@@ -22,22 +22,30 @@ import torch
 from transformers import AutoProcessor
 from functools import partial
 
-from cadrille import Cadrille, collate  # from PYTHONPATH=~/github/cadrille
+from cadrille import Cadrille, collate  # from $CADRILLE_REPO on PYTHONPATH
 
-DATA_GLOB = ("/home/ryotaro/.cache/huggingface/hub/"
-             "datasets--HuggingAI4Engineering--cadgenbench-data/snapshots/*/")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def find_generation_fixtures():
+def cgb_data_root(data_dir=None):
+    """Resolve the CADGenBench fixtures dir with no hardcoded paths:
+    explicit arg -> $CGB_DATA_DIR -> HF cache via huggingface_hub (offline-friendly)."""
+    cand = data_dir or os.environ.get("CGB_DATA_DIR")
+    if cand:
+        return cand
+    from huggingface_hub import snapshot_download
+    return snapshot_download("HuggingAI4Engineering/cadgenbench-data", repo_type="dataset")
+
+
+def find_generation_fixtures(data_dir=None):
     """Return sorted list of (fixture_id, input_png_path) for generation fixtures."""
-    snaps = sorted(glob.glob(DATA_GLOB))
-    assert snaps, f"no cadgenbench-data snapshot under {DATA_GLOB}"
-    root = snaps[-1]
+    root = cgb_data_root(data_dir)
     out = []
     for d in sorted(os.listdir(root)):
         png = os.path.join(root, d, "input.png")
         if os.path.isfile(png):
             out.append((d, png))
+    assert out, f"no generation fixtures (input.png) under {root}"
     return out
 
 
@@ -68,14 +76,15 @@ def main():
     ap.add_argument("--n", type=int, default=5, help="number of generation fixtures")
     ap.add_argument("--ids", type=str, default="", help="comma-separated fixture ids (overrides --n)")
     ap.add_argument("--checkpoint", default="maksimko123/cadrille")
-    ap.add_argument("--out", default="/home/ryotaro/my_works/drawing2cad/experiments/b2_cadrille")
+    ap.add_argument("--out", default=os.path.join(REPO_ROOT, "experiments", "b2_cadrille"))
+    ap.add_argument("--data-dir", default=None, help="CADGenBench fixtures dir (else $CGB_DATA_DIR / HF cache)")
     ap.add_argument("--max-new-tokens", type=int, default=768)
     args = ap.parse_args()
 
     out_dir = os.path.join(args.out, args.feed)
     os.makedirs(out_dir, exist_ok=True)
 
-    fixtures = find_generation_fixtures()
+    fixtures = find_generation_fixtures(args.data_dir)
     if args.ids:
         want = set(args.ids.split(","))
         fixtures = [f for f in fixtures if f[0] in want]

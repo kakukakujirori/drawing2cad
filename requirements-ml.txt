@@ -1,0 +1,23 @@
+# ML environment for drawing2cad: B2 / cadrille inference + CadQuery execution.
+# Pins match cadrille (Qwen2-VL-2B) so its model code loads correctly.
+#
+#   conda create -n drawing2cad-ml python=3.11
+#   conda activate drawing2cad-ml
+#   pip install -r requirements-ml.txt
+#
+# Torch CUDA wheels come from the pytorch index below (cu124); change the suffix
+# to match the target host's CUDA, or drop it for CPU. The cadrille *model code*
+# is a separate clone -- set CADRILLE_REPO to its path (default ~/github/cadrille).
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.5.1
+torchvision==0.20.1
+transformers==4.50.3
+qwen-vl-utils==0.0.10
+accelerate
+safetensors
+einops
+pillow
+numpy
+trimesh
+scipy
+cadquery
