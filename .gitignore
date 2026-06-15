@@ -1,0 +1,13 @@
+# confidential client material — never commit
+docs-confidential/
+
+# generated experiment outputs (reproducible via scripts/)
+experiments/
+
+# python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# logs / tmp
+*.log
