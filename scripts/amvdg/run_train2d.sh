@@ -8,7 +8,7 @@
 #   DATASET=../../experiments/f360_drawings OUT=../../experiments/2d_v0 \
 #     scripts/amvdg/run_train2d.sh
 #
-# Seed drawings come from the renderer (scripts/renderer/run_batch.sh over STEP parts).
+# Seed drawings come from the renderer (scripts/renderer/batch_dataset.py over STEP parts).
 # Fusion360 Gallery reconstruction set (27,958 STEP parts) is a good source:
 #   https://fusion-360-gallery-dataset.s3.us-west-2.amazonaws.com/reconstruction/r1.0.1/r1.0.1.zip
 set -euo pipefail

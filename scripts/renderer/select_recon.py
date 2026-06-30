@@ -5,8 +5,7 @@ The reconstruction set has many construction-sequence sub-steps per part; the re
 sorted()[:N] would take all sub-steps of a few low-numbered parts (not diverse). Instead:
 group by part ({partid}_{hash}), take each part's FINAL (lexicographically-max = most-complete)
 state, then random.sample N parts -> one diverse, geometry-rich drawing per part. Real solids
-have bores along varied axes, so circles spread across views (vs. the Z-only sketch_to_solid
-seeds that clustered circles in the top view).
+have bores along varied axes, so circles spread across views.
 
 Usage:  select_recon.py <reconstruction_dir> <N> <stage_dir> [seed]
   e.g.  select_recon.py /path/Fusion360Gallery/r1.0.1/reconstruction 2500 experiments/stage_recon 0
