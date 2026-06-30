@@ -34,9 +34,11 @@ pip install -r requirements.txt
 `batch_dataset.py` runs the FreeCAD HLR render + cairosvg rasterize + scan-aug in one env
 and emits the `(PNG, graph.json)` pairs `scripts/detector/circlenet.py` consumes. From the
 Fusion360Gallery **`reconstruction`** subset (B-rep STEP solids), stage a diverse sample
-(one final state per part, sampled across parts) and render:
+(one final state per part, sampled across parts) and render (`select_fusion360_recon.py`
+is specific to that subset's `{partid}_{hash}_{seq}_{substep}` naming):
 ```bash
-python scripts/renderer/select_recon.py /path/to/Fusion360Gallery/r1.0.1/reconstruction 2500 experiments/stage_recon
+python scripts/renderer/select_fusion360_recon.py /path/to/Fusion360Gallery/r1.0.1/reconstruction 2500 experiments/stage_recon
+
 python scripts/renderer/batch_dataset.py experiments/stage_recon experiments/dataset_recon
 ```
 Seed 3D data must be **B-rep (STEP)** — STL meshes are unsuitable for HLR. Good sources:
