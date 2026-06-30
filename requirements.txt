@@ -1,0 +1,12 @@
+accelerate
+cairosvg
+einops
+ezdxf
+jsonschema
+opencv-python-headless
+pillow
+qwen-vl-utils
+safetensors
+scipy
+transformers
+trimesh

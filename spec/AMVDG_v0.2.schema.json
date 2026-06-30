@@ -1,0 +1,1660 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://drawing2cad/schema/amvdg-0.2.schema.json",
+  "title": "Annotated Multi-View Drawing Graph (AMVDG) v0.2",
+  "description": "4-layer drawing IR. v0.2: cleaned, enum-reconciled, profile-gated. profile in {model,vectorized,derived,gt_executable} selects which fields validate_amvdg.py REQUIRES (model=coords may be null; vectorized=coords required; derived=constraints/dof recomputed; gt_executable=prov+complete build required). v0 poc field names preserved.",
+  "type": "object",
+  "required": [
+    "amvdg_version",
+    "part_id",
+    "profile",
+    "source",
+    "units",
+    "world",
+    "sheet",
+    "views",
+    "annotations",
+    "features",
+    "dof"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "amvdg_version": {
+      "const": "0.2"
+    },
+    "part_id": {
+      "type": "string"
+    },
+    "profile": {
+      "enum": [
+        "model",
+        "vectorized",
+        "derived",
+        "gt_executable"
+      ],
+      "description": "validation profile; gates which fields validate_amvdg.py requires"
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "synthetic_gt",
+            "predicted",
+            "vectorizer",
+            "merged",
+            "human"
+          ]
+        },
+        "image": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extractor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scan_affine": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "rotation_deg": {
+              "type": "number"
+            },
+            "scale": {
+              "type": "number"
+            },
+            "tx": {
+              "type": "number"
+            },
+            "ty": {
+              "type": "number"
+            },
+            "center_px": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "units": {
+      "enum": [
+        "mm",
+        "cm",
+        "m",
+        "in"
+      ]
+    },
+    "angle_units": {
+      "enum": [
+        "deg",
+        "rad"
+      ],
+      "default": "deg"
+    },
+    "world": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "handedness": {
+          "enum": [
+            "right",
+            "left"
+          ],
+          "default": "right"
+        },
+        "up_axis": {
+          "enum": [
+            "X",
+            "Y",
+            "Z"
+          ],
+          "default": "Z"
+        },
+        "bbox_3d": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "coord_system": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "px_origin": {
+          "enum": [
+            "top_left"
+          ],
+          "default": "top_left"
+        },
+        "y_axis_down": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "sheet": {
+      "type": "object",
+      "required": [
+        "projection"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "size": {
+          "type": "string"
+        },
+        "projection": {
+          "enum": [
+            "first_angle",
+            "third_angle"
+          ]
+        },
+        "scale": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "width_px": {
+          "type": "number"
+        },
+        "height_px": {
+          "type": "number"
+        },
+        "px_per_mm": {
+          "type": "number"
+        }
+      }
+    },
+    "views": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "view_type",
+          "primitives"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "view_type": {
+            "enum": [
+              "front",
+              "top",
+              "bottom",
+              "left",
+              "right",
+              "rear",
+              "iso",
+              "section",
+              "detail",
+              "auxiliary"
+            ]
+          },
+          "projection_dir": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "up_dir": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "align_to": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "view": {
+                "type": "string"
+              },
+              "shared_axis": {
+                "enum": [
+                  "x",
+                  "y"
+                ]
+              }
+            }
+          },
+          "frame": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "origin_px": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "scale": {
+                "type": "number"
+              },
+              "px_per_mm": {
+                "type": "number"
+              },
+              "axis_remap": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "matrix": {
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "px_x": {
+                    "enum": [
+                      "+X",
+                      "-X",
+                      "+Y",
+                      "-Y",
+                      "+Z",
+                      "-Z"
+                    ]
+                  },
+                  "px_y": {
+                    "enum": [
+                      "+X",
+                      "-X",
+                      "+Y",
+                      "-Y",
+                      "+Z",
+                      "-Z"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "section": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "description": "RESERVED v0.1: no headless section recipe; not emitted in first June sample.",
+            "properties": {
+              "cut_in_view": {
+                "type": "string"
+              },
+              "cut_label": {
+                "type": "string"
+              },
+              "plane_point": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "plane_normal": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "cutting_plane_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "hatch": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "pattern": {
+                      "enum": [
+                        "ANSI31",
+                        "ANSI32",
+                        "steel",
+                        "generic"
+                      ]
+                    },
+                    "angle_deg": {
+                      "type": "number"
+                    },
+                    "pitch_mm": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "boundary_refs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "material": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "symmetry": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "centerline",
+                    "center_mark",
+                    "axis_of_revolution",
+                    "mirror_line"
+                  ]
+                },
+                "ref_primitive": {
+                  "type": "string"
+                },
+                "p1": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "p2": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "implies": {
+                  "enum": [
+                    "revolve",
+                    "hole",
+                    "mirror",
+                    "none"
+                  ]
+                },
+                "feature_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "primitives": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "type",
+                "line_role",
+                "state"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "enum": [
+                    "line",
+                    "circle",
+                    "arc",
+                    "ellipse",
+                    "bezier",
+                    "bspline",
+                    "polyline",
+                    "point",
+                    "generic"
+                  ]
+                },
+                "line_role": {
+                  "enum": [
+                    "visible",
+                    "hidden",
+                    "center",
+                    "phantom",
+                    "section_cut",
+                    "break"
+                  ]
+                },
+                "feature_tag": {
+                  "enum": [
+                    "outline",
+                    "hole_or_round",
+                    "fillet",
+                    "chamfer",
+                    "thread",
+                    "boss",
+                    "slot",
+                    "rib",
+                    "bore",
+                    "unknown"
+                  ],
+                  "default": "unknown"
+                },
+                "feature_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "state": {
+                  "enum": [
+                    "known",
+                    "ambiguous",
+                    "unknown"
+                  ]
+                },
+                "coords_source": {
+                  "enum": [
+                    "gt",
+                    "vectorizer",
+                    "vlm",
+                    "snapped",
+                    "derived",
+                    "unknown"
+                  ],
+                  "default": "unknown"
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 1.0
+                },
+                "cell": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "p1": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "p2": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "pts": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  }
+                },
+                "center": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "r_px": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "r_mm": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "annotation value ALWAYS wins over r_px*scale"
+                },
+                "start_angle": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "end_angle": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "bbox_px": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 4,
+                  "maxItems": 4
+                },
+                "prov": {
+                  "$ref": "#/$defs/provenance"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "annotations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "refs",
+          "view",
+          "value_state",
+          "status"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "linear",
+              "aligned",
+              "diameter",
+              "radius",
+              "angular",
+              "chamfer",
+              "thread",
+              "counterbore",
+              "countersink",
+              "gdt",
+              "note",
+              "datum"
+            ]
+          },
+          "subtype": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "param_role": {
+            "description": "v0.1 NEW (verification F2 — the value->slot binding). What the number MEANS, independent of dim kind. Resolves '3 different 100s' ambiguity. Model-emitted, low-cardinality, image-evidenced.",
+            "enum": [
+              "diameter",
+              "radius",
+              "length",
+              "width",
+              "height",
+              "depth",
+              "thickness",
+              "spacing",
+              "pcd",
+              "count",
+              "angle",
+              "chamfer_size",
+              "cbore_dia",
+              "cbore_depth",
+              "csink_dia",
+              "thread_dia",
+              "unknown"
+            ],
+            "default": "unknown"
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "anchor_feature": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view": {
+            "type": "string"
+          },
+          "feature_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "value_source": {
+            "enum": [
+              "ocr",
+              "gt",
+              "geometry_count",
+              "prior",
+              "derived",
+              "none"
+            ],
+            "default": "none",
+            "description": "v0.1 NEW value 'geometry_count' (verification: count from CV detection is NOT a determined DoF — scorer EXCLUDES geometry_count/prior/derived from determined-DoF correctness, same as prior)."
+          },
+          "value_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tolerance": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "plus_minus",
+                  "bilateral",
+                  "limit",
+                  "fit_class",
+                  "none"
+                ]
+              },
+              "plus": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "minus": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "upper": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "lower": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "fit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "thread": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "designation": {
+                "type": "string"
+              },
+              "nominal_dia": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "pitch": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "class": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "depth": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "through": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          },
+          "counterbore": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "hole_dia": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "cbore_dia": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "cbore_depth": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "open_face": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "+Z",
+                  "-Z",
+                  "+X",
+                  "-X",
+                  "+Y",
+                  "-Y",
+                  null
+                ],
+                "description": "v0.1 NEW (verification B3): cbore is directional"
+              },
+              "through": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          },
+          "countersink": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "hole_dia": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "csink_dia": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "angle_deg": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "open_face": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "chamfer": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "size": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "angle_deg": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          },
+          "gdt": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "characteristic": {
+                "enum": [
+                  "position",
+                  "flatness",
+                  "perpendicularity",
+                  "parallelism",
+                  "concentricity",
+                  "cylindricity",
+                  "runout",
+                  "total_runout",
+                  "profile_line",
+                  "profile_surface",
+                  "straightness",
+                  "angularity",
+                  "symmetry",
+                  "circularity"
+                ]
+              },
+              "zone": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "modifier": {
+                "enum": [
+                  "MMC",
+                  "LMC",
+                  "RFS",
+                  "none"
+                ],
+                "default": "none"
+              },
+              "datums": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "text_px": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "value_state": {
+            "enum": [
+              "known",
+              "ambiguous",
+              "unknown"
+            ]
+          },
+          "status": {
+            "enum": [
+              "known",
+              "ambiguous",
+              "unknown"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 1.0
+          },
+          "prov": {
+            "$ref": "#/$defs/provenance"
+          }
+        }
+      }
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "feature_id",
+          "kind",
+          "members",
+          "status"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "feature_id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "hole",
+              "slot",
+              "boss",
+              "pocket",
+              "fillet",
+              "chamfer",
+              "rib",
+              "cylinder",
+              "bore",
+              "profile_stack",
+              "counterbore",
+              "thread",
+              "bolt_circle",
+              "outer_profile",
+              "plate",
+              "revolve",
+              "unknown"
+            ]
+          },
+          "axis": {
+            "enum": [
+              "X",
+              "Y",
+              "Z",
+              "free",
+              "none"
+            ],
+            "default": "none"
+          },
+          "extrude_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "+X",
+              "-X",
+              "+Y",
+              "-Y",
+              "+Z",
+              "-Z",
+              null
+            ],
+            "description": "v0.1 NEW (verification F3/B3): directional. axis gives the line, extrude_dir gives the sign for pocket/cbore."
+          },
+          "is_symmetry_axis": {
+            "type": "boolean",
+            "default": false
+          },
+          "r_mm": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "DEMOTED to fallback signal only (binding_method)."
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "view",
+                "primitive_id"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "view": {
+                  "type": "string"
+                },
+                "primitive_id": {
+                  "type": "string"
+                },
+                "projection_role": {
+                  "enum": [
+                    "visible",
+                    "hidden",
+                    "center"
+                  ],
+                  "default": "visible",
+                  "description": "v0.1 NEW (verification F6): the SAME hole appears as visible T1 + hidden T13. Both are members of one feature, distinguished by projection_role. Validator requires every hidden/center twin be bound, else dangling."
+                }
+              }
+            }
+          },
+          "annotations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "binding_method": {
+            "enum": [
+              "provenance",
+              "radius_fallback",
+              "model"
+            ],
+            "default": "provenance"
+          },
+          "build": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "description": "v0.1 NEW (verification F1 — the missing PROGRAM). Kernel-ready recipe, separate from prov (GT-audit-only). For synthetic GT derived from prov.params; for predicted, filled by the fusion step and MAY contain nulls -> those become DoF-undetermined. kernel_executable = every required_param has a non-null driven_by pointer to a value_state=known annotation.",
+            "properties": {
+              "op": {
+                "enum": [
+                  "pad",
+                  "pocket",
+                  "hole",
+                  "revolve",
+                  "mirror",
+                  "pattern_polar"
+                ]
+              },
+              "datum_plane": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "face/named-datum the sketch sits on"
+              },
+              "plane_offset_mm": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "world position of the sketch plane along axis"
+              },
+              "in_plane_xy": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "feature center in plane-local coords"
+              },
+              "extrude_dir": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "+X",
+                  "-X",
+                  "+Y",
+                  "-Y",
+                  "+Z",
+                  "-Z",
+                  null
+                ]
+              },
+              "driven_by": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": false,
+                "description": "maps each kernel param -> the ANNOTATION id supplying its value. Builder reads value from the pointed annotation, NEVER guesses (resolves B2 mechanically).",
+                "properties": {
+                  "dia": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "depth": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cbore_dia": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cbore_depth": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "pcd": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "count": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "angle": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "dx": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "dy": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "dz": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "dof": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "required_params": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "determined_params": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "determined_by_geometry": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "v0.1 NEW (verification): params evident from CV detection (e.g. count). SEPARATE bucket; NOT in determined_params; EXCLUDED from OCR-determined coverage."
+              },
+              "status": {
+                "enum": [
+                  "determined",
+                  "under_determined",
+                  "library_supplied"
+                ]
+              }
+            }
+          },
+          "status": {
+            "enum": [
+              "known",
+              "ambiguous",
+              "unknown"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 1.0
+          },
+          "prov": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "feature_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "solid": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "feature_3d": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "occ_face_ids": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "integer",
+                    "string"
+                  ]
+                }
+              },
+              "params": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "constraints": {
+      "description": "DERIVED (FreeCAD autoconstrain over vectorized geometry). NOT authored. origin=autoconstrain.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ctype",
+          "refs",
+          "origin"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ctype": {
+            "enum": [
+              "coincident",
+              "parallel",
+              "perpendicular",
+              "concentric",
+              "equal",
+              "horizontal",
+              "vertical",
+              "tangent",
+              "symmetric",
+              "collinear"
+            ]
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "origin": {
+            "const": "autoconstrain"
+          }
+        }
+      }
+    },
+    "dof": {
+      "type": "object",
+      "required": [
+        "required",
+        "determined",
+        "missing",
+        "fully_constrained"
+      ],
+      "additionalProperties": false,
+      "description": "'Sufficient' = correctness-on-determined x coverage; never hallucinate the under-determined.",
+      "properties": {
+        "required": {
+          "type": "integer"
+        },
+        "determined": {
+          "type": "integer",
+          "description": "DoF backed by value_state=known AND value_source in {ocr,gt}. geometry_count/prior EXCLUDED."
+        },
+        "determined_by_geometry": {
+          "type": "integer",
+          "default": 0,
+          "description": "v0.1 NEW: e.g. bolt-hole count. Reported, not counted as OCR-determined."
+        },
+        "supplied_by_prior": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "MUST be empty at extraction time."
+        },
+        "undetermined": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "the abstain set; MUST be disjoint from ocr/gt-valued annotations."
+        },
+        "missing": {
+          "type": "integer"
+        },
+        "fully_constrained": {
+          "type": "boolean"
+        },
+        "coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "determined / required (OCR-determined only)."
+        },
+        "self_declared": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "model's D-line; validator recomputes and MUST match."
+        }
+      }
+    },
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "grammar_ok": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "schema_ok": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ref_integrity_ok": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "kernel_executable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "dof_ok": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "lines_dropped": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lines_total": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "known_but_unlocalized": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "primitives state=known but no geometry after CV pass = honest synthetic<->real gap meter."
+        },
+        "skipped_in_render": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "v0.1 NEW (verification F4): unlocalized primitives omitted from DXF (makes IR->DXF total, not partial)."
+        },
+        "census": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "v0.1 NEW (verification — abstain != absent). Per-view declared counts the model emits; validator checks against actual records so OMISSION becomes a measurable recall miss, not invisible.",
+          "properties": {
+            "by_view": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": [
+                    "integer",
+                    "string"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "expected_vs_emitted": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "validator diff of census vs emitted records."
+        },
+        "dangling_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "between": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "note": {
+            "type": "string"
+          },
+          "resolution": {
+            "enum": [
+              "unresolved",
+              "prefer_first",
+              "prefer_higher_conf",
+              "manual"
+            ],
+            "default": "unresolved"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "provenance": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "feature_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "param": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "occ_compound": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "projectEx group index: visible=[0]+[1]+[3], hidden=[5]+[8]"
+        },
+        "origin": {
+          "enum": [
+            "synthetic_gt",
+            "cv_vectorizer",
+            "vlm",
+            "autoconstrain",
+            "library_prior",
+            null
+          ],
+          "default": null
+        }
+      }
+    }
+  }
+}

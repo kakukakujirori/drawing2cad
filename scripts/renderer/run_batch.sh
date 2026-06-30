@@ -2,11 +2,10 @@
 # Phase-1 synthetic dimensioned-drawing renderer (batch).
 # seed B-rep STEPs -> per-part {graph.json (Tier-1/2), .png (Tier-0 raster), .dxf (Tier-1 2D CAD)}
 #
-# Assumes the `drawing2cad` conda env is ALREADY activated (see environment.yml):
+# Assumes the `drawing2cad` conda env is ALREADY activated (see README.md):
 #   conda activate drawing2cad
-# Needs FreeCAD + matplotlib + ezdxf importable by the active `python`.
-# For a SOURCE-BUILT FreeCAD (no conda-forge package), export its lib dir:
-#   export FREECAD_LIBDIR=/path/to/FreeCAD/build/release/lib
+# Needs conda-forge FreeCAD + ezdxf importable by the active `python` (matplotlib
+# ships with FreeCAD). The renderer scripts import FreeCAD via the `freecad` shim.
 #
 # Usage:   run_batch.sh <step_dir> <out_dir> [N=0:all]
 # Example: run_batch.sh /path/to/Fusion360Gallery/r1.0.1/reconstruction out/drawings 2000
@@ -20,11 +19,6 @@ OUT_DIR="${2:?usage: run_batch.sh <step_dir> <out_dir> [N]}"
 N="${3:-0}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Optional: prepend a source-built FreeCAD's lib dir so `import FreeCAD` resolves.
-if [ -n "${FREECAD_LIBDIR:-}" ]; then
-  export PYTHONPATH="${FREECAD_LIBDIR}${PYTHONPATH:+:$PYTHONPATH}"
-fi
 
 mkdir -p "$OUT_DIR"
 

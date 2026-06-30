@@ -9,11 +9,12 @@ that are bound to those primitives AND to the originating 3D feature/parameter.
 Because data is synthetic we get all of this as ground truth for free; a real
 OCR+vectorization stage (Morpho's 2D->2D CAD) would produce the same schema, noisily.
 
-Run (FreeCAD env):
-  PYTHONPATH=/home/ryotaro/github/FreeCAD/build/release/lib \
-    conda run -n freecad python scripts/renderer/project_views.py --out experiments/renderer_demo
+Run (drawing2cad env):
+  conda activate drawing2cad
+  python scripts/renderer/project_views.py --out experiments/renderer_demo
 """
 import os, json, math, argparse
+import freecad          # conda-forge shim: puts FreeCAD's libs on sys.path
 import FreeCAD as App
 import Part
 import TechDraw
