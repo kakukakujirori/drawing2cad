@@ -10,6 +10,8 @@ holding dataset/{Bracket,Flange}.graph.json, pred/{Bracket.scan,Real101}.pred.js
 import os, json, math, numpy as np
 R=os.environ.get("ORTHOSOLVE_DATA", "poc")
 def load(p): return json.load(open(p))
+def anns(g): return g.get("annotations") or g.get("dimensions", [])   # v0.2 'annotations' / v0 'dimensions'
+def dkind(d): return d.get("kind", d.get("type"))                     # v0.2 'kind' / v0 'type'
 def circles(g):
     out={}
     for v in g.get("views",[]):
@@ -24,12 +26,12 @@ print("="*78)
 gt=load(f"{R}/dataset/Bracket.graph.json")
 ppm=gt["sheet"]["px_per_mm"]
 gtc=circles(gt)
-gtdim={d["id"]:d for d in gt["dimensions"] if d["type"]=="diameter"}
+gtdim={d["id"]:d for d in anns(gt) if dkind(d)=="diameter"}
 print(f"sheet px_per_mm = {ppm}")
 print(f"{'dim':5} {'mm':>5} {'r_px from DIM':>14} {'GT r_px':>9} {'scan r_px':>10} {'dim_err':>8} {'scan_err':>9}")
 scan=load(f"{R}/pred/Bracket.scan.pred.json")
 scanc=circles(scan)
-scandim={d["id"]:d for d in scan["dimensions"] if d["type"]=="diameter"}
+scandim={d["id"]:d for d in anns(scan) if dkind(d)=="diameter"}
 # map GT diameter dims -> their GT circle; scan diameter dims -> their scan circle (by value)
 for did,d in gtdim.items():
     rmm=d["value"]/2
@@ -98,8 +100,8 @@ real=load(f"{R}/pred/Real101.pred.json")
 rc=circles(real)
 ppm_votes=[]
 print(f"{'dim':5} {'mm⌀':>6} {'bound circle':>14} {'det r_px':>9} {'=> px_per_mm':>13}")
-for d in real["dimensions"]:
-    if d["type"]=="diameter" and d.get("refs"):
+for d in anns(real):
+    if dkind(d)=="diameter" and d.get("refs"):
         for rid in d["refs"]:
             if rid in rc:
                 rpx=rc[rid]["r_px"]; ppm_i=rpx/(d["value"]/2)
@@ -111,6 +113,6 @@ if ppm_votes:
     cv=sd/med if med else float('nan')
     print(f"-> {len(ppm_votes)} scale votes  median={med:.3f}  stdev={sd:.3f}  CV={cv:.1%}")
     print(f"   ({'CONSISTENT -> scale recovered + detections trustworthy' if cv<0.15 else 'INCONSISTENT -> detections noisy/mis-bound: the solver would EXPOSE this, not hide it'})")
-tot=len(real["dimensions"]); bound=sum(1 for d in real['dimensions'] if d.get('refs'))
+tot=len(anns(real)); bound=sum(1 for d in anns(real) if d.get('refs'))
 print(f"-> real binding coverage: {bound}/{tot} dims have a primitive ref ({bound/tot:.0%}); "
       f"the rest are honest-abstain (no calibration/refs on real, as predicted).")

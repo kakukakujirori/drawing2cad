@@ -25,7 +25,7 @@ def load_gt(graph_path):
     lines, circles = [], []
     for v in g["views"]:
         for p in v["primitives"]:
-            vis = p.get("visibility", "visible")
+            vis = p.get("line_role", p.get("visibility", "visible"))
             if p["type"] == "line":
                 lines.append((p["p1"], p["p2"], vis))
             elif p["type"] in ("circle", "arc"):

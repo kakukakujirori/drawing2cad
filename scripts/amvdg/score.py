@@ -56,13 +56,15 @@ def pred_prims(pred):
     out=[]
     for v in pred.get("views",[]):
         for p in v.get("primitives",[]):
-            q=dict(p); q.setdefault("visibility","visible"); q["view"]=v.get("name","?")
+            q=dict(p); q.setdefault("line_role","visible"); q["view"]=v.get("name","?")
             out.append(q)
     return out
 
 def d(a,b): return math.hypot(a[0]-b[0],a[1]-b[1])
 
-def _vis(p): return p.get("visibility","visible")
+def _vis(p): return p.get("line_role", p.get("visibility","visible"))
+def _dkind(d): return d.get("kind", d.get("type"))   # annotation kind (v0.2 'kind' / v0 'type')
+def _anns(g): return g.get("annotations", g.get("dimensions", []))
 
 def match_curves(gt, pr, vis=None):
     """Pool circle+arc; match by center+radius. Returns tp, n_gt, n_pred, pairs, type_ok."""
@@ -102,14 +104,14 @@ def val_match(gv,pv):
     return abs(gv-pv)<=max(V_ABS, V_REL*abs(gv))
 
 def match_dims(gt,pred):
-    G=gt["dimensions"]; P=pred.get("dimensions",[])
+    G=_anns(gt); P=_anns(pred)
     used=set(); pairs=[]
     for g in G:
         best=None
         for i,p in enumerate(P):
             if i in used: continue
             if "value" in p and val_match(g["value"],p.get("value",1e9)):
-                if best is None or (p.get("type")==g["type"]): best=i
+                if best is None or (_dkind(p)==_dkind(g)): best=i
         if best is not None: used.add(best); pairs.append((g,P[best]))
     return pairs,len(G),len(P)
 
@@ -117,7 +119,8 @@ def main():
     pred_p, gt_p = sys.argv[1], sys.argv[2]
     scan = "--scan" in sys.argv[3:]
     pred=load(pred_p); gt=load(gt_p)
-    xf=(affine(gt["scan_affine"]) if (scan and gt.get("scan_affine")) else (lambda x:list(x)))
+    _aff=(gt.get("source") or {}).get("scan_affine") or gt.get("scan_affine")
+    xf=(affine(_aff) if (scan and _aff) else (lambda x:list(x)))
     G=gt_prims(gt,xf); Pr=pred_prims(pred)
 
     # curves (pooled circle+arc): visible headline + all
@@ -133,15 +136,15 @@ def main():
     # dims
     dpairs,dng,dnp=match_dims(gt,pred)
     val_ok=sum(1 for g,p in dpairs if val_match(g["value"],p["value"]))
-    type_ok=sum(1 for g,p in dpairs if p.get("type")==g.get("type"))
-    dia_pairs=[(g,p) for g,p in dpairs if g["type"]=="diameter"]
+    type_ok=sum(1 for g,p in dpairs if _dkind(p)==_dkind(g))
+    dia_pairs=[(g,p) for g,p in dpairs if _dkind(g)=="diameter"]
     dia_mae=round(sum(abs(g["value"]-p["value"]) for g,p in dia_pairs)/len(dia_pairs),3) if dia_pairs else None
 
     # linkage (binding) over diameter+radius dims, resolved through curve pairs
     pid2gid={p.get("id"):g.get("id") for g,p in cpairs}
     link_ok=0; link_tot=0
     for g,p in dpairs:
-        if g["type"] not in ("diameter","radius"): continue
+        if _dkind(g) not in ("diameter","radius"): continue
         link_tot+=1
         mapped={pid2gid.get(r) for r in (p.get("refs") or [])}
         if set(g.get("refs",[])) & mapped: link_ok+=1

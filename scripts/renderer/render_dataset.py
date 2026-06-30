@@ -29,6 +29,11 @@ import Part
 import TechDraw
 from collections import Counter
 
+# viewing direction recorded per ortho view (third-angle); only used as recorded metadata.
+_PROJ_DIR = {"front": [0, -1, 0], "top": [0, 0, -1], "right": [1, 0, 0]}
+# annotation param_role from the prov 'param' tag (bbox dx/dy/dz + diameter).
+_PARAM_ROLE = {"dx": "width", "dy": "depth", "dz": "height", "diameter": "diameter"}
+
 # ============================================================================
 #  geometry -> SVG path + primitive records
 # ============================================================================
@@ -217,7 +222,8 @@ class View:
         feat = "outline"
         if typ in ("circle", "arc"):
             feat = "hole_or_round"
-        base = {"id": rid, "type": typ, "visibility": vis_tag, "feature": feat}
+        base = {"id": rid, "type": typ, "line_role": vis_tag, "feature_tag": feat,
+                "state": "known", "coords_source": "gt"}
         if typ == "line":
             base["p1"] = self._to_px(*g["p1"], px=px)
             base["p2"] = self._to_px(*g["p2"], px=px)
@@ -505,9 +511,14 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
             prim_index[p["id"]] = p
         views_gt.append({
             "name": v.name,
-            "origin_px": [round(v.ox * PXMM, 2), round(v.oy * PXMM, 2)],
-            "scale": v.scale,
-            "px_per_mm": round(v.scale * PXMM, 4),   # per-view px/mm = view scale * sheet PXMM (so r_px == r_mm * px_per_mm)
+            "view_type": v.name,                       # 'front'/'top'/'right' match the schema enum
+            "projection_dir": _PROJ_DIR.get(v.name, [0, 0, -1]),
+            "align_to": None,
+            "frame": {
+                "origin_px": [round(v.ox * PXMM, 2), round(v.oy * PXMM, 2)],
+                "scale": v.scale,
+                "px_per_mm": round(v.scale * PXMM, 4),  # per-view px/mm = view scale * sheet PXMM (r_px == r_mm * px_per_mm)
+            },
             "primitives": prims,
         })
     view_by_name = {gv["name"]: gv for gv in views_gt}
@@ -539,7 +550,7 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
         dims; no per-part wiring.
         axis 'h' -> left/right extremes; 'v' -> top/bottom extremes."""
         gv = view_by_name[view_name]
-        prims = [p for p in gv["primitives"] if p["visibility"] == "visible"]
+        prims = [p for p in gv["primitives"] if p["line_role"] == "visible"]
         if not prims:
             return []
         i0, i1 = (0, 2) if axis == "h" else (1, 3)  # bbox indices for this axis
@@ -568,11 +579,17 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     def add_dim(svg_frag, anchor_mm, dtype, subtype, value, view, refs, prov):
         dctr[0] += 1
         dims.append(svg_frag)
+        param = prov.get("param")
+        feat = prov.get("feature")
         dims_gt.append({
-            "id": "D%d" % dctr[0], "type": dtype, "subtype": subtype,
-            "value": round(value, 3), "refs": refs, "view": view,
+            "id": "D%d" % dctr[0], "kind": dtype, "subtype": subtype,
+            "param_role": _PARAM_ROLE.get(param, "unknown"),
+            "value": round(value, 3), "value_source": "gt",
+            "value_state": "known", "status": "known",
+            "refs": refs, "view": view,
+            "feature_id": feat if param == "diameter" else None,
             "text_px": [round(anchor_mm[0] * PXMM, 2), round(anchor_mm[1] * PXMM, 2)],
-            "provenance": prov,
+            "prov": {"feature_id": feat, "param": param, "origin": "synthetic_gt"},
         })
 
     # FRONT overall length (model X) below, height (model Z) left
@@ -604,7 +621,7 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     # (the old code dimensioned only 1 big + 1 small front bore => ~18% coverage).
     DIA = "⌀"
     cyls = extract_cylinders(shape)
-    correspondences = []
+    features = []
     _axis_view = {"Y": ("front", front, lambda c: (c[0], c[2])),
                   "Z": ("top",   top,   lambda c: (c[0], c[1])),
                   "X": ("right", right, lambda c: (c[1], c[2]))}
@@ -649,8 +666,17 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
             rid = find_circle_prim("right", cy, cz, c["r"])
             if rid: per_view["right"] = rid
         if len(per_view) >= 1:
-            correspondences.append({"feature": c["id"], "axis": c["axis"],
-                                    "r_mm": round(c["r"], 3), "views": per_view})
+            members = []
+            for vn, pid in per_view.items():
+                role = prim_index.get(pid, {}).get("line_role", "visible")
+                if role not in ("visible", "hidden", "center"):
+                    role = "visible"
+                members.append({"view": vn, "primitive_id": pid, "projection_role": role})
+            features.append({"feature_id": c["id"], "kind": "cylinder", "axis": c["axis"],
+                             "extrude_dir": None, "r_mm": round(c["r"], 3),
+                             "members": members, "status": "known",
+                             "prov": {"feature_id": c["id"], "feature_3d": "cylinder",
+                                      "params": {"r_mm": round(c["r"], 3), "axis": c["axis"]}}})
 
     parts.append('<g>%s</g>' % "\n".join(dims))
 
@@ -668,17 +694,28 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
 
     rnum, rden = _ratio(scale)
     graph = {
+        "amvdg_version": "0.2",
         "part_id": partname,
+        "profile": "vectorized",
+        "source": {"kind": "synthetic_gt", "image": None, "extractor": None,
+                   "scan_affine": None},
         "units": "mm",
-        "bbox_3d": [round(L, 3), round(W, 3), round(H, 3)],
+        "angle_units": "deg",
+        "world": {"handedness": "right", "up_axis": "Z",
+                  "bbox_3d": [round(L, 3), round(W, 3), round(H, 3)]},
+        "coord_system": {"px_origin": "top_left", "y_axis_down": True},
         "sheet": {"size": "A3", "projection": "third_angle",
-                  "scale": [int(rnum) if rnum.isdigit() else rnum,
-                            int(rden) if rden.isdigit() else rden],
+                  "scale": [int(rnum) if rnum.isdigit() else float(rnum),
+                            int(rden) if rden.isdigit() else float(rden)],
                   "width_px": out_width, "height_px": int(round(SH * PXMM)),
                   "px_per_mm": round(PXMM, 4)},
         "views": views_gt,
-        "dimensions": dims_gt,
-        "correspondences": correspondences,
+        "annotations": dims_gt,
+        "features": features,
+        "dof": {"required": 0, "determined": 0, "determined_by_geometry": 0,
+                "supplied_by_prior": [], "undetermined": [], "missing": 0,
+                "fully_constrained": False, "coverage": 0.0,
+                "self_declared": {"required": 0, "determined": 0, "missing": 0}},
     }
     meta = {"L": L, "W": W, "H": H, "scale": scale, "width_px": out_width,
             "height_px": int(round(SH * PXMM)), "pxmm": PXMM}
@@ -758,14 +795,14 @@ def render_one(step_path, out_dir, name=None, width=PX_DEFAULT_W):
 
 
 def _counts(graph):
-    nv = sum(1 for gv in graph["views"] for p in gv["primitives"] if p["visibility"] == "visible")
-    nh = sum(1 for gv in graph["views"] for p in gv["primitives"] if p["visibility"] == "hidden")
-    by_type = Counter(d["type"] for d in graph["dimensions"])
-    nrefless = sum(1 for d in graph["dimensions"] if not d["refs"])
+    nv = sum(1 for gv in graph["views"] for p in gv["primitives"] if p["line_role"] == "visible")
+    nh = sum(1 for gv in graph["views"] for p in gv["primitives"] if p["line_role"] == "hidden")
+    by_type = Counter(d["kind"] for d in graph["annotations"])
+    nrefless = sum(1 for d in graph["annotations"] if not d["refs"])
     return {"prim_visible": nv, "prim_hidden": nh,
-            "dims_total": len(graph["dimensions"]), "dims_by_type": dict(by_type),
+            "dims_total": len(graph["annotations"]), "dims_by_type": dict(by_type),
             "dims_without_refs": nrefless,
-            "correspondences": len(graph["correspondences"])}
+            "features": len(graph["features"])}
 
 
 def _main():

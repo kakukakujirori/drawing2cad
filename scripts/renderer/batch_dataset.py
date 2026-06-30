@@ -56,7 +56,7 @@ def stage2(out_dir, width, do_scan):
         if do_scan:
             scanp = os.path.join(out_dir, name + ".scan.png")
             aff = scan_augment(png, scanp, seed=hash(name) & 0xffff)
-            g = json.load(open(gp)); g["scan_affine"] = aff
+            g = json.load(open(gp)); g.setdefault("source", {})["scan_affine"] = aff
             json.dump(g, open(gp, "w"), indent=1)
             row["scan_png"] = scanp
         manifest.write(json.dumps(row) + "\n")

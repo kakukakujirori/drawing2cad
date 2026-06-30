@@ -62,14 +62,18 @@ params, determined **3** (plate dx,dz + boss dia), 1 by geometry (bolt count), *
 | `validate_amvdg.py` | the 7-gate validator + the canonical pipe-delimited DSL `lower`/`lift` |
 | `example_flange_v0.2.json` | a valid `gt_executable` instance (breaking any ref/DoF/round-trip fails it) |
 
-## Two serialization forms — and an open migration gap
+## Two serialization forms
 - The **canonical model-facing DSL** is the pipe-delimited one-record-per-line form in
   `validate_amvdg.py` (`V|… A|… F|…`), grammar-constrainable so a malformed *line* drops
   instead of the whole document.
 - The **training serializer** `scripts/amvdg/serialize.py` emits a compact-JSON `g1` target
-  for cadrille — but it (and `graph_to_dxf.py`, `score.py`, and the renderer `render_dataset.py`)
-  still use the **v0 field names** (`visibility`, `feature`, `dimensions`) whereas this v0.2
-  schema uses (`line_role`, `feature_tag`, `annotations`). Running `serialize.py` on a v0.2
-  instance therefore drops dims and reads every line as visible. **Reconciling the v0 toolchain
-  to the v0.2 names is the open landing task** (spec §8); do it across renderer + serializer +
-  scorer together, not one side at a time.
+  for cadrille.
+
+## v0 → v0.2 migration: done
+The renderer (`render_dataset.py`) now emits this v0.2 schema directly (`line_role`/`feature_tag`/
+`annotations`/`features` + `profile`/`source`/`world`/`dof`/…) at `profile: vectorized`, and the
+whole toolchain — `serialize.py`, `graph_to_dxf.py`, `score.py`, `circlenet.py`, `tile.py`,
+`pipeline.py` — was moved to the v0.2 names together (with a v0 fallback so old graphs still load).
+`python validate_amvdg.py <renderer-output>` passes all 7 gates. Remaining for a later pass:
+richer `dof`/coverage (currently emitted as zero — the OrthoSolve accounting) and the
+`gt_executable` profile (kernel `build` recipes), to be filled when the 2D→3D leg starts.

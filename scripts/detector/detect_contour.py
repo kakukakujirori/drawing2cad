@@ -45,7 +45,7 @@ print(f"after dedup: {len(circles)} circles; radii px: {[round(r) for r in det]}
 
 # scale recovery + NULL test
 real=json.load(open(f"{R}/pred/Real101.pred.json"))
-exp_r=sorted(set(d["value"]/2 for d in real["dimensions"] if d["type"]=="diameter"))
+exp_r=sorted(set(d["value"]/2 for d in (real.get("annotations") or real.get("dimensions",[])) if d.get("kind",d.get("type"))=="diameter"))
 print(f"known ⌀ (mm): {[round(e*2) for e in exp_r]}")
 TOL=0.06
 def matched(s): return sum(1 for r in det if min(abs(r-s*e)/(s*e) for e in exp_r)<TOL)

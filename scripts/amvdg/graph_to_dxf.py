@@ -49,7 +49,7 @@ def main():
 
     nline = ncirc = narc = 0
     for p in prims:
-        lay = "HIDDEN" if p.get("visibility") == "hidden" else "VISIBLE"
+        lay = "HIDDEN" if p.get("line_role", p.get("visibility")) == "hidden" else "VISIBLE"
         if p["type"] == "line":
             (x1, y1), (x2, y2) = p["p1"], p["p2"]
             msp.add_line((x1, fy(y1)), (x2, fy(y2)), dxfattribs={"layer": lay}); nline += 1
@@ -64,8 +64,8 @@ def main():
     pid = {p.get("id"): p for p in prims}
     pre = {"diameter": "Ø", "radius": "R", "angular": ""}
     ndim = 0
-    for i, dm in enumerate(g.get("dimensions", [])):
-        label = pre.get(dm.get("type"), "") + ("%g" % dm["value"])
+    for i, dm in enumerate(g.get("annotations", g.get("dimensions", []))):
+        label = pre.get(dm.get("kind", dm.get("type")), "") + ("%g" % dm["value"])
         if "text_px" in dm:
             x, y = dm["text_px"]
         else:  # place near first bound primitive, else stack in a corner

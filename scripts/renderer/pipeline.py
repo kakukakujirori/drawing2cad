@@ -143,7 +143,7 @@ def verify(png_path, graph_path, out_path):
     for gv in g["views"]:
         for p in gv["primitives"]:
             prim_by_id[p["id"]] = p
-            col = COL_VIS if p["visibility"] == "visible" else COL_HID
+            col = COL_VIS if p.get("line_role", p.get("visibility")) == "visible" else COL_HID
             if p["type"] in ("circle", "arc"):
                 cx, cy = p["center"]; r = p["r_px"]
                 d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=COL_CIRC, width=2)
@@ -154,7 +154,7 @@ def verify(png_path, graph_path, out_path):
                 d.rectangle(bb, outline=col, width=1)
 
     # dimensions: draw text anchor + line to each ref's bbox center
-    for dim in g["dimensions"]:
+    for dim in g.get("annotations", g.get("dimensions", [])):
         tx, ty = dim["text_px"]
         d.ellipse([tx - 5, ty - 5, tx + 5, ty + 5], outline=COL_DIM, width=2)
         lbl = "%s=%s" % (dim["id"], dim["value"])
@@ -201,7 +201,7 @@ def main():
 
         # record affine into graph.json so labels map onto scan.png
         g = json.load(open(graph_path))
-        g["scan_affine"] = aff
+        g.setdefault("source", {})["scan_affine"] = aff
         json.dump(g, open(graph_path, "w"), indent=1)
 
         verify(clean, graph_path, verifyp)
@@ -209,7 +209,8 @@ def main():
         counts = g.get("_counts") or _counts(g)
         row = {"part_id": name, "step": step,
                "png": clean, "scan_png": scan, "graph": graph_path, "verify": verifyp,
-               "bbox_3d": g["bbox_3d"], "scale": g["sheet"]["scale"],
+               "bbox_3d": (g.get("world") or {}).get("bbox_3d") or g.get("bbox_3d"),
+               "scale": g["sheet"]["scale"],
                "counts": counts, "scan_affine": aff}
         manifest.write(json.dumps(row) + "\n")
         summary.append((name, counts))
@@ -222,13 +223,15 @@ def main():
 
 def _counts(g):
     from collections import Counter
-    nv = sum(1 for gv in g["views"] for p in gv["primitives"] if p["visibility"] == "visible")
-    nh = sum(1 for gv in g["views"] for p in gv["primitives"] if p["visibility"] == "hidden")
-    by_type = Counter(d["type"] for d in g["dimensions"])
-    nrefless = sum(1 for d in g["dimensions"] if not d["refs"])
-    return {"prim_visible": nv, "prim_hidden": nh, "dims_total": len(g["dimensions"]),
+    _anns = g.get("annotations", g.get("dimensions", []))
+    _vis = lambda p: p.get("line_role", p.get("visibility"))
+    nv = sum(1 for gv in g["views"] for p in gv["primitives"] if _vis(p) == "visible")
+    nh = sum(1 for gv in g["views"] for p in gv["primitives"] if _vis(p) == "hidden")
+    by_type = Counter(d.get("kind", d.get("type")) for d in _anns)
+    nrefless = sum(1 for d in _anns if not d["refs"])
+    return {"prim_visible": nv, "prim_hidden": nh, "dims_total": len(_anns),
             "dims_by_type": dict(by_type), "dims_without_refs": nrefless,
-            "correspondences": len(g["correspondences"])}
+            "features": len(g.get("features", g.get("correspondences", [])))}
 
 
 if __name__ == "__main__":

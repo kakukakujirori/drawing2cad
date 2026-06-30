@@ -43,7 +43,7 @@ print(f"\n(B) CIRCLE detection (Hough): {len(det)} circles; radii px (sorted): "
 
 # known diameters from the OCR'd callouts (drawn circles/bores)
 real=json.load(open(f"{R}/pred/Real101.pred.json"))
-dia_mm=sorted({d["value"] for d in real["dimensions"] if d["type"]=="diameter"})
+dia_mm=sorted({d["value"] for d in (real.get("annotations") or real.get("dimensions",[])) if d.get("kind",d.get("type"))=="diameter"})
 exp_r=sorted(set(d/2 for d in dia_mm))
 print(f"   known OCR'd diameters (mm): {[round(x) for x in dia_mm]}")
 

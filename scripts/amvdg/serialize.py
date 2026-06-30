@@ -27,8 +27,9 @@ def _i(x):
 
 
 def _prim_to_compact(p):
-    o = {"id": p["id"], "t": p["type"], "v": _VIS.get(p.get("visibility", "visible"), "vis")}
-    f = p.get("feature")
+    o = {"id": p["id"], "t": p["type"],
+         "v": _VIS.get(p.get("line_role", p.get("visibility", "visible")), "vis")}
+    f = p.get("feature_tag", p.get("feature"))
     if f and f != "outline":
         o["f"] = f
     if p["type"] == "line":
@@ -48,7 +49,7 @@ def _prim_to_compact(p):
 
 
 def _dim_to_compact(d):
-    o = {"id": d["id"], "t": d["type"]}
+    o = {"id": d["id"], "t": d.get("kind", d.get("type"))}
     sub = d.get("subtype")
     if sub:
         o["s"] = _SUB.get(sub, sub)
@@ -68,7 +69,7 @@ def graph_to_text(graph):
             "name": v["name"],
             "prims": [_prim_to_compact(p) for p in v.get("primitives", [])],
         })
-    for d in graph.get("dimensions", []):
+    for d in graph.get("annotations", graph.get("dimensions", [])):
         out["dims"].append(_dim_to_compact(d))
     return json.dumps(out, ensure_ascii=False, separators=(",", ":"))
 
@@ -85,8 +86,8 @@ def graph_from_text(text):
         prims = []
         for p in v.get("prims", []):
             q = {"id": p["id"], "type": p["t"],
-                 "visibility": _VIS_INV.get(p.get("v", "vis"), "visible"),
-                 "feature": p.get("f", "outline")}
+                 "line_role": _VIS_INV.get(p.get("v", "vis"), "visible"),
+                 "feature_tag": p.get("f", "outline")}
             if p["t"] == "line" and "p1" in p:
                 q["p1"] = [float(p["p1"][0]), float(p["p1"][1])]
                 q["p2"] = [float(p["p2"][0]), float(p["p2"][1])]
@@ -105,11 +106,11 @@ def graph_from_text(text):
         views.append({"name": v["name"], "primitives": prims})
     dims = []
     for d in o.get("dims", []):
-        dims.append({"id": d["id"], "type": d["t"],
+        dims.append({"id": d["id"], "kind": d["t"],
                      "subtype": _SUB_INV.get(d.get("s", ""), d.get("s", "")),
                      "value": float(d["val"]), "view": d.get("view", ""),
                      "refs": list(d.get("refs", [])), "tol": d.get("tol")})
-    return {"views": views, "dimensions": dims}
+    return {"views": views, "annotations": dims}
 
 
 def _autoclose(frag):
@@ -151,7 +152,7 @@ def graph_from_text_safe(text):
                 return graph_from_text(_autoclose(body[:end])), "repaired"
             except Exception:
                 continue
-    return {"views": [], "dimensions": []}, "fail"
+    return {"views": [], "annotations": []}, "fail"
 
 
 PROMPT = ("Extract the engineering drawing as a Tier-1 graph. For each view emit "
@@ -169,5 +170,5 @@ if __name__ == "__main__":
     back = graph_from_text(t)
     print("\n[roundtrip] views:", len(back["views"]),
           "prims:", sum(len(v["primitives"]) for v in back["views"]),
-          "dims:", len(back["dimensions"]),
+          "dims:", len(back["annotations"]),
           "target_chars:", len(t))

@@ -120,10 +120,10 @@ def merge_graphs(tiles, graphs, image_size_px):
     for t, g in zip(tiles, graphs):
         if not g:
             continue
-        for dim in g.get("dimensions", []):
+        for dim in g.get("annotations", g.get("dimensions", [])):
             refs = [idmap.get("t%d_%s" % (t["i"], r)) for r in (dim.get("refs") or [])]
             refs = [r for r in refs if r]
-            key = (dim.get("type"), round(float(dim.get("value", 0)), 1), frozenset(refs))
+            key = (dim.get("kind", dim.get("type")), round(float(dim.get("value", 0)), 1), frozenset(refs))
             if key in seen:
                 continue
             seen.add(key)
@@ -133,7 +133,7 @@ def merge_graphs(tiles, graphs, image_size_px):
 
     return {"image_size_px": image_size_px,
             "views": [{"name": "merged", "primitives": kept}],
-            "dimensions": dims}
+            "annotations": dims}
 
 
 def main():

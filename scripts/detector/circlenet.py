@@ -410,7 +410,7 @@ def evalfull(ckpt, root, split_json=None, use_scan=False, thr=0.25, rtol=0.35, d
         if img is None: continue
         g=json.load(open(gj))
         circ=_gt_centers(circles_from_graph(g))
-        aff=g.get("scan_affine") if use_scan else None
+        aff=((g.get("source") or {}).get("scan_affine") or g.get("scan_affine")) if use_scan else None
         if aff:
             circ=[(*_apply_aff((cx,cy),aff), r*aff.get("scale",1.0), vis) for cx,cy,r,vis in circ]
         if not circ: continue
@@ -477,8 +477,8 @@ def _dim_anchors(g, aff=None):
             if p.get("type") in ("circle","arc"):
                 cid[(v.get("name"),p["id"])]=(p["center"][0],p["center"][1])
     out=[]
-    for d in g.get("dimensions",[]):
-        if str(d.get("type")).lower()!="diameter": continue
+    for d in g.get("annotations", g.get("dimensions",[])):
+        if str(d.get("kind", d.get("type"))).lower()!="diameter": continue
         val=d.get("value"); view=d.get("view")
         if val is None: continue
         cen=next((cid[(view,r)] for r in d.get("refs",[]) if (view,r) in cid), None)
