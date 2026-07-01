@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Tier-1 graph (JSON) -> 2D CAD (DXF). The deterministic last step of the 2D->2D leg:
+"""Intra-view graph (JSON) -> 2D CAD (DXF). The deterministic last step of the 2D->2D leg:
 the model predicts the graph; this turns it into an openable 2D-CAD file. Proves the
 output IS 2D CAD data, not just JSON.
 
 Geometry on layers VISIBLE (continuous) / HIDDEN (dashed); dimension callouts as TEXT
 on layer DIM. Image px (y-down) are flipped to DXF y-up. Arcs lack stored start/end
-angles in the Tier-1 schema, so they export as full circles on layer ARC (approx).
+angles in the intra-view schema, so they export as full circles on layer ARC (approx).
 
 Usage:  python graph_to_dxf.py GRAPH.json OUT.dxf [--height H]
 """

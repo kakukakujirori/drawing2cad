@@ -37,8 +37,10 @@ Fusion360Gallery **`reconstruction`** subset (B-rep STEP solids), stage a divers
 (one final state per part, sampled across parts) and render (`select_fusion360_recon.py`
 is specific to that subset's `{partid}_{hash}_{seq}_{substep}` naming):
 ```bash
+# Sample Fusion360 STEP files
 python scripts/renderer/select_fusion360_recon.py /path/to/Fusion360Gallery/r1.0.1/reconstruction 2500 experiments/stage_recon
 
+# Generate orthographic views
 python scripts/renderer/batch_dataset.py experiments/stage_recon experiments/dataset_recon
 ```
 Seed 3D data must be **B-rep (STEP)** — STL meshes are unsuitable for HLR. Good sources:

@@ -1,6 +1,5 @@
 #!/usr/bin/env python
-# render_dataset.py -- STEP -> (realistic drawing PNG) + (ground-truth Tier-1/Tier-2 graph JSON)
-#                      + scan-noise augmentation, self-verify overlay, batch + manifest.
+# render_dataset.py -- STEP -> (vector drawing SVG) + (ground-truth intra-/inter-view graph JSON)
 #
 # Reuses the proven headless recipe: TechDraw.project() under freecadcmd composes the SVG
 # ourselves, then cairosvg rasterizes. The DrawViewPart/GUI path is NOT used (empty/hangs headless).
@@ -135,7 +134,7 @@ class View:
         # [4]VI iso [5]H sharp [6]H1 smooth [7]HN seam [8]HO outline [9]HI iso.
         # project() (4-tuple) DROPS the outline groups -> curved-surface silhouettes
         # (e.g. a cylindrical boss/bore wall) go missing. Include VO/HO so the drawing
-        # — and the Tier-1 GT primitives derived from it — are geometrically complete.
+        # — and the intra-view GT primitives derived from it — are geometrically complete.
         res = TechDraw.projectEx(shape, App.Vector(*direction))
         self.edges_vis = compound_edges(res[0]) + compound_edges(res[1]) + compound_edges(res[3])
         self.edges_hid = compound_edges(res[5]) + compound_edges(res[8])
@@ -648,7 +647,7 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
                 [ref], {"feature": c["id"], "param": "diameter"})
 
     # =====================================================================
-    #  Tier-2 correspondences: same 3D cylinder seen in multiple views
+    #  Inter-view correspondences: same 3D cylinder seen in multiple views
     # =====================================================================
     for c in cyls:
         cx, cy, cz = c["center"]

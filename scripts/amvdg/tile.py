@@ -4,7 +4,7 @@ A2 sheets, 3072x2118). A whole-sheet pass downscales dimension text to illegibil
 and overwhelms primitive detection; tiling at NATIVE resolution restores legibility.
 
 Pipeline role:  image -> tiles (native res, overlapping) -> [extractor per tile,
-local px coords] -> merge_graphs() -> single Tier-1 graph in GLOBAL image px.
+local px coords] -> merge_graphs() -> single intra-view graph in GLOBAL image px.
 
 This module is dependency-light (PIL only) and extractor-agnostic — the same tiles
 feed a VLM or a dedicated OCR/CV stack. Coordinate remap + geometric dedup at tile
@@ -86,7 +86,7 @@ def _same_line(a, b, tol=20.0):
 
 
 def merge_graphs(tiles, graphs, image_size_px):
-    """tiles: list from make_tiles (same order as graphs). graphs[i] is the Tier-1
+    """tiles: list from make_tiles (same order as graphs). graphs[i] is the intra-view
     graph extracted from tile i (LOCAL px). Returns one merged global-px graph with
     overlap duplicates collapsed and dim refs remapped to surviving primitive ids."""
     kept = []            # canonical global primitives

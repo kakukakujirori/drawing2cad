@@ -1,7 +1,7 @@
-"""Dataset for cadrille 2D->2D: drawing image -> Tier-1 graph text.
+"""Dataset for cadrille 2D->2D: drawing image -> intra-view graph text.
 
 Mirrors cadrille's image branch (returns a 'video' list of frames) but the frame
-is our actual engineering drawing and the 'answer' is the compact Tier-1 graph
+is our actual engineering drawing and the 'answer' is the compact intra-view graph
 target instead of CadQuery code. Reuses cadrille.collate unchanged (is_pc=0).
 """
 import os, json
@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 try:
     from serialize import PROMPT
 except Exception:  # serialize.py sits next to this file
-    PROMPT = "Extract the engineering drawing as a Tier-1 graph. Output compact JSON only."
+    PROMPT = "Extract the engineering drawing as an intra-view graph. Output compact JSON only."
 
 
 class DrawingGraphDataset(Dataset):

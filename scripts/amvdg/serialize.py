@@ -1,15 +1,15 @@
-"""Tier-1 graph <-> compact text serialization for cadrille 2D->2D training.
+"""Intra-view graph <-> compact text serialization for cadrille 2D->2D training.
 
 cadrille is image->text. We keep the image path untouched and only change the
-generation TARGET from CadQuery code to a compact serialization of our Tier-1
+generation TARGET from CadQuery code to a compact serialization of our intra-view
 drawing graph (per-view primitives + dimensions-with-refs).
 
 Design choices:
   * Pixel coords are rounded to ints (sub-pixel precision is noise for a 2B VLM
     and every digit is a token). Dimension *values* (mm) keep one decimal.
   * Compact keys (t/v/f/c/r/p1/p2) cut token count vs the full schema; expansion
-    back to the canonical Tier-1 schema is deterministic (see graph_from_text).
-  * Output is minified JSON: directly parseable, matches the agreed Tier-1 output
+    back to the canonical intra-view schema is deterministic (see graph_from_text).
+  * Output is minified JSON: directly parseable, matches the agreed intra-view output
     format, and is VLM-as-judge friendly. Swap SER_VERSION if we move to a DSL.
 """
 import json
@@ -62,7 +62,7 @@ def _dim_to_compact(d):
 
 
 def graph_to_text(graph):
-    """Canonical Tier-1 graph dict -> compact minified-JSON target string."""
+    """Canonical intra-view graph dict -> compact minified-JSON target string."""
     out = {"views": [], "dims": []}
     for v in graph.get("views", []):
         out["views"].append({
@@ -75,7 +75,7 @@ def graph_to_text(graph):
 
 
 def graph_from_text(text):
-    """Compact target string -> canonical-ish Tier-1 graph dict (for scoring).
+    """Compact target string -> canonical-ish intra-view graph dict (for scoring).
 
     Inverse of graph_to_text up to the lossy rounding. Used to score model
     output with the existing poc/score.py harness.
@@ -155,7 +155,7 @@ def graph_from_text_safe(text):
     return {"views": [], "annotations": []}, "fail"
 
 
-PROMPT = ("Extract the engineering drawing as a Tier-1 graph. For each view emit "
+PROMPT = ("Extract the engineering drawing as an intra-view graph. For each view emit "
           "primitives (lines/circles/arcs with visibility and feature) and the "
           "dimensions with their value and the ids of the primitives they measure. "
           "Output compact JSON only.")

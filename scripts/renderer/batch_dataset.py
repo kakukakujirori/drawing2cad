@@ -5,8 +5,6 @@
 #   -> manifest.jsonl ; (PNG, graph.json) pairs consumed directly by scripts/detector/circlenet.py
 #
 # Single-env driver (drawing2cad env): runs stage 1 as a subprocess of THIS python.
-# render_dataset.py imports the conda-forge FreeCAD via the `freecad` shim, so no
-# freecadcmd and no PYTHONPATH are needed.
 #
 # Usage:
 #   python batch_dataset.py <step_dir> <out_dir> [--width 1800] [--no-scan] [--n N]
@@ -16,7 +14,7 @@ sys.path.insert(0, HERE)
 from pipeline import scan_augment   # main() is __main__-guarded; importing is safe
 
 
-def stage1(step_dir, out_dir, width, n):
+def stage1(step_dir: str, out_dir: str, width: int, n: int):
     env = dict(os.environ)
     env["RF_BATCH"] = "1"
     env["RF_STEPDIR"] = step_dir
@@ -33,12 +31,12 @@ def stage1(step_dir, out_dir, width, n):
     print("[stage1] render_dataset: OK=%d SKIP=%d" % (nok, nskip), flush=True)
 
 
-def rasterize(svg_path, png_path, width):
+def rasterize(svg_path: str, png_path: str, width: int):
     import cairosvg
     cairosvg.svg2png(url=svg_path, write_to=png_path, output_width=width, background_color="white")
 
 
-def stage2(out_dir, width, do_scan):
+def stage2(out_dir: str, width: int, do_scan: bool):
     graphs = sorted(glob.glob(os.path.join(out_dir, "*.graph.json")))
     manifest = open(os.path.join(out_dir, "manifest.jsonl"), "w")
     nok = 0
@@ -66,15 +64,15 @@ def stage2(out_dir, width, do_scan):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("step_dir")
-    ap.add_argument("out_dir")
-    ap.add_argument("--width", type=int, default=1800)
-    ap.add_argument("--no-scan", action="store_true")
-    ap.add_argument("--n", type=int, default=0)
-    ap.add_argument("--skip-stage1", action="store_true")
-    a = ap.parse_args()
-    os.makedirs(a.out_dir, exist_ok=True)
-    if not a.skip_stage1:
-        stage1(a.step_dir, a.out_dir, a.width, a.n)
-    stage2(a.out_dir, a.width, not a.no_scan)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("step_dir", type=str)
+    parser.add_argument("out_dir", type=str)
+    parser.add_argument("--width", type=int, default=1800)
+    parser.add_argument("--no-scan", action="store_true")
+    parser.add_argument("--n", type=int, default=0)
+    parser.add_argument("--skip-stage1", action="store_true")
+    args = parser.parse_args()
+    os.makedirs(args.out_dir, exist_ok=True)
+    if not args.skip_stage1:
+        stage1(args.step_dir, args.out_dir, args.width, args.n)
+    stage2(args.out_dir, args.width, not args.no_scan)

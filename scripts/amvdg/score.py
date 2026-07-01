@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Score an extractor-predicted Tier-1 graph against renderer ground truth.
+"""Score an extractor-predicted intra-view graph against renderer ground truth.
 
 Usage:
   python score.py PRED.json GT.graph.json [--scan]
