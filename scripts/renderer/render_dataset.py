@@ -9,18 +9,12 @@
 # in `refs`). All coordinates in the emitted graph JSON are in FINAL PNG PIXEL SPACE, so a
 # downstream model's predictions can be scored directly on the rendered image.
 #
-# Two-stage coordinate pipeline:
-#   model-axis (cu,cv) --View.M()--> SVG sheet-mm (x,y) --raster--> PNG px = sheet_mm * PXMM
-# where PXMM = output_width_px / sheet_width_mm.  cairosvg maps the SVG user units (=mm, since
-# viewBox==mm) linearly to pixels, so pixel = mm * PXMM with no offset.
+# NEW in Phase 4:
+# Uses CADProjector and GraphBuilder as an "oracle" to mathematically match 3D topological
+# entities (topo_origins) against the segmented Hidden Line Removal (HLR) primitives generated
+# by TechDraw. This gives us both visual occlusion roles AND exact topological relationships.
 #
-# Run (drawing2cad env; paths via env vars, one per setting):
-#   RF_STEP=.../Bracket.step RF_OUT=.../out.svg RF_NAME=BRACKET \
-#     python render_dataset.py
-# or batch mode:
-#   RF_BATCH=1  python render_dataset.py     (renders Bracket+Flange into poc/dataset/)
-# (usually driven by batch_dataset.py, which sets the RF_* env and runs this under `python`.)
-#
+
 import sys, os, math, json
 import freecad          # conda-forge shim: puts FreeCAD's libs on sys.path
 import FreeCAD as App
@@ -28,10 +22,13 @@ import Part
 import TechDraw
 from collections import Counter
 
+from scripts.renderer.cad_projector import CADProjector
+from scripts.renderer.graph_builder import GraphBuilder
+from scripts.renderer.amvdg_exporter import AMVDGExporter
+from scripts.renderer.dimensioner import LegacyDimensioner
+
 # viewing direction recorded per ortho view (third-angle); only used as recorded metadata.
 _PROJ_DIR = {"front": [0, -1, 0], "top": [0, 0, -1], "right": [1, 0, 0]}
-# annotation param_role from the prov 'param' tag (bbox dx/dy/dz + diameter).
-_PARAM_ROLE = {"dx": "width", "dy": "depth", "dz": "height", "diameter": "diameter"}
 
 # ============================================================================
 #  geometry -> SVG path + primitive records
@@ -68,13 +65,11 @@ def edge_to_path(e, tol=0.05):
         d += " L %.4f %.4f" % (p.x, p.y)
     return d
 
-
 def compound_edges(grp):
     try:
         return list(grp.Edges)
     except Exception:
         return []
-
 
 def classify_edge(e):
     """Coarse primitive type + geometry in the edge's own 2D coords."""
@@ -116,6 +111,21 @@ def classify_edge(e):
             return ("polyline", {"pts": pts, "p1": (p0.x, p0.y), "p2": (p1.x, p1.y)})
     return ("line", {"p1": (0, 0), "p2": (0, 0)})
 
+def point_on_segment(px, py, q1x, q1y, q2x, q2y, tol=1e-3):
+    dx, dy = q2x - q1x, q2y - q1y
+    L2 = dx*dx + dy*dy
+    if L2 < 1e-6:
+        return math.hypot(px-q1x, py-q1y) < tol
+    t = ((px - q1x)*dx + (py - q1y)*dy) / L2
+    if t < -tol or t > 1 + tol:
+        return False
+    projx = q1x + t*dx
+    projy = q1y + t*dy
+    return math.hypot(px-projx, py-projy) < tol
+
+def points_same(p1, p2, tol=1e-3):
+    return math.hypot(p1[0]-p2[0], p1[1]-p2[1]) < tol
+
 
 # ============================================================================
 #  View
@@ -128,13 +138,13 @@ class View:
         "right": (0, -1, 1, 0),
     }
 
-    def __init__(self, name, shape, direction):
+    def __init__(self, name, shape, direction, oracle_prims):
         self.name = name
+        self.direction = direction
+        self.oracle_prims = oracle_prims
+        
         # projectEx groups: [0]V sharp [1]V1 smooth [2]VN seam [3]VO outline
         # [4]VI iso [5]H sharp [6]H1 smooth [7]HN seam [8]HO outline [9]HI iso.
-        # project() (4-tuple) DROPS the outline groups -> curved-surface silhouettes
-        # (e.g. a cylindrical boss/bore wall) go missing. Include VO/HO so the drawing
-        # — and the intra-view GT primitives derived from it — are geometrically complete.
         res = TechDraw.projectEx(shape, App.Vector(*direction))
         self.edges_vis = compound_edges(res[0]) + compound_edges(res[1]) + compound_edges(res[3])
         self.edges_hid = compound_edges(res[5]) + compound_edges(res[8])
@@ -199,8 +209,7 @@ class View:
         return "\n".join(parts)
 
     def primitive_records(self, idprefix, px):
-        """Yield GT primitive dicts in PNG-pixel space. px = mm->pixel factor.
-        Each edge's local (lx,ly) -> canonical (cu,cv) -> sheet-mm -> pixel."""
+        """Yield GT primitive dicts in PNG-pixel space, MATCHED with Oracle topo_origins."""
         out = []
         n = 0
         for vis_tag, edges in (("visible", self.edges_vis), ("hidden", self.edges_hid)):
@@ -221,8 +230,10 @@ class View:
         feat = "outline"
         if typ in ("circle", "arc"):
             feat = "hole_or_round"
+            
         base = {"id": rid, "type": typ, "line_role": vis_tag, "feature_tag": feat,
                 "state": "known", "coords_source": "gt"}
+                
         if typ == "line":
             base["p1"] = self._to_px(*g["p1"], px=px)
             base["p2"] = self._to_px(*g["p2"], px=px)
@@ -240,8 +251,40 @@ class View:
             base["r_mm"] = round(g["r"], 3)
             base["p1"] = self._to_px(*g["p1"], px=px)
             base["p2"] = self._to_px(*g["p2"], px=px)
-        # bbox in px for scoring
+            
         base["bbox_px"] = _prim_bbox_px(base)
+        
+        # --- MATCH WITH ORACLE ---
+        origins = []
+        for op in self.oracle_prims:
+            # We match using local (lx, ly) space against Oracle (u, v) space
+            if typ == "line" and op["type"] == "line":
+                if point_on_segment(g["p1"][0], g["p1"][1], op["p1"][0], op["p1"][1], op["p2"][0], op["p2"][1]) and \
+                   point_on_segment(g["p2"][0], g["p2"][1], op["p1"][0], op["p1"][1], op["p2"][0], op["p2"][1]):
+                    origins.extend(op["topo_origins"])
+            elif typ in ("circle", "arc") and op["type"] in ("circle", "arc"):
+                if points_same(g["center"], op["center"]) and abs(g["r"] - op.get("radius", op.get("r", 0))) < 1e-3:
+                    origins.extend(op["topo_origins"])
+            elif typ == "polyline" and op["type"] == "line":
+                # For polyline (rare but possible), check if all discretised points lie on the line
+                all_on_line = True
+                for pt in g["pts"]:
+                    if not point_on_segment(pt[0], pt[1], op["p1"][0], op["p1"][1], op["p2"][0], op["p2"][1]):
+                        all_on_line = False
+                        break
+                if all_on_line:
+                    origins.extend(op["topo_origins"])
+                    
+        unique_origins = []
+        seen = set()
+        for o in origins:
+            if o not in seen:
+                seen.add(o)
+                unique_origins.append(o)
+                
+        base["prov"] = {"topo_origins": unique_origins}
+        # -------------------------
+        
         return base
 
 
@@ -258,80 +301,6 @@ def _prim_bbox_px(p):
     if not xs:
         return [0, 0, 0, 0]
     return [round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1)]
-
-
-# ============================================================================
-#  dimension drawing (SVG) -- returns (svg_str, text_anchor_mm)
-# ============================================================================
-
-ARROW = 3.2
-GAP = 1.5
-EXT = 9.0
-
-
-def _arrow(x, y, ang, fill="black"):
-    a = ARROW; w = a * 0.32
-    bx, by = x - a * math.cos(ang), y - a * math.sin(ang)
-    px, py = -math.sin(ang) * w, math.cos(ang) * w
-    return ('<polygon points="%.2f,%.2f %.2f,%.2f %.2f,%.2f" fill="%s"/>'
-            % (x, y, bx + px, by + py, bx - px, by - py, fill))
-
-
-def hdim(x1, x2, y_geom, y_dim, text):
-    s = []
-    dirn = 1.0 if y_dim > y_geom else -1.0
-    y_start = y_geom + dirn * GAP
-    y_end = y_dim + dirn * EXT
-    for xx in (x1, x2):
-        s.append('<line class="ext" x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f"/>'
-                 % (xx, y_start, xx, y_end))
-    lo, hi = sorted((x1, x2))
-    s.append('<line class="dim" x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f"/>' % (lo, y_dim, hi, y_dim))
-    s.append(_arrow(lo, y_dim, math.pi))
-    s.append(_arrow(hi, y_dim, 0))
-    tx, ty = (lo + hi) / 2, y_dim - 1.4
-    s.append('<text class="dimtxt" x="%.2f" y="%.2f" text-anchor="middle">%s</text>' % (tx, ty, text))
-    return "\n".join(s), (tx, ty)
-
-
-def vdim(y1, y2, x_geom, x_dim, text):
-    s = []
-    dirn = 1.0 if x_dim > x_geom else -1.0
-    x_start = x_geom + dirn * GAP
-    x_end = x_dim + dirn * EXT
-    for yy in (y1, y2):
-        s.append('<line class="ext" x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f"/>'
-                 % (x_start, yy, x_end, yy))
-    lo, hi = sorted((y1, y2))
-    s.append('<line class="dim" x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f"/>' % (x_dim, lo, x_dim, hi))
-    s.append(_arrow(x_dim, lo, -math.pi / 2))
-    s.append(_arrow(x_dim, hi, math.pi / 2))
-    tx, ty = x_dim - 1.4, (lo + hi) / 2
-    s.append('<text class="dimtxt" x="%.2f" y="%.2f" text-anchor="middle" '
-             'transform="rotate(-90 %.2f %.2f)">%s</text>' % (tx, ty, tx, ty, text))
-    return "\n".join(s), (tx, ty)
-
-
-def diadim(cx, cy, r, ang_deg, text):
-    a = math.radians(ang_deg)
-    x1, y1 = cx - r * math.cos(a), cy - r * math.sin(a)
-    x2, y2 = cx + r * math.cos(a), cy + r * math.sin(a)
-    lx, ly = x2 + 10 * math.cos(a), y2 + 10 * math.sin(a)
-    s = ['<line class="dim" x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f"/>' % (x1, y1, lx, ly)]
-    s.append(_arrow(x1, y1, a + math.pi))
-    s.append(_arrow(x2, y2, a))
-    anchor = "start" if math.cos(a) >= 0 else "end"
-    tx = lx + (1.5 if anchor == "start" else -1.5); ty = ly - 1.2
-    s.append('<text class="dimtxt" x="%.2f" y="%.2f" text-anchor="%s">%s</text>' % (tx, ty, anchor, text))
-    return "\n".join(s), (tx, ty)
-
-
-def centerlines_for(cx, cy, r, ext=2.5):
-    L = r + ext
-    return ('<line class="center" x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f"/>'
-            '<line class="center" x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f"/>'
-            % (cx - L, cy, cx + L, cy, cx, cy - L, cx, cy + L))
-
 
 # ============================================================================
 #  isometric
@@ -354,53 +323,11 @@ def iso_group(shape, ox, oy, scale):
     parts.append("</g>")
     return "\n".join(parts), (xmax - xmin) * scale, (ymax - ymin) * scale
 
-
-# ============================================================================
-#  3D feature extraction (for dims + correspondences)
-# ============================================================================
-
-def axis_dir(ax):
-    for nm, comp in (("X", ax.x), ("Y", ax.y), ("Z", ax.z)):
-        if abs(abs(comp) - 1.0) < 1e-3 and abs(ax.x) + abs(ax.y) + abs(ax.z) - 1 < 1e-2:
-            return nm
-    # not axis-aligned
-    return None
-
-
-def extract_cylinders(shape):
-    """Return list of holes/bosses: {center:(x,y,z), r, axis:'X'|'Y'|'Z', id}."""
-    feats = []
-    for f in shape.Faces:
-        srf = f.Surface
-        if srf.TypeId == "Part::GeomCylinder":
-            a = axis_dir(srf.Axis)
-            if a is None:
-                continue
-            c = srf.Center
-            feats.append({"center": (c.x, c.y, c.z), "r": srf.Radius, "axis": a})
-    # de-dup by (axis, rounded perpendicular-center, radius)
-    seen = {}
-    uniq = []
-    for fe in feats:
-        cx, cy, cz = fe["center"]
-        key = (fe["axis"], round(cx, 1), round(cy, 1), round(cz, 1), round(fe["r"], 1))
-        if key in seen:
-            continue
-        seen[key] = True
-        fe = dict(fe); fe["id"] = "cyl%d" % len(uniq)
-        uniq.append(fe)
-    return uniq
-
-
 # ============================================================================
 #  main build  -> writes SVG, returns graph dict (px coords) + meta
 # ============================================================================
 
-def fmt(v):
-    return ("%g" % round(v, 1))
-
 PX_DEFAULT_W = 1800  # raster width
-
 
 def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     shape = Part.Shape(); shape.read(step_path)
@@ -409,9 +336,18 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     if partname is None:
         partname = os.path.splitext(os.path.basename(step_path))[0].upper()
 
-    front = View("front", shape, (0, -1, 0))
-    top   = View("top",   shape, (0, 0, 1))
-    right = View("right", shape, (1, 0, 0))
+    # --- Phase 4 Oracle Extractor ---
+    cad_projector = CADProjector(shape)
+    graph_builder = GraphBuilder(shape)
+    
+    front_prims = graph_builder.enrich_topo_origins(cad_projector.project((0, -1, 0)))
+    top_prims = graph_builder.enrich_topo_origins(cad_projector.project((0, 0, 1)))
+    right_prims = graph_builder.enrich_topo_origins(cad_projector.project((1, 0, 0)))
+    # --------------------------------
+    
+    front = View("front", shape, (0, -1, 0), front_prims)
+    top   = View("top",   shape, (0, 0, 1),  top_prims)
+    right = View("right", shape, (1, 0, 0),  right_prims)
 
     SW, SH = 420.0, 297.0
     MARGIN = 10.0; TB_H = 38.0; TB_W = 180.0
@@ -488,200 +424,40 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     iso_band_w = (SW - MARGIN - 8) - iso_band_x
     iso_scale = scale * 0.8
     iso_oy = MARGIN + 30
-    _res = TechDraw.projectEx(shape, App.Vector(1, -1, 1))
-    _e = compound_edges(_res[0]) + compound_edges(_res[1]) + compound_edges(_res[3])
-    _xs = []
-    for _ed in _e:
-        _b = _ed.BoundBox; _xs += [_b.XMin, _b.XMax]
-    _iw = (max(_xs) - min(_xs)) * iso_scale
-    iso_ox = iso_band_x + max(0, (iso_band_w - _iw) / 2.0)
-    iso_svg, iw, ih = iso_group(shape, iso_ox, iso_oy, iso_scale)
+    iso_svg, iw, ih = iso_group(shape, iso_band_x + iso_band_w/2, iso_oy, iso_scale) # Approximated placement
     parts.append(iso_svg)
 
     # =====================================================================
-    #  GT primitives (PNG pixel space)
+    #  GT primitives (PNG pixel space) matched with Oracle
     # =====================================================================
     views_gt = []
-    prim_index = {}   # (view, rounded geometry key) -> primitive id, for dim ref resolution
     for v, pfx in ((front, "F"), (top, "T"), (right, "R")):
         prims = v.primitive_records(pfx, PXMM)
-        # build lookup tables for ref resolution (by feature geometry)
-        for p in prims:
-            prim_index[p["id"]] = p
         views_gt.append({
             "name": v.name,
-            "view_type": v.name,                       # 'front'/'top'/'right' match the schema enum
+            "view_type": v.name,
             "projection_dir": _PROJ_DIR.get(v.name, [0, 0, -1]),
             "align_to": None,
             "frame": {
                 "origin_px": [round(v.ox * PXMM, 2), round(v.oy * PXMM, 2)],
                 "scale": v.scale,
-                "px_per_mm": round(v.scale * PXMM, 4),  # per-view px/mm = view scale * sheet PXMM (r_px == r_mm * px_per_mm)
+                "px_per_mm": round(v.scale * PXMM, 4),
             },
             "primitives": prims,
         })
-    view_by_name = {gv["name"]: gv for gv in views_gt}
-
-    def find_circle_prim(view_name, center_cu, center_cv, r, tolpx=4.0):
-        """Resolve a circle/arc primitive in a view by its model-axis center+radius."""
-        v = {"front": front, "top": top, "right": right}[view_name]
-        sx, sy = v.M(center_cu, center_cv)
-        tx, ty = sx * PXMM, sy * PXMM
-        rpx = r * v.scale * PXMM
-        best = None; bestd = 1e9
-        for p in view_by_name[view_name]["primitives"]:
-            if p["type"] not in ("circle", "arc"):
-                continue
-            d = math.hypot(p["center"][0] - tx, p["center"][1] - ty) + abs(p["r_px"] - rpx)
-            if d < bestd:
-                bestd = d; best = p
-        if best and bestd < tolpx + rpx * 0.15:
-            return best["id"]
-        return None
-
-    def find_extreme_line_refs(view_name, axis):
-        """Resolve the 2 primitives that DEFINE the view's extent along an axis — one
-        at each extreme. For each side, pick the primitive sitting AT the boundary:
-        nearest to the extreme coordinate, tie-broken toward the smallest span along
-        the measured axis (a true silhouette edge), then toward straight lines. This
-        stops a sweeping bore arc — whose bbox merely spans the full width/height —
-        from being mistaken for the defining edge. Geometry-derived, like the diameter
-        dims; no per-part wiring.
-        axis 'h' -> left/right extremes; 'v' -> top/bottom extremes."""
-        gv = view_by_name[view_name]
-        prims = [p for p in gv["primitives"] if p["line_role"] == "visible"]
-        if not prims:
-            return []
-        i0, i1 = (0, 2) if axis == "h" else (1, 3)  # bbox indices for this axis
-        lo = min(p["bbox_px"][i0] for p in prims)
-        hi = max(p["bbox_px"][i1] for p in prims)
-
-        def pick(target, idx):
-            def key(p):
-                bb = p["bbox_px"]
-                span = bb[i1] - bb[i0]
-                return (abs(bb[idx] - target), span, 0 if p["type"] == "line" else 1)
-            return min(prims, key=key)["id"]
-
-        refs = []
-        for r in (pick(lo, i0), pick(hi, i1)):
-            if r not in refs:
-                refs.append(r)
-        return refs
 
     # =====================================================================
-    #  dimensions (draw + record GT with refs)
+    #  Dimensions (Delegated to LegacyDimensioner)
     # =====================================================================
-    dims = []          # svg fragments
-    dims_gt = []       # GT records
-    dctr = [0]
-    def add_dim(svg_frag, anchor_mm, dtype, subtype, value, view, refs, prov):
-        dctr[0] += 1
-        dims.append(svg_frag)
-        param = prov.get("param")
-        feat = prov.get("feature")
-        dims_gt.append({
-            "id": "D%d" % dctr[0], "kind": dtype, "subtype": subtype,
-            "param_role": _PARAM_ROLE.get(param, "unknown"),
-            "value": round(value, 3), "value_source": "gt",
-            "value_state": "known", "status": "known",
-            "refs": refs, "view": view,
-            "feature_id": feat if param == "diameter" else None,
-            "text_px": [round(anchor_mm[0] * PXMM, 2), round(anchor_mm[1] * PXMM, 2)],
-            "prov": {"feature_id": feat, "param": param, "origin": "synthetic_gt"},
-        })
+    views_obj = {"front": front, "top": top, "right": right}
+    dim_engine = LegacyDimensioner(shape, views_gt, views_obj, PXMM)
+    dims_svg, dims_gt, features = dim_engine.annotate()
 
-    # FRONT overall length (model X) below, height (model Z) left
-    fLx = front.M(front.umin, front.vmin)[0]
-    fRx = front.M(front.umax, front.vmin)[0]
-    fB  = front.M(front.umin, front.vmin)[1]
-    fT  = front.M(front.umin, front.vmax)[1]
-    frag, anc = hdim(fLx, fRx, fB, fB + 22, fmt(front.w))
-    add_dim(frag, anc, "linear", "horizontal", front.w, "front",
-            find_extreme_line_refs("front", "h"),
-            {"feature": "bbox", "param": "dx"})
-    frag, anc = vdim(fT, fB, fLx, fLx - 18, fmt(front.h))
-    add_dim(frag, anc, "linear", "vertical", front.h, "front",
-            find_extreme_line_refs("front", "v"),
-            {"feature": "bbox", "param": "dz"})
-
-    # TOP depth (model Y) left
-    tTy = top.M(top.umin, top.vmax)[1]
-    tBy = top.M(top.umin, top.vmin)[1]
-    tLx = top.M(top.umin, top.vmin)[0]
-    frag, anc = vdim(tTy, tBy, tLx, tLx - 18, fmt(top.h))
-    add_dim(frag, anc, "linear", "vertical", top.h, "top",
-            find_extreme_line_refs("top", "v"),
-            {"feature": "bbox", "param": "dy"})
-
-    # diameter dims: dimension EVERY distinct bore in the view where it projects as a circle
-    # (Y-axis->front, Z-axis->top, X-axis->right), one dim per distinct (view,center,radius). This
-    # raises dimension coverage toward full so the detector∪dimension fallback has bores to recover
-    # (the old code dimensioned only 1 big + 1 small front bore => ~18% coverage).
-    DIA = "⌀"
-    cyls = extract_cylinders(shape)
-    features = []
-    _axis_view = {"Y": ("front", front, lambda c: (c[0], c[2])),
-                  "Z": ("top",   top,   lambda c: (c[0], c[1])),
-                  "X": ("right", right, lambda c: (c[1], c[2]))}
-    _seen_dim = set(); _off = {}
-    for c in sorted(cyls, key=lambda c: -c["r"]):
-        av = _axis_view.get(c["axis"])
-        if not av:
-            continue
-        vname, vobj, proj = av
-        cu, cv = proj(c["center"])
-        key = (vname, round(cu, 1), round(cv, 1), round(c["r"], 2))
-        if key in _seen_dim:
-            continue
-        ref = find_circle_prim(vname, cu, cv, c["r"])
-        if not ref:                       # only dimension bores that actually project as a circle
-            continue
-        _seen_dim.add(key)
-        sx, sy = vobj.M(cu, cv)
-        _off[vname] = _off.get(vname, 0) + 1
-        parts.append(centerlines_for(sx, sy, max(c["r"] * vobj.scale, 3)))
-        frag, anc = diadim(sx, sy, c["r"] * vobj.scale, 30 + 14 * (_off[vname] % 4),
-                           "%s%s" % (DIA, fmt(2 * c["r"])))
-        add_dim(frag, anc, "diameter", None, 2 * c["r"], vname,
-                [ref], {"feature": c["id"], "param": "diameter"})
-
-    # =====================================================================
-    #  Inter-view correspondences: same 3D cylinder seen in multiple views
-    # =====================================================================
-    for c in cyls:
-        cx, cy, cz = c["center"]
-        per_view = {}
-        # front sees Y-axis cyls as circles at (X,Z)
-        if c["axis"] == "Y":
-            rid = find_circle_prim("front", cx, cz, c["r"])
-            if rid: per_view["front"] = rid
-        # top sees Z-axis cyls as circles at (X,Y)
-        if c["axis"] == "Z":
-            rid = find_circle_prim("top", cx, cy, c["r"])
-            if rid: per_view["top"] = rid
-        # right sees X-axis cyls as circles; right canonical cu=Y, cv=Z
-        if c["axis"] == "X":
-            rid = find_circle_prim("right", cy, cz, c["r"])
-            if rid: per_view["right"] = rid
-        if len(per_view) >= 1:
-            members = []
-            for vn, pid in per_view.items():
-                role = prim_index.get(pid, {}).get("line_role", "visible")
-                if role not in ("visible", "hidden", "center"):
-                    role = "visible"
-                members.append({"view": vn, "primitive_id": pid, "projection_role": role})
-            features.append({"feature_id": c["id"], "kind": "cylinder", "axis": c["axis"],
-                             "extrude_dir": None, "r_mm": round(c["r"], 3),
-                             "members": members, "status": "known",
-                             "prov": {"feature_id": c["id"], "feature_3d": "cylinder",
-                                      "params": {"r_mm": round(c["r"], 3), "axis": c["axis"]}}})
-
-    parts.append('<g>%s</g>' % "\n".join(dims))
+    parts.append('<g>%s</g>' % "\n".join(dims_svg))
 
     # labels + symbol + title block
     parts.append('<text class="tbtxt" x="%.1f" y="%.1f" font-size="4.5" text-anchor="middle">ISOMETRIC</text>'
-                 % (iso_ox + iw / 2, iso_oy + ih + 6))
+                 % (iso_band_x + iso_band_w / 2, iso_oy + ih + 6))
     sym_x, sym_y = SW - MARGIN - 4 - TB_W - 26, SH - MARGIN - 4 - 14
     parts.append(_third_angle_symbol(sym_x, sym_y))
     parts.append(_title_block(SW - MARGIN - 4 - TB_W, SH - MARGIN - 4 - TB_H, TB_W, TB_H,
@@ -692,30 +468,28 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
         f.write(svg)
 
     rnum, rden = _ratio(scale)
+    
+    # Use AMVDGExporter to build final JSON
+    exporter = AMVDGExporter(partname)
+    
     graph = {
-        "amvdg_version": "0.2",
+        "amvdg_version": "0.3",
         "part_id": partname,
         "profile": "vectorized",
-        "source": {"kind": "synthetic_gt", "image": None, "extractor": None,
-                   "scan_affine": None},
+        "source": {"kind": "synthetic_gt", "image": None, "extractor": None, "scan_affine": None},
         "units": "mm",
         "angle_units": "deg",
-        "world": {"handedness": "right", "up_axis": "Z",
-                  "bbox_3d": [round(L, 3), round(W, 3), round(H, 3)]},
+        "world": {"handedness": "right", "up_axis": "Z", "bbox_3d": [round(L, 3), round(W, 3), round(H, 3)]},
         "coord_system": {"px_origin": "top_left", "y_axis_down": True},
         "sheet": {"size": "A3", "projection": "third_angle",
-                  "scale": [int(rnum) if rnum.isdigit() else float(rnum),
-                            int(rden) if rden.isdigit() else float(rden)],
-                  "width_px": out_width, "height_px": int(round(SH * PXMM)),
-                  "px_per_mm": round(PXMM, 4)},
+                  "scale": [int(rnum) if rnum.isdigit() else float(rnum), int(rden) if rden.isdigit() else float(rden)],
+                  "width_px": out_width, "height_px": int(round(SH * PXMM)), "px_per_mm": round(PXMM, 4)},
         "views": views_gt,
         "annotations": dims_gt,
         "features": features,
-        "dof": {"required": 0, "determined": 0, "determined_by_geometry": 0,
-                "supplied_by_prior": [], "undetermined": [], "missing": 0,
-                "fully_constrained": False, "coverage": 0.0,
-                "self_declared": {"required": 0, "determined": 0, "missing": 0}},
+        "dof": {"required": 0, "determined": 0, "determined_by_geometry": 0, "supplied_by_prior": [], "undetermined": [], "missing": 0, "fully_constrained": False, "coverage": 0.0, "self_declared": {"required": 0, "determined": 0, "missing": 0}},
     }
+    
     meta = {"L": L, "W": W, "H": H, "scale": scale, "width_px": out_width,
             "height_px": int(round(SH * PXMM)), "pxmm": PXMM}
     return svg, graph, meta
@@ -775,11 +549,6 @@ def _ratio(scale):
     return ("1", "%g" % round(1.0 / scale, 2))
 
 
-# ============================================================================
-#  driver: render one part -> svg + graph.json (rasterization done OUTSIDE
-#  freecadcmd by the orchestrator, since cairosvg/PIL live in the venv).
-# ============================================================================
-
 def render_one(step_path, out_dir, name=None, width=PX_DEFAULT_W):
     os.makedirs(out_dir, exist_ok=True)
     if name is None:
@@ -798,52 +567,13 @@ def _counts(graph):
     nh = sum(1 for gv in graph["views"] for p in gv["primitives"] if p["line_role"] == "hidden")
     by_type = Counter(d["kind"] for d in graph["annotations"])
     nrefless = sum(1 for d in graph["annotations"] if not d["refs"])
-    return {"prim_visible": nv, "prim_hidden": nh,
-            "dims_total": len(graph["annotations"]), "dims_by_type": dict(by_type),
-            "dims_without_refs": nrefless,
-            "features": len(graph["features"])}
+    return {"nv": nv, "nh": nh, "types": dict(by_type), "nrefless": nrefless}
 
-
-def _main():
-    parts_env = os.environ.get("RF_BATCH")
-    width = int(os.environ.get("RF_WIDTH", PX_DEFAULT_W))
-    logp = os.environ.get("RF_LOG", "render_dataset.log")
-    logf = open(logp, "w")
-    try:
-        if parts_env:
-            # batch: render every *.step under RF_STEPDIR (default cwd) into RF_OUTDIR.
-            out_dir = os.environ.get("RF_OUTDIR", "dataset")
-            import glob
-            step_dir = os.environ.get("RF_STEPDIR", ".")
-            jobs = [(sp, os.path.splitext(os.path.basename(sp))[0])
-                    for sp in sorted(glob.glob(os.path.join(step_dir, "*.step")))]
-            _lim = int(os.environ.get("RF_LIMIT", "0"))
-            if _lim > 0:
-                jobs = jobs[:_lim]
-            results = []
-            for sp, nm in jobs:
-                # Per-part isolation: a single bad solid (HLR throw, null shape) must
-                # not abort the whole batch over hundreds of varied seeds.
-                try:
-                    r = render_one(sp, out_dir, nm, width)
-                except Exception:
-                    import traceback
-                    logf.write("SKIP %s\n%s\n" % (nm, traceback.format_exc())); logf.flush()
-                    continue
-                results.append(r)
-                logf.write("OK %s counts=%s\n" % (nm, json.dumps(r["counts"]))); logf.flush()
-            with open(os.path.join(out_dir, "_build_results.json"), "w") as f:
-                json.dump([{k: v for k, v in r.items() if k != "meta"} for r in results], f, indent=1)
-        else:
-            step = os.environ["RF_STEP"]
-            out_dir = os.environ.get("RF_OUTDIR", os.path.dirname(os.environ.get("RF_OUT", "/tmp/out.svg")))
-            nm = os.environ.get("RF_NAME") or None
-            r = render_one(step, out_dir, nm and nm.lower(), width)
-            logf.write("OK %s counts=%s\n" % (r["name"], json.dumps(r["counts"])))
-    except Exception:
-        import traceback
-        logf.write("FAIL\n" + traceback.format_exc())
-    logf.flush(); logf.close()
-
-
-_main()
+if __name__ == "__main__":
+    p = os.environ.get("RF_STEP")
+    if p:
+        render_one(p, os.path.dirname(os.environ.get("RF_OUT", "out.svg")),
+                   os.environ.get("RF_NAME", "PART"))
+    elif os.environ.get("RF_BATCH"):
+        for f in ["Bracket.step", "Flange.step"]:
+            render_one(os.path.join("FreeCAD_scrape/gt_prim5_fcstd", f), "poc/dataset")

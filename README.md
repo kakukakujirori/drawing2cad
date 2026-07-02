@@ -84,15 +84,16 @@ The raster-drawing → AMVDG-graph stage (design, methods and measured results i
 - `scripts/renderer/render_dataset.py` + `pipeline.py` — the synthetic-drawing renderer
   (ISO dims, title block, isometric, cross-view correspondences) with scan-noise augmentation;
   driven by `batch_dataset.py` and consumed by `circlenet.py`.
+  **New in Phase 4**: The renderer now implements an "Oracle Matching Strategy", fusing pure mathematical projection (`CADProjector` + `GraphBuilder`) with OCC TechDraw's HLR. This preserves exact 3D topological lineage (`topo_origins`) on visually occluded/segmented 2D lines.
 - `research/{werk24-recon,orthosolve-method,foundation-model-survey,amvdg-v0.3-roadmap}.md`
   — the supporting surveys: Werk24 reverse-engineering, the OrthoSolve method note, the
   "does a big model solve geometry?" survey, and the v0.3 representation roadmap.
 
-> The renderer now emits the **v0.2** schema (`line_role`/`feature_tag`/`annotations`/`features`,
+> The renderer now emits the **v0.3** schema (`topo_origins` for precise 3D provenance, `line_role`/`feature_tag`/`annotations`/`features`,
 > plus `profile`/`source`/`world`/`dof` etc.) at `profile: vectorized`, and `python
 > spec/validate_amvdg.py <graph>` passes all 7 gates on its output. The tooling
 > (`serialize.py`/`score.py`/`graph_to_dxf.py`/`circlenet.py`/`tile.py`/`pipeline.py`) reads the
-> v0.2 names with a v0 fallback, so pre-existing v0 graphs still load until they are regenerated.
+> latest v0.3/v0.2 names with a v0 fallback, so pre-existing v0 graphs still load until they are regenerated.
 
 Scripts that need fixtures not shipped here (the real drawing, GT graphs) take a `*_DATA`
 env var pointing at a local data dir; the spikes print what they expect.
