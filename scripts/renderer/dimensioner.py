@@ -73,23 +73,27 @@ def axis_dir(ax):
 
 def extract_cylinders(shape):
     feats = []
-    for f in shape.Faces:
+    for f_idx, f in enumerate(shape.Faces):
         srf = f.Surface
         if srf.TypeId == "Part::GeomCylinder":
             a = axis_dir(srf.Axis)
             if a is None:
                 continue
             c = srf.Center
-            feats.append({"center": (c.x, c.y, c.z), "r": srf.Radius, "axis": a})
+            feats.append({"center": (c.x, c.y, c.z), "r": srf.Radius, "axis": a,
+                          "face_id": "Face_%d" % f_idx})
     seen = {}
     uniq = []
     for fe in feats:
         cx, cy, cz = fe["center"]
         key = (fe["axis"], round(cx, 1), round(cy, 1), round(cz, 1), round(fe["r"], 1))
         if key in seen:
+            # coaxial split faces (half-bores etc.) collapse into one feature,
+            # keeping every contributing B-rep face id
+            uniq[seen[key]]["face_ids"].append(fe["face_id"])
             continue
-        seen[key] = True
-        fe = dict(fe); fe["id"] = "cyl%d" % len(uniq)
+        seen[key] = len(uniq)
+        fe = dict(fe); fe["id"] = "cyl%d" % len(uniq); fe["face_ids"] = [fe.pop("face_id")]
         uniq.append(fe)
     return uniq
 
@@ -152,6 +156,27 @@ class LegacyDimensioner:
             if r not in refs:
                 refs.append(r)
         return refs
+
+    _VIEW_PFX = {"front": "F", "top": "T", "right": "R"}
+
+    def _record_centerlines(self, vname, sx, sy, L, cyl):
+        """Record the drawn centerline cross as GT primitives (line_role=center),
+        so every inked line on the sheet is explained by the graph."""
+        prims = self.view_by_name[vname]["primitives"]
+        pfx = self._VIEW_PFX.get(vname, vname[:1].upper())
+        origins = [{"dim": 2, "id": fid, "role": "axis"} for fid in cyl.get("face_ids", [])]
+        for (x1, y1, x2, y2) in ((sx - L, sy, sx + L, sy), (sx, sy - L, sx, sy + L)):
+            p1 = [round(x1 * self.PXMM, 2), round(y1 * self.PXMM, 2)]
+            p2 = [round(x2 * self.PXMM, 2), round(y2 * self.PXMM, 2)]
+            prims.append({
+                "id": "%s%d" % (pfx, len(prims)), "type": "line",
+                "line_role": "center", "feature_tag": "hole_or_round",
+                "feature_id": cyl["id"], "state": "known", "coords_source": "gt",
+                "p1": p1, "p2": p2,
+                "bbox_px": [round(min(p1[0], p2[0]), 1), round(min(p1[1], p2[1]), 1),
+                            round(max(p1[0], p2[0]), 1), round(max(p1[1], p2[1]), 1)],
+                "prov": {"topo_origins": origins},
+            })
 
     def _add_dim(self, svg_frag, anchor_mm, dtype, subtype, value, view, refs, prov):
         self.dctr += 1
@@ -223,40 +248,52 @@ class LegacyDimensioner:
             sx, sy = vobj.M(cu, cv)
             _off[vname] = _off.get(vname, 0) + 1
             self.dims_svg.append(centerlines_for(sx, sy, max(c["r"] * vobj.scale, 3)))
+            self._record_centerlines(vname, sx, sy, max(c["r"] * vobj.scale, 3) + 2.5, c)
             frag, anc = diadim(sx, sy, c["r"] * vobj.scale, 30 + 14 * (_off[vname] % 4),
                                "%s%s" % (DIA, fmt(2 * c["r"])))
             self._add_dim(frag, anc, "diameter", None, 2 * c["r"], vname,
                           [ref], {"feature": c["id"], "param": "diameter"})
 
-        # Correspondences (features)
-        prim_index = {}
-        for gv in self.views_gt:
-            for p in gv["primitives"]:
-                prim_index[p["id"]] = p
-                
+        # Correspondences (features): a feature's members are ALL primitives —
+        # across every view — whose topo_origins touch one of the cylinder's
+        # B-rep faces (circle in the face-on view, silhouette/edge lines in the
+        # side views, centerline crosses). This is what makes the cross-view
+        # layer real: provenance-exact, not radius-guessed.
         for c in cyls:
-            cx, cy, cz = c["center"]
-            per_view = {}
-            if c["axis"] == "Y":
-                rid = self._find_circle_prim("front", cx, cz, c["r"])
-                if rid: per_view["front"] = rid
-            if c["axis"] == "Z":
-                rid = self._find_circle_prim("top", cx, cy, c["r"])
-                if rid: per_view["top"] = rid
-            if c["axis"] == "X":
-                rid = self._find_circle_prim("right", cy, cz, c["r"])
-                if rid: per_view["right"] = rid
-            if len(per_view) >= 1:
-                members = []
-                for vn, pid in per_view.items():
-                    role = prim_index.get(pid, {}).get("line_role", "visible")
+            face_ids = set(c.get("face_ids", []))
+            members, claimed = [], []
+            for gv in self.views_gt:
+                for p in gv["primitives"]:
+                    origs = (p.get("prov") or {}).get("topo_origins") or []
+                    if not any(o.get("id") in face_ids for o in origs):
+                        continue
+                    role = p.get("line_role", "visible")
                     if role not in ("visible", "hidden", "center"):
                         role = "visible"
-                    members.append({"view": vn, "primitive_id": pid, "projection_role": role})
-                self.features.append({"feature_id": c["id"], "kind": "cylinder", "axis": c["axis"],
-                                 "extrude_dir": None, "r_mm": round(c["r"], 3),
-                                 "members": members, "status": "known",
-                                 "prov": {"feature_id": c["id"], "feature_3d": "cylinder",
-                                          "params": {"r_mm": round(c["r"], 3), "axis": c["axis"]}}})
+                    members.append({"view": gv["name"], "primitive_id": p["id"],
+                                    "projection_role": role})
+                    claimed.append(p)
+            if not members:
+                # fallback (oracle found nothing): bind the face-on circle by
+                # projected center+radius as before
+                cx, cy, cz = c["center"]
+                probe = {"Y": ("front", (cx, cz)), "Z": ("top", (cx, cy)),
+                         "X": ("right", (cy, cz))}.get(c["axis"])
+                if probe:
+                    rid = self._find_circle_prim(probe[0], probe[1][0], probe[1][1], c["r"])
+                    if rid:
+                        members = [{"view": probe[0], "primitive_id": rid,
+                                    "projection_role": "visible"}]
+            if not members:
+                continue
+            for p in claimed:
+                if not p.get("feature_id"):
+                    p["feature_id"] = c["id"]
+            self.features.append({"feature_id": c["id"], "kind": "cylinder", "axis": c["axis"],
+                             "extrude_dir": None, "r_mm": round(c["r"], 3),
+                             "members": members, "status": "known",
+                             "prov": {"feature_id": c["id"], "feature_3d": "cylinder",
+                                      "occ_face_ids": list(c.get("face_ids", [])),
+                                      "params": {"r_mm": round(c["r"], 3), "axis": c["axis"]}}})
 
         return self.dims_svg, self.dims_gt, self.features

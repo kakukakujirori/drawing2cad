@@ -1,9 +1,9 @@
-# AMVDG v0.2 — Annotated Multi-View Drawing Graph (spec)
+# AMVDG v0.3 — Annotated Multi-View Drawing Graph (spec)
 
 2D→2D leg intermediate representation for `raster drawing → [AMVDG] → 3D CAD`.
-**v0.2 is mechanically validated**: `validate_amvdg.py example_flange_v0.2.json` passes all 7 gates;
+**v0.3 is mechanically validated**: `validate_amvdg.py example_flange_v0.3.json` passes all 7 gates;
 breaking any ref/census/DoF/round-trip makes it fail. This file is the human spec; the authoritative
-artifacts are `AMVDG_v0.2.schema.json` (structure), `validate_amvdg.py` (enforcement), `example_flange_v0.2.json` (a valid instance).
+artifacts are `AMVDG_v0.3.schema.json` (structure), `validate_amvdg.py` (enforcement), `example_flange_v0.3.json` (a valid instance).
 
 ## 1. The 4 authored layers
 1. **geometry** — per-view typed primitives (`line/circle/arc/ellipse/bezier/bspline/polyline/point/generic`) + `line_role` (visible/hidden/center/phantom/section_cut/break).
@@ -40,7 +40,11 @@ One schema, four profiles (`profile` field); `validate_amvdg.py` enforces per-pr
 7. **round-trip** — model subset `lower→DSL→lift` is identity (DSL↔JSON well-defined; numbers canonicalized).
 **"Sufficient" = correctness-on-determined × coverage.** Reported, never "parse-rate" or whole-blob equality.
 
-Flange worked example: 22 top circles (12 visible/10 hidden), PCD 70mm, 3 dims → required **16**, determined **3** (plate dx,dz + boss dia), determined_by_geometry **1** (bolt count), missing **12**, **coverage 0.1875**. 12 params correctly abstained; `kernel_executable=false` honestly reported.
+Flange worked example (v0.3): the **renderer's actual output** on `spec/flange.step` (`build_flange.py`),
+`profile: vectorized` — a round bolt flange (plate ⌀120 × hub ⌀76 × bore ⌀40, 6 bolt holes ⌀11 on PCD 95).
+9 cylinder `features` bound across views by shared `topo_origins`; 12 `annotations` (bbox 120×38×120 + 6 diameters).
+DoF/coverage emitted as zero (the `gt_executable` build-recipe accounting from the old hand-authored example is
+deferred to the 3D leg; see §8/§9). Historic hand-authored numbers (16/3, coverage 0.1875) are retained below as the DoF-arithmetic worked example only.
 
 ## 5. DSL serialization (enums are SCHEMA-EXACT — codex fix #2)
 The model emits flat one-record-per-line; tokens are the **same enum strings as the schema** (no `cbore`/`boltcirc` aliases — they were the v0.1 mismatch). Lift/lower are defined in `validate_amvdg.py` and round-trip-tested. Pipe-delimited canonical form:
@@ -58,7 +62,7 @@ geometry+line_role①, view-meta/projection/align②, annotation-binding+value+t
 - **Removed** leaked agent process-text that had contaminated the v0.1 `.md` (codex).
 - **Reconciled** DSL grammar enums with schema enums — schema is the single source (codex #2).
 - **Fixed** GBNF ambiguity (`prole` duplicate; `status`/`axintent` holes) → round-trip now defined & TESTED (both).
-- **Worked example is now valid JSON** in its own file `example_flange_v0.2.json`, validates against the schema; **DoF arithmetic corrected** (v0.1 said required 17/determined 4 — inconsistent; now 16/3/coverage 0.1875) (codex).
+- **Worked example is now valid JSON** in its own file `example_flange_v0.3.json`, validates against the schema; **DoF arithmetic corrected** (v0.1 said required 17/determined 4 — inconsistent; now 16/3/coverage 0.1875) (codex).
 - **Added validation profiles** (model/vectorized/derived/gt_executable) so optional ≠ unconstrained; `gt_executable` requires complete `build`+`prov` (codex "too permissive").
 - **Added `validate_amvdg.py`** — the schema is now machine-checkable, not asserted.
 
@@ -70,5 +74,24 @@ geometry+line_role①, view-meta/projection/align②, annotation-binding+value+t
 - DoF/Sketcher harness is **referenced but not yet built as code** (separate from this schema).
 - Landing: bundle v0→v0.2 migration (visibility→line_role, feature→feature_tag, dimensions→annotations, correspondences→features) with the `projectEx`+geometry-refs port into `drawing2cad/scripts/renderer/`. `graph_to_dxf.py` needs: key on `line_role`, add CENTER/PHANTOM layers, skip null-coord primitives.
 
+## 9. v0.3 delta (what the renderer emits now — schema accepts both versions)
+Design note: `research/2026-07-01-AMVDG-v0.3.md`. All additions are BACKWARD-compatible fields:
+- **`prov.topo_origins`**: `[{dim, id, role}]` per geometry primitive. `dim` 2=Face / 1=Edge /
+  0=Vertex; `id` = stable B-rep index (`Face_i`/`Edge_j` in `shape.Faces/Edges` order);
+  `role` ∈ {`edge` (3D edge projects to this primitive), `silhouette` (cylinder limb line),
+  `boundary` (cylinder seen head-on), `edge-on` (planar face degenerated to a line),
+  `parent_face` (face adjacent to a directly-projected edge — Type-2 correspondence),
+  `axis` (centerline of that face's cylinder)}. Occlusion-split segments carry the SAME
+  origin ids; edge-on faces list both the face and the coincident edges.
+- **conventions locked**: `projection_dir` = unit vector part→viewer (front `(0,-1,0)`,
+  top `(0,0,1)`, right `(1,0,0)`; third-angle). `frame.axis_remap` records px axes as signed
+  model axes (front `px_x:+X, px_y:-Z` · top `+X,-Y` · right `+Y,-Z`). Arc
+  `start_angle`/`end_angle`: degrees in the px frame (y down), θ=atan2(y−cy, x−cx), arc runs
+  start→end with increasing θ mod 360.
+- **centerline primitives**: the drawn centerline crosses are real primitives
+  (`line_role: center`, `feature_id` set) — the graph explains every inked line.
+- **features**: members span views (bound by shared `topo_origins` face ids);
+  `prov.occ_face_ids` lists the owning B-rep faces.
+
 ---
-Artifacts: `AMVDG_v0.2.schema.json` · `example_flange_v0.2.json` · `validate_amvdg.py` (run it: `python validate_amvdg.py example_flange_v0.2.json`).
+Artifacts: `AMVDG_v0.3.schema.json` · `example_flange_v0.3.json` · `validate_amvdg.py` (run it: `python validate_amvdg.py example_flange_v0.3.json`).

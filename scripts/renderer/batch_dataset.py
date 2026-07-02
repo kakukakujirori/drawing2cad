@@ -8,8 +8,9 @@
 #
 # Usage:
 #   python batch_dataset.py <step_dir> <out_dir> [--width 1800] [--no-scan] [--n N]
-import os, sys, glob, json, subprocess, argparse
+import os, sys, glob, json, zlib, subprocess, argparse
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 from pipeline import scan_augment   # main() is __main__-guarded; importing is safe
 
@@ -22,13 +23,17 @@ def stage1(step_dir: str, out_dir: str, width: int, n: int):
     env["RF_WIDTH"] = str(width)
     env["RF_LOG"] = os.path.join(out_dir, "render_dataset.log")
     env["PYTHONUNBUFFERED"] = "1"
+    # render_dataset.py imports scripts.renderer.* — make the repo root importable
+    env["PYTHONPATH"] = REPO + os.pathsep + env.get("PYTHONPATH", "")
     if n and n > 0:
         env["RF_LIMIT"] = str(n)
-    subprocess.run([sys.executable, os.path.join(HERE, "render_dataset.py")], env=env, check=False)
+    r = subprocess.run([sys.executable, os.path.join(HERE, "render_dataset.py")], env=env, check=False)
     log = open(env["RF_LOG"]).read() if os.path.exists(env["RF_LOG"]) else ""
     nok = log.count("\nOK ") + (1 if log.startswith("OK ") else 0)
-    nskip = log.count("SKIP ")
-    print("[stage1] render_dataset: OK=%d SKIP=%d" % (nok, nskip), flush=True)
+    nskip = log.count("\nSKIP ") + (1 if log.startswith("SKIP ") else 0)
+    print("[stage1] render_dataset: OK=%d SKIP=%d rc=%d" % (nok, nskip, r.returncode), flush=True)
+    if r.returncode != 0 or (nok == 0 and nskip == 0):
+        print("[stage1] WARNING: renderer produced nothing — check %s" % env["RF_LOG"], flush=True)
 
 
 def rasterize(svg_path: str, png_path: str, width: int):
@@ -46,17 +51,26 @@ def stage2(out_dir: str, width: int, do_scan: bool):
         if not os.path.exists(svg):
             continue
         png = os.path.join(out_dir, name + ".png")
+        g = json.load(open(gp))
+        # graph px coords assume sheet.width_px; rasterize at THAT width so
+        # labels stay aligned even if --width differs across invocations
+        gw = (g.get("sheet") or {}).get("width_px") or width
         try:
-            rasterize(svg, png, width)
+            rasterize(svg, png, gw)
         except Exception as e:
             print("  raster FAIL", name, e); continue
         row = {"part_id": name, "png": png, "graph": gp}
         if do_scan:
             scanp = os.path.join(out_dir, name + ".scan.png")
-            aff = scan_augment(png, scanp, seed=hash(name) & 0xffff)
-            g = json.load(open(gp)); g.setdefault("source", {})["scan_affine"] = aff
-            json.dump(g, open(gp, "w"), indent=1)
-            row["scan_png"] = scanp
+            try:
+                # stable per-part seed (hash() is salted per process — not reproducible)
+                aff = scan_augment(png, scanp, seed=zlib.crc32(name.encode()) & 0xffff)
+            except Exception as e:
+                print("  scan FAIL", name, e)
+            else:
+                g.setdefault("source", {})["scan_affine"] = aff
+                json.dump(g, open(gp, "w"), indent=1)
+                row["scan_png"] = scanp
         manifest.write(json.dumps(row) + "\n")
         nok += 1
     manifest.close()

@@ -16,7 +16,7 @@ import json
 
 SER_VERSION = "g1"
 
-_VIS = {"visible": "vis", "hidden": "hid"}
+_VIS = {"visible": "vis", "hidden": "hid", "center": "cen"}
 _VIS_INV = {v: k for k, v in _VIS.items()}
 _SUB = {"horizontal": "h", "vertical": "v", "aligned": "a", "diameter": "d", "radius": "r"}
 _SUB_INV = {v: k for k, v in _SUB.items()}
@@ -41,10 +41,12 @@ def _prim_to_compact(p):
         o["c"] = [_i(p["center"][0]), _i(p["center"][1])]
         o["r"] = _i(p.get("r_px", p.get("r", 0)))
         if p["type"] == "arc":
-            if "a1" in p:
-                o["a1"] = _i(p["a1"])
-            if "a2" in p:
-                o["a2"] = _i(p["a2"])
+            a1 = p.get("a1", p.get("start_angle"))
+            a2 = p.get("a2", p.get("end_angle"))
+            if a1 is not None:
+                o["a1"] = _i(a1)
+            if a2 is not None:
+                o["a2"] = _i(a2)
     return o
 
 

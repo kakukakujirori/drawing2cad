@@ -66,7 +66,7 @@ def test_ray_casting():
                 hit_faces.append(f"Face_{f_idx}")
                 
         expected_origins = set(hit_edges + hit_faces)
-        actual_origins = set(prim.get("topo_origins", []))
+        actual_origins = {o["id"] for o in prim.get("topo_origins", [])}
         
         # Check if actual origins is a subset of expected origins (or exact match).
         # Note: A ray through an edge will hit the edge, its 2 parent faces, 

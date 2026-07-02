@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""AMVDG v0.2 validator — makes 'the schema is solid' MECHANICAL, not a claim.
+"""AMVDG v0.3 validator — makes 'the schema is solid' MECHANICAL, not a claim.
 
 Gates (all must pass for the declared `profile`):
-  1. STRUCTURE   : jsonschema against AMVDG_v0.2.schema.json
+  1. STRUCTURE   : jsonschema against AMVDG_v0.3.schema.json
   2. REF-INTEGRITY: refs/members/feature_id/parent all resolve; no parent cycle
   3. CENSUS      : validity.census declared counts == actually emitted (abstain != absent)
   4. DoF RECOMPUTE: required/determined/det_by_geom/missing recomputed == dof block == self_declared
@@ -175,7 +175,7 @@ def roundtrip(g):
 def main():
     here=os.path.dirname(os.path.abspath(__file__))
     inst=load(sys.argv[1]); schema=load(sys.argv[2] if len(sys.argv)>2 else
-        os.path.join(here, "AMVDG_v0.2.schema.json"))
+        os.path.join(here, "AMVDG_v0.3.schema.json"))
     res={}
     try:
         jsonschema.validate(inst, schema); res["1_structure"]=[]

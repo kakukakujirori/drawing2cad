@@ -19,36 +19,62 @@ class PlaneProjector(BaseProjector):
         # Check if face is viewed edge-on (normal is perpendicular to view direction)
         dot = normal.dot(dir_vec)
         if abs(dot) < 1e-6:
-            bb = self.shape.BoundBox
-            pts = [
-                App.Vector(bb.XMin, bb.YMin, bb.ZMin),
-                App.Vector(bb.XMax, bb.YMin, bb.ZMin),
-                App.Vector(bb.XMin, bb.YMax, bb.ZMin),
-                App.Vector(bb.XMax, bb.YMax, bb.ZMin),
-                App.Vector(bb.XMin, bb.YMin, bb.ZMax),
-                App.Vector(bb.XMax, bb.YMin, bb.ZMax),
-                App.Vector(bb.XMin, bb.YMax, bb.ZMax),
-                App.Vector(bb.XMax, bb.YMax, bb.ZMax),
-            ]
-            
-            proj_pts = [self._project_point(p, view_direction) for p in pts]
-            
-            min_u = min(p[0] for p in proj_pts)
-            max_u = max(p[0] for p in proj_pts)
-            min_v = min(p[1] for p in proj_pts)
-            max_v = max(p[1] for p in proj_pts)
-            
-            p1 = self._format_pt((min_u, min_v))
-            p2 = self._format_pt((max_u, max_v))
-            
-            # When edge-on, we return a single line segment
+            # The whole face projects onto a single line. Its extent must be
+            # measured along that line from points ON the face (the bbox
+            # diagonal used before produced a wrong, positive-slope segment
+            # for slanted faces such as chamfers). Gather candidate extreme
+            # points from the face's own edges:
+            cand = []
+            for e in self.shape.Edges:
+                curve = getattr(e, "Curve", None)
+                tid = curve.TypeId if curve is not None else None
+                if tid == "Part::GeomCircle":
+                    # circle lies in the face plane; its extremes along the
+                    # projected line are center +/- r * (normal x view_dir)
+                    d3 = normal.cross(dir_vec)
+                    if d3.Length > 1e-9:
+                        d3.normalize()
+                        c = curve.Center
+                        r = curve.Radius
+                        cand.append(c + d3 * r)
+                        cand.append(c - d3 * r)
+                    for v in e.Vertexes:
+                        cand.append(v.Point)
+                elif tid == "Part::GeomLine":
+                    for v in e.Vertexes:
+                        cand.append(v.Point)
+                else:
+                    try:
+                        cand.extend(e.discretize(Deflection=1e-3))
+                    except Exception:
+                        for v in e.Vertexes:
+                            cand.append(v.Point)
+            if len(cand) < 2:
+                return []
+            proj = [self._project_point(p, view_direction) for p in cand]
+            # extremes along the (collinear) projected direction
+            u0, v0 = proj[0]
+            du = dv = 0.0
+            for (u, v) in proj[1:]:
+                if abs(u - u0) + abs(v - v0) > abs(du) + abs(dv):
+                    du, dv = u - u0, v - v0
+            L = (du * du + dv * dv) ** 0.5
+            if L < 1e-9:
+                return []
+            du, dv = du / L, dv / L
+            ts = [(p[0] - u0) * du + (p[1] - v0) * dv for p in proj]
+            tmin, tmax = min(ts), max(ts)
+            p1 = self._format_pt((u0 + du * tmin, v0 + dv * tmin))
+            p2 = self._format_pt((u0 + du * tmax, v0 + dv * tmax))
+            if p1 == p2:
+                return []
             return [{
                 "type": "line",
                 "p1": p1,
                 "p2": p2,
                 "role": "edge-on"
             }]
-        
+
         return []
 
 if __name__ == "__main__":

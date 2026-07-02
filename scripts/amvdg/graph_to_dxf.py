@@ -30,7 +30,7 @@ def main():
     prims = load_prims(g)
 
     # y-flip reference height
-    H = a.height or (g.get("image_size_px") or [0, 0])[1]
+    H = a.height or (g.get("sheet") or {}).get("height_px") or (g.get("image_size_px") or [0, 0])[1]
     if not H:
         ys = []
         for p in prims:
@@ -41,15 +41,16 @@ def main():
         H = max(ys) if ys else 0
     fy = lambda y: H - y
 
-    doc = ezdxf.new(setup=True)  # standard linetypes incl. DASHED
+    doc = ezdxf.new(setup=True)  # standard linetypes incl. DASHED/CENTER
     for name, lt in (("VISIBLE", "CONTINUOUS"), ("HIDDEN", "DASHED"),
-                     ("ARC", "CONTINUOUS"), ("DIM", "CONTINUOUS")):
+                     ("CENTER", "CENTER"), ("ARC", "CONTINUOUS"), ("DIM", "CONTINUOUS")):
         doc.layers.add(name, linetype=lt)
     msp = doc.modelspace()
 
+    _ROLE_LAYER = {"hidden": "HIDDEN", "center": "CENTER"}
     nline = ncirc = narc = 0
     for p in prims:
-        lay = "HIDDEN" if p.get("line_role", p.get("visibility")) == "hidden" else "VISIBLE"
+        lay = _ROLE_LAYER.get(p.get("line_role", p.get("visibility")), "VISIBLE")
         if p["type"] == "line":
             (x1, y1), (x2, y2) = p["p1"], p["p2"]
             msp.add_line((x1, fy(y1)), (x2, fy(y2)), dxfattribs={"layer": lay}); nline += 1
@@ -58,7 +59,15 @@ def main():
             msp.add_circle((cx, fy(cy)), p["r_px"], dxfattribs={"layer": lay}); ncirc += 1
         elif p["type"] == "arc":
             cx, cy = p["center"]
-            msp.add_circle((cx, fy(cy)), p["r_px"], dxfattribs={"layer": "ARC"}); narc += 1
+            sa = p.get("start_angle", p.get("a1"))
+            ea = p.get("end_angle", p.get("a2"))
+            if sa is not None and ea is not None:
+                # graph angles are y-DOWN increasing-theta; DXF arcs are y-up CCW:
+                # theta -> -theta and swap endpoints
+                msp.add_arc((cx, fy(cy)), p["r_px"], -float(ea), -float(sa),
+                            dxfattribs={"layer": lay}); narc += 1
+            else:
+                msp.add_circle((cx, fy(cy)), p["r_px"], dxfattribs={"layer": "ARC"}); narc += 1
 
     # dimension callouts as text (geometry-light: schema carries value/type, sometimes text_px)
     pid = {p.get("id"): p for p in prims}

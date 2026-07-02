@@ -34,6 +34,11 @@ class BaseProjector(abc.ABC):
         """
         Projects a 3D point to 2D OCC HLR coordinates based on view_direction.
         Currently supports primary orthographic views.
+
+        The (lx, ly) frames below are measured empirically against
+        TechDraw.projectEx output (axis-bar probe): they are HLR's local
+        frames, not a free choice — View.REMAP in render_dataset.py undoes
+        them into canonical model-axis (u, v) per view.
         """
         x, y, z = p.x, p.y, p.z
         if view_direction == (0, -1, 0): # Front
@@ -41,9 +46,7 @@ class BaseProjector(abc.ABC):
         elif view_direction == (0, 0, 1): # Top
             return (x, y)
         elif view_direction == (1, 0, 0): # Right
-            # Let's assume standard right view maps (y, z) to something.
-            # We'll refine this when we have test cases for it.
-            return (-z, -y) 
+            return (z, -y)
         else:
             return (x, y)
             

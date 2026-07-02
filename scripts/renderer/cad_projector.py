@@ -38,9 +38,13 @@ class CADProjector:
                 
             if projector:
                 face_results = projector.project(view_direction)
-                # Inject direct topo_origins (Type 1 correspondence)
+                # Inject direct topo_origins (Type 1 correspondence).
+                # Origins are {dim, id, role} objects (AMVDG v0.3): dim 2 =
+                # a Face degenerating to this 2D primitive (edge-on plane,
+                # cylinder silhouette), role = the geometric relationship.
                 for res in face_results:
-                    res["topo_origins"] = [f"Face_{f_idx}"]
+                    res["topo_origins"] = [
+                        {"dim": 2, "id": f"Face_{f_idx}", "role": res.get("role", "edge-on")}]
                 results.extend(face_results)
                 
         # 2. Project Edges (for standard 1D curve rendering)
@@ -60,9 +64,9 @@ class CADProjector:
                 edge_results = projector.project(view_direction)
                 # Inject direct topo_origins (Type 1 correspondence)
                 # Note: The edge ID matches the index logic used in GraphBuilder.
-                edge_id = f"Edge_{e_idx}" 
                 for res in edge_results:
-                    res["topo_origins"] = [edge_id]
+                    res["topo_origins"] = [
+                        {"dim": 1, "id": f"Edge_{e_idx}", "role": res.get("role", "edge")}]
                 results.extend(edge_results)
                 
         return results

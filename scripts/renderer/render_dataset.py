@@ -24,11 +24,21 @@ from collections import Counter
 
 from scripts.renderer.cad_projector import CADProjector
 from scripts.renderer.graph_builder import GraphBuilder
-from scripts.renderer.amvdg_exporter import AMVDGExporter
 from scripts.renderer.dimensioner import LegacyDimensioner
 
-# viewing direction recorded per ortho view (third-angle); only used as recorded metadata.
-_PROJ_DIR = {"front": [0, -1, 0], "top": [0, 0, -1], "right": [1, 0, 0]}
+# projection_dir recorded per ortho view: unit vector from the part TOWARD the
+# viewer (= TechDraw Direction), third-angle. These are exactly the vectors
+# passed to TechDraw.projectEx / CADProjector below — keep all three in sync.
+_PROJ_DIR = {"front": [0, -1, 0], "top": [0, 0, 1], "right": [1, 0, 0]}
+
+# canonical (u,v) model axes per view, as produced by View.REMAP; recorded in
+# frame.axis_remap so a consumer can invert px -> model coords without guessing.
+# matrix maps canonical (u,v) -> pixel-axis signs (px y grows downward).
+_AXIS_REMAP = {
+    "front": {"matrix": [[1, 0], [0, -1]], "px_x": "+X", "px_y": "-Z"},
+    "top":   {"matrix": [[1, 0], [0, -1]], "px_x": "+X", "px_y": "-Y"},
+    "right": {"matrix": [[1, 0], [0, -1]], "px_x": "+Y", "px_y": "-Z"},
+}
 
 # ============================================================================
 #  geometry -> SVG path + primitive records
@@ -44,12 +54,20 @@ def edge_to_path(e, tol=0.05):
             return ("M %.4f %.4f A %.4f %.4f 0 1 0 %.4f %.4f A %.4f %.4f 0 1 0 %.4f %.4f Z"
                     % (cx - r, cy, r, r, cx + r, cy, r, r, cx - r, cy))
         p0, p1 = vs[0].Point, vs[-1].Point
+        # decide large/sweep from an actual point on the arc: circle params
+        # from HLR can wrap around 2*pi, which made the old a1-a0 heuristic
+        # pick the complementary arc for some edges.
         try:
-            a0 = c.parameter(App.Vector(p0.x, p0.y, 0))
-            a1 = c.parameter(App.Vector(p1.x, p1.y, 0))
-            da = a1 - a0
-            large = 1 if abs(da) > math.pi else 0
-            sweep = 1 if da > 0 else 0
+            mid = e.discretize(Number=3)[1]
+            t0 = math.atan2(p0.y - cy, p0.x - cx)
+            tm = math.atan2(mid.y - cy, mid.x - cx)
+            t1 = math.atan2(p1.y - cy, p1.x - cx)
+            ccw_full = (t1 - t0) % (2 * math.pi)      # CCW span p0 -> p1
+            ccw_mid = (tm - t0) % (2 * math.pi)       # CCW position of mid
+            is_ccw = ccw_mid <= ccw_full + 1e-9       # mid reached going CCW?
+            span = ccw_full if is_ccw else (2 * math.pi - ccw_full)
+            large = 1 if span > math.pi else 0
+            sweep = 1 if is_ccw else 0                # SVG sweep=1: +x toward +y
         except Exception:
             large, sweep = 0, 1
         return "M %.4f %.4f A %.4f %.4f 0 %d %d %.4f %.4f" % (
@@ -82,11 +100,11 @@ def classify_edge(e):
             return ("circle", {"center": cen, "r": r})
         p0, p1 = vs[0].Point, vs[-1].Point
         try:
-            a0 = math.degrees(c.parameter(App.Vector(p0.x, p0.y, 0)))
-            a1 = math.degrees(c.parameter(App.Vector(p1.x, p1.y, 0)))
+            m = e.discretize(Number=3)[1]
+            mid = (m.x, m.y)
         except Exception:
-            a0 = a1 = 0.0
-        return ("arc", {"center": cen, "r": r, "a0": a0, "a1": a1,
+            mid = None
+        return ("arc", {"center": cen, "r": r, "mid": mid,
                         "p1": (p0.x, p0.y), "p2": (p1.x, p1.y)})
     # treat as line if 2 endpoints and (near-)straight, else polyline -> store endpoints + samples
     if len(vs) >= 2:
@@ -209,15 +227,25 @@ class View:
         return "\n".join(parts)
 
     def primitive_records(self, idprefix, px):
-        """Yield GT primitive dicts in PNG-pixel space, MATCHED with Oracle topo_origins."""
+        """Yield GT primitive dicts in PNG-pixel space, MATCHED with Oracle topo_origins.
+        HLR emits the same edge in several projectEx groups (sharp + outline), so
+        exact duplicates and zero-length degenerates are dropped here, before ids
+        are handed out to the dimensioner."""
         out = []
-        n = 0
+        seen = set()
         for vis_tag, edges in (("visible", self.edges_vis), ("hidden", self.edges_hid)):
             for e in edges:
                 typ, g = classify_edge(e)
-                rec = self._record(idprefix, n, typ, g, vis_tag, px)
-                if rec:
-                    out.append(rec); n += 1
+                rec = self._record(idprefix, len(out), typ, g, vis_tag, px)
+                if not rec:
+                    continue
+                if typ == "line" and rec["p1"] == rec["p2"]:
+                    continue
+                key = (vis_tag, typ) + tuple(round(c, 1) for c in _prim_coord_sig(rec))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(rec)
         return out
 
     def _to_px(self, lx, ly, px):
@@ -251,7 +279,16 @@ class View:
             base["r_mm"] = round(g["r"], 3)
             base["p1"] = self._to_px(*g["p1"], px=px)
             base["p2"] = self._to_px(*g["p2"], px=px)
-            
+            # p1/p2 + center leave the major/minor side ambiguous; record the
+            # swept angles. Convention: theta = atan2(y-cy, x-cx) in PX frame
+            # (y down), degrees in [0,360); the arc runs from start_angle to
+            # end_angle in INCREASING theta (mod 360).
+            if g.get("mid"):
+                mpx = self._to_px(*g["mid"], px=px)
+                sa, ea = _arc_angles_px(base["center"], base["p1"], base["p2"], mpx)
+                base["start_angle"] = sa
+                base["end_angle"] = ea
+
         base["bbox_px"] = _prim_bbox_px(base)
         
         # --- MATCH WITH ORACLE ---
@@ -278,14 +315,46 @@ class View:
         unique_origins = []
         seen = set()
         for o in origins:
-            if o not in seen:
-                seen.add(o)
+            if o["id"] not in seen:
+                seen.add(o["id"])
                 unique_origins.append(o)
-                
+
         base["prov"] = {"topo_origins": unique_origins}
         # -------------------------
-        
+
         return base
+
+
+def _prim_coord_sig(rec):
+    """Flat coord signature for duplicate detection (endpoint order normalized)."""
+    t = rec["type"]
+    if t == "line":
+        a, b = sorted([tuple(rec["p1"]), tuple(rec["p2"])])
+        return a + b
+    if t == "polyline":
+        pts = [tuple(q) for q in rec["pts"]]
+        if pts and pts[0] > pts[-1]:
+            pts = pts[::-1]
+        return tuple(c for q in pts for c in q)
+    if t == "circle":
+        return tuple(rec["center"]) + (rec["r_px"],)
+    if t == "arc":
+        a, b = sorted([tuple(rec["p1"]), tuple(rec["p2"])])
+        return tuple(rec["center"]) + (rec["r_px"],) + a + b
+    return ()
+
+
+def _arc_angles_px(c, p1, p2, mid):
+    """(start_angle, end_angle) deg in the px frame; arc = start -> end with
+    increasing atan2(y-cy, x-cx) mod 360, chosen so it passes through mid."""
+    def ang(p):
+        return math.degrees(math.atan2(p[1] - c[1], p[0] - c[0])) % 360.0
+    t1, tm, t2 = ang(p1), ang(mid), ang(p2)
+    if (tm - t1) % 360.0 <= (t2 - t1) % 360.0 + 1e-9:
+        sa, ea = t1, t2
+    else:
+        sa, ea = t2, t1
+    return round(sa, 2), round(ea, 2)
 
 
 def _prim_bbox_px(p):
@@ -386,7 +455,7 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     css = """
     .visible { stroke:#111; stroke-width:0.5; fill:none; stroke-linecap:round; stroke-linejoin:round; }
     .hidden  { stroke:#111; stroke-width:0.3; fill:none; stroke-dasharray:2.2,1.6; }
-    .center  { stroke:#c00; stroke-width:0.25; stroke-dasharray:6,1.5,1,1.5; }
+    .center  { stroke:#111; stroke-width:0.25; stroke-dasharray:6,1.5,1,1.5; }
     .dim     { stroke:#111; stroke-width:0.3; fill:none; }
     .ext     { stroke:#111; stroke-width:0.25; fill:none; }
     .dimtxt  { font-family:'DejaVu Sans','Arial',sans-serif; font-size:4.0px; fill:#111; }
@@ -442,6 +511,7 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
                 "origin_px": [round(v.ox * PXMM, 2), round(v.oy * PXMM, 2)],
                 "scale": v.scale,
                 "px_per_mm": round(v.scale * PXMM, 4),
+                "axis_remap": _AXIS_REMAP[v.name],
             },
             "primitives": prims,
         })
@@ -468,10 +538,7 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
         f.write(svg)
 
     rnum, rden = _ratio(scale)
-    
-    # Use AMVDGExporter to build final JSON
-    exporter = AMVDGExporter(partname)
-    
+
     graph = {
         "amvdg_version": "0.3",
         "part_id": partname,
@@ -569,11 +636,52 @@ def _counts(graph):
     nrefless = sum(1 for d in graph["annotations"] if not d["refs"])
     return {"nv": nv, "nh": nh, "types": dict(by_type), "nrefless": nrefless}
 
+def _main():
+    """Env-driven entry point (the contract batch_dataset.py stage 1 relies on):
+      RF_BATCH=1 RF_STEPDIR=<dir> RF_OUTDIR=<dir> [RF_WIDTH] [RF_LIMIT] [RF_LOG]
+        -> render every *.step under RF_STEPDIR (per-part isolation, OK/SKIP log)
+      RF_STEP=<file> [RF_OUTDIR|RF_OUT] [RF_NAME] [RF_WIDTH]
+        -> render a single part
+    """
+    width = int(os.environ.get("RF_WIDTH", PX_DEFAULT_W))
+    logp = os.environ.get("RF_LOG", "render_dataset.log")
+    logf = open(logp, "w")
+    try:
+        if os.environ.get("RF_BATCH"):
+            # batch: render every *.step under RF_STEPDIR (default cwd) into RF_OUTDIR.
+            out_dir = os.environ.get("RF_OUTDIR", "dataset")
+            import glob
+            step_dir = os.environ.get("RF_STEPDIR", ".")
+            jobs = [(sp, os.path.splitext(os.path.basename(sp))[0])
+                    for sp in sorted(glob.glob(os.path.join(step_dir, "*.step")))]
+            _lim = int(os.environ.get("RF_LIMIT", "0"))
+            if _lim > 0:
+                jobs = jobs[:_lim]
+            results = []
+            for sp, nm in jobs:
+                # Per-part isolation: a single bad solid (HLR throw, null shape) must
+                # not abort the whole batch over hundreds of varied seeds.
+                try:
+                    r = render_one(sp, out_dir, nm, width)
+                except Exception:
+                    import traceback
+                    logf.write("SKIP %s\n%s\n" % (nm, traceback.format_exc())); logf.flush()
+                    continue
+                results.append(r)
+                logf.write("OK %s counts=%s\n" % (nm, json.dumps(r["counts"]))); logf.flush()
+            with open(os.path.join(out_dir, "_build_results.json"), "w") as f:
+                json.dump([{k: v for k, v in r.items() if k != "meta"} for r in results], f, indent=1)
+        else:
+            step = os.environ["RF_STEP"]
+            out_dir = os.environ.get("RF_OUTDIR", os.path.dirname(os.environ.get("RF_OUT", "/tmp/out.svg")))
+            nm = os.environ.get("RF_NAME") or None
+            r = render_one(step, out_dir, nm, width)
+            logf.write("OK %s counts=%s\n" % (r["name"], json.dumps(r["counts"])))
+    except Exception:
+        import traceback
+        logf.write("FAIL\n" + traceback.format_exc())
+    logf.flush(); logf.close()
+
+
 if __name__ == "__main__":
-    p = os.environ.get("RF_STEP")
-    if p:
-        render_one(p, os.path.dirname(os.environ.get("RF_OUT", "out.svg")),
-                   os.environ.get("RF_NAME", "PART"))
-    elif os.environ.get("RF_BATCH"):
-        for f in ["Bracket.step", "Flange.step"]:
-            render_one(os.path.join("FreeCAD_scrape/gt_prim5_fcstd", f), "poc/dataset")
+    _main()

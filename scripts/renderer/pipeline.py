@@ -197,7 +197,8 @@ def main():
         verifyp = os.path.join(OUT, name + ".verify.png")
 
         rasterize(svg, clean)
-        aff = scan_augment(clean, scan, seed=hash(name) & 0xffff)
+        import zlib
+        aff = scan_augment(clean, scan, seed=zlib.crc32(name.encode()) & 0xffff)
 
         # record affine into graph.json so labels map onto scan.png
         g = json.load(open(graph_path))

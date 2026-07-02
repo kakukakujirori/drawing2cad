@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://drawing2cad/schema/amvdg-0.2.schema.json",
-  "title": "Annotated Multi-View Drawing Graph (AMVDG) v0.2",
-  "description": "4-layer drawing IR. v0.2: cleaned, enum-reconciled, profile-gated. profile in {model,vectorized,derived,gt_executable} selects which fields validate_amvdg.py REQUIRES (model=coords may be null; vectorized=coords required; derived=constraints/dof recomputed; gt_executable=prov+complete build required). v0 poc field names preserved.",
+  "$id": "https://drawing2cad/schema/amvdg-0.3.schema.json",
+  "title": "Annotated Multi-View Drawing Graph (AMVDG) v0.3",
+  "description": "4-layer drawing IR. v0.3: adds prov.topo_origins ({dim,id,role} B-rep lineage), multi-view features, arc start/end angles, centerline primitives, frame.axis_remap. profile in {model,vectorized,derived,gt_executable} selects which fields validate_amvdg.py REQUIRES (model=coords may be null; vectorized=coords required; derived=constraints/dof recomputed; gt_executable=prov+complete build required).",
   "type": "object",
   "required": [
     "amvdg_version",
@@ -20,7 +20,11 @@
   "additionalProperties": false,
   "properties": {
     "amvdg_version": {
-      "const": "0.2"
+      "enum": [
+        "0.3",
+        "0.2"
+      ],
+      "description": "0.3 native; 0.2 accepted so legacy graphs still validate. Renderer emits 0.3."
     },
     "part_id": {
       "type": "string"
@@ -1653,6 +1657,42 @@
             null
           ],
           "default": null
+        },
+        "topo_origins": {
+          "type": "array",
+          "description": "v0.3: originating B-rep entities, hierarchical (dim 2=Face, 1=Edge, 0=Vertex). role = geometric relationship of that entity to this 2D primitive",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "dim",
+              "id"
+            ],
+            "properties": {
+              "dim": {
+                "enum": [
+                  0,
+                  1,
+                  2
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "role": {
+                "enum": [
+                  "edge",
+                  "silhouette",
+                  "boundary",
+                  "edge-on",
+                  "parent_face",
+                  "axis",
+                  null
+                ],
+                "default": null
+              }
+            }
+          }
         }
       }
     }
