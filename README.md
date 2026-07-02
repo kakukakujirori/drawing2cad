@@ -23,7 +23,7 @@ The current wire format is **v0.3** = the v0.2 schema plus:
   and `projection_dir` = unit vector from part toward viewer (front `(0,-1,0)`,
   top `(0,0,1)`, right `(1,0,0)`, third-angle).
 
-Files: [`spec/README.md`](spec/README.md) (overview) · `spec/AMVDG_v0.3.md` (prose spec) ·
+Files: [`spec/AMVDG_v0.3.md`](spec/AMVDG_v0.3.md) (prose spec — start here) ·
 `spec/AMVDG_v0.3.schema.json` (accepts 0.2/0.3) · `spec/validate_amvdg.py` (7 gates) ·
 [`spec/AMVDG_TUTORIAL.md`](spec/AMVDG_TUTORIAL.md) (日本語チュートリアル: JSONの読み方と2D復元).
 Both the worked example and every renderer-emitted graph validate:

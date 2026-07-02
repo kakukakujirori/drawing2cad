@@ -1,34 +1,42 @@
 # AMVDG v0.3 — Annotated Multi-View Drawing Graph (spec)
 
 2D→2D leg intermediate representation for `raster drawing → [AMVDG] → 3D CAD`.
+Why a typed graph (not raw DXF / single-sketch constraints / a CAD-command list)? 3D recovery needs
+the *binding* a drawing carries — which dimension constrains which geometry, which views show the
+same feature, what a hidden line means. The novel part is the cross-view layer: orthographic
+projection is rank-2 (depth is the kernel), so no single view fixes depth — only inter-view feature
+identity can, and no standard sketch format expresses that.
 **v0.3 is mechanically validated**: `validate_amvdg.py example_flange_v0.3.json` passes all 7 gates;
-breaking any ref/census/DoF/round-trip makes it fail. This file is the human spec; the authoritative
-artifacts are `AMVDG_v0.3.schema.json` (structure), `validate_amvdg.py` (enforcement), `example_flange_v0.3.json` (a valid instance).
+breaking structure/ref-integrity/round-trip makes it fail. (The census and DoF gates only bite once
+`validity`/per-feature `dof` are emitted — see the status note in §1; on current `vectorized` output
+they pass vacuously.) This file is the human spec; the authoritative artifacts are
+`AMVDG_v0.3.schema.json` (structure), `validate_amvdg.py` (enforcement), `example_flange_v0.3.json` (a valid instance).
 
 ## 1. The 4 authored layers
 1. **geometry** — per-view typed primitives (`line/circle/arc/ellipse/bezier/bspline/polyline/point/generic`) + `line_role` (visible/hidden/center/phantom/section_cut/break).
 2. **annotation** — dims/GD&T/thread/CBORE/CSINK/chamfer bound to geometry via `refs`, with exact value + `value_source` + tolerance. (dimension-spine; absolute scale lives here.)
 3. **correspondence** — `features[]`, each a shared `feature_id` binding the SAME 3D feature across views via `members[]{view,primitive_id,projection_role}`.
-4. **provenance** — every element → originating 3D entity+param (synthetic GT only).
-Constraints are **derived** (autoconstrain), not authored. Uncertainty is a per-element attribute.
+4. **provenance** — every element → originating 3D entity+param (synthetic GT only). In JSON this is the per-element `prov` key (v0.3's `prov.topo_origins` lives here); there is no top-level `provenance` object.
+
+> **Implementation status (2026-07-02).** Only layers 1–4 above are actually **emitted** by the renderer, all at `profile: vectorized`. The *derived* additions promised below — `constraints[]` (autoconstrain), a populated `dof`/coverage, `validity`/`census` — are **schema-reserved but NOT produced** by any current code path (renderer, spec example, or Zero-To-CAD batch). `dof`/coverage is on the roadmap (research-log TODO #6, filled with the 3D leg); `constraints[]`/`validity`/the `derived` profile are **not** currently planned (they were tied to OrthoSolve, which is off the critical path). Read §2/§3 as the *target* schema, not the current output.
 
 ## 2. Who produces what (4-way)
 | owner | fields |
 |---|---|
-| **MODEL** (DSL subset) | V-records (view meta + signed-axis remap), A-records (kind/param_role/refs/value/tolerance/feature payloads), F-records (feature_id/kind/members/axis/extrude_dir/parent/build-hint), sparse G/X/C/D. **No raw coords, no constraints.** |
-| **CV vectorizer** | `primitives[].{p1,p2,pts,center,r_px,bbox_px,angles}`; `coords_source`,`state` |
-| **derived** | `constraints[]` (autoconstrain), `dof`, `validity`, `contradictions` (validator recomputes & cross-checks) |
-| **renderer (GT)** | `prov` on every element (feature_id assigned 3D-side → correspondence is provenance-exact, not radius-matched) |
-| **prior/library** | may only write `value_source=prior` / `dof.supplied_by_prior`; scorer excludes these from determined-DoF |
+| **MODEL** (DSL subset) | V-records (view meta + signed-axis remap), A-records (kind/param_role/refs/value/tolerance/feature payloads), F-records (feature_id/kind/members/axis/extrude_dir/parent/build-hint), sparse G/X/C/D. **No raw coords, no constraints.** *(conceptual role — the synthetic renderer authors these; a real 2D→AMVDG model does not exist yet.)* |
+| **CV vectorizer** | `primitives[].{p1,p2,pts,center,r_px,bbox_px,angles}`; `coords_source`,`state`. *(conceptual role — in the synthetic pipeline `coords_source` is always `gt`; there is no separate vectorizer.)* |
+| **derived** | `constraints[]` (autoconstrain), `dof`, `validity`, `contradictions`. ⚠️ **NOT emitted by any current code** — `constraints[]`/`validity` unplanned; `dof` emitted as an all-zero block (populated later, TODO #6). `validate_amvdg.py` has **no `derived` branch**, so its census/DoF gates run but are vacuous on current output. |
+| **renderer (GT)** | `prov` on every element (feature_id assigned 3D-side → correspondence is provenance-exact, not radius-matched). *(the only producer that actually runs today.)* |
+| **prior/library** | may only write `value_source=prior` / `dof.supplied_by_prior`; scorer excludes these from determined-DoF. *(design placeholder — no prior/library stage implemented.)* |
 
 ## 3. Validation profiles (the key v0.2 addition — codex's fix)
-One schema, four profiles (`profile` field); `validate_amvdg.py` enforces per-profile requirements so **"schema-valid" means something at each stage**:
-| profile | requires |
-|---|---|
-| `model` | structure + refs + census + DoF + round-trip; **coords may be null** |
-| `vectorized` | + every `state=known` primitive has non-null coords and `coords_source≠unknown` |
-| `derived` | + `constraints[]` present, DoF recomputed |
-| `gt_executable` | + `prov` on every feature; every **determined** feature has complete `build` (op+datum_plane) and every `required_param` has a non-null `driven_by` → a `value_state=known` annotation |
+One schema, four profiles (`profile` field); `validate_amvdg.py` enforces per-profile requirements so **"schema-valid" means something at each stage**. **Today the renderer only ever emits `vectorized`** — `derived`/`gt_executable` are defined in the schema but nothing produces them (see the status note in §1):
+| profile | requires | produced? |
+|---|---|---|
+| `model` | structure + refs + census + DoF + round-trip; **coords may be null** | not a distinct output (renderer always fills coords) |
+| `vectorized` | + every `state=known` primitive has non-null coords and `coords_source≠unknown` | ✅ **the only profile emitted** (renderer, spec example, Zero-To-CAD) |
+| `derived` | + `constraints[]` present, DoF recomputed | ❌ **not implemented** — `check_profile` has no `derived` branch; `constraints[]`/`validity` unplanned |
+| `gt_executable` | + `prov` on every feature; every **determined** feature has complete `build` (op+datum_plane) and every `required_param` has a non-null `driven_by` → a `value_state=known` annotation | ❌ **not yet** — roadmap TODO #6 (with the 3D leg's build recipes) |
 
 ## 4. Validity / DoF self-check (mechanical — see validate_amvdg.py)
 1. **structure** — jsonschema (`additionalProperties:false`).
@@ -46,8 +54,14 @@ Flange worked example (v0.3): the **renderer's actual output** on `spec/flange.s
 DoF/coverage emitted as zero (the `gt_executable` build-recipe accounting from the old hand-authored example is
 deferred to the 3D leg; see §8/§9). Historic hand-authored numbers (16/3, coverage 0.1875) are retained below as the DoF-arithmetic worked example only.
 
-## 5. DSL serialization (enums are SCHEMA-EXACT — codex fix #2)
-The model emits flat one-record-per-line; tokens are the **same enum strings as the schema** (no `cbore`/`boltcirc` aliases — they were the v0.1 mismatch). Lift/lower are defined in `validate_amvdg.py` and round-trip-tested. Pipe-delimited canonical form:
+## 5. DSL serialization (EXPLORATORY — tokenization not settled)
+> **Status.** This belongs to the **de-prioritized 2D→AMVDG leg** (the current plan is 3D-leg-first with CadQuery output — research-log 2026-07-02). The right tokenization for a graph target — how to encode primitives, cross-view `members`, and whether to carry `prov` — is an **open design question**, not a locked decision. Two *different, non-interchangeable* forms exist in code, and they cover **disjoint** layers:
+> - **pipe-DSL** (`validate_amvdg.py` `lower`/`lift`, below): view/annotation/**feature** records. Encodes cross-view correspondence (`members` as `view:primitive_id:projection_role`) and is round-trip-tested (gate 7) — but carries **no coordinates and no `prov`**, and its `F|` members reference primitive-ids that a separate vectorizer stage must assign.
+> - **`scripts/amvdg/serialize.py`** (`g1`, the cadrille training target): per-view primitives **with** coords + dims, but **drops `features[]` entirely** (it is explicitly intra-view). So the current training target expresses **no** cross-view correspondence.
+>
+> Neither is a full-graph serialization; settling one is a prerequisite before resuming the 2D leg.
+
+The pipe-DSL: model emits flat one-record-per-line; tokens are the **same enum strings as the schema** (no `cbore`/`boltcirc` aliases — they were the v0.1 mismatch). Lift/lower are defined in `validate_amvdg.py` and round-trip-tested. Pipe-delimited canonical form:
 ```
 V|front|front|0,-1,0|-
 A|D1|linear|width|plate|100|known|F13.F0
