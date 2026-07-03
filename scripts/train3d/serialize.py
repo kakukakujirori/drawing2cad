@@ -1,4 +1,7 @@
-"""AMVDG graph -> "g2" model-input text for the AMVDG->3D leg (+ inverse, for round-trip).
+"""AMVDG graph -> model-input text for the AMVDG->3D leg (+ inverse, for round-trip).
+
+This is the 3D leg's serializer (train2d/serialize.py is the 2D leg's). The text format was
+historically called "g2"/"g2.1"; that token is retired, the format is unchanged (SER_VERSION).
 
 g2 realizes the 2026-07-02 research-log §D-4 decisions: the graph is re-serialized so a
 text LLM can read cross-view correspondence without chasing id pointers.
@@ -37,7 +40,7 @@ median 4.1k tok / 41% coverage at max_len 4096):
     the measured span, e.g. `X0..120`, computed from the referenced primitives).
   * FEAT `views=` is dropped (recoverable from the tags).
 
-Round-trip: `g2_to_struct(graph_to_g2(g))` re-emits byte-identically and matches the
+Round-trip: `text_to_struct(graph_to_text(g))` re-emits byte-identically and matches the
 graph's primitive/feature/annotation census (merges accounted). `--check GLOB...` also
 measures cross-view consistency (circle center vs silhouette lines) dataset-wide.
 """
@@ -47,7 +50,7 @@ import math
 import re
 import sys
 
-G2_VERSION = "g2.1"
+SER_VERSION = "3d.1"  # AMVDG-graph -> 3D-leg model-input text (was "g2.1")
 
 ROLE = {"visible": "vis", "hidden": "hid", "center": "cen", "phantom": "pha",
         "section_cut": "sec", "break": "brk"}
@@ -156,8 +159,8 @@ def _union_tags(dst, src):
 
 
 def struct_from_graph(graph, multi_tag=True):
-    """Canonicalize an AMVDG graph into the g2 struct (the single source of truth
-    for emission). Returns dict {bbox, feats, views, dims, skipped, merged}."""
+    """Canonicalize an AMVDG graph into the intermediate struct (the single source of
+    truth for emission). Returns dict {bbox, feats, views, dims, skipped, merged}."""
     feats_src = graph.get("features", [])
     face2feat = {}
     for f in feats_src:
@@ -320,7 +323,7 @@ def struct_to_text(st):
     return "\n".join(L)
 
 
-def graph_to_g2(graph, multi_tag=True):
+def graph_to_text(graph, multi_tag=True):
     return struct_to_text(struct_from_graph(graph, multi_tag=multi_tag))
 
 
@@ -329,7 +332,7 @@ _TAGS = re.compile(r"^C\d+(?:,C\d+)*$")
 _SPAN = re.compile(r"^([A-Za-z])(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)$")
 
 
-def g2_to_struct(text):
+def text_to_struct(text):
     st = {"bbox": [], "feats": [], "views": [], "dims": [], "skipped": 0, "merged": 0}
     view = None
     for line in text.splitlines():
@@ -421,7 +424,7 @@ def roundtrip_check(graph, multi_tag=True):
     """(ok, msg): emission is parse-stable and matches the source graph's census."""
     st = struct_from_graph(graph, multi_tag=multi_tag)
     text = struct_to_text(st)
-    if struct_to_text(g2_to_struct(text)) != text:
+    if struct_to_text(text_to_struct(text)) != text:
         return False, "re-emission not byte-identical"
     if st["skipped"]:
         return False, f"{st['skipped']} primitives skipped"
@@ -437,12 +440,6 @@ def roundtrip_check(graph, multi_tag=True):
         return False, f"annotation count {len(st['dims'])}+{n_dia} != {n_ann}"
     return True, (f"prims={n_out}(+{st['merged']} merged) feats={len(st['feats'])} "
                   f"dims={len(st['dims'])}+{n_dia}dia")
-
-
-PROMPT = ("Below is a multi-view engineering drawing as a structured graph "
-          "(part-frame mm; Ck tags mark the same 3D feature across views). "
-          "Write cadquery code that builds the 3D part. Assign the result to "
-          "a variable named result.")
 
 
 if __name__ == "__main__":
@@ -463,7 +460,7 @@ if __name__ == "__main__":
             n_miss += u
         sizes.sort()
         devs.sort(reverse=True)
-        print(f"round-trip OK {len(paths) - len(bad)}/{len(paths)}; g2 chars "
+        print(f"round-trip OK {len(paths) - len(bad)}/{len(paths)}; text chars "
               f"median={sizes[len(sizes)//2]} p90={sizes[int(.9*len(sizes))]} "
               f"max={sizes[-1]}")
         print(f"cross-view silhouette@(c±r): matched {n_match} "
@@ -473,7 +470,7 @@ if __name__ == "__main__":
             print("  FAIL", p, "--", msg)
         sys.exit(1 if bad else 0)
     g = json.load(open(sys.argv[1]))
-    text = graph_to_g2(g)
+    text = graph_to_text(g)
     print(text)
     ok, msg = roundtrip_check(g)
     print(f"\n[roundtrip] {'OK' if ok else 'FAIL'} {msg} chars={len(text)}",

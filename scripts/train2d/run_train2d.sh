@@ -6,7 +6,7 @@
 #   conda activate drawing2cad-ml
 #   export CADRILLE_REPO=/path/to/cadrille            # the col14m/cadrille checkout
 #   DATASET=../../experiments/f360_drawings OUT=../../experiments/2d_v0 \
-#     scripts/amvdg/run_train2d.sh
+#     scripts/train2d/run_train2d.sh
 #
 # Seed drawings come from the renderer (scripts/renderer/batch_dataset.py over STEP parts).
 # Fusion360 Gallery reconstruction set (27,958 STEP parts) is a good source:

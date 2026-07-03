@@ -57,7 +57,7 @@ deferred to the 3D leg; see §8/§9). Historic hand-authored numbers (16/3, cove
 ## 5. DSL serialization (EXPLORATORY — tokenization not settled)
 > **Status.** This belongs to the **de-prioritized 2D→AMVDG leg** (the current plan is 3D-leg-first with CadQuery output — research-log 2026-07-02). The right tokenization for a graph target — how to encode primitives, cross-view `members`, and whether to carry `prov` — is an **open design question**, not a locked decision. Two *different, non-interchangeable* forms exist in code, and they cover **disjoint** layers:
 > - **pipe-DSL** (`validate_amvdg.py` `lower`/`lift`, below): view/annotation/**feature** records. Encodes cross-view correspondence (`members` as `view:primitive_id:projection_role`) and is round-trip-tested (gate 7) — but carries **no coordinates and no `prov`**, and its `F|` members reference primitive-ids that a separate vectorizer stage must assign.
-> - **`scripts/amvdg/serialize.py`** (`g1`, the cadrille training target): per-view primitives **with** coords + dims, but **drops `features[]` entirely** (it is explicitly intra-view). So the current training target expresses **no** cross-view correspondence.
+> - **`scripts/train2d/serialize.py`** (`g1`, the cadrille training target): per-view primitives **with** coords + dims, but **drops `features[]` entirely** (it is explicitly intra-view). So the current training target expresses **no** cross-view correspondence.
 >
 > Neither is a full-graph serialization; settling one is a prerequisite before resuming the 2D leg.
 
@@ -81,7 +81,7 @@ geometry+line_role①, view-meta/projection/align②, annotation-binding+value+t
 - **Added `validate_amvdg.py`** — the schema is now machine-checkable, not asserted.
 
 ## 8. Still open (not blockers; tracked for v0.3)
-- **g2 robustness when the annotation vocabulary grows**: `serialize_g2` TypeErrors on
+- **serializer robustness when the annotation vocabulary grows**: `train3d/serialize.py` TypeErrors on
   `value: null` annotations (note/datum/gdt) and drops thread/counterbore/tolerance payloads —
   harmless today (the renderer only emits numeric linear/diameter dims) but must be handled
   before richer dimensioning GT lands (2026-07-03 review, A-3).
@@ -120,13 +120,13 @@ Design note: `research/2026-07-01-AMVDG-v0.3.md`. All additions are BACKWARD-com
 
 **v0.3.1 delta (2026-07-03)**: `frame.model_origin` — the model-frame mm coordinate (source STEP
 frame) at `origin_px`, per px axis (`m = model_origin + sign(axis_remap)·(px − origin_px)/px_per_mm`).
-Makes px→model exact without the per-view shift discovery `serialize_g2.py` documents. **Synthetic
+Makes px→model exact without the per-view shift discovery `train3d/serialize.py` documents. **Synthetic
 GT diagnostic only**: a real 2D pipeline cannot know the authoring origin, so model-input
 serializations (g2) must keep a drawing-derivable frame (content-min-0) — otherwise the 3D leg
 trains on coordinates that literally match the GT program's frame, an information leak that a real
 2D front-end cannot reproduce. `amvdg_version: "0.3.1"`; schema accepts 0.2/0.3/0.3.1.
 **Profile gate hardened (same rev)**: `vectorized`/`gt_executable` now REQUIRE per-view `frame`
-(origin_px, px_per_mm, axis_remap.px_x/px_y) — the 3D-leg consumer (`serialize_g2.py`) reads them
+(origin_px, px_per_mm, axis_remap.px_x/px_y) — the 3D-leg consumer (`train3d/serialize.py`) reads them
 unconditionally, so "schema-valid vectorized" now implies "consumable" — and `kind: linear`
 annotations must carry `subtype` horizontal|vertical (otherwise their measurement span is
 undefined). Verified: renderer output (0.3 and 0.3.1) passes; stripping `frame` or the subtype

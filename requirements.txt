@@ -1,11 +1,14 @@
 accelerate
 cairosvg
+datasets
 einops
 ezdxf
 jsonschema
 opencv-python-headless
+peft
 pillow
 qwen-vl-utils
+rootutils
 safetensors
 scipy
 transformers

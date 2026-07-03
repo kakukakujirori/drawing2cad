@@ -106,7 +106,7 @@ def check_profile(g):
     need_exec   = prof=="gt_executable"
     if need_coords:
         # v0.3.1: coords are only consumable with the px->model mapping, so vectorized
-        # REQUIRES frame (the 3D-leg serializer serialize_g2.py reads these unconditionally)
+        # REQUIRES frame (the 3D-leg serializer train3d/serialize.py reads these unconditionally)
         for v in g["views"]:
             fr = v.get("frame") or {}
             missing = [k for k in _REQ_FRAME if fr.get(k) is None]

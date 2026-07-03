@@ -504,7 +504,7 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     # spans the full part under orthographic projection, so per signed axis it is the
     # model bbox min ('+': px grows with the axis) or max ('-'). With axis_remap +
     # px_per_mm this makes px -> model exact without the per-view shift discovery
-    # serialize_g2 documents:  m = model_origin + sign * (px - origin_px) / px_per_mm.
+    # train3d/serialize.py documents:  m = model_origin + sign * (px - origin_px) / px_per_mm.
     _bb_rng = {"X": (bb.XMin, bb.XMax), "Y": (bb.YMin, bb.YMax), "Z": (bb.ZMin, bb.ZMax)}
 
     def _model_origin(vname):

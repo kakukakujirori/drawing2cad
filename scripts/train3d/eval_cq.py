@@ -17,9 +17,6 @@ AMVDG->3D leg evaluator. For each sample we:
   6. **bbox dimension error in absolute mm** (sorted extents; the headline dimension metric),
      plus a secondary cadrille-style scale-normalized IoU for cross-reference.
 
-Runs in a CadQuery env (conda `drawing2cad`: cadquery + OCP + trimesh + numpy).
-No torch/transformers import, so `train_sft.py` (a different env) calls it as a subprocess.
-
 Usage:
   # score a directory of predicted {id}.py against GT {id}.step:
   python eval_cq.py --pred-dir PREDS --gt-dir experiments/stage_z2c --out metrics.json
@@ -68,7 +65,7 @@ def _mesh_from_shape(shape):
     return trimesh.Trimesh([(v.x, v.y, v.z) for v in verts], faces, process=True)
 
 
-def _load_gt_mesh(step_path):
+def _load_gt_mesh(step_path: str):
     import cadquery as cq
     solid = cq.importers.importStep(step_path).val()
     return _mesh_from_shape(solid), solid
@@ -258,17 +255,17 @@ def load_pred(pred_dir, sid):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--pred-dir", required=True, help="dir of predicted {id}.py")
-    ap.add_argument("--gt-dir", required=True, help="dir of GT {id}.step")
-    ap.add_argument("--ids-file", default=None, help="optional list of ids (one/line)")
-    ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--out", default=None, help="write full metrics JSON here")
-    ap.add_argument("--vox-res", type=int, default=64, help="voxels across GT max extent")
-    ap.add_argument("--align", choices=["min", "center"], default="min")
-    ap.add_argument("--timeout", type=float, default=30.0)
-    ap.add_argument("--no-norm", action="store_true", help="skip normalized-IoU cross-ref")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pred-dir", required=True, help="dir of predicted {id}.py")
+    parser.add_argument("--gt-dir", required=True, help="dir of GT {id}.step")
+    parser.add_argument("--ids-file", default=None, help="optional list of ids (one/line)")
+    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--out", default=None, help="write full metrics JSON here")
+    parser.add_argument("--vox-res", type=int, default=64, help="voxels across GT max extent")
+    parser.add_argument("--align", choices=["min", "center"], default="min")
+    parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--no-norm", action="store_true", help="skip normalized-IoU cross-ref")
+    args = parser.parse_args()
 
     cfg = {"vox_res": args.vox_res, "align": args.align,
            "timeout": args.timeout, "also_norm": not args.no_norm}

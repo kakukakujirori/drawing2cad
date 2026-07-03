@@ -9,9 +9,8 @@
 # Usage:
 #   python batch_dataset.py <step_dir> <out_dir> [--width 1800] [--no-scan] [--n N]
 import os, sys, glob, json, zlib, subprocess, argparse
-HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(os.path.dirname(HERE))
-sys.path.insert(0, HERE)
+import rootutils
+root = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 from pipeline import scan_augment   # main() is __main__-guarded; importing is safe
 
 
@@ -24,10 +23,10 @@ def stage1(step_dir: str, out_dir: str, width: int, n: int):
     env["RF_LOG"] = os.path.join(out_dir, "render_dataset.log")
     env["PYTHONUNBUFFERED"] = "1"
     # render_dataset.py imports scripts.renderer.* — make the repo root importable
-    env["PYTHONPATH"] = REPO + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(root) + os.pathsep + env.get("PYTHONPATH", "")
     if n and n > 0:
         env["RF_LIMIT"] = str(n)
-    r = subprocess.run([sys.executable, os.path.join(HERE, "render_dataset.py")], env=env, check=False)
+    r = subprocess.run([sys.executable, os.path.join(root, "scripts", "renderer", "render_dataset.py")], env=env, check=False)
     log = open(env["RF_LOG"]).read() if os.path.exists(env["RF_LOG"]) else ""
     nok = log.count("\nOK ") + (1 if log.startswith("OK ") else 0)
     nskip = log.count("\nSKIP ") + (1 if log.startswith("SKIP ") else 0)
@@ -79,8 +78,8 @@ def stage2(out_dir: str, width: int, do_scan: bool):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("step_dir", type=str)
-    parser.add_argument("out_dir", type=str)
+    parser.add_argument("--step_dir", type=str)
+    parser.add_argument("--out_dir", type=str)
     parser.add_argument("--width", type=int, default=1800)
     parser.add_argument("--no-scan", action="store_true")
     parser.add_argument("--n", type=int, default=0)
