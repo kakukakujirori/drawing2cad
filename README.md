@@ -64,7 +64,8 @@ it also drops the GT `{uuid}.cadquery.py` next to each STEP for the future AMVDG
 # one-shot driver (select in py312 + render in drawing2cad); override N/SPLIT/STAGE/OUT via env:
 N=300 SPLIT=validation scripts/renderer/run_zero_to_cad_gt.sh    # -> experiments/dataset_z2c
 # or the two steps by hand:
-/path/to/py312/bin/python scripts/renderer/select_zero_to_cad.py 300 experiments/stage_z2c --split validation
+python scripts/renderer/select_zero_to_cad.py 300 experiments/stage_z2c --split validation
+
 python scripts/renderer/batch_dataset.py experiments/stage_z2c experiments/dataset_z2c
 ```
 
@@ -72,11 +73,29 @@ python scripts/renderer/batch_dataset.py experiments/stage_z2c experiments/datas
 set's `{partid}_{hash}_{seq}_{substep}` naming (takes each part's final state, samples across parts):
 ```bash
 python scripts/renderer/select_fusion360_recon.py /path/to/Fusion360Gallery/r1.0.1/reconstruction 2500 experiments/stage_recon
+
 python scripts/renderer/batch_dataset.py experiments/stage_recon experiments/dataset_recon
 ```
 A graph can be exported to DXF 2D-CAD with `python scripts/amvdg/graph_to_dxf.py GRAPH.json OUT.dxf`.
 
-**B2-cadrille baseline** (CADGenBench drawings → CadQuery → validity/scale metrics):
+## AMVDG→3D leg (training — the current focus)
+
+**g2 serializer** (`scripts/amvdg/serialize_g2.py`) — turns a graph JSON into the model-input
+text for AMVDG→CadQuery training: part-frame mm coordinates (the same model coordinate prints
+identically in every view), `features[].members` denormalized to inline per-primitive tags
+(owner + non-parent_face co-owners), ⌀ dims inlined on circles, canonical order + short ids.
+Design/decision record: `research/research-log.md` 2026-07-02(続き).
+```bash
+python scripts/amvdg/serialize_g2.py GRAPH.json            # print the g2 text + round-trip status
+python scripts/amvdg/serialize_g2.py --check 'experiments/dataset_z2c/*.graph.json'
+# round-trip 275/275; cross-view silhouette@(c±r) worst dev 0.03mm
+```
+
+**SFT harness** (`scripts/train3d/`) — dataset bundling (g2 → CadQuery jsonl), SFT fine-tune
+(init: `ADSKAILab/Zero-To-CAD-Qwen3-VL-2B`, text-only input), and CadQuery execution eval
+(validity + translation-aligned voxel IoU + absolute-mm bbox error). See `scripts/train3d/README.md`.
+
+**B2-cadrille baseline** (historical, 2026-06-15 — motivates the above; drawings → CadQuery → validity/scale metrics):
 ```bash
 scripts/run_b2.sh --n 49          # or  IDS=101,103 scripts/run_b2.sh
 ```

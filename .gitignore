@@ -3,6 +3,7 @@ docs-confidential/
 
 # generated experiment outputs (reproducible via scripts/)
 experiments/
+scripts/train3d/data_z2c/
 
 # python
 __pycache__/
