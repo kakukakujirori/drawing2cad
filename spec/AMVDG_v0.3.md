@@ -81,10 +81,21 @@ geometry+line_role①, view-meta/projection/align②, annotation-binding+value+t
 - **Added `validate_amvdg.py`** — the schema is now machine-checkable, not asserted.
 
 ## 8. Still open (not blockers; tracked for v0.3)
+- **g2 robustness when the annotation vocabulary grows**: `serialize_g2` TypeErrors on
+  `value: null` annotations (note/datum/gdt) and drops thread/counterbore/tolerance payloads —
+  harmless today (the renderer only emits numeric linear/diameter dims) but must be handled
+  before richer dimensioning GT lands (2026-07-03 review, A-3).
 - inference-time `feature_id` authorship on real drawings (no 3D) — deterministic matcher proposes, scored separately.
 - `feature.build` authorship on real — fusion pass vs model hint.
 - `param_role` ontology + per-kind required-DoF must be locked in a versioned file shared by renderer/3D-builder/scorer.
 - section/hatch (⑥), GD&T depth, bezier/bspline sub-schema → v0.2 deferred.
+- **curved-edge provenance (found 2026-07-03)**: the renderer never actually emits
+  `ellipse`/`bspline` primitives — `classify_edge` discretizes every non-circular HLR edge to
+  `polyline` (Z2C 274: 1657 rows in 95 graphs, ALL without `topo_origins` → invisible to
+  features/dims, and the main driver of long-tail g2 token counts). TODO: extend
+  `scripts/renderer/projector/` — ellipse first (a tilted cylinder/cone projects to an exact
+  ellipse, analytic), then bspline silhouettes (at minimum hashCode-bind the originating 3D
+  edge); discretization stays as fallback.
 - DoF/Sketcher harness is **referenced but not yet built as code** (separate from this schema).
 - Landing: bundle v0→v0.2 migration (visibility→line_role, feature→feature_tag, dimensions→annotations, correspondences→features) with the `projectEx`+geometry-refs port into `drawing2cad/scripts/renderer/`. `graph_to_dxf.py` needs: key on `line_role`, add CENTER/PHANTOM layers, skip null-coord primitives.
 
@@ -106,6 +117,20 @@ Design note: `research/2026-07-01-AMVDG-v0.3.md`. All additions are BACKWARD-com
   (`line_role: center`, `feature_id` set) — the graph explains every inked line.
 - **features**: members span views (bound by shared `topo_origins` face ids);
   `prov.occ_face_ids` lists the owning B-rep faces.
+
+**v0.3.1 delta (2026-07-03)**: `frame.model_origin` — the model-frame mm coordinate (source STEP
+frame) at `origin_px`, per px axis (`m = model_origin + sign(axis_remap)·(px − origin_px)/px_per_mm`).
+Makes px→model exact without the per-view shift discovery `serialize_g2.py` documents. **Synthetic
+GT diagnostic only**: a real 2D pipeline cannot know the authoring origin, so model-input
+serializations (g2) must keep a drawing-derivable frame (content-min-0) — otherwise the 3D leg
+trains on coordinates that literally match the GT program's frame, an information leak that a real
+2D front-end cannot reproduce. `amvdg_version: "0.3.1"`; schema accepts 0.2/0.3/0.3.1.
+**Profile gate hardened (same rev)**: `vectorized`/`gt_executable` now REQUIRE per-view `frame`
+(origin_px, px_per_mm, axis_remap.px_x/px_y) — the 3D-leg consumer (`serialize_g2.py`) reads them
+unconditionally, so "schema-valid vectorized" now implies "consumable" — and `kind: linear`
+annotations must carry `subtype` horizontal|vertical (otherwise their measurement span is
+undefined). Verified: renderer output (0.3 and 0.3.1) passes; stripping `frame` or the subtype
+fails the gate.
 
 ---
 Artifacts: `AMVDG_v0.3.schema.json` · `example_flange_v0.3.json` · `validate_amvdg.py` (run it: `python validate_amvdg.py example_flange_v0.3.json`).

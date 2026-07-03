@@ -81,7 +81,9 @@ def main():
     rng = random.Random(args.seed)
     order = records[:]
     rng.shuffle(order)
-    n_val = max(1, int(round(args.val_frac * len(order))))
+    n_val = int(round(args.val_frac * len(order)))
+    if args.val_frac > 0:
+        n_val = max(1, n_val)
     val_ids = {r["id"] for r in order[:n_val]}
     train = [r for r in records if r["id"] not in val_ids]
     val = [r for r in records if r["id"] in val_ids]

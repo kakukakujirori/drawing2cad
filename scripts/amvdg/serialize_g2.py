@@ -241,16 +241,19 @@ def struct_from_graph(graph, multi_tag=True):
             r["tags"] = ([fmap[src[0]]] if src and src[0] in fmap else []) + sorted(
                 (fmap[x] for x in src[1:] if x in fmap), key=lambda s: int(s[1:]))
 
+    # list-valued: two coaxial cylinders with close radii can both dimension the SAME
+    # circle primitive (the dimensioner's radius-fallback binding) — a dict would
+    # silently drop one value (caught by the census gate on 5/2825 Z2C-train graphs)
     dia_by_ref, dims_src = {}, []
     for a in graph.get("annotations", []):
         if a.get("kind") == "diameter" and len(a.get("refs", [])) == 1:
-            dia_by_ref[(a.get("view"), a["refs"][0])] = a["value"]
+            dia_by_ref.setdefault((a.get("view"), a["refs"][0]), []).append(a["value"])
         else:
             dims_src.append(a)
     for v in views:
         for r in v["prims"]:
-            r["dias"] = [dia_by_ref[(v["name"], old)] for old in r.pop("olds")
-                         if (v["name"], old) in dia_by_ref]
+            r["dias"] = [d for old in r.pop("olds")
+                         for d in dia_by_ref.get((v["name"], old), [])]
 
     views_by_name = {v["name"]: v for v in views}
 

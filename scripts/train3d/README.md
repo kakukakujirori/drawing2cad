@@ -14,27 +14,30 @@ PNG is fed** — so a working leg is evidence the AMVDG IR is *sufficient* to re
 ## Files
 | file | env | what |
 |---|---|---|
-| `build_dataset.py` | any w/ `transformers` | graph.json → g2 → `{id,input_text,target_code,n_tok_*}` jsonl + train/val split + token report |
-| `train_sft.py` | `drawing2cad-train` | text-only SFT (bf16, completion-only loss, LoRA/full, 1-/2-GPU), eval hook → `eval_cq.py` |
+| `build_dataset.py` | `drawing2cad` | graph.json → g2 → `{id,input_text,target_code,n_tok_*}` jsonl + train/val split + token report |
+| `train_sft.py` | `drawing2cad` | text-only SFT (bf16, completion-only loss, LoRA/full, 1-/2-GPU), eval hook → `eval_cq.py` |
 | `eval_cq.py` | `drawing2cad` | isolated exec → validity + **translation-aligned voxel IoU (abs mm)** + bbox-mm error → JSON |
 | `data_z2c/` | — | built bundle: `train.jsonl` (247) · `val.jsonl` (27) · `all.jsonl` (274) · `stats.json` |
+| `data_z2c_v2/` | — | scaled bundle (2026-07-03): `train.jsonl` (**3072** = 2825 Z2C-*train*-split renders + the old 247) · `val.jsonl` (27, **identical to lora_v1's val** → runs are directly comparable) · `stats.json` |
 
-## Environments
-Two envs, split by dependency (recorded per the repo constraint on new envs):
-- **`drawing2cad-train`** — *created here* by `conda create -n drawing2cad-train --clone py312`
-  then `pip install peft`. Gives torch 2.9.1+cu128 / transformers **4.57.3** (== the ckpt's
-  `transformers_version`, so Qwen3-VL loads natively) / accelerate / datasets / peft 0.19.1.
-  Used by `train_sft.py` (+ `build_dataset.py`). No cadquery here → eval is a subprocess.
-- **`drawing2cad`** — existing (conda-forge FreeCAD 1.0.2 + cadquery 2.8.0 + trimesh 4.12 +
-  numpy + scipy). Used by `eval_cq.py`. No torch. `manifold3d` absent, but the voxel-IoU
-  path never calls a trimesh boolean, so it is not needed.
+## Environment
+**One env for everything: `drawing2cad`** (conda-forge FreeCAD 1.0.2 + cadquery 2.8.0 + trimesh
+4.12 + torch 2.11.0+cu128 + transformers **5.12.1** + accelerate + peft 0.19.1). Merged
+2026-07-03; the separate `drawing2cad-train` clone (torch 2.9.1 / tf 4.57.3) is **deleted** —
+the merged env was verified equivalent on an identical 4-step LoRA smoke (loss[0] 0.3764 in
+both, final 0.3534 vs 0.3532; bf16-noise level). transformers 5.x returns a `BatchEncoding`
+from `apply_chat_template` where 4.x returned a bare id list; `train_sft.chat_ids()` normalizes
+this, so the code runs on both. The ckpt (saved w/ tf 4.57.3) loads fine under 5.12.1.
+To recreate the old env if ever needed:
+`conda create -n drawing2cad-train --clone py312 && conda run -n drawing2cad-train pip install peft`.
 
 `train_sft.py` shells out to `eval_cq.py` via `$DRAWING2CAD_PY`
-(default `/home/ryotaro/miniforge3/envs/drawing2cad/bin/python`).
+(default `/home/ryotaro/miniforge3/envs/drawing2cad/bin/python` = the same interpreter now;
+kept as a subprocess for CadQuery/OCC crash + leak isolation, not env isolation).
 
 ## Run
 ```bash
-# 1. build the jsonl bundle + token report  (py312 or drawing2cad-train)
+# 1. build the jsonl bundle + token report  (drawing2cad env, like everything below)
 python scripts/train3d/build_dataset.py \
     --graph-dir experiments/dataset_z2c --code-dir experiments/stage_z2c \
     --out scripts/train3d/data_z2c
@@ -44,8 +47,9 @@ CUDA_VISIBLE_DEVICES=1 python scripts/train3d/train_sft.py --smoke \
     --data scripts/train3d/data_z2c --gt-dir experiments/stage_z2c --out runs/smoke
 
 # 2b. real single-GPU LoRA run (max-len defaults to 8192, the decided cap)
+#     data_z2c = 274-pair pilot (lora_v1) · data_z2c_v2 = 3072-pair scaled bundle (lora_v2)
 CUDA_VISIBLE_DEVICES=1 python scripts/train3d/train_sft.py \
-    --data scripts/train3d/data_z2c --epochs 3 --out runs/lora
+    --data scripts/train3d/data_z2c_v2 --epochs 3 --out runs/lora_v2
 
 # 2c. two-GPU DDP (LoRA or --full):        torchrun handles world size
 torchrun --nproc_per_node=2 scripts/train3d/train_sft.py --full \
@@ -98,6 +102,23 @@ design). The **eval hook ran end-to-end** on 4 unseen val graphs (generate → s
 i.e. even a 40-step overfit emits valid CadQuery that partly generalizes to held-out graphs,
 so the full load → completion-loss → step → greedy-generate → `eval_cq` loop is proven.
 
+**`lora_v1` (274-pair bundle, LoRA r16, 3 ep = 84 steps, one A5000) — FULL val (all 27),
+greedy 1024, vs the base ckpt zero-shot on the SAME g2 text (2026-07-03):**
+| model | exec_ok | valid | mean IoU | median IoU | med max-bbox-err | IoU≥0.5 |
+|---|---|---|---|---|---|---|
+| lora_v1 | 59.3% | **55.6%** | **0.297** | 0.233 | **8.0 mm** | 11.1% |
+| base Z2C ckpt (no adapter) | 59.3% | 48.1% | 0.278 | 0.217 | 15.0 mm | 11.1% |
+
+Read: the Z2C checkpoint already scores IoU≈0.28 **zero-shot on g2 text** (the part bbox is
+printed in the input, and Qwen3-VL generalizes to structured text), so at 274 pairs SFT mainly
+buys **validity (+7 pt)** and **dimension calibration (median bbox err halved)** — topology is
+not learned yet (failure mode: plausible-but-wrong feature layout; 2 timeouts count as invalid).
+The eval-hook numbers at step 84 (valid 0.667 / IoU 0.32, n=6) probe the 6 *shortest* val
+graphs = the easy side; quote the full-val numbers above. 2 of 27 val inputs exceed the 8192
+train filter (10.7k / 17.5k tok) and are still generated+scored. Artifacts:
+`runs/lora_v1/{preds_val27,preds_val27_base,metrics_val27*.json,gen_val27.log}`.
+The scale-up metric to watch is the **gap over zero-shot**, not the absolute IoU.
+
 ## Design notes / recipe deltas
 
 We **reference** cadrille and Zero-to-CAD recipes but **do not reuse their code**.
@@ -106,7 +127,7 @@ We **reference** cadrille and Zero-to-CAD recipes but **do not reuse their code*
 |---|---|---|---|---|
 | input | 4-view render → 2×2 grid, video path | 8 views 256² | **g2 text only** | test IR sufficiency; no pixels |
 | base | Qwen2-VL-2B-Instruct | Qwen3-VL-2B-Instruct | **Zero-To-CAD-Qwen3-VL-2B** (→ base fallback) | warm-start on same output format |
-| tf version | **4.50.3 pinned** (subclass hooks) | 4.57.3 | **4.57.3** | Qwen3-VL needs ≥4.57; matches py312 |
+| tf version | **4.50.3 pinned** (subclass hooks) | 4.57.3 | **5.12.1** (4.57-compat via `chat_ids`) | merged env; A/B-verified equal to 4.57.3 |
 | tuning | full FT | full FT | **LoRA (default) / full** | 2×A5000: LoRA fits easily, full is tight |
 | optimizer | AdamW | AdamW | AdamW (`adamw_torch`) | — |
 | lr / sched | 2e-4 / cosine, warmup 1000 | 1e-4 / cosine, warmup 0.03 | **2e-4 LoRA · 1e-4 full / cosine, warmup 0.03** | adopt Zero-to-CAD for full (same base) |

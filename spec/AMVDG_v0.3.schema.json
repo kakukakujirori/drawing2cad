@@ -21,10 +21,11 @@
   "properties": {
     "amvdg_version": {
       "enum": [
+        "0.3.1",
         "0.3",
         "0.2"
       ],
-      "description": "0.3 native; 0.2 accepted so legacy graphs still validate. Renderer emits 0.3."
+      "description": "0.3.1 native (adds frame.model_origin); 0.3/0.2 accepted so legacy graphs still validate. Renderer emits 0.3.1."
     },
     "part_id": {
       "type": "string"
@@ -323,6 +324,18 @@
                     ]
                   }
                 }
+              },
+              "model_origin": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "v0.3.1: model-frame mm coordinate (source STEP frame) at origin_px, one value per px axis. px -> model: m = model_origin + sign(axis_remap) * (px - origin_px) / px_per_mm. Synthetic GT only; a real 2D pipeline cannot know the authoring origin (consumers like g2 must keep using a drawing-derivable frame, e.g. content-min-0)."
               }
             }
           },

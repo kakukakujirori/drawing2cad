@@ -98,11 +98,28 @@ def _has_coords(p):
     if t=="polyline": return bool(p.get("pts"))
     return True
 
+_REQ_FRAME = ("origin_px", "px_per_mm", "axis_remap")
+
 def check_profile(g):
     errs=[]; prof=g["profile"]
     need_coords = prof in ("vectorized","gt_executable")
     need_exec   = prof=="gt_executable"
     if need_coords:
+        # v0.3.1: coords are only consumable with the px->model mapping, so vectorized
+        # REQUIRES frame (the 3D-leg serializer serialize_g2.py reads these unconditionally)
+        for v in g["views"]:
+            fr = v.get("frame") or {}
+            missing = [k for k in _REQ_FRAME if fr.get(k) is None]
+            ax = fr.get("axis_remap") or {}
+            if "axis_remap" not in missing and not (ax.get("px_x") and ax.get("px_y")):
+                missing.append("axis_remap.px_x/px_y")
+            if missing:
+                errs.append(f"[{prof}] view {v['name']} frame missing: {', '.join(missing)}")
+        # linear dims without horizontal/vertical subtype have no defined measurement span
+        for a in g["annotations"]:
+            if a.get("kind") == "linear" and a.get("subtype") not in ("horizontal", "vertical"):
+                errs.append(f"[{prof}] linear ann {a['id']} subtype "
+                            f"'{a.get('subtype')}' not horizontal/vertical")
         for v in g["views"]:
             for p in v["primitives"]:
                 if p.get("state")=="known" and not _has_coords(p):

@@ -64,14 +64,26 @@ def load_model(ckpt, dtype):
     raise last
 
 
+def chat_ids(tok, msgs, gen_prompt, return_tensors=None):
+    """apply_chat_template across transformers versions: 4.x returns a bare id list,
+    5.x returns a BatchEncoding (and nests the list per conversation)."""
+    out = tok.apply_chat_template(msgs, tokenize=True, add_generation_prompt=gen_prompt,
+                                  return_tensors=return_tensors)
+    if hasattr(out, "keys"):
+        out = out["input_ids"]
+    if return_tensors is None and len(out) and isinstance(out[0], list):
+        out = out[0]
+    return out
+
+
 def build_labels(tok, input_text, target_code, max_len):
     """Tokenize one conversation; mask everything but the assistant answer (completion-only).
     Returns (input_ids, labels) or None if it exceeds max_len (filter, don't truncate)."""
     user = PROMPT + "\n\n" + input_text
     msgs_p = [{"role": "user", "content": user}]
     msgs_f = msgs_p + [{"role": "assistant", "content": target_code}]
-    pids = tok.apply_chat_template(msgs_p, tokenize=True, add_generation_prompt=True)
-    fids = tok.apply_chat_template(msgs_f, tokenize=True, add_generation_prompt=False)
+    pids = chat_ids(tok, msgs_p, True)
+    fids = chat_ids(tok, msgs_f, False)
     if len(fids) > max_len:
         return None
     # locate answer span: prompt is a prefix of the full sequence
@@ -128,9 +140,8 @@ def generate_preds(model, tok, records, out_dir, max_new_tokens):
     dev = next(model.parameters()).device
     for r in records:
         user = PROMPT + "\n\n" + r["input_text"]
-        ids = tok.apply_chat_template([{"role": "user", "content": user}],
-                                      tokenize=True, add_generation_prompt=True,
-                                      return_tensors="pt").to(dev)
+        ids = chat_ids(tok, [{"role": "user", "content": user}], True,
+                       return_tensors="pt").to(dev)
         if ids.shape[1] > 8192:            # skip pathologically long inputs in the probe
             continue
         out = model.generate(ids, max_new_tokens=max_new_tokens, do_sample=False,
