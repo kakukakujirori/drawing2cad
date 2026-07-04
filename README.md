@@ -3,7 +3,7 @@
 This is an R&D codebase for **2D engineering drawing → 3D CAD** conversion.
 
 To developers: Research notes and the
-running log live in [`research/`](research/) (start with `research/research-log.md`).
+running log live in [`research/`](research/) (start with `research/research-log_3d.md`).
 
 ## Environments
 
@@ -97,11 +97,10 @@ A graph can be exported to DXF 2D-CAD with `python scripts/amvdg/graph_to_dxf.py
 **SFT harness** (`scripts/train3d/`) — SFT fine-tune (init:
 `ADSKAILab/Zero-To-CAD-Qwen3-VL-2B`, text-only input) + isolated CadQuery execution eval (validity + translation-aligned voxel IoU + absolute-mm bbox error). See [`scripts/train3d/README.md`](scripts/train3d/README.md) for the train/eval **procedure**, and `research/research-log.md` for **measured results**.
 
-**B2-cadrille baseline** (historical, 2026-06-15 — motivates the above; drawings → CadQuery → validity/scale metrics):
+**DEPRECATED**: **B2-cadrille baseline** (historical, 2026-06-15 — motivates the above; drawings → CadQuery → validity/scale metrics):
 ```bash
 scripts/run_b2.sh --n 49          # or  IDS=101,103 scripts/run_b2.sh
 ```
-Output under `experiments/` (git-ignored). See `research/research-log.md` for results.
 
 ## 2D→2D leg (drawing → AMVDG graph) — DE-PRIORITIZED (2026-07-02)
 

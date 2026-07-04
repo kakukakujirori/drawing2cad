@@ -27,13 +27,12 @@ JOBS = [(os.path.join(_STEP_DIR, "Bracket.step"), "Bracket"),
 
 def run_freecad():
     env = dict(os.environ)
-    env["RF_BATCH"] = "1"
-    env["RF_OUTDIR"] = OUT
-    env["RF_WIDTH"] = str(WIDTH)
-    env["RF_LOG"] = os.path.join(OUT, "render_dataset.log")
     env["PYTHONUNBUFFERED"] = "1"
-    r = subprocess.run([FREECAD, RENDER], env=env, capture_output=True, text=True, timeout=300)
-    log = open(env["RF_LOG"]).read() if os.path.exists(env["RF_LOG"]) else ""
+    logp = os.path.join(OUT, "render_dataset.log")
+    cmd = [FREECAD, RENDER, "--step-dir", _STEP_DIR, "--out-dir", OUT,
+           "--width", str(WIDTH), "--log", logp]
+    r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
+    log = open(logp).read() if os.path.exists(logp) else ""
     return r.returncode, log
 
 

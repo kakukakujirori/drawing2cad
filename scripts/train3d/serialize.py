@@ -54,10 +54,11 @@ SER_VERSION = "3d.1"  # AMVDG-graph -> 3D-leg model-input text (was "g2.1")
 
 ROLE = {"visible": "vis", "hidden": "hid", "center": "cen", "phantom": "pha",
         "section_cut": "sec", "break": "brk"}
-TYP = {"line": "L", "polyline": "PL", "circle": "CI", "arc": "A", "point": "PT"}
+TYP = {"line": "L", "polyline": "PL", "circle": "CI", "arc": "A", "point": "PT",
+       "ellipse": "EL"}
 TYP_INV = {v: k for k, v in TYP.items()}
 _ROLE_RANK = {"vis": 0, "vh": 0, "hid": 1, "cen": 2, "pha": 3, "sec": 4, "brk": 5}
-_TYP_RANK = {"L": 0, "PL": 1, "CI": 2, "A": 3, "PT": 4}
+_TYP_RANK = {"L": 0, "PL": 1, "CI": 2, "A": 3, "PT": 4, "EL": 5}
 _VIEW_ORDER = ("front", "top", "right", "left", "back", "bottom")
 
 
@@ -113,6 +114,19 @@ def _prim_geom(p, cv):
                         a1, a2 = a2, a1
                     g["a"] = (a1, a2)
             return g
+        if t == "ellipse":
+            g = {"c": cv.pt(p["center"]), "rmaj": cv.r(p.get("rmaj_px", 0)),
+                 "rmin": cv.r(p.get("rmin_px", 0)),
+                 "rot": cv.ang(p.get("rot_deg", 0.0)) % 180.0}
+            a1, a2 = p.get("start_angle"), p.get("end_angle")
+            if a1 is not None and a2 is not None:
+                # eccentric angles are intrinsic to the ellipse axes; the px->model
+                # remap is orthogonal, so a rotation leaves them unchanged and a
+                # reflection negates them + reverses the start->end orientation.
+                if cv.flips:
+                    a1, a2 = (-a2) % 360.0, (-a1) % 360.0
+                g["ea"] = (a1, a2)
+            return g
     except (KeyError, TypeError):
         return None
     return None
@@ -122,6 +136,9 @@ def _geom_min(g):
     """(minx, miny) of the drawn geometry (arc-aware: only points ON the arc count)."""
     if "pts" in g:
         return (min(x for x, _ in g["pts"]), min(y for _, y in g["pts"]))
+    if "rmaj" in g:  # ellipse: loose axis-aligned bound (major-radius box)
+        (cx, cy), r = g["c"], max(g["rmaj"], g["rmin"])
+        return (cx - r, cy - r)
     (cx, cy), r = g["c"], g["r"]
     if "a" not in g:
         return (cx - r, cy - r)
@@ -142,6 +159,13 @@ def _shift_round(g, dx, dy):
         g["pts"] = [(round(x - dx, 2), round(y - dy, 2)) for x, y in g["pts"]]
         if len(g["pts"]) == 2 and g["pts"][1] < g["pts"][0]:
             g["pts"] = [g["pts"][1], g["pts"][0]]          # canonical endpoint order
+    elif "rmaj" in g:
+        g["c"] = (round(g["c"][0] - dx, 2), round(g["c"][1] - dy, 2))
+        g["rmaj"] = round(g["rmaj"], 2)
+        g["rmin"] = round(g["rmin"], 2)
+        g["rot"] = round(g["rot"], 2)
+        if "ea" in g:
+            g["ea"] = (round(g["ea"][0], 2), round(g["ea"][1], 2))
     else:
         g["c"] = (round(g["c"][0] - dx, 2), round(g["c"][1] - dy, 2))
         g["r"] = round(g["r"], 2)
@@ -293,6 +317,12 @@ def _geom_str(row):
     g = row["geom"]
     if "pts" in g:
         return " ".join(f"{_fmt(x)},{_fmt(y)}" for x, y in g["pts"])
+    if "rmaj" in g:
+        s = (f"c{_fmt(g['c'][0])},{_fmt(g['c'][1])} rj{_fmt(g['rmaj'])} "
+             f"rn{_fmt(g['rmin'])} rot{_fmt(g['rot'])}")
+        if "ea" in g:
+            s += f" e{_fmt(g['ea'][0])}..{_fmt(g['ea'][1])}"
+        return s
     s = f"c{_fmt(g['c'][0])},{_fmt(g['c'][1])} r{_fmt(g['r'])}"
     if "a" in g:
         s += f" a{_fmt(g['a'][0])}..{_fmt(g['a'][1])}"
@@ -368,6 +398,15 @@ def text_to_struct(text):
                 elif t.startswith("c") and _PAIR.match(t[1:]):
                     x, y = t[1:].split(",")
                     row["geom"]["c"] = (float(x), float(y))
+                elif t.startswith("rj"):
+                    row["geom"]["rmaj"] = float(t[2:])
+                elif t.startswith("rn"):
+                    row["geom"]["rmin"] = float(t[2:])
+                elif t.startswith("rot"):
+                    row["geom"]["rot"] = float(t[3:])
+                elif t.startswith("e") and ".." in t:
+                    a1, a2 = t[1:].split("..")
+                    row["geom"]["ea"] = (float(a1), float(a2))
                 elif t.startswith("r") and t != "r":
                     row["geom"]["r"] = float(t[1:])
                 elif t.startswith("a") and ".." in t:
@@ -399,7 +438,7 @@ def crossview_dev(st, tol=0.1):
             rows = [r for r in v["prims"] if f["id"] in r["tags"]
                     and r["role"] in ("vis", "hid", "vh")]
             for r in rows:
-                if "c" in r["geom"] and "a" not in r["geom"]:
+                if "c" in r["geom"] and "a" not in r["geom"] and "rmaj" not in r["geom"]:
                     circles.append((v["axes"], r["geom"]["c"]))
             vert = {r["geom"]["pts"][0][0] for r in rows if r["typ"] == "L"
                     and abs(r["geom"]["pts"][0][0] - r["geom"]["pts"][1][0]) < 1e-9}

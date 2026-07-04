@@ -89,13 +89,23 @@ geometry+line_role①, view-meta/projection/align②, annotation-binding+value+t
 - `feature.build` authorship on real — fusion pass vs model hint.
 - `param_role` ontology + per-kind required-DoF must be locked in a versioned file shared by renderer/3D-builder/scorer.
 - section/hatch (⑥), GD&T depth, bezier/bspline sub-schema → v0.2 deferred.
-- **curved-edge provenance (found 2026-07-03)**: the renderer never actually emits
-  `ellipse`/`bspline` primitives — `classify_edge` discretizes every non-circular HLR edge to
-  `polyline` (Z2C 274: 1657 rows in 95 graphs, ALL without `topo_origins` → invisible to
-  features/dims, and the main driver of long-tail g2 token counts). TODO: extend
-  `scripts/renderer/projector/` — ellipse first (a tilted cylinder/cone projects to an exact
-  ellipse, analytic), then bspline silhouettes (at minimum hashCode-bind the originating 3D
-  edge); discretization stays as fallback.
+- **curved-edge provenance**: **ellipse DONE (2026-07-04)**, bspline still open.
+  - **ellipse** — TechDraw HLR emits an exact `Part::GeomEllipse` 2D edge for any
+    obliquely-projected circle/ellipse, so `classify_edge` now keeps it parametric
+    (`type: ellipse`) instead of discretizing to `polyline`. Provenance is analytic:
+    `CircleProjector` (oblique branch) and the new `EllipseProjector` project the 3D
+    circle/ellipse edge to a 2D ellipse via conjugate semi-diameters
+    (`projector/ellipse.py:ellipse_from_conjugate`), matched to the HLR ellipse on
+    center+rmaj+rmin, so the ellipse carries the originating `Edge`/`Face` `topo_origins`
+    and binds into `features` like a circle. Discretization stays as the fallback for
+    genuinely free-form edges. Verified on Z2C val: tilted-hole/dished parts convert
+    (e.g. `ba0ac9a4` 57 polylines→0 + 28 ellipses; `cb2aa847` 58→12 + 26); serialize
+    round-trips and the graph passes all 7 validate_amvdg gates.
+  - **bspline (open)** — free-form surfaces produce high-degree (4–9) HLR B-splines that
+    still discretize to `polyline`; these dominate Z2C polyline counts but have no compact
+    analytic 2D form and are of low 3D-recovery value for a text LLM. Deferred (see §8
+    memo below); at minimum they still hashCode-bind the originating 3D edge via the HLR
+    match on the discretized points.
 - DoF/Sketcher harness is **referenced but not yet built as code** (separate from this schema).
 - Landing: bundle v0→v0.2 migration (visibility→line_role, feature→feature_tag, dimensions→annotations, correspondences→features) with the `projectEx`+geometry-refs port into `drawing2cad/scripts/renderer/`. `graph_to_dxf.py` needs: key on `line_role`, add CENTER/PHANTOM layers, skip null-coord primitives.
 
@@ -131,6 +141,28 @@ unconditionally, so "schema-valid vectorized" now implies "consumable" — and `
 annotations must carry `subtype` horizontal|vertical (otherwise their measurement span is
 undefined). Verified: renderer output (0.3 and 0.3.1) passes; stripping `frame` or the subtype
 fails the gate.
+
+**Ellipse primitive (2026-07-04)**: `type: ellipse` is now emitted (previously discretized to
+`polyline`). Fields (schema-added, all optional/nullable so BACKWARD-compatible):
+- `center` [px], `rmaj_px`/`rmin_px` (major/minor semi-axes, px), `rmaj_mm`/`rmin_mm` (mm),
+  `rot_deg` (major-axis rotation in the px frame, y-down, degrees in [0,180)).
+- partial (occlusion-split) ellipse: `p1`/`p2` endpoints + `start_angle`/`end_angle` reused as
+  **eccentric** angles (deg), arc = start→end with increasing angle mod 360 (same convention as
+  arc endpoints). A full ellipse omits them.
+The 3d-leg serializer (`train3d/serialize.py`, SER_VERSION `3d.1` unchanged) emits it as an
+`EL` row `c<x>,<y> rj<rmaj> rn<rmin> rot<deg> [e<a1>..<a2>]` in part-frame mm; eccentric angles
+are intrinsic to the ellipse axes, so px→model remap leaves them unchanged under rotation and
+negates+swaps them under a reflected (`flips`) view. `train2d/serialize.py` (g1) mirrors it
+(`t:ellipse` with `c/rj/rn/rot/a1/a2`).
+
+**bspline (design memo — deferred)**: free-form HLR edges (degree 4–9 B-splines) still
+discretize to `polyline`. A parametric `type: bspline` would need `{degree, poles[], knots[],
+mults[]}` (variable-length) plumbed through the schema, both serializers' round-trip, and PNG —
+and, unlike the ellipse, has **no analytic 3D→2D provenance** (only a per-point HLR match) and
+little 3D-recovery value for a text LLM (a 15-pole spline is no more reconstructable than the
+polyline it replaces). Recommendation: keep `polyline` for free-form until the 3D leg shows a
+concrete need; if added, store 2D poles/knots directly from the HLR edge (already available) and
+hashCode-bind the originating 3D edge.
 
 ---
 Artifacts: `AMVDG_v0.3.schema.json` · `example_flange_v0.3.json` · `validate_amvdg.py` (run it: `python validate_amvdg.py example_flange_v0.3.json`).

@@ -47,6 +47,16 @@ def _prim_to_compact(p):
                 o["a1"] = _i(a1)
             if a2 is not None:
                 o["a2"] = _i(a2)
+    elif p["type"] == "ellipse":
+        o["c"] = [_i(p["center"][0]), _i(p["center"][1])]
+        o["rj"] = _i(p.get("rmaj_px", 0))
+        o["rn"] = _i(p.get("rmin_px", 0))
+        o["rot"] = _i(p.get("rot_deg", 0))
+        a1, a2 = p.get("start_angle"), p.get("end_angle")
+        if a1 is not None:
+            o["a1"] = _i(a1)
+        if a2 is not None:
+            o["a2"] = _i(a2)
     return o
 
 
@@ -97,6 +107,15 @@ def graph_from_text(text):
                 q["pts"] = [[float(x), float(y)] for x, y in p["pts"]]
                 q["p1"] = q["pts"][0]
                 q["p2"] = q["pts"][-1]
+            elif p["t"] == "ellipse":
+                q["center"] = [float(p["c"][0]), float(p["c"][1])]
+                q["rmaj_px"] = float(p.get("rj", 0))
+                q["rmin_px"] = float(p.get("rn", 0))
+                q["rot_deg"] = float(p.get("rot", 0))
+                if "a1" in p:
+                    q["start_angle"] = float(p["a1"])
+                if "a2" in p:
+                    q["end_angle"] = float(p["a2"])
             elif "c" in p:
                 q["center"] = [float(p["c"][0]), float(p["c"][1])]
                 q["r_px"] = float(p["r"])

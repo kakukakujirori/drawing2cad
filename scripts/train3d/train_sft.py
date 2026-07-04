@@ -17,19 +17,26 @@ Recipe (see scripts/train3d/README.md for the cadrille / Zero-to-CAD diff table)
     CadQuery env for validity + translation-aligned voxel IoU + bbox-mm error.
 
 Smoke: python train_sft.py --smoke  (LoRA, ~40 steps, one A5000, overfits by design).
+
+Config: args are an `ExpConfig` dataclass parsed by HfArgumentParser, so every CLI flag
+(dash or underscore form) can also be set from a JSON/YAML file via `--config run.yaml`
+(CLI flags override file values). The fully resolved config is dumped to `<out>/config.json`
+and metrics stream to TensorBoard under `<out>/logs` (or wandb with `--report-to wandb`).
 """
-import argparse
 import importlib
 import json
 import os
 import sys
 import subprocess
 import time
+from dataclasses import dataclass, field, asdict
+from typing import Optional
 
 import torch
 from torch.utils.data import Dataset
 from transformers import (AutoConfig, AutoTokenizer, AutoModelForCausalLM,
-                          Trainer, TrainingArguments, TrainerCallback)
+                          HfArgumentParser, Trainer, TrainingArguments,
+                          TrainerCallback, set_seed)
 
 DEFAULT_CKPT = "ADSKAILab/Zero-To-CAD-Qwen3-VL-2B"
 
@@ -187,41 +194,111 @@ class EvalCadCallback(TrainerCallback):
         self._do(state, f"step{int(state.global_step)}")
 
 
+# --------------------------------------------------------------- config
+@dataclass
+class ExpConfig:
+    """All experiment knobs. HfArgumentParser exposes each as a CLI flag (dash or
+    underscore form) and can seed them from a JSON/YAML file (see parse_config)."""
+    train: str = field(default="experiments/data_z2c_train",
+                       metadata={"help": "train bundle: a dir with all.jsonl, or a jsonl path"})
+    val: str = field(default="experiments/data_z2c_val",
+                     metadata={"help": "val bundle (Z2C val source split): dir with all.jsonl, or jsonl"})
+    gt_dir: str = field(default="experiments/stage_z2c_val",
+                        metadata={"help": "GT STEP dir for the val split (eval hook execs preds against these)"})
+    prompt: str = field(default=PROMPT,
+                        metadata={"help": 'instruction prepended to the graph text (--prompt "" to drop it)'})
+    ckpt: str = DEFAULT_CKPT
+    out: Optional[str] = field(default=None, metadata={
+        "help": "run dir (default: experiments/train3d/<YYYY-MM-DD_HH-MM-SS>)"})
+    full: bool = field(default=False, metadata={"help": "full fine-tune (default: LoRA)"})
+    train_vision: bool = field(default=False, metadata={"help": "don't freeze vision tower"})
+    max_len: int = 8192
+    bs: int = 1
+    grad_accum: int = 8
+    lr: Optional[float] = field(default=None, metadata={"help": "default 2e-4 LoRA / 1e-4 full"})
+    epochs: float = 3.0
+    max_steps: int = -1
+    warmup_ratio: float = 0.03
+    weight_decay: float = 0.0
+    lora_r: int = 16
+    optim: str = field(default="adamw_torch",
+                       metadata={"help": "adamw_torch | adafactor (fits full-FT of 2B on one 24GB A5000)"})
+    no_grad_ckpt: bool = False
+    max_new_tokens: int = 1024
+    n_eval: int = 6
+    limit: int = field(default=0, metadata={"help": "cap train records (smoke/overfit)"})
+    smoke: bool = field(default=False,
+                        metadata={"help": "LoRA, 40 steps, max-len 3072, limit 24 — pipe/loss sanity"})
+    seed: int = 42
+    report_to: str = field(default="tensorboard",
+                           metadata={"help": "tensorboard (default) | wandb | none"})
+    run_name: Optional[str] = field(default=None, metadata={"help": "TensorBoard/wandb run label"})
+    wandb_project: str = field(default="drawing2cad-3d",
+                               metadata={"help": "wandb project (only when --report-to wandb)"})
+
+
+def _git_hash():
+    try:
+        r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                           cwd=os.path.dirname(os.path.abspath(__file__)), timeout=5)
+        return r.stdout.strip() or None
+    except Exception:
+        return None
+
+
+DEFAULT_OUT_ROOT = "experiments/train3d"
+
+
+def resolve_out(cli_out: Optional[str], world: int, is_main: bool) -> str:
+    """Run dir. `--out` overrides; otherwise experiments/train3d/<timestamp>.
+    Under DDP every rank runs main() independently, so rank0 picks the timestamp
+    and shares it via a rendezvous file (keyed by the shared torchrun run id) —
+    without this each rank would stamp a different second and split the run."""
+    if cli_out:
+        return cli_out
+    if world <= 1:
+        return os.path.join(DEFAULT_OUT_ROOT, time.strftime("%Y-%m-%d_%H-%M-%S"))
+    import tempfile
+    rid = os.environ.get("TORCHELASTIC_RUN_ID") or os.environ.get("MASTER_PORT") or "run"
+    marker = os.path.join(tempfile.gettempdir(), f"train3d_out.{rid}")
+    if is_main:
+        out = os.path.join(DEFAULT_OUT_ROOT, time.strftime("%Y-%m-%d_%H-%M-%S"))
+        os.makedirs(out, exist_ok=True)
+        with open(marker, "w") as f:
+            f.write(out)
+        return out
+    for _ in range(600):                 # wait (≤60 s) for rank0 to choose
+        if os.path.exists(marker):
+            return open(marker).read().strip()
+        time.sleep(0.1)
+    raise RuntimeError("timed out waiting for rank0 to resolve --out")
+
+
+def parse_config() -> ExpConfig:
+    """Parse CLI into ExpConfig; a `--config FILE.{json,yaml}` seeds defaults that CLI
+    flags then override (set_defaults keeps CLI precedence)."""
+    argv = sys.argv[1:]
+    cfg_path = None
+    if "--config" in argv:
+        i = argv.index("--config"); cfg_path = argv[i + 1]; argv = argv[:i] + argv[i + 2:]
+    parser = HfArgumentParser(ExpConfig)
+    if cfg_path:
+        if cfg_path.endswith((".yaml", ".yml")):
+            import yaml
+            data = yaml.safe_load(open(cfg_path)) or {}
+        else:
+            data = json.load(open(cfg_path))
+        parser.set_defaults(**data)
+    (cfg,) = parser.parse_args_into_dataclasses(args=argv)
+    return cfg
+
+
 # --------------------------------------------------------------- main
 def main():
     global PROMPT  # --prompt overrides it; build_labels/generate_preds read the module global
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--train", default="experiments/data_z2c_train",
-                        help="train bundle: a dir with all.jsonl, or a jsonl path")
-    parser.add_argument("--val", default="experiments/data_z2c_val",
-                        help="val bundle (Zero-To-CAD val source split): dir with all.jsonl, or jsonl")
-    parser.add_argument("--gt-dir", default="experiments/stage_z2c_val",
-                        help="GT STEP dir for the val split (eval hook execs preds against these)")
-    parser.add_argument("--prompt", default=PROMPT,
-                        help='task instruction prepended to the graph text (--prompt "" to drop it)')
-    parser.add_argument("--ckpt", default=DEFAULT_CKPT)
-    parser.add_argument("--out", default="scripts/train3d/runs/sft")
-    parser.add_argument("--full", action="store_true", help="full fine-tune (default: LoRA)")
-    parser.add_argument("--train-vision", action="store_true", help="don't freeze vision tower")
-    parser.add_argument("--max-len", type=int, default=8192)
-    parser.add_argument("--bs", type=int, default=1)
-    parser.add_argument("--grad-accum", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=None, help="default 2e-4 LoRA / 1e-4 full")
-    parser.add_argument("--epochs", type=float, default=3.0)
-    parser.add_argument("--max-steps", type=int, default=-1)
-    parser.add_argument("--warmup-ratio", type=float, default=0.03)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--lora-r", type=int, default=16)
-    parser.add_argument("--optim", default="adamw_torch",
-                    help="adamw_torch (default) | adafactor (fits full-FT of 2B on one 24GB A5000)")
-    parser.add_argument("--no-grad-ckpt", action="store_true")
-    parser.add_argument("--max-new-tokens", type=int, default=1024)
-    parser.add_argument("--n-eval", type=int, default=6)
-    parser.add_argument("--limit", type=int, default=0, help="cap train records (smoke/overfit)")
-    parser.add_argument("--smoke", action="store_true",
-                    help="LoRA, 40 steps, max-len 3072, limit 24 — pipe/loss sanity")
-    args = parser.parse_args()
+    args = parse_config()
     PROMPT = args.prompt
+    set_seed(args.seed)
 
     if args.smoke:
         args.max_steps = args.max_steps if args.max_steps > 0 else 40
@@ -229,6 +306,25 @@ def main():
         args.limit = args.limit or 24
         args.n_eval = min(args.n_eval, 4)
     lr = args.lr if args.lr is not None else (1e-4 if args.full else 2e-4)
+
+    world = int(os.environ.get("WORLD_SIZE", "1"))
+    is_main = int(os.environ.get("RANK", "0")) == 0
+    args.out = resolve_out(args.out, world, is_main)
+    os.makedirs(args.out, exist_ok=True)
+    if is_main:
+        print(f"run dir: {args.out}")
+    if is_main:  # dump the fully-resolved config (survives a crash mid-train)
+        resolved = {**asdict(args), "lr_resolved": lr, "world_size": world,
+                    "git_hash": _git_hash(), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        with open(os.path.join(args.out, "config.json"), "w") as f:
+            json.dump(resolved, f, indent=2)
+
+    report = args.report_to
+    if report == "tensorboard":                # events under <out>/logs (tf5 reads this env)
+        os.environ["TENSORBOARD_LOGGING_DIR"] = os.path.join(args.out, "logs")
+    elif report == "wandb":                    # keep wandb fully local/offline on this box
+        os.environ.setdefault("WANDB_MODE", "offline")
+        os.environ.setdefault("WANDB_PROJECT", args.wandb_project)
 
     def load_jsonl(path: str) -> list[dict]:
         if os.path.isdir(path):
@@ -271,7 +367,6 @@ def main():
         model = get_peft_model(model, lc)
         model.print_trainable_parameters()
 
-    world = int(os.environ.get("WORLD_SIZE", "1"))
     targs = TrainingArguments(
         output_dir=args.out,
         per_device_train_batch_size=args.bs,
@@ -282,10 +377,12 @@ def main():
         weight_decay=args.weight_decay,
         num_train_epochs=args.epochs,
         max_steps=args.max_steps,
+        seed=args.seed,
         bf16=True,
         logging_steps=1,
         save_strategy="no",
-        report_to="none",
+        report_to=("none" if report == "none" else [report]),
+        run_name=args.run_name,
         remove_unused_columns=False,
         gradient_checkpointing=False,  # enabled manually above (PEFT input-grad handshake)
         # LoRA adapters land on the frozen vision attn too (never run text-only) -> DDP

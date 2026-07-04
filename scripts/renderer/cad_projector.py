@@ -10,6 +10,7 @@ from .projector.plane import PlaneProjector
 from .projector.cylinder import CylinderProjector
 from .projector.line import LineProjector
 from .projector.circle import CircleProjector
+from .projector.ellipse import EllipseProjector
 
 class CADProjector:
     """
@@ -59,6 +60,8 @@ class CADProjector:
                 projector = LineProjector(edge)
             elif tid == "Part::GeomCircle":
                 projector = CircleProjector(edge)
+            elif tid == "Part::GeomEllipse":
+                projector = EllipseProjector(edge)
                 
             if projector:
                 edge_results = projector.project(view_direction)

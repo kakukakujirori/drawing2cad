@@ -15,12 +15,19 @@
 # by TechDraw. This gives us both visual occlusion roles AND exact topological relationships.
 #
 
-import sys, os, math, json
+import argparse
+import glob
+import json
+import math
+import os
+import sys
+from collections import Counter
+from tqdm import tqdm
+
 import freecad          # conda-forge shim: puts FreeCAD's libs on sys.path
 import FreeCAD as App
 import Part
 import TechDraw
-from collections import Counter
 
 from scripts.renderer.cad_projector import CADProjector
 from scripts.renderer.graph_builder import GraphBuilder
@@ -106,6 +113,28 @@ def classify_edge(e):
             mid = None
         return ("arc", {"center": cen, "r": r, "mid": mid,
                         "p1": (p0.x, p0.y), "p2": (p1.x, p1.y)})
+    if c is not None and c.TypeId == "Part::GeomEllipse":
+        # HLR emits an exact GeomEllipse for an obliquely-projected circle/ellipse.
+        # Keep it parametric (center + major/minor semi-axes + rotation) instead of
+        # discretizing to a polyline. maj/min are unit directions in the edge's 2D
+        # frame; _record maps them + the lengths through the view remap to px.
+        cen = (c.Center.x, c.Center.y)
+        xa = c.XAxis
+        ya = getattr(c, "YAxis", None)
+        maj = (xa.x, xa.y)
+        mino = (ya.x, ya.y) if ya is not None else (-xa.y, xa.x)
+        g = {"center": cen, "rmaj": c.MajorRadius, "rmin": c.MinorRadius,
+             "maj": maj, "min": mino}
+        if not (e.Closed or len(vs) < 2):
+            p0, p1 = vs[0].Point, vs[-1].Point
+            try:
+                m = e.discretize(Number=3)[1]
+                g["mid"] = (m.x, m.y)
+            except Exception:
+                g["mid"] = None
+            g["p1"] = (p0.x, p0.y)
+            g["p2"] = (p1.x, p1.y)
+        return ("ellipse", g)
     # treat as line if 2 endpoints and (near-)straight, else polyline -> store endpoints + samples
     if len(vs) >= 2:
         p0, p1 = vs[0].Point, vs[-1].Point
@@ -160,7 +189,7 @@ class View:
         self.name = name
         self.direction = direction
         self.oracle_prims = oracle_prims
-        
+
         # projectEx groups: [0]V sharp [1]V1 smooth [2]VN seam [3]VO outline
         # [4]VI iso [5]H sharp [6]H1 smooth [7]HN seam [8]HO outline [9]HI iso.
         res = TechDraw.projectEx(shape, App.Vector(*direction))
@@ -258,10 +287,10 @@ class View:
         feat = "outline"
         if typ in ("circle", "arc"):
             feat = "hole_or_round"
-            
+
         base = {"id": rid, "type": typ, "line_role": vis_tag, "feature_tag": feat,
                 "state": "known", "coords_source": "gt"}
-                
+
         if typ == "line":
             base["p1"] = self._to_px(*g["p1"], px=px)
             base["p2"] = self._to_px(*g["p2"], px=px)
@@ -288,9 +317,33 @@ class View:
                 sa, ea = _arc_angles_px(base["center"], base["p1"], base["p2"], mpx)
                 base["start_angle"] = sa
                 base["end_angle"] = ea
+        elif typ == "ellipse":
+            cl = g["center"]
+            base["center"] = self._to_px(*cl, px=px)
+            cx, cy = base["center"]
+            majpt = self._to_px(cl[0] + g["rmaj"] * g["maj"][0],
+                                cl[1] + g["rmaj"] * g["maj"][1], px=px)
+            minpt = self._to_px(cl[0] + g["rmin"] * g["min"][0],
+                                cl[1] + g["rmin"] * g["min"][1], px=px)
+            base["rmaj_px"] = round(math.hypot(majpt[0] - cx, majpt[1] - cy), 2)
+            base["rmin_px"] = round(math.hypot(minpt[0] - cx, minpt[1] - cy), 2)
+            base["rmaj_mm"] = round(g["rmaj"], 3)
+            base["rmin_mm"] = round(g["rmin"], 3)
+            base["rot_deg"] = round(math.degrees(math.atan2(majpt[1] - cy,
+                                                            majpt[0] - cx)) % 180.0, 2)
+            # partial ellipse (occlusion-split arc): swept eccentric angles, same
+            # start->end-with-increasing-theta convention as arc.
+            if g.get("mid") and g.get("p1") and g.get("p2"):
+                base["p1"] = self._to_px(*g["p1"], px=px)
+                base["p2"] = self._to_px(*g["p2"], px=px)
+                mpx = self._to_px(*g["mid"], px=px)
+                sa, ea = _ellipse_angles_px(base["center"], majpt, minpt,
+                                            base["p1"], base["p2"], mpx)
+                base["start_angle"] = sa
+                base["end_angle"] = ea
 
         base["bbox_px"] = _prim_bbox_px(base)
-        
+
         # --- MATCH WITH ORACLE ---
         origins = []
         for op in self.oracle_prims:
@@ -302,6 +355,12 @@ class View:
             elif typ in ("circle", "arc") and op["type"] in ("circle", "arc"):
                 if points_same(g["center"], op["center"]) and abs(g["r"] - op.get("radius", op.get("r", 0))) < 1e-3:
                     origins.extend(op["topo_origins"])
+            elif typ == "ellipse" and op["type"] == "ellipse":
+                # an occlusion-split arc shares the full ellipse's center + axes, so
+                # match on those (angles ignored) — like circle/arc radius matching.
+                if points_same(g["center"], op["center"]) and \
+                   abs(g["rmaj"] - op["rmaj"]) < 1e-2 and abs(g["rmin"] - op["rmin"]) < 1e-2:
+                    origins.extend(op["topo_origins"])
             elif typ == "polyline" and op["type"] == "line":
                 # For polyline (rare but possible), check if all discretised points lie on the line
                 all_on_line = True
@@ -311,7 +370,7 @@ class View:
                         break
                 if all_on_line:
                     origins.extend(op["topo_origins"])
-                    
+
         unique_origins = []
         seen = set()
         for o in origins:
@@ -341,6 +400,8 @@ def _prim_coord_sig(rec):
     if t == "arc":
         a, b = sorted([tuple(rec["p1"]), tuple(rec["p2"])])
         return tuple(rec["center"]) + (rec["r_px"],) + a + b
+    if t == "ellipse":
+        return tuple(rec["center"]) + (rec["rmaj_px"], rec["rmin_px"], rec["rot_deg"])
     return ()
 
 
@@ -357,6 +418,26 @@ def _arc_angles_px(c, p1, p2, mid):
     return round(sa, 2), round(ea, 2)
 
 
+def _ellipse_angles_px(c, majpt, minpt, p1, p2, mid):
+    """(start, end) eccentric angles (deg, px frame) of p1,p2 on the ellipse whose
+    px-frame semi-axes are center->majpt (major) and center->minpt (minor). The arc
+    runs start->end with increasing theta (mod 360), chosen so it passes through mid."""
+    ux, uy = majpt[0] - c[0], majpt[1] - c[1]
+    vx, vy = minpt[0] - c[0], minpt[1] - c[1]
+    ru2, rv2 = (ux * ux + uy * uy) or 1.0, (vx * vx + vy * vy) or 1.0
+    def ecc(p):
+        dx, dy = p[0] - c[0], p[1] - c[1]
+        a = (dx * ux + dy * uy) / ru2   # cos t
+        b = (dx * vx + dy * vy) / rv2   # sin t
+        return math.degrees(math.atan2(b, a)) % 360.0
+    t1, tm, t2 = ecc(p1), ecc(mid), ecc(p2)
+    if (tm - t1) % 360.0 <= (t2 - t1) % 360.0 + 1e-9:
+        sa, ea = t1, t2
+    else:
+        sa, ea = t2, t1
+    return round(sa, 2), round(ea, 2)
+
+
 def _prim_bbox_px(p):
     xs, ys = [], []
     def add(pt): xs.append(pt[0]); ys.append(pt[1])
@@ -366,6 +447,9 @@ def _prim_bbox_px(p):
         for q in p["pts"]: add(q)
     elif p["type"] in ("circle", "arc"):
         cx, cy = p["center"]; r = p["r_px"]
+        xs += [cx - r, cx + r]; ys += [cy - r, cy + r]
+    elif p["type"] == "ellipse":
+        cx, cy = p["center"]; r = max(p["rmaj_px"], p["rmin_px"])
         xs += [cx - r, cx + r]; ys += [cy - r, cy + r]
     if not xs:
         return [0, 0, 0, 0]
@@ -408,12 +492,12 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     # --- Phase 4 Oracle Extractor ---
     cad_projector = CADProjector(shape)
     graph_builder = GraphBuilder(shape)
-    
+
     front_prims = graph_builder.enrich_topo_origins(cad_projector.project((0, -1, 0)))
     top_prims = graph_builder.enrich_topo_origins(cad_projector.project((0, 0, 1)))
     right_prims = graph_builder.enrich_topo_origins(cad_projector.project((1, 0, 0)))
     # --------------------------------
-    
+
     front = View("front", shape, (0, -1, 0), front_prims)
     top   = View("top",   shape, (0, 0, 1),  top_prims)
     right = View("right", shape, (1, 0, 0),  right_prims)
@@ -570,7 +654,7 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
         "features": features,
         "dof": {"required": 0, "determined": 0, "determined_by_geometry": 0, "supplied_by_prior": [], "undetermined": [], "missing": 0, "fully_constrained": False, "coverage": 0.0, "self_declared": {"required": 0, "determined": 0, "missing": 0}},
     }
-    
+
     meta = {"L": L, "W": W, "H": H, "scale": scale, "width_px": out_width,
             "height_px": int(round(SH * PXMM)), "pxmm": PXMM}
     return svg, graph, meta
@@ -650,46 +734,51 @@ def _counts(graph):
     nrefless = sum(1 for d in graph["annotations"] if not d["refs"])
     return {"nv": nv, "nh": nh, "types": dict(by_type), "nrefless": nrefless}
 
+def _run_batch(step_dir, out_dir, width, limit, logf):
+    """Render every *.step under step_dir into out_dir (per-part isolation, OK/SKIP log)."""
+    jobs = [(sp, os.path.splitext(os.path.basename(sp))[0])
+            for sp in sorted(glob.glob(os.path.join(step_dir, "*.step")))]
+    if limit > 0:
+        jobs = jobs[:limit]
+    results = []
+    for sp, nm in tqdm(jobs):
+        # Per-part isolation: a single bad solid (HLR throw, null shape) must
+        # not abort the whole batch over hundreds of varied seeds.
+        try:
+            r = render_one(sp, out_dir, nm, width)
+        except Exception:
+            import traceback
+            logf.write("SKIP %s\n%s\n" % (nm, traceback.format_exc())); logf.flush()
+            continue
+        results.append(r)
+        logf.write("OK %s counts=%s\n" % (nm, json.dumps(r["counts"]))); logf.flush()
+    with open(os.path.join(out_dir, "_build_results.json"), "w") as f:
+        json.dump([{k: v for k, v in r.items() if k != "meta"} for r in results], f, indent=1)
+
+
 def _main():
-    """Env-driven entry point (the contract batch_dataset.py stage 1 relies on):
-      RF_BATCH=1 RF_STEPDIR=<dir> RF_OUTDIR=<dir> [RF_WIDTH] [RF_LIMIT] [RF_LOG]
-        -> render every *.step under RF_STEPDIR (per-part isolation, OK/SKIP log)
-      RF_STEP=<file> [RF_OUTDIR|RF_OUT] [RF_NAME] [RF_WIDTH]
-        -> render a single part
+    """CLI entry point. Two mutually-exclusive modes:
+      --step-dir <dir>  batch: render every *.step under it into --out-dir
+      --step <file>     single: render one part into --out-dir
     """
-    width = int(os.environ.get("RF_WIDTH", PX_DEFAULT_W))
-    logp = os.environ.get("RF_LOG", "render_dataset.log")
-    logf = open(logp, "w")
+    parser = argparse.ArgumentParser(description="STEP -> multi-view drawing SVG + AMVDG graph JSON")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--step-dir", help="render every *.step under this dir (batch)")
+    mode.add_argument("--step", help="render this single *.step file")
+    parser.add_argument("--out-dir", default="dataset", help="output dir for <name>.svg/.graph.json")
+    parser.add_argument("--name", default=None, help="part name (single mode; default = file stem)")
+    parser.add_argument("--width", type=int, default=PX_DEFAULT_W, help="raster width in px")
+    parser.add_argument("--limit", type=int, default=0, help="cap number of parts (batch mode)")
+    parser.add_argument("--log", default="render_dataset.log", help="OK/SKIP/FAIL log path")
+    args = parser.parse_args()
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    logf = open(args.log, "w")
     try:
-        if os.environ.get("RF_BATCH"):
-            # batch: render every *.step under RF_STEPDIR (default cwd) into RF_OUTDIR.
-            out_dir = os.environ.get("RF_OUTDIR", "dataset")
-            import glob
-            step_dir = os.environ.get("RF_STEPDIR", ".")
-            jobs = [(sp, os.path.splitext(os.path.basename(sp))[0])
-                    for sp in sorted(glob.glob(os.path.join(step_dir, "*.step")))]
-            _lim = int(os.environ.get("RF_LIMIT", "0"))
-            if _lim > 0:
-                jobs = jobs[:_lim]
-            results = []
-            for sp, nm in jobs:
-                # Per-part isolation: a single bad solid (HLR throw, null shape) must
-                # not abort the whole batch over hundreds of varied seeds.
-                try:
-                    r = render_one(sp, out_dir, nm, width)
-                except Exception:
-                    import traceback
-                    logf.write("SKIP %s\n%s\n" % (nm, traceback.format_exc())); logf.flush()
-                    continue
-                results.append(r)
-                logf.write("OK %s counts=%s\n" % (nm, json.dumps(r["counts"]))); logf.flush()
-            with open(os.path.join(out_dir, "_build_results.json"), "w") as f:
-                json.dump([{k: v for k, v in r.items() if k != "meta"} for r in results], f, indent=1)
+        if args.step_dir:
+            _run_batch(args.step_dir, args.out_dir, args.width, args.limit, logf)
         else:
-            step = os.environ["RF_STEP"]
-            out_dir = os.environ.get("RF_OUTDIR", os.path.dirname(os.environ.get("RF_OUT", "/tmp/out.svg")))
-            nm = os.environ.get("RF_NAME") or None
-            r = render_one(step, out_dir, nm, width)
+            r = render_one(args.step, args.out_dir, args.name, args.width)
             logf.write("OK %s counts=%s\n" % (r["name"], json.dumps(r["counts"])))
     except Exception:
         import traceback

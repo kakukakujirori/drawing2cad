@@ -5,6 +5,7 @@ except ImportError:
 import FreeCAD as App
 from typing import Any
 from .base import BaseProjector
+from .ellipse import ellipse_from_conjugate
 
 class CircleProjector(BaseProjector):
     
@@ -50,8 +51,32 @@ class CircleProjector(BaseProjector):
                 "role": "edge"
             }]
             
-        # Ellipse projection (not implemented yet)
-        return []
+        # Oblique view: the circle projects to an analytic ellipse. Two in-plane
+        # radius vectors (u, v) map to conjugate semi-diameters under the parallel
+        # projection; ellipse_from_conjugate recovers the principal axes.
+        u = axis.cross(dir_vec)
+        if u.Length < 1e-9:
+            u = axis.cross(App.Vector(1, 0, 0))
+        if u.Length < 1e-9:
+            u = axis.cross(App.Vector(0, 1, 0))
+        u.normalize()
+        v = axis.cross(u)
+        v.normalize()
+
+        o2 = self._project_point(loc, view_direction)
+        pu = self._project_point(loc + u * r, view_direction)
+        pv = self._project_point(loc + v * r, view_direction)
+        f1 = (pu[0] - o2[0], pu[1] - o2[1])
+        f2 = (pv[0] - o2[0], pv[1] - o2[1])
+        rmaj, rmin, rot = ellipse_from_conjugate(f1, f2)
+        return [{
+            "type": "ellipse",
+            "center": self._format_pt(o2),
+            "rmaj": round(rmaj, 3),
+            "rmin": round(rmin, 3),
+            "rot_deg": round(rot, 3),
+            "role": "edge",
+        }]
 
 if __name__ == "__main__":
     import Part

@@ -623,6 +623,39 @@
                   ],
                   "description": "annotation value ALWAYS wins over r_px*scale"
                 },
+                "rmaj_px": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "ellipse major semi-axis in px (obliquely-projected circle/ellipse edge)"
+                },
+                "rmin_px": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "ellipse minor semi-axis in px"
+                },
+                "rmaj_mm": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "rmin_mm": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "rot_deg": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "ellipse major-axis rotation in the px frame (y-down), degrees in [0,180). start_angle/end_angle for an ellipse are eccentric angles."
+                },
                 "start_angle": {
                   "type": [
                     "number",

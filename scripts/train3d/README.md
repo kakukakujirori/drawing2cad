@@ -19,7 +19,8 @@ drawing PNG is fed** — so a working leg is evidence the AMVDG IR is *sufficien
 |---|---|
 | `build_dataset.py` | one graph-dir + code-dir → `all.jsonl` (`{id,input_text,target_code,n_tok_*}`) + `stats.json` token report. Run once per split — see top-level README step 3. |
 | `serialize.py` | this leg's AMVDG-graph ↔ model-input text codec (`graph_to_text` + inverse for round-trip). `python serialize.py GRAPH.json` prints it; `--check 'GLOB'` validates round-trip + cross-view consistency dataset-wide. |
-| `train_sft.py` | text-only SFT (bf16, completion-only loss, LoRA/full, 1-/2-GPU); `--train`/`--val` bundles; eval hook → `eval_cq.py`. |
+| `train_sft.py` | text-only SFT (bf16, completion-only loss, LoRA/full, 1-/2-GPU); `--train`/`--val` bundles; eval hook → `eval_cq.py`. Args are an `ExpConfig` dataclass (`HfArgumentParser`): every flag is also settable from a `--config FILE.{json,yaml}` (CLI overrides file); resolved config → `<out>/config.json`, metrics → TensorBoard `<out>/logs` (or `--report-to wandb`, offline). |
+| `infer.py` | batch inference: AMVDG JSON → CadQuery `{stem}.py` + executed `{stem}.step`, with a trained ckpt (LoRA adapter dir *or* full ckpt / HF id). Isolated timeout'd exec; writes `infer_summary.json` (exec/step rates + error hist). Naming pairs with GT `{uuid}.step` so `eval_cq.py` scores its `.py` outputs directly. |
 | `eval_cq.py` | isolated exec → validity + **translation-aligned voxel IoU (abs mm)** + bbox-mm error → JSON. |
 
 ## Run
@@ -28,38 +29,68 @@ drawing PNG is fed** — so a working leg is evidence the AMVDG IR is *sufficien
 #   experiments/data_z2c_train  +  experiments/data_z2c_val
 
 # 1. SFT smoke — LoRA, 40 steps, one A5000 (proves the pipe + loss drop)
-CUDA_VISIBLE_DEVICES=1 python scripts/train3d/train_sft.py --smoke \
-    --train experiments/data_z2c_train --val experiments/data_z2c_val --out runs/smoke
+python scripts/train3d/train_sft.py --smoke \
+    --train experiments/data_z2c_train \
+    --val experiments/data_z2c_val \
+    --out experiments/train3d/smoke
 
 # 2. real single-GPU LoRA run (max-len defaults to 8192, the decided cap)
-CUDA_VISIBLE_DEVICES=1 python scripts/train3d/train_sft.py \
-    --train experiments/data_z2c_train --val experiments/data_z2c_val \
-    --epochs 3 --out runs/lora
+#    --out is optional: omit it and the run lands in experiments/train3d/<YYYY-MM-DD_HH-MM-SS>/
+python scripts/train3d/train_sft.py \
+    --train experiments/data_z2c_train \
+    --val experiments/data_z2c_val \
+    --epochs 3
 
 # 3. two-GPU DDP (LoRA or --full): torchrun handles world size
 torchrun --nproc_per_node=2 scripts/train3d/train_sft.py --full \
-    --train experiments/data_z2c_train --val experiments/data_z2c_val \
-    --epochs 3 --bs 1 --grad-accum 8 --out runs/full
+    --train experiments/data_z2c_train \
+    --val experiments/data_z2c_val \
+    --epochs 3 --bs 1 --grad-accum 8 --out experiments/train3d/full
 #   NOTE: full-FT of a 2B with AdamW replicates ~22 GB of optimizer state PER GPU under
 #   plain DDP -> OOMs a 24 GB A5000. To fit "modest full-FT" pick ONE of:
 #     --optim adafactor            # ~no 2nd-moment state; full-FT fits one 24 GB GPU
 #     accelerate launch --fsdp ... # shard AdamW state across the 2 A5000s
 #   LoRA (default) fits comfortably and is the recommended path on this box.
 
-# 4. evaluate a dir of predicted {id}.py against GT {id}.step (val preds vs the val split)
-python scripts/train3d/eval_cq.py --pred-dir runs/lora/preds_stepN \
-    --gt-dir experiments/stage_z2c_val --out runs/lora/metrics.json
+# 3b. drive train_sft entirely from a config file (CLI flags still override it):
+python scripts/train3d/train_sft.py --config my_run.yaml --epochs 5
+#   watch it:  tensorboard --logdir <out>/logs   (resolved config -> <out>/config.json)
+
+# 4. batch-infer a trained ckpt over the val AMVDG graphs -> {uuid}.py + {uuid}.step
+python scripts/train3d/infer.py \
+    --ckpt experiments/train3d/lora_v4/final \
+    --input experiments/dataset_z2c_val \
+    --out experiments/train3d/lora_v4/preds_full
+#   --ckpt takes a LoRA adapter dir (adapter_config.json -> loads its base) or a full ckpt/HF id.
+#   Generation is BATCHED (length-sorted, left-padded): --batch-size (default 16) prompts per
+#   generate() call, capped by --max-batch-tokens (default 48000, ~14.6 GB peak on a 24 GB A5000;
+#   ~0.21 MB/token so 64000≈18 GB) so long prompts form smaller batches; exec runs in parallel
+#   (--workers, default min(8,cpu)). Greedy is bf16-batched so individual outputs differ run-to-run
+#   vs bs=1, but aggregate exec/IoU rates match.
+
+# 5. evaluate a dir of predicted {id}.py against GT {id}.step (full val = infer.py preds)
+#    THIS prints + writes the eval numbers (valid_rate, mean/median IoU, bbox-mm err); step 4 only
+#    produces the preds. eval_cq re-execs each {id}.py itself, so run 4 then 5.
+python scripts/train3d/eval_cq.py \
+    --pred-dir experiments/train3d/lora_v4/preds_full \
+    --gt-dir experiments/stage_z2c_val \
+    --out experiments/train3d/lora_v4/eval_full.json
+#   Scoring runs --workers in parallel (default min(8,cpu)); each worker is pinned to 1 numeric
+#   thread (no BLAS oversubscription) and --timeout defaults to 120 s (headroom for single-thread
+#   64³ voxelization), so results are invariant to --workers. (eval_cq globs *.py, so infer.py's
+#   co-located *.step are ignored — same dir is fine.)
 # GT-code self-IoU sanity (expect mean IoU ~1.0):
-python scripts/train3d/eval_cq.py --pred-dir experiments/stage_z2c_val \
-    --gt-dir experiments/stage_z2c_val --ids-file <uuids> --limit 20 --out self_iou.json
+python scripts/train3d/eval_cq.py \
+    --pred-dir experiments/stage_z2c_val \
+    --gt-dir experiments/stage_z2c_val \
+    --ids-file <uuids> --limit 20 --out self_iou.json
 ```
 
 The instruction prepended to the graph text is `train_sft.PROMPT` (a short cadrille-style line;
-override with `--prompt`, e.g. `--prompt ""` to ablate it — the chat template's assistant-turn
-start is the code-start marker, so no special token is added).
+`train_sft` and `infer.py` share it; override with `--prompt`, e.g. `--prompt ""` to ablate it —
+the chat template's assistant-turn start is the code-start marker, so no special token is added).
 
-Measured results — token stats, GT-corpus self-IoU, and each run's val metrics — live in
-`research/research-log.md`, not here.
+Measured results — token stats, GT-corpus self-IoU, and each run's val metrics — live in `research/research-log_3d.md`, not here.
 
 ## Design notes / recipe deltas
 

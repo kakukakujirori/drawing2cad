@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # batch_dataset.py -- end-to-end synthetic-drawing dataset over a dir of seed STEP solids.
-#   stage 1: render_dataset.py (RF_BATCH) -> per-part <name>.svg + <name>.graph.json  (needs FreeCAD)
+#   stage 1: render_dataset.py --step-dir -> per-part <name>.svg + <name>.graph.json  (needs FreeCAD)
 #   stage 2: cairosvg rasterize -> <name>.png ; scan-noise aug -> <name>.scan.png (affine into graph)
 #   -> manifest.jsonl ; (PNG, graph.json) pairs consumed directly by scripts/detector/circlenet.py
 #
@@ -8,31 +8,38 @@
 #
 # Usage:
 #   python batch_dataset.py <step_dir> <out_dir> [--width 1800] [--no-scan] [--n N]
-import os, sys, glob, json, zlib, subprocess, argparse
+import argparse
+import glob
+import json
+import os
+import subprocess
+import sys
+import zlib
+from tqdm import tqdm
+
 import rootutils
 root = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+
 from pipeline import scan_augment   # main() is __main__-guarded; importing is safe
 
 
 def stage1(step_dir: str, out_dir: str, width: int, n: int):
     env = dict(os.environ)
-    env["RF_BATCH"] = "1"
-    env["RF_STEPDIR"] = step_dir
-    env["RF_OUTDIR"] = out_dir
-    env["RF_WIDTH"] = str(width)
-    env["RF_LOG"] = os.path.join(out_dir, "render_dataset.log")
     env["PYTHONUNBUFFERED"] = "1"
     # render_dataset.py imports scripts.renderer.* — make the repo root importable
     env["PYTHONPATH"] = str(root) + os.pathsep + env.get("PYTHONPATH", "")
+    logp = os.path.join(out_dir, "render_dataset.log")
+    cmd = [sys.executable, os.path.join(root, "scripts", "renderer", "render_dataset.py"),
+           "--step-dir", step_dir, "--out-dir", out_dir, "--width", str(width), "--log", logp]
     if n and n > 0:
-        env["RF_LIMIT"] = str(n)
-    r = subprocess.run([sys.executable, os.path.join(root, "scripts", "renderer", "render_dataset.py")], env=env, check=False)
-    log = open(env["RF_LOG"]).read() if os.path.exists(env["RF_LOG"]) else ""
+        cmd += ["--limit", str(n)]
+    r = subprocess.run(cmd, env=env, check=False)
+    log = open(logp).read() if os.path.exists(logp) else ""
     nok = log.count("\nOK ") + (1 if log.startswith("OK ") else 0)
     nskip = log.count("\nSKIP ") + (1 if log.startswith("SKIP ") else 0)
     print("[stage1] render_dataset: OK=%d SKIP=%d rc=%d" % (nok, nskip, r.returncode), flush=True)
     if r.returncode != 0 or (nok == 0 and nskip == 0):
-        print("[stage1] WARNING: renderer produced nothing — check %s" % env["RF_LOG"], flush=True)
+        print("[stage1] WARNING: renderer produced nothing — check %s" % logp, flush=True)
 
 
 def rasterize(svg_path: str, png_path: str, width: int):
@@ -44,7 +51,7 @@ def stage2(out_dir: str, width: int, do_scan: bool):
     graphs = sorted(glob.glob(os.path.join(out_dir, "*.graph.json")))
     manifest = open(os.path.join(out_dir, "manifest.jsonl"), "w")
     nok = 0
-    for gp in graphs:
+    for gp in tqdm(graphs, desc="stage2"):
         name = os.path.basename(gp)[:-len(".graph.json")]
         svg = os.path.join(out_dir, name + ".svg")
         if not os.path.exists(svg):

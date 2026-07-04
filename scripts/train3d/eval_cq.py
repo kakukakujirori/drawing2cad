@@ -25,6 +25,16 @@ Usage:
                     --ids-file paired_uuids.txt --limit 8 --out self_iou.json
 """
 import os
+
+# Pin numeric libs to 1 thread BEFORE numpy loads. Each isolated worker is CPU-bound
+# (numpy/trimesh voxelization); with N parallel workers, multi-threaded BLAS oversubscribes
+# the cores, slows every sample, and pushes borderline ones past the wall-clock timeout —
+# which silently changes valid_rate vs a sequential run. One thread/worker keeps per-sample
+# time ≈ standalone, so parallel scoring reproduces the sequential numbers exactly.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
+
 import sys
 import json
 import math
@@ -180,6 +190,14 @@ def eval_one(sample_id, pred_code, gt_step, cfg, q):
     q.put(out)
 
 
+def _timeout_row(sample_id):
+    return {"id": sample_id, "exec_ok": False, "has_result": False,
+            "is_valid": False, "is_watertight": False, "volume": 0.0,
+            "valid": False, "iou": None, "iou_norm": None,
+            "bbox_pred": None, "bbox_gt": None, "bbox_err_mm": None,
+            "error_type": "timeout"}
+
+
 def eval_sample_isolated(sample_id, pred_code, gt_step, cfg):
     """Spawn a child process, enforce a timeout, terminate hangs."""
     q = Queue()
@@ -188,16 +206,53 @@ def eval_sample_isolated(sample_id, pred_code, gt_step, cfg):
     p.join(cfg["timeout"])
     if p.is_alive():
         p.terminate(); p.join()
-        return {"id": sample_id, "exec_ok": False, "has_result": False,
-                "is_valid": False, "is_watertight": False, "volume": 0.0,
-                "valid": False, "iou": None, "iou_norm": None,
-                "bbox_pred": None, "bbox_gt": None, "bbox_err_mm": None,
-                "error_type": "timeout"}
+        return _timeout_row(sample_id)
     if not q.empty():
         return q.get()
     return {"id": sample_id, "exec_ok": False, "has_result": False, "valid": False,
             "iou": None, "iou_norm": None, "bbox_err_mm": None,
             "error_type": "crash_no_result"}
+
+
+def imap_isolated(tasks, worker, timeout, workers):
+    """Run `worker` in isolated child processes with bounded concurrency + a per-task
+    wall-clock timeout. `tasks` is an iterable of (key, args_tuple); each child is
+    `Process(target=worker, args=args_tuple + (q,))` and must put exactly one result dict
+    on its queue `q`. Yields (key, result_or_None) as each finishes — None means the task
+    timed out or crashed without a result (the caller supplies the fallback row).
+
+    We manage the processes ourselves (rather than ProcessPoolExecutor) because CadQuery/OCC
+    can hang in C code, and only a parent-side terminate() reliably kills a hung child — the
+    same containment `eval_sample_isolated` gives, now `workers`-wide."""
+    workers = max(1, workers)
+    tasks = list(tasks)
+    n, i = len(tasks), 0
+    live = []          # [key, proc, queue, start_time]
+    while i < n or live:
+        while i < n and len(live) < workers:
+            key, args = tasks[i]; i += 1
+            q = Queue()
+            p = Process(target=worker, args=tuple(args) + (q,))
+            p.start()
+            live.append([key, p, q, time.time()])
+        nxt = []
+        for item in live:
+            key, p, q, t0 = item
+            if not p.is_alive():
+                try:
+                    res = q.get(timeout=1.0)
+                except Exception:
+                    res = None
+                p.join()
+                yield key, res
+            elif time.time() - t0 > timeout:
+                p.terminate(); p.join()
+                yield key, None
+            else:
+                nxt.append(item)
+        live = nxt
+        if live and (len(live) >= workers or i >= n):
+            time.sleep(0.02)
 
 
 # ---------------------------------------------------------------- aggregation
@@ -263,29 +318,44 @@ def main():
     parser.add_argument("--out", default=None, help="write full metrics JSON here")
     parser.add_argument("--vox-res", type=int, default=64, help="voxels across GT max extent")
     parser.add_argument("--align", choices=["min", "center"], default="min")
-    parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--timeout", type=float, default=120.0,
+                        help="per-sample wall-clock cap (s). Higher than the old 30 s: workers are "
+                             "pinned to 1 thread (no BLAS oversubscription), so heavy 64³ voxelization "
+                             "runs single-threaded and needs headroom — this keeps results invariant "
+                             "to --workers (a genuine hang is still caught, amortized across workers).")
+    parser.add_argument("--workers", type=int, default=0,
+                        help="parallel exec/score workers (0 = auto = min(8, cpu_count))")
     parser.add_argument("--no-norm", action="store_true", help="skip normalized-IoU cross-ref")
     args = parser.parse_args()
 
+    workers = args.workers or min(8, os.cpu_count() or 1)
     cfg = {"vox_res": args.vox_res, "align": args.align,
            "timeout": args.timeout, "also_norm": not args.no_norm}
     ids = read_ids(args.pred_dir, args.ids_file, args.limit)
-    rows, t0 = [], time.time()
-    for i, sid in enumerate(ids):
+
+    # split into schedulable tasks (each an isolated exec+score) and pre-resolved error rows
+    rows, tasks = [], []
+    for sid in ids:
         code = load_pred(args.pred_dir, sid)
         gt = os.path.join(args.gt_dir, f"{sid}.step")
         if code is None:
             rows.append({"id": sid, "exec_ok": False, "has_result": False,
                          "valid": False, "iou": None, "bbox_err_mm": None,
                          "error_type": "missing_pred"})
-            continue
-        if not os.path.exists(gt):
+        elif not os.path.exists(gt):
             rows.append({"id": sid, "exec_ok": False, "valid": False, "iou": None,
                          "bbox_err_mm": None, "error_type": "missing_gt_step"})
-            continue
-        rows.append(eval_sample_isolated(sid, code, gt, cfg))
-        if (i + 1) % 20 == 0:
-            print(f"  [{i+1}/{len(ids)}] {time.time()-t0:.0f}s", file=sys.stderr)
+        else:
+            tasks.append((sid, (sid, code, gt, cfg)))
+
+    print(f"scoring {len(tasks)} samples with {workers} workers", file=sys.stderr)
+    t0, done = time.time(), 0
+    for sid, res in imap_isolated(tasks, eval_one, args.timeout, workers):
+        rows.append(res if res is not None else _timeout_row(sid))
+        done += 1
+        if done % 20 == 0:
+            print(f"  [{done}/{len(tasks)}] {time.time()-t0:.0f}s", file=sys.stderr)
+    rows.sort(key=lambda r: r["id"])    # deterministic order (pool completes out of order)
 
     agg = aggregate(rows)
     print(json.dumps(agg, indent=2))
