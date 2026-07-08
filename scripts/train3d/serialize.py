@@ -298,7 +298,10 @@ def struct_from_graph(graph, multi_tag=True):
             if "pts" in g:
                 vals += [p[ax_i] for p in g["pts"]]
             else:
-                vals += [g["c"][ax_i] - g["r"], g["c"][ax_i] + g["r"]]
+                # circle/arc: r; ellipse: loose axis-aligned bound (major-radius box),
+                # matching _geom_min's ellipse handling
+                rr = g.get("r", max(g.get("rmaj", 0.0), g.get("rmin", 0.0)))
+                vals += [g["c"][ax_i] - rr, g["c"][ax_i] + rr]
         return (v["axes"][ax_i], min(vals), max(vals)) if vals else None
     dims = []
     for i, a in enumerate(dims_src):
@@ -306,11 +309,20 @@ def struct_from_graph(graph, multi_tag=True):
                      "role": a.get("param_role") or "-", "val": a["value"],
                      "view": a.get("view") or "-", "span": _span(a)})
     bbox = (graph.get("world") or {}).get("bbox_3d") or []
+    # edge-blend features (fillet/chamfer): correspondence-layer records carrying
+    # kind + value(mm) + a directional edge-set token (all|par:<axis>|face:<±axis>|
+    # complex). Sorted for determinism; count preserved (no merge) so round-trip census
+    # matches the injected `blends` list. Absent key -> [] (no BLEND lines emitted).
+    blends = sorted(({"kind": b.get("kind") or "-", "sel": b.get("sel") or "all",
+                      "val": b.get("value_mm")} for b in graph.get("blends", [])),
+                    key=lambda b: (b["kind"], b["sel"],
+                                   b["val"] if b["val"] is not None else -1.0))
     return {"bbox": list(bbox), "feats": [
                 {"id": fmap[f["feature_id"]], "kind": f.get("kind") or "-",
                  "axis": f.get("axis") or "-", "r": f.get("r_mm"),
                  "dir": f.get("extrude_dir")} for f in feats_sorted],
-            "views": views, "dims": dims, "skipped": skipped, "merged": merged}
+            "views": views, "dims": dims, "blends": blends,
+            "skipped": skipped, "merged": merged}
 
 
 def _geom_str(row):
@@ -337,6 +349,9 @@ def struct_to_text(st):
         if f.get("dir"):
             row += f" dir={f['dir']}"
         L.append(row)
+    for b in st.get("blends", []):
+        L.append(f"BLEND {b['kind']} {b['sel']} v"
+                 + (_fmt(b["val"]) if b["val"] is not None else "-"))
     for v in st["views"]:
         L.append(f"VIEW {v['name']} axes={v['axes'][0]},{v['axes'][1]}")
         for r in v["prims"]:
@@ -363,7 +378,8 @@ _SPAN = re.compile(r"^([A-Za-z])(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)$")
 
 
 def text_to_struct(text):
-    st = {"bbox": [], "feats": [], "views": [], "dims": [], "skipped": 0, "merged": 0}
+    st = {"bbox": [], "feats": [], "views": [], "dims": [], "blends": [],
+          "skipped": 0, "merged": 0}
     view = None
     for line in text.splitlines():
         tok = line.split()
@@ -377,6 +393,10 @@ def text_to_struct(text):
             st["feats"].append({"id": tok[1], "kind": tok[2], "axis": kv.get("axis", "-"),
                                 "r": None if kv.get("r", "-") == "-" else float(kv["r"]),
                                 "dir": kv.get("dir")})
+        elif tok[0] == "BLEND":
+            v = tok[3][1:] if len(tok) > 3 and tok[3].startswith("v") else "-"
+            st["blends"].append({"kind": tok[1], "sel": tok[2],
+                                 "val": None if v == "-" else float(v)})
         elif tok[0] == "VIEW":
             kv = dict(t.split("=", 1) for t in tok[2:] if "=" in t)
             view = {"name": tok[1], "axes": tuple(kv.get("axes", ",").split(",")),
@@ -473,6 +493,8 @@ def roundtrip_check(graph, multi_tag=True):
         return False, f"primitive count {n_out}+{st['merged']}merged != {n_src}"
     if len(st["feats"]) != len(graph.get("features", [])):
         return False, "feature count mismatch"
+    if len(st["blends"]) != len(graph.get("blends", [])):
+        return False, "blend count mismatch"
     n_ann = len(graph.get("annotations", []))
     n_dia = sum(len(r["dias"]) for v in st["views"] for r in v["prims"])
     if len(st["dims"]) + n_dia != n_ann:

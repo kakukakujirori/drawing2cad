@@ -28,6 +28,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # siblings
 import train_sft                      # load_model, chat_ids, PROMPT (single source of truth)
+from train_sft import iter_batched_generate   # shared batched decode (also used by the eval hook)
 from serialize import graph_to_text
 from eval_cq import _shape_from_globals, imap_isolated
 
@@ -101,24 +102,6 @@ def stem_of(path):
     return os.path.splitext(b)[0]
 
 
-# --------------------------------------------------------------- batched generation
-def _make_batches(items, batch_size, max_tokens):
-    """items: (stem, ids) pairs, sorted by len(ids) asc. Greedy grouping capped by count AND
-    by padded-token budget (longest_in_batch × count) so a few very long prompts fall into
-    smaller batches instead of blowing up padding/memory. A single over-budget prompt runs solo."""
-    batch = []
-    for stem, ids in items:
-        would = batch + [(stem, ids)]
-        longest = max(len(x[1]) for x in would)
-        if batch and (len(would) > batch_size or longest * len(would) > max_tokens):
-            yield batch
-            batch = [(stem, ids)]
-        else:
-            batch = would
-    if batch:
-        yield batch
-
-
 # --------------------------------------------------------------- main
 @torch.no_grad()
 def main():
@@ -165,23 +148,17 @@ def main():
         prompts.append((stem, ids))
     prompts.sort(key=lambda x: len(x[1]))     # length-sorted → minimal padding within a batch
 
-    # ---- pass 2: batched greedy generation on the single GPU ----
+    # ---- pass 2: batched greedy generation on the single GPU (shared with the eval hook) ----
     codes = {}
     n_gen = 0
-    for batch in _make_batches(prompts, args.batch_size, args.max_batch_tokens):
-        enc = tok.pad({"input_ids": [ids for _, ids in batch]},
-                      padding=True, return_tensors="pt")
-        enc = {k: v.to(dev) for k, v in enc.items()}
-        gen = model.generate(**enc, max_new_tokens=args.max_new_tokens, do_sample=False,
-                             use_cache=True, pad_token_id=tok.pad_token_id)
-        plen = enc["input_ids"].shape[1]      # left-padded → same prompt offset for the whole batch
-        for j, (stem, _) in enumerate(batch):
-            code = tok.decode(gen[j][plen:], skip_special_tokens=True)
-            codes[stem] = code
-            with open(os.path.join(args.out, f"{stem}.py"), "w") as f:   # .py ALWAYS written
-                f.write(code)
-        n_gen += len(batch)
-        print(f"  [gen {n_gen}/{len(prompts)}] {time.time()-t0:.0f}s", file=sys.stderr)
+    for stem, code in iter_batched_generate(model, tok, prompts, args.max_new_tokens,
+                                            args.batch_size, args.max_batch_tokens, dev):
+        codes[stem] = code
+        with open(os.path.join(args.out, f"{stem}.py"), "w") as f:   # .py ALWAYS written
+            f.write(code)
+        n_gen += 1
+        if n_gen % args.batch_size == 0 or n_gen == len(prompts):
+            print(f"  [gen {n_gen}/{len(prompts)}] {time.time()-t0:.0f}s", file=sys.stderr)
 
     # ---- pass 3: isolated exec -> {stem}.step, parallel across CPU workers ----
     exec_tasks = [(stem, (code, os.path.join(args.out, f"{stem}.step")))

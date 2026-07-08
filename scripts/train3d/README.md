@@ -19,8 +19,8 @@ drawing PNG is fed** — so a working leg is evidence the AMVDG IR is *sufficien
 |---|---|
 | `build_dataset.py` | one graph-dir + code-dir → `all.jsonl` (`{id,input_text,target_code,n_tok_*}`) + `stats.json` token report. Run once per split — see top-level README step 3. |
 | `serialize.py` | this leg's AMVDG-graph ↔ model-input text codec (`graph_to_text` + inverse for round-trip). `python serialize.py GRAPH.json` prints it; `--check 'GLOB'` validates round-trip + cross-view consistency dataset-wide. |
-| `train_sft.py` | text-only SFT (bf16, completion-only loss, LoRA/full, 1-/2-GPU); `--train`/`--val` bundles; eval hook → `eval_cq.py`. Args are an `ExpConfig` dataclass (`HfArgumentParser`): every flag is also settable from a `--config FILE.{json,yaml}` (CLI overrides file); resolved config → `<out>/config.json`, metrics → TensorBoard `<out>/logs` (or `--report-to wandb`, offline). |
-| `infer.py` | batch inference: AMVDG JSON → CadQuery `{stem}.py` + executed `{stem}.step`, with a trained ckpt (LoRA adapter dir *or* full ckpt / HF id). Isolated timeout'd exec; writes `infer_summary.json` (exec/step rates + error hist). Naming pairs with GT `{uuid}.step` so `eval_cq.py` scores its `.py` outputs directly. |
+| `train_sft.py` | text-only SFT (bf16, completion-only loss, LoRA/full, 1-/2-GPU); `--train`/`--val` bundles. **Periodic in-training eval** (every `--eval_every_epochs`, plus train-end): batched greedy-generate a fixed seeded RANDOM val subset (`--eval_val_n`, default 48; 0 = full val) via the *shared* `iter_batched_generate` (same code path as `infer.py`), score with `eval_cq.py`, log folded metrics to TensorBoard, and keep a **best-model checkpoint** (`<out>/best/` + `<out>/best_meta.json`) on the `--best_metric` scalar. Args are an `ExpConfig` dataclass (`HfArgumentParser`): every flag is also settable from a `--config FILE.{json,yaml}` (CLI overrides file); resolved config → `<out>/config.json`, metrics → TensorBoard `<out>/logs` (or `--report-to wandb`, offline). |
+| `infer.py` | batch inference: AMVDG JSON → CadQuery `{stem}.py` + executed `{stem}.step`, with a trained ckpt (LoRA adapter dir *or* full ckpt / HF id). Batched generation is the shared `train_sft.iter_batched_generate` (length-sort + left-pad); isolated timeout'd exec; writes `infer_summary.json` (exec/step rates + error hist). Naming pairs with GT `{uuid}.step` so `eval_cq.py` scores its `.py` outputs directly. |
 | `eval_cq.py` | isolated exec → validity + **translation-aligned voxel IoU (abs mm)** + bbox-mm error → JSON. |
 
 ## Run
@@ -55,6 +55,24 @@ torchrun --nproc_per_node=2 scripts/train3d/train_sft.py --full \
 # 3b. drive train_sft entirely from a config file (CLI flags still override it):
 python scripts/train3d/train_sft.py --config my_run.yaml --epochs 5
 #   watch it:  tensorboard --logdir <out>/logs   (resolved config -> <out>/config.json)
+
+# In-training eval + best-model checkpointing (knobs, all optional):
+#   --eval_val_n 48        fixed val subset size, sampled ONCE with a fixed seed (identical
+#                          across evals and across same-seed runs); 0 = whole val set.
+#   --eval_seed N          seed for that sample (default: reuse --seed).
+#   --eval_every_epochs 1  run the eval hook every N epochs (float ok); <=0 = train-end only.
+#   --eval_batch_size 8    prompts per generate() call in the hook (conservative vs infer's 16).
+#   --eval_max_batch_tokens 24000   padded-token budget/batch (~7-8 GB peak; half infer's 48000
+#                          because optimizer state + params are GPU-resident during training).
+#   --best_metric mean_iou_incl_fail   scalar tracked for best-model saving (higher=better):
+#                          mean_iou_incl_fail (default; mean IoU over the WHOLE subset with
+#                          failed/invalid preds counted as 0 — folds validity+geometry) |
+#                          valid_rate | median_iou.
+#   (--n_eval is a DEPRECATED alias of --eval_val_n; still honored with a warning.)
+# Each eval writes <out>/preds_step{N}/ + <out>/eval_step{N}.json (scored by eval_cq against
+# --gt_dir); the best checkpoint lands in <out>/best/ (LoRA adapter or full weights) with
+# <out>/best_meta.json = {step, epoch, metric_name, metric_value, history:[per-eval records]}.
+# Metrics stream to TensorBoard as train/eval/<metric>. Under DDP only rank0 evaluates/saves.
 
 # 4. batch-infer a trained ckpt over the val AMVDG graphs -> {uuid}.py + {uuid}.step
 python scripts/train3d/infer.py \

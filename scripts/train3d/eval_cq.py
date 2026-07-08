@@ -16,6 +16,11 @@ AMVDG->3D leg evaluator. For each sample we:
      grounding is the whole point of this project.
   6. **bbox dimension error in absolute mm** (sorted extents; the headline dimension metric),
      plus a secondary cadrille-style scale-normalized IoU for cross-reference.
+  7. **Chamfer Distance**: `cd_mm` (absolute mm, bbox-min aligned like the voxel IoU —
+     the primary CD) and `cd_norm` (cadrille/CAD-Recode unit-box-normalized CD, for
+     cross-paper comparability), both via the exact sampling+formula in cadrille's
+     evaluate.py `compute_chamfer_distance` (n=8192 surface points, cKDTree bidirectional
+     nearest-neighbour, sum of mean squared distances).
 
 Usage:
   # score a directory of predicted {id}.py against GT {id}.step:
@@ -100,6 +105,72 @@ def _aligned_origin(mesh, mode):
     return mesh.bounds[0]       # "min"
 
 
+def _align_min(mesh):
+    """Copy shifted so bbox-min sits at the origin (absolute-mm alignment convention
+    shared with the voxel IoU's align="min" mode)."""
+    m = mesh.copy()
+    m.apply_translation(-m.bounds[0])
+    return m
+
+
+def _normalize_unit(mesh):
+    """Copy centred at the origin and rescaled to max-extent 1 (the cadrille /
+    CAD-Recode unit-box convention: evaluate.py's run_cd_single centres+rescales the
+    predicted mesh before sampling; eval_Fusion360.py does the same to both meshes)."""
+    m = mesh.copy()
+    m.apply_translation(-(m.bounds[0] + m.bounds[1]) / 2.0)
+    e = float(np.max(m.extents))
+    if e > 1e-9:
+        m.apply_scale(1.0 / e)
+    return m
+
+
+def _nn_sq_dist(query, ref, chunk=1024):
+    """Chunked brute-force squared nearest-neighbour distance (fallback for when scipy
+    isn't installed). O(len(query) * len(ref)) but fine for a few thousand points."""
+    out = np.empty(len(query))
+    ref = np.asarray(ref)
+    for i in range(0, len(query), chunk):
+        d2 = np.sum((query[i:i + chunk, None, :] - ref[None, :, :]) ** 2, axis=-1)
+        out[i:i + chunk] = d2.min(axis=1)
+    return out
+
+
+def _chamfer_distance(m_pred, m_gt, n_points, seed, normalize):
+    """cadrille/CAD-Recode Chamfer Distance, computed on the meshes already in hand
+    (no re-tessellation). Sampling + formula follow evaluate.py / evaluate_new.py
+    `compute_chamfer_distance` and eval_Fusion360.py's inline CD block exactly:
+      - trimesh.sample.sample_surface (area-weighted uniform surface sampling),
+        n_points per mesh, same fixed integer seed passed to both calls,
+      - bidirectional nearest neighbour via a KD-tree (scipy.spatial.cKDTree; falls
+        back to a chunked numpy brute-force search if scipy is unavailable),
+      - CD = mean(nn_dist_pred_to_gt^2) + mean(nn_dist_gt_to_pred^2)  (sum, not
+        average, of the two mean-squared-distance terms — no extra unit scaling;
+        cad-recode's eval_Fusion360.py only applies a x1000 factor at the *display*
+        layer, the underlying compute_chamfer_distance() returns this raw value).
+    `normalize=True` reproduces their unit-box rescale (centre + divide by max
+    extent) before sampling; `normalize=False` instead uses this project's
+    absolute-mm bbox-min alignment (matching the voxel IoU's "min" mode) so the
+    result stays in real millimetres.
+    """
+    import trimesh
+    p = _normalize_unit(m_pred) if normalize else _align_min(m_pred)
+    g = _normalize_unit(m_gt) if normalize else _align_min(m_gt)
+    pred_pts, _ = trimesh.sample.sample_surface(p, n_points, seed=seed)
+    gt_pts, _ = trimesh.sample.sample_surface(g, n_points, seed=seed)
+    pred_pts = np.asarray(pred_pts)
+    gt_pts = np.asarray(gt_pts)
+    try:
+        from scipy.spatial import cKDTree
+        gt_nn, _ = cKDTree(gt_pts).query(pred_pts, k=1)
+        pred_nn, _ = cKDTree(pred_pts).query(gt_pts, k=1)
+        gt_nn_sq, pred_nn_sq = gt_nn ** 2, pred_nn ** 2
+    except ImportError:
+        gt_nn_sq = _nn_sq_dist(pred_pts, gt_pts)
+        pred_nn_sq = _nn_sq_dist(gt_pts, pred_pts)
+    return float(np.mean(gt_nn_sq) + np.mean(pred_nn_sq))
+
+
 def _voxel_iou(m_pred, m_gt, vox_res, align, normalize_scale=False):
     """Translation-aligned voxel IoU. normalize_scale=True reproduces the cadrille
     unit-box IoU (both meshes rescaled to max-extent 1) for cross-reference."""
@@ -133,6 +204,7 @@ def eval_one(sample_id, pred_code, gt_step, cfg, q):
     out = {"id": sample_id, "exec_ok": False, "has_result": False,
            "is_valid": False, "is_watertight": False, "volume": 0.0,
            "valid": False, "iou": None, "iou_norm": None,
+           "cd_mm": None, "cd_norm": None,
            "bbox_pred": None, "bbox_gt": None, "bbox_err_mm": None,
            "error_type": None}
     try:
@@ -176,6 +248,21 @@ def eval_one(sample_id, pred_code, gt_step, cfg, q):
         out["iou"] = _voxel_iou(m_pred, m_gt, cfg["vox_res"], cfg["align"], False)
         if cfg["also_norm"]:
             out["iou_norm"] = _voxel_iou(m_pred, m_gt, cfg["vox_res"], cfg["align"], True)
+
+        if cfg.get("also_cd", True):
+            # CD failures (e.g. degenerate normalization) must not clobber the metrics
+            # already computed above, so they're isolated in their own try/except.
+            try:
+                out["cd_mm"] = _chamfer_distance(
+                    m_pred, m_gt, cfg["cd_points"], cfg["cd_seed"], normalize=False)
+            except Exception:
+                out["cd_mm"] = None
+            if cfg["also_norm"]:
+                try:
+                    out["cd_norm"] = _chamfer_distance(
+                        m_pred, m_gt, cfg["cd_points"], cfg["cd_seed"], normalize=True)
+                except Exception:
+                    out["cd_norm"] = None
         out["error_type"] = "ok"
     except Exception as e:
         et = type(e).__name__
@@ -194,6 +281,7 @@ def _timeout_row(sample_id):
     return {"id": sample_id, "exec_ok": False, "has_result": False,
             "is_valid": False, "is_watertight": False, "volume": 0.0,
             "valid": False, "iou": None, "iou_norm": None,
+            "cd_mm": None, "cd_norm": None,
             "bbox_pred": None, "bbox_gt": None, "bbox_err_mm": None,
             "error_type": "timeout"}
 
@@ -262,6 +350,8 @@ def aggregate(rows):
     errs = [max(r["bbox_err_mm"]) for r in rows if r.get("bbox_err_mm")]
     valid = [r for r in rows if r["valid"]]
     iou_valid = [r["iou"] for r in valid if r["iou"] is not None]
+    cds_mm = [r["cd_mm"] for r in rows if r.get("cd_mm") is not None]
+    cds_norm = [r["cd_norm"] for r in rows if r.get("cd_norm") is not None]
 
     def _stat(xs, f, d=0.0):
         return round(float(f(xs)), 4) if xs else d
@@ -278,10 +368,17 @@ def aggregate(rows):
         "iou>=0.9_rate": round(sum(x >= 0.9 for x in ious) / n, 4) if n else 0,
         "mean_max_bbox_err_mm": _stat(errs, np.mean),
         "median_max_bbox_err_mm": _stat(errs, np.median),
+        "cd_mm_scored_n": len(cds_mm),
+        "mean_cd_mm": _stat(cds_mm, np.mean),
+        "median_cd_mm": _stat(cds_mm, np.median),
     }
     norms = [r["iou_norm"] for r in rows if r.get("iou_norm") is not None]
     if norms:
         agg["mean_iou_normalized"] = _stat(norms, np.mean)
+    if cds_norm:
+        agg["cd_norm_scored_n"] = len(cds_norm)
+        agg["mean_cd_norm"] = _stat(cds_norm, np.mean)
+        agg["median_cd_norm"] = _stat(cds_norm, np.median)
     # error histogram
     hist = {}
     for r in rows:
@@ -326,11 +423,17 @@ def main():
     parser.add_argument("--workers", type=int, default=0,
                         help="parallel exec/score workers (0 = auto = min(8, cpu_count))")
     parser.add_argument("--no-norm", action="store_true", help="skip normalized-IoU cross-ref")
+    parser.add_argument("--no-cd", action="store_true", help="skip Chamfer Distance scoring")
+    parser.add_argument("--cd-points", type=int, default=8192,
+                        help="surface points sampled per mesh for CD (cadrille/CAD-Recode default)")
+    parser.add_argument("--cd-seed", type=int, default=0,
+                        help="fixed seed for CD's trimesh.sample.sample_surface calls")
     args = parser.parse_args()
 
     workers = args.workers or min(8, os.cpu_count() or 1)
     cfg = {"vox_res": args.vox_res, "align": args.align,
-           "timeout": args.timeout, "also_norm": not args.no_norm}
+           "timeout": args.timeout, "also_norm": not args.no_norm,
+           "also_cd": not args.no_cd, "cd_points": args.cd_points, "cd_seed": args.cd_seed}
     ids = read_ids(args.pred_dir, args.ids_file, args.limit)
 
     # split into schedulable tasks (each an isolated exec+score) and pre-resolved error rows
