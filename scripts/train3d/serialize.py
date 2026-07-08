@@ -325,6 +325,145 @@ def struct_from_graph(graph, multi_tag=True):
             "skipped": skipped, "merged": merged}
 
 
+def _covered_by_visible(hg, vis_segs, tol):
+    """True iff the hidden LINE `hg` is fully covered by the union of collinear
+    visible segments (visible-priority drafting rule): the drawn path is already
+    carried by the visible line(s), so the hidden copy is redundant."""
+    (hx1, hy1), (hx2, hy2) = hg["pts"]
+    ux, uy = hx2 - hx1, hy2 - hy1
+    L = math.hypot(ux, uy)
+    if L < tol:
+        return False
+    ux, uy = ux / L, uy / L
+    ivs = []
+    for (vx1, vy1, vx2, vy2) in vis_segs:
+        # both endpoints must lie on the hidden's infinite line (=> collinear)
+        if (abs((vx1 - hx1) * (-uy) + (vy1 - hy1) * ux) > tol or
+                abs((vx2 - hx1) * (-uy) + (vy2 - hy1) * ux) > tol):
+            continue
+        a = (vx1 - hx1) * ux + (vy1 - hy1) * uy
+        b = (vx2 - hx1) * ux + (vy2 - hy1) * uy
+        ivs.append((min(a, b) - tol, max(a, b) + tol))
+    if not ivs:
+        return False
+    ivs.sort()
+    cur = 0.0
+    for a, b in ivs:
+        if a > cur + tol:          # gap before we've covered up to `cur`
+            break
+        cur = max(cur, b)
+    return cur >= L - tol
+
+
+def _suppress_covered_hidden(st, tol=0.02):
+    """(1) Partial-overlap suppression, deterministic + lossless. Drop each hidden
+    LINE fully covered by collinear visible line(s) (extends the exact hid==vis
+    `vh` merge to the contained/partial case). Removals are counted so the
+    round-trip census still balances."""
+    n = 0
+    for v in st["views"]:
+        vis_segs = [(r["geom"]["pts"][0][0], r["geom"]["pts"][0][1],
+                     r["geom"]["pts"][1][0], r["geom"]["pts"][1][1])
+                    for r in v["prims"]
+                    if r["role"] in ("vis", "vh") and r["typ"] == "L"
+                    and len(r["geom"].get("pts", [])) == 2]
+        keep = []
+        for r in v["prims"]:
+            if (r["role"] == "hid" and r["typ"] == "L" and not r.get("dias")
+                    and len(r["geom"].get("pts", [])) == 2
+                    and _covered_by_visible(r["geom"], vis_segs, tol)):
+                n += 1
+                continue
+            keep.append(r)
+        v["prims"] = keep
+    st["suppressed"] = st.get("suppressed", 0) + n
+    return st
+
+
+def _dropout_feature_hidden(st, prob, rng=None):
+    """(2) Feature-coherent, cross-view hidden-line dropout — a TRAIN-TIME
+    augmentation (stochastic; NOT part of the canonical/round-trip form).
+
+    For a feature drawn *visibly* in some view, drop (with prob `prob`) the rows
+    where it appears only as HIDDEN in another view. Information is preserved (the
+    feature stays visible elsewhere), the drop is feature-coherent (whole tagged
+    rows, not random edges), and it mirrors real drawings that omit redundant
+    hidden detail — training the 3D leg to be robust to the sparse-hidden-line
+    reality of authored drawings. Untagged (structural) hidden lines and features
+    with no visible view anywhere (load-bearing internal detail) are never dropped."""
+    import random as _random
+    rng = rng or _random
+    vis_views = {}
+    for v in st["views"]:
+        for r in v["prims"]:
+            if r["role"] in ("vis", "vh"):
+                for tg in r["tags"]:
+                    vis_views.setdefault(tg, set()).add(v["name"])
+    dropped = 0
+    for v in st["views"]:
+        keep = []
+        for r in v["prims"]:
+            drop = (r["role"] == "hid" and r["tags"]
+                    and all(tg in vis_views and v["name"] not in vis_views[tg]
+                            for tg in r["tags"])
+                    and rng.random() < prob)
+            if drop:
+                dropped += 1
+            else:
+                keep.append(r)
+        v["prims"] = keep
+    st["hid_dropped"] = st.get("hid_dropped", 0) + dropped
+    return st
+
+
+def _quantize_struct(st, n):
+    """Quantize primitive *coordinates* (line/polyline/point/center positions +
+    radii) and positional DIM spans onto an integer grid of `n` levels over the
+    part's max coordinate extent. The step is a single SHARED scale across all
+    views, so the cross-view number-equality this format promises is preserved
+    (same mm -> same integer everywhere). Semantic dimensions stay exact mm:
+    DIM value, FEAT r, and the PART bbox are NOT quantized, so dimensional
+    fidelity of the target is untouched — only the token-heavy line coordinates
+    become short integers. Angles (arc/ellipse) are left in degrees.
+
+    Idempotent and round-trip-stable: values become integers, re-emitted and
+    re-parsed unchanged. The grid (n + extent) is written to the PART header so
+    mm is recoverable (mm ≈ grid_value / (n-1) * ext)."""
+    ext = 0.0
+    for v in st["views"]:
+        for r in v["prims"]:
+            g = r["geom"]
+            if "pts" in g:
+                for x, y in g["pts"]:
+                    ext = max(ext, abs(x), abs(y))
+            else:
+                cx, cy = g["c"]
+                rr = g.get("r") or max(g.get("rmaj", 0.0), g.get("rmin", 0.0))
+                ext = max(ext, abs(cx) + rr, abs(cy) + rr)
+    ext = ext or 1.0
+    step = ext / (n - 1)
+    q = lambda x: int(round(x / step))
+    for v in st["views"]:
+        for r in v["prims"]:
+            g = r["geom"]
+            if "pts" in g:
+                g["pts"] = [(q(x), q(y)) for x, y in g["pts"]]
+                if len(g["pts"]) == 2 and g["pts"][1] < g["pts"][0]:
+                    g["pts"] = [g["pts"][1], g["pts"][0]]
+            else:
+                g["c"] = (q(g["c"][0]), q(g["c"][1]))
+                if "r" in g:
+                    g["r"] = q(g["r"])
+                if "rmaj" in g:
+                    g["rmaj"] = q(g["rmaj"]); g["rmin"] = q(g["rmin"])
+    for d in st["dims"]:
+        sp = d.get("span")
+        if sp:
+            d["span"] = (sp[0], q(sp[1]), q(sp[2]))
+    st["quant"] = {"n": n, "ext": round(ext, 3)}
+    return st
+
+
 def _geom_str(row):
     g = row["geom"]
     if "pts" in g:
@@ -342,7 +481,10 @@ def _geom_str(row):
 
 
 def struct_to_text(st):
-    L = [f"PART unit=mm bbox={','.join(_fmt(x) for x in st['bbox'])}"]
+    head = f"PART unit=mm bbox={','.join(_fmt(x) for x in st['bbox'])}"
+    if st.get("quant"):
+        head += f" grid={st['quant']['n']} ext={_fmt(st['quant']['ext'])}"
+    L = [head]
     for f in st["feats"]:
         row = f"FEAT {f['id']} {f['kind']} axis={f['axis']}"
         row += f" r={_fmt(f['r'])}" if f.get("r") is not None else " r=-"
@@ -368,8 +510,32 @@ def struct_to_text(st):
     return "\n".join(L)
 
 
-def graph_to_text(graph, multi_tag=True):
-    return struct_to_text(struct_from_graph(graph, multi_tag=multi_tag))
+def graph_to_text(graph, multi_tag=True, quant=None, drop_covered=False,
+                  hid_dropout=0.0, rng=None):
+    st = struct_from_graph(graph, multi_tag=multi_tag)
+    if drop_covered:
+        _suppress_covered_hidden(st)
+    if hid_dropout:
+        _dropout_feature_hidden(st, hid_dropout, rng)
+    if quant:
+        _quantize_struct(st, quant)
+    return struct_to_text(st)
+
+
+# --- 3D-leg canonical serialization -----------------------------------------
+# build_dataset (train + val) and infer.py MUST serialize identically, or the
+# coordinate system the model trained on differs from what it sees at inference.
+# `serialize_3d` is the single source of truth for the 3D leg: covered hidden
+# lines are ALWAYS suppressed (lossless visible-priority drafting rule — not a
+# knob), coordinates are quantized to `quant` levels (default CANON_QUANT), and
+# `hid_dropout` (train-only sim-to-real augmentation) is passed through. The 2D
+# leg keeps calling `graph_to_text` with neutral defaults, unaffected.
+CANON_QUANT = 1024
+
+
+def serialize_3d(graph, quant=CANON_QUANT, hid_dropout=0.0, rng=None, multi_tag=True):
+    return graph_to_text(graph, multi_tag=multi_tag, quant=(quant or None),
+                         drop_covered=True, hid_dropout=hid_dropout, rng=rng)
 
 
 _PAIR = re.compile(r"^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$")
@@ -388,6 +554,8 @@ def text_to_struct(text):
         if tok[0] == "PART":
             kv = dict(t.split("=", 1) for t in tok[1:] if "=" in t)
             st["bbox"] = [float(x) for x in kv.get("bbox", "").split(",") if x]
+            if "grid" in kv:
+                st["quant"] = {"n": int(kv["grid"]), "ext": float(kv.get("ext", 0))}
         elif tok[0] == "FEAT":
             kv = dict(t.split("=", 1) for t in tok[3:] if "=" in t)
             st["feats"].append({"id": tok[1], "kind": tok[2], "axis": kv.get("axis", "-"),
@@ -479,9 +647,13 @@ def crossview_dev(st, tol=0.1):
     return dev, matched, unmatched
 
 
-def roundtrip_check(graph, multi_tag=True):
+def roundtrip_check(graph, multi_tag=True, quant=None, drop_covered=False):
     """(ok, msg): emission is parse-stable and matches the source graph's census."""
     st = struct_from_graph(graph, multi_tag=multi_tag)
+    if drop_covered:
+        _suppress_covered_hidden(st)
+    if quant:
+        _quantize_struct(st, quant)
     text = struct_to_text(st)
     if struct_to_text(text_to_struct(text)) != text:
         return False, "re-emission not byte-identical"
@@ -489,8 +661,9 @@ def roundtrip_check(graph, multi_tag=True):
         return False, f"{st['skipped']} primitives skipped"
     n_src = sum(len(v["primitives"]) for v in graph.get("views", []))
     n_out = sum(len(v["prims"]) for v in st["views"])
-    if n_out + st["merged"] != n_src:
-        return False, f"primitive count {n_out}+{st['merged']}merged != {n_src}"
+    n_removed = st["merged"] + st.get("suppressed", 0)
+    if n_out + n_removed != n_src:
+        return False, f"primitive count {n_out}+{n_removed}removed != {n_src}"
     if len(st["feats"]) != len(graph.get("features", [])):
         return False, "feature count mismatch"
     if len(st["blends"]) != len(graph.get("blends", [])):
@@ -504,16 +677,32 @@ def roundtrip_check(graph, multi_tag=True):
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "--check":
-        paths = sorted(p for a in sys.argv[2:] for p in glob.glob(a))
+    # optional: --quant N anywhere in argv toggles integer-grid quantization
+    argv = sys.argv[1:]
+    quant = None
+    if "--quant" in argv:
+        i = argv.index("--quant")
+        quant = int(argv[i + 1])
+        del argv[i:i + 2]
+    drop_covered = False
+    if "--drop-covered" in argv:
+        argv.remove("--drop-covered")
+        drop_covered = True
+    if argv and argv[0] == "--check":
+        paths = sorted(p for a in argv[1:] for p in glob.glob(a))
         bad, sizes, devs = [], [], []
-        n_match = n_miss = 0
+        n_match = n_miss = n_suppressed = 0
         for p in paths:
             g = json.load(open(p))
-            ok, msg = roundtrip_check(g)
+            ok, msg = roundtrip_check(g, quant=quant, drop_covered=drop_covered)
             if not ok:
                 bad.append((p, msg))
             st = struct_from_graph(g)
+            if drop_covered:
+                _suppress_covered_hidden(st)
+                n_suppressed += st.get("suppressed", 0)
+            if quant:
+                _quantize_struct(st, quant)
             sizes.append(len(struct_to_text(st)))
             d, m, u = crossview_dev(st)
             devs.append((d, p))
@@ -523,16 +712,17 @@ if __name__ == "__main__":
         devs.sort(reverse=True)
         print(f"round-trip OK {len(paths) - len(bad)}/{len(paths)}; text chars "
               f"median={sizes[len(sizes)//2]} p90={sizes[int(.9*len(sizes))]} "
-              f"max={sizes[-1]}")
+              f"max={sizes[-1]}"
+              + (f"; suppressed_hidden={n_suppressed}" if drop_covered else ""))
         print(f"cross-view silhouette@(c±r): matched {n_match} "
               f"(worst dev {devs[0][0]:.3f}mm at {devs[0][1].split('/')[-1][:8]}), "
               f"unmatched(tag-coverage) {n_miss}")
         for p, msg in bad[:10]:
             print("  FAIL", p, "--", msg)
         sys.exit(1 if bad else 0)
-    g = json.load(open(sys.argv[1]))
-    text = graph_to_text(g)
+    g = json.load(open(argv[0]))
+    text = graph_to_text(g, quant=quant, drop_covered=drop_covered)
     print(text)
-    ok, msg = roundtrip_check(g)
+    ok, msg = roundtrip_check(g, quant=quant, drop_covered=drop_covered)
     print(f"\n[roundtrip] {'OK' if ok else 'FAIL'} {msg} chars={len(text)}",
           file=sys.stderr)

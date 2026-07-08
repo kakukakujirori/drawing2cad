@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """LLM baseline via the **agy CLI agent** (Antigravity CLI), input = the drawing.
 
-This REPLACES the ollama/LiteLLM baseline (run_baseline.py, now legacy). For
-each fixture we hand agy the clean multi-view drawing PNG and ask it to write +
-execute a CadQuery script and export the solid to `output.step`, mirroring what
-our route produces (same OCC kernel via CadQuery => fair shape comparison).
+For each fixture we hand agy the clean multi-view drawing PNG and ask it to write
+and execute a CadQuery script and export the solid to `output.step`, mirroring
+what our route produces (same OCC kernel via CadQuery => fair shape comparison).
 
 Per fixture:
   1. make a clean workdir, copy the fixture's drawing.png into it,
@@ -54,6 +53,90 @@ import common as C  # noqa: E402
 AGY_BIN_DEFAULT = str(Path.home() / ".local" / "bin" / "agy")
 # The output STEP the agent must produce, inside its workdir.
 OUTPUT_STEP_NAME = "output.step"
+
+# --- Filesystem sandbox (bwrap) --------------------------------------------
+# The agent runs with --dangerously-skip-permissions and unrestricted reads. If
+# its workdir sits inside the repo (or the repo is otherwise reachable), a
+# curious agent will `find` the ground-truth STEP files (they live under
+# experiments/ and bench/data/gt) and re-export the *answer* instead of solving
+# the drawing — silent test-set contamination (observed with Gemini 3.5 Flash,
+# 2026-07-08). `--sandbox-fs` runs agy inside a bubblewrap jail that mounts the
+# whole FS read-only, HIDES the repo behind an empty tmpfs, and exposes only an
+# opaque per-fixture workdir OUTSIDE the repo. The GT is then physically
+# unreachable; the agent still sees the drawing.png staged into the workdir.
+DEFAULT_WORK_ROOT = Path.home() / ".cache" / "agy_bench_work"
+# agy's auth/config/cache — bound read-WRITE so token refresh still works inside
+# the jail (the rest of the FS is read-only).
+AGY_CONFIG_DIRS = [
+    Path.home() / ".gemini",
+    Path.home() / ".antigravity",
+    Path.home() / ".config" / "Antigravity",
+    Path.home() / ".cache" / "antigravity",
+]
+
+
+def bwrap_wrap(inner_cmd: list[str], workdir: Path, repo: Path,
+               rw_paths: list[Path]) -> list[str]:
+    """Wrap an agy command in a bubblewrap FS jail that hides `repo`.
+
+    Whole FS read-only, `repo` masked by an empty tmpfs (so the GT under it is
+    unreachable), `rw_paths` (+ `workdir`) rebound read-write, cwd=`workdir`.
+    """
+    args = ["bwrap",
+            "--ro-bind", "/", "/",
+            "--tmpfs", str(repo),      # mask the repo => GT is gone
+            "--tmpfs", "/tmp",
+            "--dev-bind", "/dev", "/dev",
+            "--proc", "/proc"]
+    for p in rw_paths:
+        if Path(p).exists():
+            args += ["--bind", str(p), str(p)]
+    # workdir added last so it wins over the tmpfs/ro-bind above.
+    args += ["--bind", str(workdir), str(workdir),
+             "--chdir", str(workdir),
+             "--die-with-parent"]
+    return args + list(inner_cmd)
+
+
+def _step_geom_lines(path: Path) -> list[str]:
+    """STEP body lines minus the FILE_NAME header (which carries an export
+    timestamp), so two exports of the *same* solid compare equal."""
+    txt = path.read_text(errors="replace").splitlines()
+    return [ln for ln in txt if not ln.startswith("FILE_NAME")]
+
+
+def is_leaked_gt(candidate: Path, gt: Path,
+                 tol_lines: int = 20, tol_frac: float = 0.005) -> bool:
+    """True iff `candidate` is the ground-truth STEP re-exported.
+
+    Integrity gate against test-set contamination: identical entity count and
+    all-but-a-handful of lines identical (only header timestamp + sub-nm float
+    rounding may differ). Runs regardless of --sandbox-fs, so a leak via any
+    vector is caught post-hoc instead of scoring as a fake success.
+    """
+    if not (candidate.exists() and gt.exists()):
+        return False
+    try:
+        c = _step_geom_lines(candidate)
+        g = _step_geom_lines(gt)
+    except Exception:
+        return False
+    if len(c) != len(g) or not g:
+        return False
+    diff = sum(1 for a, b in zip(c, g) if a != b)
+    return diff <= max(tol_lines, int(tol_frac * len(g)))
+
+
+def _copy_work_back(workdir: Path, fx: Path) -> None:
+    """Copy an external (sandboxed) workdir back under the fixture dir for
+    debugging (model.py, output.step, intermediate pngs)."""
+    dst = fx / "work"
+    try:
+        if dst.exists():
+            shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(workdir, dst)
+    except Exception:
+        pass
 
 
 def model_slug(model: str | None) -> str:
@@ -139,18 +222,27 @@ def looks_rate_limited(stdout: str, stderr: str) -> bool:
 
 def run_one(uuid: str, run_dir: Path, agy_bin: str, model: str | None,
             print_timeout_s: float, wall_timeout_s: float, sandbox: bool,
-            cadquery_python: str, dry_run: bool) -> str:
+            cadquery_python: str, dry_run: bool,
+            sandbox_fs: bool = False, work_root: Path | None = None) -> str:
     in_dir = C.INPUTS_DIR / uuid
     drawing = in_dir / C.DRAWING_NAME
     fx = run_dir / uuid
-    workdir = fx / "work"
+    if sandbox_fs:
+        # Opaque workdir OUTSIDE the repo (the repo is masked inside the jail).
+        # Opaque (not the uuid) so the agent has no key to search other stores by.
+        import secrets
+        workdir = Path(work_root or DEFAULT_WORK_ROOT) / secrets.token_hex(8)
+    else:
+        workdir = fx / "work"
 
     prompt = build_prompt(cadquery_python)
     cmd = agy_command(agy_bin, prompt, workdir, model, print_timeout_s, sandbox)
+    if sandbox_fs:
+        cmd = bwrap_wrap(cmd, workdir, C.REPO, AGY_CONFIG_DIRS)
 
     if dry_run:
         print(f"\n===== fixture {uuid} =====")
-        print(f"# cwd: {workdir}")
+        print(f"# cwd: {workdir}  (sandbox_fs={sandbox_fs})")
         print(f"# copy: {drawing} -> {workdir / C.DRAWING_NAME}")
         # shell-quote for copy-paste fidelity
         import shlex
@@ -207,7 +299,18 @@ def run_one(uuid: str, run_dir: Path, agy_bin: str, model: str | None,
 
     produced = workdir / OUTPUT_STEP_NAME
     if produced.exists() and produced.stat().st_size > 0:
+        # Integrity gate: reject a candidate that is just the GT re-exported.
+        gt = C.GT_DIR / uuid / C.GT_STEP_NAME
+        if is_leaked_gt(produced, gt):
+            print(f"[agy] {uuid}: REJECTED — output.step is the ground truth "
+                  f"re-exported (test-set contamination). Not accepted as a result. "
+                  f"Use --sandbox-fs. (see {log_path})", file=sys.stderr)
+            if sandbox_fs:
+                _copy_work_back(workdir, fx)   # keep artefacts for forensics
+            return "leaked"
         shutil.copy2(produced, fx / "output.step")
+        if sandbox_fs:
+            _copy_work_back(workdir, fx)        # external workdir -> keep for debugging
         print(f"[agy] {uuid}: output.step ({produced.stat().st_size} B, {dt:.1f}s)")
         return "step"
 
@@ -240,6 +343,17 @@ def main() -> int:
                          "(default: print-timeout + 120)")
     parser.add_argument("--sandbox", action="store_true",
                     help="pass agy --sandbox (restricted terminal)")
+    parser.add_argument("--sandbox-fs", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="run agy inside a bubblewrap FS jail that HIDES the repo "
+                         "(so the ground-truth STEP files are unreachable and the "
+                         "agent cannot read the answer off disk). Uses an opaque "
+                         "workdir under --work-root, OUTSIDE the repo. Requires bwrap. "
+                         "**ON BY DEFAULT** — pass --no-sandbox-fs to disable (⚠️ then "
+                         "the agent can and does find + re-export the GT: contamination).")
+    parser.add_argument("--work-root", default=str(DEFAULT_WORK_ROOT),
+                    help=f"parent dir for per-fixture --sandbox-fs workdirs; MUST be "
+                         f"outside the repo (default {DEFAULT_WORK_ROOT})")
     parser.add_argument("--agy-bin", default=AGY_BIN_DEFAULT,
                     help=f"path to the agy binary (default {AGY_BIN_DEFAULT})")
     parser.add_argument("--cadquery-python", default=str(C.CGB_VENV_PY),
@@ -275,6 +389,24 @@ def main() -> int:
 
     wall = args.wall_timeout if args.wall_timeout is not None else args.print_timeout + 120.0
 
+    work_root = Path(args.work_root)
+    if args.sandbox_fs:
+        if shutil.which("bwrap") is None:
+            raise SystemExit("--sandbox-fs requires bubblewrap (bwrap), not found "
+                             "on PATH. Install it (apt install bubblewrap) or drop "
+                             "--sandbox-fs (⚠️ then the agent can read the GT).")
+        # The work-root MUST be outside the repo, else masking the repo hides it.
+        if C.REPO in work_root.resolve().parents or work_root.resolve() == C.REPO:
+            raise SystemExit(f"--work-root must be OUTSIDE the repo ({C.REPO}); "
+                             f"got {work_root}.")
+        if not args.dry_run:
+            work_root.mkdir(parents=True, exist_ok=True)
+        print(f"[agy] sandbox-fs ON (bwrap): repo hidden, workdirs under {work_root}")
+    else:
+        print("[agy] ⚠️ sandbox-fs OFF: the agent can read the ground-truth STEP "
+              "files off disk. Pass --sandbox-fs to prevent contamination.",
+              file=sys.stderr)
+
     run_name = args.run_name or f"agy_{model_slug(args.model)}"
     run_dir = C.RESULTS_DIR / run_name
     if not args.dry_run:
@@ -296,6 +428,7 @@ def main() -> int:
         statuses[uuid] = run_one(
             uuid, run_dir, args.agy_bin, args.model, args.print_timeout, wall,
             args.sandbox, args.cadquery_python, args.dry_run,
+            sandbox_fs=args.sandbox_fs, work_root=work_root,
         )
         if statuses[uuid] == "limit":
             stopped_on_limit = True
@@ -312,6 +445,7 @@ def main() -> int:
     # not just this invocation's statuses.
     n_step_total = sum(1 for uuid in ids if is_done(uuid))
     n_step_this = sum(1 for s in statuses.values() if s == "step")
+    n_leaked = sum(1 for s in statuses.values() if s == "leaked")
     # Merge per-fixture statuses with any prior run_meta so the record is cumulative.
     meta_path = run_dir / "run_meta.json"
     prior = {}
@@ -332,11 +466,16 @@ def main() -> int:
         "n_fixtures": len(ids),
         "n_output_step": n_step_total,
         "last_run": {"n_step": n_step_this, "n_skipped_done": n_skipped,
-                     "stopped_on_limit": stopped_on_limit},
+                     "n_leaked_rejected": n_leaked,
+                     "stopped_on_limit": stopped_on_limit,
+                     "sandbox_fs": args.sandbox_fs},
         "per_fixture": merged,
     }, indent=2))
     print(f"[agy] this run: +{n_step_this} step, {n_skipped} already done | "
           f"cumulative {n_step_total}/{len(ids)} have output.step -> {run_dir}")
+    if n_leaked:
+        print(f"[agy] ⚠️ {n_leaked} fixture(s) REJECTED as GT-leak (agent re-exported "
+              f"the ground truth). Re-run those with --sandbox-fs.", file=sys.stderr)
     if stopped_on_limit:
         print("[agy] stopped early on a usage limit — re-run to resume.", file=sys.stderr)
     if any(s == "unauth" for s in statuses.values()):

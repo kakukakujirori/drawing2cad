@@ -20,13 +20,14 @@ import argparse
 import glob
 import json
 import os
+import random
 import statistics as st
 import sys
 
 from transformers import AutoTokenizer
 
 sys.path.insert(0, os.path.dirname(__file__))  # serialize.py is a sibling in train3d/
-from serialize import graph_to_text  # noqa: E402
+from serialize import serialize_3d, CANON_QUANT  # noqa: E402
 
 
 def dist(xs: list[float]):
@@ -43,7 +44,23 @@ def main():
     parser.add_argument("--code-dir", type=str, default="experiments/stage_z2c_val",
                         help="GT CadQuery dir (*.cadquery.py)")
     parser.add_argument("--out", type=str, default="experiments/data_z2c_val")
+    # --- serialization (serialize_3d): covered-hidden suppression is ALWAYS on
+    #     (lossless); these knobs are the only variables, and must match on infer.py ---
+    parser.add_argument("--quant", type=int, default=CANON_QUANT,
+                        help=f"integer-grid coordinate quantization, N levels "
+                             f"(default {CANON_QUANT}); 0 = off (ablation). infer.py "
+                             f"must use the SAME value.")
+    parser.add_argument("--hid-dropout", type=float, default=0.0,
+                        help="TRAIN-ONLY augmentation: probability of dropping a "
+                             "feature's redundant hidden lines in views where it is "
+                             "visible elsewhere (sim-to-real robustness). Leave 0 for "
+                             "val/infer. NOTE: baked ONCE here (static draw); per-epoch "
+                             "dynamic augmentation would require re-serializing in the "
+                             "train loop.")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="RNG seed for --hid-dropout")
     args = parser.parse_args()
+    rng = random.Random(args.seed)
 
     os.makedirs(args.out, exist_ok=True)
     tok = AutoTokenizer.from_pretrained("ADSKAILab/Zero-To-CAD-Qwen3-VL-2B", trust_remote_code=True)
@@ -57,7 +74,8 @@ def main():
         if not os.path.exists(cp):
             skipped.append(sid); continue
         try:
-            txt = graph_to_text(json.load(open(gp)))
+            txt = serialize_3d(json.load(open(gp)), quant=args.quant,
+                               hid_dropout=args.hid_dropout, rng=rng)
         except Exception as e:
             skipped.append(f"{sid}:serfail:{e}"); continue
         code = open(cp).read()
@@ -74,7 +92,7 @@ def main():
     tgt = [r["n_tok_target"] for r in records]
     tot = [r["n_tok_total"] for r in records]
     caps = {}
-    for cap in (2048, 3072, 4096, 6144, 8192):
+    for cap in (2048, 3072, 4096, 6144, 8192, 12288, 16384):
         over = sum(1 for x in tot if x + 40 > cap)
         caps[cap] = {"pairs_over": over, "pct_over": round(100 * over / len(tot), 1),
                      "pairs_kept": len(tot) - over}
@@ -82,6 +100,8 @@ def main():
            for cap in (768, 1024, 1280, 1536)}
     stats = {"n_records": len(records), "n_skipped": len(skipped),
              "graph_dir": args.graph_dir, "code_dir": args.code_dir, "tokenizer": tok_name,
+             "transforms": {"drop_covered": True, "quant": args.quant,
+                            "hid_dropout": args.hid_dropout, "seed": args.seed},
              "input_tokens": dist(inp), "target_tokens": dist(tgt), "total_tokens": dist(tot),
              "seq_cap_coverage": caps, "max_new_tokens_target_coverage_pct": mnt}
     json.dump(stats, open(os.path.join(args.out, "stats.json"), "w"), indent=2)

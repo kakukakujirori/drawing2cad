@@ -29,7 +29,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # siblings
 import train_sft                      # load_model, chat_ids, PROMPT (single source of truth)
 from train_sft import iter_batched_generate   # shared batched decode (also used by the eval hook)
-from serialize import graph_to_text
+from serialize import serialize_3d, CANON_QUANT
 from eval_cq import _shape_from_globals, imap_isolated
 
 
@@ -122,6 +122,11 @@ def main():
     parser.add_argument("--workers", type=int, default=0,
                         help="parallel exec workers (0 = auto = min(8, cpu_count))")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--quant", type=int, default=CANON_QUANT,
+                        help=f"coordinate quantization levels (default {CANON_QUANT}); "
+                             f"MUST match the value build_dataset used for the training "
+                             f"data, else train/inference coordinate systems diverge. "
+                             f"0 = off.")
     args = parser.parse_args()
 
     inputs = collect_inputs(args.input)
@@ -139,7 +144,7 @@ def main():
     for path in inputs:
         stem = stem_of(path)
         try:
-            text = graph_to_text(json.load(open(path)))
+            text = serialize_3d(json.load(open(path)), quant=args.quant)
         except Exception as e:
             serialize_err[stem] = f"serialize:{type(e).__name__}"
             continue

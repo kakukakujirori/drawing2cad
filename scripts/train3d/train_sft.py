@@ -55,10 +55,27 @@ EVAL_CQ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval_cq.py")
 
 
 # --------------------------------------------------------------- model loading
-def load_model(ckpt, dtype):
+def _resolve_attn(attn: str) -> str:
+    """Pick the attention backend. 'auto' => flash_attention_2 if the flash-attn
+    package is importable (best for long context / 16k), else 'sdpa'. Note SDPA
+    already dispatches to a *memory-efficient O(n)* kernel for masked training, so
+    16k fits without flash-attn — flash_attention_2 is a speed/headroom upgrade
+    that needs `pip install flash-attn`."""
+    if attn != "auto":
+        return attn
+    try:
+        import flash_attn  # noqa: F401
+        return "flash_attention_2"
+    except Exception:
+        return "sdpa"
+
+
+def load_model(ckpt, dtype, attn="auto"):
     """Load exactly `ckpt` as a causal LM.
     Qwen3-VL loads text-only fine (no images)."""
-    kw = dict(torch_dtype=dtype, attn_implementation="sdpa", trust_remote_code=True)
+    impl = _resolve_attn(attn)
+    print(f"[load_model] attn_implementation={impl}", file=sys.stderr)
+    kw = dict(torch_dtype=dtype, attn_implementation=impl, trust_remote_code=True)
     cfg = AutoConfig.from_pretrained(ckpt, trust_remote_code=True)
     arch = (cfg.architectures or [""])[0]
     if "ForConditionalGeneration" in arch:
@@ -351,7 +368,10 @@ class ExpConfig:
         "help": "run dir (default: experiments/train3d/<YYYY-MM-DD_HH-MM-SS>)"})
     full: bool = field(default=False, metadata={"help": "full fine-tune (default: LoRA)"})
     train_vision: bool = field(default=False, metadata={"help": "don't freeze vision tower"})
-    max_len: int = 8192
+    max_len: int = 16384 # 8192
+    attn: str = field(default="auto", metadata={
+        "help": "attention backend: auto (flash_attention_2 if installed else sdpa) "
+                "| sdpa | flash_attention_2 | eager"})
     bs: int = 1
     grad_accum: int = 8
     lr: Optional[float] = field(default=None, metadata={"help": "default 2e-4 LoRA / 1e-4 full"})
@@ -509,7 +529,7 @@ def main():
     print(f"train examples kept {len(ds)} (dropped over-len {ds.dropped}) "
           f"| val {len(val)} | max_len {args.max_len}")
 
-    model, used = load_model(args.ckpt, torch.bfloat16)
+    model, used = load_model(args.ckpt, torch.bfloat16, attn=args.attn)
     print(f"loaded {used}")
     if not args.train_vision:
         nfz = 0

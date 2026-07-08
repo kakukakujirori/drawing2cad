@@ -1,14 +1,10 @@
 # AMVDG → 3D CAD learning harness (`scripts/train3d/`)
 
-Trains and evaluates the **back leg** of the drawing2cad pipeline:
-`AMVDG graph (serialized text) → CadQuery code → 3D solid`. Text-only by design — **no
-drawing PNG is fed** — so a working leg is evidence the AMVDG IR is *sufficient* to recover 3D.
+Trains and evaluates the **back leg** of the drawing2cad pipeline: `AMVDG graph (serialized text) → CadQuery code → 3D solid`. Text-only by design — **no drawing PNG is fed** — so a working leg is evidence the AMVDG IR is *sufficient* to recover 3D.
 
-- **Input** = `scripts/train3d/serialize.graph_to_text(graph)` (part-frame mm, each axis
-  bbox-min = 0; `Ck` tags mark the same 3D feature across views).
+- **Input** = `scripts/train3d/serialize.graph_to_text(graph)` (part-frame mm, each axis bbox-min = 0; `Ck` tags mark the same 3D feature across views).
 - **Target** = GT CadQuery (`experiments/stage_z2c_{train,val}/{uuid}.cadquery.py`, assigns `result`).
-- **Start ckpt** = [`ADSKAILab/Zero-To-CAD-Qwen3-VL-2B`](https://huggingface.co/ADSKAILab/Zero-To-CAD-Qwen3-VL-2B)
-  (image→CadQuery SFT; same base *and* same output format as us), swappable via `--ckpt`.
+- **Start ckpt** = [`ADSKAILab/Zero-To-CAD-Qwen3-VL-2B`](https://huggingface.co/ADSKAILab/Zero-To-CAD-Qwen3-VL-2B) (image→CadQuery SFT; same base *and* same output format as us), swappable via `--ckpt`.
 - **Data** = the two per-split bundles from **Data Preparation step 3** (top-level README):
   `experiments/data_z2c_train` (≈2825, Zero-To-CAD train split) and `experiments/data_z2c_val`
   (≈274, val split). Each is `all.jsonl` + `stats.json`; the SFT train/val sets **are** these
@@ -34,20 +30,31 @@ python scripts/train3d/train_sft.py --smoke \
     --val experiments/data_z2c_val \
     --out experiments/train3d/smoke
 
-# 2. real single-GPU LoRA run (max-len defaults to 8192, the decided cap)
+# 2. real single-GPU LoRA run.
+#    --max_len 16384: hard parts (faces median 127) serialize to ~10k tokens; at the old
+#      8192 cap ~84% are FILTERED out of training (build_labels drops, never truncates).
+#      16k lets them in; --attn auto uses flash_attention_2 if `pip install flash-attn`,
+#      else sdpa (already mem-efficient O(n), so 16k fits one 24 GB A5000 with grad-ckpt).
 #    --out is optional: omit it and the run lands in experiments/train3d/<YYYY-MM-DD_HH-MM-SS>/
 python scripts/train3d/train_sft.py \
     --train experiments/data_z2c_train \
     --val experiments/data_z2c_val \
-    --epochs 3
+    --epochs 3 \
+    --max_len 16384 \
+    --attn auto
 
-# 3. two-GPU DDP (LoRA or --full): torchrun handles world size
-torchrun --nproc_per_node=2 scripts/train3d/train_sft.py --full \
+# 3. two-GPU DDP (LoRA recommended; --full optional): torchrun handles world size.
+#    DDP = throughput (each GPU a full replica on different samples), not memory relief;
+#    16k LoRA already fits ONE 24 GB A5000, so no sharding needed.
+torchrun --nproc_per_node=2 scripts/train3d/train_sft.py \
     --train experiments/data_z2c_train \
     --val experiments/data_z2c_val \
-    --epochs 3 --bs 1 --grad-accum 8 --out experiments/train3d/full
-#   NOTE: full-FT of a 2B with AdamW replicates ~22 GB of optimizer state PER GPU under
-#   plain DDP -> OOMs a 24 GB A5000. To fit "modest full-FT" pick ONE of:
+    --epochs 3 \
+    --bs 1 \
+    --grad-accum 8 \
+    --max_len 16384 \
+    --attn auto
+#   NOTE: full-FT of a 2B with AdamW replicates ~22 GB of optimizer state PER GPU under plain DDP -> OOMs a 24 GB A5000. To fit "modest full-FT" pick ONE of:
 #     --optim adafactor            # ~no 2nd-moment state; full-FT fits one 24 GB GPU
 #     accelerate launch --fsdp ... # shard AdamW state across the 2 A5000s
 #   LoRA (default) fits comfortably and is the recommended path on this box.

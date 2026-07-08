@@ -53,6 +53,11 @@ def main() -> int:
     ap.add_argument("--gpu", default="1",
                     help="CUDA_VISIBLE_DEVICES for inference (default 1)")
     ap.add_argument("--batch-size", type=int, default=16)
+    ap.add_argument("--quant", type=int, default=0,
+                    help="coordinate quantization passed to infer.py; MUST match the "
+                         "checkpoint's training data. Default 0 = the pre-quant "
+                         "noblend_v1 ckpt; use 1024 for checkpoints trained on "
+                         "quantized data (build_dataset's default).")
     ap.add_argument("--keep-preds", action="store_true",
                     help="keep the raw infer.py output dir (default: temp)")
     args = ap.parse_args()
@@ -88,6 +93,7 @@ def main() -> int:
         "--input", str(graph_link_dir),
         "--out", str(preds_dir),
         "--batch-size", str(args.batch_size),
+        "--quant", str(args.quant),
     ]
     print("[run_ours] $", " ".join(cmd), f"(CUDA_VISIBLE_DEVICES={args.gpu})")
     rc = subprocess.run(cmd, env=env).returncode

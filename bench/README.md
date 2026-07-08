@@ -12,7 +12,7 @@ with **CADGenBench's own CAD Score** against our own GT STEP files:
 - **(ii) LLM/agent baseline** — the **`agy` CLI agent** (Antigravity CLI) run
   headless, one prompt per fixture, input = the rendered drawing PNG. It writes
   and executes a CadQuery script and exports a STEP. See `run_baseline_agy.py`.
-  *(The previous ollama/LiteLLM baseline, `run_baseline.py`, is **legacy** — kept
+  *(The previous ollama/LiteLLM baseline, `run_baseline_ollama.py`, is **legacy** — kept
   for reference but superseded by agy; see "Baselines" below.)*
 
 Metric = **CADGenBench CAD Score**, computed locally via `cadgenbench evaluate`.
@@ -23,11 +23,10 @@ Metric = **CADGenBench CAD Score**, computed locally via `cadgenbench evaluate`.
 > [90,400]** so its distribution sits inside the real-CADGenBench IQR. See
 > "Fixtures" below.
 
----
 
 ## Layout
 
-```
+```bash
 bench/
   common.py            # shared paths/helpers (stdlib only; everything is shelled out)
   build_fixtures.py    # select N parts from a source set (--step-dir/--graph-dir) w/ BOTH
@@ -38,7 +37,7 @@ bench/
                        #   results/ours_noblend_v1/<uuid>/output.step
   run_baseline_agy.py  # agy CLI agent, one headless prompt/fixture, backend=cadquery ->
                        #   results/agy_<modelslug>/<uuid>/output.step  (CURRENT, resumable)
-  run_baseline.py      # LEGACY: cadgenbench baseline agent + ollama vision model ->
+  run_baseline_ollama.py # LEGACY: cadgenbench baseline agent + ollama vision model ->
                        #   results/<timestamp>_<model_slug>/<uuid>/output.step
   evaluate.py          # cadgenbench evaluate over a results dir -> per-fixture result.json + run_summary.json
   report.py            # aggregate ours-vs-baseline -> results/report.{json,md}
@@ -50,7 +49,6 @@ All bench scripts are **stdlib-only** and shell out to the correct interpreter,
 so you can run them with any `python3` (examples below use the cadgenbench venv
 for convenience). Every script has `--help` and runs from the repo root.
 
----
 
 ## Environments
 
@@ -59,7 +57,7 @@ for convenience). Every script has `--help` and runs from the repo root.
   `build123d`, `litellm`, `pyvista`, `trimesh`, `open3d`. This env runs the
   baseline agent and the evaluator.
   - The box is **headless**: VTK 9.3 (< 9.5) has no OSMesa offscreen, so both
-    `run_baseline.py` and `evaluate.py` wrap the cadgenbench CLI in `xvfb-run -a`
+    `run_baseline_agy.py` and `evaluate.py` wrap the cadgenbench CLI in `xvfb-run -a`
     (auto; disable with `--no-xvfb` if you have a display). `xvfb` is installed.
 - **drawing2cad** (py3.11): `~/miniforge3/envs/drawing2cad` — runs our
   `scripts/train3d/infer.py` (FreeCAD/OCC + the LoRA model). Used by `run_ours.py`.
@@ -67,7 +65,6 @@ for convenience). Every script has `--help` and runs from the repo root.
 Fixture discovery uses `CADGENBENCH_DATA_DIR` (set automatically by the wrappers
 to `bench/data`), so nothing depends on the current working directory.
 
----
 
 ## Fixtures (complexity-matched)
 
@@ -92,22 +89,16 @@ via `--step-dir` / `--graph-dir`.
   Real CADGenBench for reference: **p25 93 / median 173 / p75 373** — the sample
   sits squarely inside the real IQR (the old uniform-random set had median 29).
 
-The manifest (`data/manifest.json`) records `seed`, the `[90,400]` band, the
-source dataset, per-fixture face counts, and the achieved distribution, so the
-complexity claim is self-documenting.
+The manifest (`data/manifest.json`) records `seed`, the `[90,400]` band, the source dataset, per-fixture face counts, and the achieved distribution, so the complexity claim is self-documenting.
 
-To (re)build: stage ≥65 parts to clear ~50 after the ~79% render yield, render,
-build the ours bundle, then build fixtures (see "How to run", step 0/1).
+To (re)build: stage ≥65 parts to clear ~50 after the ~79% render yield, render, build the ours bundle, then build fixtures (see "How to run", step 0/1).
 
----
 
 ## Baselines
 
 ### Current: the `agy` CLI agent (`run_baseline_agy.py`)
 
-The baseline is the **`agy` CLI agent** (Antigravity CLI, `~/.local/bin/agy`),
-run **headless, one prompt per fixture**. For each fixture the script makes a
-clean workdir, copies the drawing PNG in, and runs:
+The baseline is the **`agy` CLI agent** (Antigravity CLI, `~/.local/bin/agy`), run **headless, one prompt per fixture**. For each fixture the script makes a clean workdir, copies the drawing PNG in, and runs:
 
 ```
 agy -p "<prompt>" --dangerously-skip-permissions --add-dir <workdir>   (cwd=workdir)
@@ -144,14 +135,9 @@ Per-fixture stdout/exit go to `<uuid>/agy.log`; the workdir is kept under
 - **Dry run.** `--dry-run` prints the exact command + prompt per fixture and
   invokes nothing — use it to inspect before a real (costly) run.
 
-### Legacy: ollama + CADGenBench baseline agent (`run_baseline.py`)
+### Legacy: ollama + CADGenBench baseline agent (`run_baseline_ollama.py`)
 
-Superseded by agy; kept for reference/optional use. It drives CADGenBench's own
-reference agent with a **local ollama vision model** (`qwen2.5vl:32b`, Q4_K_M,
-~23 GB VRAM — the strongest vision model fitting one 24 GB A5000) via LiteLLM,
-backend forced to cadquery. It needs a **private ollama server pinned to a free
-GPU** (the shared systemd ollama on `:11434` spreads the model across GPUs and
-offloads to CPU → unusably slow):
+Superseded by agy; kept for reference/optional use. It drives CADGenBench's own reference agent with a **local ollama vision model** (`qwen2.5vl:32b`, Q4_K_M, ~23 GB VRAM — the strongest vision model fitting one 24 GB A5000) via LiteLLM, backend forced to cadquery. It needs a **private ollama server pinned to a free GPU** (the shared systemd ollama on `:11434` spreads the model across GPUs and offloads to CPU → unusably slow):
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 OLLAMA_HOST=127.0.0.1:11435 \
@@ -159,10 +145,8 @@ CUDA_VISIBLE_DEVICES=1 OLLAMA_HOST=127.0.0.1:11435 \
   ollama serve &
 ```
 
-`OLLAMA_MODELS` is **required** (else the user server reads an empty store and
-every request 404s). `run_baseline.py` defaults `OLLAMA_API_BASE` to that server.
+`OLLAMA_MODELS` is **required** (else the user server reads an empty store and every request 404s). `run_baseline_ollama.py` defaults `OLLAMA_API_BASE` to that server.
 
----
 
 ## How to run
 
@@ -173,12 +157,17 @@ D2C=~/miniforge3/envs/drawing2cad/bin/python
 # 0) (Re)build the hard source set if needed (drawing2cad env for HF + renderer).
 #    Stage >=65 to clear ~50 after the ~79% render yield; seed 0 is deterministic.
 $D2C scripts/renderer/select_zero_to_cad.py --n 70 \
-     --stage_dir experiments/stage_z2c_val_hard --split validation --seed 0 \
-     --min-faces 90 --max-faces 400
+     --stage_dir experiments/stage_z2c_val_hard \
+     --split validation \
+     --seed 0 \
+     --min-faces 90 \
+     --max-faces 400
 $D2C scripts/renderer/batch_dataset.py \
-     --step_dir experiments/stage_z2c_val_hard --out_dir experiments/dataset_z2c_val_hard
+     --step_dir experiments/stage_z2c_val_hard \
+     --out_dir experiments/dataset_z2c_val_hard
 $D2C scripts/train3d/build_dataset.py \
-     --graph-dir experiments/dataset_z2c_val_hard --code-dir experiments/stage_z2c_val_hard \
+     --graph-dir experiments/dataset_z2c_val_hard \
+     --code-dir experiments/stage_z2c_val_hard \
      --out experiments/data_z2c_val_hard
 
 # 1) Build fixtures (default N=50, seed 0, hard source set). --clean wipes prior data/.
@@ -202,59 +191,22 @@ $V bench/evaluate.py bench/results/ours_noblend_v1
 $V bench/evaluate.py bench/results/agy_<modelslug>
 
 # 5) Side-by-side report -> results/report.{json,md}
-$V bench/report.py --ours bench/results/ours_noblend_v1 \
-                   --baseline bench/results/agy_<modelslug>
+$V bench/report.py \
+    --ours bench/results/ours_noblend_v1 \
+    --baseline bench/results/agy_<modelslug>
 ```
-
----
 
 ## CAD Score, as computed here
 
-CADGenBench's generation CAD Score is a weighted mean over the axes actually
-present: **shape 0.4 / interface 0.4 / topology 0.2**, renormalized over present
-axes; **0** for an invalid or missing candidate. Our fixtures carry **no
-interface jig sub-volumes**, so only **shape + topology** are present and the
-effective weights are **shape 2/3, topology 1/3**. This is a documented, honest
-deviation from the full 3-axis score — the interface axis is simply not
-available for Z2C parts.
+CADGenBench's generation CAD Score is a weighted mean over the axes actually present: **shape 0.4 / interface 0.4 / topology 0.2**, renormalized over present axes; **0** for an invalid or missing candidate. Our fixtures carry **no interface jig sub-volumes**, so only **shape + topology** are present and the effective weights are **shape 2/3, topology 1/3**. This is a documented, honest deviation from the full 3-axis score — the interface axis is simply not available for Z2C parts.
 
 - shape = surface-distance F1 + volume-IoU (rigid-aligned to GT).
 - topology = fuzzy Betti-number (b0,b1,b2) agreement.
-- `report.py` reports the mean CAD Score **including zeros** from invalid/missing
-  fixtures (the leaderboard convention), plus a **paired** aggregate over the
-  fixtures common to both runs.
-
----
-
-## Decisions & caveats
-
-- **Fairness: kernel = CadQuery for the baseline.** Our route emits CadQuery→OCC
-  STEP; the agy baseline is prompted to use CadQuery and to execute with the same
-  CadQuery/OCC interpreter (`--cadquery-python`, default the cadgenbench venv), so
-  the kernel does not confound the shape comparison. (The legacy `run_baseline.py`
-  forces `--backend cadquery` on CADGenBench's agent for the same reason.)
-- **Synthesized task text.** Z2C parts have no authored natural-language spec, so
-  every fixture uses one honest, minimal description (see `common.TASK_DESCRIPTION`);
-  the real signal is the drawing PNG. We use the **clean** `{uuid}.png`, not the
-  scan-augmented `{uuid}.scan.png`.
-- **Complexity-matched, not exhaustive.** Fixtures are drawn from the face band
-  `[90,400]` (see "Fixtures"); parts whose HLR curves the projector drops (~21%)
-  never enter the set. This is a deliberate complexity match, not a full census
-  of Z2C-val. Selection is within the rendered pool (55 parts here → 50 chosen).
-- **GT AMVDG for ours** is an upper bound, not an end-to-end drawing→CAD result;
-  the 2D leg (drawing→AMVDG) is future work. **Expect ours to score low on this
-  hard set:** the model was trained on simple parts (faces median ~29) and these
-  are median 127 — strongly out-of-distribution. That gap is itself a finding.
-- **Bounds.** The agy baseline is capped by `--print-timeout` + `--wall-timeout`
-  so no fixture can hang forever; a non-converged run is scored on whatever
-  `output.step` it last produced (missing → 0).
-- **Determinism.** Fixture selection is seeded (`--seed`). LLM/agent generation is
-  not bit-reproducible; our infer.py greedy decode is stable up to batch effects.
+- `report.py` reports the mean CAD Score **including zeros** from invalid/missing fixtures (the leaderboard convention), plus a **paired** aggregate over the fixtures common to both runs.
 
 ## Estimated full-run time (50 fixtures, this box)
 
-- **Ours:** inference is batched (~6 s/part amortized) + eval (~15 s/part / N
-  workers). Roughly **10–20 min** total.
+- **Ours:** inference is batched (~6 s/part amortized) + eval (~15 s/part / N workers). Roughly **10–20 min** total.
 - **agy baseline:** dominated by the agent loop (read image → write → execute →
   fix). Per-fixture bounded by `--print-timeout` (default 900 s) + margin; budget
   several hours for 50 fixtures sequentially. Kick it off deliberately, and only

@@ -11,10 +11,9 @@ running log live in [`research/`](research/) (start with `research/research-log_
 conda create -y -n drawing2cad python=3.11 freecad cadquery -c conda-forge
 conda activate drawing2cad
 
-# install pytorch according to instructions
-# https://pytorch.org/get-started/
-
 # install requirements
+pip3 install torch torchvision xformers --index-url https://download.pytorch.org/whl/cu128
+MAX_JOBS=4 pip3 install flash-attn --no-build-isolation
 pip install -r requirements.txt
 ```
 
@@ -30,15 +29,17 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
     ```bash
     # train
     python scripts/renderer/select_zero_to_cad.py \
-      --n 3000 \
+      --n 100000 \
       --stage_dir experiments/stage_z2c_train \
-      --split train
+      --split train \
+      --max-faces 400
 
     # val
     python scripts/renderer/select_zero_to_cad.py \
       --n 300 \
       --stage_dir experiments/stage_z2c_val \
-      --split validation
+      --split validation \
+      --max-faces 400
     ```
 
 2. Generate AMVDG json and 2D drawings:
@@ -55,24 +56,37 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
     ```
     For the AMVDG format, refer to [`spec/AMVDG_v0.3.md`](spec/AMVDG_v0.3.md).
 
-3. Bundle each `(AMVDG graph, GT CadQuery)` pair into an SFT jsonl:
+3. Strip edge blends (fillet/chamfer) from the GT CadQuery (Note: AMVDG doesn't encode blends by default):
+    ```bash
+    # train
+    python scripts/train3d/strip_blends.py \
+      --in-dir experiments/stage_z2c_train \
+      --out-dir experiments/stage_z2c_train_noblend
+
+    # val
+    python scripts/train3d/strip_blends.py \
+      --in-dir experiments/stage_z2c_val \
+      --out-dir experiments/stage_z2c_val_noblend
+    ```
+
+4. Bundle each `(AMVDG graph, GT CadQuery)` pair into an SFT jsonl. Coordinates are quantized to 1024 levels by default:
     ```bash
     # train
     python scripts/train3d/build_dataset.py \
       --graph-dir experiments/dataset_z2c_train \
-      --code-dir  experiments/stage_z2c_train \
-      --out experiments/data_z2c_train
+      --code-dir  experiments/stage_z2c_train_noblend \
+      --out experiments/data_z2c_train_noblend \
+      --hid-dropout 0.95  # drop redundant hidden lines visible from other views
 
     # val
     python scripts/train3d/build_dataset.py \
       --graph-dir experiments/dataset_z2c_val \
-      --code-dir  experiments/stage_z2c_val \
-      --out experiments/data_z2c_val
+      --code-dir  experiments/stage_z2c_val_noblend \
+      --out experiments/data_z2c_val_noblend \
+      --hid-dropout 0.95  # NOTE: DO WE NEED THIS FOR EVALUATION?
     ```
-    Each bundle is `all.jsonl` (one record per part: `input_text` = serialized graph,
-    `target_code` = GT CadQuery) + `stats.json` (token report). `build_dataset.py` calls the
-    graph→text serializer [`scripts/train3d/serialize.py`](scripts/train3d/serialize.py); to
-    eyeball / round-trip-check the exact text the model reads:
+    > **Consistency:** `--quant` sets the coordinate encoding, so `infer.py --quant` must equal what the training data used (both default 1024 → consistent by default; pass `--quant 0` on both to ablate). `stats.json` records the transforms and reports token coverage up to 16384.
+    Each bundle is `all.jsonl` (one record per part: `input_text` = serialized graph, `target_code` = GT CadQuery) + `stats.json` (token report). `build_dataset.py` calls the graph→text serializer [`scripts/train3d/serialize.py`](scripts/train3d/serialize.py); to eyeball / round-trip-check the exact text the model reads:
     ```bash
     # one graph -> the model-input text (pass any <uuid>.graph.json from Step 2's output):
     python scripts/train3d/serialize.py "$(ls experiments/dataset_z2c_val/*.graph.json | head -1)"
