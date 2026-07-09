@@ -23,7 +23,10 @@ import os
 import random
 import statistics as st
 import sys
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 
+from tqdm import tqdm
 from transformers import AutoTokenizer
 
 sys.path.insert(0, os.path.dirname(__file__))  # serialize.py is a sibling in train3d/
@@ -59,29 +62,48 @@ def main():
                              "train loop.")
     parser.add_argument("--seed", type=int, default=0,
                         help="RNG seed for --hid-dropout")
+    parser.add_argument("--workers", type=int, default=16,
+                        help="thread pool size: per-record work is file I/O + the "
+                             "fast (Rust) tokenizer, both of which release the GIL, "
+                             "so threads (not processes) parallelize this well")
     args = parser.parse_args()
-    rng = random.Random(args.seed)
 
     os.makedirs(args.out, exist_ok=True)
     tok = AutoTokenizer.from_pretrained("ADSKAILab/Zero-To-CAD-Qwen3-VL-2B", trust_remote_code=True)
     tok_name = getattr(tok, "name_or_path", "?")
     ntok = lambda s: len(tok(s)["input_ids"])
 
-    records, skipped = [], []
-    for gp in sorted(glob.glob(os.path.join(args.graph_dir, "*.graph.json"))):
+    def record_seed(sid):
+        # per-record deterministic seed, NOT a single rng shared/threaded across
+        # records: hash() is salted per process (not reproducible, see
+        # scripts/renderer/batch_dataset.py's scan_augment for the same fix), and a
+        # shared sequential Random's draw order would depend on thread scheduling.
+        return zlib.crc32(f"{args.seed}:{sid}".encode()) & 0xffffffff
+
+    def process_one(gp):
         sid = os.path.basename(gp)[:-len(".graph.json")]
         cp = os.path.join(args.code_dir, f"{sid}.cadquery.py")
         if not os.path.exists(cp):
-            skipped.append(sid); continue
+            return ("SKIP", sid, None)
         try:
             txt = serialize_3d(json.load(open(gp)), quant=args.quant,
-                               hid_dropout=args.hid_dropout, rng=rng)
+                               hid_dropout=args.hid_dropout,
+                               rng=random.Random(record_seed(sid)))
         except Exception as e:
-            skipped.append(f"{sid}:serfail:{e}"); continue
+            return ("SKIP", f"{sid}:serfail:{e}", None)
         code = open(cp).read()
         ti, tt = ntok(txt), ntok(code)
-        records.append({"id": sid, "input_text": txt, "target_code": code,
-                        "n_tok_input": ti, "n_tok_target": tt, "n_tok_total": ti + tt})
+        return ("OK", sid, {"id": sid, "input_text": txt, "target_code": code,
+                            "n_tok_input": ti, "n_tok_target": tt, "n_tok_total": ti + tt})
+
+    graphs = sorted(glob.glob(os.path.join(args.graph_dir, "*.graph.json")))
+    records, skipped = [], []
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        for kind, key, payload in tqdm(ex.map(process_one, graphs), total=len(graphs)):
+            if kind == "SKIP":
+                skipped.append(key)
+            else:
+                records.append(payload)
 
     records.sort(key=lambda r: r["id"])
     with open(os.path.join(args.out, "all.jsonl"), "w") as f:

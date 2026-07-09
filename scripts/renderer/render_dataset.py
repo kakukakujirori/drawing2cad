@@ -19,8 +19,10 @@ import argparse
 import glob
 import json
 import math
+import multiprocessing as mp
 import os
 import sys
+import time
 from collections import Counter
 from tqdm import tqdm
 
@@ -46,6 +48,20 @@ _AXIS_REMAP = {
     "top":   {"matrix": [[1, 0], [0, -1]], "px_x": "+X", "px_y": "-Y"},
     "right": {"matrix": [[1, 0], [0, -1]], "px_x": "+Y", "px_y": "-Z"},
 }
+
+def _atomic_write(path, write_fn):
+    """Write via a temp file + fsync + os.replace so a kill/crash/timeout mid-write
+    (or a transient disk/IO hiccup) can never leave a truncated file at `path` --
+    readers either see the complete previous version or the complete new one, never
+    a partial one. (We hit exactly this: one part's graph.json came out truncated
+    with no corresponding error in the render log.)"""
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w") as f:
+        write_fn(f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
 
 # ============================================================================
 #  geometry -> SVG path + primitive records
@@ -632,8 +648,7 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
                               partname, scale, L, W, H))
     parts.append('</svg>')
     svg = "\n".join(parts)
-    with open(out_svg, "w") as f:
-        f.write(svg)
+    _atomic_write(out_svg, lambda f: f.write(svg))
 
     rnum, rden = _ratio(scale)
 
@@ -721,8 +736,7 @@ def render_one(step_path, out_dir, name=None, width=PX_DEFAULT_W):
     svg_path = os.path.join(out_dir, name + ".svg")
     svg, graph, meta = build(step_path, svg_path, name.upper(), width)
     graph_path = os.path.join(out_dir, name + ".graph.json")
-    with open(graph_path, "w") as f:
-        json.dump(graph, f, indent=1)
+    _atomic_write(graph_path, lambda f: json.dump(graph, f, indent=1))
     return {"name": name, "svg": svg_path, "graph": graph_path, "meta": meta,
             "counts": _counts(graph)}
 
@@ -734,26 +748,92 @@ def _counts(graph):
     nrefless = sum(1 for d in graph["annotations"] if not d["refs"])
     return {"nv": nv, "nh": nh, "types": dict(by_type), "nrefless": nrefless}
 
-def _run_batch(step_dir, out_dir, width, limit, logf):
-    """Render every *.step under step_dir into out_dir (per-part isolation, OK/SKIP log)."""
-    jobs = [(sp, os.path.splitext(os.path.basename(sp))[0])
-            for sp in sorted(glob.glob(os.path.join(step_dir, "*.step")))]
+def _render_worker(step_path, out_dir, name, width, q):
+    """Runs inside a forked child process spawned by _run_batch. Isolation in a
+    real OS process (not just a try/except) is what lets the parent recover
+    from a hang, not only a raised exception -- see _run_batch docstring."""
+    try:
+        r = render_one(step_path, out_dir, name, width)
+        q.put(("OK", r))
+    except Exception:
+        import traceback
+        q.put(("SKIP", traceback.format_exc()))
+
+
+def _run_batch(step_dir, out_dir, width, limit, logf, workers=1, timeout=60):
+    """Render every *.step under step_dir into out_dir (per-part isolation, OK/SKIP log).
+
+    Each part runs in its own forked child process with a hard wall-clock timeout.
+    Per-part isolation is not optional: TechDraw's HLR projection can spin forever
+    in native OpenCascade code on pathological geometry (observed: TechDraw.projectEx
+    hanging, 100% CPU, no progress for 14+ hours on one part). That kind of hang never
+    raises a Python exception, so a plain try/except in a single long-lived process
+    can't recover from it -- only a parent-side terminate() of a genuinely separate
+    process does (same pattern already used by scripts/train3d/eval_cq.py's
+    imap_isolated and scripts/b2_cadrille_execute.py, both for the same reason:
+    CadQuery/OCC can hang in C code).
+
+    Parts whose graph.json already exists are skipped up front, so a run that was
+    killed (stuck part, Ctrl-C, ...) can simply be re-launched to resume.
+    """
+    all_jobs = [(sp, os.path.splitext(os.path.basename(sp))[0])
+                for sp in sorted(glob.glob(os.path.join(step_dir, "*.step")))]
     if limit > 0:
-        jobs = jobs[:limit]
-    results = []
-    for sp, nm in tqdm(jobs):
-        # Per-part isolation: a single bad solid (HLR throw, null shape) must
-        # not abort the whole batch over hundreds of varied seeds.
-        try:
-            r = render_one(sp, out_dir, nm, width)
-        except Exception:
-            import traceback
-            logf.write("SKIP %s\n%s\n" % (nm, traceback.format_exc())); logf.flush()
-            continue
-        results.append(r)
-        logf.write("OK %s counts=%s\n" % (nm, json.dumps(r["counts"]))); logf.flush()
-    with open(os.path.join(out_dir, "_build_results.json"), "w") as f:
-        json.dump([{k: v for k, v in r.items() if k != "meta"} for r in results], f, indent=1)
+        all_jobs = all_jobs[:limit]
+    jobs = [(sp, nm) for sp, nm in all_jobs
+            if not os.path.exists(os.path.join(out_dir, nm + ".graph.json"))]
+    ndone = len(all_jobs) - len(jobs)
+    if ndone:
+        print("[render_dataset] resuming: %d/%d already done, %d remaining"
+              % (ndone, len(all_jobs), len(jobs)), flush=True)
+
+    # _build_results.json is a cumulative summary across resumed runs (like the
+    # log file above) — preload any prior run's entries so a resume doesn't
+    # clobber them with just this run's newly-processed subset.
+    results_path = os.path.join(out_dir, "_build_results.json")
+    results = json.load(open(results_path)) if os.path.exists(results_path) else []
+    live = []  # [name, proc, queue, start_time]
+    i, n = 0, len(jobs)
+    pbar = tqdm(total=n)
+    while i < n or live:
+        while i < n and len(live) < workers:
+            sp, nm = jobs[i]; i += 1
+            q = mp.Queue()
+            p = mp.Process(target=_render_worker, args=(sp, out_dir, nm, width, q))
+            p.start()
+            live.append([nm, p, q, time.time()])
+        nxt = []
+        for nm, p, q, t0 in live:
+            if not p.is_alive():
+                try:
+                    kind, payload = q.get(timeout=1.0)
+                except Exception:
+                    kind, payload = "SKIP", "no result (exit code %s)" % p.exitcode
+                p.join()
+                if kind == "OK":
+                    results.append({k: v for k, v in payload.items() if k != "meta"})
+                    logf.write("OK %s counts=%s\n" % (nm, json.dumps(payload["counts"])))
+                else:
+                    logf.write("SKIP %s\n%s\n" % (nm, payload))
+                logf.flush()
+                pbar.update(1)
+            elif time.time() - t0 > timeout:
+                p.terminate(); p.join(5)
+                if p.is_alive():
+                    p.kill(); p.join()
+                logf.write("SKIP %s\nTimeoutError: exceeded %ds (native hang, likely TechDraw HLR)\n"
+                           % (nm, timeout))
+                logf.flush()
+                pbar.update(1)
+            else:
+                nxt.append([nm, p, q, t0])
+        live = nxt
+        if live and (len(live) >= workers or i >= n):
+            time.sleep(0.02)
+    pbar.close()
+
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=1)
 
 
 def _main():
@@ -770,13 +850,21 @@ def _main():
     parser.add_argument("--width", type=int, default=PX_DEFAULT_W, help="raster width in px")
     parser.add_argument("--limit", type=int, default=0, help="cap number of parts (batch mode)")
     parser.add_argument("--log", default="render_dataset.log", help="OK/SKIP/FAIL log path")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="parallel worker processes (batch mode; each part is a separate "
+                             "forked process so a hang can be killed without losing the batch)")
+    parser.add_argument("--timeout", type=int, default=60,
+                        help="per-part wall-clock timeout in seconds (batch mode)")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
-    logf = open(args.log, "w")
+    # append: a killed/resumed batch run's log history (and OK/SKIP counts that
+    # scripts/renderer/batch_dataset.py tallies from it) must survive across runs.
+    logf = open(args.log, "a")
     try:
         if args.step_dir:
-            _run_batch(args.step_dir, args.out_dir, args.width, args.limit, logf)
+            _run_batch(args.step_dir, args.out_dir, args.width, args.limit, logf,
+                      workers=args.workers, timeout=args.timeout)
         else:
             r = render_one(args.step, args.out_dir, args.name, args.width)
             logf.write("OK %s counts=%s\n" % (r["name"], json.dumps(r["counts"])))
