@@ -54,12 +54,10 @@ def main():
                              f"(default {CANON_QUANT}); 0 = off (ablation). infer.py "
                              f"must use the SAME value.")
     parser.add_argument("--hid-dropout", type=float, default=0.0,
-                        help="TRAIN-ONLY augmentation: probability of dropping a "
-                             "feature's redundant hidden lines in views where it is "
-                             "visible elsewhere (sim-to-real robustness). Leave 0 for "
-                             "val/infer. NOTE: baked ONCE here (static draw); per-epoch "
-                             "dynamic augmentation would require re-serializing in the "
-                             "train loop.")
+                        help="Probability of dropping a feature's redundant hidden lines "
+                             "in views where it is visible elsewhere (sim-to-real robustness). "
+                             "NOTE: baked ONCE here (static draw); per-epoch dynamic "
+                             "augmentation would require re-serializing in the train loop.")
     parser.add_argument("--seed", type=int, default=0,
                         help="RNG seed for --hid-dropout")
     parser.add_argument("--workers", type=int, default=16,

@@ -34,11 +34,13 @@ import os
 import sys
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 import torch
 from torch.utils.data import Dataset
+from tqdm import tqdm
 from transformers import (AutoConfig, AutoTokenizer, AutoModelForCausalLM,
                           HfArgumentParser, Trainer, TrainingArguments,
                           TrainerCallback, set_seed)
@@ -100,7 +102,7 @@ def chat_ids(tok, msgs, gen_prompt, return_tensors=None):
 
 def build_labels(tok, input_text, target_code, max_len):
     """Tokenize one conversation; mask everything but the assistant answer (completion-only).
-    Returns (input_ids, labels) or None if it exceeds max_len (filter, don't truncate)."""
+    Returns (input_ids, labels, prompt_len) or None if it exceeds max_len (filter, don't truncate)."""
     user = f"{PROMPT}\n\n{input_text}" if PROMPT else input_text
     msgs_p = [{"role": "user", "content": user}]
     msgs_f = msgs_p + [{"role": "assistant", "content": target_code}]
@@ -108,26 +110,38 @@ def build_labels(tok, input_text, target_code, max_len):
     fids = chat_ids(tok, msgs_f, False)
     if len(fids) > max_len:
         return None
-    # locate answer span: prompt is a prefix of the full sequence
-    p = len(pids)
-    if fids[:p] != pids:                      # tokenizer edge case -> substring search
-        p = 0
-        for i in range(len(fids) - len(pids) + 1):
-            if fids[i:i + len(pids)] == pids:
-                p = i + len(pids); break
+    # locate the answer span via longest common prefix. pids/fids are tokenized as whole
+    # strings, not per-message, so BPE can re-merge the trailing prompt token once the
+    # assistant content follows right after (e.g. "...assistant\n" alone vs
+    # "...assistant\n\nimport ...") -- an exact `fids[:len(pids)] == pids` check fails on
+    # ~0.25% of the noblend train corpus for exactly this reason (verified: always a
+    # 1-token gap right at the boundary, never a deep mismatch). The previous fallback
+    # (substring search, else silently p=0) both trained those examples on the whole
+    # sequence unmasked AND forced the collator's logits window to the full length --
+    # the actual root cause of a 9+ GiB single-example OOM at long max_len.
+    p = 0
+    for a, b in zip(pids, fids):
+        if a != b:
+            break
+        p += 1
     labels = [-100] * p + fids[p:]
-    return fids, labels
+    return fids, labels, p
 
 
 class SFTDataset(Dataset):
-    def __init__(self, records: list[dict[str, str]], tok, max_len: int):
+    def __init__(self, records: list[dict[str, str]], tok, max_len: int, workers: int = 16):
+        # per-record work is the fast (Rust) chat-template/tokenizer, which releases the
+        # GIL, so a thread pool parallelizes this well (same fix as build_dataset.py's
+        # tokenizer loop) instead of tokenizing all records one at a time up front.
         self.ex, self.dropped = [], 0
-        for r in records:
-            built = build_labels(tok, r["input_text"], r["target_code"], max_len)
-            if built is None:
-                self.dropped += 1; continue
-            ids, labels = built
-            self.ex.append({"input_ids": ids, "labels": labels})
+        def _one(r):
+            return build_labels(tok, r["input_text"], r["target_code"], max_len)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for built in tqdm(ex.map(_one, records), total=len(records), desc="tokenizing"):
+                if built is None:
+                    self.dropped += 1; continue
+                ids, labels, p = built
+                self.ex.append({"input_ids": ids, "labels": labels, "prompt_len": p})
 
     def __len__(self):
         return len(self.ex)
@@ -137,19 +151,54 @@ class SFTDataset(Dataset):
 
 
 class Collator:
-    def __init__(self, pad_id):
+    """Right-pads a batch AND restricts the model's final vocab-projection (lm_head) to
+    the trailing span that actually needs logits, via `logits_to_keep` (supported by the
+    Qwen3-VL forward). Completion targets are short (median ~380 tok, p99 ~850) versus
+    the up-to-16k-token prompt, so materializing full-sequence logits — then upcasting
+    them to fp32 for the loss, per HF's ForCausalLMLoss — is the dominant OOM source at
+    long max_len (confirmed: 16k-token example OOMs at ~21GB with full logits, fits in
+    ~10GB restricted to the completion span). See train_sft.py module docstring / README
+    for the derivation; the alignment below must exactly match transformers'
+    ForCausalLMLoss internal pad+shift or the loss silently trains on the wrong targets.
+    `max_completion_cap` additionally hard-bounds the window regardless of prompt_len
+    (see comment in __call__ -- this is what a real prompt-boundary mis-detection OOM'd on).
+    """
+    def __init__(self, pad_id, max_completion_cap=4096):
         self.pad_id = pad_id
+        self.max_completion_cap = max_completion_cap
 
     def __call__(self, batch):
         m = max(len(b["input_ids"]) for b in batch)
+        min_p = min(b["prompt_len"] for b in batch)
+        # hard cap independent of prompt_len, so a future prompt-boundary bug (build_labels
+        # returning a too-small p for some example) can't silently re-open the full-sequence-
+        # logits OOM this once caused. The corpus-wide max completion is 3018 tok (verified
+        # over all 85,903 kept examples), well under the default 4096 -- so under normal
+        # operation this branch is unreachable. If it fires, something upstream is newly
+        # broken; raise instead of truncating-and-warning, since a print to stderr is easy to
+        # miss in a multi-day DDP log and the alternative (silently train on a truncated
+        # target) is exactly the silent-corruption failure mode this whole fix exists to kill.
+        # Raise the cap deliberately via --max_completion_cap if completions have genuinely
+        # grown longer than this corpus; don't let this exception train you into raising it
+        # reflexively without checking why first.
+        uncapped = m - min_p + 1
+        if uncapped > self.max_completion_cap:
+            raise RuntimeError(
+                f"[Collator] completion window {uncapped} exceeds max_completion_cap="
+                f"{self.max_completion_cap} (min prompt_len={min_p}, max total len={m} "
+                f"in this batch). This should not happen with the current corpus (max "
+                f"completion 3018 tok) -- investigate the offending example before raising "
+                f"the cap.")
+        k = min(m, uncapped)  # trailing hidden-state positions covering every example's completion
         ii, ll, am = [], [], []
         for b in batch:
             n = m - len(b["input_ids"])
             ii.append(b["input_ids"] + [self.pad_id] * n)
-            ll.append(b["labels"] + [-100] * n)
             am.append([1] * len(b["input_ids"]) + [0] * n)
+            full = b["labels"] + [-100] * n                  # length m
+            ll.append([-100] + full[m - k + 1:])             # length k, aligned to the kept window
         return {"input_ids": torch.tensor(ii), "labels": torch.tensor(ll),
-                "attention_mask": torch.tensor(am)}
+                "attention_mask": torch.tensor(am), "logits_to_keep": k}
 
 
 # ------------------------------------------------ shared batched generation
@@ -369,6 +418,12 @@ class ExpConfig:
     full: bool = field(default=False, metadata={"help": "full fine-tune (default: LoRA)"})
     train_vision: bool = field(default=False, metadata={"help": "don't freeze vision tower"})
     max_len: int = 16384 # 8192
+    max_completion_cap: int = field(default=4096, metadata={
+        "help": "hard cap on the collator's completion-logits window (logits_to_keep), "
+                "independent of prompt_len; bounds worst-case logits memory if a future "
+                "tokenizer/prompt-boundary edge case ever widens it (see Collator)"})
+    tok_workers: int = field(default=16, metadata={
+        "help": "thread pool size for SFTDataset's up-front tokenization pass"})
     attn: str = field(default="auto", metadata={
         "help": "attention backend: auto (flash_attention_2 if installed else sdpa) "
                 "| sdpa | flash_attention_2 | eager"})
@@ -525,7 +580,7 @@ def main():
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
 
-    ds = SFTDataset(train, tok, args.max_len)
+    ds = SFTDataset(train, tok, args.max_len, workers=args.tok_workers)
     print(f"train examples kept {len(ds)} (dropped over-len {ds.dropped}) "
           f"| val {len(val)} | max_len {args.max_len}")
 
@@ -596,7 +651,7 @@ def main():
         model=model,
         args=targs,
         train_dataset=ds,
-        data_collator=Collator(tok.pad_token_id),
+        data_collator=Collator(tok.pad_token_id, max_completion_cap=args.max_completion_cap),
         callbacks=[cb],
     )
     cb.trainer = trainer                       # save_model / TensorBoard logging need it

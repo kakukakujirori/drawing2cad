@@ -32,14 +32,16 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
       --n 100000 \
       --stage_dir experiments/stage_z2c_train \
       --split train \
-      --max-faces 400
+      --max-faces 400 \
+      --stratify  # ensure uniform diversity in difficulty
 
     # val
     python scripts/renderer/select_zero_to_cad.py \
       --n 300 \
       --stage_dir experiments/stage_z2c_val \
       --split validation \
-      --max-faces 400
+      --max-faces 400 \
+      --stratify
     ```
 
 2. Generate AMVDG json and 2D drawings:
@@ -83,7 +85,7 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
       --graph-dir experiments/dataset_z2c_val \
       --code-dir  experiments/stage_z2c_val_noblend \
       --out experiments/data_z2c_val_noblend \
-      --hid-dropout 0.95  # NOTE: DO WE NEED THIS FOR EVALUATION?
+      --hid-dropout 0.95  # MAYBE BETTER TO SET 0?
     ```
     > **Consistency:** `--quant` sets the coordinate encoding, so `infer.py --quant` must equal what the training data used (both default 1024 → consistent by default; pass `--quant 0` on both to ablate). `stats.json` records the transforms and reports token coverage up to 16384.
     Each bundle is `all.jsonl` (one record per part: `input_text` = serialized graph, `target_code` = GT CadQuery) + `stats.json` (token report). `build_dataset.py` calls the graph→text serializer [`scripts/train3d/serialize.py`](scripts/train3d/serialize.py); to eyeball / round-trip-check the exact text the model reads:

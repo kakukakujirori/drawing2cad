@@ -345,11 +345,16 @@ def imap_isolated(tasks, worker, timeout, workers):
 
 # ---------------------------------------------------------------- aggregation
 def aggregate(rows):
+    # rows can include hand-built early-return dicts (missing_pred / missing_gt_step in
+    # main(), below) alongside eval_one's/_ timeout_row's full schema -- .get() throughout
+    # so an incomplete row degrades gracefully (counts as false/unscored) instead of
+    # KeyError-ing the whole aggregation (which, in the training eval hook, silently
+    # drops ALL periodic metrics for the run; see train_sft.py's EvalCadCallback).
     n = len(rows)
-    ious = [r["iou"] for r in rows if r["iou"] is not None]
+    ious = [r.get("iou") for r in rows if r.get("iou") is not None]
     errs = [max(r["bbox_err_mm"]) for r in rows if r.get("bbox_err_mm")]
-    valid = [r for r in rows if r["valid"]]
-    iou_valid = [r["iou"] for r in valid if r["iou"] is not None]
+    valid = [r for r in rows if r.get("valid")]
+    iou_valid = [r.get("iou") for r in valid if r.get("iou") is not None]
     cds_mm = [r["cd_mm"] for r in rows if r.get("cd_mm") is not None]
     cds_norm = [r["cd_norm"] for r in rows if r.get("cd_norm") is not None]
 
@@ -357,8 +362,8 @@ def aggregate(rows):
         return round(float(f(xs)), 4) if xs else d
     agg = {
         "n": n,
-        "exec_ok_rate": round(sum(r["exec_ok"] for r in rows) / n, 4) if n else 0,
-        "has_result_rate": round(sum(r["has_result"] for r in rows) / n, 4) if n else 0,
+        "exec_ok_rate": round(sum(bool(r.get("exec_ok")) for r in rows) / n, 4) if n else 0,
+        "has_result_rate": round(sum(bool(r.get("has_result")) for r in rows) / n, 4) if n else 0,
         "valid_rate": round(len(valid) / n, 4) if n else 0,
         "iou_scored_n": len(ious),
         "mean_iou": _stat(ious, np.mean),
@@ -446,8 +451,8 @@ def main():
                          "valid": False, "iou": None, "bbox_err_mm": None,
                          "error_type": "missing_pred"})
         elif not os.path.exists(gt):
-            rows.append({"id": sid, "exec_ok": False, "valid": False, "iou": None,
-                         "bbox_err_mm": None, "error_type": "missing_gt_step"})
+            rows.append({"id": sid, "exec_ok": False, "has_result": False, "valid": False,
+                         "iou": None, "bbox_err_mm": None, "error_type": "missing_gt_step"})
         else:
             tasks.append((sid, (sid, code, gt, cfg)))
 
