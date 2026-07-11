@@ -48,7 +48,7 @@ def main() -> int:
             raise SystemExit(f"Not a directory: {d}")
 
     cgb = [
-        str(C.CGB_VENV_PY), "-m", "cadgenbench.cli", "evaluate",
+        sys.executable, "-m", "cadgenbench.cli", "evaluate",
         *[str(d) for d in run_dirs],
         "--workers", str(args.workers),
     ]

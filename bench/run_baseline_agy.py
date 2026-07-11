@@ -356,10 +356,10 @@ def main() -> int:
                          f"outside the repo (default {DEFAULT_WORK_ROOT})")
     parser.add_argument("--agy-bin", default=AGY_BIN_DEFAULT,
                     help=f"path to the agy binary (default {AGY_BIN_DEFAULT})")
-    parser.add_argument("--cadquery-python", default=str(C.CGB_VENV_PY),
+    parser.add_argument("--cadquery-python", default=sys.executable,
                     help="interpreter agy is told to execute the script with "
-                         "(default the cadgenbench venv, so the baseline uses the "
-                         "same CadQuery/OCC as our route)")
+                         "(default the current drawing2cad env, which includes "
+                         "CadQuery/OCC)")
     parser.add_argument("--run-name", default=None,
                     help="results/<run_name>/ (default agy_<modelslug>, date-less so "
                          "re-runs resume in place)")

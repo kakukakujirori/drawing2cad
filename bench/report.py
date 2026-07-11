@@ -171,15 +171,15 @@ def to_markdown(rep: dict) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
+    parser = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--ours", type=Path, default=None, help="ours run dir")
-    ap.add_argument("--baseline", type=Path, default=None, help="baseline run dir")
-    ap.add_argument("--run", action="append", default=[], metavar="LABEL=DIR",
+    parser.add_argument("--ours", type=Path, default=None, help="ours run dir")
+    parser.add_argument("--baseline", type=Path, default=None, help="baseline run dir")
+    parser.add_argument("--run", action="append", default=[], metavar="LABEL=DIR",
                     help="add a labelled run (repeatable)")
-    ap.add_argument("--out", type=Path, default=C.RESULTS_DIR / "report",
+    parser.add_argument("--out", type=Path, default=C.RESULTS_DIR / "report",
                     help="output path stem (writes .json + .md)")
-    args = ap.parse_args()
+    args = parser.parse_args()
 
     runs: dict[str, Path] = {}
     if args.ours:

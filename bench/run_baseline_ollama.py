@@ -81,7 +81,7 @@ def main() -> int:
             ids = ids[: args.limit]
 
     cgb = [
-        str(C.CGB_VENV_PY), "-m", "cadgenbench.cli", "baseline", "run",
+        sys.executable, "-m", "cadgenbench.cli", "baseline", "run",
         "--backend", args.backend,
         "--model", args.model,
         "--max-iter", str(args.max_iter),

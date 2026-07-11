@@ -13,8 +13,9 @@ conda activate drawing2cad
 
 # install requirements
 pip3 install torch torchvision xformers --index-url https://download.pytorch.org/whl/cu128
-MAX_JOBS=4 pip3 install flash-attn --no-build-isolation
+pip install build123d --no-deps  # Prevent build123d from installing cadquery-ocp-novtk
 pip install -r requirements.txt
+MAX_JOBS=4 pip3 install flash-attn --no-build-isolation
 ```
 
 **Note**: conda-forge ships `FreeCAD.so` under `$CONDA_PREFIX/lib`, which is not on `sys.path`, so a bare `import FreeCAD` fails — the renderer scripts therefore `import freecad` first (a conda-forge shim that adds that lib dir), then `import FreeCAD` works.

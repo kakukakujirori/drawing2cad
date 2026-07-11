@@ -32,7 +32,10 @@ Usage:
 Then (in the drawing2cad env):
   python scripts/renderer/batch_dataset.py <stage_dir> <out_dir>
 """
-import os, sys, random, argparse
+import argparse
+import json
+import os
+import random
 
 import numpy as np
 from datasets import load_dataset
@@ -103,6 +106,10 @@ def main():
                          help="print the pool/allocation plan and exit without touching --stage_dir")
     args = parser.parse_args()
 
+    if os.path.isdir(args.stage_dir):
+        raise FileExistsError(f"{args.stage_dir=} already exists. Remove it first.")
+    os.makedirs(args.stage_dir)
+
     # select only the light columns -- a bare row also carries 8 PNGs + an STL,
     # so pulling those per-row would be much slower.
     cols = ["uuid", "num_faces", "step_file"] + ([] if args.no_code else ["cadquery_file"])
@@ -160,11 +167,6 @@ def main():
         print("--dry-run: exiting without touching %s" % args.stage_dir)
         return
 
-    os.makedirs(args.stage_dir, exist_ok=True)
-    for old in os.listdir(args.stage_dir):
-        if old.endswith(".step") or old.endswith(".cadquery.py"):
-            os.unlink(os.path.join(args.stage_dir, old))
-
     bin_kept_counts = [0] * (len(bin_bounds) - 1) if bin_bounds else None
     kept = scanned = skipped_band = skipped_empty = 0
     for idx in order:
@@ -209,6 +211,18 @@ def main():
     if kept < args.n:
         print("WARNING: only staged %d of requested %d (band too tight, bins exhausted, or split exhausted)"
               % (kept, args.n), flush=True)
+
+    # Self-documenting provenance: downstream tools (bench/build_fixtures.py) read
+    # this instead of guessing/hardcoding the selection params that produced stage_dir.
+    params = {
+        "split": args.split, "seed": args.seed, "n_requested": args.n, "n_staged": kept,
+        "min_faces": args.min_faces, "max_faces": args.max_faces, "stratify": args.stratify,
+        "n_bins": args.n_bins if (args.stratify and not args.bin_edges) else None,
+        "bin_edges_arg": args.bin_edges,
+        "bin_bounds": bin_bounds,
+    }
+    with open(os.path.join(args.stage_dir, "_select_params.json"), "w") as f:
+        json.dump(params, f, indent=2)
 
 
 if __name__ == "__main__":

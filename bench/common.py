@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 # --- Repo / bench layout ---------------------------------------------------
@@ -29,11 +30,13 @@ MANIFEST = DATA_DIR / "manifest.json"
 #              the fixture drawing (NOT the scan-augmented {uuid}.scan.png).
 # The PNG dir is the same as the graph dir (they are co-located by the renderer).
 #
-# DEFAULT = the complexity-matched "hard" set (Zero-To-CAD-1m validation, seed 0,
-# face band [90,400]), which sits inside the real-CADGenBench face-count IQR.
-# build_fixtures.py exposes --step-dir / --graph-dir to point at any source set.
-SRC_STEP_DIR = REPO / "experiments" / "stage_z2c_val_hard"     # {uuid}.step, {uuid}.cadquery.py
-SRC_GRAPH_DIR = REPO / "experiments" / "dataset_z2c_val_hard"  # {uuid}.png, {uuid}.graph.json, ...
+# DEFAULT = the complexity-matched set (Zero-To-CAD-1m validation, seed 0,
+# --stratify + real-quantile --bin-edges, see stage_dir's own _select_params.json
+# for the exact params used), built to track the real-CADGenBench face-count
+# distribution rather than just "hard" examples. build_fixtures.py exposes
+# --step-dir / --graph-dir to point at any source set.
+SRC_STEP_DIR = REPO / "experiments" / "stage_z2c_bench"     # {uuid}.step, {uuid}.cadquery.py
+SRC_GRAPH_DIR = REPO / "experiments" / "dataset_z2c_bench"  # {uuid}.png, {uuid}.graph.json, ...
 
 # Legacy source set (uniform-random Z2C-val sample, faces median ~29 — too easy;
 # superseded by the hard set above). Kept for reference / reproducibility.
@@ -41,13 +44,7 @@ SRC_STEP_DIR_LEGACY = REPO / "experiments" / "stage_z2c_val"
 SRC_GRAPH_DIR_LEGACY = REPO / "experiments" / "dataset_z2c_val"
 
 # --- Interpreters / entry points -------------------------------------------
-# cadgenbench needs its own py3.12 env; the repo already has one at .venv.
-CGB_VENV_PY = Path.home() / "github" / "cadgenbench" / ".venv" / "bin" / "python"
-# Our inference route runs in the drawing2cad conda env (py3.11 + FreeCAD/OCC).
-D2C_PY = Path.home() / "miniforge3" / "envs" / "drawing2cad" / "bin" / "python"
 INFER_PY = REPO / "scripts" / "train3d" / "infer.py"
-# Production recipe checkpoint (ellipse AMVDG + blend-free target).
-DEFAULT_CKPT = REPO / "experiments" / "train3d" / "noblend_v1" / "final"
 
 # Fixture-contract file names (mirrors cadgenbench).
 GT_STEP_NAME = "ground_truth.step"           # data/gt/<uuid>/ground_truth.step
@@ -119,7 +116,7 @@ def count_faces(step_paths: dict[str, Path]) -> dict[str, int | None]:
     payload = json.dumps({u: str(p) for u, p in step_paths.items()})
     try:
         proc = subprocess.run(
-            [str(CGB_VENV_PY), "-c", _FACE_COUNT_SNIPPET],
+            [sys.executable, "-c", _FACE_COUNT_SNIPPET],
             input=payload, capture_output=True, text=True, timeout=1800,
         )
         if proc.returncode != 0:
@@ -169,7 +166,7 @@ def cgb_env() -> dict:
     env["CADGENBENCH_DATA_DIR"] = str(DATA_DIR)
     # backend=cadquery: the .venv itself has cadquery, so the agent's code
     # runner uses its own interpreter. Pin it explicitly to be safe.
-    env["CADGENBENCH_CADQUERY_PYTHON"] = str(CGB_VENV_PY)
+    env["CADGENBENCH_CADQUERY_PYTHON"] = sys.executable
     return env
 
 

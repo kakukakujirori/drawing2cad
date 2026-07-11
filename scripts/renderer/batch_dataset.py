@@ -144,7 +144,11 @@ if __name__ == "__main__":
                              "(rasterize/scan-aug) (0 = auto: cpu_count-2)")
     parser.add_argument("--timeout", type=int, default=60,
                         help="per-part wall-clock timeout in seconds for stage1")
+    parser.add_argument("--resume", action="store_true", help="resume from previous run")
     args = parser.parse_args()
+
+    if os.path.isdir(args.out_dir) and not args.resume:
+        raise FileExistsError(f"{args.out_dir=} already exists. Use --resume or remove it first.")
     os.makedirs(args.out_dir, exist_ok=True)
     if not args.skip_stage1:
         stage1(args.step_dir, args.out_dir, args.width, args.n, args.workers, args.timeout)

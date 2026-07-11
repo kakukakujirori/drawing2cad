@@ -88,7 +88,7 @@ def main() -> int:
     env = dict(os.environ)
     env["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     cmd = [
-        str(C.D2C_PY), str(C.INFER_PY),
+        sys.executable, str(C.INFER_PY),
         "--ckpt", str(args.ckpt),
         "--input", str(graph_link_dir),
         "--out", str(preds_dir),
