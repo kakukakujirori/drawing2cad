@@ -224,7 +224,7 @@ def main():
 
     codes, gen_fail = {}, {}
 
-    def _run_phase(subset, device_map, label):
+    def _run_phase(subset, device_map, label: str):
         if not subset:
             return
         model, mtok = load_infer_model(args.ckpt, device_map=device_map)

@@ -15,11 +15,20 @@ Recipe (see scripts/train3d/README.md for the cadrille / Zero-to-CAD diff table)
     input or cut the target); the dropped count is reported.
   * eval: Trainer's NATIVE distributed eval loop (GenEvalTrainer) greedy-generates a FIXED,
     seeded RANDOM val subset (`eval_val_n`, default 48; 0 = full val) every `eval_every_epochs`
-    epochs — the subset is SHARDED across ranks (both GPUs generate), gathered, then scored by
-    eval_cq.py (validity + translation-aligned voxel IoU + bbox-mm) inside compute_metrics.
+    epochs, or every `eval_every_steps` optimizer steps when that's set (replaces the epoch
+    cadence entirely) — the subset is SHARDED across ranks (both GPUs generate), gathered, then
+    scored by eval_cq.py (validity + translation-aligned voxel IoU + bbox-mm) inside compute_metrics.
     The folded scalar (`best_metric`, default `mean_iou_incl_fail` = mean IoU over the whole
     subset counting failed/invalid preds as 0) streams to TensorBoard as `eval_*` and drives
-    native best-model checkpointing (save_strategy="best" + load_best_model_at_end -> `<out>/best/`).
+    native best-model checkpointing (save_strategy="steps" @ eval cadence, so EVERY eval saves a
+    full HF checkpoint -- not just new-bests -- + load_best_model_at_end). The final save lands in
+    `<out>/<best_metric>_<value>_step<N>/` (self-describing name); `<out>/best` is kept as a
+    symlink to it so infer.py's fixed `--ckpt <out>/best` keeps working. `<out>/latest` is a
+    symlink to the most-recently-saved `<out>/checkpoint-<N>/`, kept current live DURING training
+    by `LatestLinkCallback` (survives a crash, unlike best/final which are only written after
+    trainer.train() returns) -- resume a crashed/stopped run with `--resume_from auto` (or an
+    explicit `<out>/checkpoint-<N>` path) + the SAME `--out`. `save_total_limit` (default 2) caps
+    HF checkpoints (`<out>/checkpoint-<N>/`, full optimizer/scheduler/rng state) to latest+best.
     No rank0-only callback / manual barrier: the eval loop keeps the ranks in lockstep by design.
 
 Smoke: python train_sft.py --smoke  (LoRA, ~40 steps, one A5000, overfits by design).
@@ -57,7 +66,9 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from transformers import (AutoConfig, AutoTokenizer, AutoModelForCausalLM,
-                          HfArgumentParser, Trainer, TrainingArguments, set_seed)
+                          HfArgumentParser, Trainer, TrainingArguments,
+                          TrainerCallback, set_seed)
+from transformers.trainer_utils import get_last_checkpoint
 
 # Task instruction prepended to the graph text in the user turn. cadrille uses the 3-word
 # "Generate cadquery code"; the chat template's assistant-turn start is the code-start marker,
@@ -440,6 +451,32 @@ class GenEvalTrainer(Trainer):
         return (None, comp, idx)
 
 
+class LatestLinkCallback(TrainerCallback):
+    """Re-points `<out>/latest` at the checkpoint `_save_checkpoint` JUST wrote, on every save
+    (save_strategy="steps" now saves every eval, not just new-bests -- see main()). This is the
+    ONLY thing in this file that updates live, DURING training: the best-name dir + `<out>/best`
+    symlink (see main(), after trainer.train() returns) are a post-hoc summary of a run that
+    finished, so they don't exist if the process crashes first -- which is exactly when a resume
+    pointer is needed. `on_save` fires after the checkpoint dir is fully written (Trainer calls it
+    right after `_save_checkpoint`), so the target always exists at symlink-creation time; the one
+    gap is a crash mid-symlink-swap, an inherent limit of any live pointer, not worth guarding."""
+
+    def __init__(self, out_dir):
+        self.out_dir = out_dir
+
+    def on_save(self, args, state, control, **kwargs):
+        if not state.is_world_process_zero:
+            return control
+        target = f"checkpoint-{state.global_step}"       # matches Trainer._save_checkpoint exactly
+        link = os.path.join(self.out_dir, "latest")
+        if os.path.islink(link):
+            os.remove(link)
+        elif os.path.exists(link):
+            shutil.rmtree(link)
+        os.symlink(target, link)
+        return control
+
+
 def make_compute_metrics(trainer, eval_ids, gt_dir, out_dir, tok, n_subset):
     """compute_metrics for GenEvalTrainer. Runs on EVERY rank with the identical gathered
     predictions (accelerate.gather_for_metrics), so it needs no manual broadcast/barrier: each rank
@@ -516,8 +553,13 @@ class ExpConfig:
     eval_seed: int | None = field(default=None, metadata={
         "help": "seed for the eval-subset sample (default: reuse --seed)"})
     eval_every_epochs: float = field(default=1.0, metadata={
-        "help": "run the eval hook every N epochs (float ok; checked at on_step_end via "
-                "state.epoch). <=0 disables periodic eval (train-end eval still runs)."})
+        "help": "run the eval hook every N epochs (float ok; converted to optimizer steps via "
+                "steps_per_epoch). Ignored when --eval_every_steps is set. <=0 disables periodic "
+                "eval (train-end eval still runs)."})
+    eval_every_steps: int | None = field(default=None, metadata={
+        "help": "run the eval hook every N optimizer steps; when set this REPLACES the "
+                "epoch-derived cadence entirely (0 or negative explicitly disables periodic "
+                "eval, regardless of --eval_every_epochs). Default None keeps the epoch cadence."})
     eval_batch_size: int = field(default=4, metadata={
         "help": "per-device eval GENERATION batch size (fixed). Peak eval memory ~= this * longest "
                 "prompt, so keep it modest at --max_len 16k (4 fits LoRA on a 24 GB A5000; lower for "
@@ -530,6 +572,22 @@ class ExpConfig:
         "help": "scalar tracked for best-model checkpointing (higher=better): "
                 "mean_iou_incl_fail (default; folds validity+geometry, failures=0) | "
                 "valid_rate | median_iou"})
+    save_total_limit: int = field(default=2, metadata={
+        "help": "max HF-native checkpoints (<out>/checkpoint-<step>/, full optimizer/scheduler/rng "
+                "state -- a save now happens every eval, not just new-bests, so resume can restart "
+                "from the LATEST step) kept on disk; the most-recent AND the best are both always "
+                "protected on top of this count and collapse to 1 dir when they're the same "
+                "checkpoint. Default 2 = exactly latest+best. Raise for more resume history (costs "
+                "disk -- only meaningfully large under --full; a LoRA checkpoint is ~tens of MB). "
+                "<=0 = unlimited (HF default; unbounded growth under frequent step-eval)."})
+    resume_from: str | None = field(default=None, metadata={
+        "help": "resume training from a checkpoint dir (optimizer/scheduler/rng/step state, not "
+                "just weights) -- pass 'auto' to resume the LATEST checkpoint under --out (same "
+                "convention as <out>/latest), or an explicit <out>/checkpoint-<N> path. Requires "
+                "--out to point at the ORIGINAL run's dir (resume continues writing into it, it "
+                "does not fork a new one) and the same --ckpt/--full/--lora_r/--train_vision/--optim "
+                "(a mismatch is warned about, not blocked -- see main()). Needs periodic eval "
+                "enabled (checkpointing is driven by the eval cadence); default None = fresh start."})
     n_eval: int = field(default=-1, metadata={
         "help": "DEPRECATED alias of --eval_val_n (kept for backward compat; if >=0 it "
                 "overrides eval_val_n with a warning)"})
@@ -581,6 +639,31 @@ def resolve_out(cli_out: str | None, world: int, is_main: bool) -> str:
     raise RuntimeError("timed out waiting for rank0 to resolve --out")
 
 
+ARCH_ARGS = ["ckpt", "full", "lora_r", "train_vision", "optim"]  # shared with warn_resume_arch_drift
+
+
+def warn_resume_arch_drift(resume_from: str, args: "ExpConfig") -> None:
+    """--resume_from restores optimizer/scheduler/adapter state INTO whatever model
+    load_model()+get_peft_model() just built from the CURRENT CLI args -- it does not restore
+    the args themselves. A drifted --ckpt/--full/--lora_r/--train_vision/--optim either crashes
+    deep inside optimizer/adapter loading (shape mismatch) or, worse, loads onto the wrong
+    shapes without erroring. config.json (dumped by the ORIGINAL run at its own startup, see
+    main()) sits one directory up from any <out>/checkpoint-<N> or <out>/latest path -- that's
+    always true here since _save_checkpoint places checkpoint dirs directly under output_dir."""
+    cfg_path = os.path.join(os.path.dirname(os.path.normpath(resume_from)), "config.json")
+    if not os.path.exists(cfg_path):
+        print(f"[warn] --resume_from {resume_from}: no sibling config.json found at {cfg_path} "
+              f"-- cannot check for architecture drift.", file=sys.stderr)
+        return
+    orig = json.load(open(cfg_path))
+    drift = {k: (orig.get(k), getattr(args, k)) for k in ARCH_ARGS if orig.get(k) != getattr(args, k)}
+    if drift:
+        print(f"[warn] --resume_from {resume_from}: architecture args differ from the original "
+              f"run's config.json ({cfg_path}): {drift} -- optimizer/adapter state may fail to "
+              f"load, or load onto mismatched shapes without erroring. Verify this is intentional.",
+              file=sys.stderr)
+
+
 def parse_config() -> ExpConfig:
     """Parse CLI into ExpConfig; a `--config FILE.{json,yaml}` seeds defaults that CLI
     flags then override (set_defaults keeps CLI precedence)."""
@@ -625,9 +708,24 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     if is_main:
         print(f"run dir: {args.out}")
+
+    # resolve --resume_from BEFORE the config.json dump below overwrites it -- the drift check
+    # needs the ORIGINAL run's config.json, and "auto" needs an existing checkpoint-N to find.
+    # get_last_checkpoint is a deterministic local-filesystem glob, safe to call on every rank.
+    resume = args.resume_from
+    if resume == "auto":
+        resume = get_last_checkpoint(args.out)
+        if is_main and resume is None:
+            print(f"[warn] --resume_from auto: no checkpoint-* found under {args.out}; "
+                  f"starting fresh.", file=sys.stderr)
+    if resume and is_main:
+        print(f"[resume] resuming from {resume}")
+        warn_resume_arch_drift(resume, args)
+
     if is_main:  # dump the fully-resolved config (survives a crash mid-train)
         resolved = {**asdict(args), "lr_resolved": lr, "world_size": world,
-                    "git_hash": _git_hash(), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                    "git_hash": _git_hash(), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "resume_from_resolved": resume}
         with open(os.path.join(args.out, "config.json"), "w") as f:
             json.dump(resolved, f, indent=2)
 
@@ -691,15 +789,21 @@ def main():
     gen_eval_ds = GenEvalDataset(val_eval, tok, cap_len=args.max_len, prompt=args.prompt)
     eval_ids = list(gen_eval_ds.ids)
 
-    eval_on = args.eval_every_epochs > 0 and len(gen_eval_ds) > 0
     # optimizer steps/epoch = ceil(per-rank samples / bs) // grad_accum (matches HF's own count)
     steps_per_epoch = max(1, math.ceil(len(ds) / max(world, 1) / max(args.bs, 1)) // args.grad_accum)
-    eval_steps = max(1, round(args.eval_every_epochs * steps_per_epoch)) if eval_on else None
+    if args.eval_every_steps is not None:              # explicit step cadence -> REPLACES epochs
+        eval_steps = args.eval_every_steps if args.eval_every_steps > 0 else None
+        cadence_desc = f"every {eval_steps} steps (--eval_every_steps)"
+    else:
+        eval_steps = (max(1, round(args.eval_every_epochs * steps_per_epoch))
+                      if args.eval_every_epochs > 0 else None)
+        cadence_desc = f"every {args.eval_every_epochs} epoch(s) = {eval_steps} steps"
+    eval_on = eval_steps is not None and len(gen_eval_ds) > 0
     if is_main:
         print(f"eval subset: {len(gen_eval_ds)}/{len(val)} usable "
               f"(+{gen_eval_ds.dropped} over-cap -> counted as failures) seed {eval_seed} | "
-              + (f"every {args.eval_every_epochs} epoch(s) = {eval_steps} steps "
-                 f"| best=eval_{args.best_metric}" if eval_on else "periodic eval DISABLED"))
+              + (f"{cadence_desc} | best=eval_{args.best_metric}"
+                 if eval_on else "periodic eval DISABLED"))
 
     targs = TrainingArguments(
         output_dir=args.out,
@@ -718,7 +822,15 @@ def main():
         # native distributed generate-eval + best-model checkpointing (GenEvalTrainer):
         eval_strategy=("steps" if eval_on else "no"),
         eval_steps=eval_steps,
-        save_strategy=("best" if eval_on else "no"),   # save ONLY on a new best (SaveStrategy.BEST)
+        # save EVERY eval (not just new-bests): load_best_model_at_end still finds the best via
+        # best_global_step (tracked regardless of save_strategy), and this additionally leaves a
+        # checkpoint at the true latest step for --resume_from / LatestLinkCallback. save_steps
+        # MUST equal eval_steps, not just a multiple of it -- if the best landed on an eval step
+        # that wasn't ALSO a save step, load_best_model_at_end would hunt for a checkpoint that
+        # was never written. (When eval is off there's nothing to resume from either way.)
+        save_strategy=("steps" if eval_on else "no"),
+        save_steps=(eval_steps if eval_on else 500),   # 500 = HF default; inert under strategy="no"
+        save_total_limit=args.save_total_limit,        # protects latest + best; see field help
         metric_for_best_model=(f"eval_{args.best_metric}" if eval_on else None),
         greater_is_better=True,
         load_best_model_at_end=eval_on,
@@ -755,23 +867,54 @@ def main():
     if eval_on:                                # compute_metrics closes over the live trainer
         trainer.compute_metrics = make_compute_metrics(
             trainer, eval_ids, args.gt_dir, args.out, tok, n_subset)
+        trainer.add_callback(LatestLinkCallback(args.out))   # live <out>/latest, survives a crash
 
     t0 = time.time()
-    out = trainer.train()
+    out = trainer.train(resume_from_checkpoint=resume)
     print(f"train_runtime {time.time()-t0:.0f}s  final_loss {out.training_loss:.4f}")
     if hasattr(trainer.state, "log_history"):
         losses = [h["loss"] for h in trainer.state.log_history if "loss" in h]
         if losses:
             print(f"loss[0]={losses[0]:.4f} loss[-1]={losses[-1]:.4f} "
                   f"(min {min(losses):.4f})")
-    # with load_best_model_at_end the in-memory model IS the best eval checkpoint -> save it as
-    # <out>/best (what infer.py points at). Without eval, save the last model as <out>/final.
-    save_dir = os.path.join(args.out, "best" if eval_on else "final")
+    # with load_best_model_at_end the in-memory model IS the best eval checkpoint -> save it under
+    # a self-describing name (<best_metric>_<value>_step<N>) so `ls <out>` shows what the best
+    # checkpoint scored without opening config.json/TensorBoard, and point the stable <out>/best
+    # symlink at it (relative target, so moving the whole run dir doesn't break it) -- infer.py /
+    # README / bench.py all hardcode --ckpt <out>/best, so that fixed path must keep resolving.
+    # <out>/latest is kept current throughout training by LatestLinkCallback, not here -- nothing
+    # to do for it at this point. Without eval, nothing was ever scored -> save <out>/final instead.
+    has_best = eval_on and trainer.state.best_metric is not None
+    if has_best:
+        # best_metric/best_global_step are set atomically by Trainer._determine_best_metric
+        # whenever save_strategy is steps/epoch/best (all true here) -> best_global_step cannot
+        # be None in this branch.
+        best_step = trainer.state.best_global_step
+        best_name = f"{args.best_metric}_{trainer.state.best_metric:.4f}_step{best_step}"
+    else:
+        best_name = "final"
+    save_dir = os.path.join(args.out, best_name)
     trainer.save_model(save_dir)
     if is_main:
-        if eval_on and trainer.state.best_metric is not None:
-            print(f"saved best model -> {save_dir} (eval_{args.best_metric}="
-                  f"{trainer.state.best_metric:.4f} @ {trainer.state.best_model_checkpoint})")
+        if has_best:
+            best_link = os.path.join(args.out, "best")
+            # unlike checkpoint-<N>/ (rotated by HF's own save_total_limit), best_name/final dirs
+            # are OUR OWN trainer.save_model() dumps outside that mechanism -- across a resumed
+            # run (main() invoked again against the same --out), a stale best_name dir from the
+            # earlier invocation would otherwise never get cleaned up. Remove it once superseded.
+            old_target = os.readlink(best_link) if os.path.islink(best_link) else None
+            if os.path.islink(best_link):
+                os.remove(best_link)
+            elif os.path.exists(best_link):
+                shutil.rmtree(best_link)
+            if old_target and old_target != best_name:
+                old_dir = os.path.join(args.out, old_target)
+                if os.path.isdir(old_dir):
+                    shutil.rmtree(old_dir, ignore_errors=True)
+            os.symlink(best_name, best_link)
+            print(f"saved best model -> {save_dir} (symlinked as {best_link}; eval_{args.best_metric}="
+                  f"{trainer.state.best_metric:.4f} @ step {best_step}); latest step's checkpoint "
+                  f"-> {os.path.join(args.out, 'latest')}")
         else:
             print(f"saved model -> {save_dir}")
 

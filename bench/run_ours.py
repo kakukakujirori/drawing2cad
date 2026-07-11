@@ -51,11 +51,15 @@ def main() -> int:
                             "Required on purpose — a wrong value silently corrupts coordinates.")
     parser.add_argument("--ids", nargs="*", default=None, help="explicit uuids (default: all manifest ids)")
     parser.add_argument("--limit", type=int, default=None, help="only the first N manifest ids (smoke tests)")
-    parser.add_argument("--gpu", type=str, default="0",
+    parser.add_argument("--gpu", type=str, default="0,1",
                     help="CUDA_VISIBLE_DEVICES for inference. Pass e.g. '0,1' to let infer.py "
                          "shard the model across both GPUs for prompts too long for one (the "
                          "few very complex parts); a single GPU records those as oom_generate.")
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--graph-dir", type=Path, default=None,
+                    help="AMVDG graph source dir (default: common.SRC_GRAPH_DIR). "
+                         "Override for alternate benchmark sets, e.g. "
+                         "experiments/dataset_z2c_bench_new.")
     parser.add_argument("--keep-preds", action="store_true",
                     help="keep the raw infer.py output dir (default: temp)")
     args = parser.parse_args()
@@ -70,9 +74,12 @@ def main() -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) scratch dir of symlinks to just the selected graphs
+    graph_src = args.graph_dir or C.SRC_GRAPH_DIR
+    if not graph_src.is_absolute():
+        graph_src = C.REPO / graph_src
     graph_link_dir = Path(tempfile.mkdtemp(prefix="bench_graphs_"))
     for uuid in ids:
-        src = C.SRC_GRAPH_DIR / f"{uuid}.graph.json"
+        src = graph_src / f"{uuid}.graph.json"
         if not src.exists():
             print(f"[warn] missing graph for {uuid}, skipping", file=sys.stderr)
             continue
