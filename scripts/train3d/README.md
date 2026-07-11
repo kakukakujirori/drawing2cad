@@ -23,9 +23,15 @@ Trains and evaluates the **back leg** of the drawing2cad pipeline: `AMVDG graph 
 ```bash
 # bundles come from Data Preparation step 3 (top-level README):
 #   experiments/data_z2c_train  +  experiments/data_z2c_val
+#
+# LAUNCH POLICY: always via torchrun (`--nproc_per_node=N`; N=1 single-GPU, N=2 DDP). Device
+# selection is the launcher's job — a bare `python train_sft.py` on a >1-GPU box trips HF Trainer
+# into a DataParallel fallback (batch silently scaled to bs*n_gpu); the script hard-fails that with
+# instructions. Pick specific GPUs with CUDA_VISIBLE_DEVICES in the shell (it composes with
+# torchrun), e.g. `CUDA_VISIBLE_DEVICES=1 torchrun --nproc_per_node=1 ...`.
 
 # 1. SFT smoke — LoRA, 40 steps, one A5000 (proves the pipe + loss drop)
-python scripts/train3d/train_sft.py --smoke \
+torchrun --nproc_per_node=1 scripts/train3d/train_sft.py --smoke \
     --train experiments/data_z2c_train \
     --val experiments/data_z2c_val \
     --out experiments/train3d/smoke
@@ -36,7 +42,7 @@ python scripts/train3d/train_sft.py --smoke \
 #      16k lets them in; --attn auto uses flash_attention_2 if `pip install flash-attn`,
 #      else sdpa (already mem-efficient O(n), so 16k fits one 24 GB A5000 with grad-ckpt).
 #    --out is optional: omit it and the run lands in experiments/train3d/<YYYY-MM-DD_HH-MM-SS>/
-python scripts/train3d/train_sft.py \
+torchrun --nproc_per_node=1 scripts/train3d/train_sft.py \
     --train experiments/data_z2c_train \
     --val experiments/data_z2c_val \
     --epochs 3 \
@@ -60,33 +66,39 @@ torchrun --nproc_per_node=2 scripts/train3d/train_sft.py \
 #   LoRA (default) fits comfortably and is the recommended path on this box.
 
 # 3b. drive train_sft entirely from a config file (CLI flags still override it):
-python scripts/train3d/train_sft.py --config my_run.yaml --epochs 5
+torchrun --nproc_per_node=1 scripts/train3d/train_sft.py --config my_run.yaml --epochs 5
 #   watch it:  tensorboard --logdir <out>/logs   (resolved config -> <out>/config.json)
 
-# In-training eval + best-model checkpointing (knobs, all optional):
-#   --eval_val_n 48        fixed val subset size, sampled ONCE with a fixed seed (identical
-#                          across evals and across same-seed runs); 0 = whole val set.
+# In-training eval + best-model checkpointing (NATIVE distributed eval; knobs all optional):
+#   --eval_val_n 48        fixed val subset size, sampled ONCE with a fixed seed (identical across
+#                          evals and same-seed runs); 0 = whole val set. Over-cap prompts (>--max_len)
+#                          are excluded from generation but still counted as failures (IoU 0).
 #   --eval_seed N          seed for that sample (default: reuse --seed).
-#   --eval_every_epochs 1  run the eval hook every N epochs (float ok); <=0 = train-end only.
-#   --eval_batch_size 8    prompts per generate() call in the hook (conservative vs infer's 16).
-#   --eval_max_batch_tokens 24000   padded-token budget/batch (~7-8 GB peak; half infer's 48000
-#                          because optimizer state + params are GPU-resident during training).
+#   --eval_every_epochs 1  evaluate every N epochs (float ok; mapped to Trainer eval_steps);
+#                          <=0 disables in-training eval + best-model tracking.
+#   --eval_batch_size 4    per-device eval generation batch size (fixed). Peak eval mem ~= this *
+#                          longest prompt -> keep modest at --max_len 16k (4 fits LoRA on 24 GB;
+#                          lower for full-FT). The subset is length-sorted so batches are homogeneous.
 #   --best_metric mean_iou_incl_fail   scalar tracked for best-model saving (higher=better):
 #                          mean_iou_incl_fail (default; mean IoU over the WHOLE subset with
 #                          failed/invalid preds counted as 0 — folds validity+geometry) |
-#                          valid_rate | median_iou.
-#   (--n_eval is a DEPRECATED alias of --eval_val_n; still honored with a warning.)
-# Each eval writes <out>/preds_step{N}/ + <out>/eval_step{N}.json (scored by eval_cq against
-# --gt_dir); the best checkpoint lands in <out>/best/ (LoRA adapter or full weights) with
-# <out>/best_meta.json = {step, epoch, metric_name, metric_value, history:[per-eval records]}.
-# Metrics stream to TensorBoard as train/eval/<metric>. Under DDP only rank0 evaluates/saves.
+#                          valid_rate | median_iou.  (logged with an `eval_` prefix.)
+#   (--n_eval is a DEPRECATED alias of --eval_val_n; --eval_max_batch_tokens is now unused.)
+# The subset is SHARDED across ranks (both GPUs generate) by the native evaluation_loop, gathered,
+# then scored by eval_cq (against --gt_dir) inside compute_metrics — no rank0-only callback, no manual
+# barrier (this is what fixed the DDP eval desync/hang). Each eval writes <out>/preds_step{N}/ +
+# <out>/eval_step{N}.json; metrics stream to TensorBoard as `eval_<metric>` and drive native best-model
+# checkpointing (save_strategy="best" + load_best_model_at_end) -> best adapter/weights land in
+# <out>/best/ at train end. (If eval_cq can't score — e.g. cadquery broken — metrics fold to 0 and
+# training continues instead of crashing.)
 
 # 4. batch-infer a trained ckpt over the val AMVDG graphs -> {uuid}.py + {uuid}.step
 python scripts/train3d/infer.py \
-    --ckpt experiments/train3d/lora_v4/final \
+    --ckpt experiments/train3d/<run>/best \
     --input experiments/dataset_z2c_val \
-    --out experiments/train3d/lora_v4/preds_full
+    --out experiments/train3d/<run>/preds_full
 #   --ckpt takes a LoRA adapter dir (adapter_config.json -> loads its base) or a full ckpt/HF id.
+#   (train_sft now saves the best eval checkpoint to <out>/best/; a no-eval run saves <out>/final/.)
 #   Generation is BATCHED (length-sorted, left-padded): --batch-size (default 16) prompts per
 #   generate() call, capped by --max-batch-tokens (default 48000, ~14.6 GB peak on a 24 GB A5000;
 #   ~0.21 MB/token so 64000≈18 GB) so long prompts form smaller batches; exec runs in parallel

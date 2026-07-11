@@ -28,7 +28,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # siblings
 import train_sft                      # load_model, chat_ids, PROMPT (single source of truth)
-from train_sft import iter_batched_generate   # shared batched decode (also used by the eval hook)
+from train_sft import iter_batched_generate   # batched decode (infer.py; in-training eval uses the native Trainer loop)
 from serialize import serialize_3d, CANON_QUANT
 from eval_cq import _shape_from_globals, imap_isolated
 

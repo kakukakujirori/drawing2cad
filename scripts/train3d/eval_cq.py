@@ -348,8 +348,8 @@ def aggregate(rows):
     # rows can include hand-built early-return dicts (missing_pred / missing_gt_step in
     # main(), below) alongside eval_one's/_ timeout_row's full schema -- .get() throughout
     # so an incomplete row degrades gracefully (counts as false/unscored) instead of
-    # KeyError-ing the whole aggregation (which, in the training eval hook, silently
-    # drops ALL periodic metrics for the run; see train_sft.py's EvalCadCallback).
+    # KeyError-ing the whole aggregation (which, in the in-training eval, would drop that
+    # eval's periodic metrics; see train_sft.py's compute_metrics / GenEvalTrainer).
     n = len(rows)
     ious = [r.get("iou") for r in rows if r.get("iou") is not None]
     errs = [max(r["bbox_err_mm"]) for r in rows if r.get("bbox_err_mm")]

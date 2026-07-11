@@ -9,17 +9,18 @@ Start  = ADSKAILab/Zero-To-CAD-Qwen3-VL-2B (image->CadQuery SFT; same base + out
 Recipe (see scripts/train3d/README.md for the cadrille / Zero-to-CAD diff table):
   * bf16, completion-only loss (mask the prompt, train only the answer span),
   * LoRA (default) or full fine-tuning (--full), vision tower frozen (text-only),
-  * single-GPU (`python train_sft.py ...`) or DDP (`torchrun --nproc_per_node=2 ...` /
-    `accelerate launch ...`) — HF Trainer picks up the world size automatically,
+  * launched via torchrun (`torchrun --nproc_per_node=N ...`; N=1 single-GPU, N=2 DDP) —
+    device selection is the launcher's job, never done in-process (see the note above imports),
   * over-length pairs are FILTERED, never truncated (truncation would corrupt the g2
     input or cut the target); the dropped count is reported.
-  * eval hook: periodically (every `eval_every_epochs`, plus at train end) greedy-generate
-    a FIXED, seeded RANDOM val subset (`eval_val_n`, default 48; 0 = full val) — batched via
-    the SAME code path as infer.py (iter_batched_generate: length-sort + left-pad) — then shell
-    out to eval_cq.py in the CadQuery env for validity + translation-aligned voxel IoU + bbox-mm
-    error. A folded scalar (`best_metric`, default `mean_iou_incl_fail` = mean IoU over the whole
-    subset counting failed/invalid preds as 0) is logged to TensorBoard and drives best-model
-    checkpointing to `<out>/best/` (+ `<out>/best_meta.json`). rank0-only (DDP-safe).
+  * eval: Trainer's NATIVE distributed eval loop (GenEvalTrainer) greedy-generates a FIXED,
+    seeded RANDOM val subset (`eval_val_n`, default 48; 0 = full val) every `eval_every_epochs`
+    epochs — the subset is SHARDED across ranks (both GPUs generate), gathered, then scored by
+    eval_cq.py (validity + translation-aligned voxel IoU + bbox-mm) inside compute_metrics.
+    The folded scalar (`best_metric`, default `mean_iou_incl_fail` = mean IoU over the whole
+    subset counting failed/invalid preds as 0) streams to TensorBoard as `eval_*` and drives
+    native best-model checkpointing (save_strategy="best" + load_best_model_at_end -> `<out>/best/`).
+    No rank0-only callback / manual barrier: the eval loop keeps the ranks in lockstep by design.
 
 Smoke: python train_sft.py --smoke  (LoRA, ~40 steps, one A5000, overfits by design).
 
@@ -28,43 +29,34 @@ Config: args are an `ExpConfig` dataclass parsed by HfArgumentParser, so every C
 (CLI flags override file values). The fully resolved config is dumped to `<out>/config.json`
 and metrics stream to TensorBoard under `<out>/logs` (or wandb with `--report-to wandb`).
 """
-import glob
 import importlib
 import json
+import math
 import os
-import sys
+import shutil
 import subprocess
+import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, asdict
 
-# Single-process runs must be single-GPU. With >1 GPU visible outside torchrun, HF
-# Trainer silently falls back to torch.nn.DataParallel and scales the REAL DataLoader
-# batch size to bs*n_gpu (TrainingArguments.train_batch_size) — the Collator's shared
-# trailing logits window is only tight per-example, so a DP batch mixing a long-prompt
-# and a short-prompt example blows past max_completion_cap (or, uncapped, re-opens the
-# full-logits OOM). This guard has to live HERE, before the transformers import below:
-# importing transformers.Trainer initializes the CUDA driver (cuInit), and the driver
-# reads CUDA_VISIBLE_DEVICES exactly once, at cuInit — mutating it any later in the
-# process (even at the top of main()) is a no-op. Verified empirically; the n_gpu
-# tripwire in main() catches any regression.
-if __name__ == "__main__" and int(os.environ.get("WORLD_SIZE", "1")) == 1:
-    _vis = os.environ.get("CUDA_VISIBLE_DEVICES")
-    _gpus = ([g.strip() for g in _vis.split(",") if g.strip()] if _vis is not None else
-             [str(i) for i in range(len(glob.glob("/proc/driver/nvidia/gpus/*")))])
-    if len(_gpus) > 1:
-        os.environ["CUDA_VISIBLE_DEVICES"] = _gpus[0]
-        print(f"[warn] {len(_gpus)} GPUs visible in a single-process run; restricting "
-              f"to GPU {_gpus[0]} to avoid Trainer's DataParallel fallback (batch size "
-              f"would become bs*n_gpu). Use torchrun --nproc_per_node=N for multi-GPU, "
-              f"or CUDA_VISIBLE_DEVICES=<id> to pick a different GPU.", file=sys.stderr)
+# Device selection is delegated to the launcher (torchrun / accelerate launch), NOT done
+# in-process: a bare `python train_sft.py` on a >1-GPU box makes HF Trainer fall back to
+# torch.nn.DataParallel and silently scale the DataLoader batch to bs*n_gpu (which then
+# feeds the shared-logits Collator cross-example batches). The supported launch is always
+# `torchrun --nproc_per_node=N` (N GPUs; N=1 for single-GPU) — under it every rank sees
+# LOCAL_RANK, so n_gpu=1 and DataParallel never triggers. Pick specific GPUs with
+# CUDA_VISIBLE_DEVICES in the SHELL (it composes with torchrun). The n_gpu>1 tripwire in
+# main() hard-fails a bare-python multi-GPU run with these instructions instead of limping
+# into DataParallel. (Replaces the old cuInit-order-fragile in-process CUDA_VISIBLE_DEVICES
+# rewrite; see troubleshoot.md for that saga.)
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from transformers import (AutoConfig, AutoTokenizer, AutoModelForCausalLM,
-                          HfArgumentParser, Trainer, TrainingArguments,
-                          TrainerCallback, set_seed)
+                          HfArgumentParser, Trainer, TrainingArguments, set_seed)
 
 # Task instruction prepended to the graph text in the user turn. cadrille uses the 3-word
 # "Generate cadquery code"; the chat template's assistant-turn start is the code-start marker,
@@ -274,15 +266,18 @@ def iter_batched_generate(model, tok, prompts, max_new_tokens, batch_size, max_b
             yield stem, tok.decode(gen[j][plen:], skip_special_tokens=True)
 
 
-# --------------------------------------------------------------- eval hook
+# ---------------------------------------------- eval (native distributed generate-eval)
 def run_eval_cq(pred_dir: str, gt_dir: str, out_json: str, limit: int = 0):
     """Shell out to eval_cq.py in the CadQuery env; return the loaded JSON dict
     ({"aggregate","config","rows"}) or None. We need per-row data (not just the
     aggregate) so the folded IoU metric can count failed/invalid preds as 0."""
-    if not os.path.exists(DRAWING2CAD_PY):
-        print(f"[eval] skip: {DRAWING2CAD_PY} not found", file=sys.stderr)
+    py = DRAWING2CAD_PY
+    if not os.path.exists(py):                 # sys.executable symlink can churn mid env-rebuild
+        py = shutil.which("python3") or shutil.which("python") or py
+    if not os.path.exists(py):
+        print(f"[eval] skip: no python interpreter found (tried {DRAWING2CAD_PY})", file=sys.stderr)
         return None
-    cmd = [DRAWING2CAD_PY, EVAL_CQ, "--pred-dir", pred_dir, "--gt-dir", gt_dir,
+    cmd = [py, EVAL_CQ, "--pred-dir", pred_dir, "--gt-dir", gt_dir,
            "--out", out_json]
     if limit:
         cmd += ["--limit", str(limit)]
@@ -316,120 +311,138 @@ def eval_metrics(rows, n_subset):
     }
 
 
-class EvalCadCallback(TrainerCallback):
-    """Periodic in-training eval: greedy-generate a fixed val subset (batched, shared
-    with infer.py), score via eval_cq.py, log folded metrics to TensorBoard, and keep
-    a best-model checkpoint. Runs only on rank0 (DDP-safe); other ranks block at the
-    next allreduce until rank0 finishes, so no desync. `trainer` is attached post-init
-    (save_model needs it)."""
+class GenEvalDataset(Dataset):
+    """Prompt-only eval examples for GENERATION. Each item = the user-turn prompt ids plus a
+    single-element `labels` holding the example's index into `self.ids` — so compute_metrics can
+    map each (gathered, possibly reordered/padding-duplicated) prediction back to its uuid WITHOUT
+    depending on gather order. Over-cap prompts (> cap_len) are EXCLUDED here (they'd OOM
+    generate()); the caller keeps counting them in n_subset, so they score as failures (IoU 0)."""
 
-    def __init__(self, model, tok, val_records, work_dir, gt_dir, max_new_tokens,
-                 cap_len, batch_size, max_batch_tokens, eval_every_epochs, best_metric,
-                 prompt=PROMPT):
-        self.model, self.tok = model, tok
-        self.val = list(val_records)
-        self.work_dir, self.gt_dir = work_dir, gt_dir
-        self.max_new_tokens = max_new_tokens
-        self.cap_len = cap_len
-        self.batch_size = batch_size
-        self.max_batch_tokens = max_batch_tokens
-        self.eval_every_epochs = float(eval_every_epochs)
-        self.best_metric = best_metric
-        self.prompt = prompt
-        self.trainer = None
-        self.best_value = None
-        self.best_step = self.best_epoch = None
-        self.history = []
-        self.last_eval_step = -1
-        self.last_eval_epoch = 0.0
-
-    def _generate(self, out_dir):
-        os.makedirs(out_dir, exist_ok=True)
-        m, tok = self.model, self.tok
-        was_training = m.training
-        prev_cache = m.config.use_cache
-        prev_pad = tok.padding_side
-        gc_on = bool(getattr(m, "is_gradient_checkpointing", False))
-        m.eval()
-        if gc_on:                              # use_cache is silently forced off under grad-ckpt
-            m.gradient_checkpointing_disable()
-        m.config.use_cache = True
-        tok.padding_side = "left"
-        dev = next(m.parameters()).device
-        prompts = []
-        for r in self.val:
-            user = f"{self.prompt}\n\n{r['input_text']}" if self.prompt else r["input_text"]
+    def __init__(self, records, tok, cap_len, prompt=PROMPT):
+        self.ids, self.ex, self.dropped = [], [], 0
+        kept = []
+        for r in records:
+            user = f"{prompt}\n\n{r['input_text']}" if prompt else r["input_text"]
             ids = chat_ids(tok, [{"role": "user", "content": user}], True)
-            if len(ids) > self.cap_len:        # over-cap: stub .py so it scores as a failure
-                with open(os.path.join(out_dir, f"{r['id']}.py"), "w") as f:
-                    f.write(f"# prompt too long: {len(ids)} tok > cap {self.cap_len}\n")
+            if len(ids) > cap_len:
+                self.dropped += 1
                 continue
-            prompts.append((r["id"], ids))
+            kept.append((r["id"], ids))
+        kept.sort(key=lambda t: len(t[1]))       # length-sort -> homogeneous fixed-size eval batches
+        for rid, ids in kept:                    # labels = index into self.ids (gather-order-proof)
+            self.ex.append({"input_ids": ids, "labels": [len(self.ids)]})
+            self.ids.append(rid)
+
+    def __len__(self):
+        return len(self.ex)
+
+    def __getitem__(self, i):
+        return self.ex[i]
+
+
+class GenCollator:
+    """LEFT-pad prompts for decoder-only generation; pass the index-carrying `labels` through."""
+
+    def __init__(self, pad_id):
+        self.pad_id = pad_id
+
+    def __call__(self, batch):
+        m = max(len(b["input_ids"]) for b in batch)
+        ii, am, ll = [], [], []
+        for b in batch:
+            n = m - len(b["input_ids"])
+            ii.append([self.pad_id] * n + b["input_ids"])     # left pad
+            am.append([0] * n + [1] * len(b["input_ids"]))
+            ll.append(b["labels"])                             # length-1, uniform -> no padding
+        return {"input_ids": torch.tensor(ii), "attention_mask": torch.tensor(am),
+                "labels": torch.tensor(ll)}
+
+
+class GenEvalTrainer(Trainer):
+    """Trainer whose eval loop GENERATES (greedy) instead of a forward pass, so the native
+    distributed evaluation_loop shards the eval set across ranks (both GPUs generate), gathers the
+    predictions, and calls compute_metrics — no rank0-only callback, no manual barrier/log/save, no
+    collective desync. Generation runs on the UNWRAPPED `self.model` (same pattern as
+    Seq2SeqTrainer) so it issues no DDP collective. The eval dataset is length-sorted (GenEvalDataset)
+    and batched at a FIXED per_device_eval_batch_size through the standard accelerate-prepared loader,
+    which EQUALIZES batch counts across ranks. (A custom token-budget batch_sampler does not — it left
+    the ranks with unequal batch counts, desyncing the per-batch gather into a 30-min NCCL timeout.)
+    Peak eval memory ~= eval_batch_size * longest prompt, so keep eval_batch_size modest at max_len 16k."""
+
+    def __init__(self, *args, gen_collator=None, max_new_tokens=1024, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._gen_collator = gen_collator
+        self._max_new_tokens = max_new_tokens
+
+    def get_eval_dataloader(self, eval_dataset=None):
+        ds = self.eval_dataset if eval_dataset is None else eval_dataset
+        dl = DataLoader(ds, batch_size=self.args.per_device_eval_batch_size, shuffle=False,
+                        collate_fn=self._gen_collator,
+                        num_workers=self.args.dataloader_num_workers,
+                        pin_memory=self.args.dataloader_pin_memory)
+        return self.accelerator.prepare(dl)      # accelerate shards + EQUALIZES batches across ranks
+
+    def evaluate(self, *args, **kwargs):
+        # Generation needs grad-ckpt OFF + KV cache ON, else an 8k-prefill decode is O(n^2)
+        # (~minutes/batch instead of seconds). Training leaves gradient checkpointing enabled,
+        # and while it is enabled this model forces use_cache=False in its forward -- so the
+        # generate() use_cache kwarg is ignored. Bracket the whole eval: disable grad-ckpt + turn
+        # the cache on, then restore for training (forward-only eval never needs grad-ckpt). This
+        # mirrors the setup the old rank0 eval hook did, now hoisted to the native eval boundary.
+        gc_on = bool(getattr(self.model, "is_gradient_checkpointing", False))
+        prev_cache = self.model.config.use_cache
+        if gc_on:
+            self.model.gradient_checkpointing_disable()
+        self.model.config.use_cache = True
         try:
-            for stem, code in iter_batched_generate(
-                    m, tok, prompts, self.max_new_tokens, self.batch_size,
-                    self.max_batch_tokens, dev):
-                with open(os.path.join(out_dir, f"{stem}.py"), "w") as f:
-                    f.write(code)
-        finally:                               # always restore training state
-            tok.padding_side = prev_pad
-            m.config.use_cache = prev_cache
+            return super().evaluate(*args, **kwargs)
+        finally:
+            self.model.config.use_cache = prev_cache
             if gc_on:
-                m.gradient_checkpointing_enable(
+                self.model.gradient_checkpointing_enable(
                     gradient_checkpointing_kwargs={"use_reentrant": False})
-            if was_training:
-                m.train()
 
-    def _do(self, state):
-        if not self.val:
-            return
-        step = int(state.global_step)
-        if step == self.last_eval_step:        # avoid a duplicate at train-end
-            return
-        self.last_eval_step = step
-        epoch = round(float(state.epoch or 0.0), 4)
-        tag = f"step{step}"
-        pdir = os.path.join(self.work_dir, f"preds_{tag}")
-        t0 = time.time()
-        self._generate(pdir)
-        gen_s = time.time() - t0
-        data = run_eval_cq(pdir, self.gt_dir, os.path.join(self.work_dir, f"eval_{tag}.json"))
-        if not data:
-            return
-        m = eval_metrics(data.get("rows", []), len(self.val))
-        m["eval_gen_s"] = round(gen_s, 1)
-        m["eval_total_s"] = round(time.time() - t0, 1)
-        print(f"[eval @ {tag} epoch {epoch}] " + " ".join(f"{k}={v}" for k, v in m.items()))
-        if self.trainer is not None:           # TensorBoard curves (eval/<metric>)
-            self.trainer.log({f"eval/{k}": v for k, v in m.items()
-                              if isinstance(v, (int, float))})
-        rec = {"step": step, "epoch": epoch, **m}
-        self.history.append(rec)
-        cur = m.get(self.best_metric)
-        if cur is not None and (self.best_value is None or cur > self.best_value):
-            self.best_value, self.best_step, self.best_epoch = cur, step, epoch
-            best_dir = os.path.join(self.work_dir, "best")
-            if self.trainer is not None:
-                self.trainer.save_model(best_dir)      # LoRA -> adapter; full -> full weights
-            else:
-                self.model.save_pretrained(best_dir)
-            print(f"[eval] new best {self.best_metric}={cur} -> {best_dir}")
-        with open(os.path.join(self.work_dir, "best_meta.json"), "w") as f:
-            json.dump({"step": self.best_step, "epoch": self.best_epoch,
-                       "metric_name": self.best_metric, "metric_value": self.best_value,
-                       "history": self.history}, f, indent=2)
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        idx = inputs["labels"]                   # [B,1] dataset index -> rides through the gather
+        if prediction_loss_only:
+            return (None, None, idx)
+        with torch.no_grad():
+            gen = self.model.generate(           # UNWRAPPED model: no DDP forward collective
+                input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"],
+                max_new_tokens=self._max_new_tokens, do_sample=False, use_cache=True,
+                pad_token_id=self.processing_class.pad_token_id)
+        comp = gen[:, inputs["input_ids"].shape[1]:].contiguous()   # strip shared left-pad prompt
+        return (None, comp, idx)
 
-    def on_step_end(self, args, state, control, **kw):
-        if not state.is_world_process_zero or self.eval_every_epochs <= 0:
-            return
-        ep = float(state.epoch or 0.0)
-        if ep - self.last_eval_epoch + 1e-9 >= self.eval_every_epochs:
-            self.last_eval_epoch = ep
-            self._do(state)
 
-    def on_train_end(self, args, state, control, **kw):
-        if state.is_world_process_zero:
-            self._do(state)
+def make_compute_metrics(trainer, eval_ids, gt_dir, out_dir, tok, n_subset):
+    """compute_metrics for GenEvalTrainer. Runs on EVERY rank with the identical gathered
+    predictions (accelerate.gather_for_metrics), so it needs no manual broadcast/barrier: each rank
+    writes id-keyed .py files (main -> <out>/preds_step{N} for the artifact trail, others -> a
+    throwaway tmp it deletes) and scores them via eval_cq.py, producing an identical metric dict.
+    The scalars are prefixed `eval_` by Trainer and drive native best-model checkpointing."""
+    def compute_metrics(eval_pred):
+        import numpy as np
+        preds = np.asarray(eval_pred.predictions)
+        idx = np.asarray(eval_pred.label_ids).reshape(-1)
+        preds = np.where(preds >= 0, preds, tok.pad_token_id)   # eval loop pads the gather with -100
+        codes = tok.batch_decode(preds, skip_special_tokens=True)
+        step = int(trainer.state.global_step)
+        is_main = trainer.accelerator.is_main_process
+        pdir = os.path.join(out_dir, f"preds_step{step}") if is_main else tempfile.mkdtemp(prefix="eval_preds_")
+        os.makedirs(pdir, exist_ok=True)
+        for j, code in zip(idx.tolist(), codes):
+            with open(os.path.join(pdir, f"{eval_ids[int(j)]}.py"), "w") as f:
+                f.write(code)
+        data = run_eval_cq(pdir, gt_dir, os.path.join(pdir, f"eval_step{step}.json"))
+        if not is_main:
+            shutil.rmtree(pdir, ignore_errors=True)
+        # ALWAYS return the metric keys (eval_metrics of [] folds to all-zeros) even when eval_cq
+        # could not score (e.g. cadquery/FreeCAD broken) -- otherwise metric_for_best_model raises
+        # KeyError in _determine_best_metric and takes the whole training run down.
+        rows = data.get("rows", []) if data else []
+        return {k: v for k, v in eval_metrics(rows, n_subset).items() if isinstance(v, (int, float))}
+    return compute_metrics
 
 
 # --------------------------------------------------------------- config
@@ -480,12 +493,14 @@ class ExpConfig:
     eval_every_epochs: float = field(default=1.0, metadata={
         "help": "run the eval hook every N epochs (float ok; checked at on_step_end via "
                 "state.epoch). <=0 disables periodic eval (train-end eval still runs)."})
-    eval_batch_size: int = field(default=8, metadata={
-        "help": "prompts per generate() call in the eval hook (conservative vs infer's 16)"})
+    eval_batch_size: int = field(default=4, metadata={
+        "help": "per-device eval GENERATION batch size (fixed). Peak eval memory ~= this * longest "
+                "prompt, so keep it modest at --max_len 16k (4 fits LoRA on a 24 GB A5000; lower for "
+                "full-FT). The eval subset is length-sorted so batches stay homogeneous."})
     eval_max_batch_tokens: int = field(default=24000, metadata={
-        "help": "padded-token budget (longest×count) per eval batch. Conservative default "
-                "(~half infer's 48000) because optimizer state + params are GPU-resident during "
-                "training; ~7-8 GB peak leaves LoRA plenty of headroom on a 24 GB A5000."})
+        "help": "DEPRECATED / unused since the native distributed eval — fixed --eval_batch_size now "
+                "governs eval batching (a token-budget batch_sampler desynced the DDP gather). Kept "
+                "only so pre-existing --config files don't error."})
     best_metric: str = field(default="mean_iou_incl_fail", metadata={
         "help": "scalar tracked for best-model checkpointing (higher=better): "
                 "mean_iou_incl_fail (default; folds validity+geometry, failures=0) | "
@@ -639,9 +654,32 @@ def main():
         model = get_peft_model(model, lc)
         model.print_trainable_parameters()
 
+    # --- fixed, seeded RANDOM val subset for eval (identical across evals AND same-seed runs;
+    # eval_val_n=0 -> whole val). Built BEFORE TrainingArguments so the eval cadence (in optimizer
+    # steps) can be derived from the requested epoch fraction. ---
+    import random
+    eval_seed = args.eval_seed if args.eval_seed is not None else args.seed
+    n_sub = len(val) if args.eval_val_n <= 0 else min(args.eval_val_n, len(val))
+    val_eval = (list(val) if n_sub >= len(val)
+                else random.Random(eval_seed).sample(val, n_sub))
+    n_subset = len(val_eval)                    # denominator: over-cap prompts count as failures
+    gen_eval_ds = GenEvalDataset(val_eval, tok, cap_len=args.max_len, prompt=args.prompt)
+    eval_ids = list(gen_eval_ds.ids)
+
+    eval_on = args.eval_every_epochs > 0 and len(gen_eval_ds) > 0
+    # optimizer steps/epoch = ceil(per-rank samples / bs) // grad_accum (matches HF's own count)
+    steps_per_epoch = max(1, math.ceil(len(ds) / max(world, 1) / max(args.bs, 1)) // args.grad_accum)
+    eval_steps = max(1, round(args.eval_every_epochs * steps_per_epoch)) if eval_on else None
+    if is_main:
+        print(f"eval subset: {len(gen_eval_ds)}/{len(val)} usable "
+              f"(+{gen_eval_ds.dropped} over-cap -> counted as failures) seed {eval_seed} | "
+              + (f"every {args.eval_every_epochs} epoch(s) = {eval_steps} steps "
+                 f"| best=eval_{args.best_metric}" if eval_on else "periodic eval DISABLED"))
+
     targs = TrainingArguments(
         output_dir=args.out,
         per_device_train_batch_size=args.bs,
+        per_device_eval_batch_size=args.eval_batch_size,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=lr,
         lr_scheduler_type="cosine",
@@ -652,7 +690,13 @@ def main():
         seed=args.seed,
         bf16=True,
         logging_steps=1,
-        save_strategy="no",
+        # native distributed generate-eval + best-model checkpointing (GenEvalTrainer):
+        eval_strategy=("steps" if eval_on else "no"),
+        eval_steps=eval_steps,
+        save_strategy=("best" if eval_on else "no"),   # save ONLY on a new best (SaveStrategy.BEST)
+        metric_for_best_model=(f"eval_{args.best_metric}" if eval_on else None),
+        greater_is_better=True,
+        load_best_model_at_end=eval_on,
         report_to=("none" if report == "none" else [report]),
         run_name=args.run_name,
         remove_unused_columns=False,
@@ -661,47 +705,31 @@ def main():
         # would flag them as unused; allow it for the 2-GPU path (no-op single-GPU).
         ddp_find_unused_parameters=(world > 1),
         dataloader_num_workers=2, optim=args.optim)
-    # Tripwire for the DataParallel fallback (see the CUDA_VISIBLE_DEVICES guard at the
-    # top of this module): n_gpu > 1 here means the visibility restriction didn't take
-    # (it only runs when this file is the entrypoint, and only before the CUDA driver's
-    # one-shot cuInit read of CUDA_VISIBLE_DEVICES) — and the Trainer would multiply the
-    # DataLoader batch size by n_gpu, feeding the Collator cross-example batches. Fail
-    # here, at the source, instead of minutes later in a DataLoader worker.
+    # Tripwire: n_gpu>1 means a bare `python train_sft.py` on a multi-GPU box (no launcher set
+    # LOCAL_RANK), so HF Trainer is about to fall back to DataParallel and scale the DataLoader
+    # batch to bs*n_gpu, feeding the shared-logits Collator cross-example batches. Fail here with
+    # instructions instead of limping on. Device selection is the launcher's job (see the note
+    # atop this module); there is no in-process CUDA_VISIBLE_DEVICES rewrite anymore.
     if targs.n_gpu > 1:
         raise RuntimeError(
-            f"n_gpu={targs.n_gpu} in a single-process run: Trainer would fall back to "
-            f"DataParallel and scale the DataLoader batch size to bs*n_gpu. The module-"
-            f"top CUDA_VISIBLE_DEVICES guard didn't take effect (CUDA driver was "
-            f"initialized first — e.g. train_sft was imported rather than run, or a "
-            f"CUDA call precedes the guard). Run with CUDA_VISIBLE_DEVICES=<one id>, "
-            f"or use torchrun for multi-GPU.")
+            f"n_gpu={targs.n_gpu}: bare-python multi-GPU run -> Trainer would use DataParallel and "
+            f"scale the DataLoader batch to bs*n_gpu. Launch with a distributed launcher instead: "
+            f"`torchrun --nproc_per_node={targs.n_gpu} scripts/train3d/train_sft.py ...` (N=1 for "
+            f"single-GPU); pick specific GPUs with CUDA_VISIBLE_DEVICES in the shell.")
 
-    # fixed, seeded RANDOM val subset for the eval hook (avoids the shortest-graph bias of
-    # the old probe). Sampled once here so the subset is identical across every eval in a run
-    # AND across runs sharing the same seed. eval_val_n=0 -> the whole val set.
-    import random
-    eval_seed = args.eval_seed if args.eval_seed is not None else args.seed
-    n_sub = len(val) if args.eval_val_n <= 0 else min(args.eval_val_n, len(val))
-    val_eval = (list(val) if n_sub >= len(val)
-                else random.Random(eval_seed).sample(val, n_sub))
-    if is_main:
-        print(f"eval subset: {len(val_eval)}/{len(val)} (seed {eval_seed}) "
-              f"every {args.eval_every_epochs} epoch(s) | best_metric={args.best_metric}")
-    cb = EvalCadCallback(model, tok, val_eval, args.out, args.gt_dir,
-                         max_new_tokens=args.max_new_tokens, cap_len=args.max_len,
-                         batch_size=args.eval_batch_size,
-                         max_batch_tokens=args.eval_max_batch_tokens,
-                         eval_every_epochs=args.eval_every_epochs,
-                         best_metric=args.best_metric,
-                         prompt=args.prompt)
-    trainer = Trainer(
+    trainer = GenEvalTrainer(
         model=model,
         args=targs,
         train_dataset=ds,
+        eval_dataset=(gen_eval_ds if eval_on else None),
         data_collator=Collator(tok.pad_token_id, max_completion_cap=args.max_completion_cap),
-        callbacks=[cb],
+        processing_class=tok,
+        gen_collator=GenCollator(tok.pad_token_id),
+        max_new_tokens=args.max_new_tokens,
     )
-    cb.trainer = trainer                       # save_model / TensorBoard logging need it
+    if eval_on:                                # compute_metrics closes over the live trainer
+        trainer.compute_metrics = make_compute_metrics(
+            trainer, eval_ids, args.gt_dir, args.out, tok, n_subset)
 
     t0 = time.time()
     out = trainer.train()
@@ -711,7 +739,16 @@ def main():
         if losses:
             print(f"loss[0]={losses[0]:.4f} loss[-1]={losses[-1]:.4f} "
                   f"(min {min(losses):.4f})")
-    trainer.save_model(os.path.join(args.out, "final"))
+    # with load_best_model_at_end the in-memory model IS the best eval checkpoint -> save it as
+    # <out>/best (what infer.py points at). Without eval, save the last model as <out>/final.
+    save_dir = os.path.join(args.out, "best" if eval_on else "final")
+    trainer.save_model(save_dir)
+    if is_main:
+        if eval_on and trainer.state.best_metric is not None:
+            print(f"saved best model -> {save_dir} (eval_{args.best_metric}="
+                  f"{trainer.state.best_metric:.4f} @ {trainer.state.best_model_checkpoint})")
+        else:
+            print(f"saved model -> {save_dir}")
 
 
 if __name__ == "__main__":
