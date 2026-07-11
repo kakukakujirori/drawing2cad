@@ -40,27 +40,25 @@ def select_ids(args) -> list[str]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
+    parser = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--ckpt", type=Path, default=C.DEFAULT_CKPT,
-                    help=f"LoRA adapter dir (default {C.DEFAULT_CKPT})")
-    ap.add_argument("--run-name", default="ours_noblend_v1",
-                    help="results/<run_name>/ subdir (default ours_noblend_v1)")
-    ap.add_argument("--ids", nargs="*", default=None,
-                    help="explicit uuids (default: all manifest ids)")
-    ap.add_argument("--limit", type=int, default=None,
-                    help="only the first N manifest ids (smoke tests)")
-    ap.add_argument("--gpu", default="1",
-                    help="CUDA_VISIBLE_DEVICES for inference (default 1)")
-    ap.add_argument("--batch-size", type=int, default=16)
-    ap.add_argument("--quant", type=int, default=0,
-                    help="coordinate quantization passed to infer.py; MUST match the "
-                         "checkpoint's training data. Default 0 = the pre-quant "
-                         "noblend_v1 ckpt; use 1024 for checkpoints trained on "
-                         "quantized data (build_dataset's default).")
-    ap.add_argument("--keep-preds", action="store_true",
+    parser.add_argument("--ckpt", type=Path, required=True, help=f"LoRA adapter dir")
+    parser.add_argument("--run-name", type=str, required=True, help="results/<run_name>/ subdir")
+    parser.add_argument("--quant", type=int, required=True,
+                        help="coordinate quantization passed to infer.py; MUST match the "
+                            "checkpoint's training data (see the run's stats.json/config.json). "
+                            "build_dataset's default is 1024; use 0 only for a pre-quant ckpt. "
+                            "Required on purpose — a wrong value silently corrupts coordinates.")
+    parser.add_argument("--ids", nargs="*", default=None, help="explicit uuids (default: all manifest ids)")
+    parser.add_argument("--limit", type=int, default=None, help="only the first N manifest ids (smoke tests)")
+    parser.add_argument("--gpu", type=str, default="0",
+                    help="CUDA_VISIBLE_DEVICES for inference. Pass e.g. '0,1' to let infer.py "
+                         "shard the model across both GPUs for prompts too long for one (the "
+                         "few very complex parts); a single GPU records those as oom_generate.")
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--keep-preds", action="store_true",
                     help="keep the raw infer.py output dir (default: temp)")
-    args = ap.parse_args()
+    args = parser.parse_args()
 
     ids = select_ids(args)
     if not ids:
@@ -138,8 +136,26 @@ def main() -> int:
     if not args.keep_preds:
         shutil.rmtree(preds_dir, ignore_errors=True)
 
+    # surface infer.py's error histogram so failures aren't buried in run_meta.json
+    infer_hist = (run_meta.get("infer_summary") or {}).get("summary", {}).get("error_hist", {})
+    if infer_hist:
+        top = ", ".join(f"{k}={v}" for k, v in list(infer_hist.items())[:4])
+        print(f"[run_ours] infer error histogram: {top}", file=sys.stderr)
+
     print(f"[run_ours] {n_step}/{len(ids)} fixtures produced output.step -> {run_dir}")
-    return 0
+
+    if n_step == 0 and ids:
+        # A total wipeout is a hard failure, NOT a benign empty result. Exit non-zero
+        # and point at the real diagnostics (infer.py already printed the trace above).
+        print("=" * 72, file=sys.stderr)
+        print(f"[run_ours] 0/{len(ids)} fixtures produced a STEP -> hard failure.",
+              file=sys.stderr)
+        print(f"[run_ours] real error+trace: infer.py's stderr above; generated code: "
+              f"{run_dir}/<uuid>/candidate.py; summary: {run_dir}/run_meta.json",
+              file=sys.stderr)
+        print("=" * 72, file=sys.stderr)
+        return 1
+    return rc if rc != 0 else 0
 
 
 if __name__ == "__main__":

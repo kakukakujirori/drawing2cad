@@ -100,8 +100,12 @@ python scripts/train3d/infer.py \
 #   --ckpt takes a LoRA adapter dir (adapter_config.json -> loads its base) or a full ckpt/HF id.
 #   (train_sft now saves the best eval checkpoint to <out>/best/; a no-eval run saves <out>/final/.)
 #   Generation is BATCHED (length-sorted, left-padded): --batch-size (default 16) prompts per
-#   generate() call, capped by --max-batch-tokens (default 48000, ~14.6 GB peak on a 24 GB A5000;
-#   ~0.21 MB/token so 64000≈18 GB) so long prompts form smaller batches; exec runs in parallel
+#   generate() call, capped by --max-batch-tokens (default 0 = auto from free VRAM; peak ≈
+#   0.214 MB/token measured, so one 24 GB A5000 holds ~82k prompt tokens). Prompts longer than
+#   one GPU's capacity are run through a model SHARDED across all visible GPUs (device_map=auto,
+#   --shard auto|on|off) so they still fit — expose both cards (CUDA_VISIBLE_DEVICES=0,1) to
+#   enable it. A batch that OOMs is halved and retried; a solo prompt that still won't fit is
+#   recorded as an `oom_generate` failure (attempted, never skipped). exec runs in parallel
 #   (--workers, default min(8,cpu)). Greedy is bf16-batched so individual outputs differ run-to-run
 #   vs bs=1, but aggregate exec/IoU rates match.
 

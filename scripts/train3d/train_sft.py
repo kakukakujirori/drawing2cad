@@ -29,6 +29,7 @@ Config: args are an `ExpConfig` dataclass parsed by HfArgumentParser, so every C
 (CLI flags override file values). The fully resolved config is dumped to `<out>/config.json`
 and metrics stream to TensorBoard under `<out>/logs` (or wandb with `--report-to wandb`).
 """
+from typing import Iterable
 import importlib
 import json
 import math
@@ -88,12 +89,16 @@ def _resolve_attn(attn: str) -> str:
         return "sdpa"
 
 
-def load_model(ckpt, dtype, attn="auto"):
+def load_model(ckpt, dtype, attn="auto", device_map=None):
     """Load exactly `ckpt` as a causal LM.
-    Qwen3-VL loads text-only fine (no images)."""
+    Qwen3-VL loads text-only fine (no images).
+    device_map: None -> caller places the model (training / single-GPU inference); pass "auto"
+    to let accelerate shard the layers across every visible GPU (big-model inference)."""
     impl = _resolve_attn(attn)
     print(f"[load_model] attn_implementation={impl}", file=sys.stderr)
     kw = dict(torch_dtype=dtype, attn_implementation=impl, trust_remote_code=True)
+    if device_map is not None:
+        kw["device_map"] = device_map
     cfg = AutoConfig.from_pretrained(ckpt, trust_remote_code=True)
     arch = (cfg.architectures or [""])[0]
     if "ForConditionalGeneration" in arch:
@@ -248,22 +253,42 @@ def _make_batches(items, batch_size, max_tokens):
 
 
 @torch.no_grad()
-def iter_batched_generate(model, tok, prompts, max_new_tokens, batch_size, max_batch_tokens,
-                          device):
-    """prompts: list[(stem, ids_list[int])]. Yields (stem, decoded_code) per prompt.
-    Length-sorts, left-pad-batches (_make_batches), greedy-decodes on `device`.
+def iter_batched_generate(model, tok, prompts, max_new_tokens: int, batch_size: int, max_batch_tokens: int, device: torch.device) -> Iterable[tuple[str, str | None]]:
+    """prompts: list[(stem, ids_list[int])]. Yields (stem, decoded_code) per prompt, or
+    (stem, None) when generation OOMs for that prompt even on its own — attempt-then-fail,
+    nothing is dropped before it is tried. Length-sorts, left-pad-batches (_make_batches),
+    greedy-decodes on `device` (the model's input-embedding device; the model may be sharded
+    across GPUs). On a CUDA OOM the offending batch is halved and requeued (shorter half first);
+    a solo batch that still OOMs yields None.
     Precondition (caller-set): model.eval(), model.config.use_cache=True,
     tok.padding_side='left', gradient checkpointing disabled."""
     prompts = sorted(prompts, key=lambda x: len(x[1]))
-    for batch in _make_batches(prompts, batch_size, max_batch_tokens):
-        enc = tok.pad({"input_ids": [ids for _, ids in batch]},
-                      padding=True, return_tensors="pt")
+    queue = list(_make_batches(prompts, batch_size, max_batch_tokens))
+    while queue:
+        batch = queue.pop(0)
+        enc = tok.pad({"input_ids": [ids for _, ids in batch]}, padding=True, return_tensors="pt")
         enc = {k: v.to(device) for k, v in enc.items()}
-        gen = model.generate(**enc, max_new_tokens=max_new_tokens, do_sample=False,
-                             use_cache=True, pad_token_id=tok.pad_token_id)
+        try:
+            gen = model.generate(**enc, max_new_tokens=max_new_tokens, do_sample=False,
+                                 use_cache=True, pad_token_id=tok.pad_token_id)
+        except Exception as e:                       # only CUDA OOM is recoverable; re-raise the rest
+            if "out of memory" not in str(e).lower():
+                raise
+            del enc
+            torch.cuda.empty_cache()
+            if len(batch) > 1:                       # too big together -> split and retry
+                mid = (len(batch) + 1) // 2
+                queue[:0] = [batch[:mid], batch[mid:]]
+            else:                                    # does not fit even alone -> generation failure
+                stem, ids = batch[0]
+                print(f"[gen] OOM: '{stem}' ({len(ids)} tok) does not fit even solo -> failure",
+                      file=sys.stderr)
+                yield stem, None
+            continue
         plen = enc["input_ids"].shape[1]      # left-padded → shared prompt offset for the batch
         for j, (stem, _) in enumerate(batch):
             yield stem, tok.decode(gen[j][plen:], skip_special_tokens=True)
+        del enc, gen
 
 
 # ---------------------------------------------- eval (native distributed generate-eval)
