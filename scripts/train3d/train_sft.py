@@ -1,6 +1,6 @@
 """train_sft.py — text-only SFT for the AMVDG->CadQuery (AMVDG->3D) leg.
 
-Input  = g2 serialization of an AMVDG graph (text only; NO drawing image — this is the
+Input  = Serialization of an AMVDG graph (text only; NO drawing image — this is the
          experiment that tests whether the IR is *sufficient*).
 Output = CadQuery Python code (GT = Zero-to-CAD cadquery_file).
 Start  = ADSKAILab/Zero-To-CAD-Qwen3-VL-2B (image->CadQuery SFT; same base + output as us),
@@ -28,6 +28,7 @@ Config: args are an `ExpConfig` dataclass parsed by HfArgumentParser, so every C
 (CLI flags override file values). The fully resolved config is dumped to `<out>/config.json`
 and metrics stream to TensorBoard under `<out>/logs` (or wandb with `--report-to wandb`).
 """
+import glob
 import importlib
 import json
 import os
@@ -36,7 +37,27 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, asdict
-from typing import Optional
+
+# Single-process runs must be single-GPU. With >1 GPU visible outside torchrun, HF
+# Trainer silently falls back to torch.nn.DataParallel and scales the REAL DataLoader
+# batch size to bs*n_gpu (TrainingArguments.train_batch_size) — the Collator's shared
+# trailing logits window is only tight per-example, so a DP batch mixing a long-prompt
+# and a short-prompt example blows past max_completion_cap (or, uncapped, re-opens the
+# full-logits OOM). This guard has to live HERE, before the transformers import below:
+# importing transformers.Trainer initializes the CUDA driver (cuInit), and the driver
+# reads CUDA_VISIBLE_DEVICES exactly once, at cuInit — mutating it any later in the
+# process (even at the top of main()) is a no-op. Verified empirically; the n_gpu
+# tripwire in main() catches any regression.
+if __name__ == "__main__" and int(os.environ.get("WORLD_SIZE", "1")) == 1:
+    _vis = os.environ.get("CUDA_VISIBLE_DEVICES")
+    _gpus = ([g.strip() for g in _vis.split(",") if g.strip()] if _vis is not None else
+             [str(i) for i in range(len(glob.glob("/proc/driver/nvidia/gpus/*")))])
+    if len(_gpus) > 1:
+        os.environ["CUDA_VISIBLE_DEVICES"] = _gpus[0]
+        print(f"[warn] {len(_gpus)} GPUs visible in a single-process run; restricting "
+              f"to GPU {_gpus[0]} to avoid Trainer's DataParallel fallback (batch size "
+              f"would become bs*n_gpu). Use torchrun --nproc_per_node=N for multi-GPU, "
+              f"or CUDA_VISIBLE_DEVICES=<id> to pick a different GPU.", file=sys.stderr)
 
 import torch
 from torch.utils.data import Dataset
@@ -45,14 +66,17 @@ from transformers import (AutoConfig, AutoTokenizer, AutoModelForCausalLM,
                           HfArgumentParser, Trainer, TrainingArguments,
                           TrainerCallback, set_seed)
 
-DEFAULT_CKPT = "ADSKAILab/Zero-To-CAD-Qwen3-VL-2B"
-
 # Task instruction prepended to the graph text in the user turn. cadrille uses the 3-word
 # "Generate cadquery code"; the chat template's assistant-turn start is the code-start marker,
 # so no custom special token is added. Override with --prompt (e.g. --prompt "" to ablate).
+# infer.py reads this as its own --prompt default (train_sft.PROMPT); kept as an immutable
+# module constant -- the per-run value is threaded explicitly, not written back here.
 PROMPT = "Generate cadquery code from this multi-view drawing graph; assign the solid to `result`."
-DRAWING2CAD_PY = os.environ.get(
-    "DRAWING2CAD_PY", "/home/ryotaro/miniforge3/envs/drawing2cad/bin/python")
+# eval_cq.py needs cadquery/FreeCAD and is subprocessed rather than imported: OCC has real
+# C-layer hang failure modes (see eval_cq.py's imap_isolated), and the periodic in-training
+# eval hook can't be allowed to take a multi-day run down with it. Defaults to this process's
+# own interpreter (verified to already have cadquery/FreeCAD); DRAWING2CAD_PY overrides it.
+DRAWING2CAD_PY = os.environ.get("DRAWING2CAD_PY", sys.executable)
 EVAL_CQ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval_cq.py")
 
 
@@ -100,10 +124,10 @@ def chat_ids(tok, msgs, gen_prompt, return_tensors=None):
     return out
 
 
-def build_labels(tok, input_text, target_code, max_len):
+def build_labels(tok, input_text, target_code, max_len, prompt=PROMPT):
     """Tokenize one conversation; mask everything but the assistant answer (completion-only).
     Returns (input_ids, labels, prompt_len) or None if it exceeds max_len (filter, don't truncate)."""
-    user = f"{PROMPT}\n\n{input_text}" if PROMPT else input_text
+    user = f"{prompt}\n\n{input_text}" if prompt else input_text
     msgs_p = [{"role": "user", "content": user}]
     msgs_f = msgs_p + [{"role": "assistant", "content": target_code}]
     pids = chat_ids(tok, msgs_p, True)
@@ -129,13 +153,14 @@ def build_labels(tok, input_text, target_code, max_len):
 
 
 class SFTDataset(Dataset):
-    def __init__(self, records: list[dict[str, str]], tok, max_len: int, workers: int = 16):
+    def __init__(self, records: list[dict[str, str]], tok, max_len: int, workers: int = 16,
+                 prompt: str = PROMPT):
         # per-record work is the fast (Rust) chat-template/tokenizer, which releases the
         # GIL, so a thread pool parallelizes this well (same fix as build_dataset.py's
         # tokenizer loop) instead of tokenizing all records one at a time up front.
         self.ex, self.dropped = [], 0
         def _one(r):
-            return build_labels(tok, r["input_text"], r["target_code"], max_len)
+            return build_labels(tok, r["input_text"], r["target_code"], max_len, prompt=prompt)
         with ThreadPoolExecutor(max_workers=workers) as ex:
             for built in tqdm(ex.map(_one, records), total=len(records), desc="tokenizing"):
                 if built is None:
@@ -183,12 +208,18 @@ class Collator:
         # reflexively without checking why first.
         uncapped = m - min_p + 1
         if uncapped > self.max_completion_cap:
+            pairs = [(b["prompt_len"], len(b["input_ids"])) for b in batch]
             raise RuntimeError(
                 f"[Collator] completion window {uncapped} exceeds max_completion_cap="
-                f"{self.max_completion_cap} (min prompt_len={min_p}, max total len={m} "
-                f"in this batch). This should not happen with the current corpus (max "
-                f"completion 3018 tok) -- investigate the offending example before raising "
-                f"the cap.")
+                f"{self.max_completion_cap} (min prompt_len={min_p}, max total len={m}, "
+                f"len(batch)={len(batch)}, per-example (prompt_len, total)={pairs}). "
+                f"If len(batch)==1 the example's own prompt boundary is mis-detected -- "
+                f"investigate it before raising the cap. If len(batch)>1 the window is a "
+                f"cross-example quantity: a long-prompt and a short-prompt example were "
+                f"batched together, which the shared trailing window can't cover under the "
+                f"cap -- check for an unintended effective batch size (e.g. Trainer's "
+                f"DataParallel fallback scales it to bs*n_gpu when >1 GPU is visible "
+                f"outside torchrun).")
         k = min(m, uncapped)  # trailing hidden-state positions covering every example's completion
         ii, ll, am = [], [], []
         for b in batch:
@@ -293,7 +324,8 @@ class EvalCadCallback(TrainerCallback):
     (save_model needs it)."""
 
     def __init__(self, model, tok, val_records, work_dir, gt_dir, max_new_tokens,
-                 cap_len, batch_size, max_batch_tokens, eval_every_epochs, best_metric):
+                 cap_len, batch_size, max_batch_tokens, eval_every_epochs, best_metric,
+                 prompt=PROMPT):
         self.model, self.tok = model, tok
         self.val = list(val_records)
         self.work_dir, self.gt_dir = work_dir, gt_dir
@@ -303,6 +335,7 @@ class EvalCadCallback(TrainerCallback):
         self.max_batch_tokens = max_batch_tokens
         self.eval_every_epochs = float(eval_every_epochs)
         self.best_metric = best_metric
+        self.prompt = prompt
         self.trainer = None
         self.best_value = None
         self.best_step = self.best_epoch = None
@@ -325,7 +358,7 @@ class EvalCadCallback(TrainerCallback):
         dev = next(m.parameters()).device
         prompts = []
         for r in self.val:
-            user = f"{PROMPT}\n\n{r['input_text']}" if PROMPT else r["input_text"]
+            user = f"{self.prompt}\n\n{r['input_text']}" if self.prompt else r["input_text"]
             ids = chat_ids(tok, [{"role": "user", "content": user}], True)
             if len(ids) > self.cap_len:        # over-cap: stub .py so it scores as a failure
                 with open(os.path.join(out_dir, f"{r['id']}.py"), "w") as f:
@@ -412,8 +445,8 @@ class ExpConfig:
                         metadata={"help": "GT STEP dir for the val split (eval hook execs preds against these)"})
     prompt: str = field(default=PROMPT,
                         metadata={"help": 'instruction prepended to the graph text (--prompt "" to drop it)'})
-    ckpt: str = DEFAULT_CKPT
-    out: Optional[str] = field(default=None, metadata={
+    ckpt: str = "ADSKAILab/Zero-To-CAD-Qwen3-VL-2B"
+    out: str| None = field(default=None, metadata={
         "help": "run dir (default: experiments/train3d/<YYYY-MM-DD_HH-MM-SS>)"})
     full: bool = field(default=False, metadata={"help": "full fine-tune (default: LoRA)"})
     train_vision: bool = field(default=False, metadata={"help": "don't freeze vision tower"})
@@ -429,7 +462,7 @@ class ExpConfig:
                 "| sdpa | flash_attention_2 | eager"})
     bs: int = 1
     grad_accum: int = 8
-    lr: Optional[float] = field(default=None, metadata={"help": "default 2e-4 LoRA / 1e-4 full"})
+    lr: float | None = field(default=None, metadata={"help": "default 2e-4 LoRA / 1e-4 full"})
     epochs: float = 3.0
     max_steps: int = -1
     warmup_ratio: float = 0.03
@@ -442,7 +475,7 @@ class ExpConfig:
     eval_val_n: int = field(default=48, metadata={
         "help": "in-training eval subset size, sampled ONCE from val with a fixed seed "
                 "(identical across evals and across same-seed runs). 0 = full val set."})
-    eval_seed: Optional[int] = field(default=None, metadata={
+    eval_seed: int | None = field(default=None, metadata={
         "help": "seed for the eval-subset sample (default: reuse --seed)"})
     eval_every_epochs: float = field(default=1.0, metadata={
         "help": "run the eval hook every N epochs (float ok; checked at on_step_end via "
@@ -466,7 +499,7 @@ class ExpConfig:
     seed: int = 42
     report_to: str = field(default="tensorboard",
                            metadata={"help": "tensorboard (default) | wandb | none"})
-    run_name: Optional[str] = field(default=None, metadata={"help": "TensorBoard/wandb run label"})
+    run_name: str | None = field(default=None, metadata={"help": "TensorBoard/wandb run label"})
     wandb_project: str = field(default="drawing2cad-3d",
                                metadata={"help": "wandb project (only when --report-to wandb)"})
 
@@ -483,7 +516,7 @@ def _git_hash():
 DEFAULT_OUT_ROOT = "experiments/train3d"
 
 
-def resolve_out(cli_out: Optional[str], world: int, is_main: bool) -> str:
+def resolve_out(cli_out: str | None, world: int, is_main: bool) -> str:
     """Run dir. `--out` overrides; otherwise experiments/train3d/<timestamp>.
     Under DDP every rank runs main() independently, so rank0 picks the timestamp
     and shares it via a rendezvous file (keyed by the shared torchrun run id) —
@@ -529,10 +562,11 @@ def parse_config() -> ExpConfig:
 
 # --------------------------------------------------------------- main
 def main():
-    global PROMPT  # --prompt overrides it; build_labels/generate_preds read the module global
     args = parse_config()
-    PROMPT = args.prompt
     set_seed(args.seed)
+
+    world = int(os.environ.get("WORLD_SIZE", "1"))
+    is_main = int(os.environ.get("RANK", "0")) == 0
 
     if args.n_eval >= 0:                       # deprecated alias -> eval_val_n (stay truthful in dump)
         print(f"[warn] --n_eval is deprecated; mapping {args.n_eval} -> --eval_val_n",
@@ -547,8 +581,6 @@ def main():
             args.eval_every_epochs = 4.0
     lr = args.lr if args.lr is not None else (1e-4 if args.full else 2e-4)
 
-    world = int(os.environ.get("WORLD_SIZE", "1"))
-    is_main = int(os.environ.get("RANK", "0")) == 0
     args.out = resolve_out(args.out, world, is_main)
     os.makedirs(args.out, exist_ok=True)
     if is_main:
@@ -580,7 +612,7 @@ def main():
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
 
-    ds = SFTDataset(train, tok, args.max_len, workers=args.tok_workers)
+    ds = SFTDataset(train, tok, args.max_len, workers=args.tok_workers, prompt=args.prompt)
     print(f"train examples kept {len(ds)} (dropped over-len {ds.dropped}) "
           f"| val {len(val)} | max_len {args.max_len}")
 
@@ -629,6 +661,20 @@ def main():
         # would flag them as unused; allow it for the 2-GPU path (no-op single-GPU).
         ddp_find_unused_parameters=(world > 1),
         dataloader_num_workers=2, optim=args.optim)
+    # Tripwire for the DataParallel fallback (see the CUDA_VISIBLE_DEVICES guard at the
+    # top of this module): n_gpu > 1 here means the visibility restriction didn't take
+    # (it only runs when this file is the entrypoint, and only before the CUDA driver's
+    # one-shot cuInit read of CUDA_VISIBLE_DEVICES) — and the Trainer would multiply the
+    # DataLoader batch size by n_gpu, feeding the Collator cross-example batches. Fail
+    # here, at the source, instead of minutes later in a DataLoader worker.
+    if targs.n_gpu > 1:
+        raise RuntimeError(
+            f"n_gpu={targs.n_gpu} in a single-process run: Trainer would fall back to "
+            f"DataParallel and scale the DataLoader batch size to bs*n_gpu. The module-"
+            f"top CUDA_VISIBLE_DEVICES guard didn't take effect (CUDA driver was "
+            f"initialized first — e.g. train_sft was imported rather than run, or a "
+            f"CUDA call precedes the guard). Run with CUDA_VISIBLE_DEVICES=<one id>, "
+            f"or use torchrun for multi-GPU.")
 
     # fixed, seeded RANDOM val subset for the eval hook (avoids the shortest-graph bias of
     # the old probe). Sampled once here so the subset is identical across every eval in a run
@@ -646,7 +692,8 @@ def main():
                          batch_size=args.eval_batch_size,
                          max_batch_tokens=args.eval_max_batch_tokens,
                          eval_every_epochs=args.eval_every_epochs,
-                         best_metric=args.best_metric)
+                         best_metric=args.best_metric,
+                         prompt=args.prompt)
     trainer = Trainer(
         model=model,
         args=targs,
