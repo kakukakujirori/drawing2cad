@@ -3,6 +3,7 @@ cairosvg
 datasets
 einops
 ezdxf
+hatchling
 huggingface_hub
 jsonschema
 manifold3d

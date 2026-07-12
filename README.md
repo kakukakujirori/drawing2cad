@@ -8,17 +8,24 @@ running log live in [`research/`](research/) (start with `research/research-log_
 ## Environments
 
 ```bash
-conda create -y -n drawing2cad python=3.11 freecad cadquery -c conda-forge
+conda create -y -n drawing2cad python=3.12 freecad cadquery build123d -c conda-forge
 conda activate drawing2cad
 
 # install requirements
 pip3 install torch torchvision xformers --index-url https://download.pytorch.org/whl/cu128
-pip install build123d --no-deps  # Prevent build123d from installing cadquery-ocp-novtk
 pip install -r requirements.txt
+
+# ABI symbol resolution
+conda env config vars set LD_PRELOAD=$CONDA_PREFIX/lib/libjpeg.so
+conda env config vars set LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+conda deactivate && conda activate drawing2cad
+
+# Install CADGenBench
+pip install "cadgenbench @ git+https://github.com/huggingface/cadgenbench.git@main" --no-deps --no-build-isolation
+
+# install flash-attn
 MAX_JOBS=4 pip3 install flash-attn --no-build-isolation
 ```
-
-**Note**: conda-forge ships `FreeCAD.so` under `$CONDA_PREFIX/lib`, which is not on `sys.path`, so a bare `import FreeCAD` fails — the renderer scripts therefore `import freecad` first (a conda-forge shim that adds that lib dir), then `import FreeCAD` works.
 
 ## Data Preparation
 

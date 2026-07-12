@@ -86,7 +86,7 @@ python bench/evaluate.py bench/results/agy_<modelslug>
 
 # Side-by-side report -> results/report.{json,md}
 python bench/report.py \
-    --ours bench/results/ours_noblend_v1 \
+    --ours bench/results/[yyyy-mm-dd_hh-mm-ss] \
     --baseline bench/results/agy_<modelslug>
 ```
 

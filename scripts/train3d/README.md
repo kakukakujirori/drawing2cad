@@ -164,9 +164,9 @@ python scripts/train3d/infer.py \
 #    THIS prints + writes the eval numbers (valid_rate, mean/median IoU, bbox-mm err); step 4 only
 #    produces the preds. eval_cq re-execs each {id}.py itself, so run 4 then 5.
 python scripts/train3d/eval_cq.py \
-    --pred-dir experiments/train3d/lora_v4/preds_full \
+    --pred-dir experiments/train3d/<run>/preds_full \
     --gt-dir experiments/stage_z2c_val \
-    --out experiments/train3d/lora_v4/eval_full.json
+    --out experiments/train3d/<run>/eval_full.json
 #   Scoring runs --workers in parallel (default min(8,cpu)); each worker is pinned to 1 numeric
 #   thread (no BLAS oversubscription) and --timeout defaults to 120 s (headroom for single-thread
 #   64³ voxelization), so results are invariant to --workers. (eval_cq globs *.py, so infer.py's
