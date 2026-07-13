@@ -5,15 +5,16 @@ Trains and evaluates the **back leg** of the drawing2cad pipeline: `AMVDG graph 
 - **Input** = `scripts/train3d/serialize.graph_to_text(graph)` (part-frame mm, each axis bbox-min = 0; `Ck` tags mark the same 3D feature across views).
 - **Target** = GT CadQuery (`experiments/stage_z2c_{train,val}/{uuid}.cadquery.py`, assigns `result`).
 - **Start ckpt** = [`ADSKAILab/Zero-To-CAD-Qwen3-VL-2B`](https://huggingface.co/ADSKAILab/Zero-To-CAD-Qwen3-VL-2B) (image→CadQuery SFT; same base *and* same output format as us), swappable via `--ckpt`.
-- **Data** = the two per-split bundles from **Data Preparation step 3** (top-level README):
+- **Data** = the two per-split bundles from **Data Preparation step 4** (top-level README):
   `experiments/data_z2c_train` (≈2825, Zero-To-CAD train split) and `experiments/data_z2c_val`
-  (≈274, val split). Each is `all.jsonl` + `stats.json`; the SFT train/val sets **are** these
+  (≈274, val split). Each is `all.jsonl` + `invalid_extent.jsonl` + `stats.json`; the SFT train/val sets **are** these
   source splits (no extra split is carved inside a bundle).
 
 ## Files
 | file | what |
 |---|---|
-| `build_dataset.py` | one graph-dir + code-dir → `all.jsonl` (`{id,input_text,target_code,n_tok_*}`) + `stats.json` token report. Run once per split — see top-level README step 3. |
+| `audit_extent.py` | audit an existing bundle's `ext / max(bbox_3d)` distribution; optionally trace each warning/quarantine to the source view/primitive/failure mode with `--graph-dir`. |
+| `build_dataset.py` | one graph-dir + code-dir → `all.jsonl` (`{id,input_text,target_code,n_tok_*}`) + `invalid_extent.jsonl` quarantine + `stats.json` token/extent report. Run once per split — see top-level README step 4. |
 | `serialize.py` | this leg's AMVDG-graph ↔ model-input text codec (`graph_to_text` + inverse for round-trip). `python serialize.py GRAPH.json` prints it; `--check 'GLOB'` validates round-trip + cross-view consistency dataset-wide. |
 | `train_sft.py` | text-only SFT (bf16, completion-only loss, LoRA/full, 1-/2-GPU); `--train`/`--val` bundles. **Periodic in-training eval** (every `--eval_every_epochs` epochs, or every `--eval_every_steps` steps when set — that replaces the epoch cadence — plus train-end): batched greedy-generate a fixed seeded RANDOM val subset (`--eval_val_n`, default 48; 0 = full val) via the *shared* `iter_batched_generate` (same code path as `infer.py`), score with `eval_cq.py`, log folded metrics to TensorBoard, and save a full HF checkpoint EVERY eval on the `--best_metric` scalar: the final save lands in a self-describing `<out>/<best_metric>_<value>_step<N>/`, with `<out>/best` symlinked to it (fixed path for `--ckpt`) and `<out>/latest` symlinked to the most-recently-saved `<out>/checkpoint-<N>/` (kept current live during training, so it survives a crash — see `--resume_from`). `--save_total_limit` (default 2) caps HF checkpoints (`<out>/checkpoint-<N>/`, full optimizer/scheduler/rng state) to latest+best. Args are an `ExpConfig` dataclass (`HfArgumentParser`): every flag is also settable from a `--config FILE.{json,yaml}` (CLI overrides file); resolved config → `<out>/config.json`, metrics → TensorBoard `<out>/logs` (or `--report-to wandb`, offline). |
 | `infer.py` | batch inference: AMVDG JSON → CadQuery `{stem}.py` + executed `{stem}.step`, with a trained ckpt (LoRA adapter dir *or* full ckpt / HF id). Batched generation is the shared `train_sft.iter_batched_generate` (length-sort + left-pad); isolated timeout'd exec; writes `infer_summary.json` (exec/step rates + error hist). Naming pairs with GT `{uuid}.step` so `eval_cq.py` scores its `.py` outputs directly. |
@@ -23,7 +24,7 @@ Trains and evaluates the **back leg** of the drawing2cad pipeline: `AMVDG graph 
 
 ### Training
 ```bash
-# bundles come from Data Preparation step 3 (top-level README):
+# bundles come from Data Preparation step 4 (top-level README):
 #   experiments/data_z2c_train  +  experiments/data_z2c_val
 #
 # LAUNCH POLICY: always via torchrun (`--nproc_per_node=N`; N=1 single-GPU, N=2 DDP). Device

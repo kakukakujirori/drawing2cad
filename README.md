@@ -96,7 +96,7 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
       --hid-dropout 0.95  # MAYBE BETTER TO SET 0?
     ```
     > **Consistency:** `--quant` sets the coordinate encoding, so `infer.py --quant` must equal what the training data used (both default 1024 → consistent by default; pass `--quant 0` on both to ablate). `stats.json` records the transforms and reports token coverage up to 16384.
-    Each bundle is `all.jsonl` (one record per part: `input_text` = serialized graph, `target_code` = GT CadQuery) + `stats.json` (token report). `build_dataset.py` calls the graph→text serializer [`scripts/train3d/serialize.py`](scripts/train3d/serialize.py); to eyeball / round-trip-check the exact text the model reads:
+    Each bundle is `all.jsonl` (one record per valid part: `input_text` = serialized graph, `target_code` = GT CadQuery) + `invalid_extent.jsonl` + `stats.json`. The builder keeps `extent_ratio <= 5`, warns for `2 < extent_ratio <= 5`, and quarantines larger values so one pathological HLR primitive cannot collapse the shared quantization grid; counts, IDs, thresholds, and the ratio distribution are recorded in `stats.json`. `build_dataset.py` calls the graph→text serializer [`scripts/train3d/serialize.py`](scripts/train3d/serialize.py); to eyeball / round-trip-check the exact text the model reads:
     ```bash
     # one graph -> the model-input text (pass any <uuid>.graph.json from Step 2's output):
     python scripts/train3d/serialize.py \
@@ -106,6 +106,14 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
     python scripts/train3d/serialize.py \
       --quant 1024 --drop-covered --check \
       'experiments/dataset_z2c_val/*.graph.json'
+    ```
+    Existing bundles can be audited without rebuilding or loading the tokenizer. Add `--graph-dir` to identify the maximum-contributing source primitive and classify the failure mode:
+    ```bash
+    python scripts/train3d/audit_extent.py \
+      --bundle experiments/data_z2c_train_noblend/all.jsonl \
+      --graph-dir experiments/dataset_z2c_train \
+      --warn-ratio 2 --fail-ratio 5 \
+      --out experiments/data_z2c_train_noblend/extent_audit.json
     ```
     Training + eval then consume these two bundles — see [`scripts/train3d/README.md`](scripts/train3d/README.md).
 

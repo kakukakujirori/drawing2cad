@@ -1,5 +1,8 @@
 import math
+import logging
 import FreeCAD as App
+
+log = logging.getLogger(__name__)
 
 _PARAM_ROLE = {"dx": "width", "dy": "depth", "dz": "height", "diameter": "diameter"}
 ARROW = 3.2
@@ -73,6 +76,11 @@ def axis_dir(ax):
 
 def extract_cylinders(shape):
     feats = []
+    bb = shape.BoundBox
+    bounds = {"X": (bb.XMin, bb.XMax), "Y": (bb.YMin, bb.YMax),
+              "Z": (bb.ZMin, bb.ZMax)}
+    diag = max(math.sqrt(bb.XLength ** 2 + bb.YLength ** 2 + bb.ZLength ** 2), 1e-6)
+    rejected = 0
     for f_idx, f in enumerate(shape.Faces):
         srf = f.Surface
         if srf.TypeId == "Part::GeomCylinder":
@@ -80,8 +88,25 @@ def extract_cylinders(shape):
             if a is None:
                 continue
             c = srf.Center
+            xyz = {"X": c.x, "Y": c.y, "Z": c.z}
+            r = float(srf.Radius)
+            margin = max(1e-3, 0.05 * diag)
+            perpendicular = [nm for nm in ("X", "Y", "Z") if nm != a]
+            # The origin of an OCC infinite cylinder is arbitrary along its
+            # axis, but its perpendicular coordinates define the physical axis
+            # line and must pass through the finite part envelope.  Otherwise it
+            # is not a safe hole/round feature to dimension.
+            sane = (math.isfinite(r) and r > 0 and r <= diag
+                    and all(math.isfinite(xyz[nm])
+                            and bounds[nm][0] - margin <= xyz[nm] <= bounds[nm][1] + margin
+                            for nm in perpendicular))
+            if not sane:
+                rejected += 1
+                continue
             feats.append({"center": (c.x, c.y, c.z), "r": srf.Radius, "axis": a,
                           "face_id": "Face_%d" % f_idx})
+    if rejected:
+        log.warning("dimensioner: rejected %d out-of-envelope cylinder surface(s)", rejected)
     seen = {}
     uniq = []
     for fe in feats:
@@ -118,6 +143,7 @@ class LegacyDimensioner:
         self.dims_gt = []
         self.features = []
         self.dctr = 0
+        self.rejected_centerlines = 0
 
     def _find_circle_prim(self, view_name, center_cu, center_cv, r, tolpx=4.0):
         vobj = self.views_obj[view_name]
@@ -177,6 +203,23 @@ class LegacyDimensioner:
                             round(max(p1[0], p2[0]), 1), round(max(p1[1], p2[1]), 1)],
                 "prov": {"topo_origins": origins},
             })
+
+    def _centerline_in_view(self, vname, sx, sy, L):
+        """Last gate before centerline ink/records are added to the drawing."""
+        v = self.views_obj[vname]
+        x1, y1 = v.M(v.umin, v.vmin)
+        x2, y2 = v.M(v.umax, v.vmax)
+        xmin, xmax = sorted((x1, x2))
+        ymin, ymax = sorted((y1, y2))
+        diag = max(math.hypot(xmax - xmin, ymax - ymin), 1e-6)
+        # Center marks intentionally extend 2.5 mm beyond the circle and may
+        # sit on an outer silhouette; leave drafting clearance in addition to
+        # the geometric envelope.  This is still tiny versus the million-mm
+        # stray centers this gate is designed to reject.
+        margin = max(5.0, 0.15 * diag)
+        return (math.isfinite(sx) and math.isfinite(sy) and math.isfinite(L) and L > 0
+                and sx - L >= xmin - margin and sx + L <= xmax + margin
+                and sy - L >= ymin - margin and sy + L <= ymax + margin)
 
     def _add_dim(self, svg_frag, anchor_mm, dtype, subtype, value, view, refs, prov):
         self.dctr += 1
@@ -244,11 +287,17 @@ class LegacyDimensioner:
             ref = self._find_circle_prim(vname, cu, cv, c["r"])
             if not ref:
                 continue
-            _seen_dim.add(key)
             sx, sy = vobj.M(cu, cv)
+            line_len = max(c["r"] * vobj.scale, 3) + 2.5
+            if not self._centerline_in_view(vname, sx, sy, line_len):
+                self.rejected_centerlines += 1
+                log.warning("dimensioner: rejected out-of-view centerline for %s in %s",
+                            c["id"], vname)
+                continue
+            _seen_dim.add(key)
             _off[vname] = _off.get(vname, 0) + 1
             self.dims_svg.append(centerlines_for(sx, sy, max(c["r"] * vobj.scale, 3)))
-            self._record_centerlines(vname, sx, sy, max(c["r"] * vobj.scale, 3) + 2.5, c)
+            self._record_centerlines(vname, sx, sy, line_len, c)
             frag, anc = diadim(sx, sy, c["r"] * vobj.scale, 30 + 14 * (_off[vname] % 4),
                                "%s%s" % (DIA, fmt(2 * c["r"])))
             self._add_dim(frag, anc, "diameter", None, 2 * c["r"], vname,

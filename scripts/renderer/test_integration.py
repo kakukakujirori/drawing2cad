@@ -116,6 +116,38 @@ class _BadCurveEdge:
         return list(self._pts)
 
 
+class _FakeCurve:
+    def __init__(self, type_id, center=(0, 0), radius=0, rmaj=0, rmin=0):
+        self.TypeId = type_id
+        self.Center = App.Vector(center[0], center[1], 0)
+        self.Radius = radius
+        self.MajorRadius = rmaj
+        self.MinorRadius = rmin
+        self.XAxis = App.Vector(1, 0, 0)
+        self.YAxis = App.Vector(0, 1, 0)
+
+
+class _FakeCurveEdge:
+    def __init__(self, curve, endpoints, stable, bad_deflection=None, closed=False):
+        self.Curve = curve
+        self.Closed = closed
+        self._ends = [App.Vector(x, y, 0) for x, y in endpoints]
+        self._stable = [App.Vector(x, y, 0) for x, y in stable]
+        self._bad = ([App.Vector(x, y, 0) for x, y in bad_deflection]
+                     if bad_deflection else None)
+
+    @property
+    def Vertexes(self):
+        class _V:
+            def __init__(self, p): self.Point = p
+        return [_V(p) for p in self._ends]
+
+    def discretize(self, **kw):
+        if "Deflection" in kw and self._bad is not None:
+            return list(self._bad)
+        return list(self._stable)
+
+
 class _FakeShape:
     def __init__(self, faces, edges):
         self.Faces = faces
@@ -145,6 +177,49 @@ def test_classify_edge_fallback():
     assert _FALLBACK["svg_fallback_edges"] == 1, dict(_FALLBACK)
     print("[OK] classify_edge + edge_to_path fall back to polyline, counters:",
           {k: v for k, v in _FALLBACK.items() if v})
+    _FALLBACK.clear()
+
+
+def test_classify_edge_extent_guards():
+    print("\n=== classify_edge finite-envelope guards ===")
+    from scripts.renderer.render_dataset import classify_edge, _FALLBACK
+
+    env = (0, 0, 100, 100)
+    _FALLBACK.clear()
+
+    # A partial ellipse whose infinite support is far away, while its actual
+    # bounded edge is local, must preserve the edge as a bounded polyline.
+    ill = _FakeCurveEdge(
+        _FakeCurve("Part::GeomEllipse", center=(100000, 100000),
+                   rmaj=100000, rmin=50000),
+        endpoints=[(10, 10), (12, 10)],
+        stable=[(10, 10), (11, 10.1), (12, 10)])
+    typ, g = classify_edge(ill, env)
+    assert typ == "polyline" and g["pts"][1] == (11.0, 10.1), (typ, g)
+    assert _FALLBACK["partial_conic_polylines"] == 1, dict(_FALLBACK)
+
+    # Deflection sampling can diverge even when Number sampling is stable.
+    curve = _FakeCurve("Part::GeomBSplineCurve")
+    divergent = _FakeCurveEdge(curve, endpoints=[(10, 10), (20, 10)],
+                               stable=[(10, 10), (15, 12), (20, 10)],
+                               bad_deflection=[(10, 10), (1e9, 1e9), (20, 10)])
+    typ, g = classify_edge(divergent, env)
+    assert typ == "polyline" and max(x for p in g["pts"] for x in p) < 100, (typ, g)
+
+    # A genuinely out-of-envelope HLR edge has no trustworthy bounded form.
+    stray = _FakeCurveEdge(_FakeCurve("Part::GeomLine"),
+                           endpoints=[(10000, 0), (10010, 0)],
+                           stable=[(10000, 0), (10010, 0)])
+    assert classify_edge(stray, env) is None
+
+    # Normal analytic ellipse stays analytic (negative regression).
+    normal = _FakeCurveEdge(_FakeCurve("Part::GeomEllipse", center=(50, 50),
+                                      rmaj=10, rmin=5),
+                            endpoints=[(60, 50), (50, 55)],
+                            stable=[(60, 50), (57, 53), (50, 55)])
+    typ, _ = classify_edge(normal, env)
+    assert typ == "ellipse", typ
+    print("[OK] partial conic fallback, polyline retry, stray rejection, normal ellipse")
     _FALLBACK.clear()
 
 
@@ -190,6 +265,7 @@ def test_cone_face_projection():
 if __name__ == "__main__":
     test_ray_casting()
     test_classify_edge_fallback()
+    test_classify_edge_extent_guards()
     test_cad_projector_guard()
     test_cone_face_projection()
     print("\nAll integration tests passed.")

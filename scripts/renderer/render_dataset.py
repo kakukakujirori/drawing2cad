@@ -99,7 +99,110 @@ def _safe_curve(e):
         return _CURVE_RAISED
 
 
-def edge_to_path(e, tol=0.05):
+def _projected_shape_envelope(shape, direction):
+    """Expected OCC-HLR local envelope from the finite 3D shape bbox.
+
+    Unlike ``Edge.BoundBox`` this cannot be poisoned by the infinite support
+    curve of a short, ill-conditioned HLR arc/ellipse.
+    """
+    b = shape.BoundBox
+    if tuple(direction) == (0, -1, 0):       # local = (-Z, X)
+        return (-b.ZMax, b.XMin, -b.ZMin, b.XMax)
+    if tuple(direction) == (0, 0, 1):        # local = (X, Y)
+        return (b.XMin, b.YMin, b.XMax, b.YMax)
+    if tuple(direction) == (1, 0, 0):        # local = (Z, -Y)
+        return (b.ZMin, -b.YMax, b.ZMax, -b.YMin)
+    return None
+
+
+def _envelope_diag(envelope):
+    if envelope is None:
+        return 1.0
+    return max(math.hypot(envelope[2] - envelope[0], envelope[3] - envelope[1]), 1e-6)
+
+
+def _points_valid(points, envelope=None):
+    """Finite, bounded, ordered curve samples suitable for an AMVDG polyline."""
+    if len(points) < 2:
+        return False
+    xy = [(float(p[0]), float(p[1])) for p in points]
+    if not all(math.isfinite(z) for p in xy for z in p):
+        return False
+    if envelope is None:
+        return True
+    xmin, ymin, xmax, ymax = envelope
+    diag = _envelope_diag(envelope)
+    margin = max(1.0, 0.1 * diag)
+    if any(x < xmin - margin or x > xmax + margin or
+           y < ymin - margin or y > ymax + margin for x, y in xy):
+        return False
+    # A jump larger than the projected part itself is numerical corruption, not
+    # a meaningful adjacent segment of a bounded edge.
+    return all(math.hypot(b[0] - a[0], b[1] - a[1]) <= 1.5 * diag + margin
+               for a, b in zip(xy, xy[1:]))
+
+
+def _edge_endpoints(e):
+    vs = e.Vertexes
+    if len(vs) < 2:
+        return []
+    return [(vs[0].Point.x, vs[0].Point.y),
+            (vs[-1].Point.x, vs[-1].Point.y)]
+
+
+def _valid_discretize(e, envelope=None, *, conic=False, allow_endpoints=True):
+    """Discretize with validation and stable retries; never delete points in-place."""
+    attempts = ([{"Number": 17}, {"Number": 9}, {"Number": 3}]
+                if conic else
+                [{"Deflection": 0.2}, {"Number": 17}, {"Number": 9}, {"Number": 3}])
+    for kw in attempts:
+        try:
+            pts = [(p.x, p.y) for p in e.discretize(**kw)]
+        except Exception:
+            continue
+        if _points_valid(pts, envelope):
+            return pts
+    if allow_endpoints:
+        endpoints = _edge_endpoints(e)
+        return endpoints if _points_valid(endpoints, envelope) else None
+    return None
+
+
+def _partial_conic_is_ill_conditioned(g, envelope):
+    """Whether full support parameters dwarf the finite projected edge."""
+    if envelope is None:
+        return False
+    cx, cy = g["center"]
+    radius = max(g.get("r", 0.0), g.get("rmaj", 0.0), g.get("rmin", 0.0))
+    vals = (cx, cy, radius)
+    if not all(math.isfinite(float(x)) for x in vals) or radius <= 0:
+        return True
+    diag = _envelope_diag(envelope)
+    ex = max(abs(cx - envelope[0]), abs(cx - envelope[2]),
+             abs(cy - envelope[1]), abs(cy - envelope[3])) + radius
+    p1, p2 = g.get("p1"), g.get("p2")
+    chord = math.hypot(p2[0] - p1[0], p2[1] - p1[1]) if p1 and p2 else diag
+    condition = radius / max(chord, 1e-9)
+    # Keep legitimate large-radius partial arcs (the observed ratio 2.5--2.9
+    # boundary cases).  Fallback is deliberately conservative and targets the
+    # >5x corrupt support curves documented in research-log_invalid_ext.md.
+    return ex > 5.0 * diag or (condition > 100.0 and ex > 2.0 * diag)
+
+
+def _full_conic_in_envelope(g, envelope):
+    if envelope is None:
+        return True
+    cx, cy = g["center"]
+    radius = max(g.get("r", 0.0), g.get("rmaj", 0.0), g.get("rmin", 0.0))
+    diag = _envelope_diag(envelope)
+    margin = max(1.0, 0.1 * diag)
+    xmin, ymin, xmax, ymax = envelope
+    return (all(math.isfinite(float(x)) for x in (cx, cy, radius)) and radius >= 0
+            and cx - radius >= xmin - margin and cx + radius <= xmax + margin
+            and cy - radius >= ymin - margin and cy + radius <= ymax + margin)
+
+
+def edge_to_path(e, tol=0.05, envelope=None):
     c = _safe_curve(e)
     if c is _CURVE_RAISED:
         _FALLBACK["svg_fallback_edges"] += 1
@@ -131,9 +234,13 @@ def edge_to_path(e, tol=0.05):
         return "M %.4f %.4f A %.4f %.4f 0 %d %d %.4f %.4f" % (
             p0.x, p0.y, r, r, large, sweep, p1.x, p1.y)
     try:
-        pts = e.discretize(Deflection=tol)
+        raw = e.discretize(Deflection=tol)
+        pts = raw if _points_valid([(p.x, p.y) for p in raw], envelope) else []
     except Exception:
-        pts = [v.Point for v in vs]
+        pts = []
+    if not pts:
+        safe = _valid_discretize(e, envelope)
+        pts = [App.Vector(x, y, 0) for x, y in safe] if safe else []
     if len(pts) < 2:
         return ""
     d = "M %.4f %.4f" % (pts[0].x, pts[0].y)
@@ -147,7 +254,7 @@ def compound_edges(grp):
     except Exception:
         return []
 
-def classify_edge(e):
+def classify_edge(e, envelope=None):
     """Coarse primitive type + geometry in the edge's own 2D coords."""
     c = _safe_curve(e)
     vs = e.Vertexes
@@ -157,26 +264,28 @@ def classify_edge(e):
         # only if the oracle matcher finds a line under it; otherwise the
         # primitive is emitted without prov rather than dropped.
         _FALLBACK["hlr_fallback_edges"] += 1
-        try:
-            pts = [(p.x, p.y) for p in e.discretize(Deflection=0.2)]
-        except Exception:
-            pts = [(v.Point.x, v.Point.y) for v in vs]
-        if len(pts) >= 2:
+        pts = _valid_discretize(e, envelope)
+        if pts and len(pts) >= 2:
             return ("polyline", {"pts": pts, "p1": pts[0], "p2": pts[-1]})
-        return ("line", {"p1": (0, 0), "p2": (0, 0)})  # degenerate; dropped by caller
+        return None
     if c is not None and c.TypeId == "Part::GeomCircle":
         r = c.Radius
         cen = (c.Center.x, c.Center.y)
         if e.Closed or len(vs) < 2:
+            if not _full_conic_in_envelope({"center": cen, "r": r}, envelope):
+                return None
             return ("circle", {"center": cen, "r": r})
         p0, p1 = vs[0].Point, vs[-1].Point
-        try:
-            m = e.discretize(Number=3)[1]
-            mid = (m.x, m.y)
-        except Exception:
-            mid = None
-        return ("arc", {"center": cen, "r": r, "mid": mid,
-                        "p1": (p0.x, p0.y), "p2": (p1.x, p1.y)})
+        g = {"center": cen, "r": r, "p1": (p0.x, p0.y), "p2": (p1.x, p1.y)}
+        samples = _valid_discretize(e, envelope, conic=True, allow_endpoints=False)
+        if not samples:
+            return None
+        g["mid"] = samples[len(samples) // 2]
+        if _partial_conic_is_ill_conditioned(g, envelope):
+            _FALLBACK["partial_conic_polylines"] += 1
+            return ("polyline", {"pts": samples, "p1": samples[0], "p2": samples[-1],
+                                 "fallback_reason": "ill_conditioned_partial_circle"})
+        return ("arc", g)
     if c is not None and c.TypeId == "Part::GeomEllipse":
         # HLR emits an exact GeomEllipse for an obliquely-projected circle/ellipse.
         # Keep it parametric (center + major/minor semi-axes + rotation) instead of
@@ -189,38 +298,49 @@ def classify_edge(e):
         mino = (ya.x, ya.y) if ya is not None else (-xa.y, xa.x)
         g = {"center": cen, "rmaj": c.MajorRadius, "rmin": c.MinorRadius,
              "maj": maj, "min": mino}
-        if not (e.Closed or len(vs) < 2):
+        if e.Closed or len(vs) < 2:
+            if not _full_conic_in_envelope(
+                    {"center": cen, "rmaj": c.MajorRadius,
+                     "rmin": c.MinorRadius}, envelope):
+                return None
+        else:
             p0, p1 = vs[0].Point, vs[-1].Point
-            try:
-                m = e.discretize(Number=3)[1]
-                g["mid"] = (m.x, m.y)
-            except Exception:
-                g["mid"] = None
             g["p1"] = (p0.x, p0.y)
             g["p2"] = (p1.x, p1.y)
+            samples = _valid_discretize(e, envelope, conic=True, allow_endpoints=False)
+            if not samples:
+                return None
+            g["mid"] = samples[len(samples) // 2]
+            if _partial_conic_is_ill_conditioned(g, envelope):
+                _FALLBACK["partial_conic_polylines"] += 1
+                return ("polyline", {"pts": samples, "p1": samples[0],
+                                     "p2": samples[-1],
+                                     "fallback_reason": "ill_conditioned_partial_ellipse"})
         return ("ellipse", g)
     # treat as line if 2 endpoints and (near-)straight, else polyline -> store endpoints + samples
     if len(vs) >= 2:
         p0, p1 = vs[0].Point, vs[-1].Point
+        endpoints = [(p0.x, p0.y), (p1.x, p1.y)]
+        if not _points_valid(endpoints, envelope):
+            return None
         # check straightness via discretized midpoint deviation
-        try:
-            pts = e.discretize(Number=5)
-            straight = True
-            ax, ay = p1.x - p0.x, p1.y - p0.y
-            L = math.hypot(ax, ay) or 1.0
-            for q in pts[1:-1]:
-                # distance from line p0->p1
-                dist = abs(ax * (p0.y - q.y) - (p0.x - q.x) * ay) / L
-                if dist > 0.05 * L + 0.05:
-                    straight = False; break
-        except Exception:
-            straight = True
+        pts = _valid_discretize(e, envelope, allow_endpoints=False)
+        if not pts:
+            return (("line", {"p1": endpoints[0], "p2": endpoints[1]})
+                    if c is not None and c.TypeId == "Part::GeomLine" else None)
+        straight = True
+        ax, ay = p1.x - p0.x, p1.y - p0.y
+        L = math.hypot(ax, ay) or 1.0
+        for q in pts[1:-1]:
+            # distance from line p0->p1
+            dist = abs(ax * (p0.y - q[1]) - (p0.x - q[0]) * ay) / L
+            if dist > 0.05 * L + 0.05:
+                straight = False; break
         if straight:
             return ("line", {"p1": (p0.x, p0.y), "p2": (p1.x, p1.y)})
         else:
-            pts = [(p.x, p.y) for p in e.discretize(Deflection=0.2)]
             return ("polyline", {"pts": pts, "p1": (p0.x, p0.y), "p2": (p1.x, p1.y)})
-    return ("line", {"p1": (0, 0), "p2": (0, 0)})
+    return None
 
 def point_on_segment(px, py, q1x, q1y, q2x, q2y, tol=1e-3):
     dx, dy = q2x - q1x, q2y - q1y
@@ -253,12 +373,30 @@ class View:
         self.name = name
         self.direction = direction
         self.oracle_prims = oracle_prims
+        self.expected_envelope = _projected_shape_envelope(shape, direction)
+        self._classified = {}
 
         # projectEx groups: [0]V sharp [1]V1 smooth [2]VN seam [3]VO outline
         # [4]VI iso [5]H sharp [6]H1 smooth [7]HN seam [8]HO outline [9]HI iso.
         res = TechDraw.projectEx(shape, App.Vector(*direction))
-        self.edges_vis = compound_edges(res[0]) + compound_edges(res[1]) + compound_edges(res[3])
-        self.edges_hid = compound_edges(res[5]) + compound_edges(res[8])
+        edges_vis = compound_edges(res[0]) + compound_edges(res[1]) + compound_edges(res[3])
+        edges_hid = compound_edges(res[5]) + compound_edges(res[8])
+
+        def valid_edges(edges):
+            out = []
+            for e in edges:
+                classified = classify_edge(e, self.expected_envelope)
+                if classified is None:
+                    _FALLBACK["hlr_envelope_rejected"] += 1
+                    continue
+                self._classified[id(e)] = classified
+                out.append(e)
+            return out
+
+        # Reject before layout/SVG/graph generation so one bad primitive cannot
+        # inflate the view scale in one output while disappearing in another.
+        self.edges_vis = valid_edges(edges_vis)
+        self.edges_hid = valid_edges(edges_hid)
         self.a, self.b, self.c, self.d = self.REMAP[name]
         self._bbox()
 
@@ -268,17 +406,21 @@ class View:
     def _bbox(self):
         us, vs = [], []
         for e in self.edges_vis + self.edges_hid:
-            try:
-                for vtx in e.Vertexes:
-                    cu, cv = self.cmap(vtx.X, vtx.Y)
-                    us.append(cu); vs.append(cv)
-                b = e.BoundBox
-                for (lx, ly) in ((b.XMin, b.YMin), (b.XMax, b.YMax),
-                                 (b.XMin, b.YMax), (b.XMax, b.YMin)):
-                    cu, cv = self.cmap(lx, ly)
-                    us.append(cu); vs.append(cv)
-            except Exception:
-                pass
+            typ, g = self._classified[id(e)]
+            if typ in ("line", "polyline"):
+                pts = g.get("pts") or [g["p1"], g["p2"]]
+            elif typ in ("arc", "ellipse") and g.get("p1"):
+                # Bounded partial conic: support center/radius may lie far
+                # outside its actual swept interval, even when still below the
+                # conservative polyline-fallback threshold.
+                pts = [g["p1"], g["p2"]] + ([g["mid"]] if g.get("mid") else [])
+            else:
+                cx, cy = g["center"]
+                r = max(g.get("r", 0.0), g.get("rmaj", 0.0), g.get("rmin", 0.0))
+                pts = [(cx - r, cy - r), (cx + r, cy + r)]
+            for lx, ly in pts:
+                cu, cv = self.cmap(lx, ly)
+                us.append(cu); vs.append(cv)
         if not us:
             self.umin = self.vmin = 0.0; self.umax = self.vmax = 1.0
         else:
@@ -309,15 +451,25 @@ class View:
         tr = "matrix(%.6f %.6f %.6f %.6f %.4f %.4f)" % m
         parts = ['<g transform="%s">' % tr]
         for e in self.edges_hid:
-            d = edge_to_path(e)
+            d = self._edge_path(e)
             if d:
                 parts.append('<path class="hidden" d="%s"/>' % d)
         for e in self.edges_vis:
-            d = edge_to_path(e)
+            d = self._edge_path(e)
             if d:
                 parts.append('<path class="visible" d="%s"/>' % d)
         parts.append("</g>")
         return "\n".join(parts)
+
+    def _edge_path(self, e):
+        typ, g = self._classified[id(e)]
+        if typ == "polyline":
+            pts = g["pts"]
+            if len(pts) < 2:
+                return ""
+            return ("M %.4f %.4f " % pts[0]
+                    + " ".join("L %.4f %.4f" % p for p in pts[1:]))
+        return edge_to_path(e, envelope=self.expected_envelope)
 
     def primitive_records(self, idprefix, px):
         """Yield GT primitive dicts in PNG-pixel space, MATCHED with Oracle topo_origins.
@@ -328,7 +480,7 @@ class View:
         seen = set()
         for vis_tag, edges in (("visible", self.edges_vis), ("hidden", self.edges_hid)):
             for e in edges:
-                typ, g = classify_edge(e)
+                typ, g = self._classified[id(e)]
                 rec = self._record(idprefix, len(out), typ, g, vis_tag, px)
                 if not rec:
                     continue
@@ -691,6 +843,8 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     views_obj = {"front": front, "top": top, "right": right}
     dim_engine = LegacyDimensioner(shape, views_gt, views_obj, PXMM)
     dims_svg, dims_gt, features = dim_engine.annotate()
+    if dim_engine.rejected_centerlines:
+        _FALLBACK["dimensioner_centerlines_rejected"] += dim_engine.rejected_centerlines
 
     parts.append('<g>%s</g>' % "\n".join(dims_svg))
 

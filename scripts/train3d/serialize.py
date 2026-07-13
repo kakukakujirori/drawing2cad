@@ -182,7 +182,7 @@ def _union_tags(dst, src):
     dst += [t for t in src if t not in dst]
 
 
-def struct_from_graph(graph, multi_tag=True):
+def struct_from_graph(graph, multi_tag=True, keep_source_ids=False):
     """Canonicalize an AMVDG graph into the intermediate struct (the single source of
     truth for emission). Returns dict {bbox, feats, views, dims, skipped, merged}."""
     feats_src = graph.get("features", [])
@@ -279,8 +279,13 @@ def struct_from_graph(graph, multi_tag=True):
             dims_src.append(a)
     for v in views:
         for r in v["prims"]:
-            r["dias"] = [d for old in r.pop("olds")
+            olds = r.pop("olds")
+            r["dias"] = [d for old in olds
                          for d in dia_by_ref.get((v["name"], old), [])]
+            if keep_source_ids:
+                # Audit-only provenance. struct_to_text intentionally ignores
+                # it, so the model wire format and round-trip remain unchanged.
+                r["source_ids"] = olds
 
     views_by_name = {v["name"]: v for v in views}
 
@@ -416,6 +421,44 @@ def _dropout_feature_hidden(st, prob, rng=None):
     return st
 
 
+def quantization_extent(st):
+    """Return the shared coordinate extent used by integer-grid quantization.
+
+    Kept separate from :func:`_quantize_struct` so dataset builders and audit
+    tools can apply exactly the same scale sanity checks without quantizing (or
+    reimplementing) the serializer's intermediate representation.
+    """
+    ext = 0.0
+    for v in st["views"]:
+        for r in v["prims"]:
+            g = r["geom"]
+            if "pts" in g:
+                for x, y in g["pts"]:
+                    ext = max(ext, abs(x), abs(y))
+            else:
+                cx, cy = g["c"]
+                rr = g.get("r") or max(g.get("rmaj", 0.0), g.get("rmin", 0.0))
+                ext = max(ext, abs(cx) + rr, abs(cy) + rr)
+    return ext or 1.0
+
+
+def extent_ratio(ext, bbox):
+    """Scale-free serialization sanity metric: 2D extent / largest 3D side.
+
+    A non-finite/zero 3D bbox is invalid rather than something to silently
+    normalize, hence ``inf``.  Callers can quarantine it with the same policy
+    used for an excessively large projected extent.
+    """
+    try:
+        den = max(abs(float(x)) for x in bbox)
+        ext = float(ext)
+    except (TypeError, ValueError):
+        return math.inf
+    if not math.isfinite(ext) or not math.isfinite(den) or den <= 0:
+        return math.inf
+    return ext / den
+
+
 def _quantize_struct(st, n):
     """Quantize primitive *coordinates* (line/polyline/point/center positions +
     radii) and positional DIM spans onto a signed integer grid with `n` magnitude
@@ -432,18 +475,7 @@ def _quantize_struct(st, n):
     mm is recoverable (mm ≈ grid_value / (n-1) * ext)."""
     if not isinstance(n, int) or n < 2:
         raise ValueError(f"quant must be 0 (disabled) or an integer >= 2, got {n!r}")
-    ext = 0.0
-    for v in st["views"]:
-        for r in v["prims"]:
-            g = r["geom"]
-            if "pts" in g:
-                for x, y in g["pts"]:
-                    ext = max(ext, abs(x), abs(y))
-            else:
-                cx, cy = g["c"]
-                rr = g.get("r") or max(g.get("rmaj", 0.0), g.get("rmin", 0.0))
-                ext = max(ext, abs(cx) + rr, abs(cy) + rr)
-    ext = ext or 1.0
+    ext = quantization_extent(st)
     step = ext / (n - 1)
     q = lambda x: int(round(x / step))
     for v in st["views"]:
@@ -474,6 +506,9 @@ def _quantize_struct(st, n):
 CANON_QUANT = 1024
 _COORD_TOKEN_RE = re.compile(r"<\|coord_(\d+)\|>")
 _PART_GRID_RE = re.compile(r"^PART\b[^\n]*\bgrid=(\d+)(?:\s|$)")
+_PART_SCALE_RE = re.compile(
+    r"^PART\b[^\n]*\bbbox=([^\s]+)[^\n]*\bext=(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
+    r"(?:\s|$)")
 
 
 def coordinate_tokens(n):
@@ -488,6 +523,24 @@ def serialized_quant(text):
     """Return the PART header's grid N, or None for an unquantized serialization."""
     m = _PART_GRID_RE.match(text)
     return int(m.group(1)) if m else None
+
+
+def serialized_scale(text):
+    """Return ``(bbox, extent, extent_ratio)`` from a quantized PART header.
+
+    ``None`` means the text is unquantized or malformed.  This parser is used
+    by corpus audits, so auditing an existing bundle never needs the source
+    graph or the tokenizer that originally built it.
+    """
+    m = _PART_SCALE_RE.match(text)
+    if not m:
+        return None
+    try:
+        bbox = [float(x) for x in m.group(1).split(",")]
+        ext = float(m.group(2))
+    except ValueError:
+        return None
+    return bbox, ext, extent_ratio(ext, bbox)
 
 
 def coordinate_quant_from_vocab(vocab):
