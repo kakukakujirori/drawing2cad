@@ -18,6 +18,7 @@
 import argparse
 import glob
 import json
+import logging
 import math
 import multiprocessing as mp
 import os
@@ -67,8 +68,42 @@ def _atomic_write(path, write_fn):
 #  geometry -> SVG path + primitive records
 # ============================================================================
 
+log = logging.getLogger(__name__)
+
+# Per-part fallback telemetry, reset by build() for each part (batch mode runs
+# every part in its own forked process, so there is no cross-part contamination).
+# Keys:
+#   hlr_fallback_edges   -- HLR edges whose 2D Curve FreeCAD cannot read
+#                           (TypeError "undefined curve type"): emitted as a
+#                           discretized POLYLINE instead of aborting the part.
+#   svg_fallback_edges   -- same condition hit while drawing the SVG paths.
+#   oracle_skipped_edges / oracle_skipped_faces -- 3D B-rep entities the
+#                           provenance oracle skipped (summed over the 3 views);
+#                           their primitives render fine, just without prov.
+_FALLBACK = Counter()
+
+_CURVE_RAISED = object()  # sentinel: e.Curve RAISED (vs. genuinely absent -> None)
+
+
+def _safe_curve(e):
+    """edge.Curve with the FreeCAD C++ trap defused: for OCC curve types that
+    have no FreeCAD wrapper, accessing .Curve raises TypeError("undefined curve
+    type") -- and hasattr/getattr only swallow AttributeError, so one such HLR
+    edge aborted the whole part before (train 173/175 + val 26/26 skips).
+    Returns the curve, None (no Curve attribute), or _CURVE_RAISED."""
+    try:
+        return e.Curve
+    except AttributeError:
+        return None
+    except Exception:
+        return _CURVE_RAISED
+
+
 def edge_to_path(e, tol=0.05):
-    c = getattr(e, "Curve", None)
+    c = _safe_curve(e)
+    if c is _CURVE_RAISED:
+        _FALLBACK["svg_fallback_edges"] += 1
+        c = None  # falls into the generic discretize path below
     vs = e.Vertexes
     if c is not None and c.TypeId == "Part::GeomCircle":
         r = c.Radius
@@ -114,8 +149,21 @@ def compound_edges(grp):
 
 def classify_edge(e):
     """Coarse primitive type + geometry in the edge's own 2D coords."""
-    c = getattr(e, "Curve", None)
+    c = _safe_curve(e)
     vs = e.Vertexes
+    if c is _CURVE_RAISED:
+        # Unsupported curve type must never abort the part: discretize this HLR
+        # edge to the EXISTING polyline primitive. Provenance attaches downstream
+        # only if the oracle matcher finds a line under it; otherwise the
+        # primitive is emitted without prov rather than dropped.
+        _FALLBACK["hlr_fallback_edges"] += 1
+        try:
+            pts = [(p.x, p.y) for p in e.discretize(Deflection=0.2)]
+        except Exception:
+            pts = [(v.Point.x, v.Point.y) for v in vs]
+        if len(pts) >= 2:
+            return ("polyline", {"pts": pts, "p1": pts[0], "p2": pts[-1]})
+        return ("line", {"p1": (0, 0), "p2": (0, 0)})  # degenerate; dropped by caller
     if c is not None and c.TypeId == "Part::GeomCircle":
         r = c.Radius
         cen = (c.Center.x, c.Center.y)
@@ -499,6 +547,7 @@ def iso_group(shape, ox, oy, scale):
 PX_DEFAULT_W = 1800  # raster width
 
 def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
+    _FALLBACK.clear()   # per-part fallback telemetry (see definition above)
     shape = Part.Shape(); shape.read(step_path)
     bb = shape.BoundBox
     L, W, H = bb.XLength, bb.YLength, bb.ZLength
@@ -509,9 +558,15 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     cad_projector = CADProjector(shape)
     graph_builder = GraphBuilder(shape)
 
-    front_prims = graph_builder.enrich_topo_origins(cad_projector.project((0, -1, 0)))
-    top_prims = graph_builder.enrich_topo_origins(cad_projector.project((0, 0, 1)))
-    right_prims = graph_builder.enrich_topo_origins(cad_projector.project((1, 0, 0)))
+    def _oracle(vd):
+        prims = graph_builder.enrich_topo_origins(cad_projector.project(vd))
+        _FALLBACK["oracle_skipped_faces"] += cad_projector.last_skipped["faces"]
+        _FALLBACK["oracle_skipped_edges"] += cad_projector.last_skipped["edges"]
+        return prims
+
+    front_prims = _oracle((0, -1, 0))
+    top_prims = _oracle((0, 0, 1))
+    right_prims = _oracle((1, 0, 0))
     # --------------------------------
 
     front = View("front", shape, (0, -1, 0), front_prims)
@@ -670,8 +725,16 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
         "dof": {"required": 0, "determined": 0, "determined_by_geometry": 0, "supplied_by_prior": [], "undetermined": [], "missing": 0, "fully_constrained": False, "coverage": 0.0, "self_declared": {"required": 0, "determined": 0, "missing": 0}},
     }
 
+    # unsupported-geometry fallback telemetry (zeros dropped): a part that hits
+    # any fallback still renders a valid graph, but say so loudly in the log.
+    fallbacks = {k: v for k, v in _FALLBACK.items() if v}
+    if fallbacks:
+        log.warning("part %s: unsupported-geometry fallbacks (part still rendered): %s",
+                    partname, fallbacks)
+
     meta = {"L": L, "W": W, "H": H, "scale": scale, "width_px": out_width,
-            "height_px": int(round(SH * PXMM)), "pxmm": PXMM}
+            "height_px": int(round(SH * PXMM)), "pxmm": PXMM,
+            "fallbacks": fallbacks}
     return svg, graph, meta
 
 
@@ -737,8 +800,13 @@ def render_one(step_path, out_dir, name=None, width=PX_DEFAULT_W):
     svg, graph, meta = build(step_path, svg_path, name.upper(), width)
     graph_path = os.path.join(out_dir, name + ".graph.json")
     _atomic_write(graph_path, lambda f: json.dump(graph, f, indent=1))
+    counts = _counts(graph)
+    if meta.get("fallbacks"):
+        # surface per-part fallback counters in the OK log line (batch tallies
+        # only count the "OK "/"SKIP " prefixes, so extra keys are safe)
+        counts["fallbacks"] = meta["fallbacks"]
     return {"name": name, "svg": svg_path, "graph": graph_path, "meta": meta,
-            "counts": _counts(graph)}
+            "counts": counts}
 
 
 def _counts(graph):

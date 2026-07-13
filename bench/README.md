@@ -132,6 +132,65 @@ Per-fixture stdout/exit go to `<uuid>/agy.log`; the workdir is kept under
 - **Dry run.** `--dry-run` prints the exact command + prompt per fixture and
   invokes nothing — use it to inspect before a real (costly) run.
 
+### Graph-input baseline (representation ablation)
+
+Same agent, same fixtures, but the input is the **serialized AMVDG graph text** instead of the drawing PNG: the workdir gets `graph.txt` — byte-for-byte the `serialize_3d(quant=1024)` text our model receives (`scripts/train3d/serialize.py`, same call as `infer.py`/`run_ours.py`) — and the prompt carries a compact format legend. With the PNG run as control, only the input representation varies, so this measures whether the AMVDG IR itself adds value for a frontier model.
+Results land in `results/agy-graph_<modelslug>/` (a separate namespace, so
+`report.py` pairing can never mix modes).
+
+```bash
+# Real run (agy signed in; resumable):
+python bench/run_baseline_agy.py \
+    --input graph --all \
+    --model "Gemini 3.1 Pro (High)" \
+    --shots 3
+
+python bench/evaluate.py "bench/results/agy-graph-3shot_Gemini-3.1-Pro-(High)"
+
+python bench/report.py \
+    --run "gemini-png=bench/results/agy_Gemini-3.1-Pro-(High)" \
+    --run "gemini-graph-3shot=bench/results/agy-graph-3shot_Gemini-3.1-Pro-(High)"
+```
+
+- **`--shots K` (0–3)**: in-context worked examples (never-a-bench-fixture val
+  graphs + their blend-stripped GT CadQuery). Example 1 is always the shortest;
+  the rest span complexity at spaced percentiles. Results land in
+  `agy-graph-Kshot_<modelslug>/` (K=1 keeps the literal `agy-graph-1shot_...`).
+  - **`--shots 0`** stays the strictly-matched **control** vs the PNG run: the
+    format legend only, no worked example, so the two conditions are comparable;
+    its prompt is byte-identical to the original zero-shot code.
+  - **`--shots 3`** (primary): a simple + medium + complex example.
+  - **`--max-shot-bytes`** (default 45,000) caps the total example size
+    (serialized graph text + GT code); a percentile pick over budget walks down
+    to the next shorter eligible graph.
+- **`--max-graph-bytes`** (default 2,000,000): a fixture whose serialized
+  `graph.txt` exceeds it gets status `too_large` in run_meta and is skipped
+  **without invoking agy** (quota guard; none of the current 50 trigger it —
+  max is ~39 KB — it protects future, bigger fixture sets).
+- **`--shot-graph-dir` / `--shot-code-dir`** (`--shots>=1`): where the worked
+  examples come from — the `{uuid}.graph.json` pool and the paired blend-stripped
+  `{uuid}.cadquery.py` solutions. **Default = the Z2C *train* set**
+  (`dataset_z2c_train` + `stage_z2c_train_noblend`), which is **disjoint by
+  construction** from the val-derived bench fixtures, so an example can never be
+  a graded part (and, symmetrically, both systems then only ever use train — ours
+  via fine-tuning, the baseline via a few in-context examples).
+- **`--shot-pool-cap`** (`--shots>=1`, default 500): the train pool is ~90k
+  graphs; serializing all of them to rank by length would take hours, so the
+  candidate pool is uniformly subsampled (seed 0) to this many **before**
+  serialization. `0` disables the cap (use the whole pool — fine for a small dir
+  like the val set).
+- **`--exclude-ids-from`** (`--shots>=1`): extra id sources (each a
+  `manifest.json` or a newline id list) barred from the example pool on top of
+  the **active bench's own fixtures, which are always excluded** (tracking
+  whichever bench `data/` points at — no transient id file baked in). With the
+  default train pool this exclusion is a **no-op safety net** (train is already
+  disjoint from the val bench); it matters only if you point `--shot-graph-dir`
+  back at a val-derived pool, where you'd pass e.g.
+  `--exclude-ids-from bench/data_new/manifest.json` to bar another corpus too.
+- Everything else matches the PNG baseline: `--sandbox-fs` bwrap jail (GT
+  unreachable), `is_leaked_gt` gate, resumable date-less run dir, rate-limit
+  clean stop, `--print-timeout`/`--wall-timeout`.
+
 ### Legacy: ollama + CADGenBench baseline agent (`run_baseline_ollama.py`)
 
 Superseded by agy; kept for reference/optional use. It drives CADGenBench's own reference agent with a **local ollama vision model** (`qwen2.5vl:32b`, Q4_K_M, ~23 GB VRAM — the strongest vision model fitting one 24 GB A5000) via LiteLLM, backend forced to cadquery. It needs a **private ollama server pinned to a free GPU** (the shared systemd ollama on `:11434` spreads the model across GPUs and offloads to CPU → unusably slow):

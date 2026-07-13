@@ -84,5 +84,112 @@ def test_ray_casting():
             
     print(f"Test Complete: {matches} Matches, {errors} Errors.")
 
+
+# ============================================================================
+#  Fallback-path tests: an unsupported curve type must never abort a part.
+#  FreeCAD raises TypeError("undefined curve type") from the C++ layer when an
+#  OCC curve has no python wrapper; hasattr/getattr only swallow AttributeError,
+#  so this used to kill the whole part (val 26/26 skips). Real such edges only
+#  arise from pathological booleans, so the tests emulate one with a fake edge.
+# ============================================================================
+
+class _BadCurveEdge:
+    """Emulates a FreeCAD Edge whose .Curve raises like the C++ layer does."""
+
+    def __init__(self, pts, discretize_raises=False):
+        self._pts = [App.Vector(*p) for p in pts]
+        self._discretize_raises = discretize_raises
+
+    @property
+    def Curve(self):
+        raise TypeError("undefined curve type")
+
+    @property
+    def Vertexes(self):
+        class _V:
+            def __init__(self, p): self.Point = p
+        return [_V(self._pts[0]), _V(self._pts[-1])]
+
+    def discretize(self, **kw):
+        if self._discretize_raises:
+            raise ValueError("discretize failed")
+        return list(self._pts)
+
+
+class _FakeShape:
+    def __init__(self, faces, edges):
+        self.Faces = faces
+        self.Edges = edges
+
+
+def test_classify_edge_fallback():
+    print("\n=== classify_edge fallback (undefined curve type -> polyline) ===")
+    from scripts.renderer.render_dataset import classify_edge, edge_to_path, _FALLBACK
+
+    _FALLBACK.clear()
+    bad = _BadCurveEdge([(0, 0, 0), (5, 1, 0), (10, 0, 0)])
+    typ, g = classify_edge(bad)
+    assert typ == "polyline", f"expected polyline fallback, got {typ}"
+    assert g["pts"] == [(0, 0), (5, 1), (10, 0)], g
+    assert g["p1"] == (0, 0) and g["p2"] == (10, 0), g
+    assert _FALLBACK["hlr_fallback_edges"] == 1, dict(_FALLBACK)
+
+    # discretize also failing -> degrade to endpoint polyline, still no raise
+    bad2 = _BadCurveEdge([(0, 0, 0), (10, 0, 0)], discretize_raises=True)
+    typ2, g2 = classify_edge(bad2)
+    assert typ2 == "polyline" and g2["pts"] == [(0.0, 0.0), (10.0, 0.0)], (typ2, g2)
+
+    # the SVG path writer must not raise either, and must draw the fallback edge
+    d = edge_to_path(_BadCurveEdge([(0, 0, 0), (5, 1, 0), (10, 0, 0)]))
+    assert d.startswith("M") and "L" in d, d
+    assert _FALLBACK["svg_fallback_edges"] == 1, dict(_FALLBACK)
+    print("[OK] classify_edge + edge_to_path fall back to polyline, counters:",
+          {k: v for k, v in _FALLBACK.items() if v})
+    _FALLBACK.clear()
+
+
+def test_cad_projector_guard():
+    print("\n=== CADProjector guard (bad edge/face must not abort project()) ===")
+    good_edge = Part.makeLine(App.Vector(0, 0, 0), App.Vector(10, 0, 0))
+
+    class _BadSurfaceFace:
+        @property
+        def Surface(self):
+            raise TypeError("undefined surface type")
+
+    shape = _FakeShape([_BadSurfaceFace()],
+                       [_BadCurveEdge([(0, 0, 0), (1, 1, 1)]), good_edge.Edges[0]])
+    proj = CADProjector(shape)
+    prims = proj.project((0, -1, 0))   # must not raise
+    assert proj.last_skipped == {"faces": 1, "edges": 1}, proj.last_skipped
+    lines = [p for p in prims if p["type"] == "line"]
+    assert len(lines) == 1, prims      # the good line still projected
+    assert lines[0]["topo_origins"] == [{"dim": 1, "id": "Edge_1", "role": "edge"}]
+    print("[OK] bad face+edge skipped (last_skipped=%s), good edge still projected"
+          % proj.last_skipped)
+
+
+def test_cone_face_projection():
+    print("\n=== ConeProjector wired into CADProjector ===")
+    cone = Part.makeCone(10, 0, 20)
+    proj = CADProjector(cone)
+    prims = proj.project((0, -1, 0))   # edge-on axis: 2 silhouette generators
+    sil = [p for p in prims if p.get("role") == "silhouette" and
+           p["topo_origins"][0]["dim"] == 2]
+    assert len(sil) == 2, prims
+    for p in sil:
+        assert p["type"] == "line"
+        assert p["topo_origins"][0]["role"] == "silhouette"
+    top = proj.project((0, 0, 1))      # axis-aligned: base ring as boundary circle
+    rings = [p for p in top if p.get("role") == "boundary" and p["type"] == "circle"]
+    assert len(rings) == 1 and abs(rings[0]["radius"] - 10.0) < 1e-6, top
+    print("[OK] cone face -> %d silhouette lines (front), %d boundary circle (top)"
+          % (len(sil), len(rings)))
+
+
 if __name__ == "__main__":
     test_ray_casting()
+    test_classify_edge_fallback()
+    test_cad_projector_guard()
+    test_cone_face_projection()
+    print("\nAll integration tests passed.")
