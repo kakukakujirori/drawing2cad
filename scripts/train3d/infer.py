@@ -32,7 +32,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # siblings
 import train_sft                      # load_model, chat_ids, PROMPT (single source of truth)
 from train_sft import iter_batched_generate   # batched decode (infer.py; in-training eval uses the native Trainer loop)
-from serialize import serialize_3d, CANON_QUANT
+from serialize import serialize_3d, CANON_QUANT, coordinate_tokenize_text, coordinate_quant_from_vocab
 from eval_cq import _shape_from_globals, imap_isolated
 
 
@@ -41,6 +41,10 @@ def _tok_source(ckpt: str) -> str:
     """Tokenizer/base source for `ckpt`: the LoRA base if it's an adapter dir, else `ckpt`."""
     adapter_cfg = os.path.join(ckpt, "adapter_config.json")
     if os.path.isdir(ckpt) and os.path.exists(adapter_cfg):
+        # Coordinate-token adapters save their expanded tokenizer alongside the adapter.
+        if any(os.path.exists(os.path.join(ckpt, name)) for name in
+               ("tokenizer.json", "tokenizer_config.json", "added_tokens.json")):
+            return ckpt
         return json.load(open(adapter_cfg))["base_model_name_or_path"]
     return ckpt
 
@@ -62,14 +66,16 @@ def load_infer_model(ckpt: str, dtype: torch.dtype = torch.bfloat16, device_map=
     accelerate shards the layers across every visible GPU so a prompt too large for one GPU
     still fits (weights + KV cache spread across their combined memory)."""
     adapter_cfg = os.path.join(ckpt, "adapter_config.json")
+    tok = load_tokenizer(ckpt)
     if os.path.isdir(ckpt) and os.path.exists(adapter_cfg):
         base = json.load(open(adapter_cfg))["base_model_name_or_path"]
         model, _ = train_sft.load_model(base, dtype, device_map=device_map)
+        if model.get_input_embeddings().num_embeddings != len(tok):
+            model.resize_token_embeddings(len(tok))
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, ckpt)
     else:
         model, _ = train_sft.load_model(ckpt, dtype, device_map=device_map)
-    tok = load_tokenizer(ckpt)
     model.eval()
     model.config.use_cache = True
     if device_map is None and torch.cuda.is_available():
@@ -162,7 +168,7 @@ def main():
     parser.add_argument("--ckpt", required=True, help="LoRA adapter dir / full ckpt dir / HF id")
     parser.add_argument("--input", required=True, help="one AMVDG JSON, or a dir of *.graph.json/*.json")
     parser.add_argument("--out", required=True, help="output dir for {stem}.py + {stem}.step")
-    parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument("--max-new-tokens", type=int, default=train_sft.DEFAULT_MAX_NEW_TOKENS)
     parser.add_argument("--prompt", default=train_sft.PROMPT,
                     help='instruction prepended to the graph text (--prompt "" to drop it)')
     parser.add_argument("--timeout", type=float, default=30.0, help="per-sample exec timeout (s)")
@@ -180,10 +186,15 @@ def main():
                         help="parallel exec workers (0 = auto = min(8, cpu_count))")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--quant", type=int, default=CANON_QUANT,
-                        help=f"coordinate quantization levels (default {CANON_QUANT}); "
+                        help=f"signed coordinate-grid magnitude bins per sign "
+                             f"(default {CANON_QUANT}, yielding "
+                             f"[-{CANON_QUANT - 1}, {CANON_QUANT - 1}]); "
                              f"MUST match the value build_dataset used for the training "
                              f"data, else train/inference coordinate systems diverge. "
                              f"0 = off.")
+    parser.add_argument("--coord-tokens", choices=("auto", "on", "off"), default="auto",
+                        help="coordinate-token serialization. auto (default) detects the expanded "
+                             "checkpoint tokenizer; on/off are diagnostic overrides")
     args = parser.parse_args()
 
     inputs = collect_inputs(args.input)
@@ -194,6 +205,14 @@ def main():
     n_gpu = torch.cuda.device_count()
     tok = load_tokenizer(args.ckpt)         # tokenizer first, so prompts can be sized pre-load
     tok.padding_side = "left"               # decoder-only: left-pad so gen starts at a shared offset
+    coord_quant = coordinate_quant_from_vocab(tok.get_vocab())
+    use_coord_tokens = coord_quant is not None if args.coord_tokens == "auto" else args.coord_tokens == "on"
+    if use_coord_tokens and coord_quant is None:
+        raise ValueError("--coord-tokens on requires a checkpoint tokenizer with coordinate tokens")
+    if use_coord_tokens and args.quant != coord_quant:
+        raise ValueError(
+            f"coordinate-token checkpoint uses quant={coord_quant}, but infer received "
+            f"--quant {args.quant}")
     print(f"loaded tokenizer for {args.ckpt} | {len(inputs)} inputs -> {args.out}", file=sys.stderr)
 
     # ---- pass 1: serialize + tokenize every prompt (collect serialize failures as rows) ----
@@ -202,6 +221,8 @@ def main():
         stem = stem_of(path)
         try:
             text = serialize_3d(json.load(open(path)), quant=args.quant)
+            if use_coord_tokens:
+                text = coordinate_tokenize_text(text)
         except Exception as e:
             serialize_err[stem] = f"serialize:{type(e).__name__}"
             continue

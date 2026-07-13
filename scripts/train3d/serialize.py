@@ -418,10 +418,11 @@ def _dropout_feature_hidden(st, prob, rng=None):
 
 def _quantize_struct(st, n):
     """Quantize primitive *coordinates* (line/polyline/point/center positions +
-    radii) and positional DIM spans onto an integer grid of `n` levels over the
-    part's max coordinate extent. The step is a single SHARED scale across all
-    views, so the cross-view number-equality this format promises is preserved
-    (same mm -> same integer everywhere). Semantic dimensions stay exact mm:
+    radii) and positional DIM spans onto a signed integer grid with `n` magnitude
+    bins: [-(n-1), n-1] over the part's max absolute coordinate extent. The step
+    is a single SHARED scale across all views, so the cross-view number-equality
+    this format promises is preserved (same signed mm -> same integer everywhere).
+    Semantic dimensions stay exact mm:
     DIM value, FEAT r, and the PART bbox are NOT quantized, so dimensional
     fidelity of the target is untouched — only the token-heavy line coordinates
     become short integers. Angles (arc/ellipse) are left in degrees.
@@ -429,6 +430,8 @@ def _quantize_struct(st, n):
     Idempotent and round-trip-stable: values become integers, re-emitted and
     re-parsed unchanged. The grid (n + extent) is written to the PART header so
     mm is recoverable (mm ≈ grid_value / (n-1) * ext)."""
+    if not isinstance(n, int) or n < 2:
+        raise ValueError(f"quant must be 0 (disabled) or an integer >= 2, got {n!r}")
     ext = 0.0
     for v in st["views"]:
         for r in v["prims"]:
@@ -464,23 +467,76 @@ def _quantize_struct(st, n):
     return st
 
 
-def _geom_str(row):
+# A grid with N magnitude bins has signed values in [-(N-1), N-1]. Coordinate-token models use
+# one magnitude token for each value in [0, N-1], with a literal '-' for negative values. N is
+# read from the serialized training bundle and saved in the checkpoint tokenizer; CANON_QUANT is
+# only the default grid used by build_dataset/infer, not a coordinate-vocabulary restriction.
+CANON_QUANT = 1024
+_COORD_TOKEN_RE = re.compile(r"<\|coord_(\d+)\|>")
+_PART_GRID_RE = re.compile(r"^PART\b[^\n]*\bgrid=(\d+)(?:\s|$)")
+
+
+def coordinate_tokens(n):
+    """Vocabulary for an N-magnitude signed grid. Four digits preserves old 1024 checkpoints."""
+    if not isinstance(n, int) or n < 2:
+        raise ValueError(f"coordinate-token quant must be an integer >= 2, got {n!r}")
+    width = max(4, len(str(n - 1)))
+    return [f"<|coord_{i:0{width}d}|>" for i in range(n)]
+
+
+def serialized_quant(text):
+    """Return the PART header's grid N, or None for an unquantized serialization."""
+    m = _PART_GRID_RE.match(text)
+    return int(m.group(1)) if m else None
+
+
+def coordinate_quant_from_vocab(vocab):
+    """Infer N from a saved tokenizer vocab; reject partial/non-contiguous coordinate vocabularies."""
+    values = sorted(int(m.group(1)) for token in vocab
+                    if (m := _COORD_TOKEN_RE.fullmatch(token)))
+    if not values:
+        return None
+    if values != list(range(values[-1] + 1)):
+        raise ValueError("checkpoint has a non-contiguous coordinate-token vocabulary")
+    return values[-1] + 1
+
+
+def _coord_fmt(x, tokens):
+    """Losslessly encode a signed coordinate on an N-magnitude quantization grid."""
+    n = len(tokens)
+    v = int(x)
+    if float(x) != v or abs(v) >= n:
+        raise ValueError(
+            f"coordinate token requires an integer in [-{n - 1}, {n - 1}], got {x}")
+    return ("-" if v < 0 else "") + tokens[abs(v)]
+
+
+def _geom_str(row, coord_vocab=None):
     g = row["geom"]
+    cf = (lambda x: _coord_fmt(x, coord_vocab)) if coord_vocab else _fmt
     if "pts" in g:
-        return " ".join(f"{_fmt(x)},{_fmt(y)}" for x, y in g["pts"])
+        return " ".join(f"{cf(x)},{cf(y)}" for x, y in g["pts"])
     if "rmaj" in g:
-        s = (f"c{_fmt(g['c'][0])},{_fmt(g['c'][1])} rj{_fmt(g['rmaj'])} "
-             f"rn{_fmt(g['rmin'])} rot{_fmt(g['rot'])}")
+        s = (f"c{cf(g['c'][0])},{cf(g['c'][1])} rj{cf(g['rmaj'])} "
+             f"rn{cf(g['rmin'])} rot{_fmt(g['rot'])}")
         if "ea" in g:
             s += f" e{_fmt(g['ea'][0])}..{_fmt(g['ea'][1])}"
         return s
-    s = f"c{_fmt(g['c'][0])},{_fmt(g['c'][1])} r{_fmt(g['r'])}"
+    s = f"c{cf(g['c'][0])},{cf(g['c'][1])} r{cf(g['r'])}"
     if "a" in g:
         s += f" a{_fmt(g['a'][0])}..{_fmt(g['a'][1])}"
     return s
 
 
-def struct_to_text(st):
+def struct_to_text(st, coord_tokens=False):
+    coord_quant = None
+    coord_vocab = None
+    if coord_tokens:
+        quant = st.get("quant")
+        coord_quant = quant.get("n") if quant else None
+        if not coord_quant:
+            raise ValueError("coordinate tokens require a quantized serialization")
+        coord_vocab = coordinate_tokens(coord_quant)
     head = f"PART unit=mm bbox={','.join(_fmt(x) for x in st['bbox'])}"
     if st.get("quant"):
         head += f" grid={st['quant']['n']} ext={_fmt(st['quant']['ext'])}"
@@ -497,7 +553,7 @@ def struct_to_text(st):
     for v in st["views"]:
         L.append(f"VIEW {v['name']} axes={v['axes'][0]},{v['axes'][1]}")
         for r in v["prims"]:
-            row = f"{r['typ']} {r['role']} {_geom_str(r)}"
+            row = f"{r['typ']} {r['role']} {_geom_str(r, coord_vocab=coord_vocab)}"
             if r["tags"]:
                 row += " " + ",".join(r["tags"])
             for d in r.get("dias", []):
@@ -506,7 +562,9 @@ def struct_to_text(st):
     for d in st["dims"]:
         sp = d.get("span")
         L.append(f"DIM {d['id']} {d['kind']} {d['role']} {_fmt(d['val'])} {d['view']} "
-                 + (f"{sp[0]}{_fmt(sp[1])}..{_fmt(sp[2])}" if sp else "-"))
+                 + (f"{sp[0]}{(_coord_fmt(sp[1], coord_vocab) if coord_vocab else _fmt(sp[1]))}.."
+                    f"{(_coord_fmt(sp[2], coord_vocab) if coord_vocab else _fmt(sp[2]))}"
+                    if sp else "-"))
     return "\n".join(L)
 
 
@@ -527,15 +585,17 @@ def graph_to_text(graph, multi_tag=True, quant=None, drop_covered=False,
 # coordinate system the model trained on differs from what it sees at inference.
 # `serialize_3d` is the single source of truth for the 3D leg: covered hidden
 # lines are ALWAYS suppressed (lossless visible-priority drafting rule — not a
-# knob), coordinates are quantized to `quant` levels (default CANON_QUANT), and
+# knob), coordinates use `quant` signed magnitude bins (default CANON_QUANT), and
 # `hid_dropout` (train-only sim-to-real augmentation) is passed through. The 2D
 # leg keeps calling `graph_to_text` with neutral defaults, unaffected.
-CANON_QUANT = 1024
-
-
 def serialize_3d(graph, quant=CANON_QUANT, hid_dropout=0.0, rng=None, multi_tag=True):
     return graph_to_text(graph, multi_tag=multi_tag, quant=(quant or None),
                          drop_covered=True, hid_dropout=hid_dropout, rng=rng)
+
+
+def coordinate_tokenize_text(text):
+    """Convert an existing canonical numeric serialization without rebuilding its bundle."""
+    return struct_to_text(text_to_struct(text), coord_tokens=True)
 
 
 _PAIR = re.compile(r"^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$")
@@ -544,6 +604,9 @@ _SPAN = re.compile(r"^([A-Za-z])(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)$")
 
 
 def text_to_struct(text):
+    # Decode before the numeric parser. A negative coordinate is emitted as a literal '-' plus
+    # the magnitude token, so the same replacement also reconstructs signed decimal text.
+    text = _COORD_TOKEN_RE.sub(lambda m: str(int(m.group(1))), text)
     st = {"bbox": [], "feats": [], "views": [], "dims": [], "blends": [],
           "skipped": 0, "merged": 0}
     view = None

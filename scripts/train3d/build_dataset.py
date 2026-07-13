@@ -50,8 +50,10 @@ def main():
     # --- serialization (serialize_3d): covered-hidden suppression is ALWAYS on
     #     (lossless); these knobs are the only variables, and must match on infer.py ---
     parser.add_argument("--quant", type=int, default=CANON_QUANT,
-                        help=f"integer-grid coordinate quantization, N levels "
-                             f"(default {CANON_QUANT}); 0 = off (ablation). infer.py "
+                        help=f"signed integer-grid coordinate quantization, N magnitude bins "
+                             f"per sign (default {CANON_QUANT}, yielding "
+                             f"[-{CANON_QUANT - 1}, {CANON_QUANT - 1}]); "
+                             f"0 = off (ablation). infer.py "
                              f"must use the SAME value.")
     parser.add_argument("--hid-dropout", type=float, default=0.0,
                         help="Probability of dropping a feature's redundant hidden lines "

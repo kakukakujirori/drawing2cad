@@ -20,6 +20,8 @@ Trains and evaluates the **back leg** of the drawing2cad pipeline: `AMVDG graph 
 | `eval_cq.py` | isolated exec → validity + **translation-aligned voxel IoU (abs mm)** + bbox-mm error → JSON. |
 
 ## Run
+
+### Training
 ```bash
 # bundles come from Data Preparation step 3 (top-level README):
 #   experiments/data_z2c_train  +  experiments/data_z2c_val
@@ -56,12 +58,15 @@ torchrun --nproc_per_node=1 scripts/train3d/train_sft.py \
     --val experiments/data_z2c_val \
     --epochs 3 \
     --max_len 16384 \
-    # --eval_every_steps 1000 \
-    --attn auto
+    --attn auto \
+    # --eval_every_steps 1000
 
 # 3. two-GPU DDP (LoRA recommended; --full optional): torchrun handles world size.
 #    DDP = throughput (each GPU a full replica on different samples), not memory relief;
 #    16k LoRA already fits ONE 24 GB A5000, so no sharding needed.
+#    Length grouping is enabled by default, and the unused-parameter traversal is disabled after
+#    the text-only vision tower (including any LoRA tensors) is frozen. The run log prints both
+#    resolved settings plus token-length percentiles and optimizer-step seconds.
 torchrun --nproc_per_node=2 scripts/train3d/train_sft.py \
     --train experiments/data_z2c_train \
     --val experiments/data_z2c_val \
@@ -69,12 +74,21 @@ torchrun --nproc_per_node=2 scripts/train3d/train_sft.py \
     --bs 1 \
     --grad-accum 8 \
     --max_len 16384 \
-    # --eval_every_steps 1000 \
-    --attn auto
+    --attn auto \
+    --grad_ckpt_min_tokens 4000 \
+    --coord_tokens \
+    # --eval_every_steps 1000
+# Throughput ablations (use the same data/seed/step count and compare after warmup):
+#   --track_token_throughput         # adds non-padding tokens/s; small per-microstep DDP collective
+#   --train_sampling_strategy random
+#   --ddp_find_unused_parameters
+#   --torch_compile                 # experimental; watch graph-break/recompile logs
+#   --grad_ckpt_min_tokens 4000     # no checkpoint below N; calibrated for LoRA on 24GB A5000
+#   --grad_ckpt_mode sac             # research option; no measured gain with FlashAttention-2 here
+#   --coord_tokens                   # N learned magnitude tokens, where bundle header grid=N
 #   NOTE: full-FT of a 2B with AdamW replicates ~22 GB of optimizer state PER GPU under plain DDP -> OOMs a 24 GB A5000. To fit "modest full-FT" pick ONE of:
 #     --optim adafactor            # ~no 2nd-moment state; full-FT fits one 24 GB GPU
 #     accelerate launch --fsdp ... # shard AdamW state across the 2 A5000s
-#   LoRA (default) fits comfortably and is the recommended path on this box.
 
 # 3b. drive train_sft entirely from a config file (CLI flags still override it):
 torchrun --nproc_per_node=1 scripts/train3d/train_sft.py --config my_run.yaml --epochs 5
@@ -140,7 +154,59 @@ torchrun --nproc_per_node=1 scripts/train3d/train_sft.py \
 #   A mismatched --ckpt/--full/--lora_r/--train_vision/--optim vs the original run's config.json
 #   prints a [warn] (architecture drift can crash deep inside optimizer/adapter loading, or worse,
 #   load onto mismatched shapes silently) but does not block the run -- read the warning.
+```
 
+### Throughput calibration (2026-07-12, 2 x RTX A5000 24 GB)
+
+`group_by_length` intentionally creates long-to-short cycles, so the first steps of a group took
+33--45 seconds and later steps took 2--8 seconds. Controlled runs on the same 50 optimizer steps:
+
+| setting | optimizer sec/step | loss |
+|---|---:|---:|
+| old: random + DDP unused traversal | 13.158 | 0.3249 |
+| default: grouped + no traversal | **12.346** | 0.3251 |
+
+Optional activation-checkpoint calibration found that disabling checkpointing at 5.2k tokens OOMed
+after optimizer-state allocation; `--grad_ckpt_min_tokens 4000` completed a real 25-step DDP run at
+11.364 sec/step (about 8% faster than the all-checkpoint window). This threshold is specific to the
+current LoRA/model/A5000 setup. Keep the default `0` for maximum memory safety, and recalibrate after
+changing batch size, LoRA/full fine-tuning, model, attention backend, or GPU.
+
+The current attention-only SAC policy completed a 15k sample but matched full checkpointing at 6.329
+sec/step: FlashAttention-2's external kernel is not exposed to the current ATen policy, so SAC behaves
+like full recomputation. Keep `--grad_ckpt_mode full` unless profiling a different backend.
+
+`torch.compile` is implemented but not recommended for this variable-length run. On a fixed ~3k
+five-step probe it took 4.695 sec/step versus 0.952 without compile, with graph breaks in DDP logging,
+FlashAttention masking, and checkpointing, plus recompiles for 2828 vs 2829 total length and differing
+completion windows. It needs strict bucketing on both total sequence length and `logits_to_keep` before
+another production comparison.
+
+### Coordinate-token experiment
+
+`--coord_tokens` maps quantized magnitudes 0--1023 to one token each; negative coordinates use the
+same magnitude token plus a sign. Only primitive coordinates/radii and DIM span positions change.
+Angles, bbox/ext, exact mm dimensions, feature values, and target CadQuery remain numeric. Existing
+`all.jsonl` bundles are transformed structurally at load time, so they do not need rebuilding.
+The coordinate vocabulary size is read from the numeric bundle's `PART ... grid=N` header; train and val must have one shared N. The N learned tokens are saved with the checkpoint tokenizer. Inference recovers N from that tokenizer and fails fast if `infer --quant` differs, so 256/512/1024/2048 grids can be tested without creating an inconsistent vocabulary. `CANON_QUANT=1024` remains only the build/infer default. The numerically equal `max_new_tokens=1024` is unrelated: it is the CadQuery completion-generation budget, shared by train-time eval and infer.
+
+On 1,000 real `data_z2c_train_noblend` inputs this reduced tokenizer input length from 5,422,465 to 3,584,219 tokens (**33.9%**). A two-GPU LoRA smoke verified DDP training and checkpoint round-trip;
+PEFT stores only the 1,024 added embedding rows alongside LoRA. Use a separate run because the new embeddings must be learned:
+
+```bash
+torchrun --nproc_per_node=2 scripts/train3d/train_sft.py \
+    --train experiments/data_z2c_train_noblend \
+    --val experiments/data_z2c_val_noblend \
+    --epochs 3 --bs 1 --grad-accum 8 --max_len 16384 --attn auto \
+    --coord_tokens
+```
+
+`infer.py` auto-detects the expanded tokenizer saved with that adapter and applies the same coordinate
+serialization. `--coord-tokens on|off` exists only as a diagnostic override.
+
+### Inference and Evaluation
+
+```bash
 # 4. batch-infer a trained ckpt over the val AMVDG graphs -> {uuid}.py + {uuid}.step
 python scripts/train3d/infer.py \
     --ckpt experiments/train3d/<run>/best \

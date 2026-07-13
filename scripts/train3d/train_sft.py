@@ -70,12 +70,53 @@ from transformers import (AutoConfig, AutoTokenizer, AutoModelForCausalLM,
                           TrainerCallback, set_seed)
 from transformers.trainer_utils import get_last_checkpoint
 
+from serialize import coordinate_tokens, coordinate_tokenize_text, serialized_quant
+
+
+def _sac_context_fn():
+    """Selective-AC policy: retain attention kernels and recompute MLP/cheap ops.
+
+    Saving all MLP matmuls OOMs a 15k sequence on the 24 GB A5000, so this deliberately uses the
+    memory-conservative end of SAC's tradeoff. Kept top-level because torch checkpoint invokes
+    context_fn during every checkpointed layer forward. Ops absent from torch are simply omitted.
+    """
+    from torch.utils.checkpoint import (CheckpointPolicy,
+                                        create_selective_checkpoint_contexts)
+    aten = torch.ops.aten
+    save_ops = []
+    for path in ("_scaled_dot_product_flash_attention.default",
+                 "_scaled_dot_product_efficient_attention.default",
+                 "_flash_attention_forward.default", "_efficient_attention_forward.default"):
+        op = aten
+        try:
+            for part in path.split("."):
+                op = getattr(op, part)
+        except AttributeError:
+            continue
+        save_ops.append(op)
+    save_ops = set(save_ops)
+
+    def policy_fn(ctx, op, *args, **kwargs):
+        return (CheckpointPolicy.MUST_SAVE if op in save_ops
+                else CheckpointPolicy.PREFER_RECOMPUTE)
+
+    return create_selective_checkpoint_contexts(policy_fn)
+
+
+def gradient_checkpointing_kwargs(mode: str) -> dict:
+    if mode == "full":
+        return {"use_reentrant": False}
+    if mode == "sac":
+        return {"use_reentrant": False, "context_fn": _sac_context_fn}
+    raise ValueError(f"unknown --grad_ckpt_mode {mode!r}; expected full or sac")
+
 # Task instruction prepended to the graph text in the user turn. cadrille uses the 3-word
 # "Generate cadquery code"; the chat template's assistant-turn start is the code-start marker,
 # so no custom special token is added. Override with --prompt (e.g. --prompt "" to ablate).
 # infer.py reads this as its own --prompt default (train_sft.PROMPT); kept as an immutable
 # module constant -- the per-run value is threaded explicitly, not written back here.
 PROMPT = "Generate cadquery code from this multi-view drawing graph; assign the solid to `result`."
+DEFAULT_MAX_NEW_TOKENS = 1024
 # eval_cq.py needs cadquery/FreeCAD and is subprocessed rather than imported: OCC has real
 # C-layer hang failure modes (see eval_cq.py's imap_isolated), and the periodic in-training
 # eval hook can't be allowed to take a multi-day run down with it. Defaults to this process's
@@ -162,13 +203,14 @@ def build_labels(tok, input_text, target_code, max_len, prompt=PROMPT):
 
 class SFTDataset(Dataset):
     def __init__(self, records: list[dict[str, str]], tok, max_len: int, workers: int = 16,
-                 prompt: str = PROMPT):
+                 prompt: str = PROMPT, coord_tokens: bool = False):
         # per-record work is the fast (Rust) chat-template/tokenizer, which releases the
         # GIL, so a thread pool parallelizes this well (same fix as build_dataset.py's
         # tokenizer loop) instead of tokenizing all records one at a time up front.
         self.ex, self.dropped = [], 0
         def _one(r):
-            return build_labels(tok, r["input_text"], r["target_code"], max_len, prompt=prompt)
+            text = coordinate_tokenize_text(r["input_text"]) if coord_tokens else r["input_text"]
+            return build_labels(tok, text, r["target_code"], max_len, prompt=prompt)
         with ThreadPoolExecutor(max_workers=workers) as ex:
             for built in tqdm(ex.map(_one, records), total=len(records), desc="tokenizing"):
                 if built is None:
@@ -354,11 +396,12 @@ class GenEvalDataset(Dataset):
     depending on gather order. Over-cap prompts (> cap_len) are EXCLUDED here (they'd OOM
     generate()); the caller keeps counting them in n_subset, so they score as failures (IoU 0)."""
 
-    def __init__(self, records, tok, cap_len, prompt=PROMPT):
+    def __init__(self, records, tok, cap_len, prompt=PROMPT, coord_tokens=False):
         self.ids, self.ex, self.dropped = [], [], 0
         kept = []
         for r in records:
-            user = f"{prompt}\n\n{r['input_text']}" if prompt else r["input_text"]
+            text = coordinate_tokenize_text(r["input_text"]) if coord_tokens else r["input_text"]
+            user = f"{prompt}\n\n{text}" if prompt else text
             ids = chat_ids(tok, [{"role": "user", "content": user}], True)
             if len(ids) > cap_len:
                 self.dropped += 1
@@ -405,10 +448,35 @@ class GenEvalTrainer(Trainer):
     the ranks with unequal batch counts, desyncing the per-batch gather into a 30-min NCCL timeout.)
     Peak eval memory ~= eval_batch_size * longest prompt, so keep eval_batch_size modest at max_len 16k."""
 
-    def __init__(self, *args, gen_collator=None, max_new_tokens=1024, **kwargs):
+    def __init__(self, *args, gen_collator=None, max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
+                 grad_ckpt_min_tokens=0, grad_ckpt_kwargs=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._gen_collator = gen_collator
         self._max_new_tokens = max_new_tokens
+        self._grad_ckpt_min_tokens = grad_ckpt_min_tokens
+        self._grad_ckpt_kwargs = grad_ckpt_kwargs or {"use_reentrant": False}
+        self._gc_modules = [m for m in self.model.modules()
+                            if hasattr(m, "gradient_checkpointing")]
+        self._last_gc_active = bool(getattr(self.model, "is_gradient_checkpointing", False))
+
+    def _set_gc_active(self, active, seq_len=None):
+        """Toggle only layer flags; keep the configured checkpoint function/input-grad hook."""
+        if active == self._last_gc_active:
+            return
+        for module in self._gc_modules:
+            module.gradient_checkpointing = active
+        self._last_gc_active = active
+        if self.is_world_process_zero():
+            print(f"[grad-ckpt] {'ON' if active else 'OFF'} at step {self.state.global_step} "
+                  f"seq_len={seq_len}")
+
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        if self._grad_ckpt_min_tokens > 0:
+            # Inputs are still CPU tensors here, before Trainer._prepare_inputs. Padded sequence
+            # length is the conservative memory criterion and adds no CUDA synchronization.
+            seq_len = int(inputs["input_ids"].shape[-1])
+            self._set_gc_active(seq_len >= self._grad_ckpt_min_tokens, seq_len)
+        return super().training_step(model, inputs, num_items_in_batch=num_items_in_batch)
 
     def get_eval_dataloader(self, eval_dataset=None):
         ds = self.eval_dataset if eval_dataset is None else eval_dataset
@@ -436,7 +504,8 @@ class GenEvalTrainer(Trainer):
             self.model.config.use_cache = prev_cache
             if gc_on:
                 self.model.gradient_checkpointing_enable(
-                    gradient_checkpointing_kwargs={"use_reentrant": False})
+                    gradient_checkpointing_kwargs=self._grad_ckpt_kwargs)
+                self._last_gc_active = True
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
         idx = inputs["labels"]                   # [B,1] dataset index -> rides through the gather
@@ -546,7 +615,35 @@ class ExpConfig:
     optim: str = field(default="adamw_torch",
                        metadata={"help": "adamw_torch | adafactor (fits full-FT of 2B on one 24GB A5000)"})
     no_grad_ckpt: bool = False
-    max_new_tokens: int = 1024
+    grad_ckpt_min_tokens: int = field(default=0, metadata={
+        "help": "dynamic activation-checkpoint threshold: with grad checkpointing enabled, "
+                "disable it for padded sequences shorter than N tokens. 0 keeps checkpointing "
+                "enabled for every batch (current behavior). Calibrate against peak VRAM first."})
+    grad_ckpt_mode: str = field(default="full", metadata={
+        "help": "activation checkpoint policy: full (current whole-layer recomputation) | "
+                "sac (experimental selective AC; retain recognized attention ops)"})
+    train_sampling_strategy: str = field(default="group_by_length", metadata={
+        "help": "training sampler: group_by_length (default; reduces padding and DDP rank skew) "
+                "| random | sequential"})
+    ddp_find_unused_parameters: bool = field(default=False, metadata={
+        "help": "enable DDP's per-step unused-parameter graph traversal. Default false because "
+                "text-only training freezes the unused vision tower after LoRA insertion. It is "
+                "forced on by --train_vision."})
+    torch_compile: bool = field(default=False, metadata={
+        "help": "opt in to torch.compile training. Keep off for the production recipe until a "
+                "fixed-length-bucket benchmark confirms that recompilation does not erase gains."})
+    torch_compile_backend: str | None = field(default=None, metadata={
+        "help": "torch.compile backend (default: PyTorch/Accelerate default, normally inductor)"})
+    torch_compile_mode: str | None = field(default=None, metadata={
+        "help": "torch.compile mode, e.g. default | reduce-overhead | max-autotune"})
+    coord_tokens: bool = field(default=False, metadata={
+        "help": "replace quantized geometry coordinates with N dedicated magnitude tokens, "
+                "where N is read from the bundle's PART grid=N header. "
+                "Opt-in representation experiment; learns only the added embedding rows under LoRA."})
+    track_token_throughput: bool = field(default=False, metadata={
+        "help": "log non-padding tokens/second. Off by default because distributed token counting "
+                "adds a small collective on each micro-step; enable for short throughput A/B runs."})
+    max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS
     eval_val_n: int = field(default=48, metadata={
         "help": "in-training eval subset size, sampled ONCE from val with a fixed seed "
                 "(identical across evals and across same-seed runs). 0 = full val set."})
@@ -592,6 +689,10 @@ class ExpConfig:
         "help": "DEPRECATED alias of --eval_val_n (kept for backward compat; if >=0 it "
                 "overrides eval_val_n with a warning)"})
     limit: int = field(default=0, metadata={"help": "cap train records (smoke/overfit)"})
+    train_min_tokens: int = field(default=0, metadata={
+        "help": "benchmark-only: keep records whose precomputed n_tok_total is at least N"})
+    train_max_tokens: int = field(default=0, metadata={
+        "help": "benchmark-only: keep records whose precomputed n_tok_total is at most N; 0=off"})
     smoke: bool = field(default=False,
                         metadata={"help": "LoRA, 40 steps, max-len 3072, limit 24 — pipe/loss sanity"})
     seed: int = 42
@@ -639,7 +740,7 @@ def resolve_out(cli_out: str | None, world: int, is_main: bool) -> str:
     raise RuntimeError("timed out waiting for rank0 to resolve --out")
 
 
-ARCH_ARGS = ["ckpt", "full", "lora_r", "train_vision", "optim"]  # shared with warn_resume_arch_drift
+ARCH_ARGS = ["ckpt", "full", "lora_r", "train_vision", "optim", "coord_tokens"]
 
 
 def warn_resume_arch_drift(resume_from: str, args: "ExpConfig") -> None:
@@ -743,38 +844,88 @@ def main():
 
     train = load_jsonl(args.train)
     val = load_jsonl(args.val)
+    if args.train_min_tokens:
+        train = [r for r in train if r["n_tok_total"] >= args.train_min_tokens]
+    if args.train_max_tokens:
+        train = [r for r in train if r["n_tok_total"] <= args.train_max_tokens]
     if args.limit:
         train = sorted(train, key=lambda r: r["n_tok_total"])[:args.limit]  # short = fast smoke
 
     tok = AutoTokenizer.from_pretrained(args.ckpt, trust_remote_code=True)
+    coord_token_ids = []
+    if args.coord_tokens:
+        grids = {serialized_quant(r["input_text"]) for r in train + val}
+        if None in grids or len(grids) != 1:
+            raise ValueError(
+                f"--coord_tokens requires one shared nonzero PART grid=N across train+val; "
+                f"found {sorted(str(x) for x in grids)}")
+        coord_quant = grids.pop()
+        coord_vocab = coordinate_tokens(coord_quant)
+        added = tok.add_tokens(coord_vocab, special_tokens=True)
+        coord_token_ids = tok.convert_tokens_to_ids(coord_vocab)
+        if len(set(coord_token_ids)) != len(coord_vocab):
+            raise RuntimeError(
+                f"coordinate tokens did not map to {len(coord_vocab)} unique tokenizer ids")
+        print(f"coordinate tokens: quant={coord_quant}, added {added}, "
+              f"ids {min(coord_token_ids)}.."
+              f"{max(coord_token_ids)}")
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
 
-    ds = SFTDataset(train, tok, args.max_len, workers=args.tok_workers, prompt=args.prompt)
+    ds = SFTDataset(train, tok, args.max_len, workers=args.tok_workers, prompt=args.prompt,
+                    coord_tokens=args.coord_tokens)
     print(f"train examples kept {len(ds)} (dropped over-len {ds.dropped}) "
           f"| val {len(val)} | max_len {args.max_len}")
+    if is_main and len(ds):
+        lengths = sorted(len(ex["input_ids"]) for ex in ds.ex)
+        percentile = lambda q: lengths[min(len(lengths) - 1, round(q * (len(lengths) - 1)))]
+        print(f"train tokens/example mean {sum(lengths) / len(lengths):.0f} "
+              f"p50 {percentile(.50)} p90 {percentile(.90)} p99 {percentile(.99)}; "
+              "Trainer will also report aggregate train_tokens_per_second when supported")
 
     model, used = load_model(args.ckpt, torch.bfloat16, attn=args.attn)
     print(f"loaded {used}")
+    if args.coord_tokens:
+        model.resize_token_embeddings(len(tok))
     if not args.train_vision:
         nfz = 0
         for n, p in model.named_parameters():
             if ".visual." in n or n.startswith("visual."):
                 p.requires_grad_(False); nfz += 1
         print(f"froze {nfz} vision params")
+    gc_kwargs = gradient_checkpointing_kwargs(args.grad_ckpt_mode)
     if not args.no_grad_ckpt:
-        model.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs={"use_reentrant": False})
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gc_kwargs)
         model.config.use_cache = False
     if not args.full:
         from peft import LoraConfig, get_peft_model
         lc = LoraConfig(r=args.lora_r, lora_alpha=2 * args.lora_r, lora_dropout=0.05,
                         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                                         "gate_proj", "up_proj", "down_proj"],
-                        task_type="CAUSAL_LM")
+                        task_type="CAUSAL_LM",
+                        trainable_token_indices=(coord_token_ids or None))
         if not args.no_grad_ckpt:
             model.enable_input_require_grads()
         model = get_peft_model(model, lc)
+
+    # PEFT inserts fresh trainable LoRA tensors after the initial vision freeze above. Freeze the
+    # vision namespace again so text-only DDP has no deliberately-unused trainable parameters and
+    # can safely skip find_unused_parameters' autograd-graph traversal on every micro-step.
+    if not args.train_vision:
+        nfz_after, trainable_visual = 0, []
+        for n, p in model.named_parameters():
+            if ".visual." in n or n.startswith("visual."):
+                if p.requires_grad:
+                    nfz_after += 1
+                    p.requires_grad_(False)
+                if p.requires_grad:
+                    trainable_visual.append(n)
+        if trainable_visual:
+            raise RuntimeError(f"text-only run still has trainable vision parameters: "
+                               f"{trainable_visual[:8]}")
+        if is_main:
+            print(f"froze {nfz_after} vision params introduced or re-enabled after adapter setup")
+    if not args.full:
         model.print_trainable_parameters()
 
     # --- fixed, seeded RANDOM val subset for eval (identical across evals AND same-seed runs;
@@ -786,7 +937,8 @@ def main():
     val_eval = (list(val) if n_sub >= len(val)
                 else random.Random(eval_seed).sample(val, n_sub))
     n_subset = len(val_eval)                    # denominator: over-cap prompts count as failures
-    gen_eval_ds = GenEvalDataset(val_eval, tok, cap_len=args.max_len, prompt=args.prompt)
+    gen_eval_ds = GenEvalDataset(val_eval, tok, cap_len=args.max_len, prompt=args.prompt,
+                                 coord_tokens=args.coord_tokens)
     eval_ids = list(gen_eval_ds.ids)
 
     # optimizer steps/epoch = ceil(per-rank samples / bs) // grad_accum (matches HF's own count)
@@ -804,6 +956,25 @@ def main():
               f"(+{gen_eval_ds.dropped} over-cap -> counted as failures) seed {eval_seed} | "
               + (f"{cadence_desc} | best=eval_{args.best_metric}"
                  if eval_on else "periodic eval DISABLED"))
+
+    # Available in recent Transformers and harmlessly omitted on older installs. This scans the
+    # already-tokenized in-memory dataset once and adds a length-aware throughput metric; examples/s
+    # alone is misleading when sequences span hundreds to 16k tokens.
+    throughput_args = {}
+    if "include_tokens_per_second" in TrainingArguments.__dataclass_fields__:
+        throughput_args["include_tokens_per_second"] = True
+    if (args.track_token_throughput
+            and "include_num_input_tokens_seen" in TrainingArguments.__dataclass_fields__):
+        throughput_args["include_num_input_tokens_seen"] = "non_padding"
+    ddp_find_unused = args.ddp_find_unused_parameters or args.train_vision
+    if is_main:
+        print(f"train optimizations: train_sampling_strategy={args.train_sampling_strategy} "
+              f"ddp_find_unused_parameters={ddp_find_unused} "
+              f"torch_compile={args.torch_compile} "
+              f"compile_backend={args.torch_compile_backend} "
+              f"compile_mode={args.torch_compile_mode} "
+              f"coord_tokens={args.coord_tokens} "
+              f"track_token_throughput={args.track_token_throughput}")
 
     targs = TrainingArguments(
         output_dir=args.out,
@@ -838,10 +1009,13 @@ def main():
         run_name=args.run_name,
         remove_unused_columns=False,
         gradient_checkpointing=False,  # enabled manually above (PEFT input-grad handshake)
-        # LoRA adapters land on the frozen vision attn too (never run text-only) -> DDP
-        # would flag them as unused; allow it for the 2-GPU path (no-op single-GPU).
-        ddp_find_unused_parameters=(world > 1),
-        dataloader_num_workers=2, optim=args.optim)
+        train_sampling_strategy=args.train_sampling_strategy,
+        ddp_find_unused_parameters=ddp_find_unused,
+        torch_compile=args.torch_compile,
+        torch_compile_backend=args.torch_compile_backend,
+        torch_compile_mode=args.torch_compile_mode,
+        dataloader_num_workers=2, optim=args.optim,
+        **throughput_args)
     # Tripwire: n_gpu>1 means a bare `python train_sft.py` on a multi-GPU box (no launcher set
     # LOCAL_RANK), so HF Trainer is about to fall back to DataParallel and scale the DataLoader
     # batch to bs*n_gpu, feeding the shared-logits Collator cross-example batches. Fail here with
@@ -863,6 +1037,8 @@ def main():
         processing_class=tok,
         gen_collator=GenCollator(tok.pad_token_id),
         max_new_tokens=args.max_new_tokens,
+        grad_ckpt_min_tokens=(0 if args.no_grad_ckpt else args.grad_ckpt_min_tokens),
+        grad_ckpt_kwargs=gc_kwargs,
     )
     if eval_on:                                # compute_metrics closes over the live trainer
         trainer.compute_metrics = make_compute_metrics(
@@ -872,6 +1048,15 @@ def main():
     t0 = time.time()
     out = trainer.train(resume_from_checkpoint=resume)
     print(f"train_runtime {time.time()-t0:.0f}s  final_loss {out.training_loss:.4f}")
+    steps_per_second = out.metrics.get("train_steps_per_second", 0)
+    seen = getattr(trainer.state, "num_input_tokens_seen", 0)
+    initial_seen = getattr(trainer, "_initial_num_input_tokens_seen", 0)
+    runtime = out.metrics.get("train_runtime", 0)
+    if is_main and steps_per_second:
+        msg = f"optimizer_step_seconds {1 / steps_per_second:.3f}"
+        if runtime and seen > initial_seen:
+            msg += f"  non_padding_tokens_per_second {(seen - initial_seen) / runtime:.1f}"
+        print(msg)
     if hasattr(trainer.state, "log_history"):
         losses = [h["loss"] for h in trainer.state.log_history if "loss" in h]
         if losses:

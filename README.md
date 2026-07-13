@@ -79,7 +79,7 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
       --out-dir experiments/stage_z2c_val_noblend
     ```
 
-4. Bundle each `(AMVDG graph, GT CadQuery)` pair into an SFT jsonl. Coordinates are quantized to 1024 levels by default:
+4. Bundle each `(AMVDG graph, GT CadQuery)` pair into an SFT jsonl. Coordinates use a signed canonical grid with 1024 magnitude bins per sign (`-1023..1023`) by default:
     ```bash
     # train
     python scripts/train3d/build_dataset.py \
@@ -99,9 +99,13 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
     Each bundle is `all.jsonl` (one record per part: `input_text` = serialized graph, `target_code` = GT CadQuery) + `stats.json` (token report). `build_dataset.py` calls the graph→text serializer [`scripts/train3d/serialize.py`](scripts/train3d/serialize.py); to eyeball / round-trip-check the exact text the model reads:
     ```bash
     # one graph -> the model-input text (pass any <uuid>.graph.json from Step 2's output):
-    python scripts/train3d/serialize.py "$(ls experiments/dataset_z2c_val/*.graph.json | head -1)"
+    python scripts/train3d/serialize.py \
+      --quant 1024 --drop-covered \
+      "$(ls experiments/dataset_z2c_val/*.graph.json | head -1)"
     # whole dir -> round-trip + cross-view consistency check (quote the glob):
-    python scripts/train3d/serialize.py --check 'experiments/dataset_z2c_val/*.graph.json'
+    python scripts/train3d/serialize.py \
+      --quant 1024 --drop-covered --check \
+      'experiments/dataset_z2c_val/*.graph.json'
     ```
     Training + eval then consume these two bundles — see [`scripts/train3d/README.md`](scripts/train3d/README.md).
 
