@@ -719,7 +719,12 @@ def resolve_out(cli_out: str | None, world: int, is_main: bool) -> str:
     """Run dir. `--out` overrides; otherwise experiments/train3d/<timestamp>.
     Under DDP every rank runs main() independently, so rank0 picks the timestamp
     and shares it via a rendezvous file (keyed by the shared torchrun run id) —
-    without this each rank would stamp a different second and split the run."""
+    without this each rank would stamp a different second and split the run.
+
+    Race-condition fix: rank0 writes via a temp file + os.replace (atomic on POSIX)
+    so rank1 never sees a truncated (empty) marker. A stale marker from a previous
+    run with the same TORCHELASTIC_RUN_ID is deleted first; rank1 additionally
+    skips empty reads as a belt-and-suspenders guard."""
     if cli_out:
         return cli_out
     if world <= 1:
@@ -728,14 +733,27 @@ def resolve_out(cli_out: str | None, world: int, is_main: bool) -> str:
     rid = os.environ.get("TORCHELASTIC_RUN_ID") or os.environ.get("MASTER_PORT") or "run"
     marker = os.path.join(tempfile.gettempdir(), f"train3d_out.{rid}")
     if is_main:
+        # Remove stale marker from a previous run so rank1 doesn't read an old value
+        # before rank0 writes the new one.
+        try:
+            os.remove(marker)
+        except FileNotFoundError:
+            pass
         out = os.path.join(DEFAULT_OUT_ROOT, time.strftime("%Y-%m-%d_%H-%M-%S"))
         os.makedirs(out, exist_ok=True)
-        with open(marker, "w") as f:
+        # Atomic write: tmp file + os.replace prevents rank1 from ever reading
+        # a truncated (0-byte) marker — the old open("w") truncated the file
+        # before writing, creating a window where rank1 could read ''.
+        tmp = marker + ".tmp"
+        with open(tmp, "w") as f:
             f.write(out)
+        os.replace(tmp, marker)          # atomic on POSIX
         return out
     for _ in range(600):                 # wait (≤60 s) for rank0 to choose
         if os.path.exists(marker):
-            return open(marker).read().strip()
+            val = open(marker).read().strip()
+            if val:                      # skip empty reads (stale truncated file)
+                return val
         time.sleep(0.1)
     raise RuntimeError("timed out waiting for rank0 to resolve --out")
 
