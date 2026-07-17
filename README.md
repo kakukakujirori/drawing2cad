@@ -8,7 +8,7 @@ running log live in [`research/`](research/) (start with `research/research-log_
 ## Environments
 
 ```bash
-conda create -y -n drawing2cad python=3.12 freecad cadquery build123d -c conda-forge
+conda create -y -n drawing2cad python=3.12 pythonocc-core pyvista open3d -c conda-forge
 conda activate drawing2cad
 
 # install requirements
@@ -16,7 +16,6 @@ pip3 install torch torchvision xformers --index-url https://download.pytorch.org
 pip install -r requirements.txt
 
 # ABI symbol resolution
-conda env config vars set LD_PRELOAD=$CONDA_PREFIX/lib/libjpeg.so
 conda env config vars set LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 conda deactivate && conda activate drawing2cad
 

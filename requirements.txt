@@ -1,4 +1,6 @@
 accelerate
+build123d
+cadquery
 cairosvg
 datasets
 einops
@@ -7,15 +9,14 @@ hatchling
 huggingface_hub
 jsonschema
 manifold3d
-open3d
 opencv-python-headless
 peft
 Pillow
-pyvista
 pyyaml
 rootutils
 safetensors
 scipy
 tensorboard
+tqdm
 transformers
 trimesh
