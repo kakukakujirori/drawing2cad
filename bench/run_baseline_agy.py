@@ -667,12 +667,9 @@ def run_one(uuid: str, run_dir: Path, agy_bin: str, model: str | None,
     except subprocess.TimeoutExpired as e:
         rc = -1
         timed_out = True
-        stdout = e.stdout or ""
-        stderr = (e.stderr or "") + "\n[agy] wall-clock timeout"
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode(errors="replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode(errors="replace")
+        stdout = (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        stderr = (e.stderr or b"").decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        stderr += "\n[agy] wall-clock timeout"
     except FileNotFoundError:
         print(f"[agy] agy binary not found at {agy_bin}. Install/point --agy-bin.",
               file=sys.stderr)

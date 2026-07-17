@@ -76,7 +76,7 @@ torchrun --nproc_per_node=2 scripts/train3d/train_sft.py \
     --grad-accum 8 \
     --max_len 16384 \
     --attn auto \
-    --grad_ckpt_min_tokens 4000 \
+    --grad_ckpt_min_tokens 3000 \
     --coord_tokens \
     # --eval_every_steps 1000
 # Throughput ablations (use the same data/seed/step count and compare after warmup):
@@ -84,7 +84,7 @@ torchrun --nproc_per_node=2 scripts/train3d/train_sft.py \
 #   --train_sampling_strategy random
 #   --ddp_find_unused_parameters
 #   --torch_compile                 # experimental; watch graph-break/recompile logs
-#   --grad_ckpt_min_tokens 4000     # no checkpoint below N; calibrated for LoRA on 24GB A5000
+#   --grad_ckpt_min_tokens 3000     # no checkpoint below N; calibrated for LoRA on 24GB A5000
 #   --grad_ckpt_mode sac             # research option; no measured gain with FlashAttention-2 here
 #   --coord_tokens                   # N learned magnitude tokens, where bundle header grid=N
 #   NOTE: full-FT of a 2B with AdamW replicates ~22 GB of optimizer state PER GPU under plain DDP -> OOMs a 24 GB A5000. To fit "modest full-FT" pick ONE of:
@@ -168,7 +168,7 @@ torchrun --nproc_per_node=1 scripts/train3d/train_sft.py \
 | default: grouped + no traversal | **12.346** | 0.3251 |
 
 Optional activation-checkpoint calibration found that disabling checkpointing at 5.2k tokens OOMed
-after optimizer-state allocation; `--grad_ckpt_min_tokens 4000` completed a real 25-step DDP run at
+after optimizer-state allocation; `--grad_ckpt_min_tokens 3000` completed a real 25-step DDP run at
 11.364 sec/step (about 8% faster than the all-checkpoint window). This threshold is specific to the
 current LoRA/model/A5000 setup. Keep the default `0` for maximum memory safety, and recalibrate after
 changing batch size, LoRA/full fine-tuning, model, attention backend, or GPU.
