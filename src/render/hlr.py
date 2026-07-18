@@ -1,0 +1,504 @@
+"""OCC HLR projection -> typed 2D primitives.
+
+Given a shape and a view frame (origin + view direction + up direction) this
+runs the OCC hidden-line-removal algorithm and returns the projected edges as
+*typed* 2D primitives (segments, arcs, circles, ellipses, polylines from
+b-splines).  Coordinates are in the projection plane frame: screen ``x`` is the
+frame X direction, screen ``y`` is the frame Y direction, both in model units.
+
+The projection is orthographic.  The projected edges returned by
+``HLRBRep_HLRToShape`` live in the projector coordinate system, so their
+(X, Y) already are screen coordinates and Z is depth (ignored).
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+from OCC.Core.GCPnts import GCPnts_QuasiUniformDeflection
+from OCC.Core.GeomAbs import (
+    GeomAbs_BSplineCurve,
+    GeomAbs_BezierCurve,
+    GeomAbs_Circle,
+    GeomAbs_Ellipse,
+    GeomAbs_Line,
+)
+from OCC.Core.gp import gp_Ax2, gp_Dir, gp_Pnt
+from OCC.Core.HLRAlgo import HLRAlgo_Projector
+from OCC.Core.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
+from OCC.Core.TopAbs import TopAbs_EDGE
+from OCC.Core.TopExp import TopExp_Explorer
+
+
+# --------------------------------------------------------------------------
+# Typed 2D primitives (screen coordinates, model units)
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class Segment:
+    p0: tuple[float, float]
+    p1: tuple[float, float]
+
+
+@dataclass
+class Arc:
+    center: tuple[float, float]
+    radius: float
+    a0: float  # start angle (rad, CCW from +x)
+    a1: float  # end angle (rad)
+    ccw: bool = True
+
+
+@dataclass
+class Circle:
+    center: tuple[float, float]
+    radius: float
+
+
+@dataclass
+class Ellipse:
+    center: tuple[float, float]
+    rmaj: float
+    rmin: float
+    rot: float  # major-axis angle (rad)
+    a0: float = 0.0
+    a1: float = 2.0 * math.pi
+
+
+@dataclass
+class Polyline:
+    pts: list[tuple[float, float]]
+
+
+@dataclass
+class ProjectedEdges:
+    """Typed primitives for one edge class (visible or hidden)."""
+
+    segments: list[Segment] = field(default_factory=list)
+    arcs: list[Arc] = field(default_factory=list)
+    circles: list[Circle] = field(default_factory=list)
+    ellipses: list[Ellipse] = field(default_factory=list)
+    polylines: list[Polyline] = field(default_factory=list)
+
+    def count(self) -> int:
+        return (
+            len(self.segments)
+            + len(self.arcs)
+            + len(self.circles)
+            + len(self.ellipses)
+            + len(self.polylines)
+        )
+
+
+@dataclass
+class ViewProjection:
+    """Result of projecting a shape for one orthographic view."""
+
+    visible: ProjectedEdges
+    hidden: ProjectedEdges
+
+    def bbox(self, include_hidden: bool = True) -> tuple[float, float, float, float]:
+        xs: list[float] = []
+        ys: list[float] = []
+        groups = [self.visible] + ([self.hidden] if include_hidden else [])
+        for g in groups:
+            for s in g.segments:
+                xs += [s.p0[0], s.p1[0]]
+                ys += [s.p0[1], s.p1[1]]
+            for a in g.arcs:
+                # sample the arc for a tight bbox
+                for x, y in _sample_arc(a.center, a.radius, a.a0, a.a1, a.ccw, 12):
+                    xs.append(x)
+                    ys.append(y)
+            for c in g.circles:
+                xs += [c.center[0] - c.radius, c.center[0] + c.radius]
+                ys += [c.center[1] - c.radius, c.center[1] + c.radius]
+            for e in g.ellipses:
+                r = max(e.rmaj, e.rmin)
+                xs += [e.center[0] - r, e.center[0] + r]
+                ys += [e.center[1] - r, e.center[1] + r]
+            for pl in g.polylines:
+                for x, y in pl.pts:
+                    xs.append(x)
+                    ys.append(y)
+        if not xs:
+            return (0.0, 0.0, 0.0, 0.0)
+        return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _sample_arc(center, radius, a0, a1, ccw, n):
+    if not ccw:
+        a0, a1 = a1, a0
+    if a1 < a0:
+        a1 += 2.0 * math.pi
+    pts = []
+    for i in range(n + 1):
+        a = a0 + (a1 - a0) * i / n
+        pts.append((center[0] + radius * math.cos(a), center[1] + radius * math.sin(a)))
+    return pts
+
+
+# --------------------------------------------------------------------------
+# Projector construction
+# --------------------------------------------------------------------------
+
+
+def make_projector(view_dir: tuple[float, float, float],
+                   up_dir: tuple[float, float, float]) -> HLRAlgo_Projector:
+    """Orthographic projector.
+
+    ``view_dir`` points from the model toward the viewer (the plane normal).
+    Screen +Y follows ``up_dir``; screen +X = up x view (right-handed screen).
+    """
+    zdir = gp_Dir(*view_dir)
+    ydir = gp_Dir(*up_dir)
+    # x = y cross z  gives a right-handed (x,y,z) screen frame with z toward viewer
+    ax2 = gp_Ax2(gp_Pnt(0, 0, 0), zdir)
+    ax2.SetYDirection(ydir)
+    return HLRAlgo_Projector(ax2)
+
+
+def run_hlr(shape, projector: HLRAlgo_Projector) -> HLRBRep_HLRToShape:
+    algo = HLRBRep_Algo()
+    algo.Add(shape)
+    algo.Projector(projector)
+    algo.Update()
+    algo.Hide()
+    return HLRBRep_HLRToShape(algo)
+
+
+# --------------------------------------------------------------------------
+# Typed curve extraction
+# --------------------------------------------------------------------------
+
+_TWO_PI = 2.0 * math.pi
+
+
+def _norm_angle(a: float) -> float:
+    a = a % _TWO_PI
+    if a < 0:
+        a += _TWO_PI
+    return a
+
+
+def _classify_edge(edge, out: ProjectedEdges, deflection: float) -> None:
+    ad = BRepAdaptor_Curve(edge)
+    t = ad.GetType()
+    u0 = ad.FirstParameter()
+    u1 = ad.LastParameter()
+
+    if t == GeomAbs_Line:
+        p0 = ad.Value(u0)
+        p1 = ad.Value(u1)
+        out.segments.append(Segment((p0.X(), p0.Y()), (p1.X(), p1.Y())))
+        return
+
+    if t == GeomAbs_Circle:
+        circ = ad.Circle()
+        c = circ.Location()
+        r = circ.Radius()
+        # angle of the circle's own X axis in the screen frame
+        xax = circ.XAxis().Direction()
+        base = math.atan2(xax.Y(), xax.X())
+        # sense: circle axis Z vs screen +Z
+        zsign = 1.0 if circ.Axis().Direction().Z() >= 0 else -1.0
+        span = u1 - u0
+        full = abs(span) >= _TWO_PI - 1e-6
+        if full:
+            out.circles.append(Circle((c.X(), c.Y()), r))
+        else:
+            if zsign >= 0:
+                a0 = base + u0
+                a1 = base + u1
+                ccw = True
+            else:
+                a0 = base - u0
+                a1 = base - u1
+                ccw = False
+            out.arcs.append(Arc((c.X(), c.Y()), r, a0, a1, ccw))
+        return
+
+    if t == GeomAbs_Ellipse:
+        el = ad.Ellipse()
+        c = el.Location()
+        rmaj = el.MajorRadius()
+        rmin = el.MinorRadius()
+        xax = el.XAxis().Direction()
+        rot = math.atan2(xax.Y(), xax.X())
+        zsign = 1.0 if el.Axis().Direction().Z() >= 0 else -1.0
+        span = u1 - u0
+        full = abs(span) >= _TWO_PI - 1e-6
+        if full:
+            out.ellipses.append(Ellipse((c.X(), c.Y()), rmaj, rmin, rot))
+        else:
+            if zsign >= 0:
+                a0, a1 = u0, u1
+            else:
+                a0, a1 = -u0, -u1
+            out.ellipses.append(Ellipse((c.X(), c.Y()), rmaj, rmin, rot, a0, a1))
+        return
+
+    # b-spline / bezier / other -> discretize into a polyline
+    pts: list[tuple[float, float]] = []
+    try:
+        disc = GCPnts_QuasiUniformDeflection(ad, deflection)
+        if disc.IsDone() and disc.NbPoints() >= 2:
+            for i in range(1, disc.NbPoints() + 1):
+                p = disc.Value(i)
+                pts.append((p.X(), p.Y()))
+    except Exception:  # noqa: BLE001
+        pts = []
+    if len(pts) < 2:
+        n = 32
+        for i in range(n + 1):
+            p = ad.Value(u0 + (u1 - u0) * i / n)
+            pts.append((p.X(), p.Y()))
+    _emit_curve(pts, out)
+
+
+def _closed(pts, tol_ratio: float = 1e-3) -> bool:
+    x0, y0 = pts[0]
+    x1, y1 = pts[-1]
+    d = math.hypot(x1 - x0, y1 - y0)
+    # length scale from the polyline extent
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    scale = max(max(xs) - min(xs), max(ys) - min(ys), 1e-9)
+    return d <= tol_ratio * scale
+
+
+def _emit_curve(pts, out: ProjectedEdges) -> None:
+    """Classify a sampled curve into Circle / Arc / Segment / Polyline.
+
+    OCC HLR returns projected circular edges (and curved silhouettes) as
+    b-splines; recognising circles/arcs restores smooth output and centre marks.
+    """
+    closed = _closed(pts)
+    if not closed and _is_straight(pts):
+        out.segments.append(Segment(pts[0], pts[-1]))
+        return
+    fit = _fit_circle(pts)
+    if fit is not None:
+        cx, cy, r, resid = fit
+        if r > 1e-9 and resid / r < 0.03:
+            if closed:
+                out.circles.append(Circle((cx, cy), r))
+            else:
+                a0 = math.atan2(pts[0][1] - cy, pts[0][0] - cx)
+                a1 = math.atan2(pts[-1][1] - cy, pts[-1][0] - cx)
+                mid = pts[len(pts) // 2]
+                # sense from the cross product (start->mid)
+                cross = ((mid[0] - cx) * (pts[0][1] - cy)
+                         - (mid[1] - cy) * (pts[0][0] - cx))
+                ccw = cross < 0
+                out.arcs.append(Arc((cx, cy), r, a0, a1, ccw))
+            return
+    out.polylines.append(Polyline(pts))
+
+
+def _is_straight(pts, rel_tol: float = 0.01) -> bool:
+    x0, y0 = pts[0]
+    x1, y1 = pts[-1]
+    L = math.hypot(x1 - x0, y1 - y0)
+    if L < 1e-9:
+        return False  # closed / degenerate -> not a straight segment
+    maxd = 0.0
+    for x, y in pts:
+        d = abs((y1 - y0) * x - (x1 - x0) * y + x1 * y0 - y1 * x0) / L
+        if d > maxd:
+            maxd = d
+    return (maxd / L) < rel_tol
+
+
+def _fit_circle(pts):
+    """Kasa algebraic circle fit; returns (cx, cy, r, max_residual) or None."""
+    n = len(pts)
+    if n < 4:
+        return None
+    mx = sum(p[0] for p in pts) / n
+    my = sum(p[1] for p in pts) / n
+    u = [p[0] - mx for p in pts]
+    v = [p[1] - my for p in pts]
+    Suu = sum(ui * ui for ui in u)
+    Svv = sum(vi * vi for vi in v)
+    Suv = sum(ui * vi for ui, vi in zip(u, v))
+    Suuu = sum(ui ** 3 for ui in u)
+    Svvv = sum(vi ** 3 for vi in v)
+    Suvv = sum(ui * vi * vi for ui, vi in zip(u, v))
+    Svuu = sum(vi * ui * ui for ui, vi in zip(u, v))
+    det = Suu * Svv - Suv * Suv
+    if abs(det) < 1e-20:
+        return None
+    b1 = 0.5 * (Suuu + Suvv)
+    b2 = 0.5 * (Svvv + Svuu)
+    uc = (b1 * Svv - b2 * Suv) / det
+    vc = (Suu * b2 - Suv * b1) / det
+    cx, cy = uc + mx, vc + my
+    r = math.sqrt(max(uc * uc + vc * vc + (Suu + Svv) / n, 0.0))
+    resid = max(abs(math.hypot(p[0] - cx, p[1] - cy) - r) for p in pts)
+    return cx, cy, r, resid
+
+
+def _extract_compound(comp, out: ProjectedEdges, deflection: float) -> None:
+    if comp is None or comp.IsNull():
+        return
+    exp = TopExp_Explorer(comp, TopAbs_EDGE)
+    while exp.More():
+        _classify_edge(exp.Current(), out, deflection)
+        exp.Next()
+
+
+# HLR compound accessor names, grouped by visible / hidden.
+_VISIBLE_ACCESSORS = ("VCompound", "OutLineVCompound")
+_VISIBLE_SMOOTH = ("Rg1LineVCompound",)
+_HIDDEN_ACCESSORS = ("HCompound", "OutLineHCompound")
+_HIDDEN_SMOOTH = ("Rg1LineHCompound",)
+
+
+def _safe_compound(hts: HLRBRep_HLRToShape, name: str):
+    try:
+        return getattr(hts, name)()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _recombine_circles(edges: ProjectedEdges, tol: float) -> None:
+    """Merge arcs that share a centre+radius and together cover ~2pi into a
+    full Circle (OCC HLR splits circular edges at silhouette points)."""
+    if not edges.arcs:
+        return
+    groups: dict = {}
+    key_scale = 1.0 / max(tol, 1e-9)
+    for a in edges.arcs:
+        k = (round(a.center[0] * key_scale), round(a.center[1] * key_scale),
+             round(a.radius * key_scale))
+        groups.setdefault(k, []).append(a)
+    remaining: list[Arc] = []
+    for k, arcs in groups.items():
+        # angular coverage as union of [a0,a1] intervals (normalised CCW)
+        intervals = []
+        for a in arcs:
+            s = _norm_angle(a.a0)
+            if a.ccw:
+                span = (a.a1 - a.a0) % _TWO_PI
+            else:
+                span = (a.a0 - a.a1) % _TWO_PI
+                s = _norm_angle(a.a1)
+            if span < 1e-9:
+                span = _TWO_PI
+            intervals.append((s, s + span))
+        cov = _interval_union_len(intervals)
+        if cov >= _TWO_PI - 0.15:
+            c = arcs[0]
+            edges.circles.append(Circle(c.center, c.radius))
+        else:
+            remaining.extend(arcs)
+    edges.arcs = remaining
+
+
+def _interval_union_len(intervals) -> float:
+    segs = []
+    for s, e in intervals:
+        s %= _TWO_PI
+        e = s + (e - s) % _TWO_PI if e != s else s + _TWO_PI
+        if e > _TWO_PI:
+            segs.append((s, _TWO_PI))
+            segs.append((0.0, e - _TWO_PI))
+        else:
+            segs.append((s, e))
+    segs.sort()
+    total = 0.0
+    cur_s, cur_e = None, None
+    for s, e in segs:
+        if cur_s is None:
+            cur_s, cur_e = s, e
+        elif s <= cur_e + 1e-9:
+            cur_e = max(cur_e, e)
+        else:
+            total += cur_e - cur_s
+            cur_s, cur_e = s, e
+    if cur_s is not None:
+        total += cur_e - cur_s
+    return min(total, _TWO_PI)
+
+
+def _merge_segments(edges: ProjectedEdges, tol: float) -> None:
+    """Deduplicate and merge collinear, overlapping/touching segments so the
+    hidden/visible line counts approach GT (SolidWorks merges such runs)."""
+    segs = edges.segments
+    if len(segs) < 2:
+        return
+    # bucket by infinite-line signature (angle mod pi, signed distance to origin)
+    buckets: dict = {}
+    for s in segs:
+        (x0, y0), (x1, y1) = s.p0, s.p1
+        dx, dy = x1 - x0, y1 - y0
+        L = math.hypot(dx, dy)
+        if L < 1e-9:
+            continue
+        ang = math.atan2(dy, dx) % math.pi
+        ux, uy = math.cos(ang), math.sin(ang)
+        # perpendicular offset of the line from origin
+        off = -uy * x0 + ux * y0
+        k = (round(ang / (tol * 2)), round(off / tol))
+        buckets.setdefault(k, (ux, uy, []))[2].append(s)
+    merged: list[Segment] = []
+    for (ux, uy, group) in buckets.values():
+        # project endpoints onto the line direction, merge overlapping ranges
+        ivals = []
+        for s in group:
+            t0 = s.p0[0] * ux + s.p0[1] * uy
+            t1 = s.p1[0] * ux + s.p1[1] * uy
+            ivals.append((min(t0, t1), max(t0, t1)))
+        ivals.sort()
+        base = group[0].p0
+        b_t = base[0] * ux + base[1] * uy
+        px = base[0] - b_t * ux
+        py = base[1] - b_t * uy
+        cur_s, cur_e = ivals[0]
+        out_ivals = []
+        for s, e in ivals[1:]:
+            if s <= cur_e + tol:
+                cur_e = max(cur_e, e)
+            else:
+                out_ivals.append((cur_s, cur_e))
+                cur_s, cur_e = s, e
+        out_ivals.append((cur_s, cur_e))
+        for s, e in out_ivals:
+            merged.append(Segment((px + ux * s, py + uy * s), (px + ux * e, py + uy * e)))
+    edges.segments = merged
+
+
+def _cleanup(edges: ProjectedEdges, tol: float) -> None:
+    _recombine_circles(edges, tol)
+    _merge_segments(edges, tol)
+
+
+def project(shape,
+            view_dir: tuple[float, float, float],
+            up_dir: tuple[float, float, float],
+            deflection: float = 0.05,
+            include_smooth: bool = False,
+            merge_tol: float = 1e-4) -> ViewProjection:
+    """Project ``shape`` and return typed visible / hidden primitives."""
+    projector = make_projector(view_dir, up_dir)
+    hts = run_hlr(shape, projector)
+
+    visible = ProjectedEdges()
+    hidden = ProjectedEdges()
+
+    vis_names = list(_VISIBLE_ACCESSORS) + (list(_VISIBLE_SMOOTH) if include_smooth else [])
+    hid_names = list(_HIDDEN_ACCESSORS) + (list(_HIDDEN_SMOOTH) if include_smooth else [])
+
+    for name in vis_names:
+        _extract_compound(_safe_compound(hts, name), visible, deflection)
+    for name in hid_names:
+        _extract_compound(_safe_compound(hts, name), hidden, deflection)
+
+    _cleanup(visible, merge_tol)
+    _cleanup(hidden, merge_tol)
+
+    return ViewProjection(visible=visible, hidden=hidden)

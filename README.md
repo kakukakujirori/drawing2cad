@@ -15,6 +15,17 @@ conda activate drawing2cad
 pip3 install torch torchvision xformers --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 
+# IMPORTANT: `pip install cadquery` (pulled in by requirements.txt) installs the
+# PyPI OCP wheels (`cadquery-ocp` / `cadquery-ocp-novtk`). The vtk-enabled wheel
+# expects PyPI-style VTK sonames and cannot load against conda's vtk, which
+# breaks `import OCP` (and therefore `import cadquery`) with
+# "libvtkWrappingPythonCore3.12.so: cannot open shared object file".
+# Fix: replace the pip OCP wheels with the conda-forge `ocp` package, which is
+# built against the same conda occt/vtk stack (this also switches
+# occt/pythonocc-core to their vtk-enabled builds):
+pip uninstall -y cadquery-ocp cadquery-ocp-novtk
+conda install -y -c conda-forge "ocp=7.9.3"
+
 # ABI symbol resolution
 conda env config vars set LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 conda deactivate && conda activate drawing2cad
@@ -26,6 +37,30 @@ pip install "cadgenbench @ git+https://github.com/huggingface/cadgenbench.git@ma
 MAX_JOBS=4 pip3 install flash-attn --no-build-isolation
 ```
 
+## ECCV-style rendering (`src/render/`)
+
+Renders STEP files into the same drawing domain as `data/eccv2026-cad-challenge-data/`
+(SolidWorks-style 3-view technical drawings + three perspective 3D renders),
+using pythonocc HLR directly (no FreeCAD). Calibrated against the challenge
+train split: third-angle 3-view L-layout on A4 landscape, GT-identical SVG
+stroke styles (visible/hidden/center), native DXF entities (LINE/ARC/CIRCLE/
+ELLIPSE with `Continuous`/`HIDDEN` linetypes + `SW_CENTERMARKSYMBOL` center-mark
+blocks), and the SolidWorks isometric perspective camera for
+`render_3d/{hlg,transparent_shaded_edges,hlg_translucent_faces}_perspective`.
+
+```bash
+python src/render/render_dataset.py \
+  --input_dir experiments/stage_z2c_train \   # flat dir of {stem}.step ({stem}.cadquery.py ignored)
+  --output_dir <OUTDIR> \
+  [--workers N] [--timeout 120] [--limit N] [--no-render3d] [--no-techdraw]
+```
+
+Output mirrors the challenge tree: `OUTDIR/techdraw/{svg,dxf,pdf}/{stem}.*` and
+`OUTDIR/render_3d/<style>/{stem}.png`, plus `manifest.jsonl` (resume: re-running
+with the same OUTDIR skips finished parts; each part runs in a killable
+subprocess because OCC HLR can hang in native code). Calibration/verification
+harnesses: `src/render/calibrate_techdraw.py`, `src/render/calibrate_render3d.py`.
+
 ## Data Preparation
 
 End-to-end, this turns existing 3D CAD (STEP) into the `(AMVDG graph JSON, 2D drawing PNG)` pairs, then bundles them into the SFT jsonl for `AMVDG -> 3D CAD` training.
@@ -35,7 +70,7 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
 1. Randomly sample STEP files:
     ```bash
     # train
-    python scripts/renderer/select_zero_to_cad.py \
+    python scripts_dep/renderer/select_zero_to_cad.py \
       --n 100000 \
       --stage_dir experiments/stage_z2c_train \
       --split train \
@@ -43,7 +78,7 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
       --stratify  # ensure uniform diversity in difficulty
 
     # val
-    python scripts/renderer/select_zero_to_cad.py \
+    python scripts_dep/renderer/select_zero_to_cad.py \
       --n 300 \
       --stage_dir experiments/stage_z2c_val \
       --split validation \
@@ -54,12 +89,12 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
 2. Generate AMVDG json and 2D drawings:
     ```bash
     # train
-    python scripts/renderer/batch_dataset.py \
+    python scripts_dep/renderer/batch_dataset.py \
       --step_dir experiments/stage_z2c_train \
       --out_dir experiments/dataset_z2c_train
 
     # val
-    python scripts/renderer/batch_dataset.py \
+    python scripts_dep/renderer/batch_dataset.py \
       --step_dir experiments/stage_z2c_val \
       --out_dir experiments/dataset_z2c_val
     ```
@@ -68,12 +103,12 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
 3. Strip edge blends (fillet/chamfer) from the GT CadQuery (Note: AMVDG doesn't encode blends by default):
     ```bash
     # train
-    python scripts/train3d/strip_blends.py \
+    python scripts_dep/train3d/strip_blends.py \
       --in-dir experiments/stage_z2c_train \
       --out-dir experiments/stage_z2c_train_noblend
 
     # val
-    python scripts/train3d/strip_blends.py \
+    python scripts_dep/train3d/strip_blends.py \
       --in-dir experiments/stage_z2c_val \
       --out-dir experiments/stage_z2c_val_noblend
     ```
@@ -81,60 +116,60 @@ We use the *Zero-to-CAD* dataset, which will be automatically downloaded when yo
 4. Bundle each `(AMVDG graph, GT CadQuery)` pair into an SFT jsonl. Coordinates use a signed canonical grid with 1024 magnitude bins per sign (`-1023..1023`) by default:
     ```bash
     # train
-    python scripts/train3d/build_dataset.py \
+    python scripts_dep/train3d/build_dataset.py \
       --graph-dir experiments/dataset_z2c_train \
       --code-dir  experiments/stage_z2c_train_noblend \
       --out experiments/data_z2c_train_noblend \
       --hid-dropout 0.95  # drop redundant hidden lines visible from other views
 
     # val
-    python scripts/train3d/build_dataset.py \
+    python scripts_dep/train3d/build_dataset.py \
       --graph-dir experiments/dataset_z2c_val \
       --code-dir  experiments/stage_z2c_val_noblend \
       --out experiments/data_z2c_val_noblend \
       --hid-dropout 0.95  # MAYBE BETTER TO SET 0?
     ```
     > **Consistency:** `--quant` sets the coordinate encoding, so `infer.py --quant` must equal what the training data used (both default 1024 → consistent by default; pass `--quant 0` on both to ablate). `stats.json` records the transforms and reports token coverage up to 16384.
-    Each bundle is `all.jsonl` (one record per valid part: `input_text` = serialized graph, `target_code` = GT CadQuery) + `invalid_extent.jsonl` + `stats.json`. The builder keeps `extent_ratio <= 5`, warns for `2 < extent_ratio <= 5`, and quarantines larger values so one pathological HLR primitive cannot collapse the shared quantization grid; counts, IDs, thresholds, and the ratio distribution are recorded in `stats.json`. `build_dataset.py` calls the graph→text serializer [`scripts/train3d/serialize.py`](scripts/train3d/serialize.py); to eyeball / round-trip-check the exact text the model reads:
+    Each bundle is `all.jsonl` (one record per valid part: `input_text` = serialized graph, `target_code` = GT CadQuery) + `invalid_extent.jsonl` + `stats.json`. The builder keeps `extent_ratio <= 5`, warns for `2 < extent_ratio <= 5`, and quarantines larger values so one pathological HLR primitive cannot collapse the shared quantization grid; counts, IDs, thresholds, and the ratio distribution are recorded in `stats.json`. `build_dataset.py` calls the graph→text serializer [`scripts_dep/train3d/serialize.py`](scripts_dep/train3d/serialize.py); to eyeball / round-trip-check the exact text the model reads:
     ```bash
     # one graph -> the model-input text (pass any <uuid>.graph.json from Step 2's output):
-    python scripts/train3d/serialize.py \
+    python scripts_dep/train3d/serialize.py \
       --quant 1024 --drop-covered \
       "$(ls experiments/dataset_z2c_val/*.graph.json | head -1)"
     # whole dir -> round-trip + cross-view consistency check (quote the glob):
-    python scripts/train3d/serialize.py \
+    python scripts_dep/train3d/serialize.py \
       --quant 1024 --drop-covered --check \
       'experiments/dataset_z2c_val/*.graph.json'
     ```
     Existing bundles can be audited without rebuilding or loading the tokenizer. Add `--graph-dir` to identify the maximum-contributing source primitive and classify the failure mode:
     ```bash
-    python scripts/train3d/audit_extent.py \
+    python scripts_dep/train3d/audit_extent.py \
       --bundle experiments/data_z2c_train_noblend/all.jsonl \
       --graph-dir experiments/dataset_z2c_train \
       --warn-ratio 2 --fail-ratio 5 \
       --out experiments/data_z2c_train_noblend/extent_audit.json
     ```
-    Training + eval then consume these two bundles — see [`scripts/train3d/README.md`](scripts/train3d/README.md).
+    Training + eval then consume these two bundles — see [`scripts_dep/train3d/README.md`](scripts_dep/train3d/README.md).
 
 **DEPRECATED**: You can also use the *Fusion360Gallery* `reconstruction` subset — `select_fusion360_recon.py` is specific to that
 set's `{partid}_{hash}_{seq}_{substep}` naming (takes each part's final state, samples across parts):
 ```bash
-python scripts/renderer/select_fusion360_recon.py /path/to/Fusion360Gallery/r1.0.1/reconstruction 2500 experiments/stage_recon
+python scripts_dep/renderer/select_fusion360_recon.py /path/to/Fusion360Gallery/r1.0.1/reconstruction 2500 experiments/stage_recon
 
-python scripts/renderer/batch_dataset.py experiments/stage_recon experiments/dataset_recon
+python scripts_dep/renderer/batch_dataset.py experiments/stage_recon experiments/dataset_recon
 ```
-A graph can be exported to DXF 2D-CAD with `python scripts/amvdg/graph_to_dxf.py GRAPH.json OUT.dxf`.
+A graph can be exported to DXF 2D-CAD with `python scripts_dep/amvdg/graph_to_dxf.py GRAPH.json OUT.dxf`.
 
 ## AMVDG→3D leg (training — the current focus)
 
 **Input = serialized-graph text only** (no drawing PNG is fed), so a working leg is direct evidence the AMVDG IR is *sufficient* to recover 3D. The training set (serialized graph → GT CadQuery jsonl) is built in **Data Preparation Step 3**.
 
-**SFT harness** (`scripts/train3d/`) — SFT fine-tune (init:
-`ADSKAILab/Zero-To-CAD-Qwen3-VL-2B`, text-only input) + isolated CadQuery execution eval (validity + translation-aligned voxel IoU + absolute-mm bbox error). See [`scripts/train3d/README.md`](scripts/train3d/README.md) for the train/eval **procedure**, and `research/research-log.md` for **measured results**.
+**SFT harness** (`scripts_dep/train3d/`) — SFT fine-tune (init:
+`ADSKAILab/Zero-To-CAD-Qwen3-VL-2B`, text-only input) + isolated CadQuery execution eval (validity + translation-aligned voxel IoU + absolute-mm bbox error). See [`scripts_dep/train3d/README.md`](scripts_dep/train3d/README.md) for the train/eval **procedure**, and `research/research-log.md` for **measured results**.
 
 **DEPRECATED**: **B2-cadrille baseline** (historical, 2026-06-15 — motivates the above; drawings → CadQuery → validity/scale metrics):
 ```bash
-scripts/run_b2.sh --n 49          # or  IDS=101,103 scripts/run_b2.sh
+scripts_dep/run_b2.sh --n 49          # or  IDS=101,103 scripts_dep/run_b2.sh
 ```
 
 ## 2D→2D leg (drawing → AMVDG graph) — DE-PRIORITIZED (2026-07-02)
@@ -154,29 +189,29 @@ The raster-drawing → AMVDG-graph stage (design, methods and measured results i
 `research/research-log.md`, 2026-06-20 entry):
 
 - `spec/` — the AMVDG DSL: schema, validator, worked example. Start here.
-- `scripts/train2d/` — the 2D→AMVDG-graph (cadrille) leg, mirroring `scripts/train3d/`:
+- `scripts_dep/train2d/` — the 2D→AMVDG-graph (cadrille) leg, mirroring `scripts_dep/train3d/`:
   - `serialize.py` (`g1`, graph ⇔ compact-JSON training target, intra-view — drops `features[]`),
     `score.py` (predicted vs GT graph).
   - pipeline: `dataset.py` → `make_dataset.py` (build bundle) → `train.py` (fine-tune) →
     `infer.py`; `tile.py` tiles a high-res real drawing for inference; `run_train2d.sh`
     wraps bundle→train→infer (needs the `drawing2cad-ml` env + `CADRILLE_REPO`).
-- `scripts/amvdg/` — general AMVDG format tooling: `graph_to_dxf.py` (graph → 2D-CAD DXF).
-- `scripts/orthosolve/orthosolve_spike.py` — **OrthoSolve** proof-of-concept: instead of
+- `scripts_dep/amvdg/` — general AMVDG format tooling: `graph_to_dxf.py` (graph → 2D-CAD DXF).
+- `scripts_dep/orthosolve/orthosolve_spike.py` — **OrthoSolve** proof-of-concept: instead of
   regressing pixels, recover exact metric for the dimensioned subset from topology + OCR'd
   dims via a constraint solve (pure-numpy, zero training).
-- `scripts/detector/` — geometry detection: `circlenet.py` (center-heatmap + **log-radius** +
+- `scripts_dep/detector/` — geometry detection: `circlenet.py` (center-heatmap + **log-radius** +
   **dilated big-RF backbone** that detects circles at all radii incl. large bores; train/eval on
   GPU below); `detect_hough.py` / `detect_contour.py` (classical-CV probes showing why
   thresholding fails on real drawings).
   ```bash
-  CIRCLENET_SEED=0 python scripts/detector/circlenet.py train experiments/dataset_recon out_dir \
+  CIRCLENET_SEED=0 python scripts_dep/detector/circlenet.py train experiments/dataset_recon out_dir \
       --steps 6000 --tile 640 --bs 24
   # per-drawing recall/precision/radius-MAE + stratified-by-radius recall on the held-out split
   # (--scan for scan-aug; --thr 0.4 operating point; --dimunion unions diameter-dimension circles):
-  python scripts/detector/circlenet.py evalfull out_dir/circlenet.pt experiments/dataset_recon \
+  python scripts_dep/detector/circlenet.py evalfull out_dir/circlenet.pt experiments/dataset_recon \
       --split out_dir/split.json --thr 0.4 [--dimunion]
   ```
-- `scripts/renderer/render_dataset.py` + `pipeline.py` — the synthetic-drawing renderer
+- `scripts_dep/renderer/render_dataset.py` + `pipeline.py` — the synthetic-drawing renderer
   (ISO dims, title block, isometric, cross-view correspondences) with scan-noise augmentation;
   driven by `batch_dataset.py` and consumed by `circlenet.py`.
   **Phase 4 — Oracle Matching**: pure mathematical projection (`projector/` handlers →
@@ -184,7 +219,7 @@ The raster-drawing → AMVDG-graph stage (design, methods and measured results i
   exact 3D topological lineage (`prov.topo_origins`, `{dim,id,role}` objects) on visually
   occluded/segmented 2D lines; features then bind primitives ACROSS views by shared B-rep
   face ids. Projector local frames are verified against `projectEx` per view
-  (`scripts/renderer/test_integration.py` + the per-module `__main__` unit tests).
+  (`scripts_dep/renderer/test_integration.py` + the per-module `__main__` unit tests).
 - `research/{werk24-recon,orthosolve-method,foundation-model-survey,amvdg-v0.3-roadmap}.md`
   — the supporting surveys: Werk24 reverse-engineering, the OrthoSolve method note, the
   "does a big model solve geometry?" survey, and the v0.3 representation roadmap.
@@ -202,7 +237,7 @@ DE-PRIORITIZED section ends here -->
 > (right-view frame, duplicate HLR edges, single-member features) — regenerate with
 > `batch_dataset.py` before training on `topo_origins`/`features`.
 
-Scripts that need fixtures not shipped here (the real drawing, GT graphs) take a `*_DATA`
+Scripts_dep that need fixtures not shipped here (the real drawing, GT graphs) take a `*_DATA`
 env var pointing at a local data dir; the spikes print what they expect.
 
 
