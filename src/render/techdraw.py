@@ -121,6 +121,13 @@ def generate_techdraw(step_path: Path, paths: TechdrawPaths, cfg: TechdrawConfig
 
     info = {
         "scale": layout.scale,
+        "bbox_format": "xyxy",
+        "bbox_coordinate_system": {
+            "unit": "mm",
+            "origin": "sheet_bottom_left",
+            "x_axis": "right",
+            "y_axis": "up",
+        },
         "cluster_bbox": [round(x, 3) for x in layout.cluster_bbox],
         "views": {v.name: {"bbox": [round(x, 3) for x in v.bbox], **_counts(v)}
                   for v in layout.views},

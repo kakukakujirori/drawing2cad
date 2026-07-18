@@ -61,6 +61,19 @@ with the same OUTDIR skips finished parts; each part runs in a killable
 subprocess because OCC HLR can hang in native code). Calibration/verification
 harnesses: `src/render/calibrate_techdraw.py`, `src/render/calibrate_render3d.py`.
 
+Successful techdraw rows store layout metadata under `extra.techdraw`. View and
+cluster `bbox` values use `[xmin, ymin, xmax, ymax]` (`bbox_format="xyxy"`) in
+sheet-mm with a bottom-left origin. Manifests created before this metadata was
+added are refreshed on the next techdraw run; pass `--no-render3d` to avoid
+re-rendering the perspective images during that one-time migration.
+
+Audit raw STEP bbox scale and CadQuery numeric-literal magnitudes with:
+
+```bash
+conda run -n drawing2cad python src/render/audit_cad_scale.py \
+  --target-dir experiments/dataset_z2c_eccv_val/target
+```
+
 ## Data Preparation
 
 End-to-end, this turns existing 3D CAD (STEP) into the `(AMVDG graph JSON, 2D drawing PNG)` pairs, then bundles them into the SFT jsonl for `AMVDG -> 3D CAD` training.

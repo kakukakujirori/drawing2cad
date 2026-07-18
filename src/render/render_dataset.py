@@ -15,8 +15,9 @@ layout of data/eccv2026-cad-challenge-data:
 Each part runs in its own process with a wall-clock timeout because OCC HLR can
 hang forever in native code (observed with FreeCAD TechDraw HLR as well); a
 try/except cannot recover from that, only SIGKILL can. Re-running with the same
-OUTDIR resumes: parts whose manifest entry exists and whose outputs are present
-are skipped.
+OUTDIR resumes: parts whose manifest entry exists (including current techdraw
+metadata when techdraw output is requested) and whose outputs are present are
+skipped.
 """
 
 from __future__ import annotations
@@ -68,7 +69,7 @@ def _worker(step_path: Path, td: TechdrawPaths | None, r3: Render3dPaths | None,
         if td is not None:
             from src.render.techdraw import generate_techdraw
 
-            generate_techdraw(step_path, td)
+            result.extra["techdraw"] = generate_techdraw(step_path, td)
             result.techdraw_ok = True
         if r3 is not None:
             from src.render.render3d import generate_render3d
@@ -82,7 +83,7 @@ def _worker(step_path: Path, td: TechdrawPaths | None, r3: Render3dPaths | None,
     queue.put(result.__dict__)
 
 
-def _load_done(manifest: Path) -> set[str]:
+def _load_done(manifest: Path, *, require_techdraw_info: bool = False) -> set[str]:
     done: set[str] = set()
     if manifest.exists():
         for line in manifest.read_text().splitlines():
@@ -90,7 +91,11 @@ def _load_done(manifest: Path) -> set[str]:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("ok"):
+            extra = rec.get("extra")
+            has_techdraw_info = (
+                isinstance(extra, dict) and isinstance(extra.get("techdraw"), dict)
+            )
+            if rec.get("ok") and (not require_techdraw_info or has_techdraw_info):
                 done.add(rec["name"])
     return done
 
@@ -122,7 +127,10 @@ def main(argv: list[str] | None = None) -> int:
         (out / "render_3d" / sub).mkdir(parents=True, exist_ok=True)
 
     manifest_path = out / MANIFEST_NAME
-    done = _load_done(manifest_path)
+    done = _load_done(
+        manifest_path,
+        require_techdraw_info=not args.no_techdraw,
+    )
     manifest = manifest_path.open("a")
 
     todo = []

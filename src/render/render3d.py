@@ -599,10 +599,87 @@ def _depth_buffer(camera: Camera, cfg: Render3dConfig, tf: "FitTransform",
     return np.maximum.reduce(stack)
 
 
+def _make_ray_visible(camera: Camera, verts, tris, r_excl, pen_min):
+    """Exact eye->point occlusion test against the mesh (vtkOBBTree).
+
+    Used to arbitrate grazing-zone samples where the z-buffer is ill-posed.
+    A hit only counts as an occluder when the ray actually dives deeper than
+    ``pen_min`` into the body (signed distance at the midpoint of each
+    entry/exit hit pair): tangency artifacts -- knife-edge double hits,
+    terminal skims along the surface the sample sits on, chord-error
+    grazes -- all have ~zero penetration, while a genuine occluder is
+    crossed face-on.  Silhouette-chain samples are additionally pushed
+    ``eps_out`` along the outward vertex normal before casting, because the
+    chains are quantised to the angular tessellation step and self-occlude
+    by a whisker (~R*dphi^2)."""
+    import pyvista as pv
+    import vtk
+    from scipy.spatial import cKDTree
+
+    n = len(tris)
+    conn = np.hstack([np.full((n, 1), 3, dtype=np.int64), tris]).ravel()
+    poly = pv.PolyData(verts, conn)
+    obb = vtk.vtkOBBTree()
+    obb.SetDataSet(poly)
+    obb.BuildLocator()
+    sdf = vtk.vtkImplicitPolyDataDistance()
+    sdf.SetInput(poly)
+    eye = np.asarray(camera.eye, dtype=np.float64)
+
+    v = verts[tris]
+    fn = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
+    vn = np.zeros_like(verts)
+    for c in range(3):
+        np.add.at(vn, tris[:, c], fn)
+    norms = np.linalg.norm(vn, axis=1, keepdims=True)
+    vn /= np.maximum(norms, 1e-30)
+    tree = cKDTree(verts)
+
+    def visible(samples, eps_out=0.0):
+        samples = np.asarray(samples, dtype=np.float64)
+        if eps_out > 0.0:
+            _, idx = tree.query(samples)
+            pushed = samples + vn[idx] * eps_out
+        else:
+            pushed = samples
+        out = np.zeros(len(samples), dtype=bool)
+        hits = vtk.vtkPoints()
+        for k, p in enumerate(pushed):
+            dist = float(np.linalg.norm(p - eye))
+            ray = (p - eye) / dist
+            obb.IntersectWithLine(eye.tolist(), p.tolist(), hits, None)
+            ts = sorted(
+                t for m in range(hits.GetNumberOfPoints())
+                if (t := float(np.dot(np.asarray(hits.GetPoint(m)) - eye, ray)))
+                < dist - r_excl)
+            ok = True
+            # entry/exit pairs (odd tail closes at the sample itself)
+            for m in range(0, len(ts), 2):
+                t_in = ts[m]
+                t_out = ts[m + 1] if m + 1 < len(ts) else dist
+                mid = eye + ray * (0.5 * (t_in + t_out))
+                if -sdf.EvaluateFunction(mid.tolist()) > pen_min:
+                    ok = False
+                    break
+            out[k] = ok
+        return out
+
+    return visible
+
+
 def _classify_split(pts3, camera: Camera, tf: "FitTransform",
-                    depmax, supersample, tol):
+                    depmax, supersample, tol,
+                    graze_recheck=None, graze_band=0.0):
     """Split one 3D polyline into visible / hidden runs by comparing each
-    sample's depth against the (max-filtered) depth buffer."""
+    sample's depth against the (max-filtered) depth buffer.
+
+    ``graze_recheck``: exact ray-visibility callback used to re-arbitrate
+    samples the buffer calls hidden by no more than ``graze_band``.  A
+    silhouette generator running nearly along the line of sight has its own
+    surface skimming a few units in front of it over MANY pixels (depth error
+    ~ sqrt(2*R*px)), so neither tol nor the 3x3 filter can rescue it -- but
+    the exact tangent ray never crosses the body, while a genuinely occluded
+    line has its ray blocked, so the ray test separates the two."""
     pts3 = np.asarray(pts3, dtype=np.float64)
     plane = _plane_project(pts3, camera)
     d = pts3 - np.asarray(camera.eye)
@@ -611,6 +688,10 @@ def _classify_split(pts3, camera: Camera, tf: "FitTransform",
     ix = np.clip(px[:, 0].astype(np.int64), 0, depmax.shape[1] - 1)
     iy = np.clip(px[:, 1].astype(np.int64), 0, depmax.shape[0] - 1)
     vis = dep <= depmax[iy, ix] + tol
+    if graze_recheck is not None:
+        cand = np.flatnonzero(~vis & (dep - depmax[iy, ix] <= graze_band))
+        if cand.size:
+            vis[cand] = graze_recheck(pts3[cand])
     if len(vis) >= 3:  # absorb single-sample flickers (z-buffer noise)
         v = vis.copy()
         v[1:-1] = np.where(vis[:-2] == vis[2:], vis[:-2], vis[1:-1])
@@ -639,16 +720,34 @@ def _mesh_hlr_project(shape, camera: Camera, cfg: Render3dConfig,
     polylines3d = []
     for edge in _drawable_edges(shape, tol=1e-4 * diag, diag=diag):
         try:
-            polylines3d.append(_sample_edge_points(edge, camera, tf))
+            polylines3d.append((_sample_edge_points(edge, camera, tf), False))
         except Exception:  # noqa: BLE001 - skip broken edge geometry
             continue
     for chain in _silhouette_chains(verts, tris, camera.eye):
         pts3 = verts[np.asarray(chain, dtype=np.int64)]
-        polylines3d.append(_densify_polyline(pts3, camera, tf))
+        polylines3d.append((_densify_polyline(pts3, camera, tf), True))
+
+    # grazing band: worst-case z-buffer depth error at a tangent contact,
+    # sqrt(2*R*w) with R <= diag and w ~ 1.5px + margin of pixel footprint.
+    # tf.scale is px per CAMERA-PLANE unit; world units at scene depth are
+    # larger by the perspective factor (focus+D)/focus.
+    wpp = (camera.focus + camera.D) / (camera.focus * tf.scale)
+    graze_band = math.sqrt(4.5 * diag * wpp)
+    # silhouette chains are quantised to the angular tessellation step, so
+    # their samples self-occlude by a whisker (~R*dphi^2) and need the
+    # outward push; exact BRep edge samples sit ON the true surface, above
+    # the inscribed mesh, so no push is needed (and pushing would bleed
+    # solid ink past true tangency transitions, e.g. far-cap arcs).
+    ray_visible = _make_ray_visible(camera, verts, tris, r_excl=2.0 * wpp,
+                                    pen_min=5.4e-4 * diag)
+    eps_sil = 4e-3 * diag
 
     visible, hidden = [], []
-    for pts3 in polylines3d:
-        for is_vis, poly in _classify_split(pts3, camera, tf, depmax, 2, tol):
+    for pts3, is_sil in polylines3d:
+        recheck = (lambda s: ray_visible(s, eps_sil)) if is_sil else ray_visible
+        runs = _classify_split(pts3, camera, tf, depmax, 2, tol,
+                               graze_recheck=recheck, graze_band=graze_band)
+        for is_vis, poly in runs:
             (visible if is_vis else hidden).append(poly)
     if not visible and not hidden:
         raise RuntimeError("mesh HLR produced no geometry")

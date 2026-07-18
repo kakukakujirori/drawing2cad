@@ -161,6 +161,36 @@ def make_projector(view_dir: tuple[float, float, float],
     return HLRAlgo_Projector(ax2)
 
 
+def _footprint_bound(shape, view_dir, up_dir, margin_frac: float = 0.01):
+    """Projected-AABB bound (xmin, xmax, ymin, ymax) in the view frame.
+
+    Every real edge / outline lies ON the shape, so its projection must fall
+    inside the projected model AABB; OCC's exact HLR occasionally emits
+    runaway outline curves in tangency zones (out-and-back b-splines whose
+    interior shoots thousands of units away) and those are the only curves
+    that can exit this bound.
+    """
+    from OCC.Core.Bnd import Bnd_Box
+    from OCC.Core.BRepBndLib import brepbndlib
+
+    b = Bnd_Box()
+    brepbndlib.Add(shape, b)
+    xmin, ymin, zmin, xmax, ymax, zmax = b.Get()
+    ax2 = gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(*view_dir))
+    ax2.SetYDirection(gp_Dir(*up_dir))
+    xd = ax2.XDirection()
+    yd = ax2.YDirection()
+    us, vs = [], []
+    for cx in (xmin, xmax):
+        for cy in (ymin, ymax):
+            for cz in (zmin, zmax):
+                us.append(cx * xd.X() + cy * xd.Y() + cz * xd.Z())
+                vs.append(cx * yd.X() + cy * yd.Y() + cz * yd.Z())
+    diag = math.sqrt((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2)
+    m = max(margin_frac * diag, 1e-9)
+    return min(us) - m, max(us) + m, min(vs) - m, max(vs) + m
+
+
 def run_hlr(shape, projector: HLRAlgo_Projector) -> HLRBRep_HLRToShape:
     algo = HLRBRep_Algo()
     algo.Add(shape)
@@ -184,11 +214,35 @@ def _norm_angle(a: float) -> float:
     return a
 
 
-def _classify_edge(edge, out: ProjectedEdges, deflection: float) -> None:
+def _degenerate_sliver(pts) -> bool:
+    """Closed, near-zero-area (out-and-back) curve: an OCC tangency-zone
+    outline artifact.  Real outlines traverse one way or enclose area."""
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    ext = max(max(xs) - min(xs), max(ys) - min(ys))
+    if ext <= 1e-9:
+        return True
+    endgap = math.hypot(xs[-1] - xs[0], ys[-1] - ys[0])
+    if endgap >= 1e-2 * ext:
+        return False
+    area = 0.5 * abs(sum(xs[k] * ys[k + 1] - xs[k + 1] * ys[k]
+                         for k in range(len(pts) - 1)))
+    return area < 0.01 * ext * ext
+
+
+def _classify_edge(edge, out: ProjectedEdges, deflection: float,
+                   bound=None, is_outline: bool = False) -> None:
     ad = BRepAdaptor_Curve(edge)
     t = ad.GetType()
     u0 = ad.FirstParameter()
     u1 = ad.LastParameter()
+
+    if bound is not None:
+        bx0, bx1, by0, by1 = bound
+        for i in range(25):
+            p = ad.Value(u0 + (u1 - u0) * i / 24)
+            if not (bx0 <= p.X() <= bx1 and by0 <= p.Y() <= by1):
+                return  # runaway HLR outline artifact: drop the whole edge
 
     if t == GeomAbs_Line:
         p0 = ad.Value(u0)
@@ -256,6 +310,8 @@ def _classify_edge(edge, out: ProjectedEdges, deflection: float) -> None:
         for i in range(n + 1):
             p = ad.Value(u0 + (u1 - u0) * i / n)
             pts.append((p.X(), p.Y()))
+    if is_outline and _degenerate_sliver(pts):
+        return
     _emit_curve(pts, out)
 
 
@@ -283,7 +339,15 @@ def _emit_curve(pts, out: ProjectedEdges) -> None:
     fit = _fit_circle(pts)
     if fit is not None:
         cx, cy, r, resid = fit
-        if r > 1e-9 and resid / r < 0.03:
+        # r must be commensurate with the data extent: a near-degenerate
+        # (collinear / out-and-back) curve fits a quasi-infinite circle whose
+        # RELATIVE residual resid/r vanishes as r grows, so the ratio test
+        # alone accepts garbage.  Real arcs shallow enough to reach here have
+        # r <= ~12.5x chord (_is_straight catches flatter ones).
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        extent = max(max(xs) - min(xs), max(ys) - min(ys), 1e-9)
+        if r > 1e-9 and resid / r < 0.03 and r <= 25.0 * extent:
             if closed:
                 out.circles.append(Circle((cx, cy), r))
             else:
@@ -342,12 +406,13 @@ def _fit_circle(pts):
     return cx, cy, r, resid
 
 
-def _extract_compound(comp, out: ProjectedEdges, deflection: float) -> None:
+def _extract_compound(comp, out: ProjectedEdges, deflection: float,
+                      bound=None, is_outline: bool = False) -> None:
     if comp is None or comp.IsNull():
         return
     exp = TopExp_Explorer(comp, TopAbs_EDGE)
     while exp.More():
-        _classify_edge(exp.Current(), out, deflection)
+        _classify_edge(exp.Current(), out, deflection, bound, is_outline)
         exp.Next()
 
 
@@ -472,7 +537,27 @@ def _merge_segments(edges: ProjectedEdges, tol: float) -> None:
     edges.segments = merged
 
 
+def _drop_degenerate(edges: ProjectedEdges, tol: float) -> None:
+    """Remove sub-tolerance fragments (exact HLR emits them at tangency
+    endpoints); they survive rounding as zero-length LINE / LWPOLYLINE
+    entities in the DXF output."""
+    edges.segments = [
+        s for s in edges.segments
+        if math.hypot(s.p1[0] - s.p0[0], s.p1[1] - s.p0[1]) >= tol]
+
+    def _ext(pts):
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        return max(max(xs) - min(xs), max(ys) - min(ys))
+
+    edges.polylines = [p for p in edges.polylines if _ext(p.pts) >= tol]
+    edges.arcs = [a for a in edges.arcs if a.radius >= tol]
+    edges.circles = [c for c in edges.circles if c.radius >= 0.5 * tol]
+    edges.ellipses = [e for e in edges.ellipses if e.rmaj >= 0.5 * tol]
+
+
 def _cleanup(edges: ProjectedEdges, tol: float) -> None:
+    _drop_degenerate(edges, tol)
     _recombine_circles(edges, tol)
     _merge_segments(edges, tol)
 
@@ -486,6 +571,7 @@ def project(shape,
     """Project ``shape`` and return typed visible / hidden primitives."""
     projector = make_projector(view_dir, up_dir)
     hts = run_hlr(shape, projector)
+    bound = _footprint_bound(shape, view_dir, up_dir)
 
     visible = ProjectedEdges()
     hidden = ProjectedEdges()
@@ -494,9 +580,11 @@ def project(shape,
     hid_names = list(_HIDDEN_ACCESSORS) + (list(_HIDDEN_SMOOTH) if include_smooth else [])
 
     for name in vis_names:
-        _extract_compound(_safe_compound(hts, name), visible, deflection)
+        _extract_compound(_safe_compound(hts, name), visible, deflection, bound,
+                          is_outline="OutLine" in name)
     for name in hid_names:
-        _extract_compound(_safe_compound(hts, name), hidden, deflection)
+        _extract_compound(_safe_compound(hts, name), hidden, deflection, bound,
+                          is_outline="OutLine" in name)
 
     _cleanup(visible, merge_tol)
     _cleanup(hidden, merge_tol)
