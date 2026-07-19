@@ -3,7 +3,6 @@ try:
 except ImportError:
     pass
 import logging
-import FreeCAD as App
 import Part
 from typing import Any
 
@@ -15,6 +14,7 @@ from .projector.circle import CircleProjector
 from .projector.ellipse import EllipseProjector
 
 log = logging.getLogger(__name__)
+
 
 class CADProjector:
     """
@@ -31,7 +31,9 @@ class CADProjector:
         # below ONE such edge aborted the whole part).
         self.last_skipped = {"faces": 0, "edges": 0}
 
-    def project(self, view_direction: tuple[float, float, float]) -> list[dict[str, Any]]:
+    def project(
+        self, view_direction: tuple[float, float, float]
+    ) -> list[dict[str, Any]]:
         results = []
         skipped_faces = 0
         skipped_edges = 0
@@ -60,7 +62,12 @@ class CADProjector:
                     # cylinder/cone silhouette), role = the geometric relationship.
                     for res in face_results:
                         res["topo_origins"] = [
-                            {"dim": 2, "id": f"Face_{f_idx}", "role": res.get("role", "edge-on")}]
+                            {
+                                "dim": 2,
+                                "id": f"Face_{f_idx}",
+                                "role": res.get("role", "edge-on"),
+                            }
+                        ]
                     results.extend(face_results)
             except Exception:
                 # An unreadable/unsupported face must never abort the part: the
@@ -92,7 +99,12 @@ class CADProjector:
                     # Note: The edge ID matches the index logic used in GraphBuilder.
                     for res in edge_results:
                         res["topo_origins"] = [
-                            {"dim": 1, "id": f"Edge_{e_idx}", "role": res.get("role", "edge")}]
+                            {
+                                "dim": 1,
+                                "id": f"Edge_{e_idx}",
+                                "role": res.get("role", "edge"),
+                            }
+                        ]
                     results.extend(edge_results)
             except Exception:
                 # e.g. `edge.Curve` -> TypeError: undefined curve type (OCC curve
@@ -103,10 +115,15 @@ class CADProjector:
 
         self.last_skipped = {"faces": skipped_faces, "edges": skipped_edges}
         if skipped_faces or skipped_edges:
-            log.warning("CADProjector: view %s: skipped %d unreadable face(s), "
-                        "%d unreadable edge(s) (no provenance for their primitives)",
-                        tuple(view_direction), skipped_faces, skipped_edges)
+            log.warning(
+                "CADProjector: view %s: skipped %d unreadable face(s), "
+                "%d unreadable edge(s) (no provenance for their primitives)",
+                tuple(view_direction),
+                skipped_faces,
+                skipped_edges,
+            )
         return results
+
 
 if __name__ == "__main__":
     print("=== CADProjector Unit Test ===")

@@ -82,11 +82,14 @@ class SFTLoopConfig:
         )
         if value.gradient_accumulation_steps <= 0:
             raise ValueError("gradient_accumulation_steps must be positive")
-        if min(
-            value.eval_every_steps,
-            value.save_every_steps,
-            value.log_every_steps,
-        ) <= 0:
+        if (
+            min(
+                value.eval_every_steps,
+                value.save_every_steps,
+                value.log_every_steps,
+            )
+            <= 0
+        ):
             raise ValueError("eval/save/log cadences must be positive")
         if value.max_grad_norm < 0:
             raise ValueError("max_grad_norm must be non-negative")
@@ -100,7 +103,9 @@ def build_optimizer(
 
     if str(config.get("name", "adamw")).lower() != "adamw":
         raise ValueError("only AdamW is supported by the baseline SFT loop")
-    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
     if not parameters:
         raise ValueError("model has no trainable parameters")
     fused_value = config.get("fused", "auto")

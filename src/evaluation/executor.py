@@ -207,7 +207,9 @@ def execute_cadquery(
         if output.exists():
             raise FileExistsError(f"mesh output already exists: {output}")
         if not output.parent.is_dir():
-            raise FileNotFoundError(f"mesh output parent does not exist: {output.parent}")
+            raise FileNotFoundError(
+                f"mesh output parent does not exist: {output.parent}"
+            )
 
     context = mp.get_context("spawn")
     parent, child = context.Pipe(duplex=False)

@@ -5,6 +5,7 @@ Everything here is stdlib-only so every bench script runs under any Python 3.
 The heavy work (inference, cadgenbench eval, the LLM baseline agent) is shelled
 out to the *right* interpreter, never imported into these scripts.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,8 +36,12 @@ MANIFEST = DATA_DIR / "manifest.json"
 # for the exact params used), built to track the real-CADGenBench face-count
 # distribution rather than just "hard" examples. build_fixtures.py exposes
 # --step-dir / --graph-dir to point at any source set.
-SRC_STEP_DIR = REPO / "experiments" / "stage_z2c_bench"     # {uuid}.step, {uuid}.cadquery.py
-SRC_GRAPH_DIR = REPO / "experiments" / "dataset_z2c_bench"  # {uuid}.png, {uuid}.graph.json, ...
+SRC_STEP_DIR = (
+    REPO / "experiments" / "stage_z2c_bench"
+)  # {uuid}.step, {uuid}.cadquery.py
+SRC_GRAPH_DIR = (
+    REPO / "experiments" / "dataset_z2c_bench"
+)  # {uuid}.png, {uuid}.graph.json, ...
 
 # Legacy source set (uniform-random Z2C-val sample, faces median ~29 — too easy;
 # superseded by the hard set above). Kept for reference / reproducibility.
@@ -47,9 +52,9 @@ SRC_GRAPH_DIR_LEGACY = REPO / "experiments" / "dataset_z2c_val"
 INFER_PY = REPO / "scripts" / "train3d" / "infer.py"
 
 # Fixture-contract file names (mirrors cadgenbench).
-GT_STEP_NAME = "ground_truth.step"           # data/gt/<uuid>/ground_truth.step
-DRAWING_NAME = "drawing.png"                  # data/inputs/<uuid>/drawing.png
-DESC_NAME = "description.yaml"               # data/inputs/<uuid>/description.yaml
+GT_STEP_NAME = "ground_truth.step"  # data/gt/<uuid>/ground_truth.step
+DRAWING_NAME = "drawing.png"  # data/inputs/<uuid>/drawing.png
+DESC_NAME = "description.yaml"  # data/inputs/<uuid>/description.yaml
 
 # Honest, minimal task description handed to the LLM baseline (we have no
 # authored natural-language spec; the drawing PNG carries the real signal).
@@ -69,8 +74,11 @@ def eligible_ids(step_dir: Path, graph_dir: Path) -> list[str]:
     """
     steps = {p.name[: -len(".step")] for p in step_dir.glob("*.step")}
     graphs = {p.name[: -len(".graph.json")] for p in graph_dir.glob("*.graph.json")}
-    pngs = {p.name[: -len(".png")]
-            for p in graph_dir.glob("*.png") if not p.name.endswith(".scan.png")}
+    pngs = {
+        p.name[: -len(".png")]
+        for p in graph_dir.glob("*.png")
+        if not p.name.endswith(".scan.png")
+    }
     return sorted(steps & graphs & pngs)
 
 
@@ -113,11 +121,15 @@ def count_faces(step_paths: dict[str, Path]) -> dict[str, int | None]:
     error) returns all-None so callers can degrade gracefully.
     """
     import subprocess
+
     payload = json.dumps({u: str(p) for u, p in step_paths.items()})
     try:
         proc = subprocess.run(
             [sys.executable, "-c", _FACE_COUNT_SNIPPET],
-            input=payload, capture_output=True, text=True, timeout=1800,
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=1800,
         )
         if proc.returncode != 0:
             return {u: None for u in step_paths}
@@ -150,9 +162,7 @@ def faces_distribution(face_counts: dict[str, int | None]) -> dict:
 
 def load_manifest() -> dict:
     if not MANIFEST.exists():
-        raise SystemExit(
-            f"No manifest at {MANIFEST}. Run build_fixtures.py first."
-        )
+        raise SystemExit(f"No manifest at {MANIFEST}. Run build_fixtures.py first.")
     return json.loads(MANIFEST.read_text())
 
 
@@ -170,8 +180,9 @@ def cgb_env() -> dict:
     return env
 
 
-def write_description_yaml(path: Path, description: str, input_files: list[str],
-                           task_type: str = "generation") -> None:
+def write_description_yaml(
+    path: Path, description: str, input_files: list[str], task_type: str = "generation"
+) -> None:
     """Write a cadgenbench fixture description.yaml.
 
     Uses a YAML block scalar for the description so colons / punctuation in the

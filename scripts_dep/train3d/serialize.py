@@ -44,6 +44,7 @@ Round-trip: `text_to_struct(graph_to_text(g))` re-emits byte-identically and mat
 graph's primitive/feature/annotation census (merges accounted). `--check GLOB...` also
 measures cross-view consistency (circle center vs silhouette lines) dataset-wide.
 """
+
 import glob
 import json
 import math
@@ -52,10 +53,22 @@ import sys
 
 SER_VERSION = "3d.1"  # AMVDG-graph -> 3D-leg model-input text (was "g2.1")
 
-ROLE = {"visible": "vis", "hidden": "hid", "center": "cen", "phantom": "pha",
-        "section_cut": "sec", "break": "brk"}
-TYP = {"line": "L", "polyline": "PL", "circle": "CI", "arc": "A", "point": "PT",
-       "ellipse": "EL"}
+ROLE = {
+    "visible": "vis",
+    "hidden": "hid",
+    "center": "cen",
+    "phantom": "pha",
+    "section_cut": "sec",
+    "break": "brk",
+}
+TYP = {
+    "line": "L",
+    "polyline": "PL",
+    "circle": "CI",
+    "arc": "A",
+    "point": "PT",
+    "ellipse": "EL",
+}
 TYP_INV = {v: k for k, v in TYP.items()}
 _ROLE_RANK = {"vis": 0, "vh": 0, "hid": 1, "cen": 2, "pha": 3, "sec": 4, "brk": 5}
 _TYP_RANK = {"L": 0, "PL": 1, "CI": 2, "A": 3, "PT": 4, "EL": 5}
@@ -78,16 +91,20 @@ class _ViewFrame:
         self.nx, self.ny = ax["px_x"][1], ax["px_y"][1]
 
     def pt(self, p):
-        return (self.sx * (p[0] - self.ox) / self.ppm,
-                self.sy * (p[1] - self.oy) / self.ppm)
+        return (
+            self.sx * (p[0] - self.ox) / self.ppm,
+            self.sy * (p[1] - self.oy) / self.ppm,
+        )
 
     def r(self, r_px):
         return r_px / self.ppm
 
     def ang(self, deg):
         t = math.radians(deg)
-        return math.degrees(math.atan2(self.sy * math.sin(t),
-                                       self.sx * math.cos(t))) % 360.0
+        return (
+            math.degrees(math.atan2(self.sy * math.sin(t), self.sx * math.cos(t)))
+            % 360.0
+        )
 
     @property
     def flips(self):  # orientation reversal (exactly one axis mirrored)
@@ -115,9 +132,12 @@ def _prim_geom(p, cv):
                     g["a"] = (a1, a2)
             return g
         if t == "ellipse":
-            g = {"c": cv.pt(p["center"]), "rmaj": cv.r(p.get("rmaj_px", 0)),
-                 "rmin": cv.r(p.get("rmin_px", 0)),
-                 "rot": cv.ang(p.get("rot_deg", 0.0)) % 180.0}
+            g = {
+                "c": cv.pt(p["center"]),
+                "rmaj": cv.r(p.get("rmaj_px", 0)),
+                "rmin": cv.r(p.get("rmin_px", 0)),
+                "rot": cv.ang(p.get("rot_deg", 0.0)) % 180.0,
+            }
             a1, a2 = p.get("start_angle"), p.get("end_angle")
             if a1 is not None and a2 is not None:
                 # eccentric angles are intrinsic to the ellipse axes; the px->model
@@ -158,7 +178,7 @@ def _shift_round(g, dx, dy):
     if "pts" in g:
         g["pts"] = [(round(x - dx, 2), round(y - dy, 2)) for x, y in g["pts"]]
         if len(g["pts"]) == 2 and g["pts"][1] < g["pts"][0]:
-            g["pts"] = [g["pts"][1], g["pts"][0]]          # canonical endpoint order
+            g["pts"] = [g["pts"][1], g["pts"][0]]  # canonical endpoint order
     elif "rmaj" in g:
         g["c"] = (round(g["c"][0] - dx, 2), round(g["c"][1] - dy, 2))
         g["rmaj"] = round(g["rmaj"], 2)
@@ -209,10 +229,16 @@ def struct_from_graph(graph, multi_tag=True, keep_source_ids=False):
                     if t.get("dim") == 2 and t.get("role") != "parent_face":
                         extra |= face2feat.get(t["id"], set())
                 tags_src += sorted(x for x in extra if x not in tags_src)
-            rows.append({"typ": typ,
-                         "role": ROLE.get(p.get("line_role", "visible"), "vis"),
-                         "geom": geom, "tags_src": tags_src, "olds": [p["id"]],
-                         "dias": []})
+            rows.append(
+                {
+                    "typ": typ,
+                    "role": ROLE.get(p.get("line_role", "visible"), "vis"),
+                    "geom": geom,
+                    "tags_src": tags_src,
+                    "olds": [p["id"]],
+                    "dias": [],
+                }
+            )
         # part-frame shift: content minimum (visible+hidden only) -> 0 per axis
         mins = [_geom_min(r["geom"]) for r in rows if r["role"] in ("vis", "hid")]
         dx = min((m[0] for m in mins), default=0.0)
@@ -242,31 +268,46 @@ def struct_from_graph(graph, multi_tag=True, keep_source_ids=False):
                 merged += 1
             else:
                 rows.append(r)
-        rows.sort(key=lambda r: (_ROLE_RANK.get(r["role"], 9), _TYP_RANK.get(r["typ"], 9),
-                                 tuple(r["geom"].get("c", r["geom"].get("pts", [(0, 0)])[0])),
-                                 r["geom"].get("r", 0)))
+        rows.sort(
+            key=lambda r: (
+                _ROLE_RANK.get(r["role"], 9),
+                _TYP_RANK.get(r["typ"], 9),
+                tuple(r["geom"].get("c", r["geom"].get("pts", [(0, 0)])[0])),
+                r["geom"].get("r", 0),
+            )
+        )
         for r in rows:
-            key = (vi, _TYP_RANK.get(r["typ"], 9),
-                   tuple(r["geom"].get("c", r["geom"].get("pts", [(0, 0)])[0])))
+            key = (
+                vi,
+                _TYP_RANK.get(r["typ"], 9),
+                tuple(r["geom"].get("c", r["geom"].get("pts", [(0, 0)])[0])),
+            )
             for old in r["olds"]:
                 old2row[(v["name"], old)] = r
                 anchor_key[(v["name"], old)] = key
         views.append({"name": v["name"], "axes": (cv.nx, cv.ny), "prims": rows})
-    views.sort(key=lambda v: _VIEW_ORDER.index(v["name"]) if v["name"] in _VIEW_ORDER else 9)
+    views.sort(
+        key=lambda v: _VIEW_ORDER.index(v["name"]) if v["name"] in _VIEW_ORDER else 9
+    )
 
     def _anchor(f):
-        keys = [anchor_key.get((m["view"], m["primitive_id"]))
-                for m in f.get("members", [])]
+        keys = [
+            anchor_key.get((m["view"], m["primitive_id"])) for m in f.get("members", [])
+        ]
         keys = [k for k in keys if k is not None]
         return min(keys) if keys else (99,)
-    feats_sorted = sorted(feats_src, key=lambda f: (f.get("kind") or "",
-                                                    -(f.get("r_mm") or 0.0), _anchor(f)))
+
+    feats_sorted = sorted(
+        feats_src,
+        key=lambda f: (f.get("kind") or "", -(f.get("r_mm") or 0.0), _anchor(f)),
+    )
     fmap = {f["feature_id"]: f"C{i + 1}" for i, f in enumerate(feats_sorted)}
     for v in views:
         for r in v["prims"]:
             src = r.pop("tags_src")
             r["tags"] = ([fmap[src[0]]] if src and src[0] in fmap else []) + sorted(
-                (fmap[x] for x in src[1:] if x in fmap), key=lambda s: int(s[1:]))
+                (fmap[x] for x in src[1:] if x in fmap), key=lambda s: int(s[1:])
+            )
 
     # list-valued: two coaxial cylinders with close radii can both dimension the SAME
     # circle primitive (the dimensioner's radius-fallback binding) — a dict would
@@ -280,8 +321,9 @@ def struct_from_graph(graph, multi_tag=True, keep_source_ids=False):
     for v in views:
         for r in v["prims"]:
             olds = r.pop("olds")
-            r["dias"] = [d for old in olds
-                         for d in dia_by_ref.get((v["name"], old), [])]
+            r["dias"] = [
+                d for old in olds for d in dia_by_ref.get((v["name"], old), [])
+            ]
             if keep_source_ids:
                 # Audit-only provenance. struct_to_text intentionally ignores
                 # it, so the model wire format and round-trip remain unchanged.
@@ -308,26 +350,53 @@ def struct_from_graph(graph, multi_tag=True, keep_source_ids=False):
                 rr = g.get("r", max(g.get("rmaj", 0.0), g.get("rmin", 0.0)))
                 vals += [g["c"][ax_i] - rr, g["c"][ax_i] + rr]
         return (v["axes"][ax_i], min(vals), max(vals)) if vals else None
+
     dims = []
     for i, a in enumerate(dims_src):
-        dims.append({"id": f"d{i + 1}", "kind": a.get("kind") or "-",
-                     "role": a.get("param_role") or "-", "val": a["value"],
-                     "view": a.get("view") or "-", "span": _span(a)})
+        dims.append(
+            {
+                "id": f"d{i + 1}",
+                "kind": a.get("kind") or "-",
+                "role": a.get("param_role") or "-",
+                "val": a["value"],
+                "view": a.get("view") or "-",
+                "span": _span(a),
+            }
+        )
     bbox = (graph.get("world") or {}).get("bbox_3d") or []
     # edge-blend features (fillet/chamfer): correspondence-layer records carrying
     # kind + value(mm) + a directional edge-set token (all|par:<axis>|face:<±axis>|
     # complex). Sorted for determinism; count preserved (no merge) so round-trip census
     # matches the injected `blends` list. Absent key -> [] (no BLEND lines emitted).
-    blends = sorted(({"kind": b.get("kind") or "-", "sel": b.get("sel") or "all",
-                      "val": b.get("value_mm")} for b in graph.get("blends", [])),
-                    key=lambda b: (b["kind"], b["sel"],
-                                   b["val"] if b["val"] is not None else -1.0))
-    return {"bbox": list(bbox), "feats": [
-                {"id": fmap[f["feature_id"]], "kind": f.get("kind") or "-",
-                 "axis": f.get("axis") or "-", "r": f.get("r_mm"),
-                 "dir": f.get("extrude_dir")} for f in feats_sorted],
-            "views": views, "dims": dims, "blends": blends,
-            "skipped": skipped, "merged": merged}
+    blends = sorted(
+        (
+            {
+                "kind": b.get("kind") or "-",
+                "sel": b.get("sel") or "all",
+                "val": b.get("value_mm"),
+            }
+            for b in graph.get("blends", [])
+        ),
+        key=lambda b: (b["kind"], b["sel"], b["val"] if b["val"] is not None else -1.0),
+    )
+    return {
+        "bbox": list(bbox),
+        "feats": [
+            {
+                "id": fmap[f["feature_id"]],
+                "kind": f.get("kind") or "-",
+                "axis": f.get("axis") or "-",
+                "r": f.get("r_mm"),
+                "dir": f.get("extrude_dir"),
+            }
+            for f in feats_sorted
+        ],
+        "views": views,
+        "dims": dims,
+        "blends": blends,
+        "skipped": skipped,
+        "merged": merged,
+    }
 
 
 def _covered_by_visible(hg, vis_segs, tol):
@@ -341,10 +410,12 @@ def _covered_by_visible(hg, vis_segs, tol):
         return False
     ux, uy = ux / L, uy / L
     ivs = []
-    for (vx1, vy1, vx2, vy2) in vis_segs:
+    for vx1, vy1, vx2, vy2 in vis_segs:
         # both endpoints must lie on the hidden's infinite line (=> collinear)
-        if (abs((vx1 - hx1) * (-uy) + (vy1 - hy1) * ux) > tol or
-                abs((vx2 - hx1) * (-uy) + (vy2 - hy1) * ux) > tol):
+        if (
+            abs((vx1 - hx1) * (-uy) + (vy1 - hy1) * ux) > tol
+            or abs((vx2 - hx1) * (-uy) + (vy2 - hy1) * ux) > tol
+        ):
             continue
         a = (vx1 - hx1) * ux + (vy1 - hy1) * uy
         b = (vx2 - hx1) * ux + (vy2 - hy1) * uy
@@ -354,7 +425,7 @@ def _covered_by_visible(hg, vis_segs, tol):
     ivs.sort()
     cur = 0.0
     for a, b in ivs:
-        if a > cur + tol:          # gap before we've covered up to `cur`
+        if a > cur + tol:  # gap before we've covered up to `cur`
             break
         cur = max(cur, b)
     return cur >= L - tol
@@ -367,16 +438,27 @@ def _suppress_covered_hidden(st, tol=0.02):
     round-trip census still balances."""
     n = 0
     for v in st["views"]:
-        vis_segs = [(r["geom"]["pts"][0][0], r["geom"]["pts"][0][1],
-                     r["geom"]["pts"][1][0], r["geom"]["pts"][1][1])
-                    for r in v["prims"]
-                    if r["role"] in ("vis", "vh") and r["typ"] == "L"
-                    and len(r["geom"].get("pts", [])) == 2]
+        vis_segs = [
+            (
+                r["geom"]["pts"][0][0],
+                r["geom"]["pts"][0][1],
+                r["geom"]["pts"][1][0],
+                r["geom"]["pts"][1][1],
+            )
+            for r in v["prims"]
+            if r["role"] in ("vis", "vh")
+            and r["typ"] == "L"
+            and len(r["geom"].get("pts", [])) == 2
+        ]
         keep = []
         for r in v["prims"]:
-            if (r["role"] == "hid" and r["typ"] == "L" and not r.get("dias")
-                    and len(r["geom"].get("pts", [])) == 2
-                    and _covered_by_visible(r["geom"], vis_segs, tol)):
+            if (
+                r["role"] == "hid"
+                and r["typ"] == "L"
+                and not r.get("dias")
+                and len(r["geom"].get("pts", [])) == 2
+                and _covered_by_visible(r["geom"], vis_segs, tol)
+            ):
                 n += 1
                 continue
             keep.append(r)
@@ -397,6 +479,7 @@ def _dropout_feature_hidden(st, prob, rng=None):
     reality of authored drawings. Untagged (structural) hidden lines and features
     with no visible view anywhere (load-bearing internal detail) are never dropped."""
     import random as _random
+
     rng = rng or _random
     vis_views = {}
     for v in st["views"]:
@@ -408,10 +491,15 @@ def _dropout_feature_hidden(st, prob, rng=None):
     for v in st["views"]:
         keep = []
         for r in v["prims"]:
-            drop = (r["role"] == "hid" and r["tags"]
-                    and all(tg in vis_views and v["name"] not in vis_views[tg]
-                            for tg in r["tags"])
-                    and rng.random() < prob)
+            drop = (
+                r["role"] == "hid"
+                and r["tags"]
+                and all(
+                    tg in vis_views and v["name"] not in vis_views[tg]
+                    for tg in r["tags"]
+                )
+                and rng.random() < prob
+            )
             if drop:
                 dropped += 1
             else:
@@ -477,7 +565,10 @@ def _quantize_struct(st, n):
         raise ValueError(f"quant must be 0 (disabled) or an integer >= 2, got {n!r}")
     ext = quantization_extent(st)
     step = ext / (n - 1)
-    q = lambda x: int(round(x / step))
+
+    def q(x):
+        return int(round(x / step))
+
     for v in st["views"]:
         for r in v["prims"]:
             g = r["geom"]
@@ -490,7 +581,8 @@ def _quantize_struct(st, n):
                 if "r" in g:
                     g["r"] = q(g["r"])
                 if "rmaj" in g:
-                    g["rmaj"] = q(g["rmaj"]); g["rmin"] = q(g["rmin"])
+                    g["rmaj"] = q(g["rmaj"])
+                    g["rmin"] = q(g["rmin"])
     for d in st["dims"]:
         sp = d.get("span")
         if sp:
@@ -508,7 +600,8 @@ _COORD_TOKEN_RE = re.compile(r"<\|coord_(\d+)\|>")
 _PART_GRID_RE = re.compile(r"^PART\b[^\n]*\bgrid=(\d+)(?:\s|$)")
 _PART_SCALE_RE = re.compile(
     r"^PART\b[^\n]*\bbbox=([^\s]+)[^\n]*\bext=(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
-    r"(?:\s|$)")
+    r"(?:\s|$)"
+)
 
 
 def coordinate_tokens(n):
@@ -545,8 +638,9 @@ def serialized_scale(text):
 
 def coordinate_quant_from_vocab(vocab):
     """Infer N from a saved tokenizer vocab; reject partial/non-contiguous coordinate vocabularies."""
-    values = sorted(int(m.group(1)) for token in vocab
-                    if (m := _COORD_TOKEN_RE.fullmatch(token)))
+    values = sorted(
+        int(m.group(1)) for token in vocab if (m := _COORD_TOKEN_RE.fullmatch(token))
+    )
     if not values:
         return None
     if values != list(range(values[-1] + 1)):
@@ -560,7 +654,8 @@ def _coord_fmt(x, tokens):
     v = int(x)
     if float(x) != v or abs(v) >= n:
         raise ValueError(
-            f"coordinate token requires an integer in [-{n - 1}, {n - 1}], got {x}")
+            f"coordinate token requires an integer in [-{n - 1}, {n - 1}], got {x}"
+        )
     return ("-" if v < 0 else "") + tokens[abs(v)]
 
 
@@ -570,8 +665,10 @@ def _geom_str(row, coord_vocab=None):
     if "pts" in g:
         return " ".join(f"{cf(x)},{cf(y)}" for x, y in g["pts"])
     if "rmaj" in g:
-        s = (f"c{cf(g['c'][0])},{cf(g['c'][1])} rj{cf(g['rmaj'])} "
-             f"rn{cf(g['rmin'])} rot{_fmt(g['rot'])}")
+        s = (
+            f"c{cf(g['c'][0])},{cf(g['c'][1])} rj{cf(g['rmaj'])} "
+            f"rn{cf(g['rmin'])} rot{_fmt(g['rot'])}"
+        )
         if "ea" in g:
             s += f" e{_fmt(g['ea'][0])}..{_fmt(g['ea'][1])}"
         return s
@@ -601,8 +698,10 @@ def struct_to_text(st, coord_tokens=False):
             row += f" dir={f['dir']}"
         L.append(row)
     for b in st.get("blends", []):
-        L.append(f"BLEND {b['kind']} {b['sel']} v"
-                 + (_fmt(b["val"]) if b["val"] is not None else "-"))
+        L.append(
+            f"BLEND {b['kind']} {b['sel']} v"
+            + (_fmt(b["val"]) if b["val"] is not None else "-")
+        )
     for v in st["views"]:
         L.append(f"VIEW {v['name']} axes={v['axes'][0]},{v['axes'][1]}")
         for r in v["prims"]:
@@ -614,15 +713,21 @@ def struct_to_text(st, coord_tokens=False):
             L.append(row)
     for d in st["dims"]:
         sp = d.get("span")
-        L.append(f"DIM {d['id']} {d['kind']} {d['role']} {_fmt(d['val'])} {d['view']} "
-                 + (f"{sp[0]}{(_coord_fmt(sp[1], coord_vocab) if coord_vocab else _fmt(sp[1]))}.."
-                    f"{(_coord_fmt(sp[2], coord_vocab) if coord_vocab else _fmt(sp[2]))}"
-                    if sp else "-"))
+        L.append(
+            f"DIM {d['id']} {d['kind']} {d['role']} {_fmt(d['val'])} {d['view']} "
+            + (
+                f"{sp[0]}{(_coord_fmt(sp[1], coord_vocab) if coord_vocab else _fmt(sp[1]))}.."
+                f"{(_coord_fmt(sp[2], coord_vocab) if coord_vocab else _fmt(sp[2]))}"
+                if sp
+                else "-"
+            )
+        )
     return "\n".join(L)
 
 
-def graph_to_text(graph, multi_tag=True, quant=None, drop_covered=False,
-                  hid_dropout=0.0, rng=None):
+def graph_to_text(
+    graph, multi_tag=True, quant=None, drop_covered=False, hid_dropout=0.0, rng=None
+):
     st = struct_from_graph(graph, multi_tag=multi_tag)
     if drop_covered:
         _suppress_covered_hidden(st)
@@ -642,8 +747,14 @@ def graph_to_text(graph, multi_tag=True, quant=None, drop_covered=False,
 # `hid_dropout` (train-only sim-to-real augmentation) is passed through. The 2D
 # leg keeps calling `graph_to_text` with neutral defaults, unaffected.
 def serialize_3d(graph, quant=CANON_QUANT, hid_dropout=0.0, rng=None, multi_tag=True):
-    return graph_to_text(graph, multi_tag=multi_tag, quant=(quant or None),
-                         drop_covered=True, hid_dropout=hid_dropout, rng=rng)
+    return graph_to_text(
+        graph,
+        multi_tag=multi_tag,
+        quant=(quant or None),
+        drop_covered=True,
+        hid_dropout=hid_dropout,
+        rng=rng,
+    )
 
 
 def coordinate_tokenize_text(text):
@@ -660,8 +771,15 @@ def text_to_struct(text):
     # Decode before the numeric parser. A negative coordinate is emitted as a literal '-' plus
     # the magnitude token, so the same replacement also reconstructs signed decimal text.
     text = _COORD_TOKEN_RE.sub(lambda m: str(int(m.group(1))), text)
-    st = {"bbox": [], "feats": [], "views": [], "dims": [], "blends": [],
-          "skipped": 0, "merged": 0}
+    st = {
+        "bbox": [],
+        "feats": [],
+        "views": [],
+        "dims": [],
+        "blends": [],
+        "skipped": 0,
+        "merged": 0,
+    }
     view = None
     for line in text.splitlines():
         tok = line.split()
@@ -674,24 +792,42 @@ def text_to_struct(text):
                 st["quant"] = {"n": int(kv["grid"]), "ext": float(kv.get("ext", 0))}
         elif tok[0] == "FEAT":
             kv = dict(t.split("=", 1) for t in tok[3:] if "=" in t)
-            st["feats"].append({"id": tok[1], "kind": tok[2], "axis": kv.get("axis", "-"),
-                                "r": None if kv.get("r", "-") == "-" else float(kv["r"]),
-                                "dir": kv.get("dir")})
+            st["feats"].append(
+                {
+                    "id": tok[1],
+                    "kind": tok[2],
+                    "axis": kv.get("axis", "-"),
+                    "r": None if kv.get("r", "-") == "-" else float(kv["r"]),
+                    "dir": kv.get("dir"),
+                }
+            )
         elif tok[0] == "BLEND":
             v = tok[3][1:] if len(tok) > 3 and tok[3].startswith("v") else "-"
-            st["blends"].append({"kind": tok[1], "sel": tok[2],
-                                 "val": None if v == "-" else float(v)})
+            st["blends"].append(
+                {"kind": tok[1], "sel": tok[2], "val": None if v == "-" else float(v)}
+            )
         elif tok[0] == "VIEW":
             kv = dict(t.split("=", 1) for t in tok[2:] if "=" in t)
-            view = {"name": tok[1], "axes": tuple(kv.get("axes", ",").split(",")),
-                    "prims": []}
+            view = {
+                "name": tok[1],
+                "axes": tuple(kv.get("axes", ",").split(",")),
+                "prims": [],
+            }
             st["views"].append(view)
         elif tok[0] == "DIM":
             m = _SPAN.match(tok[6]) if len(tok) > 6 else None
-            st["dims"].append({"id": tok[1], "kind": tok[2], "role": tok[3],
-                               "val": float(tok[4]), "view": tok[5],
-                               "span": (m.group(1), float(m.group(2)),
-                                        float(m.group(3))) if m else None})
+            st["dims"].append(
+                {
+                    "id": tok[1],
+                    "kind": tok[2],
+                    "role": tok[3],
+                    "val": float(tok[4]),
+                    "view": tok[5],
+                    "span": (m.group(1), float(m.group(2)), float(m.group(3)))
+                    if m
+                    else None,
+                }
+            )
         elif view is not None and tok[0] in TYP_INV and len(tok) >= 3:
             row = {"typ": tok[0], "role": tok[1], "geom": {}, "tags": [], "dias": []}
             pts = []
@@ -739,13 +875,24 @@ def crossview_dev(st, tol=0.1):
             continue
         circles, sils = [], []
         for vn, v in views.items():
-            rows = [r for r in v["prims"] if f["id"] in r["tags"]
-                    and r["role"] in ("vis", "hid", "vh")]
+            rows = [
+                r
+                for r in v["prims"]
+                if f["id"] in r["tags"] and r["role"] in ("vis", "hid", "vh")
+            ]
             for r in rows:
-                if "c" in r["geom"] and "a" not in r["geom"] and "rmaj" not in r["geom"]:
+                if (
+                    "c" in r["geom"]
+                    and "a" not in r["geom"]
+                    and "rmaj" not in r["geom"]
+                ):
                     circles.append((v["axes"], r["geom"]["c"]))
-            vert = {r["geom"]["pts"][0][0] for r in rows if r["typ"] == "L"
-                    and abs(r["geom"]["pts"][0][0] - r["geom"]["pts"][1][0]) < 1e-9}
+            vert = {
+                r["geom"]["pts"][0][0]
+                for r in rows
+                if r["typ"] == "L"
+                and abs(r["geom"]["pts"][0][0] - r["geom"]["pts"][1][0]) < 1e-9
+            }
             if vert:
                 sils.append((v["axes"][0], sorted(vert)))
         for caxes, c in circles:
@@ -788,8 +935,10 @@ def roundtrip_check(graph, multi_tag=True, quant=None, drop_covered=False):
     n_dia = sum(len(r["dias"]) for v in st["views"] for r in v["prims"])
     if len(st["dims"]) + n_dia != n_ann:
         return False, f"annotation count {len(st['dims'])}+{n_dia} != {n_ann}"
-    return True, (f"prims={n_out}(+{st['merged']} merged) feats={len(st['feats'])} "
-                  f"dims={len(st['dims'])}+{n_dia}dia")
+    return True, (
+        f"prims={n_out}(+{st['merged']} merged) feats={len(st['feats'])} "
+        f"dims={len(st['dims'])}+{n_dia}dia"
+    )
 
 
 if __name__ == "__main__":
@@ -799,7 +948,7 @@ if __name__ == "__main__":
     if "--quant" in argv:
         i = argv.index("--quant")
         quant = int(argv[i + 1])
-        del argv[i:i + 2]
+        del argv[i : i + 2]
     drop_covered = False
     if "--drop-covered" in argv:
         argv.remove("--drop-covered")
@@ -826,13 +975,17 @@ if __name__ == "__main__":
             n_miss += u
         sizes.sort()
         devs.sort(reverse=True)
-        print(f"round-trip OK {len(paths) - len(bad)}/{len(paths)}; text chars "
-              f"median={sizes[len(sizes)//2]} p90={sizes[int(.9*len(sizes))]} "
-              f"max={sizes[-1]}"
-              + (f"; suppressed_hidden={n_suppressed}" if drop_covered else ""))
-        print(f"cross-view silhouette@(c±r): matched {n_match} "
-              f"(worst dev {devs[0][0]:.3f}mm at {devs[0][1].split('/')[-1][:8]}), "
-              f"unmatched(tag-coverage) {n_miss}")
+        print(
+            f"round-trip OK {len(paths) - len(bad)}/{len(paths)}; text chars "
+            f"median={sizes[len(sizes) // 2]} p90={sizes[int(0.9 * len(sizes))]} "
+            f"max={sizes[-1]}"
+            + (f"; suppressed_hidden={n_suppressed}" if drop_covered else "")
+        )
+        print(
+            f"cross-view silhouette@(c±r): matched {n_match} "
+            f"(worst dev {devs[0][0]:.3f}mm at {devs[0][1].split('/')[-1][:8]}), "
+            f"unmatched(tag-coverage) {n_miss}"
+        )
         for p, msg in bad[:10]:
             print("  FAIL", p, "--", msg)
         sys.exit(1 if bad else 0)
@@ -840,5 +993,7 @@ if __name__ == "__main__":
     text = graph_to_text(g, quant=quant, drop_covered=drop_covered)
     print(text)
     ok, msg = roundtrip_check(g, quant=quant, drop_covered=drop_covered)
-    print(f"\n[roundtrip] {'OK' if ok else 'FAIL'} {msg} chars={len(text)}",
-          file=sys.stderr)
+    print(
+        f"\n[roundtrip] {'OK' if ok else 'FAIL'} {msg} chars={len(text)}",
+        file=sys.stderr,
+    )

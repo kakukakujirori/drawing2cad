@@ -11,14 +11,17 @@ Metrics (honest, fragmentation-robust):
     precision = fraction of detected length (inside the GT bbox) lying on some GT line.
   Lines are split visible / hidden / all — visible is the headline a real drawing shows.
 """
-import json, math
+
+import json
+import math
 import numpy as np
 
-C_TOL = 22.0     # circle center match (px)
-R_TOL = 12.0     # circle radius match (px) or 25% of r
-PERP_TOL = 7.0   # line proximity (px)
-SAMPLE = 6.0     # sample step along a segment (px)
+C_TOL = 22.0  # circle center match (px)
+R_TOL = 12.0  # circle radius match (px) or 25% of r
+PERP_TOL = 7.0  # line proximity (px)
+SAMPLE = 6.0  # sample step along a segment (px)
 BBOX_MARGIN = 30.0
+
 
 def load_gt(graph_path):
     g = json.load(open(graph_path))
@@ -32,26 +35,35 @@ def load_gt(graph_path):
                 circles.append((p["center"], p.get("r_px", 0), vis))
     return lines, circles
 
+
 def _seg_pts(a, b, step=SAMPLE):
-    a = np.asarray(a, float); b = np.asarray(b, float)
+    a = np.asarray(a, float)
+    b = np.asarray(b, float)
     L = np.hypot(*(b - a))
     n = max(2, int(L / step) + 1)
     return a + (b - a) * np.linspace(0, 1, n)[:, None], L
 
+
 def _pt_seg_dist(p, a, b):
-    a = np.asarray(a, float); b = np.asarray(b, float); p = np.asarray(p, float)
-    ab = b - a; t = np.clip(np.dot(p - a, ab) / (np.dot(ab, ab) + 1e-9), 0, 1)
+    a = np.asarray(a, float)
+    b = np.asarray(b, float)
+    p = np.asarray(p, float)
+    ab = b - a
+    t = np.clip(np.dot(p - a, ab) / (np.dot(ab, ab) + 1e-9), 0, 1)
     return np.hypot(*(p - (a + t * ab)))
+
 
 def _covered(pts, segs, tol=PERP_TOL):
     if not segs:
         return np.zeros(len(pts), bool)
     out = np.zeros(len(pts), bool)
     for i, p in enumerate(pts):
-        for (a, b) in segs:
+        for a, b in segs:
             if _pt_seg_dist(p, a, b) < tol:
-                out[i] = True; break
+                out[i] = True
+                break
     return out
+
 
 def score_lines(gt_lines, det_lines, bbox):
     det = [((l[0], l[1]), (l[2], l[3])) for l in det_lines]
@@ -62,8 +74,9 @@ def score_lines(gt_lines, det_lines, bbox):
         for a, b in G:
             pts, L = _seg_pts(a, b)
             c = _covered(pts, det)
-            cov += c.mean() * L; tot += L
-        res[tag] = round(cov / tot, 3) if tot else None       # length-weighted recall
+            cov += c.mean() * L
+            tot += L
+        res[tag] = round(cov / tot, 3) if tot else None  # length-weighted recall
     # precision: detected segments whose midpoint is in the GT bbox
     (x0, y0, x1, y1) = bbox
     Gall = [(a, b) for (a, b, v) in gt_lines]
@@ -74,44 +87,63 @@ def score_lines(gt_lines, det_lines, bbox):
             continue
         pts, L = _seg_pts(a, b)
         c = _covered(pts, Gall)
-        pin += c.mean() * L; ptot += L
+        pin += c.mean() * L
+        ptot += L
     res["precision"] = round(pin / ptot, 3) if ptot else None
     return res
+
 
 def score_circles(gt_circles, det_circles, bbox):
     (x0, y0, x1, y1) = bbox
     det = [c for c in det_circles if x0 <= c[0] <= x1 and y0 <= c[1] <= y1]
-    used = set(); tp = 0
-    for (cen, r, vis) in gt_circles:
-        best = None; bd = 1e9
+    used = set()
+    tp = 0
+    for cen, r, vis in gt_circles:
+        best = None
+        bd = 1e9
         for i, (dx, dy, dr) in enumerate(det):
             if i in used:
                 continue
             dc = math.hypot(cen[0] - dx, cen[1] - dy)
             if dc < C_TOL and abs(r - dr) < max(R_TOL, 0.25 * r) and dc < bd:
-                bd = dc; best = i
+                bd = dc
+                best = i
         if best is not None:
-            used.add(best); tp += 1
-    ng = len(gt_circles); nd = len(det)
-    return {"recall": round(tp / ng, 3) if ng else None,
-            "precision": round(tp / nd, 3) if nd else None,
-            "tp": tp, "gt": ng, "det": nd}
+            used.add(best)
+            tp += 1
+    ng = len(gt_circles)
+    nd = len(det)
+    return {
+        "recall": round(tp / ng, 3) if ng else None,
+        "precision": round(tp / nd, 3) if nd else None,
+        "tp": tp,
+        "gt": ng,
+        "det": nd,
+    }
+
 
 def gt_bbox(gt_lines, gt_circles, m=BBOX_MARGIN):
     xs, ys = [], []
     for a, b, _ in gt_lines:
-        xs += [a[0], b[0]]; ys += [a[1], b[1]]
+        xs += [a[0], b[0]]
+        ys += [a[1], b[1]]
     for cen, r, _ in gt_circles:
-        xs += [cen[0] - r, cen[0] + r]; ys += [cen[1] - r, cen[1] + r]
+        xs += [cen[0] - r, cen[0] + r]
+        ys += [cen[1] - r, cen[1] + r]
     return (min(xs) - m, min(ys) - m, max(xs) + m, max(ys) + m)
+
 
 def score(graph_path, det):
     gl, gc = load_gt(graph_path)
     bb = gt_bbox(gl, gc)
-    return {"lines": score_lines(gl, det.get("lines", []), bb),
-            "circles": score_circles(gc, det.get("circles", []), bb)}
+    return {
+        "lines": score_lines(gl, det.get("lines", []), bb),
+        "circles": score_circles(gc, det.get("circles", []), bb),
+    }
+
 
 if __name__ == "__main__":
     import sys
+
     graph, detj = sys.argv[1], sys.argv[2]
     print(json.dumps(score(graph, json.load(open(detj))), indent=2))

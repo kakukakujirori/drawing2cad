@@ -22,12 +22,10 @@ import logging
 import math
 import multiprocessing as mp
 import os
-import sys
 import time
 from collections import Counter
 from tqdm import tqdm
 
-import freecad          # conda-forge shim: puts FreeCAD's libs on sys.path
 import FreeCAD as App
 import Part
 import TechDraw
@@ -46,9 +44,10 @@ _PROJ_DIR = {"front": [0, -1, 0], "top": [0, 0, 1], "right": [1, 0, 0]}
 # matrix maps canonical (u,v) -> pixel-axis signs (px y grows downward).
 _AXIS_REMAP = {
     "front": {"matrix": [[1, 0], [0, -1]], "px_x": "+X", "px_y": "-Z"},
-    "top":   {"matrix": [[1, 0], [0, -1]], "px_x": "+X", "px_y": "-Y"},
+    "top": {"matrix": [[1, 0], [0, -1]], "px_x": "+X", "px_y": "-Y"},
     "right": {"matrix": [[1, 0], [0, -1]], "px_x": "+Y", "px_y": "-Z"},
 }
+
 
 def _atomic_write(path, write_fn):
     """Write via a temp file + fsync + os.replace so a kill/crash/timeout mid-write
@@ -106,11 +105,11 @@ def _projected_shape_envelope(shape, direction):
     curve of a short, ill-conditioned HLR arc/ellipse.
     """
     b = shape.BoundBox
-    if tuple(direction) == (0, -1, 0):       # local = (-Z, X)
+    if tuple(direction) == (0, -1, 0):  # local = (-Z, X)
         return (-b.ZMax, b.XMin, -b.ZMin, b.XMax)
-    if tuple(direction) == (0, 0, 1):        # local = (X, Y)
+    if tuple(direction) == (0, 0, 1):  # local = (X, Y)
         return (b.XMin, b.YMin, b.XMax, b.YMax)
-    if tuple(direction) == (1, 0, 0):        # local = (Z, -Y)
+    if tuple(direction) == (1, 0, 0):  # local = (Z, -Y)
         return (b.ZMin, -b.YMax, b.ZMax, -b.YMin)
     return None
 
@@ -133,28 +132,33 @@ def _points_valid(points, envelope=None):
     xmin, ymin, xmax, ymax = envelope
     diag = _envelope_diag(envelope)
     margin = max(1.0, 0.1 * diag)
-    if any(x < xmin - margin or x > xmax + margin or
-           y < ymin - margin or y > ymax + margin for x, y in xy):
+    if any(
+        x < xmin - margin or x > xmax + margin or y < ymin - margin or y > ymax + margin
+        for x, y in xy
+    ):
         return False
     # A jump larger than the projected part itself is numerical corruption, not
     # a meaningful adjacent segment of a bounded edge.
-    return all(math.hypot(b[0] - a[0], b[1] - a[1]) <= 1.5 * diag + margin
-               for a, b in zip(xy, xy[1:]))
+    return all(
+        math.hypot(b[0] - a[0], b[1] - a[1]) <= 1.5 * diag + margin
+        for a, b in zip(xy, xy[1:])
+    )
 
 
 def _edge_endpoints(e):
     vs = e.Vertexes
     if len(vs) < 2:
         return []
-    return [(vs[0].Point.x, vs[0].Point.y),
-            (vs[-1].Point.x, vs[-1].Point.y)]
+    return [(vs[0].Point.x, vs[0].Point.y), (vs[-1].Point.x, vs[-1].Point.y)]
 
 
 def _valid_discretize(e, envelope=None, *, conic=False, allow_endpoints=True):
     """Discretize with validation and stable retries; never delete points in-place."""
-    attempts = ([{"Number": 17}, {"Number": 9}, {"Number": 3}]
-                if conic else
-                [{"Deflection": 0.2}, {"Number": 17}, {"Number": 9}, {"Number": 3}])
+    attempts = (
+        [{"Number": 17}, {"Number": 9}, {"Number": 3}]
+        if conic
+        else [{"Deflection": 0.2}, {"Number": 17}, {"Number": 9}, {"Number": 3}]
+    )
     for kw in attempts:
         try:
             pts = [(p.x, p.y) for p in e.discretize(**kw)]
@@ -178,8 +182,15 @@ def _partial_conic_is_ill_conditioned(g, envelope):
     if not all(math.isfinite(float(x)) for x in vals) or radius <= 0:
         return True
     diag = _envelope_diag(envelope)
-    ex = max(abs(cx - envelope[0]), abs(cx - envelope[2]),
-             abs(cy - envelope[1]), abs(cy - envelope[3])) + radius
+    ex = (
+        max(
+            abs(cx - envelope[0]),
+            abs(cx - envelope[2]),
+            abs(cy - envelope[1]),
+            abs(cy - envelope[3]),
+        )
+        + radius
+    )
     p1, p2 = g.get("p1"), g.get("p2")
     chord = math.hypot(p2[0] - p1[0], p2[1] - p1[1]) if p1 and p2 else diag
     condition = radius / max(chord, 1e-9)
@@ -197,9 +208,14 @@ def _full_conic_in_envelope(g, envelope):
     diag = _envelope_diag(envelope)
     margin = max(1.0, 0.1 * diag)
     xmin, ymin, xmax, ymax = envelope
-    return (all(math.isfinite(float(x)) for x in (cx, cy, radius)) and radius >= 0
-            and cx - radius >= xmin - margin and cx + radius <= xmax + margin
-            and cy - radius >= ymin - margin and cy + radius <= ymax + margin)
+    return (
+        all(math.isfinite(float(x)) for x in (cx, cy, radius))
+        and radius >= 0
+        and cx - radius >= xmin - margin
+        and cx + radius <= xmax + margin
+        and cy - radius >= ymin - margin
+        and cy + radius <= ymax + margin
+    )
 
 
 def edge_to_path(e, tol=0.05, envelope=None):
@@ -212,8 +228,10 @@ def edge_to_path(e, tol=0.05, envelope=None):
         r = c.Radius
         cx, cy = c.Center.x, c.Center.y
         if e.Closed or len(vs) < 2:
-            return ("M %.4f %.4f A %.4f %.4f 0 1 0 %.4f %.4f A %.4f %.4f 0 1 0 %.4f %.4f Z"
-                    % (cx - r, cy, r, r, cx + r, cy, r, r, cx - r, cy))
+            return (
+                "M %.4f %.4f A %.4f %.4f 0 1 0 %.4f %.4f A %.4f %.4f 0 1 0 %.4f %.4f Z"
+                % (cx - r, cy, r, r, cx + r, cy, r, r, cx - r, cy)
+            )
         p0, p1 = vs[0].Point, vs[-1].Point
         # decide large/sweep from an actual point on the arc: circle params
         # from HLR can wrap around 2*pi, which made the old a1-a0 heuristic
@@ -223,16 +241,24 @@ def edge_to_path(e, tol=0.05, envelope=None):
             t0 = math.atan2(p0.y - cy, p0.x - cx)
             tm = math.atan2(mid.y - cy, mid.x - cx)
             t1 = math.atan2(p1.y - cy, p1.x - cx)
-            ccw_full = (t1 - t0) % (2 * math.pi)      # CCW span p0 -> p1
-            ccw_mid = (tm - t0) % (2 * math.pi)       # CCW position of mid
-            is_ccw = ccw_mid <= ccw_full + 1e-9       # mid reached going CCW?
+            ccw_full = (t1 - t0) % (2 * math.pi)  # CCW span p0 -> p1
+            ccw_mid = (tm - t0) % (2 * math.pi)  # CCW position of mid
+            is_ccw = ccw_mid <= ccw_full + 1e-9  # mid reached going CCW?
             span = ccw_full if is_ccw else (2 * math.pi - ccw_full)
             large = 1 if span > math.pi else 0
-            sweep = 1 if is_ccw else 0                # SVG sweep=1: +x toward +y
+            sweep = 1 if is_ccw else 0  # SVG sweep=1: +x toward +y
         except Exception:
             large, sweep = 0, 1
         return "M %.4f %.4f A %.4f %.4f 0 %d %d %.4f %.4f" % (
-            p0.x, p0.y, r, r, large, sweep, p1.x, p1.y)
+            p0.x,
+            p0.y,
+            r,
+            r,
+            large,
+            sweep,
+            p1.x,
+            p1.y,
+        )
     try:
         raw = e.discretize(Deflection=tol)
         pts = raw if _points_valid([(p.x, p.y) for p in raw], envelope) else []
@@ -248,11 +274,13 @@ def edge_to_path(e, tol=0.05, envelope=None):
         d += " L %.4f %.4f" % (p.x, p.y)
     return d
 
+
 def compound_edges(grp):
     try:
         return list(grp.Edges)
     except Exception:
         return []
+
 
 def classify_edge(e, envelope=None):
     """Coarse primitive type + geometry in the edge's own 2D coords."""
@@ -283,8 +311,15 @@ def classify_edge(e, envelope=None):
         g["mid"] = samples[len(samples) // 2]
         if _partial_conic_is_ill_conditioned(g, envelope):
             _FALLBACK["partial_conic_polylines"] += 1
-            return ("polyline", {"pts": samples, "p1": samples[0], "p2": samples[-1],
-                                 "fallback_reason": "ill_conditioned_partial_circle"})
+            return (
+                "polyline",
+                {
+                    "pts": samples,
+                    "p1": samples[0],
+                    "p2": samples[-1],
+                    "fallback_reason": "ill_conditioned_partial_circle",
+                },
+            )
         return ("arc", g)
     if c is not None and c.TypeId == "Part::GeomEllipse":
         # HLR emits an exact GeomEllipse for an obliquely-projected circle/ellipse.
@@ -296,12 +331,17 @@ def classify_edge(e, envelope=None):
         ya = getattr(c, "YAxis", None)
         maj = (xa.x, xa.y)
         mino = (ya.x, ya.y) if ya is not None else (-xa.y, xa.x)
-        g = {"center": cen, "rmaj": c.MajorRadius, "rmin": c.MinorRadius,
-             "maj": maj, "min": mino}
+        g = {
+            "center": cen,
+            "rmaj": c.MajorRadius,
+            "rmin": c.MinorRadius,
+            "maj": maj,
+            "min": mino,
+        }
         if e.Closed or len(vs) < 2:
             if not _full_conic_in_envelope(
-                    {"center": cen, "rmaj": c.MajorRadius,
-                     "rmin": c.MinorRadius}, envelope):
+                {"center": cen, "rmaj": c.MajorRadius, "rmin": c.MinorRadius}, envelope
+            ):
                 return None
         else:
             p0, p1 = vs[0].Point, vs[-1].Point
@@ -313,9 +353,15 @@ def classify_edge(e, envelope=None):
             g["mid"] = samples[len(samples) // 2]
             if _partial_conic_is_ill_conditioned(g, envelope):
                 _FALLBACK["partial_conic_polylines"] += 1
-                return ("polyline", {"pts": samples, "p1": samples[0],
-                                     "p2": samples[-1],
-                                     "fallback_reason": "ill_conditioned_partial_ellipse"})
+                return (
+                    "polyline",
+                    {
+                        "pts": samples,
+                        "p1": samples[0],
+                        "p2": samples[-1],
+                        "fallback_reason": "ill_conditioned_partial_ellipse",
+                    },
+                )
         return ("ellipse", g)
     # treat as line if 2 endpoints and (near-)straight, else polyline -> store endpoints + samples
     if len(vs) >= 2:
@@ -326,8 +372,11 @@ def classify_edge(e, envelope=None):
         # check straightness via discretized midpoint deviation
         pts = _valid_discretize(e, envelope, allow_endpoints=False)
         if not pts:
-            return (("line", {"p1": endpoints[0], "p2": endpoints[1]})
-                    if c is not None and c.TypeId == "Part::GeomLine" else None)
+            return (
+                ("line", {"p1": endpoints[0], "p2": endpoints[1]})
+                if c is not None and c.TypeId == "Part::GeomLine"
+                else None
+            )
         straight = True
         ax, ay = p1.x - p0.x, p1.y - p0.y
         L = math.hypot(ax, ay) or 1.0
@@ -335,37 +384,41 @@ def classify_edge(e, envelope=None):
             # distance from line p0->p1
             dist = abs(ax * (p0.y - q[1]) - (p0.x - q[0]) * ay) / L
             if dist > 0.05 * L + 0.05:
-                straight = False; break
+                straight = False
+                break
         if straight:
             return ("line", {"p1": (p0.x, p0.y), "p2": (p1.x, p1.y)})
         else:
             return ("polyline", {"pts": pts, "p1": (p0.x, p0.y), "p2": (p1.x, p1.y)})
     return None
 
+
 def point_on_segment(px, py, q1x, q1y, q2x, q2y, tol=1e-3):
     dx, dy = q2x - q1x, q2y - q1y
-    L2 = dx*dx + dy*dy
+    L2 = dx * dx + dy * dy
     if L2 < 1e-6:
-        return math.hypot(px-q1x, py-q1y) < tol
-    t = ((px - q1x)*dx + (py - q1y)*dy) / L2
+        return math.hypot(px - q1x, py - q1y) < tol
+    t = ((px - q1x) * dx + (py - q1y) * dy) / L2
     if t < -tol or t > 1 + tol:
         return False
-    projx = q1x + t*dx
-    projy = q1y + t*dy
-    return math.hypot(px-projx, py-projy) < tol
+    projx = q1x + t * dx
+    projy = q1y + t * dy
+    return math.hypot(px - projx, py - projy) < tol
+
 
 def points_same(p1, p2, tol=1e-3):
-    return math.hypot(p1[0]-p2[0], p1[1]-p2[1]) < tol
+    return math.hypot(p1[0] - p2[0], p1[1] - p2[1]) < tol
 
 
 # ============================================================================
 #  View
 # ============================================================================
 
+
 class View:
     REMAP = {
         "front": (0, 1, -1, 0),
-        "top":   (1, 0, 0, 1),
+        "top": (1, 0, 0, 1),
         "right": (0, -1, 1, 0),
     }
 
@@ -379,7 +432,9 @@ class View:
         # projectEx groups: [0]V sharp [1]V1 smooth [2]VN seam [3]VO outline
         # [4]VI iso [5]H sharp [6]H1 smooth [7]HN seam [8]HO outline [9]HI iso.
         res = TechDraw.projectEx(shape, App.Vector(*direction))
-        edges_vis = compound_edges(res[0]) + compound_edges(res[1]) + compound_edges(res[3])
+        edges_vis = (
+            compound_edges(res[0]) + compound_edges(res[1]) + compound_edges(res[3])
+        )
         edges_hid = compound_edges(res[5]) + compound_edges(res[8])
 
         def valid_edges(edges):
@@ -420,9 +475,11 @@ class View:
                 pts = [(cx - r, cy - r), (cx + r, cy + r)]
             for lx, ly in pts:
                 cu, cv = self.cmap(lx, ly)
-                us.append(cu); vs.append(cv)
+                us.append(cu)
+                vs.append(cv)
         if not us:
-            self.umin = self.vmin = 0.0; self.umax = self.vmax = 1.0
+            self.umin = self.vmin = 0.0
+            self.umax = self.vmax = 1.0
         else:
             self.umin, self.umax = min(us), max(us)
             self.vmin, self.vmax = min(vs), max(vs)
@@ -434,16 +491,25 @@ class View:
 
     def M(self, cu, cv):
         """canonical model-axis coords -> SVG sheet-mm."""
-        return (self.ox + (cu - self.umin) * self.scale,
-                self.oy + (self.vmax - cv) * self.scale)
+        return (
+            self.ox + (cu - self.umin) * self.scale,
+            self.oy + (self.vmax - cv) * self.scale,
+        )
 
-    def sheet_w(self): return self.w * self.scale
-    def sheet_h(self): return self.h * self.scale
+    def sheet_w(self):
+        return self.w * self.scale
+
+    def sheet_h(self):
+        return self.h * self.scale
 
     def _matrix(self):
         s = self.scale
-        A = s * self.a; B = -s * self.c; C = s * self.b; D = -s * self.d
-        E = self.ox - self.umin * s; F = self.oy + self.vmax * s
+        A = s * self.a
+        B = -s * self.c
+        C = s * self.b
+        D = -s * self.d
+        E = self.ox - self.umin * s
+        F = self.oy + self.vmax * s
         return (A, B, C, D, E, F)
 
     def svg_group(self):
@@ -467,8 +533,9 @@ class View:
             pts = g["pts"]
             if len(pts) < 2:
                 return ""
-            return ("M %.4f %.4f " % pts[0]
-                    + " ".join("L %.4f %.4f" % p for p in pts[1:]))
+            return "M %.4f %.4f " % pts[0] + " ".join(
+                "L %.4f %.4f" % p for p in pts[1:]
+            )
         return edge_to_path(e, envelope=self.expected_envelope)
 
     def primitive_records(self, idprefix, px):
@@ -504,8 +571,14 @@ class View:
         if typ in ("circle", "arc"):
             feat = "hole_or_round"
 
-        base = {"id": rid, "type": typ, "line_role": vis_tag, "feature_tag": feat,
-                "state": "known", "coords_source": "gt"}
+        base = {
+            "id": rid,
+            "type": typ,
+            "line_role": vis_tag,
+            "feature_tag": feat,
+            "state": "known",
+            "coords_source": "gt",
+        }
 
         if typ == "line":
             base["p1"] = self._to_px(*g["p1"], px=px)
@@ -537,24 +610,28 @@ class View:
             cl = g["center"]
             base["center"] = self._to_px(*cl, px=px)
             cx, cy = base["center"]
-            majpt = self._to_px(cl[0] + g["rmaj"] * g["maj"][0],
-                                cl[1] + g["rmaj"] * g["maj"][1], px=px)
-            minpt = self._to_px(cl[0] + g["rmin"] * g["min"][0],
-                                cl[1] + g["rmin"] * g["min"][1], px=px)
+            majpt = self._to_px(
+                cl[0] + g["rmaj"] * g["maj"][0], cl[1] + g["rmaj"] * g["maj"][1], px=px
+            )
+            minpt = self._to_px(
+                cl[0] + g["rmin"] * g["min"][0], cl[1] + g["rmin"] * g["min"][1], px=px
+            )
             base["rmaj_px"] = round(math.hypot(majpt[0] - cx, majpt[1] - cy), 2)
             base["rmin_px"] = round(math.hypot(minpt[0] - cx, minpt[1] - cy), 2)
             base["rmaj_mm"] = round(g["rmaj"], 3)
             base["rmin_mm"] = round(g["rmin"], 3)
-            base["rot_deg"] = round(math.degrees(math.atan2(majpt[1] - cy,
-                                                            majpt[0] - cx)) % 180.0, 2)
+            base["rot_deg"] = round(
+                math.degrees(math.atan2(majpt[1] - cy, majpt[0] - cx)) % 180.0, 2
+            )
             # partial ellipse (occlusion-split arc): swept eccentric angles, same
             # start->end-with-increasing-theta convention as arc.
             if g.get("mid") and g.get("p1") and g.get("p2"):
                 base["p1"] = self._to_px(*g["p1"], px=px)
                 base["p2"] = self._to_px(*g["p2"], px=px)
                 mpx = self._to_px(*g["mid"], px=px)
-                sa, ea = _ellipse_angles_px(base["center"], majpt, minpt,
-                                            base["p1"], base["p2"], mpx)
+                sa, ea = _ellipse_angles_px(
+                    base["center"], majpt, minpt, base["p1"], base["p2"], mpx
+                )
                 base["start_angle"] = sa
                 base["end_angle"] = ea
 
@@ -565,23 +642,44 @@ class View:
         for op in self.oracle_prims:
             # We match using local (lx, ly) space against Oracle (u, v) space
             if typ == "line" and op["type"] == "line":
-                if point_on_segment(g["p1"][0], g["p1"][1], op["p1"][0], op["p1"][1], op["p2"][0], op["p2"][1]) and \
-                   point_on_segment(g["p2"][0], g["p2"][1], op["p1"][0], op["p1"][1], op["p2"][0], op["p2"][1]):
+                if point_on_segment(
+                    g["p1"][0],
+                    g["p1"][1],
+                    op["p1"][0],
+                    op["p1"][1],
+                    op["p2"][0],
+                    op["p2"][1],
+                ) and point_on_segment(
+                    g["p2"][0],
+                    g["p2"][1],
+                    op["p1"][0],
+                    op["p1"][1],
+                    op["p2"][0],
+                    op["p2"][1],
+                ):
                     origins.extend(op["topo_origins"])
             elif typ in ("circle", "arc") and op["type"] in ("circle", "arc"):
-                if points_same(g["center"], op["center"]) and abs(g["r"] - op.get("radius", op.get("r", 0))) < 1e-3:
+                if (
+                    points_same(g["center"], op["center"])
+                    and abs(g["r"] - op.get("radius", op.get("r", 0))) < 1e-3
+                ):
                     origins.extend(op["topo_origins"])
             elif typ == "ellipse" and op["type"] == "ellipse":
                 # an occlusion-split arc shares the full ellipse's center + axes, so
                 # match on those (angles ignored) — like circle/arc radius matching.
-                if points_same(g["center"], op["center"]) and \
-                   abs(g["rmaj"] - op["rmaj"]) < 1e-2 and abs(g["rmin"] - op["rmin"]) < 1e-2:
+                if (
+                    points_same(g["center"], op["center"])
+                    and abs(g["rmaj"] - op["rmaj"]) < 1e-2
+                    and abs(g["rmin"] - op["rmin"]) < 1e-2
+                ):
                     origins.extend(op["topo_origins"])
             elif typ == "polyline" and op["type"] == "line":
                 # For polyline (rare but possible), check if all discretised points lie on the line
                 all_on_line = True
                 for pt in g["pts"]:
-                    if not point_on_segment(pt[0], pt[1], op["p1"][0], op["p1"][1], op["p2"][0], op["p2"][1]):
+                    if not point_on_segment(
+                        pt[0], pt[1], op["p1"][0], op["p1"][1], op["p2"][0], op["p2"][1]
+                    ):
                         all_on_line = False
                         break
                 if all_on_line:
@@ -624,8 +722,10 @@ def _prim_coord_sig(rec):
 def _arc_angles_px(c, p1, p2, mid):
     """(start_angle, end_angle) deg in the px frame; arc = start -> end with
     increasing atan2(y-cy, x-cx) mod 360, chosen so it passes through mid."""
+
     def ang(p):
         return math.degrees(math.atan2(p[1] - c[1], p[0] - c[0])) % 360.0
+
     t1, tm, t2 = ang(p1), ang(mid), ang(p2)
     if (tm - t1) % 360.0 <= (t2 - t1) % 360.0 + 1e-9:
         sa, ea = t1, t2
@@ -641,11 +741,13 @@ def _ellipse_angles_px(c, majpt, minpt, p1, p2, mid):
     ux, uy = majpt[0] - c[0], majpt[1] - c[1]
     vx, vy = minpt[0] - c[0], minpt[1] - c[1]
     ru2, rv2 = (ux * ux + uy * uy) or 1.0, (vx * vx + vy * vy) or 1.0
+
     def ecc(p):
         dx, dy = p[0] - c[0], p[1] - c[1]
-        a = (dx * ux + dy * uy) / ru2   # cos t
-        b = (dx * vx + dy * vy) / rv2   # sin t
+        a = (dx * ux + dy * uy) / ru2  # cos t
+        b = (dx * vx + dy * vy) / rv2  # sin t
         return math.degrees(math.atan2(b, a)) % 360.0
+
     t1, tm, t2 = ecc(p1), ecc(mid), ecc(p2)
     if (tm - t1) % 360.0 <= (t2 - t1) % 360.0 + 1e-9:
         sa, ea = t1, t2
@@ -656,34 +758,54 @@ def _ellipse_angles_px(c, majpt, minpt, p1, p2, mid):
 
 def _prim_bbox_px(p):
     xs, ys = [], []
-    def add(pt): xs.append(pt[0]); ys.append(pt[1])
+
+    def add(pt):
+        xs.append(pt[0])
+        ys.append(pt[1])
+
     if p["type"] in ("line",):
-        add(p["p1"]); add(p["p2"])
+        add(p["p1"])
+        add(p["p2"])
     elif p["type"] == "polyline":
-        for q in p["pts"]: add(q)
+        for q in p["pts"]:
+            add(q)
     elif p["type"] in ("circle", "arc"):
-        cx, cy = p["center"]; r = p["r_px"]
-        xs += [cx - r, cx + r]; ys += [cy - r, cy + r]
+        cx, cy = p["center"]
+        r = p["r_px"]
+        xs += [cx - r, cx + r]
+        ys += [cy - r, cy + r]
     elif p["type"] == "ellipse":
-        cx, cy = p["center"]; r = max(p["rmaj_px"], p["rmin_px"])
-        xs += [cx - r, cx + r]; ys += [cy - r, cy + r]
+        cx, cy = p["center"]
+        r = max(p["rmaj_px"], p["rmin_px"])
+        xs += [cx - r, cx + r]
+        ys += [cy - r, cy + r]
     if not xs:
         return [0, 0, 0, 0]
     return [round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1)]
 
+
 # ============================================================================
 #  isometric
 # ============================================================================
+
 
 def iso_group(shape, ox, oy, scale):
     res = TechDraw.projectEx(shape, App.Vector(1, -1, 1))
     edges = compound_edges(res[0]) + compound_edges(res[1]) + compound_edges(res[3])
     xs, ys = [], []
     for e in edges:
-        b = e.BoundBox; xs += [b.XMin, b.XMax]; ys += [b.YMin, b.YMax]
+        b = e.BoundBox
+        xs += [b.XMin, b.XMax]
+        ys += [b.YMin, b.YMax]
     xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
-    tr = ("translate(%.4f %.4f) scale(%.5f %.5f) translate(%.4f %.4f)"
-          % (ox, oy, scale, -scale, -xmin, -ymax))
+    tr = "translate(%.4f %.4f) scale(%.5f %.5f) translate(%.4f %.4f)" % (
+        ox,
+        oy,
+        scale,
+        -scale,
+        -xmin,
+        -ymax,
+    )
     parts = ['<g transform="%s">' % tr]
     for e in edges:
         d = edge_to_path(e)
@@ -692,15 +814,18 @@ def iso_group(shape, ox, oy, scale):
     parts.append("</g>")
     return "\n".join(parts), (xmax - xmin) * scale, (ymax - ymin) * scale
 
+
 # ============================================================================
 #  main build  -> writes SVG, returns graph dict (px coords) + meta
 # ============================================================================
 
 PX_DEFAULT_W = 1800  # raster width
 
+
 def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
-    _FALLBACK.clear()   # per-part fallback telemetry (see definition above)
-    shape = Part.Shape(); shape.read(step_path)
+    _FALLBACK.clear()  # per-part fallback telemetry (see definition above)
+    shape = Part.Shape()
+    shape.read(step_path)
     bb = shape.BoundBox
     L, W, H = bb.XLength, bb.YLength, bb.ZLength
     if partname is None:
@@ -722,14 +847,17 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     # --------------------------------
 
     front = View("front", shape, (0, -1, 0), front_prims)
-    top   = View("top",   shape, (0, 0, 1),  top_prims)
-    right = View("right", shape, (1, 0, 0),  right_prims)
+    top = View("top", shape, (0, 0, 1), top_prims)
+    right = View("right", shape, (1, 0, 0), right_prims)
 
     SW, SH = 420.0, 297.0
-    MARGIN = 10.0; TB_H = 38.0; TB_W = 180.0
-    PXMM = out_width / SW   # mm -> pixel (cairosvg maps viewBox mm linearly to width px)
+    MARGIN = 10.0
+    TB_H = 38.0
+    TB_W = 180.0
+    PXMM = out_width / SW  # mm -> pixel (cairosvg maps viewBox mm linearly to width px)
 
-    DIMPAD = 30.0; VGAP = 42.0
+    DIMPAD = 30.0
+    VGAP = 42.0
     draw_x0, draw_y0 = MARGIN + 10, MARGIN + 12
     draw_x1 = MARGIN + 235
     draw_y1 = SH - MARGIN - 16
@@ -742,7 +870,8 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     scale = nice[-1]
     for s in nice:
         if cluster_mw * s + VGAP <= avail_w and cluster_mh * s + VGAP <= avail_h:
-            scale = s; break
+            scale = s
+            break
 
     for v in (front, top, right):
         v.set_layout(0, 0, scale)
@@ -769,26 +898,45 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     .frame   { stroke:#111; fill:none; }
     .tbtxt   { font-family:'DejaVu Sans','Arial',sans-serif; fill:#111; }
     """
-    parts = ['<svg xmlns="http://www.w3.org/2000/svg" width="%dmm" height="%dmm" viewBox="0 0 %g %g">'
-             % (int(SW), int(SH), SW, SH), '<style>%s</style>' % css,
-             '<rect x="0" y="0" width="%g" height="%g" fill="white"/>' % (SW, SH)]
+    parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" width="%dmm" height="%dmm" viewBox="0 0 %g %g">'
+        % (int(SW), int(SH), SW, SH),
+        "<style>%s</style>" % css,
+        '<rect x="0" y="0" width="%g" height="%g" fill="white"/>' % (SW, SH),
+    ]
 
     # frame + zones
-    parts.append('<rect class="frame" x="%g" y="%g" width="%g" height="%g" stroke-width="0.7"/>'
-                 % (MARGIN, MARGIN, SW - 2 * MARGIN, SH - 2 * MARGIN))
-    parts.append('<rect class="frame" x="%g" y="%g" width="%g" height="%g" stroke-width="0.35"/>'
-                 % (MARGIN + 4, MARGIN + 4, SW - 2 * MARGIN - 8, SH - 2 * MARGIN - 8))
+    parts.append(
+        '<rect class="frame" x="%g" y="%g" width="%g" height="%g" stroke-width="0.7"/>'
+        % (MARGIN, MARGIN, SW - 2 * MARGIN, SH - 2 * MARGIN)
+    )
+    parts.append(
+        '<rect class="frame" x="%g" y="%g" width="%g" height="%g" stroke-width="0.35"/>'
+        % (MARGIN + 4, MARGIN + 4, SW - 2 * MARGIN - 8, SH - 2 * MARGIN - 8)
+    )
     fxs = SW - 2 * (MARGIN + 4)
     for i in range(8):
         zx = MARGIN + 4 + fxs * (i + 0.5) / 8
-        parts.append('<text class="tbtxt" x="%.1f" y="%.1f" font-size="3" text-anchor="middle">%d</text>' % (zx, MARGIN + 3, i + 1))
-        parts.append('<text class="tbtxt" x="%.1f" y="%.1f" font-size="3" text-anchor="middle">%d</text>' % (zx, SH - MARGIN - 1.2, i + 1))
+        parts.append(
+            '<text class="tbtxt" x="%.1f" y="%.1f" font-size="3" text-anchor="middle">%d</text>'
+            % (zx, MARGIN + 3, i + 1)
+        )
+        parts.append(
+            '<text class="tbtxt" x="%.1f" y="%.1f" font-size="3" text-anchor="middle">%d</text>'
+            % (zx, SH - MARGIN - 1.2, i + 1)
+        )
     fys = SH - 2 * (MARGIN + 4)
     for j in range(4):
         zy = MARGIN + 4 + fys * (j + 0.5) / 4
         lab = "ABCD"[j]
-        parts.append('<text class="tbtxt" x="%.1f" y="%.1f" font-size="3" text-anchor="middle">%s</text>' % (MARGIN + 2, zy + 1, lab))
-        parts.append('<text class="tbtxt" x="%.1f" y="%.1f" font-size="3" text-anchor="middle">%s</text>' % (SW - MARGIN - 2, zy + 1, lab))
+        parts.append(
+            '<text class="tbtxt" x="%.1f" y="%.1f" font-size="3" text-anchor="middle">%s</text>'
+            % (MARGIN + 2, zy + 1, lab)
+        )
+        parts.append(
+            '<text class="tbtxt" x="%.1f" y="%.1f" font-size="3" text-anchor="middle">%s</text>'
+            % (SW - MARGIN - 2, zy + 1, lab)
+        )
 
     # geometry
     parts.append(top.svg_group())
@@ -800,7 +948,9 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     iso_band_w = (SW - MARGIN - 8) - iso_band_x
     iso_scale = scale * 0.8
     iso_oy = MARGIN + 30
-    iso_svg, iw, ih = iso_group(shape, iso_band_x + iso_band_w/2, iso_oy, iso_scale) # Approximated placement
+    iso_svg, iw, ih = iso_group(
+        shape, iso_band_x + iso_band_w / 2, iso_oy, iso_scale
+    )  # Approximated placement
     parts.append(iso_svg)
 
     # =====================================================================
@@ -812,30 +962,38 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     # model bbox min ('+': px grows with the axis) or max ('-'). With axis_remap +
     # px_per_mm this makes px -> model exact without the per-view shift discovery
     # train3d/serialize.py documents:  m = model_origin + sign * (px - origin_px) / px_per_mm.
-    _bb_rng = {"X": (bb.XMin, bb.XMax), "Y": (bb.YMin, bb.YMax), "Z": (bb.ZMin, bb.ZMax)}
+    _bb_rng = {
+        "X": (bb.XMin, bb.XMax),
+        "Y": (bb.YMin, bb.YMax),
+        "Z": (bb.ZMin, bb.ZMax),
+    }
 
     def _model_origin(vname):
         rm = _AXIS_REMAP[vname]
-        return [round(_bb_rng[spec[1]][0 if spec[0] == "+" else 1], 3)
-                for spec in (rm["px_x"], rm["px_y"])]
+        return [
+            round(_bb_rng[spec[1]][0 if spec[0] == "+" else 1], 3)
+            for spec in (rm["px_x"], rm["px_y"])
+        ]
 
     views_gt = []
     for v, pfx in ((front, "F"), (top, "T"), (right, "R")):
         prims = v.primitive_records(pfx, PXMM)
-        views_gt.append({
-            "name": v.name,
-            "view_type": v.name,
-            "projection_dir": _PROJ_DIR.get(v.name, [0, 0, -1]),
-            "align_to": None,
-            "frame": {
-                "origin_px": [round(v.ox * PXMM, 2), round(v.oy * PXMM, 2)],
-                "scale": v.scale,
-                "px_per_mm": round(v.scale * PXMM, 4),
-                "axis_remap": _AXIS_REMAP[v.name],
-                "model_origin": _model_origin(v.name),
-            },
-            "primitives": prims,
-        })
+        views_gt.append(
+            {
+                "name": v.name,
+                "view_type": v.name,
+                "projection_dir": _PROJ_DIR.get(v.name, [0, 0, -1]),
+                "align_to": None,
+                "frame": {
+                    "origin_px": [round(v.ox * PXMM, 2), round(v.oy * PXMM, 2)],
+                    "scale": v.scale,
+                    "px_per_mm": round(v.scale * PXMM, 4),
+                    "axis_remap": _AXIS_REMAP[v.name],
+                    "model_origin": _model_origin(v.name),
+                },
+                "primitives": prims,
+            }
+        )
 
     # =====================================================================
     #  Dimensions (Delegated to LegacyDimensioner)
@@ -846,16 +1004,29 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
     if dim_engine.rejected_centerlines:
         _FALLBACK["dimensioner_centerlines_rejected"] += dim_engine.rejected_centerlines
 
-    parts.append('<g>%s</g>' % "\n".join(dims_svg))
+    parts.append("<g>%s</g>" % "\n".join(dims_svg))
 
     # labels + symbol + title block
-    parts.append('<text class="tbtxt" x="%.1f" y="%.1f" font-size="4.5" text-anchor="middle">ISOMETRIC</text>'
-                 % (iso_band_x + iso_band_w / 2, iso_oy + ih + 6))
+    parts.append(
+        '<text class="tbtxt" x="%.1f" y="%.1f" font-size="4.5" text-anchor="middle">ISOMETRIC</text>'
+        % (iso_band_x + iso_band_w / 2, iso_oy + ih + 6)
+    )
     sym_x, sym_y = SW - MARGIN - 4 - TB_W - 26, SH - MARGIN - 4 - 14
     parts.append(_third_angle_symbol(sym_x, sym_y))
-    parts.append(_title_block(SW - MARGIN - 4 - TB_W, SH - MARGIN - 4 - TB_H, TB_W, TB_H,
-                              partname, scale, L, W, H))
-    parts.append('</svg>')
+    parts.append(
+        _title_block(
+            SW - MARGIN - 4 - TB_W,
+            SH - MARGIN - 4 - TB_H,
+            TB_W,
+            TB_H,
+            partname,
+            scale,
+            L,
+            W,
+            H,
+        )
+    )
+    parts.append("</svg>")
     svg = "\n".join(parts)
     _atomic_write(out_svg, lambda f: f.write(svg))
 
@@ -865,79 +1036,178 @@ def build(step_path, out_svg, partname=None, out_width=PX_DEFAULT_W):
         "amvdg_version": "0.3.1",
         "part_id": partname,
         "profile": "vectorized",
-        "source": {"kind": "synthetic_gt", "image": None, "extractor": None, "scan_affine": None},
+        "source": {
+            "kind": "synthetic_gt",
+            "image": None,
+            "extractor": None,
+            "scan_affine": None,
+        },
         "units": "mm",
         "angle_units": "deg",
-        "world": {"handedness": "right", "up_axis": "Z", "bbox_3d": [round(L, 3), round(W, 3), round(H, 3)]},
+        "world": {
+            "handedness": "right",
+            "up_axis": "Z",
+            "bbox_3d": [round(L, 3), round(W, 3), round(H, 3)],
+        },
         "coord_system": {"px_origin": "top_left", "y_axis_down": True},
-        "sheet": {"size": "A3", "projection": "third_angle",
-                  "scale": [int(rnum) if rnum.isdigit() else float(rnum), int(rden) if rden.isdigit() else float(rden)],
-                  "width_px": out_width, "height_px": int(round(SH * PXMM)), "px_per_mm": round(PXMM, 4)},
+        "sheet": {
+            "size": "A3",
+            "projection": "third_angle",
+            "scale": [
+                int(rnum) if rnum.isdigit() else float(rnum),
+                int(rden) if rden.isdigit() else float(rden),
+            ],
+            "width_px": out_width,
+            "height_px": int(round(SH * PXMM)),
+            "px_per_mm": round(PXMM, 4),
+        },
         "views": views_gt,
         "annotations": dims_gt,
         "features": features,
-        "dof": {"required": 0, "determined": 0, "determined_by_geometry": 0, "supplied_by_prior": [], "undetermined": [], "missing": 0, "fully_constrained": False, "coverage": 0.0, "self_declared": {"required": 0, "determined": 0, "missing": 0}},
+        "dof": {
+            "required": 0,
+            "determined": 0,
+            "determined_by_geometry": 0,
+            "supplied_by_prior": [],
+            "undetermined": [],
+            "missing": 0,
+            "fully_constrained": False,
+            "coverage": 0.0,
+            "self_declared": {"required": 0, "determined": 0, "missing": 0},
+        },
     }
 
     # unsupported-geometry fallback telemetry (zeros dropped): a part that hits
     # any fallback still renders a valid graph, but say so loudly in the log.
     fallbacks = {k: v for k, v in _FALLBACK.items() if v}
     if fallbacks:
-        log.warning("part %s: unsupported-geometry fallbacks (part still rendered): %s",
-                    partname, fallbacks)
+        log.warning(
+            "part %s: unsupported-geometry fallbacks (part still rendered): %s",
+            partname,
+            fallbacks,
+        )
 
-    meta = {"L": L, "W": W, "H": H, "scale": scale, "width_px": out_width,
-            "height_px": int(round(SH * PXMM)), "pxmm": PXMM,
-            "fallbacks": fallbacks}
+    meta = {
+        "L": L,
+        "W": W,
+        "H": H,
+        "scale": scale,
+        "width_px": out_width,
+        "height_px": int(round(SH * PXMM)),
+        "pxmm": PXMM,
+        "fallbacks": fallbacks,
+    }
     return svg, graph, meta
 
 
 def _third_angle_symbol(x, y):
-    s = ['<g>']
-    s.append('<text class="tbtxt" x="%.1f" y="%.1f" font-size="3" text-anchor="middle">THIRD ANGLE PROJECTION</text>' % (x + 9, y - 4))
-    s.append('<polygon points="%.1f,%.1f %.1f,%.1f %.1f,%.1f %.1f,%.1f" class="frame" stroke-width="0.4"/>'
-             % (x, y + 4, x + 12, y + 1, x + 12, y + 11, x, y + 8))
-    s.append('<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.4"/>' % (x + 4, y, x + 4, y + 12))
-    s.append('<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.4"/>' % (x + 8, y, x + 8, y + 12))
-    s.append('<circle cx="%.1f" cy="%.1f" r="5.5" class="frame" stroke-width="0.4"/>' % (x + 22, y + 6))
-    s.append('<circle cx="%.1f" cy="%.1f" r="2.2" class="frame" stroke-width="0.4"/>' % (x + 22, y + 6))
-    s.append('<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.3"/>' % (x + 14, y + 6, x + 30, y + 6))
-    s.append('<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.3"/>' % (x + 22, y - 1, x + 22, y + 13))
-    s.append('</g>')
+    s = ["<g>"]
+    s.append(
+        '<text class="tbtxt" x="%.1f" y="%.1f" font-size="3" text-anchor="middle">THIRD ANGLE PROJECTION</text>'
+        % (x + 9, y - 4)
+    )
+    s.append(
+        '<polygon points="%.1f,%.1f %.1f,%.1f %.1f,%.1f %.1f,%.1f" class="frame" stroke-width="0.4"/>'
+        % (x, y + 4, x + 12, y + 1, x + 12, y + 11, x, y + 8)
+    )
+    s.append(
+        '<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.4"/>'
+        % (x + 4, y, x + 4, y + 12)
+    )
+    s.append(
+        '<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.4"/>'
+        % (x + 8, y, x + 8, y + 12)
+    )
+    s.append(
+        '<circle cx="%.1f" cy="%.1f" r="5.5" class="frame" stroke-width="0.4"/>'
+        % (x + 22, y + 6)
+    )
+    s.append(
+        '<circle cx="%.1f" cy="%.1f" r="2.2" class="frame" stroke-width="0.4"/>'
+        % (x + 22, y + 6)
+    )
+    s.append(
+        '<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.3"/>'
+        % (x + 14, y + 6, x + 30, y + 6)
+    )
+    s.append(
+        '<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.3"/>'
+        % (x + 22, y - 1, x + 22, y + 13)
+    )
+    s.append("</g>")
     return "\n".join(s)
 
 
 def _title_block(x, y, w, h, name, scale, L, W, H):
-    s = ['<g>']
-    s.append('<rect class="frame" x="%.1f" y="%.1f" width="%.1f" height="%.1f" stroke-width="0.7"/>' % (x, y, w, h))
+    s = ["<g>"]
+    s.append(
+        '<rect class="frame" x="%.1f" y="%.1f" width="%.1f" height="%.1f" stroke-width="0.7"/>'
+        % (x, y, w, h)
+    )
     for ry in [y + h * 0.45, y + h * 0.72]:
-        s.append('<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.3"/>' % (x, ry, x + w, ry))
+        s.append(
+            '<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.3"/>'
+            % (x, ry, x + w, ry)
+        )
     for cx in [x + w * 0.55, x + w * 0.78]:
-        s.append('<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.3"/>' % (cx, y, cx, y + h * 0.45))
+        s.append(
+            '<line class="frame" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="0.3"/>'
+            % (cx, y, cx, y + h * 0.45)
+        )
+
     def t(tx, ty, txt, size=3.0, bold=False, anchor="start"):
-        return ('<text class="tbtxt" x="%.1f" y="%.1f" font-size="%g" text-anchor="%s"%s>%s</text>'
-                % (tx, ty, size, anchor, ' font-weight="bold"' if bold else '', txt))
+        return (
+            '<text class="tbtxt" x="%.1f" y="%.1f" font-size="%g" text-anchor="%s"%s>%s</text>'
+            % (tx, ty, size, anchor, ' font-weight="bold"' if bold else "", txt)
+        )
+
     s.append(t(x + 3, y + h * 0.30, name, 7.5, True))
-    s.append(t(x + 3, y + h * 0.40, "drawing2cad  synthetic drawing (FreeCAD TechDraw HLR)", 2.4))
+    s.append(
+        t(
+            x + 3,
+            y + h * 0.40,
+            "drawing2cad  synthetic drawing (FreeCAD TechDraw HLR)",
+            2.4,
+        )
+    )
     s.append(t(x + w * 0.56, y + h * 0.20, "DRAWN", 2.4))
     s.append(t(x + w * 0.79, y + h * 0.20, "drawing2cad", 2.6, True))
     s.append(t(x + w * 0.56, y + h * 0.36, "CHK", 2.4))
     s.append(t(x + w * 0.79, y + h * 0.36, "PoC", 2.6))
     s.append(t(x + 3, y + h * 0.62, "MATERIAL:  STEEL", 2.8))
-    s.append(t(x + w * 0.40, y + h * 0.62, "SCALE  %s : %s" % (_ratio(scale)), 2.8, True))
+    s.append(
+        t(x + w * 0.40, y + h * 0.62, "SCALE  %s : %s" % (_ratio(scale)), 2.8, True)
+    )
     s.append(t(x + w * 0.72, y + h * 0.62, "SIZE A3", 2.8))
-    s.append(t(x + 3, y + h * 0.90, "ENVELOPE  %g x %g x %g mm" % (round(L), round(W), round(H)), 2.8))
+    s.append(
+        t(
+            x + 3,
+            y + h * 0.90,
+            "ENVELOPE  %g x %g x %g mm" % (round(L), round(W), round(H)),
+            2.8,
+        )
+    )
     s.append(t(x + w * 0.55, y + h * 0.90, "UNITS: mm   THIRD ANGLE", 2.6))
     s.append(t(x + w * 0.86, y + h * 0.90, "SHEET 1/1", 2.6, True))
-    s.append('</g>')
+    s.append("</g>")
     return "\n".join(s)
 
 
 def _ratio(scale):
-    std = {5.0: ("5", "1"), 2.0: ("2", "1"), 1.0: ("1", "1"),
-           0.75: ("3", "4"), 0.5: ("1", "2"), 0.4: ("2", "5"),
-           0.3: ("3", "10"), 0.25: ("1", "4"), 0.2: ("1", "5"),
-           0.15: ("3", "20"), 0.1: ("1", "10"), 0.05: ("1", "20")}
+    std = {
+        5.0: ("5", "1"),
+        2.0: ("2", "1"),
+        1.0: ("1", "1"),
+        0.75: ("3", "4"),
+        0.5: ("1", "2"),
+        0.4: ("2", "5"),
+        0.3: ("3", "10"),
+        0.25: ("1", "4"),
+        0.2: ("1", "5"),
+        0.15: ("3", "20"),
+        0.1: ("1", "10"),
+        0.05: ("1", "20"),
+    }
     for k, v in std.items():
         if abs(scale - k) < 1e-6:
             return v
@@ -959,16 +1229,32 @@ def render_one(step_path, out_dir, name=None, width=PX_DEFAULT_W):
         # surface per-part fallback counters in the OK log line (batch tallies
         # only count the "OK "/"SKIP " prefixes, so extra keys are safe)
         counts["fallbacks"] = meta["fallbacks"]
-    return {"name": name, "svg": svg_path, "graph": graph_path, "meta": meta,
-            "counts": counts}
+    return {
+        "name": name,
+        "svg": svg_path,
+        "graph": graph_path,
+        "meta": meta,
+        "counts": counts,
+    }
 
 
 def _counts(graph):
-    nv = sum(1 for gv in graph["views"] for p in gv["primitives"] if p["line_role"] == "visible")
-    nh = sum(1 for gv in graph["views"] for p in gv["primitives"] if p["line_role"] == "hidden")
+    nv = sum(
+        1
+        for gv in graph["views"]
+        for p in gv["primitives"]
+        if p["line_role"] == "visible"
+    )
+    nh = sum(
+        1
+        for gv in graph["views"]
+        for p in gv["primitives"]
+        if p["line_role"] == "hidden"
+    )
     by_type = Counter(d["kind"] for d in graph["annotations"])
     nrefless = sum(1 for d in graph["annotations"] if not d["refs"])
     return {"nv": nv, "nh": nh, "types": dict(by_type), "nrefless": nrefless}
+
 
 def _render_worker(step_path, out_dir, name, width, q):
     """Runs inside a forked child process spawned by _run_batch. Isolation in a
@@ -979,6 +1265,7 @@ def _render_worker(step_path, out_dir, name, width, q):
         q.put(("OK", r))
     except Exception:
         import traceback
+
         q.put(("SKIP", traceback.format_exc()))
 
 
@@ -998,16 +1285,24 @@ def _run_batch(step_dir, out_dir, width, limit, logf, workers=1, timeout=60):
     Parts whose graph.json already exists are skipped up front, so a run that was
     killed (stuck part, Ctrl-C, ...) can simply be re-launched to resume.
     """
-    all_jobs = [(sp, os.path.splitext(os.path.basename(sp))[0])
-                for sp in sorted(glob.glob(os.path.join(step_dir, "*.step")))]
+    all_jobs = [
+        (sp, os.path.splitext(os.path.basename(sp))[0])
+        for sp in sorted(glob.glob(os.path.join(step_dir, "*.step")))
+    ]
     if limit > 0:
         all_jobs = all_jobs[:limit]
-    jobs = [(sp, nm) for sp, nm in all_jobs
-            if not os.path.exists(os.path.join(out_dir, nm + ".graph.json"))]
+    jobs = [
+        (sp, nm)
+        for sp, nm in all_jobs
+        if not os.path.exists(os.path.join(out_dir, nm + ".graph.json"))
+    ]
     ndone = len(all_jobs) - len(jobs)
     if ndone:
-        print("[render_dataset] resuming: %d/%d already done, %d remaining"
-              % (ndone, len(all_jobs), len(jobs)), flush=True)
+        print(
+            "[render_dataset] resuming: %d/%d already done, %d remaining"
+            % (ndone, len(all_jobs), len(jobs)),
+            flush=True,
+        )
 
     # _build_results.json is a cumulative summary across resumed runs (like the
     # log file above) — preload any prior run's entries so a resume doesn't
@@ -1019,7 +1314,8 @@ def _run_batch(step_dir, out_dir, width, limit, logf, workers=1, timeout=60):
     pbar = tqdm(total=n)
     while i < n or live:
         while i < n and len(live) < workers:
-            sp, nm = jobs[i]; i += 1
+            sp, nm = jobs[i]
+            i += 1
             q = mp.Queue()
             p = mp.Process(target=_render_worker, args=(sp, out_dir, nm, width, q))
             p.start()
@@ -1034,17 +1330,23 @@ def _run_batch(step_dir, out_dir, width, limit, logf, workers=1, timeout=60):
                 p.join()
                 if kind == "OK":
                     results.append({k: v for k, v in payload.items() if k != "meta"})
-                    logf.write("OK %s counts=%s\n" % (nm, json.dumps(payload["counts"])))
+                    logf.write(
+                        "OK %s counts=%s\n" % (nm, json.dumps(payload["counts"]))
+                    )
                 else:
                     logf.write("SKIP %s\n%s\n" % (nm, payload))
                 logf.flush()
                 pbar.update(1)
             elif time.time() - t0 > timeout:
-                p.terminate(); p.join(5)
+                p.terminate()
+                p.join(5)
                 if p.is_alive():
-                    p.kill(); p.join()
-                logf.write("SKIP %s\nTimeoutError: exceeded %ds (native hang, likely TechDraw HLR)\n"
-                           % (nm, timeout))
+                    p.kill()
+                    p.join()
+                logf.write(
+                    "SKIP %s\nTimeoutError: exceeded %ds (native hang, likely TechDraw HLR)\n"
+                    % (nm, timeout)
+                )
                 logf.flush()
                 pbar.update(1)
             else:
@@ -1060,23 +1362,43 @@ def _run_batch(step_dir, out_dir, width, limit, logf, workers=1, timeout=60):
 
 def _main():
     """CLI entry point. Two mutually-exclusive modes:
-      --step-dir <dir>  batch: render every *.step under it into --out-dir
-      --step <file>     single: render one part into --out-dir
+    --step-dir <dir>  batch: render every *.step under it into --out-dir
+    --step <file>     single: render one part into --out-dir
     """
-    parser = argparse.ArgumentParser(description="STEP -> multi-view drawing SVG + AMVDG graph JSON")
+    parser = argparse.ArgumentParser(
+        description="STEP -> multi-view drawing SVG + AMVDG graph JSON"
+    )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--step-dir", help="render every *.step under this dir (batch)")
     mode.add_argument("--step", help="render this single *.step file")
-    parser.add_argument("--out-dir", default="dataset", help="output dir for <name>.svg/.graph.json")
-    parser.add_argument("--name", default=None, help="part name (single mode; default = file stem)")
-    parser.add_argument("--width", type=int, default=PX_DEFAULT_W, help="raster width in px")
-    parser.add_argument("--limit", type=int, default=0, help="cap number of parts (batch mode)")
-    parser.add_argument("--log", default="render_dataset.log", help="OK/SKIP/FAIL log path")
-    parser.add_argument("--workers", type=int, default=1,
-                        help="parallel worker processes (batch mode; each part is a separate "
-                             "forked process so a hang can be killed without losing the batch)")
-    parser.add_argument("--timeout", type=int, default=60,
-                        help="per-part wall-clock timeout in seconds (batch mode)")
+    parser.add_argument(
+        "--out-dir", default="dataset", help="output dir for <name>.svg/.graph.json"
+    )
+    parser.add_argument(
+        "--name", default=None, help="part name (single mode; default = file stem)"
+    )
+    parser.add_argument(
+        "--width", type=int, default=PX_DEFAULT_W, help="raster width in px"
+    )
+    parser.add_argument(
+        "--limit", type=int, default=0, help="cap number of parts (batch mode)"
+    )
+    parser.add_argument(
+        "--log", default="render_dataset.log", help="OK/SKIP/FAIL log path"
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="parallel worker processes (batch mode; each part is a separate "
+        "forked process so a hang can be killed without losing the batch)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=60,
+        help="per-part wall-clock timeout in seconds (batch mode)",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -1085,15 +1407,24 @@ def _main():
     logf = open(args.log, "a")
     try:
         if args.step_dir:
-            _run_batch(args.step_dir, args.out_dir, args.width, args.limit, logf,
-                      workers=args.workers, timeout=args.timeout)
+            _run_batch(
+                args.step_dir,
+                args.out_dir,
+                args.width,
+                args.limit,
+                logf,
+                workers=args.workers,
+                timeout=args.timeout,
+            )
         else:
             r = render_one(args.step, args.out_dir, args.name, args.width)
             logf.write("OK %s counts=%s\n" % (r["name"], json.dumps(r["counts"])))
     except Exception:
         import traceback
+
         logf.write("FAIL\n" + traceback.format_exc())
-    logf.flush(); logf.close()
+    logf.flush()
+    logf.close()
 
 
 if __name__ == "__main__":

@@ -29,9 +29,7 @@ class PerceiverResamplerTest(unittest.TestCase):
         mask = torch.zeros(2, 6, dtype=torch.bool)
         mask[:, :2] = True
         padded_output = self.model(tokens, mask)
-        truncated_output = self.model(
-            tokens[:, :2], torch.ones(2, 2, dtype=torch.bool)
-        )
+        truncated_output = self.model(tokens[:, :2], torch.ones(2, 2, dtype=torch.bool))
         torch.testing.assert_close(padded_output, truncated_output)
 
         changed_padding = tokens.clone()

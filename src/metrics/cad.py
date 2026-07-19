@@ -12,7 +12,9 @@ def _row_mapping(row: object) -> Mapping[str, Any]:
         return row
     if is_dataclass(row) and not isinstance(row, type):
         return asdict(row)
-    raise TypeError(f"metric rows must be mappings or dataclass instances, got {type(row)!r}")
+    raise TypeError(
+        f"metric rows must be mappings or dataclass instances, got {type(row)!r}"
+    )
 
 
 def cad_execution_metrics(

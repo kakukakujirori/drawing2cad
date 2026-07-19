@@ -44,6 +44,7 @@ class ConeProjector(BaseProjector):
         except Exception:
             try:
                 import Part as _Part
+
                 vtx = _Part.Vertex(pnt)
                 return self.shape.distToShape(vtx)[0] < tol
             except Exception:
@@ -73,8 +74,13 @@ class ConeProjector(BaseProjector):
         rings.sort(key=lambda cr: cr[0].dot(axis))
         return rings
 
-    def _project_ring(self, C: App.Vector, r: float, axis: App.Vector,
-                      view_direction: tuple[float, float, float]) -> dict[str, Any] | None:
+    def _project_ring(
+        self,
+        C: App.Vector,
+        r: float,
+        axis: App.Vector,
+        view_direction: tuple[float, float, float],
+    ) -> dict[str, Any] | None:
         """One circular ring (center C, radius r, plane normal = axis) -> 2D conic."""
         dir_vec = App.Vector(*view_direction)
         d = axis.dot(dir_vec)
@@ -103,11 +109,18 @@ class ConeProjector(BaseProjector):
         rmaj, rmin, rot = ellipse_from_conjugate(f1, f2)
         if rmaj < 1e-9:
             return None
-        return {"type": "ellipse", "center": self._format_pt(o2),
-                "rmaj": round(rmaj, 3), "rmin": round(rmin, 3),
-                "rot_deg": round(rot, 3), "role": "boundary"}
+        return {
+            "type": "ellipse",
+            "center": self._format_pt(o2),
+            "rmaj": round(rmaj, 3),
+            "rmin": round(rmin, 3),
+            "rot_deg": round(rot, 3),
+            "role": "boundary",
+        }
 
-    def project(self, view_direction: tuple[float, float, float]) -> list[dict[str, Any]]:
+    def project(
+        self, view_direction: tuple[float, float, float]
+    ) -> list[dict[str, Any]]:
         surf = self.shape.Surface
         apex = surf.Apex
         axis = App.Vector(surf.Axis)
@@ -119,7 +132,7 @@ class ConeProjector(BaseProjector):
         rings = self._rings(axis)
 
         # 1. boundary rings -> circle / ellipse / line
-        for (C, r) in rings:
+        for C, r in rings:
             prim = self._project_ring(C, r, axis, view_direction)
             if prim:
                 results.append(prim)
@@ -134,10 +147,10 @@ class ConeProjector(BaseProjector):
         Vu, Vw, Va = V.dot(u), V.dot(w), V.dot(axis)
         R = math.hypot(Vu, Vw)
         if R < 1e-9:
-            return results          # axis-aligned view: no lateral silhouette
+            return results  # axis-aligned view: no lateral silhouette
         rhs = math.tan(alpha) * Va / R
         if abs(rhs) > 1.0:
-            return results          # view inside the half-angle: no real silhouette
+            return results  # view inside the half-angle: no real silhouette
         phi = math.atan2(Vw, Vu)
         dth = math.acos(rhs)
         for th in (phi + dth, phi - dth):
@@ -154,13 +167,15 @@ class ConeProjector(BaseProjector):
                 P1 = C1 + radial * r1
                 P2 = apex
             else:
-                continue            # no circular boundary: skip silhouette
+                continue  # no circular boundary: skip silhouette
             if not self._on_face((P1 + P2) * 0.5):
                 continue
             p1 = self._format_pt(self._project_point(P1, view_direction))
             p2 = self._format_pt(self._project_point(P2, view_direction))
             if p1 != p2:
-                results.append({"type": "line", "p1": p1, "p2": p2, "role": "silhouette"})
+                results.append(
+                    {"type": "line", "p1": p1, "p2": p2, "role": "silhouette"}
+                )
         return results
 
 
@@ -191,7 +206,9 @@ if __name__ == "__main__":
                 circles.append(((c.Center.x, c.Center.y), c.Radius))
                 continue
             if c is not None and c.TypeId == "Part::GeomEllipse":
-                ellipses.append(((c.Center.x, c.Center.y), c.MajorRadius, c.MinorRadius))
+                ellipses.append(
+                    ((c.Center.x, c.Center.y), c.MajorRadius, c.MinorRadius)
+                )
                 continue
             vs = e.Vertexes
             if len(vs) >= 2:
@@ -221,8 +238,11 @@ if __name__ == "__main__":
 
     def check(name, shape, vd, expect_sil):
         global fails
-        cone_faces = [f for f in shape.Faces
-                      if hasattr(f, "Surface") and f.Surface.TypeId == "Part::GeomCone"]
+        cone_faces = [
+            f
+            for f in shape.Faces
+            if hasattr(f, "Surface") and f.Surface.TypeId == "Part::GeomCone"
+        ]
         segs, occ_circ, occ_ell = occ_prims(shape, vd)
         nsil = nsil_ok = nring = nring_ok = 0
         for f in cone_faces:
@@ -232,39 +252,47 @@ if __name__ == "__main__":
                     nsil_ok += seg_matched((p["p1"], p["p2"]), segs)
                 elif p["type"] == "circle":
                     nring += 1
-                    nring_ok += any(abs(p["center"][0] - c[0]) < 1e-3
-                                    and abs(p["center"][1] - c[1]) < 1e-3
-                                    and abs(p["radius"] - r) < 1e-3
-                                    for (c, r) in occ_circ)
+                    nring_ok += any(
+                        abs(p["center"][0] - c[0]) < 1e-3
+                        and abs(p["center"][1] - c[1]) < 1e-3
+                        and abs(p["radius"] - r) < 1e-3
+                        for (c, r) in occ_circ
+                    )
                 elif p["type"] == "ellipse":
                     nring += 1
-                    nring_ok += any(abs(p["center"][0] - c[0]) < 1e-3
-                                    and abs(p["center"][1] - c[1]) < 1e-3
-                                    and abs(p["rmaj"] - rmaj) < 1e-3
-                                    and abs(p["rmin"] - rmin) < 1e-3
-                                    for (c, rmaj, rmin) in occ_ell)
+                    nring_ok += any(
+                        abs(p["center"][0] - c[0]) < 1e-3
+                        and abs(p["center"][1] - c[1]) < 1e-3
+                        and abs(p["rmaj"] - rmaj) < 1e-3
+                        and abs(p["rmin"] - rmin) < 1e-3
+                        for (c, rmaj, rmin) in occ_ell
+                    )
                 elif p["type"] == "line":  # edge-on ring
                     nring += 1
                     nring_ok += seg_matched((p["p1"], p["p2"]), segs)
-        ok = (nsil == expect_sil and nsil_ok == nsil and nring_ok == nring and nring > 0)
-        print("  [%s] %-14s vd=%s  sil %d/%d matched, rings %d/%d matched"
-              % ("OK" if ok else "FAIL", name, vd, nsil_ok, nsil, nring_ok, nring))
+        ok = nsil == expect_sil and nsil_ok == nsil and nring_ok == nring and nring > 0
+        print(
+            "  [%s] %-14s vd=%s  sil %d/%d matched, rings %d/%d matched"
+            % ("OK" if ok else "FAIL", name, vd, nsil_ok, nsil, nring_ok, nring)
+        )
         if not ok:
             fails += 1
 
-    plain = Part.makeCone(10, 0, 20)            # base r=10, apex, h=20 (+Z axis)
-    frus = Part.makeCone(10, 5, 15)             # frustum
+    plain = Part.makeCone(10, 0, 20)  # base r=10, apex, h=20 (+Z axis)
+    frus = Part.makeCone(10, 5, 15)  # frustum
     tilt = Part.makeCone(10, 0, 20)
     tilt.rotate(App.Vector(0, 0, 0), App.Vector(1, 0, 0), 35)
     box = Part.makeBox(40, 40, 20, App.Vector(-20, -20, -20))
-    csk = box.cut(Part.makeCone(3, 9, 6, App.Vector(0, 0, -6)))  # countersink-ish pocket
+    csk = box.cut(
+        Part.makeCone(3, 9, 6, App.Vector(0, 0, -6))
+    )  # countersink-ish pocket
 
     # front view (0,-1,0): oracle frame (-z, x); HLR front frame == same (see base.py)
-    check("plain_cone", plain, (0, -1, 0), expect_sil=2)   # edge-on axis
+    check("plain_cone", plain, (0, -1, 0), expect_sil=2)  # edge-on axis
     check("frustum", frus, (0, -1, 0), expect_sil=2)
-    check("tilted_cone", tilt, (0, -1, 0), expect_sil=2)   # oblique axis
-    check("tilted_cone", tilt, (0, 0, 1), expect_sil=2)    # oblique from top
-    check("countersunk", csk, (0, -1, 0), expect_sil=2)    # internal cone (hidden lines)
+    check("tilted_cone", tilt, (0, -1, 0), expect_sil=2)  # oblique axis
+    check("tilted_cone", tilt, (0, 0, 1), expect_sil=2)  # oblique from top
+    check("countersunk", csk, (0, -1, 0), expect_sil=2)  # internal cone (hidden lines)
     # axis-aligned view: silhouette degenerates to nothing, rings -> circles
     check("plain_cone", plain, (0, 0, 1), expect_sil=0)
     check("frustum", frus, (0, 0, 1), expect_sil=0)

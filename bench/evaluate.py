@@ -18,6 +18,7 @@ Usage:
     python bench/evaluate.py results/20260705_xxxx_qwen2.5vl:32b --workers 4
     python bench/evaluate.py results/*/                      # several at once
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,14 +32,26 @@ import common as C  # noqa: E402
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("run_dirs", nargs="+", type=Path,
-                    help="results/<run_name>/ directories to (re)score")
-    ap.add_argument("--workers", type=int, default=4,
-                    help="parallel fixtures (default 4; 1 = sequential)")
-    ap.add_argument("--force", action="store_true",
-                    help="realign + re-render even if cached artefacts are fresh")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "run_dirs",
+        nargs="+",
+        type=Path,
+        help="results/<run_name>/ directories to (re)score",
+    )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="parallel fixtures (default 4; 1 = sequential)",
+    )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="realign + re-render even if cached artefacts are fresh",
+    )
     ap.add_argument("--no-xvfb", action="store_true")
     args = ap.parse_args()
 
@@ -48,9 +61,13 @@ def main() -> int:
             raise SystemExit(f"Not a directory: {d}")
 
     cgb = [
-        sys.executable, "-m", "cadgenbench.cli", "evaluate",
+        sys.executable,
+        "-m",
+        "cadgenbench.cli",
+        "evaluate",
         *[str(d) for d in run_dirs],
-        "--workers", str(args.workers),
+        "--workers",
+        str(args.workers),
     ]
     if args.force:
         cgb.append("--force")

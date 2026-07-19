@@ -60,8 +60,9 @@ def _outputs_exist(td: TechdrawPaths | None, r3: Render3dPaths | None) -> bool:
     return all(p.exists() for p in paths)
 
 
-def _worker(step_path: Path, td: TechdrawPaths | None, r3: Render3dPaths | None,
-            queue: mp.Queue) -> None:
+def _worker(
+    step_path: Path, td: TechdrawPaths | None, r3: Render3dPaths | None, queue: mp.Queue
+) -> None:
     """Runs in a child process; all OCC work happens here."""
     t0 = time.time()
     result = PartResult(name=step_path.stem, ok=True)
@@ -92,8 +93,8 @@ def _load_done(manifest: Path, *, require_techdraw_info: bool = False) -> set[st
             except json.JSONDecodeError:
                 continue
             extra = rec.get("extra")
-            has_techdraw_info = (
-                isinstance(extra, dict) and isinstance(extra.get("techdraw"), dict)
+            has_techdraw_info = isinstance(extra, dict) and isinstance(
+                extra.get("techdraw"), dict
             )
             if rec.get("ok") and (not require_techdraw_info or has_techdraw_info):
                 done.add(rec["name"])
@@ -105,8 +106,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--input_dir", type=Path, required=True)
     ap.add_argument("--output_dir", type=Path, required=True)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 4) - 2))
-    ap.add_argument("--timeout", type=float, default=120.0,
-                    help="per-part wall-clock timeout in seconds")
+    ap.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="per-part wall-clock timeout in seconds",
+    )
     ap.add_argument("--limit", type=int, default=0, help="render at most N parts")
     ap.add_argument("--no-render3d", action="store_true")
     ap.add_argument("--no-techdraw", action="store_true")
@@ -122,8 +127,11 @@ def main(argv: list[str] | None = None) -> int:
     out = args.output_dir
     for sub in ("svg", "dxf", "pdf"):
         (out / "techdraw" / sub).mkdir(parents=True, exist_ok=True)
-    for sub in ("hlg_perspective", "transparent_shaded_edges_perspective",
-                "hlg_translucent_faces_perspective"):
+    for sub in (
+        "hlg_perspective",
+        "transparent_shaded_edges_perspective",
+        "hlg_translucent_faces_perspective",
+    ):
         (out / "render_3d" / sub).mkdir(parents=True, exist_ok=True)
 
     manifest_path = out / MANIFEST_NAME
@@ -141,8 +149,10 @@ def main(argv: list[str] | None = None) -> int:
             continue
         todo.append((step, td, r3))
 
-    print(f"{len(steps)} parts, {len(steps) - len(todo)} already done, "
-          f"{len(todo)} to render, workers={args.workers}, timeout={args.timeout}s")
+    print(
+        f"{len(steps)} parts, {len(steps) - len(todo)} already done, "
+        f"{len(todo)} to render, workers={args.workers}, timeout={args.timeout}s"
+    )
 
     ctx = mp.get_context("spawn")  # OCC state must not be forked
     live: dict[int, tuple] = {}  # pid -> (proc, queue, name, deadline)
@@ -157,8 +167,11 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:  # noqa: BLE001
             pass
         if rec is None:
-            rec = PartResult(name=name, ok=False, error="TimeoutError: killed "
-                             "(native hang, likely OCC HLR)").__dict__
+            rec = PartResult(
+                name=name,
+                ok=False,
+                error="TimeoutError: killed (native hang, likely OCC HLR)",
+            ).__dict__
         n_ok += bool(rec["ok"])
         n_fail += not rec["ok"]
         manifest.write(json.dumps(rec) + "\n")

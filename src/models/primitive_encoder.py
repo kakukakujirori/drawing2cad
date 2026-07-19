@@ -43,7 +43,9 @@ class PrimitiveEncoderConfig:
         for field_name in positive_fields:
             value = getattr(self, field_name)
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError(f"{field_name} must be a positive integer, got {value!r}")
+                raise ValueError(
+                    f"{field_name} must be a positive integer, got {value!r}"
+                )
         if self.primitive_dim % self.resampler_heads != 0:
             raise ValueError(
                 "primitive_dim must be divisible by resampler_heads; "
@@ -68,7 +70,9 @@ class PrimitiveEncoderConfig:
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "PrimitiveEncoderConfig":
         if not isinstance(values, dict):
-            raise TypeError(f"primitive configuration must be a dictionary, got {type(values)}")
+            raise TypeError(
+                f"primitive configuration must be a dictionary, got {type(values)}"
+            )
         return cls(**values)
 
 
@@ -208,7 +212,9 @@ class _CurveEncoder(nn.Module):
         sample_mask: torch.Tensor,
     ) -> torch.Tensor:
         if not torch.all(sample_mask.any(dim=-1)):
-            raise ValueError("every encoded primitive must contain at least one valid sample")
+            raise ValueError(
+                "every encoded primitive must contain at least one valid sample"
+            )
         reversed_features, reversed_mask = self.reverse_valid_samples(
             sample_features, sample_mask
         )
@@ -253,9 +259,7 @@ class _GroupContext(nn.Module):
             counts = torch.bincount(inverse, minlength=group_count).to(tokens.dtype)
             contexts = contexts / counts.unsqueeze(-1)
             contexts = self.context_projection(self.context_mlp(contexts))
-            output[batch_index][grouped] = self.output_norm(
-                tokens + contexts[inverse]
-            )
+            output[batch_index][grouped] = self.output_norm(tokens + contexts[inverse])
         return output
 
 
@@ -278,9 +282,7 @@ class PrimitiveEncoder(nn.Module):
             config.primitive_encoder_layers,
         )
         self.primitive_type_embedding = nn.Embedding(config.num_primitive_types, dim)
-        self.view_direction_embedding = nn.Embedding(
-            len(config.view_directions), dim
-        )
+        self.view_direction_embedding = nn.Embedding(len(config.view_directions), dim)
         self.local_feature_norm = nn.LayerNorm(dim)
         self.group_context = _GroupContext(dim) if config.use_group_context else None
         self.resampler = PerceiverResampler(
@@ -358,7 +360,9 @@ class PrimitiveEncoder(nn.Module):
         for name, shape in expected_shapes.items():
             actual = getattr(batch, name)
             if actual.shape != shape:
-                raise ValueError(f"{name} must have shape {shape}, got {tuple(actual.shape)}")
+                raise ValueError(
+                    f"{name} must have shape {shape}, got {tuple(actual.shape)}"
+                )
 
         for name in ("sample_mask", "primitive_mask"):
             value = getattr(batch, name)
@@ -379,20 +383,28 @@ class PrimitiveEncoder(nn.Module):
 
         devices = {value.device for value in fields.values()}
         if len(devices) != 1:
-            raise ValueError(f"all primitive tensors must share one device, got {devices}")
+            raise ValueError(
+                f"all primitive tensors must share one device, got {devices}"
+            )
 
         if torch.any(batch.sample_mask & ~batch.primitive_mask.unsqueeze(-1)):
             raise ValueError("inactive primitive slots must not contain valid samples")
         active_sample_counts = batch.sample_mask.sum(dim=-1)
         if torch.any(batch.primitive_mask & (active_sample_counts == 0)):
-            raise ValueError("every active primitive must contain at least one valid sample")
+            raise ValueError(
+                "every active primitive must contain at least one valid sample"
+            )
         if not torch.all(batch.primitive_mask.any(dim=-1)):
             raise ValueError("every sample must contain at least one active primitive")
 
         positions = torch.arange(sample_count, device=batch.sample_mask.device)
         prefix_mask = positions < active_sample_counts.unsqueeze(-1)
-        if not torch.equal(batch.sample_mask, prefix_mask & batch.primitive_mask.unsqueeze(-1)):
-            raise ValueError("valid samples must form a contiguous prefix with padding at the end")
+        if not torch.equal(
+            batch.sample_mask, prefix_mask & batch.primitive_mask.unsqueeze(-1)
+        ):
+            raise ValueError(
+                "valid samples must form a contiguous prefix with padding at the end"
+            )
 
         active_types = batch.primitive_type_ids[batch.primitive_mask]
         if torch.any(active_types < 0) or torch.any(
@@ -430,9 +442,7 @@ class PrimitiveEncoder(nn.Module):
         directions = self.view_direction_embedding(
             batch.view_direction_ids[batch.primitive_mask]
         )
-        active_tokens = self.local_feature_norm(
-            geometry + primitive_types + directions
-        )
+        active_tokens = self.local_feature_norm(geometry + primitive_types + directions)
         # LayerNorm may intentionally run in float32 under autocast even when
         # sampled inputs and module parameters are bf16. Allocate from the
         # fused result so masked assignment never mixes those dtypes.

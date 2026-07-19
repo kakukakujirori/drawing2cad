@@ -69,14 +69,28 @@ ENVELOPE_W_MM = 255.0
 ENVELOPE_H_MM = 192.0
 # Standard drawing scales SolidWorks chooses from (drawing-mm per model-unit).
 SCALE_LADDER = (
-    100.0, 50.0, 20.0, 10.0, 5.0, 2.0, 1.0,
-    0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001,
+    100.0,
+    50.0,
+    20.0,
+    10.0,
+    5.0,
+    2.0,
+    1.0,
+    0.5,
+    0.2,
+    0.1,
+    0.05,
+    0.02,
+    0.01,
+    0.005,
+    0.002,
+    0.001,
 )
 
 # --- Center marks (measured on SW_CENTERMARKSYMBOL blocks) -----------------
-CENTERMARK_CROSS_MM = 2.5      # central cross half-length
-CENTERMARK_GAP_MM = 2.5        # gap from cross tip to the extension dash start
-CENTERMARK_EXT_MM = 2.5        # arm extension beyond the circle edge
+CENTERMARK_CROSS_MM = 2.5  # central cross half-length
+CENTERMARK_GAP_MM = 2.5  # gap from cross tip to the extension dash start
+CENTERMARK_EXT_MM = 2.5  # arm extension beyond the circle edge
 # SVG center-line dash pattern (pt) and its DXF-mm equivalent.
 SVG_CENTER_DASH = (86.40001, 3.60001, 3.60001, 3.60001)
 

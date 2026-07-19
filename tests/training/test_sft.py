@@ -88,8 +88,12 @@ class SFTTrainingTest(unittest.TestCase):
         self.assertTrue(any(gradient is not None for gradient in lora_gradients))
         self.assertTrue(primitive_gradients)
         self.assertTrue(any(gradient is not None for gradient in primitive_gradients))
-        self.assertTrue(all(not parameter.requires_grad for parameter in visual.parameters()))
-        self.assertTrue(all(parameter.grad is None for parameter in visual.parameters()))
+        self.assertTrue(
+            all(not parameter.requires_grad for parameter in visual.parameters())
+        )
+        self.assertTrue(
+            all(parameter.grad is None for parameter in visual.parameters())
+        )
 
         optimizer.step()
         self.assertTrue(
@@ -100,7 +104,9 @@ class SFTTrainingTest(unittest.TestCase):
             )
         )
 
-    def test_adapter_checkpoint_restores_model_optimizer_scheduler_rng_and_step(self) -> None:
+    def test_adapter_checkpoint_restores_model_optimizer_scheduler_rng_and_step(
+        self,
+    ) -> None:
         model, _ = tiny_peft_model()
         accelerator = Accelerator(cpu=True)
         optimizer = torch.optim.AdamW(
@@ -123,9 +129,7 @@ class SFTTrainingTest(unittest.TestCase):
             scheduler=scheduler,
             dataloader_generator=generator,
         )
-        progress = TrainingProgress(
-            global_step=3, epoch=1, batches_seen_in_epoch=2
-        )
+        progress = TrainingProgress(global_step=3, epoch=1, batches_seen_in_epoch=2)
         checkpoint.set_progress(progress)
         saved_parameters = {
             name: parameter.detach().clone()

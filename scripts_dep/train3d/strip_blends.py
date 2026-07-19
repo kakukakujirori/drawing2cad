@@ -22,6 +22,7 @@ Usage:
     # then point build_dataset --code-dir at --out-dir (gt_dir stays the original
     # WITH-blend stage: blends are sub-voxel, so eval GT is unaffected).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,8 +36,19 @@ from tqdm import tqdm
 BLEND = {"fillet", "chamfer"}
 # selector / stack-navigation methods that only exist to pick the edges a blend
 # acts on — peeled back so `X.edges().first().fillet(r)` reduces to `X`.
-SELECTOR = {"edges", "faces", "vertices", "wires", "solids", "shells",
-            "first", "last", "item", "end", "all"}
+SELECTOR = {
+    "edges",
+    "faces",
+    "vertices",
+    "wires",
+    "solids",
+    "shells",
+    "first",
+    "last",
+    "item",
+    "end",
+    "all",
+}
 
 
 class StripBlend(ast.NodeTransformer):
@@ -46,11 +58,14 @@ class StripBlend(ast.NodeTransformer):
         self.n = 0
 
     def visit_Call(self, node: ast.Call):
-        self.generic_visit(node)                      # transform inner calls first
+        self.generic_visit(node)  # transform inner calls first
         if isinstance(node.func, ast.Attribute) and node.func.attr in BLEND:
             recv = node.func.value
-            while (isinstance(recv, ast.Call) and isinstance(recv.func, ast.Attribute)
-                   and recv.func.attr in SELECTOR):
+            while (
+                isinstance(recv, ast.Call)
+                and isinstance(recv.func, ast.Attribute)
+                and recv.func.attr in SELECTOR
+            ):
                 recv = recv.func.value
             self.n += 1
             return recv
@@ -81,16 +96,23 @@ def _process_one(p, out_dir):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--in-dir", required=True, help="stage dir with *.cadquery.py")
-    ap.add_argument("--out-dir", required=True, help="dest dir for blend-free *.cadquery.py")
+    ap.add_argument(
+        "--out-dir", required=True, help="dest dir for blend-free *.cadquery.py"
+    )
     ap.add_argument("--glob", default="*.cadquery.py")
-    ap.add_argument("--workers", type=int, default=32,
-                    help="thread pool size: per-file work is almost entirely file "
-                         "open/read/write (the ast parse/transform itself is a few "
-                         "hundred microseconds), which releases the GIL, so threads "
-                         "parallelize this well")
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=32,
+        help="thread pool size: per-file work is almost entirely file "
+        "open/read/write (the ast parse/transform itself is a few "
+        "hundred microseconds), which releases the GIL, so threads "
+        "parallelize this well",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -105,9 +127,11 @@ def main() -> int:
             else:
                 n_ok += 1
                 n_blend += payload
-                n_stripped += (payload > 0)
-    print(f"[strip_blends] {n_ok} written ({n_stripped} had blends, {n_blend} blend "
-          f"ops removed), {n_fail} parse-failed -> {args.out_dir}")
+                n_stripped += payload > 0
+    print(
+        f"[strip_blends] {n_ok} written ({n_stripped} had blends, {n_blend} blend "
+        f"ops removed), {n_fail} parse-failed -> {args.out_dir}"
+    )
     return 0
 
 

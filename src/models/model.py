@@ -70,7 +70,9 @@ class Drawing2CADQwen3VLForConditionalGeneration(Qwen3VLForConditionalGeneration
         config.architectures = [self.__class__.__name__]
         super().__init__(config)
         hidden_size = config.text_config.hidden_size
-        self.primitive_encoder = PrimitiveEncoder(primitive_config, output_dim=hidden_size)
+        self.primitive_encoder = PrimitiveEncoder(
+            primitive_config, output_dim=hidden_size
+        )
         self.primitive_config = primitive_config
 
     @classmethod
@@ -222,14 +224,18 @@ class Drawing2CADQwen3VLForConditionalGeneration(Qwen3VLForConditionalGeneration
             )
 
         if attention_mask is None:
-            raise ValueError("attention_mask is required when primitive placeholders are used")
+            raise ValueError(
+                "attention_mask is required when primitive placeholders are used"
+            )
         if attention_mask.shape != input_ids.shape:
             raise ValueError(
                 "attention_mask must have the same [B, T] shape as input_ids when "
                 "primitive placeholders are used"
             )
         if not torch.all(attention_mask[primitive_token_mask].bool()):
-            raise ValueError("primitive placeholder positions must have attention_mask=1")
+            raise ValueError(
+                "primitive placeholder positions must have attention_mask=1"
+            )
 
         if mm_token_type_ids is None:
             raise ValueError(
@@ -241,7 +247,9 @@ class Drawing2CADQwen3VLForConditionalGeneration(Qwen3VLForConditionalGeneration
                 "mm_token_type_ids must have the same [B, T] shape as input_ids"
             )
         if torch.any(mm_token_type_ids[primitive_token_mask] != 0):
-            raise ValueError("primitive placeholder positions must have mm_token_type_ids=0")
+            raise ValueError(
+                "primitive placeholder positions must have mm_token_type_ids=0"
+            )
 
         if labels is not None:
             if labels.ndim != 2 or labels.shape[0] != input_ids.shape[0]:
@@ -251,7 +259,9 @@ class Drawing2CADQwen3VLForConditionalGeneration(Qwen3VLForConditionalGeneration
             label_offset = input_ids.shape[1] - labels.shape[1]
             overlapping_mask = primitive_token_mask[:, label_offset:]
             if torch.any(labels[overlapping_mask] != -100):
-                raise ValueError("primitive placeholder positions must have labels=-100")
+                raise ValueError(
+                    "primitive placeholder positions must have labels=-100"
+                )
 
     def forward(
         self,

@@ -8,80 +8,85 @@ import Part
 from scripts.renderer.cad_projector import CADProjector
 from scripts.renderer.graph_builder import GraphBuilder
 
+
 def test_ray_casting():
     print("=== Ray Casting Topological Test ===")
-    
+
     # 1. Setup CAD Model
     shape = Part.makeBox(10, 20, 30)
-    direction = (0, -1, 0) # Front view (Y is into the screen for standard Z-up)
-    
+    direction = (0, -1, 0)  # Front view (Y is into the screen for standard Z-up)
+
     # 2. Run Pipeline
     projector = CADProjector(shape)
     prims = projector.project(direction)
-    
+
     graph_builder = GraphBuilder(shape)
     enriched_prims = graph_builder.enrich_topo_origins(prims)
-    
+
     # 3. Ray Casting Validation
     matches = 0
     errors = 0
-    
+
     for i, prim in enumerate(enriched_prims):
         if prim["type"] != "line":
             continue
-            
+
         p1 = prim["p1"]
         p2 = prim["p2"]
-        
+
         # Midpoint in 2D
         mid_u = (p1[0] + p2[0]) / 2.0
         mid_v = (p1[1] + p2[1]) / 2.0
-        
+
         # Back-project to 3D ray (Line segment)
         # For direction = (0, -1, 0): X -> -u, Z -> v ?
-        # Wait, in base.py: 
+        # Wait, in base.py:
         # if (0, -1, 0): return (-z, x)
         # So u = -z => z = -u
         # v = x => x = v
-        
+
         # To be general, we know project_point. We can just inverse map for (0, -1, 0).
         x = mid_v
         z = -mid_u
-        
+
         # Create a Ray along Y axis (the view direction)
         # Since view_direction is (0, -1, 0), the ray goes from +Y to -Y.
         ray_start = App.Vector(x, 100, z)
         ray_end = App.Vector(x, -100, z)
         ray_edge = Part.makeLine(ray_start, ray_end)
-        
+
         # Find which Edges and Faces the ray intersects
         hit_edges = []
         for e_idx, edge in enumerate(shape.Edges):
             if edge.distToShape(ray_edge)[0] < 1e-4:
                 hit_edges.append(f"Edge_{e_idx}")
-                
+
         hit_faces = []
         for f_idx, face in enumerate(shape.Faces):
             if face.distToShape(ray_edge)[0] < 1e-4:
                 hit_faces.append(f"Face_{f_idx}")
-                
+
         expected_origins = set(hit_edges + hit_faces)
         actual_origins = {o["id"] for o in prim.get("topo_origins", [])}
-        
+
         # Check if actual origins is a subset of expected origins (or exact match).
-        # Note: A ray through an edge will hit the edge, its 2 parent faces, 
-        # and possibly other faces/edges behind it. 
+        # Note: A ray through an edge will hit the edge, its 2 parent faces,
+        # and possibly other faces/edges behind it.
         # Our projector only projects visible or all? It projects all.
         # But GraphBuilder only adds PARENT faces of the edge, not faces behind it.
         # Actually, for an Edge, expected parent faces = the faces hit by the ray that share the edge.
         # Let's just check if all actual_origins are in expected_origins.
         if actual_origins.issubset(expected_origins):
             matches += 1
-            print(f"[OK] Line {i} origins {actual_origins} subset of Ray Hits {expected_origins}")
+            print(
+                f"[OK] Line {i} origins {actual_origins} subset of Ray Hits {expected_origins}"
+            )
         else:
             errors += 1
-            print(f"[FAIL] Line {i} origins {actual_origins} NOT in Ray Hits {expected_origins}")
-            
+            print(
+                f"[FAIL] Line {i} origins {actual_origins} NOT in Ray Hits {expected_origins}"
+            )
+
     print(f"Test Complete: {matches} Matches, {errors} Errors.")
 
 
@@ -92,6 +97,7 @@ def test_ray_casting():
 #  so this used to kill the whole part (val 26/26 skips). Real such edges only
 #  arise from pathological booleans, so the tests emulate one with a fake edge.
 # ============================================================================
+
 
 class _BadCurveEdge:
     """Emulates a FreeCAD Edge whose .Curve raises like the C++ layer does."""
@@ -107,7 +113,9 @@ class _BadCurveEdge:
     @property
     def Vertexes(self):
         class _V:
-            def __init__(self, p): self.Point = p
+            def __init__(self, p):
+                self.Point = p
+
         return [_V(self._pts[0]), _V(self._pts[-1])]
 
     def discretize(self, **kw):
@@ -133,13 +141,16 @@ class _FakeCurveEdge:
         self.Closed = closed
         self._ends = [App.Vector(x, y, 0) for x, y in endpoints]
         self._stable = [App.Vector(x, y, 0) for x, y in stable]
-        self._bad = ([App.Vector(x, y, 0) for x, y in bad_deflection]
-                     if bad_deflection else None)
+        self._bad = (
+            [App.Vector(x, y, 0) for x, y in bad_deflection] if bad_deflection else None
+        )
 
     @property
     def Vertexes(self):
         class _V:
-            def __init__(self, p): self.Point = p
+            def __init__(self, p):
+                self.Point = p
+
         return [_V(p) for p in self._ends]
 
     def discretize(self, **kw):
@@ -175,8 +186,10 @@ def test_classify_edge_fallback():
     d = edge_to_path(_BadCurveEdge([(0, 0, 0), (5, 1, 0), (10, 0, 0)]))
     assert d.startswith("M") and "L" in d, d
     assert _FALLBACK["svg_fallback_edges"] == 1, dict(_FALLBACK)
-    print("[OK] classify_edge + edge_to_path fall back to polyline, counters:",
-          {k: v for k, v in _FALLBACK.items() if v})
+    print(
+        "[OK] classify_edge + edge_to_path fall back to polyline, counters:",
+        {k: v for k, v in _FALLBACK.items() if v},
+    )
     _FALLBACK.clear()
 
 
@@ -190,36 +203,46 @@ def test_classify_edge_extent_guards():
     # A partial ellipse whose infinite support is far away, while its actual
     # bounded edge is local, must preserve the edge as a bounded polyline.
     ill = _FakeCurveEdge(
-        _FakeCurve("Part::GeomEllipse", center=(100000, 100000),
-                   rmaj=100000, rmin=50000),
+        _FakeCurve(
+            "Part::GeomEllipse", center=(100000, 100000), rmaj=100000, rmin=50000
+        ),
         endpoints=[(10, 10), (12, 10)],
-        stable=[(10, 10), (11, 10.1), (12, 10)])
+        stable=[(10, 10), (11, 10.1), (12, 10)],
+    )
     typ, g = classify_edge(ill, env)
     assert typ == "polyline" and g["pts"][1] == (11.0, 10.1), (typ, g)
     assert _FALLBACK["partial_conic_polylines"] == 1, dict(_FALLBACK)
 
     # Deflection sampling can diverge even when Number sampling is stable.
     curve = _FakeCurve("Part::GeomBSplineCurve")
-    divergent = _FakeCurveEdge(curve, endpoints=[(10, 10), (20, 10)],
-                               stable=[(10, 10), (15, 12), (20, 10)],
-                               bad_deflection=[(10, 10), (1e9, 1e9), (20, 10)])
+    divergent = _FakeCurveEdge(
+        curve,
+        endpoints=[(10, 10), (20, 10)],
+        stable=[(10, 10), (15, 12), (20, 10)],
+        bad_deflection=[(10, 10), (1e9, 1e9), (20, 10)],
+    )
     typ, g = classify_edge(divergent, env)
     assert typ == "polyline" and max(x for p in g["pts"] for x in p) < 100, (typ, g)
 
     # A genuinely out-of-envelope HLR edge has no trustworthy bounded form.
-    stray = _FakeCurveEdge(_FakeCurve("Part::GeomLine"),
-                           endpoints=[(10000, 0), (10010, 0)],
-                           stable=[(10000, 0), (10010, 0)])
+    stray = _FakeCurveEdge(
+        _FakeCurve("Part::GeomLine"),
+        endpoints=[(10000, 0), (10010, 0)],
+        stable=[(10000, 0), (10010, 0)],
+    )
     assert classify_edge(stray, env) is None
 
     # Normal analytic ellipse stays analytic (negative regression).
-    normal = _FakeCurveEdge(_FakeCurve("Part::GeomEllipse", center=(50, 50),
-                                      rmaj=10, rmin=5),
-                            endpoints=[(60, 50), (50, 55)],
-                            stable=[(60, 50), (57, 53), (50, 55)])
+    normal = _FakeCurveEdge(
+        _FakeCurve("Part::GeomEllipse", center=(50, 50), rmaj=10, rmin=5),
+        endpoints=[(60, 50), (50, 55)],
+        stable=[(60, 50), (57, 53), (50, 55)],
+    )
     typ, _ = classify_edge(normal, env)
     assert typ == "ellipse", typ
-    print("[OK] partial conic fallback, polyline retry, stray rejection, normal ellipse")
+    print(
+        "[OK] partial conic fallback, polyline retry, stray rejection, normal ellipse"
+    )
     _FALLBACK.clear()
 
 
@@ -232,34 +255,42 @@ def test_cad_projector_guard():
         def Surface(self):
             raise TypeError("undefined surface type")
 
-    shape = _FakeShape([_BadSurfaceFace()],
-                       [_BadCurveEdge([(0, 0, 0), (1, 1, 1)]), good_edge.Edges[0]])
+    shape = _FakeShape(
+        [_BadSurfaceFace()], [_BadCurveEdge([(0, 0, 0), (1, 1, 1)]), good_edge.Edges[0]]
+    )
     proj = CADProjector(shape)
-    prims = proj.project((0, -1, 0))   # must not raise
+    prims = proj.project((0, -1, 0))  # must not raise
     assert proj.last_skipped == {"faces": 1, "edges": 1}, proj.last_skipped
     lines = [p for p in prims if p["type"] == "line"]
-    assert len(lines) == 1, prims      # the good line still projected
+    assert len(lines) == 1, prims  # the good line still projected
     assert lines[0]["topo_origins"] == [{"dim": 1, "id": "Edge_1", "role": "edge"}]
-    print("[OK] bad face+edge skipped (last_skipped=%s), good edge still projected"
-          % proj.last_skipped)
+    print(
+        "[OK] bad face+edge skipped (last_skipped=%s), good edge still projected"
+        % proj.last_skipped
+    )
 
 
 def test_cone_face_projection():
     print("\n=== ConeProjector wired into CADProjector ===")
     cone = Part.makeCone(10, 0, 20)
     proj = CADProjector(cone)
-    prims = proj.project((0, -1, 0))   # edge-on axis: 2 silhouette generators
-    sil = [p for p in prims if p.get("role") == "silhouette" and
-           p["topo_origins"][0]["dim"] == 2]
+    prims = proj.project((0, -1, 0))  # edge-on axis: 2 silhouette generators
+    sil = [
+        p
+        for p in prims
+        if p.get("role") == "silhouette" and p["topo_origins"][0]["dim"] == 2
+    ]
     assert len(sil) == 2, prims
     for p in sil:
         assert p["type"] == "line"
         assert p["topo_origins"][0]["role"] == "silhouette"
-    top = proj.project((0, 0, 1))      # axis-aligned: base ring as boundary circle
+    top = proj.project((0, 0, 1))  # axis-aligned: base ring as boundary circle
     rings = [p for p in top if p.get("role") == "boundary" and p["type"] == "circle"]
     assert len(rings) == 1 and abs(rings[0]["radius"] - 10.0) < 1e-6, top
-    print("[OK] cone face -> %d silhouette lines (front), %d boundary circle (top)"
-          % (len(sil), len(rings)))
+    print(
+        "[OK] cone face -> %d silhouette lines (front), %d boundary circle (top)"
+        % (len(sil), len(rings))
+    )
 
 
 if __name__ == "__main__":

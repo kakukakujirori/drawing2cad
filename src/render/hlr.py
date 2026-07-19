@@ -19,8 +19,6 @@ from dataclasses import dataclass, field
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
 from OCC.Core.GCPnts import GCPnts_QuasiUniformDeflection
 from OCC.Core.GeomAbs import (
-    GeomAbs_BSplineCurve,
-    GeomAbs_BezierCurve,
     GeomAbs_Circle,
     GeomAbs_Ellipse,
     GeomAbs_Line,
@@ -146,8 +144,9 @@ def _sample_arc(center, radius, a0, a1, ccw, n):
 # --------------------------------------------------------------------------
 
 
-def make_projector(view_dir: tuple[float, float, float],
-                   up_dir: tuple[float, float, float]) -> HLRAlgo_Projector:
+def make_projector(
+    view_dir: tuple[float, float, float], up_dir: tuple[float, float, float]
+) -> HLRAlgo_Projector:
     """Orthographic projector.
 
     ``view_dir`` points from the model toward the viewer (the plane normal).
@@ -225,13 +224,15 @@ def _degenerate_sliver(pts) -> bool:
     endgap = math.hypot(xs[-1] - xs[0], ys[-1] - ys[0])
     if endgap >= 1e-2 * ext:
         return False
-    area = 0.5 * abs(sum(xs[k] * ys[k + 1] - xs[k + 1] * ys[k]
-                         for k in range(len(pts) - 1)))
+    area = 0.5 * abs(
+        sum(xs[k] * ys[k + 1] - xs[k + 1] * ys[k] for k in range(len(pts) - 1))
+    )
     return area < 0.01 * ext * ext
 
 
-def _classify_edge(edge, out: ProjectedEdges, deflection: float,
-                   bound=None, is_outline: bool = False) -> None:
+def _classify_edge(
+    edge, out: ProjectedEdges, deflection: float, bound=None, is_outline: bool = False
+) -> None:
     ad = BRepAdaptor_Curve(edge)
     t = ad.GetType()
     u0 = ad.FirstParameter()
@@ -355,8 +356,9 @@ def _emit_curve(pts, out: ProjectedEdges) -> None:
                 a1 = math.atan2(pts[-1][1] - cy, pts[-1][0] - cx)
                 mid = pts[len(pts) // 2]
                 # sense from the cross product (start->mid)
-                cross = ((mid[0] - cx) * (pts[0][1] - cy)
-                         - (mid[1] - cy) * (pts[0][0] - cx))
+                cross = (mid[0] - cx) * (pts[0][1] - cy) - (mid[1] - cy) * (
+                    pts[0][0] - cx
+                )
                 ccw = cross < 0
                 out.arcs.append(Arc((cx, cy), r, a0, a1, ccw))
             return
@@ -389,8 +391,8 @@ def _fit_circle(pts):
     Suu = sum(ui * ui for ui in u)
     Svv = sum(vi * vi for vi in v)
     Suv = sum(ui * vi for ui, vi in zip(u, v))
-    Suuu = sum(ui ** 3 for ui in u)
-    Svvv = sum(vi ** 3 for vi in v)
+    Suuu = sum(ui**3 for ui in u)
+    Svvv = sum(vi**3 for vi in v)
     Suvv = sum(ui * vi * vi for ui, vi in zip(u, v))
     Svuu = sum(vi * ui * ui for ui, vi in zip(u, v))
     det = Suu * Svv - Suv * Suv
@@ -406,8 +408,9 @@ def _fit_circle(pts):
     return cx, cy, r, resid
 
 
-def _extract_compound(comp, out: ProjectedEdges, deflection: float,
-                      bound=None, is_outline: bool = False) -> None:
+def _extract_compound(
+    comp, out: ProjectedEdges, deflection: float, bound=None, is_outline: bool = False
+) -> None:
     if comp is None or comp.IsNull():
         return
     exp = TopExp_Explorer(comp, TopAbs_EDGE)
@@ -438,8 +441,11 @@ def _recombine_circles(edges: ProjectedEdges, tol: float) -> None:
     groups: dict = {}
     key_scale = 1.0 / max(tol, 1e-9)
     for a in edges.arcs:
-        k = (round(a.center[0] * key_scale), round(a.center[1] * key_scale),
-             round(a.radius * key_scale))
+        k = (
+            round(a.center[0] * key_scale),
+            round(a.center[1] * key_scale),
+            round(a.radius * key_scale),
+        )
         groups.setdefault(k, []).append(a)
     remaining: list[Arc] = []
     for k, arcs in groups.items():
@@ -511,7 +517,7 @@ def _merge_segments(edges: ProjectedEdges, tol: float) -> None:
         k = (round(ang / (tol * 2)), round(off / tol))
         buckets.setdefault(k, (ux, uy, []))[2].append(s)
     merged: list[Segment] = []
-    for (ux, uy, group) in buckets.values():
+    for ux, uy, group in buckets.values():
         # project endpoints onto the line direction, merge overlapping ranges
         ivals = []
         for s in group:
@@ -533,7 +539,9 @@ def _merge_segments(edges: ProjectedEdges, tol: float) -> None:
                 cur_s, cur_e = s, e
         out_ivals.append((cur_s, cur_e))
         for s, e in out_ivals:
-            merged.append(Segment((px + ux * s, py + uy * s), (px + ux * e, py + uy * e)))
+            merged.append(
+                Segment((px + ux * s, py + uy * s), (px + ux * e, py + uy * e))
+            )
     edges.segments = merged
 
 
@@ -542,8 +550,10 @@ def _drop_degenerate(edges: ProjectedEdges, tol: float) -> None:
     endpoints); they survive rounding as zero-length LINE / LWPOLYLINE
     entities in the DXF output."""
     edges.segments = [
-        s for s in edges.segments
-        if math.hypot(s.p1[0] - s.p0[0], s.p1[1] - s.p0[1]) >= tol]
+        s
+        for s in edges.segments
+        if math.hypot(s.p1[0] - s.p0[0], s.p1[1] - s.p0[1]) >= tol
+    ]
 
     def _ext(pts):
         xs = [p[0] for p in pts]
@@ -562,12 +572,14 @@ def _cleanup(edges: ProjectedEdges, tol: float) -> None:
     _merge_segments(edges, tol)
 
 
-def project(shape,
-            view_dir: tuple[float, float, float],
-            up_dir: tuple[float, float, float],
-            deflection: float = 0.05,
-            include_smooth: bool = False,
-            merge_tol: float = 1e-4) -> ViewProjection:
+def project(
+    shape,
+    view_dir: tuple[float, float, float],
+    up_dir: tuple[float, float, float],
+    deflection: float = 0.05,
+    include_smooth: bool = False,
+    merge_tol: float = 1e-4,
+) -> ViewProjection:
     """Project ``shape`` and return typed visible / hidden primitives."""
     projector = make_projector(view_dir, up_dir)
     hts = run_hlr(shape, projector)
@@ -576,15 +588,29 @@ def project(shape,
     visible = ProjectedEdges()
     hidden = ProjectedEdges()
 
-    vis_names = list(_VISIBLE_ACCESSORS) + (list(_VISIBLE_SMOOTH) if include_smooth else [])
-    hid_names = list(_HIDDEN_ACCESSORS) + (list(_HIDDEN_SMOOTH) if include_smooth else [])
+    vis_names = list(_VISIBLE_ACCESSORS) + (
+        list(_VISIBLE_SMOOTH) if include_smooth else []
+    )
+    hid_names = list(_HIDDEN_ACCESSORS) + (
+        list(_HIDDEN_SMOOTH) if include_smooth else []
+    )
 
     for name in vis_names:
-        _extract_compound(_safe_compound(hts, name), visible, deflection, bound,
-                          is_outline="OutLine" in name)
+        _extract_compound(
+            _safe_compound(hts, name),
+            visible,
+            deflection,
+            bound,
+            is_outline="OutLine" in name,
+        )
     for name in hid_names:
-        _extract_compound(_safe_compound(hts, name), hidden, deflection, bound,
-                          is_outline="OutLine" in name)
+        _extract_compound(
+            _safe_compound(hts, name),
+            hidden,
+            deflection,
+            bound,
+            is_outline="OutLine" in name,
+        )
 
     _cleanup(visible, merge_tol)
     _cleanup(hidden, merge_tol)

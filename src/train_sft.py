@@ -12,7 +12,7 @@ import rootutils
 
 
 ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
-
+# ruff: noqa: E402
 from src.data.factory import build_sft_dataloaders
 from src.evaluation import CADGenerationEvaluator
 from src.models.factory import build_sft_model, set_sft_train_mode
@@ -33,7 +33,6 @@ from src.utils import (
     seed_everything,
     setup_run,
 )
-
 
 CONFIG_DIR = str(ROOT / "configs")
 
@@ -65,9 +64,7 @@ def execute(config: Any) -> dict[str, float | int]:
     cfg = _plain_config(config)
     training = _mapping(cfg["training"], name="training")
     accelerator = Accelerator(
-        gradient_accumulation_steps=int(
-            training.get("gradient_accumulation_steps", 1)
-        ),
+        gradient_accumulation_steps=int(training.get("gradient_accumulation_steps", 1)),
         mixed_precision=_mixed_precision(training),
     )
     seed = int(cfg.get("seed", 42))

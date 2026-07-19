@@ -22,12 +22,8 @@ class QwenIntegrationTest(unittest.TestCase):
         self.primitive_batch = make_primitive_batch((1,))
         self.input_ids = torch.tensor([[5, 6, 7, 8, 9]])
         self.attention_mask = torch.ones_like(self.input_ids)
-        self.mm_token_type_ids = torch.zeros_like(
-            self.input_ids, dtype=torch.int32
-        )
-        self.primitive_token_mask = torch.tensor(
-            [[False, True, True, False, False]]
-        )
+        self.mm_token_type_ids = torch.zeros_like(self.input_ids, dtype=torch.int32)
+        self.primitive_token_mask = torch.tensor([[False, True, True, False, False]])
 
     def _primitive_forward(self, **overrides):
         inputs = {
@@ -74,9 +70,7 @@ class QwenIntegrationTest(unittest.TestCase):
         )
         try:
             with torch.no_grad():
-                expected_latents, _ = self.model.encode_primitives(
-                    self.primitive_batch
-                )
+                expected_latents, _ = self.model.encode_primitives(self.primitive_batch)
                 original = self.model.get_input_embeddings()(self.input_ids)
                 self._primitive_forward(use_cache=False)
         finally:
@@ -111,9 +105,7 @@ class QwenIntegrationTest(unittest.TestCase):
     def test_native_image_path_and_multimodal_rope_remain_active(self) -> None:
         # Grid [1, 4, 4] produces four merged Qwen image tokens.
         input_ids = torch.tensor([[5, 120, 120, 120, 120, 6, 7, 8]])
-        mm_token_type_ids = torch.tensor(
-            [[0, 1, 1, 1, 1, 0, 0, 0]], dtype=torch.int32
-        )
+        mm_token_type_ids = torch.tensor([[0, 1, 1, 1, 1, 0, 0, 0]], dtype=torch.int32)
         primitive_mask = torch.tensor(
             [[False, False, False, False, False, True, True, False]]
         )
@@ -190,11 +182,13 @@ class QwenIntegrationTest(unittest.TestCase):
         self.assertEqual(generated.shape, (1, self.input_ids.shape[1] + 3))
 
     def test_saved_checkpoint_round_trip_restores_config_and_weights(self) -> None:
-        original_weight = self.model.primitive_encoder.resampler.queries.detach().clone()
+        original_weight = (
+            self.model.primitive_encoder.resampler.queries.detach().clone()
+        )
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             self.model.save_pretrained(directory)
-            reloaded = (
-                Drawing2CADQwen3VLForConditionalGeneration.from_pretrained(directory)
+            reloaded = Drawing2CADQwen3VLForConditionalGeneration.from_pretrained(
+                directory
             )
         self.assertEqual(
             reloaded.primitive_config.to_dict(),
@@ -215,9 +209,7 @@ class QwenIntegrationTest(unittest.TestCase):
                 primitive_config=primitive_config(),
                 attn_implementation="sdpa",
             )
-        self.assertIsInstance(
-            loaded, Drawing2CADQwen3VLForConditionalGeneration
-        )
+        self.assertIsInstance(loaded, Drawing2CADQwen3VLForConditionalGeneration)
         self.assertEqual(loaded.config.text_config.hidden_size, 32)
         encoded, counts = loaded.encode_primitives(make_primitive_batch((1,)))
         self.assertEqual(counts.tolist(), [4])

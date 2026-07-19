@@ -15,12 +15,15 @@ Run (GPU1 is usually free; GPU0 busy):
   CUDA_VISIBLE_DEVICES=1 PYTHONPATH=/home/ryotaro/github/cadrille \
     python scripts/b2_cadrille_generate.py --feed whole268 --n 5
 """
-import os, glob, json, argparse, time
+
+import os
+import json
+import argparse
+import time
 from PIL import Image
 
 import torch
 from transformers import AutoProcessor
-from functools import partial
 
 from cadrille import Cadrille, collate  # from $CADRILLE_REPO on PYTHONPATH
 
@@ -34,7 +37,10 @@ def cgb_data_root(data_dir=None):
     if cand:
         return cand
     from huggingface_hub import snapshot_download
-    return snapshot_download("HuggingAI4Engineering/cadgenbench-data", repo_type="dataset")
+
+    return snapshot_download(
+        "HuggingAI4Engineering/cadgenbench-data", repo_type="dataset"
+    )
 
 
 def find_generation_fixtures(data_dir=None):
@@ -74,10 +80,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--feed", default="whole268", choices=["whole268", "whole_native"])
     ap.add_argument("--n", type=int, default=5, help="number of generation fixtures")
-    ap.add_argument("--ids", type=str, default="", help="comma-separated fixture ids (overrides --n)")
+    ap.add_argument(
+        "--ids",
+        type=str,
+        default="",
+        help="comma-separated fixture ids (overrides --n)",
+    )
     ap.add_argument("--checkpoint", default="maksimko123/cadrille")
-    ap.add_argument("--out", default=os.path.join(REPO_ROOT, "experiments", "b2_cadrille"))
-    ap.add_argument("--data-dir", default=None, help="CADGenBench fixtures dir (else $CGB_DATA_DIR / HF cache)")
+    ap.add_argument(
+        "--out", default=os.path.join(REPO_ROOT, "experiments", "b2_cadrille")
+    )
+    ap.add_argument(
+        "--data-dir",
+        default=None,
+        help="CADGenBench fixtures dir (else $CGB_DATA_DIR / HF cache)",
+    )
     ap.add_argument("--max-new-tokens", type=int, default=768)
     args = ap.parse_args()
 
@@ -90,22 +107,32 @@ def main():
         fixtures = [f for f in fixtures if f[0] in want]
     else:
         fixtures = fixtures[: args.n]
-    print(f"[b2] {len(fixtures)} fixtures, feed={args.feed}: {[f[0] for f in fixtures]}")
+    print(
+        f"[b2] {len(fixtures)} fixtures, feed={args.feed}: {[f[0] for f in fixtures]}"
+    )
 
     print("[b2] loading cadrille ...")
     model = Cadrille.from_pretrained(
-        args.checkpoint, torch_dtype=torch.bfloat16,
-        attn_implementation="sdpa", device_map="auto")
+        args.checkpoint,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+        device_map="auto",
+    )
     model.eval()
     processor = AutoProcessor.from_pretrained(
         "Qwen/Qwen2-VL-2B-Instruct",
-        min_pixels=256 * 28 * 28, max_pixels=1280 * 28 * 28, padding_side="left")
+        min_pixels=256 * 28 * 28,
+        max_pixels=1280 * 28 * 28,
+        padding_side="left",
+    )
 
     summary = []
     for fid, png in fixtures:
-        item = {"video": [make_image(png, args.feed)],
-                "description": "Generate cadquery code",
-                "file_name": fid}
+        item = {
+            "video": [make_image(png, args.feed)],
+            "description": "Generate cadquery code",
+            "file_name": fid,
+        }
         batch = collate([item], processor=processor, n_points=256, eval=True)
         t0 = time.time()
         with torch.no_grad():
@@ -116,13 +143,17 @@ def main():
                 is_pc=batch["is_pc"].to(model.device),
                 is_img=batch["is_img"].to(model.device),
                 pixel_values_videos=batch["pixel_values_videos"].to(model.device)
-                    if batch.get("pixel_values_videos") is not None else None,
+                if batch.get("pixel_values_videos") is not None
+                else None,
                 video_grid_thw=batch["video_grid_thw"].to(model.device)
-                    if batch.get("video_grid_thw") is not None else None,
-                max_new_tokens=args.max_new_tokens)
-        trimmed = gen[0][batch["input_ids"].shape[1]:]
-        code = processor.decode(trimmed, skip_special_tokens=True,
-                                clean_up_tokenization_spaces=False)
+                if batch.get("video_grid_thw") is not None
+                else None,
+                max_new_tokens=args.max_new_tokens,
+            )
+        trimmed = gen[0][batch["input_ids"].shape[1] :]
+        code = processor.decode(
+            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
         dt = time.time() - t0
         code_path = os.path.join(out_dir, f"{fid}.py")
         with open(code_path, "w") as f:
@@ -131,11 +162,16 @@ def main():
         parses = True
         try:
             compile(code, code_path, "exec")
-        except Exception as e:
+        except Exception:
             parses = False
-        rec = {"id": fid, "chars": len(code), "lines": code.count("\n") + 1,
-               "parses": parses, "has_cadquery": ("cadquery" in code or "cq." in code),
-               "secs": round(dt, 1)}
+        rec = {
+            "id": fid,
+            "chars": len(code),
+            "lines": code.count("\n") + 1,
+            "parses": parses,
+            "has_cadquery": ("cadquery" in code or "cq." in code),
+            "secs": round(dt, 1),
+        }
         summary.append(rec)
         print(f"[b2] {fid}: {rec}")
 

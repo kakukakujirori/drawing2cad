@@ -52,9 +52,7 @@ class GeometryMetricsTest(unittest.TestCase):
         translated = target.copy()
         translated.apply_translation([10.0, 20.0, 30.0])
         self.assertLess(
-            surface_chamfer_distance(
-                translated, target, num_points=256, seed=7
-            ),
+            surface_chamfer_distance(translated, target, num_points=256, seed=7),
             1e-20,
         )
 

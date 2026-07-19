@@ -13,31 +13,39 @@ A round bolt flange chosen to exercise every AMVDG geometry case in one part:
   * a stepped front-view profile (plate + hub) -> visible + hidden edges,
   * axis-aligned cylinders throughout -> the dimensioner/oracle handle them exactly.
 """
+
 import os
 import cadquery as cq
 
 # --- parameters (these ARE the intended dimensions of the part) --------------
-PLATE_OD = 120.0   # base plate outer diameter
-PLATE_T  = 16.0    # base plate thickness
-HUB_OD   = 76.0    # raised central hub outer diameter
-HUB_H    = 22.0    # hub height above the plate
-BORE_D   = 40.0    # central through bore diameter
-BOLT_PCD = 95.0    # bolt-hole pitch-circle diameter
-BOLT_D   = 11.0    # bolt-hole diameter
-BOLT_N   = 6       # number of bolt holes
+PLATE_OD = 120.0  # base plate outer diameter
+PLATE_T = 16.0  # base plate thickness
+HUB_OD = 76.0  # raised central hub outer diameter
+HUB_H = 22.0  # hub height above the plate
+BORE_D = 40.0  # central through bore diameter
+BOLT_PCD = 95.0  # bolt-hole pitch-circle diameter
+BOLT_D = 11.0  # bolt-hole diameter
+BOLT_N = 6  # number of bolt holes
 
 
 def build():
     r = (
         cq.Workplane("XY")
-        .circle(PLATE_OD / 2.0).extrude(PLATE_T)                 # base plate
-        .faces(">Z").workplane()
-        .circle(HUB_OD / 2.0).extrude(HUB_H)                     # raised hub
-        .faces(">Z").workplane()
-        .circle(BORE_D / 2.0).cutThruAll()                       # central bore
-        .faces("<Z").workplane()
+        .circle(PLATE_OD / 2.0)
+        .extrude(PLATE_T)  # base plate
+        .faces(">Z")
+        .workplane()
+        .circle(HUB_OD / 2.0)
+        .extrude(HUB_H)  # raised hub
+        .faces(">Z")
+        .workplane()
+        .circle(BORE_D / 2.0)
+        .cutThruAll()  # central bore
+        .faces("<Z")
+        .workplane()
         .polarArray(BOLT_PCD / 2.0, 0, 360, BOLT_N)
-        .circle(BOLT_D / 2.0).cutThruAll()                       # bolt holes
+        .circle(BOLT_D / 2.0)
+        .cutThruAll()  # bolt holes
     )
     return r
 
@@ -49,5 +57,7 @@ if __name__ == "__main__":
     solid = r.val()
     assert solid.isValid(), "flange solid failed OCC validity check"
     cq.exporters.export(r, out)
-    print("wrote %s  (volume=%.1f mm^3, faces=%d)"
-          % (out, solid.Volume(), len(solid.Faces())))
+    print(
+        "wrote %s  (volume=%.1f mm^3, faces=%d)"
+        % (out, solid.Volume(), len(solid.Faces()))
+    )

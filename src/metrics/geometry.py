@@ -49,9 +49,7 @@ def max_bbox_error_mm(
 ) -> float:
     return float(
         np.max(
-            bbox_dimension_error_mm(
-                predicted, target, sort_dimensions=sort_dimensions
-            )
+            bbox_dimension_error_mm(predicted, target, sort_dimensions=sort_dimensions)
         )
     )
 
@@ -102,7 +100,11 @@ def translation_aligned_voxel_iou(
     benchmarks.
     """
 
-    if isinstance(resolution, bool) or not isinstance(resolution, int) or resolution <= 0:
+    if (
+        isinstance(resolution, bool)
+        or not isinstance(resolution, int)
+        or resolution <= 0
+    ):
         raise ValueError(f"resolution must be a positive integer, got {resolution!r}")
     pred = _aligned_mesh(predicted_mesh, normalize_scale=normalize_scale)
     gt = _aligned_mesh(target_mesh, normalize_scale=normalize_scale)
@@ -153,7 +155,9 @@ def _nearest_squared_distances(
     result = np.empty(len(query), dtype=np.float64)
     for start in range(0, len(query), chunk_size):
         delta = query[start : start + chunk_size, None, :] - reference[None, :, :]
-        result[start : start + chunk_size] = np.min(np.sum(delta * delta, axis=-1), axis=1)
+        result[start : start + chunk_size] = np.min(
+            np.sum(delta * delta, axis=-1), axis=1
+        )
     return result
 
 
@@ -171,7 +175,11 @@ def surface_chamfer_distance(
     independently divided by its maximum bbox extent.
     """
 
-    if isinstance(num_points, bool) or not isinstance(num_points, int) or num_points <= 0:
+    if (
+        isinstance(num_points, bool)
+        or not isinstance(num_points, int)
+        or num_points <= 0
+    ):
         raise ValueError(f"num_points must be a positive integer, got {num_points!r}")
     import trimesh
 

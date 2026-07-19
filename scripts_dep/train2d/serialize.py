@@ -12,13 +12,20 @@ Design choices:
   * Output is minified JSON: directly parseable, matches the agreed intra-view output
     format, and is VLM-as-judge friendly. Swap SER_VERSION if we move to a DSL.
 """
+
 import json
 
 SER_VERSION = "g1"
 
 _VIS = {"visible": "vis", "hidden": "hid", "center": "cen"}
 _VIS_INV = {v: k for k, v in _VIS.items()}
-_SUB = {"horizontal": "h", "vertical": "v", "aligned": "a", "diameter": "d", "radius": "r"}
+_SUB = {
+    "horizontal": "h",
+    "vertical": "v",
+    "aligned": "a",
+    "diameter": "d",
+    "radius": "r",
+}
 _SUB_INV = {v: k for k, v in _SUB.items()}
 
 
@@ -27,8 +34,11 @@ def _i(x):
 
 
 def _prim_to_compact(p):
-    o = {"id": p["id"], "t": p["type"],
-         "v": _VIS.get(p.get("line_role", p.get("visibility", "visible")), "vis")}
+    o = {
+        "id": p["id"],
+        "t": p["type"],
+        "v": _VIS.get(p.get("line_role", p.get("visibility", "visible")), "vis"),
+    }
     f = p.get("feature_tag", p.get("feature"))
     if f and f != "outline":
         o["f"] = f
@@ -77,10 +87,12 @@ def graph_to_text(graph):
     """Canonical intra-view graph dict -> compact minified-JSON target string."""
     out = {"views": [], "dims": []}
     for v in graph.get("views", []):
-        out["views"].append({
-            "name": v["name"],
-            "prims": [_prim_to_compact(p) for p in v.get("primitives", [])],
-        })
+        out["views"].append(
+            {
+                "name": v["name"],
+                "prims": [_prim_to_compact(p) for p in v.get("primitives", [])],
+            }
+        )
     for d in graph.get("annotations", graph.get("dimensions", [])):
         out["dims"].append(_dim_to_compact(d))
     return json.dumps(out, ensure_ascii=False, separators=(",", ":"))
@@ -97,9 +109,12 @@ def graph_from_text(text):
     for v in o.get("views", []):
         prims = []
         for p in v.get("prims", []):
-            q = {"id": p["id"], "type": p["t"],
-                 "line_role": _VIS_INV.get(p.get("v", "vis"), "visible"),
-                 "feature_tag": p.get("f", "outline")}
+            q = {
+                "id": p["id"],
+                "type": p["t"],
+                "line_role": _VIS_INV.get(p.get("v", "vis"), "visible"),
+                "feature_tag": p.get("f", "outline"),
+            }
             if p["t"] == "line" and "p1" in p:
                 q["p1"] = [float(p["p1"][0]), float(p["p1"][1])]
                 q["p2"] = [float(p["p2"][0]), float(p["p2"][1])]
@@ -127,33 +142,49 @@ def graph_from_text(text):
         views.append({"name": v["name"], "primitives": prims})
     dims = []
     for d in o.get("dims", []):
-        dims.append({"id": d["id"], "kind": d["t"],
-                     "subtype": _SUB_INV.get(d.get("s", ""), d.get("s", "")),
-                     "value": float(d["val"]), "view": d.get("view", ""),
-                     "refs": list(d.get("refs", [])), "tol": d.get("tol")})
+        dims.append(
+            {
+                "id": d["id"],
+                "kind": d["t"],
+                "subtype": _SUB_INV.get(d.get("s", ""), d.get("s", "")),
+                "value": float(d["val"]),
+                "view": d.get("view", ""),
+                "refs": list(d.get("refs", [])),
+                "tol": d.get("tol"),
+            }
+        )
     return {"views": views, "annotations": dims}
 
 
 def _autoclose(frag):
     """Balance a possibly-truncated JSON fragment: close an open string, drop a
     trailing comma, and append the missing closing brackets in order."""
-    instr = False; esc = False; stack = []
+    instr = False
+    esc = False
+    stack = []
     for ch in frag:
         if instr:
-            if esc: esc = False
-            elif ch == '\\': esc = True
-            elif ch == '"': instr = False
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                instr = False
             continue
-        if ch == '"': instr = True
-        elif ch == '{': stack.append('}')
-        elif ch == '[': stack.append(']')
-        elif ch in '}]':
-            if stack: stack.pop()
+        if ch == '"':
+            instr = True
+        elif ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
     out = frag
     if instr:
         out += '"'
-    out = out.rstrip().rstrip(',')
-    return out + ''.join(reversed(stack))
+    out = out.rstrip().rstrip(",")
+    return out + "".join(reversed(stack))
 
 
 def graph_from_text_safe(text):
@@ -164,11 +195,11 @@ def graph_from_text_safe(text):
         return graph_from_text(text), "ok"
     except Exception:
         pass
-    start = text.find('{')
+    start = text.find("{")
     if start >= 0:
         body = text[start:]
-        cuts = [i + 1 for i, ch in enumerate(body) if ch in '}]']
-        for end in reversed(cuts):                 # longest valid sub-structure first
+        cuts = [i + 1 for i, ch in enumerate(body) if ch in "}]"]
+        for end in reversed(cuts):  # longest valid sub-structure first
             try:
                 return graph_from_text(_autoclose(body[:end])), "repaired"
             except Exception:
@@ -176,20 +207,29 @@ def graph_from_text_safe(text):
     return {"views": [], "annotations": []}, "fail"
 
 
-PROMPT = ("Extract the engineering drawing as an intra-view graph. For each view emit "
-          "primitives (lines/circles/arcs with visibility and feature) and the "
-          "dimensions with their value and the ids of the primitives they measure. "
-          "Output compact JSON only.")
+PROMPT = (
+    "Extract the engineering drawing as an intra-view graph. For each view emit "
+    "primitives (lines/circles/arcs with visibility and feature) and the "
+    "dimensions with their value and the ids of the primitives they measure. "
+    "Output compact JSON only."
+)
 
 
 if __name__ == "__main__":
     import sys
+
     g = json.load(open(sys.argv[1]))
     t = graph_to_text(g)
     print(t)
     # round-trip sanity
     back = graph_from_text(t)
-    print("\n[roundtrip] views:", len(back["views"]),
-          "prims:", sum(len(v["primitives"]) for v in back["views"]),
-          "dims:", len(back["annotations"]),
-          "target_chars:", len(t))
+    print(
+        "\n[roundtrip] views:",
+        len(back["views"]),
+        "prims:",
+        sum(len(v["primitives"]) for v in back["views"]),
+        "dims:",
+        len(back["annotations"]),
+        "target_chars:",
+        len(t),
+    )

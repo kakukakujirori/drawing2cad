@@ -31,7 +31,9 @@ def make_primitive_batch(
     *,
     with_groups: bool = True,
 ) -> PrimitiveBatch:
-    if not active_primitive_counts or any(count <= 0 for count in active_primitive_counts):
+    if not active_primitive_counts or any(
+        count <= 0 for count in active_primitive_counts
+    ):
         raise ValueError("every active primitive count must be positive")
 
     generator = torch.Generator().manual_seed(123)
@@ -49,9 +51,7 @@ def make_primitive_batch(
         batch_size, primitive_count, sample_count, dtype=torch.bool
     )
     primitive_mask = torch.zeros(batch_size, primitive_count, dtype=torch.bool)
-    primitive_type_ids = torch.full(
-        (batch_size, primitive_count), -1, dtype=torch.long
-    )
+    primitive_type_ids = torch.full((batch_size, primitive_count), -1, dtype=torch.long)
     view_direction_ids = torch.full_like(primitive_type_ids, -1)
     group_ids = torch.full_like(primitive_type_ids, -1)
 
@@ -145,6 +145,4 @@ def tiny_drawing_model(
         resampler_heads=4,
         dropout=0.0,
     )
-    return Drawing2CADQwen3VLForConditionalGeneration(
-        tiny_qwen_config(primitive)
-    )
+    return Drawing2CADQwen3VLForConditionalGeneration(tiny_qwen_config(primitive))

@@ -15,6 +15,7 @@ Usage:
         --fail-ratio 5 \
         --out /tmp/extent_audit.json
 """
+
 import argparse
 import json
 import math
@@ -24,8 +25,12 @@ import sys
 import zlib
 
 sys.path.insert(0, os.path.dirname(__file__))
-from serialize import (_dropout_feature_hidden, _suppress_covered_hidden,  # noqa: E402
-                       serialized_scale, struct_from_graph)
+from serialize import (
+    _dropout_feature_hidden,
+    _suppress_covered_hidden,  # noqa: E402
+    serialized_scale,
+    struct_from_graph,
+)
 
 
 DEFAULT_THRESHOLDS = (2, 3, 5, 10, 20, 100, 1000)
@@ -66,15 +71,17 @@ def _failure_mode(p):
     if typ == "polyline":
         return "polyline_discretization"
     if typ in ("arc", "ellipse") and (
-            p.get("start_angle") is not None or p.get("p1") is not None):
+        p.get("start_angle") is not None or p.get("p1") is not None
+    ):
         return "ill_conditioned_partial_conic"
     if typ == "line":
         return "stray_hlr_line"
     return "out_of_envelope_primitive"
 
 
-def graph_contributor(graph, expected_ext=None, *, drop_covered=True,
-                      hid_dropout=0.0, rng=None):
+def graph_contributor(
+    graph, expected_ext=None, *, drop_covered=True, hid_dropout=0.0, rng=None
+):
     """Return the source primitive most likely responsible for serialization ext.
 
     This mirrors the serializer's per-view shift.  If an existing bundle used
@@ -87,15 +94,25 @@ def graph_contributor(graph, expected_ext=None, *, drop_covered=True,
         _suppress_covered_hidden(st)
     if hid_dropout:
         _dropout_feature_hidden(st, hid_dropout, rng)
-    source = {(v.get("name"), p.get("id")): p
-              for v in graph.get("views", []) for p in v.get("primitives", [])}
+    source = {
+        (v.get("name"), p.get("id")): p
+        for v in graph.get("views", [])
+        for p in v.get("primitives", [])
+    }
     candidates = []
     for v in st["views"]:
         for row in v["prims"]:
             contribution = _geom_contribution(row["geom"])
-            candidates.append((abs(contribution - expected_ext)
-                               if expected_ext is not None else 0.0,
-                               -contribution, v["name"], row))
+            candidates.append(
+                (
+                    abs(contribution - expected_ext)
+                    if expected_ext is not None
+                    else 0.0,
+                    -contribution,
+                    v["name"],
+                    row,
+                )
+            )
     if not candidates:
         return None
     if expected_ext is not None:
@@ -117,8 +134,9 @@ def graph_contributor(graph, expected_ext=None, *, drop_covered=True,
     }
 
 
-def audit_bundle(bundle, graph_dir=None, warn_ratio=2.0, fail_ratio=5.0,
-                 absolute_bbox_mm=None):
+def audit_bundle(
+    bundle, graph_dir=None, warn_ratio=2.0, fail_ratio=5.0, absolute_bbox_mm=None
+):
     ratios = []
     offenders = []
     malformed = []
@@ -143,14 +161,20 @@ def audit_bundle(bundle, graph_dir=None, warn_ratio=2.0, fail_ratio=5.0,
             sid = record.get("id")
             scale = serialized_scale(record.get("input_text", ""))
             if scale is None:
-                malformed.append({"line": lineno, "id": sid,
-                                  "error": "missing/malformed quantized PART header"})
+                malformed.append(
+                    {
+                        "line": lineno,
+                        "id": sid,
+                        "error": "missing/malformed quantized PART header",
+                    }
+                )
                 continue
             bbox, ext, ratio = scale
             ratios.append(ratio)
-            domain_bad = (absolute_bbox_mm is not None
-                          and max((abs(x) for x in bbox), default=math.inf)
-                          > absolute_bbox_mm)
+            domain_bad = (
+                absolute_bbox_mm is not None
+                and max((abs(x) for x in bbox), default=math.inf) > absolute_bbox_mm
+            )
             if ratio <= warn_ratio and not domain_bad:
                 continue
             item = {
@@ -167,12 +191,17 @@ def audit_bundle(bundle, graph_dir=None, warn_ratio=2.0, fail_ratio=5.0,
                 gp = os.path.join(graph_dir, f"{sid}.graph.json")
                 try:
                     with open(gp) as gf:
-                        seed = zlib.crc32(f"{transforms.get('seed', 0)}:{sid}".encode()) & 0xffffffff
+                        seed = (
+                            zlib.crc32(f"{transforms.get('seed', 0)}:{sid}".encode())
+                            & 0xFFFFFFFF
+                        )
                         item["max_contributor"] = graph_contributor(
-                            json.load(gf), ext,
+                            json.load(gf),
+                            ext,
                             drop_covered=transforms.get("drop_covered", True),
                             hid_dropout=transforms.get("hid_dropout", 0.0),
-                            rng=random.Random(seed))
+                            rng=random.Random(seed),
+                        )
                 except Exception as e:
                     item["graph_error"] = str(e)
             offenders.append(item)
@@ -193,7 +222,8 @@ def audit_bundle(bundle, graph_dir=None, warn_ratio=2.0, fail_ratio=5.0,
         "n_warn": sum(x["severity"] == "warning" for x in offenders),
         "n_quarantined": sum(x["severity"] == "quarantine" for x in offenders),
         "n_absolute_bbox_violations": sum(
-            bool(x.get("absolute_bbox_violation")) for x in offenders),
+            bool(x.get("absolute_bbox_violation")) for x in offenders
+        ),
         "offenders": offenders,
         "malformed": malformed,
     }
@@ -202,24 +232,48 @@ def audit_bundle(bundle, graph_dir=None, warn_ratio=2.0, fail_ratio=5.0,
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--bundle", required=True, help="SFT all.jsonl")
-    ap.add_argument("--graph-dir", help="source *.graph.json dir for root-cause details")
+    ap.add_argument(
+        "--graph-dir", help="source *.graph.json dir for root-cause details"
+    )
     ap.add_argument("--warn-ratio", type=float, default=2.0)
     ap.add_argument("--fail-ratio", type=float, default=5.0)
-    ap.add_argument("--absolute-bbox-mm", type=float,
-                    help="optional independent part-scale domain gate")
+    ap.add_argument(
+        "--absolute-bbox-mm",
+        type=float,
+        help="optional independent part-scale domain gate",
+    )
     ap.add_argument("--out", required=True, help="output audit JSON")
     args = ap.parse_args()
     if args.warn_ratio < 0 or args.fail_ratio <= args.warn_ratio:
         ap.error("require 0 <= --warn-ratio < --fail-ratio")
     if args.absolute_bbox_mm is not None and args.absolute_bbox_mm <= 0:
         ap.error("--absolute-bbox-mm must be positive")
-    report = audit_bundle(args.bundle, args.graph_dir, args.warn_ratio,
-                          args.fail_ratio, args.absolute_bbox_mm)
+    report = audit_bundle(
+        args.bundle,
+        args.graph_dir,
+        args.warn_ratio,
+        args.fail_ratio,
+        args.absolute_bbox_mm,
+    )
     with open(args.out, "w") as f:
         json.dump(report, f, indent=2, allow_nan=False)
-    print(json.dumps({k: report[k] for k in (
-        "n_records", "n_audited", "n_malformed", "extent_ratio",
-        "counts_above", "n_warn", "n_quarantined")}, indent=2))
+    print(
+        json.dumps(
+            {
+                k: report[k]
+                for k in (
+                    "n_records",
+                    "n_audited",
+                    "n_malformed",
+                    "extent_ratio",
+                    "counts_above",
+                    "n_warn",
+                    "n_quarantined",
+                )
+            },
+            indent=2,
+        )
+    )
     print(f"wrote {args.out}")
 
 

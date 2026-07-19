@@ -36,7 +36,7 @@ Pipeline:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import cairosvg
@@ -53,8 +53,13 @@ from OCC.Core.gp import gp_Ax2, gp_Dir, gp_Pnt
 from OCC.Core.HLRAlgo import HLRAlgo_Projector
 from OCC.Core.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
-from OCC.Core.GeomAbs import (GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane,
-                              GeomAbs_Sphere, GeomAbs_Torus)
+from OCC.Core.GeomAbs import (
+    GeomAbs_Cone,
+    GeomAbs_Cylinder,
+    GeomAbs_Plane,
+    GeomAbs_Sphere,
+    GeomAbs_Torus,
+)
 from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE
 from OCC.Core.TopExp import TopExp_Explorer, topexp
@@ -121,20 +126,24 @@ class Render3dConfig:
 
 
 def _norm(v):
-    l = math.sqrt(sum(c * c for c in v))
-    return tuple(c / l for c in v)
+    length = math.sqrt(sum(c * c for c in v))
+    return tuple(c / length for c in v)
 
 
 def _cross(a, b):
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
 
 
 @dataclass
 class Camera:
     eye: tuple[float, float, float]
-    N: tuple[float, float, float]       # view direction, eye -> scene
-    right: tuple[float, float, float]   # screen +X
-    up2d: tuple[float, float, float]    # screen +Y (true screen up, = right x N)
+    N: tuple[float, float, float]  # view direction, eye -> scene
+    right: tuple[float, float, float]  # screen +X
+    up2d: tuple[float, float, float]  # screen +Y (true screen up, = right x N)
     focus: float
     D: float
 
@@ -246,13 +255,18 @@ def _polylines_from_compound(compound, deflection):
             pts = [(p1.X(), p1.Y()), (p2.X(), p2.Y())]
         elif ctype == GeomAbs_BSplineCurve and curve.BSpline().Degree() == 1:
             bs = curve.BSpline()
-            poles = [(bs.Pole(i).X(), bs.Pole(i).Y()) for i in range(1, bs.NbPoles() + 1)]
+            poles = [
+                (bs.Pole(i).X(), bs.Pole(i).Y()) for i in range(1, bs.NbPoles() + 1)
+            ]
             pts = poles if len(poles) == 2 else _smooth_resample(poles)
         else:
             try:
                 disc = GCPnts_QuasiUniformDeflection(curve, deflection, u0, u1)
                 if disc.IsDone() and disc.NbPoints() >= 2:
-                    pts = [(disc.Value(i).X(), disc.Value(i).Y()) for i in range(1, disc.NbPoints() + 1)]
+                    pts = [
+                        (disc.Value(i).X(), disc.Value(i).Y())
+                        for i in range(1, disc.NbPoints() + 1)
+                    ]
             except Exception:  # noqa: BLE001
                 pts = None
             if not pts:
@@ -268,8 +282,13 @@ def _polylines_from_compound(compound, deflection):
     return lines
 
 
-def _hlr_project(shape, camera: Camera, cfg: Render3dConfig, deflection_scale: float = 1.0,
-                 deflection: float | None = None):
+def _hlr_project(
+    shape,
+    camera: Camera,
+    cfg: Render3dConfig,
+    deflection_scale: float = 1.0,
+    deflection: float | None = None,
+):
     """Runs OCC HLR with a perspective projector; returns (visible, hidden)
     lists of 2D polylines in camera-plane (model) units.
 
@@ -356,18 +375,22 @@ def _same_surface_domain(f1, f2, tol) -> bool:
         return d.Modulus() <= tol
     if t1 == GeomAbs_Cone:
         c1, c2 = s1.Cone(), s2.Cone()
-        return (parallel(c1.Axis().Direction(), c2.Axis().Direction())
-                and close(c1.SemiAngle(), c2.SemiAngle(), 1e-9)
-                and pclose(c1.Apex(), c2.Apex()))
+        return (
+            parallel(c1.Axis().Direction(), c2.Axis().Direction())
+            and close(c1.SemiAngle(), c2.SemiAngle(), 1e-9)
+            and pclose(c1.Apex(), c2.Apex())
+        )
     if t1 == GeomAbs_Sphere:
         c1, c2 = s1.Sphere(), s2.Sphere()
         return close(c1.Radius(), c2.Radius()) and pclose(c1.Location(), c2.Location())
     if t1 == GeomAbs_Torus:
         c1, c2 = s1.Torus(), s2.Torus()
-        return (parallel(c1.Axis().Direction(), c2.Axis().Direction())
-                and close(c1.MajorRadius(), c2.MajorRadius())
-                and close(c1.MinorRadius(), c2.MinorRadius())
-                and pclose(c1.Location(), c2.Location()))
+        return (
+            parallel(c1.Axis().Direction(), c2.Axis().Direction())
+            and close(c1.MajorRadius(), c2.MajorRadius())
+            and close(c1.MinorRadius(), c2.MinorRadius())
+            and pclose(c1.Location(), c2.Location())
+        )
     return False
 
 
@@ -464,8 +487,12 @@ def _sample_edge_points(edge, camera, tf, px_step=1.2, max_pts=2400):
     are ~px_step pixels apart on the canvas."""
     curve = BRepAdaptor_Curve(edge)
     u0, u1 = curve.FirstParameter(), curve.LastParameter()
-    coarse = np.array([[curve.Value(u0 + (u1 - u0) * i / 15).Coord(j) for j in (1, 2, 3)]
-                       for i in range(16)])
+    coarse = np.array(
+        [
+            [curve.Value(u0 + (u1 - u0) * i / 15).Coord(j) for j in (1, 2, 3)]
+            for i in range(16)
+        ]
+    )
     px = np.array([tf(x, y) for x, y in _plane_project(coarse, camera)])
     length_px = float(np.linalg.norm(np.diff(px, axis=0), axis=1).sum())
     n = int(np.clip(math.ceil(length_px / px_step) + 1, 2, max_pts))
@@ -475,8 +502,9 @@ def _sample_edge_points(edge, camera, tf, px_step=1.2, max_pts=2400):
     return np.array([[curve.Value(u).Coord(j) for j in (1, 2, 3)] for u in us])
 
 
-def _densify_polyline(pts3, camera: Camera, tf: "FitTransform", px_step=1.2,
-                      max_pts=4000):
+def _densify_polyline(
+    pts3, camera: Camera, tf: "FitTransform", px_step=1.2, max_pts=4000
+):
     """Insert linear subdivisions so consecutive samples are ~px_step px
     apart. Straight silhouette generators of cylinders/cones tessellate to a
     SINGLE axial segment -- 2 samples cannot support per-sample visibility
@@ -503,8 +531,9 @@ def _plane_project(pts3, camera: Camera):
     d = np.asarray(pts3, dtype=np.float64) - np.asarray(camera.eye)
     dep = d @ np.asarray(camera.N)
     s = camera.focus / (camera.focus + dep)
-    return np.stack([(d @ np.asarray(camera.right)) * s,
-                     (d @ np.asarray(camera.up2d)) * s], axis=1)
+    return np.stack(
+        [(d @ np.asarray(camera.right)) * s, (d @ np.asarray(camera.up2d)) * s], axis=1
+    )
 
 
 def _silhouette_chains(verts, tris, eye):
@@ -560,8 +589,9 @@ def _silhouette_chains(verts, tris, eye):
     return chains
 
 
-def _depth_buffer(camera: Camera, cfg: Render3dConfig, tf: "FitTransform",
-                  verts, tris, supersample=2):
+def _depth_buffer(
+    camera: Camera, cfg: Render3dConfig, tf: "FitTransform", verts, tris, supersample=2
+):
     """Depth-from-eye buffer (supersampled canvas) rendered by VTK with the
     exact same camera model as the shaded pass. NaN where no geometry."""
     import pyvista as pv  # deferred, matches _render_shaded
@@ -578,8 +608,9 @@ def _depth_buffer(camera: Camera, cfg: Render3dConfig, tf: "FitTransform",
     cam.up = camera.up2d
     half_h_world = cfg.canvas_h / (2.0 * tf.scale)
     cam.view_angle = 2.0 * math.degrees(math.atan(half_h_world / camera.focus))
-    cam.SetWindowCenter(2.0 * tf.cx * tf.scale / cfg.canvas_w,
-                        2.0 * tf.cy * tf.scale / cfg.canvas_h)
+    cam.SetWindowCenter(
+        2.0 * tf.cx * tf.scale / cfg.canvas_w, 2.0 * tf.cy * tf.scale / cfg.canvas_h
+    )
     # generous near plane: keeps 24-bit z-buffer precision ~1e-4 of the scene
     near = max(0.25 * (camera.focus + camera.D), camera.focus * 0.01)
     cam.clipping_range = (near, (camera.focus + camera.D) * 50.0)
@@ -594,8 +625,11 @@ def _depth_buffer(camera: Camera, cfg: Render3dConfig, tf: "FitTransform",
     # covered by the nearer occluder and stays hidden.
     padded = np.full((dep.shape[0] + 2, dep.shape[1] + 2), np.inf)
     padded[1:-1, 1:-1] = np.where(np.isnan(dep), np.inf, dep)
-    stack = [padded[dy:dy + dep.shape[0], dx:dx + dep.shape[1]]
-             for dy in range(3) for dx in range(3)]
+    stack = [
+        padded[dy : dy + dep.shape[0], dx : dx + dep.shape[1]]
+        for dy in range(3)
+        for dx in range(3)
+    ]
     return np.maximum.reduce(stack)
 
 
@@ -649,9 +683,11 @@ def _make_ray_visible(camera: Camera, verts, tris, r_excl, pen_min):
             ray = (p - eye) / dist
             obb.IntersectWithLine(eye.tolist(), p.tolist(), hits, None)
             ts = sorted(
-                t for m in range(hits.GetNumberOfPoints())
+                t
+                for m in range(hits.GetNumberOfPoints())
                 if (t := float(np.dot(np.asarray(hits.GetPoint(m)) - eye, ray)))
-                < dist - r_excl)
+                < dist - r_excl
+            )
             ok = True
             # entry/exit pairs (odd tail closes at the sample itself)
             for m in range(0, len(ts), 2):
@@ -667,9 +703,16 @@ def _make_ray_visible(camera: Camera, verts, tris, r_excl, pen_min):
     return visible
 
 
-def _classify_split(pts3, camera: Camera, tf: "FitTransform",
-                    depmax, supersample, tol,
-                    graze_recheck=None, graze_band=0.0):
+def _classify_split(
+    pts3,
+    camera: Camera,
+    tf: "FitTransform",
+    depmax,
+    supersample,
+    tol,
+    graze_recheck=None,
+    graze_band=0.0,
+):
     """Split one 3D polyline into visible / hidden runs by comparing each
     sample's depth against the (max-filtered) depth buffer.
 
@@ -708,12 +751,15 @@ def _classify_split(pts3, camera: Camera, tf: "FitTransform",
     return runs
 
 
-def _mesh_hlr_project(shape, camera: Camera, cfg: Render3dConfig,
-                      tf: "FitTransform", verts, tris):
+def _mesh_hlr_project(
+    shape, camera: Camera, cfg: Render3dConfig, tf: "FitTransform", verts, tris
+):
     """(visible, hidden) polylines in camera-plane coords, built from real
     edges + mesh silhouettes with depth-buffer visibility."""
     xmin, ymin, zmin, xmax, ymax, zmax = _bbox(shape)
-    diag = max(math.sqrt((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2), 1e-9)
+    diag = max(
+        math.sqrt((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2), 1e-9
+    )
     tol = 2e-3 * diag
     depmax = _depth_buffer(camera, cfg, tf, verts, tris)
 
@@ -738,15 +784,24 @@ def _mesh_hlr_project(shape, camera: Camera, cfg: Render3dConfig,
     # outward push; exact BRep edge samples sit ON the true surface, above
     # the inscribed mesh, so no push is needed (and pushing would bleed
     # solid ink past true tangency transitions, e.g. far-cap arcs).
-    ray_visible = _make_ray_visible(camera, verts, tris, r_excl=2.0 * wpp,
-                                    pen_min=5.4e-4 * diag)
+    ray_visible = _make_ray_visible(
+        camera, verts, tris, r_excl=2.0 * wpp, pen_min=5.4e-4 * diag
+    )
     eps_sil = 4e-3 * diag
 
     visible, hidden = [], []
     for pts3, is_sil in polylines3d:
         recheck = (lambda s: ray_visible(s, eps_sil)) if is_sil else ray_visible
-        runs = _classify_split(pts3, camera, tf, depmax, 2, tol,
-                               graze_recheck=recheck, graze_band=graze_band)
+        runs = _classify_split(
+            pts3,
+            camera,
+            tf,
+            depmax,
+            2,
+            tol,
+            graze_recheck=recheck,
+            graze_band=graze_band,
+        )
         for is_vis, poly in runs:
             (visible if is_vis else hidden).append(poly)
     if not visible and not hidden:
@@ -779,12 +834,18 @@ def _fit_transform(all_lines, canvas_w, canvas_h, margin_frac) -> FitTransform:
     avail_w = canvas_w * (1 - 2 * margin_frac)
     avail_h = canvas_h * (1 - 2 * margin_frac)
     scale = min(avail_w / w, avail_h / h)
-    return FitTransform(scale=scale, cx=(xmin + xmax) / 2, cy=(ymin + ymax) / 2,
-                         canvas_w=canvas_w, canvas_h=canvas_h)
+    return FitTransform(
+        scale=scale,
+        cx=(xmin + xmax) / 2,
+        cy=(ymin + ymax) / 2,
+        canvas_w=canvas_w,
+        canvas_h=canvas_h,
+    )
 
 
-def _sphere_fit_transform(shape, camera: Camera, cfg: Render3dConfig,
-                          verts: "np.ndarray") -> FitTransform:
+def _sphere_fit_transform(
+    shape, camera: Camera, cfg: Render3dConfig, verts: "np.ndarray"
+) -> FitTransform:
     """GT-style framing: the part's true bounding sphere (max vertex distance
     from the AABB centre) projects to a circle whose diameter fills
     ``cfg.fill_factor`` of the canvas height; the sphere centre projects to the
@@ -799,50 +860,78 @@ def _sphere_fit_transform(shape, camera: Camera, cfg: Render3dConfig,
     cx = float(rel @ np.array(camera.right)) * camera.focus / z
     cy = float(rel @ np.array(camera.up2d)) * camera.focus / z
     scale = cfg.fill_factor * cfg.canvas_h / d_proj
-    return FitTransform(scale=scale, cx=cx, cy=cy,
-                        canvas_w=cfg.canvas_w, canvas_h=cfg.canvas_h)
+    return FitTransform(
+        scale=scale, cx=cx, cy=cy, canvas_w=cfg.canvas_w, canvas_h=cfg.canvas_h
+    )
 
 
-def _write_hlg_svg(visible, hidden, tf: FitTransform, cfg: Render3dConfig,
-                    background: str | None = "white") -> str:
+def _write_hlg_svg(
+    visible,
+    hidden,
+    tf: FitTransform,
+    cfg: Render3dConfig,
+    background: str | None = "white",
+) -> str:
     w, h = cfg.canvas_w, cfg.canvas_h
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">']
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
+    ]
     if background:
         parts.append(f'<rect width="{w}" height="{h}" fill="{background}"/>')
     for line in hidden:
         pts = [tf(x, y) for x, y in line]
         d = "M " + " L ".join(f"{x:.2f},{y:.2f}" for x, y in pts)
-        parts.append(f'<path d="{d}" fill="none" stroke="{cfg.hid_color}" '
-                     f'stroke-width="{cfg.hid_stroke_width}" stroke-dasharray="{cfg.hid_dash}"/>')
+        parts.append(
+            f'<path d="{d}" fill="none" stroke="{cfg.hid_color}" '
+            f'stroke-width="{cfg.hid_stroke_width}" stroke-dasharray="{cfg.hid_dash}"/>'
+        )
     for line in visible:
         pts = [tf(x, y) for x, y in line]
         d = "M " + " L ".join(f"{x:.2f},{y:.2f}" for x, y in pts)
-        parts.append(f'<path d="{d}" fill="none" stroke="black" '
-                     f'stroke-width="{cfg.vis_stroke_width}" stroke-linecap="round" stroke-linejoin="round"/>')
+        parts.append(
+            f'<path d="{d}" fill="none" stroke="black" '
+            f'stroke-width="{cfg.vis_stroke_width}" stroke-linecap="round" stroke-linejoin="round"/>'
+        )
     parts.append("</svg>")
     return "\n".join(parts)
 
 
-def _write_alledges_svg(visible, hidden, tf: FitTransform, cfg: Render3dConfig,
-                         background: str | None = None) -> str:
+def _write_alledges_svg(
+    visible,
+    hidden,
+    tf: FitTransform,
+    cfg: Render3dConfig,
+    background: str | None = None,
+) -> str:
     """All projected edges (visible AND hidden) drawn with the SAME solid
     style -- used to overlay edges on the translucent-shaded pass, where both
     near and far edges are visible through the translucency (no dashing)."""
     w, h = cfg.canvas_w, cfg.canvas_h
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">']
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
+    ]
     if background:
         parts.append(f'<rect width="{w}" height="{h}" fill="{background}"/>')
     for line in visible + hidden:
         pts = [tf(x, y) for x, y in line]
         d = "M " + " L ".join(f"{x:.2f},{y:.2f}" for x, y in pts)
-        parts.append(f'<path d="{d}" fill="none" stroke="{cfg.shaded_edge_color}" '
-                     f'stroke-width="{cfg.shaded_edge_width}" stroke-linecap="round" stroke-linejoin="round"/>')
+        parts.append(
+            f'<path d="{d}" fill="none" stroke="{cfg.shaded_edge_color}" '
+            f'stroke-width="{cfg.shaded_edge_width}" stroke-linecap="round" stroke-linejoin="round"/>'
+        )
     parts.append("</svg>")
     return "\n".join(parts)
 
 
-def _render_hlg(shape, camera: Camera, cfg: Render3dConfig, out_path: Path,
-                tf: FitTransform | None = None, verts=None, tris=None):
+def _render_hlg(
+    shape,
+    camera: Camera,
+    cfg: Render3dConfig,
+    out_path: Path,
+    tf: FitTransform | None = None,
+    verts=None,
+    tris=None,
+):
     if tf is not None and verts is not None and tris is not None:
         visible, hidden = _mesh_hlr_project(shape, camera, cfg, tf, verts, tris)
     else:
@@ -857,8 +946,12 @@ def _render_hlg(shape, camera: Camera, cfg: Render3dConfig, out_path: Path,
             tf = _fit_transform(all_lines, cfg.canvas_w, cfg.canvas_h, cfg.margin_frac)
     svg = _write_hlg_svg(visible, hidden, tf, cfg)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cairosvg.svg2png(bytestring=svg.encode(), write_to=str(out_path),
-                      output_width=cfg.canvas_w, output_height=cfg.canvas_h)
+    cairosvg.svg2png(
+        bytestring=svg.encode(),
+        write_to=str(out_path),
+        output_width=cfg.canvas_w,
+        output_height=cfg.canvas_h,
+    )
     return visible, hidden, tf
 
 
@@ -894,8 +987,15 @@ def _tessellate(shape, linear_deflection, angular_deflection=0.3):
     return np.asarray(verts, dtype=np.float64), np.asarray(tris, dtype=np.int64)
 
 
-def _render_shaded(shape, camera: Camera, cfg: Render3dConfig, tf: FitTransform,
-                   out_path: Path, verts=None, tris=None):
+def _render_shaded(
+    shape,
+    camera: Camera,
+    cfg: Render3dConfig,
+    tf: FitTransform,
+    out_path: Path,
+    verts=None,
+    tris=None,
+):
     import pyvista as pv  # deferred: heavy import, keep off the module's import path
 
     if verts is None or tris is None:
@@ -912,10 +1012,18 @@ def _render_shaded(shape, camera: Camera, cfg: Render3dConfig, tf: FitTransform,
     pl.set_background("white")
     # Faces only -- GT draws feature edges, not mesh wireframe; the caller
     # composites the HLR edge pass (same camera) on top.
-    pl.add_mesh(mesh, color=cfg.shaded_color, opacity=cfg.shaded_opacity,
-                show_edges=False, smooth_shading=True, split_sharp_edges=True,
-                specular=0.15, ambient=cfg.shaded_ambient, diffuse=cfg.shaded_diffuse,
-                culling=False)
+    pl.add_mesh(
+        mesh,
+        color=cfg.shaded_color,
+        opacity=cfg.shaded_opacity,
+        show_edges=False,
+        smooth_shading=True,
+        split_sharp_edges=True,
+        specular=0.15,
+        ambient=cfg.shaded_ambient,
+        diffuse=cfg.shaded_diffuse,
+        culling=False,
+    )
 
     # Derive the SAME projection as the HLR fit. The fit affine maps
     # camera-plane (x, y) [world units at the image plane, distance
@@ -932,7 +1040,11 @@ def _render_shaded(shape, camera: Camera, cfg: Render3dConfig, tf: FitTransform,
     pinhole = tuple(camera.eye[i] - camera.N[i] * camera.focus for i in range(3))
     focal_point = camera.eye  # on-axis, one focal length ahead of the pinhole
     half_h_world = cfg.canvas_h / (2.0 * tf.scale)
-    vertical_fov = 2.0 * math.degrees(math.atan(half_h_world / camera.focus)) * cfg.shaded_view_angle_pad
+    vertical_fov = (
+        2.0
+        * math.degrees(math.atan(half_h_world / camera.focus))
+        * cfg.shaded_view_angle_pad
+    )
 
     cam = pl.camera
     cam.position = pinhole
@@ -941,8 +1053,9 @@ def _render_shaded(shape, camera: Camera, cfg: Render3dConfig, tf: FitTransform,
     cam.view_angle = vertical_fov
     # Optical axis must land at pixel (W/2 - cx*s, H/2 + cy*s):
     # VTK maps camera-space x=0 to NDC -WindowCenter.
-    cam.SetWindowCenter(2.0 * tf.cx * tf.scale / cfg.canvas_w,
-                        2.0 * tf.cy * tf.scale / cfg.canvas_h)
+    cam.SetWindowCenter(
+        2.0 * tf.cx * tf.scale / cfg.canvas_w, 2.0 * tf.cy * tf.scale / cfg.canvas_h
+    )
     cam.clipping_range = (max(camera.focus * 0.01, 1e-4), camera.D * 50.0)
 
     arr = pl.screenshot(None, return_img=True)
@@ -955,8 +1068,14 @@ def _render_shaded(shape, camera: Camera, cfg: Render3dConfig, tf: FitTransform,
 # ---------------------------------------------------------------------------
 
 
-def _composite_translucent(shaded_img: Image.Image, visible, hidden, tf: FitTransform,
-                            cfg: Render3dConfig, out_path: Path):
+def _composite_translucent(
+    shaded_img: Image.Image,
+    visible,
+    hidden,
+    tf: FitTransform,
+    cfg: Render3dConfig,
+    out_path: Path,
+):
     w, h = cfg.canvas_w, cfg.canvas_h
     out_path.parent.mkdir(parents=True, exist_ok=True)
     base = shaded_img.convert("RGB").resize((w, h))
@@ -965,8 +1084,12 @@ def _composite_translucent(shaded_img: Image.Image, visible, hidden, tf: FitTran
 
     svg = _write_hlg_svg(visible, hidden, tf, cfg, background=None)
     line_png_path = out_path.with_suffix(".lines.tmp.png")
-    cairosvg.svg2png(bytestring=svg.encode(), write_to=str(line_png_path),
-                      output_width=w, output_height=h)
+    cairosvg.svg2png(
+        bytestring=svg.encode(),
+        write_to=str(line_png_path),
+        output_width=w,
+        output_height=h,
+    )
     lines = Image.open(line_png_path).convert("RGBA")
     line_png_path.unlink(missing_ok=True)
 
@@ -981,10 +1104,17 @@ def _composite_translucent(shaded_img: Image.Image, visible, hidden, tf: FitTran
 # ---------------------------------------------------------------------------
 
 
-def generate_render3d(step_path: Path, paths: Render3dPaths, cfg: Render3dConfig | None = None) -> dict:
+def generate_render3d(
+    step_path: Path, paths: Render3dPaths, cfg: Render3dConfig | None = None
+) -> dict:
     step_path = Path(step_path)
     cfg = cfg or Render3dConfig()
-    info: dict = {"hlg_ok": False, "shaded_ok": False, "hlg_translucent_ok": False, "errors": {}}
+    info: dict = {
+        "hlg_ok": False,
+        "shaded_ok": False,
+        "hlg_translucent_ok": False,
+        "errors": {},
+    }
 
     shape = _load_shape(step_path)
     camera = _build_camera(shape, cfg)
@@ -998,15 +1128,18 @@ def generate_render3d(step_path: Path, paths: Render3dPaths, cfg: Render3dConfig
     try:
         xmin, ymin, zmin, xmax, ymax, zmax = _bbox(shape)
         diag = math.sqrt((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2)
-        verts, tris = _tessellate(shape, max(diag * 2e-4, 1e-6), angular_deflection=0.15)
+        verts, tris = _tessellate(
+            shape, max(diag * 2e-4, 1e-6), angular_deflection=0.15
+        )
         sphere_tf = _sphere_fit_transform(shape, camera, cfg, verts)
     except Exception as exc:  # noqa: BLE001
         info["errors"]["tessellation"] = f"{type(exc).__name__}: {exc}"
 
     visible = hidden = tf = None
     try:
-        visible, hidden, tf = _render_hlg(shape, camera, cfg, Path(paths.hlg),
-                                          tf=sphere_tf, verts=verts, tris=tris)
+        visible, hidden, tf = _render_hlg(
+            shape, camera, cfg, Path(paths.hlg), tf=sphere_tf, verts=verts, tris=tris
+        )
         info["hlg_ok"] = True
     except Exception as exc:  # noqa: BLE001
         info["errors"]["hlg"] = f"{type(exc).__name__}: {exc}"
@@ -1014,15 +1147,18 @@ def generate_render3d(step_path: Path, paths: Render3dPaths, cfg: Render3dConfig
     shaded_img = None
     if tf is not None and verts is not None:
         try:
-            shaded_img = _render_shaded(shape, camera, cfg, tf, Path(paths.shaded),
-                                        verts=verts, tris=tris)
+            shaded_img = _render_shaded(
+                shape, camera, cfg, tf, Path(paths.shaded), verts=verts, tris=tris
+            )
             # GT's transparent_shaded_edges draws feature edges (near AND far,
             # solid, seen through the translucency) -- composite the HLR edge
             # pass, which shares the camera and fit, over the face render.
             edges_svg = _write_alledges_svg(visible, hidden, tf, cfg)
-            edges_png = cairosvg.svg2png(bytestring=edges_svg.encode(),
-                                         output_width=cfg.canvas_w,
-                                         output_height=cfg.canvas_h)
+            edges_png = cairosvg.svg2png(
+                bytestring=edges_svg.encode(),
+                output_width=cfg.canvas_w,
+                output_height=cfg.canvas_h,
+            )
             import io
 
             edges = Image.open(io.BytesIO(edges_png)).convert("RGBA")
@@ -1038,14 +1174,20 @@ def generate_render3d(step_path: Path, paths: Render3dPaths, cfg: Render3dConfig
     if tf is not None:
         try:
             if shaded_img is not None:
-                _composite_translucent(shaded_img, visible, hidden, tf, cfg, Path(paths.hlg_translucent))
+                _composite_translucent(
+                    shaded_img, visible, hidden, tf, cfg, Path(paths.hlg_translucent)
+                )
             else:
                 # shaded pass failed: fall back to the plain line art so the
                 # style still exists (documented degraded output).
                 Path(paths.hlg_translucent).parent.mkdir(parents=True, exist_ok=True)
                 svg = _write_hlg_svg(visible, hidden, tf, cfg)
-                cairosvg.svg2png(bytestring=svg.encode(), write_to=str(paths.hlg_translucent),
-                                  output_width=cfg.canvas_w, output_height=cfg.canvas_h)
+                cairosvg.svg2png(
+                    bytestring=svg.encode(),
+                    write_to=str(paths.hlg_translucent),
+                    output_width=cfg.canvas_w,
+                    output_height=cfg.canvas_h,
+                )
             info["hlg_translucent_ok"] = True
         except Exception as exc:  # noqa: BLE001
             info["errors"]["hlg_translucent"] = f"{type(exc).__name__}: {exc}"

@@ -14,7 +14,6 @@ Usage:
 
 from __future__ import annotations
 
-import math
 import multiprocessing as mp
 import sys
 from pathlib import Path
@@ -57,7 +56,9 @@ def gt_occupancy(png_path: Path) -> np.ndarray:
     return gaussian_filter(occ, BLUR_SIGMA)
 
 
-def candidate_occupancy(visible, hidden, canvas_w=1400, canvas_h=1000, margin_frac=0.08, res=RES):
+def candidate_occupancy(
+    visible, hidden, canvas_w=1400, canvas_h=1000, margin_frac=0.08, res=RES
+):
     all_lines = visible + hidden
     if not all_lines:
         return None
@@ -120,8 +121,13 @@ def run_search():
     results = []
     for ed in octant_dirs():
         for roll in range(0, 360, 30):
-            cfg = Render3dConfig(eye_dir=ed, world_up=(0.0, 1.0, 0.0),
-                                  dist_factor=8.0, focus_factor=0.15, roll_deg=float(roll))
+            cfg = Render3dConfig(
+                eye_dir=ed,
+                world_up=(0.0, 1.0, 0.0),
+                dist_factor=8.0,
+                focus_factor=0.15,
+                roll_deg=float(roll),
+            )
             s = score_cfg_multi(CAL_STEMS, cfg)
             results.append((s, ed, roll))
             if best is None or s > best[0]:
@@ -169,7 +175,9 @@ def run_isolated(step, paths, cfg, timeout=60):
     return status, payload
 
 
-def render_compare(cfg: Render3dConfig, stems=CAL_STEMS, out_dir: Path = OUT_DIR, timeout=60):
+def render_compare(
+    cfg: Render3dConfig, stems=CAL_STEMS, out_dir: Path = OUT_DIR, timeout=60
+):
     out_dir.mkdir(parents=True, exist_ok=True)
     for stem in stems:
         step = GT_DIR / "target_step" / f"{stem}.step"
@@ -179,21 +187,40 @@ def render_compare(cfg: Render3dConfig, stems=CAL_STEMS, out_dir: Path = OUT_DIR
         if status != "ok":
             continue
         gt = Image.open(GT_DIR / "render_3d" / "hlg_perspective" / f"{stem}.png")
-        ours = Image.open(paths.hlg) if paths.hlg.exists() else Image.new("RGB", (1400, 1000), "white")
+        ours = (
+            Image.open(paths.hlg)
+            if paths.hlg.exists()
+            else Image.new("RGB", (1400, 1000), "white")
+        )
         sheet = Image.new("RGB", (1400 * 2, 1000), "white")
         sheet.paste(gt, (0, 0))
         sheet.paste(ours, (1400, 0))
         sheet.save(out_dir / f"compare_hlg_{stem}.png")
 
-        gt_s = Image.open(GT_DIR / "render_3d" / "transparent_shaded_edges_perspective" / f"{stem}.png")
-        ours_s = Image.open(paths.shaded) if paths.shaded.exists() else Image.new("RGB", (1400, 1000), "white")
+        gt_s = Image.open(
+            GT_DIR
+            / "render_3d"
+            / "transparent_shaded_edges_perspective"
+            / f"{stem}.png"
+        )
+        ours_s = (
+            Image.open(paths.shaded)
+            if paths.shaded.exists()
+            else Image.new("RGB", (1400, 1000), "white")
+        )
         sheet_s = Image.new("RGB", (1400 * 2, 1000), "white")
         sheet_s.paste(gt_s, (0, 0))
         sheet_s.paste(ours_s, (1400, 0))
         sheet_s.save(out_dir / f"compare_shaded_{stem}.png")
 
-        gt_t = Image.open(GT_DIR / "render_3d" / "hlg_translucent_faces_perspective" / f"{stem}.png")
-        ours_t = Image.open(paths.hlg_translucent) if paths.hlg_translucent.exists() else Image.new("RGB", (1400, 1000), "white")
+        gt_t = Image.open(
+            GT_DIR / "render_3d" / "hlg_translucent_faces_perspective" / f"{stem}.png"
+        )
+        ours_t = (
+            Image.open(paths.hlg_translucent)
+            if paths.hlg_translucent.exists()
+            else Image.new("RGB", (1400, 1000), "white")
+        )
         sheet_t = Image.new("RGB", (1400 * 2, 1000), "white")
         sheet_t.paste(gt_t, (0, 0))
         sheet_t.paste(ours_t, (1400, 0))
@@ -218,7 +245,11 @@ if __name__ == "__main__":
     elif mode == "compare":
         render_compare(Render3dConfig())
     elif mode == "smoke":
-        real_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "experiments" / "stage_z2c_train"
+        real_dir = (
+            Path(sys.argv[2])
+            if len(sys.argv) > 2
+            else ROOT / "experiments" / "stage_z2c_train"
+        )
         run_smoke(real_dir)
     else:
         print(f"unknown mode {mode}")

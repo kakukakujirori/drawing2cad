@@ -20,6 +20,7 @@ from src.render.config import (
 )
 from src.render.centermarks import mark_svg_arms
 
+
 def _num(v: float) -> str:
     """Compact number: integers without a decimal point, else full precision."""
     if v == int(v):
@@ -41,27 +42,35 @@ def _pt(p):
 
 # ---- style strings (match GT exactly) -------------------------------------
 
+
 def _style_visible():
-    return ("fill:none;stroke-width:%s;stroke-linecap:round;stroke-linejoin:round;"
-            "stroke:rgb(0%%,0%%,0%%);stroke-opacity:1;stroke-miterlimit:10;"
-            % _fmt(SVG_STYLE_VISIBLE["stroke-width"]))
+    return (
+        "fill:none;stroke-width:%s;stroke-linecap:round;stroke-linejoin:round;"
+        "stroke:rgb(0%%,0%%,0%%);stroke-opacity:1;stroke-miterlimit:10;"
+        % _fmt(SVG_STYLE_VISIBLE["stroke-width"])
+    )
 
 
 def _style_hidden():
     da = ",".join(_fmt(x) for x in SVG_STYLE_HIDDEN["dasharray"])
-    return ("fill:none;stroke-width:%s;stroke-linecap:butt;stroke-linejoin:miter;"
-            "stroke:rgb(0%%,0%%,0%%);stroke-opacity:1;stroke-dasharray:%s;"
-            "stroke-miterlimit:10;" % (_fmt(SVG_STYLE_HIDDEN["stroke-width"]), da))
+    return (
+        "fill:none;stroke-width:%s;stroke-linecap:butt;stroke-linejoin:miter;"
+        "stroke:rgb(0%%,0%%,0%%);stroke-opacity:1;stroke-dasharray:%s;"
+        "stroke-miterlimit:10;" % (_fmt(SVG_STYLE_HIDDEN["stroke-width"]), da)
+    )
 
 
 def _style_center():
     da = ",".join(_fmt(x) for x in SVG_CENTER_DASH)
-    return ("fill:none;stroke-width:%s;stroke-linecap:butt;stroke-linejoin:miter;"
-            "stroke:rgb(0%%,0%%,0%%);stroke-opacity:1;stroke-dasharray:%s;"
-            "stroke-miterlimit:10;" % (_fmt(0.51024), da))
+    return (
+        "fill:none;stroke-width:%s;stroke-linecap:butt;stroke-linejoin:miter;"
+        "stroke:rgb(0%%,0%%,0%%);stroke-opacity:1;stroke-dasharray:%s;"
+        "stroke-miterlimit:10;" % (_fmt(0.51024), da)
+    )
 
 
 # ---- path 'd' builders (point coords) -------------------------------------
+
 
 def _d_seg(p0, p1):
     a = _pt(p0)
@@ -81,8 +90,10 @@ def _arc_cmd(center, radius, a0, a1, ccw):
         span = (a0 - a1) % (2 * math.pi)
         sweep = 0
     large = 1 if span > math.pi else 0
-    return (f"M {_fmt(s[0])} {_fmt(s[1])} "
-            f"A {_fmt(r)} {_fmt(r)} 0 {large} {sweep} {_fmt(e[0])} {_fmt(e[1])} ")
+    return (
+        f"M {_fmt(s[0])} {_fmt(s[1])} "
+        f"A {_fmt(r)} {_fmt(r)} 0 {large} {sweep} {_fmt(e[0])} {_fmt(e[1])} "
+    )
 
 
 def _d_circle(center, radius):
@@ -91,9 +102,11 @@ def _d_circle(center, radius):
     c = _pt(center)
     left = (c[0] - r, c[1])
     right = (c[0] + r, c[1])
-    return (f"M {_fmt(right[0])} {_fmt(right[1])} "
-            f"A {_fmt(r)} {_fmt(r)} 0 0 1 {_fmt(left[0])} {_fmt(left[1])} "
-            f"A {_fmt(r)} {_fmt(r)} 0 0 1 {_fmt(right[0])} {_fmt(right[1])} ")
+    return (
+        f"M {_fmt(right[0])} {_fmt(right[1])} "
+        f"A {_fmt(r)} {_fmt(r)} 0 0 1 {_fmt(left[0])} {_fmt(left[1])} "
+        f"A {_fmt(r)} {_fmt(r)} 0 0 1 {_fmt(right[0])} {_fmt(right[1])} "
+    )
 
 
 def _d_ellipse(e):
@@ -114,15 +127,19 @@ def _d_ellipse(e):
     if full:
         s = pt_at(0.0)
         m = pt_at(math.pi)
-        return (f"M {_fmt(s[0])} {_fmt(s[1])} "
-                f"A {_fmt(rmaj)} {_fmt(rmin)} {_fmt(xrot_deg)} 0 1 {_fmt(m[0])} {_fmt(m[1])} "
-                f"A {_fmt(rmaj)} {_fmt(rmin)} {_fmt(xrot_deg)} 0 1 {_fmt(s[0])} {_fmt(s[1])} ")
+        return (
+            f"M {_fmt(s[0])} {_fmt(s[1])} "
+            f"A {_fmt(rmaj)} {_fmt(rmin)} {_fmt(xrot_deg)} 0 1 {_fmt(m[0])} {_fmt(m[1])} "
+            f"A {_fmt(rmaj)} {_fmt(rmin)} {_fmt(xrot_deg)} 0 1 {_fmt(s[0])} {_fmt(s[1])} "
+        )
     s = pt_at(e.a0)
     en = pt_at(e.a1)
     span = (e.a1 - e.a0) % (2 * math.pi)
     large = 1 if span > math.pi else 0
-    return (f"M {_fmt(s[0])} {_fmt(s[1])} "
-            f"A {_fmt(rmaj)} {_fmt(rmin)} {_fmt(xrot_deg)} {large} 1 {_fmt(en[0])} {_fmt(en[1])} ")
+    return (
+        f"M {_fmt(s[0])} {_fmt(s[1])} "
+        f"A {_fmt(rmaj)} {_fmt(rmin)} {_fmt(xrot_deg)} {large} 1 {_fmt(en[0])} {_fmt(en[1])} "
+    )
 
 
 def _d_polyline(pts):
@@ -180,8 +197,8 @@ def write_svg(path, views, marks):
         vd = _edges_to_paths(v.visible)
         if vd.strip():
             parts.append(_path(vis, vd))
-    parts.append('</g>')
-    parts.append('</svg>')
+    parts.append("</g>")
+    parts.append("</svg>")
     text = "\n".join(parts) + "\n"
     path.write_text(text)
     return text

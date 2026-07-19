@@ -25,7 +25,9 @@ class MetricSink(Protocol):
 def _scalar(value: Any, *, key: str) -> bool | int | float | str | None:
     if isinstance(value, torch.Tensor):
         if value.numel() != 1:
-            raise TypeError(f"metric {key!r} must be scalar, got tensor {tuple(value.shape)}")
+            raise TypeError(
+                f"metric {key!r} must be scalar, got tensor {tuple(value.shape)}"
+            )
         value = value.detach().cpu().item()
     try:
         import numpy as np
@@ -39,7 +41,9 @@ def _scalar(value: Any, *, key: str) -> bool | int | float | str | None:
         return None
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
-    raise TypeError(f"metric {key!r} must be a scalar, string, or None, got {type(value)}")
+    raise TypeError(
+        f"metric {key!r} must be a scalar, string, or None, got {type(value)}"
+    )
 
 
 def normalize_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
@@ -178,7 +182,9 @@ class ExperimentLogger:
         jsonl_config = config.get("jsonl", {})
         if bool(jsonl_config.get("enabled", True)):
             sinks.append(
-                JSONLMetricLogger(run_dir / jsonl_config.get("filename", "metrics.jsonl"))
+                JSONLMetricLogger(
+                    run_dir / jsonl_config.get("filename", "metrics.jsonl")
+                )
             )
         wandb_config = config.get("wandb", {})
         if bool(wandb_config.get("enabled", False)):
@@ -214,7 +220,9 @@ class ExperimentLogger:
             except Exception as error:  # ensure every sink receives finish
                 errors.append(error)
         if errors:
-            raise RuntimeError(f"failed to finish {len(errors)} metric sink(s)") from errors[0]
+            raise RuntimeError(
+                f"failed to finish {len(errors)} metric sink(s)"
+            ) from errors[0]
 
     def __enter__(self) -> "ExperimentLogger":
         return self

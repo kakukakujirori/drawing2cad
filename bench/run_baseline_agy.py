@@ -50,6 +50,7 @@ Usage:
     python bench/run_baseline_agy.py --all --model <model-id>
     # ^ re-run the same line after a usage-limit stop to resume the remaining fixtures
 """
+
 from __future__ import annotations
 
 import argparse
@@ -91,9 +92,13 @@ AGY_CONFIG_DIRS = [
 ]
 
 
-def bwrap_wrap(inner_cmd: list[str], workdir: Path, repo: Path,
-               rw_paths: list[Path],
-               ro_binds: list[tuple[str, str]] | None = None) -> list[str]:
+def bwrap_wrap(
+    inner_cmd: list[str],
+    workdir: Path,
+    repo: Path,
+    rw_paths: list[Path],
+    ro_binds: list[tuple[str, str]] | None = None,
+) -> list[str]:
     """Wrap an agy command in a bubblewrap FS jail that hides `repo`.
 
     Whole FS read-only, `repo` masked by an empty tmpfs (so the GT under it is
@@ -104,23 +109,37 @@ def bwrap_wrap(inner_cmd: list[str], workdir: Path, repo: Path,
     mask would otherwise hide — see repo_venv_binds(). These carry no GT, so the
     ground truth under the repo stays masked.
     """
-    args = ["bwrap",
-            "--ro-bind", "/", "/",
-            "--tmpfs", str(repo),      # mask the repo => GT is gone
-            "--tmpfs", "/tmp",
-            "--dev-bind", "/dev", "/dev",
-            "--proc", "/proc"]
+    args = [
+        "bwrap",
+        "--ro-bind",
+        "/",
+        "/",
+        "--tmpfs",
+        str(repo),  # mask the repo => GT is gone
+        "--tmpfs",
+        "/tmp",
+        "--dev-bind",
+        "/dev",
+        "/dev",
+        "--proc",
+        "/proc",
+    ]
     # AFTER the tmpfs mask so these win: re-expose only the pinned venv root.
-    for src, dest in (ro_binds or []):
+    for src, dest in ro_binds or []:
         if Path(src).exists():
             args += ["--ro-bind", str(src), str(dest)]
     for p in rw_paths:
         if Path(p).exists():
             args += ["--bind", str(p), str(p)]
     # workdir added last so it wins over the tmpfs/ro-bind above.
-    args += ["--bind", str(workdir), str(workdir),
-             "--chdir", str(workdir),
-             "--die-with-parent"]
+    args += [
+        "--bind",
+        str(workdir),
+        str(workdir),
+        "--chdir",
+        str(workdir),
+        "--die-with-parent",
+    ]
     return args + list(inner_cmd)
 
 
@@ -143,8 +162,8 @@ def repo_venv_binds(cadquery_python: str, repo: Path) -> list[tuple[str, str]]:
     interp = Path(cadquery_python)
     if not interp.is_absolute():
         return []
-    root = interp.parent.parent                      # venv layout: <root>/bin/py
-    under_repo = root == repo or repo in root.parents   # UNRESOLVED path check
+    root = interp.parent.parent  # venv layout: <root>/bin/py
+    under_repo = root == repo or repo in root.parents  # UNRESOLVED path check
     if not under_repo:
         return []
     real = os.path.realpath(str(root))
@@ -160,8 +179,9 @@ def _step_geom_lines(path: Path) -> list[str]:
     return [ln for ln in txt if not ln.startswith("FILE_NAME")]
 
 
-def is_leaked_gt(candidate: Path, gt: Path,
-                 tol_lines: int = 20, tol_frac: float = 0.005) -> bool:
+def is_leaked_gt(
+    candidate: Path, gt: Path, tol_lines: int = 20, tol_frac: float = 0.005
+) -> bool:
     """True iff `candidate` is the ground-truth STEP re-exported.
 
     Integrity gate against test-set contamination: identical entity count and
@@ -323,12 +343,22 @@ def serialize_graph(serialize_python: str, graph_json: Path, quant: int) -> str:
     """{uuid}.graph.json -> the exact serialize_3d(quant=) text our model
     receives (mirrors infer.py's call; see the block comment above)."""
     proc = subprocess.run(
-        [serialize_python, "-c", _SERIALIZE_SNIPPET,
-         str(C.REPO / "scripts" / "train3d"), str(graph_json), str(quant)],
-        capture_output=True, text=True, timeout=600)
+        [
+            serialize_python,
+            "-c",
+            _SERIALIZE_SNIPPET,
+            str(C.REPO / "scripts" / "train3d"),
+            str(graph_json),
+            str(quant),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
     if proc.returncode != 0:
-        raise RuntimeError(f"serialize_3d failed for {graph_json.name}: "
-                           f"{proc.stderr.strip()[-400:]}")
+        raise RuntimeError(
+            f"serialize_3d failed for {graph_json.name}: {proc.stderr.strip()[-400:]}"
+        )
     return proc.stdout
 
 
@@ -436,17 +466,22 @@ def bench_ids_to_exclude(extra_files: list[Path] | None = None) -> set[str]:
     another bench corpus passed via --exclude-ids-from). Missing files are
     skipped."""
     ids: set[str] = set(C.manifest_ids())
-    for f in (extra_files or []):
+    for f in extra_files or []:
         if f.exists():
             ids |= _read_id_file(f)
     return ids
 
 
-def select_shot_examples(serialize_python: str, quant: int, k: int,
-                         max_shot_bytes: int, shot_graph_dir: Path,
-                         shot_code_dir: Path,
-                         exclude_files: list[Path] | None = None,
-                         shot_pool_cap: int = 500) -> list[dict]:
+def select_shot_examples(
+    serialize_python: str,
+    quant: int,
+    k: int,
+    max_shot_bytes: int,
+    shot_graph_dir: Path,
+    shot_code_dir: Path,
+    exclude_files: list[Path] | None = None,
+    shot_pool_cap: int = 500,
+) -> list[dict]:
     """--shots K: pick k deterministic worked examples from `shot_graph_dir`
     (a pool of {uuid}.graph.json, e.g. the Z2C train set), each (a) never a
     bench fixture (bench_ids_to_exclude(exclude_files)) and (b) with a blend-
@@ -458,22 +493,33 @@ def select_shot_examples(serialize_python: str, quant: int, k: int,
     under a total byte budget (see _SHOT_SELECT_SNIPPET)."""
     excl = bench_ids_to_exclude(exclude_files)
     proc = subprocess.run(
-        [serialize_python, "-c", _SHOT_SELECT_SNIPPET,
-         str(C.REPO / "scripts" / "train3d"), str(shot_graph_dir),
-         str(shot_code_dir), str(quant), str(k), str(max_shot_bytes),
-         str(shot_pool_cap)],
-        input=json.dumps(sorted(excl)), capture_output=True, text=True,
-        timeout=1800)
+        [
+            serialize_python,
+            "-c",
+            _SHOT_SELECT_SNIPPET,
+            str(C.REPO / "scripts" / "train3d"),
+            str(shot_graph_dir),
+            str(shot_code_dir),
+            str(quant),
+            str(k),
+            str(max_shot_bytes),
+            str(shot_pool_cap),
+        ],
+        input=json.dumps(sorted(excl)),
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
     if proc.returncode != 0:
         raise SystemExit(
             f"[agy] --shots {k}: no eligible worked example ({shot_graph_dir} x "
             f"{shot_code_dir}, {len(excl)} ids excluded): "
-            f"{proc.stderr.strip()[-400:]}")
+            f"{proc.stderr.strip()[-400:]}"
+        )
     return json.loads(proc.stdout)
 
 
-def build_graph_prompt(cadquery_python: str,
-                       shots: list[dict] | None = None) -> str:
+def build_graph_prompt(cadquery_python: str, shots: list[dict] | None = None) -> str:
     """The single headless prompt for one fixture in --input graph mode.
 
     Same task framing as PNG mode (CadQuery model.py, execute with the pinned
@@ -531,15 +577,24 @@ def build_graph_prompt(cadquery_python: str,
     )
 
 
-def agy_command(agy_bin: str, prompt: str, workdir: Path, model: str | None,
-                print_timeout_s: float, sandbox: bool) -> list[str]:
+def agy_command(
+    agy_bin: str,
+    prompt: str,
+    workdir: Path,
+    model: str | None,
+    print_timeout_s: float,
+    sandbox: bool,
+) -> list[str]:
     cmd = [
         agy_bin,
-        "-p", prompt,
+        "-p",
+        prompt,
         "--dangerously-skip-permissions",
-        "--add-dir", str(workdir),
+        "--add-dir",
+        str(workdir),
         # agy expects a Go duration string; whole seconds is unambiguous.
-        "--print-timeout", f"{int(print_timeout_s)}s",
+        "--print-timeout",
+        f"{int(print_timeout_s)}s",
     ]
     if model:
         assert model in [
@@ -557,9 +612,18 @@ def agy_command(agy_bin: str, prompt: str, workdir: Path, model: str | None,
 
 def looks_unauthenticated(stdout: str, stderr: str) -> bool:
     blob = (stdout + "\n" + stderr).lower()
-    needles = ("not signed in", "not authenticated", "sign in", "please log in",
-               "please login", "unauthorized", "authentication required",
-               "no credentials", "run `agy`", "authentication failed")
+    needles = (
+        "not signed in",
+        "not authenticated",
+        "sign in",
+        "please log in",
+        "please login",
+        "unauthorized",
+        "authentication required",
+        "no credentials",
+        "run `agy`",
+        "authentication failed",
+    )
     return any(n in blob for n in needles)
 
 
@@ -567,21 +631,44 @@ def looks_rate_limited(stdout: str, stderr: str) -> bool:
     """Detect a usage/quota/rate limit so the loop can stop cleanly and resume later
     (rather than burning every remaining fixture on the same error)."""
     blob = (stdout + "\n" + stderr).lower()
-    needles = ("usage limit", "rate limit", "rate-limit", "quota", "resource exhausted",
-               "too many requests", "429", "limit reached", "reached your limit",
-               "you've reached", "you have reached", "try again later",
-               "insufficient_quota", "over capacity")
+    needles = (
+        "usage limit",
+        "rate limit",
+        "rate-limit",
+        "quota",
+        "resource exhausted",
+        "too many requests",
+        "429",
+        "limit reached",
+        "reached your limit",
+        "you've reached",
+        "you have reached",
+        "try again later",
+        "insufficient_quota",
+        "over capacity",
+    )
     return any(n in blob for n in needles)
 
 
-def run_one(uuid: str, run_dir: Path, agy_bin: str, model: str | None,
-            print_timeout_s: float, wall_timeout_s: float, sandbox: bool,
-            prompt: str, dry_run: bool,
-            sandbox_fs: bool = False, work_root: Path | None = None,
-            input_mode: str = "png", graph_dir: Path | None = None,
-            quant: int = 1024, serialize_python: str = sys.executable,
-            max_graph_bytes: int = 0,
-            venv_binds: list[tuple[str, str]] | None = None) -> str:
+def run_one(
+    uuid: str,
+    run_dir: Path,
+    agy_bin: str,
+    model: str | None,
+    print_timeout_s: float,
+    wall_timeout_s: float,
+    sandbox: bool,
+    prompt: str,
+    dry_run: bool,
+    sandbox_fs: bool = False,
+    work_root: Path | None = None,
+    input_mode: str = "png",
+    graph_dir: Path | None = None,
+    quant: int = 1024,
+    serialize_python: str = sys.executable,
+    max_graph_bytes: int = 0,
+    venv_binds: list[tuple[str, str]] | None = None,
+) -> str:
     in_dir = C.INPUTS_DIR / uuid
     drawing = in_dir / C.DRAWING_NAME
     fx = run_dir / uuid
@@ -589,6 +676,7 @@ def run_one(uuid: str, run_dir: Path, agy_bin: str, model: str | None,
         # Opaque workdir OUTSIDE the repo (the repo is masked inside the jail).
         # Opaque (not the uuid) so the agent has no key to search other stores by.
         import secrets
+
         workdir = Path(work_root or DEFAULT_WORK_ROOT) / secrets.token_hex(8)
     else:
         workdir = fx / "work"
@@ -599,8 +687,9 @@ def run_one(uuid: str, run_dir: Path, agy_bin: str, model: str | None,
     if input_mode == "graph":
         graph_json = (graph_dir or C.SRC_GRAPH_DIR) / f"{uuid}.graph.json"
         if not graph_json.exists():
-            print(f"[agy] {uuid}: missing graph {graph_json}, skipping",
-                  file=sys.stderr)
+            print(
+                f"[agy] {uuid}: missing graph {graph_json}, skipping", file=sys.stderr
+            )
             return "no-input"
         try:
             graph_text = serialize_graph(serialize_python, graph_json, quant)
@@ -609,27 +698,32 @@ def run_one(uuid: str, run_dir: Path, agy_bin: str, model: str | None,
             return "serialize-error"
         n_graph_bytes = len(graph_text.encode("utf-8"))
         if max_graph_bytes and n_graph_bytes > max_graph_bytes:
-            print(f"[agy] {uuid}: {GRAPH_NAME} would be {n_graph_bytes:,} B > "
-                  f"--max-graph-bytes {max_graph_bytes:,} — status too_large; "
-                  f"agy NOT invoked (no quota spent).", file=sys.stderr)
+            print(
+                f"[agy] {uuid}: {GRAPH_NAME} would be {n_graph_bytes:,} B > "
+                f"--max-graph-bytes {max_graph_bytes:,} — status too_large; "
+                f"agy NOT invoked (no quota spent).",
+                file=sys.stderr,
+            )
             return "too_large"
 
     cmd = agy_command(agy_bin, prompt, workdir, model, print_timeout_s, sandbox)
     if sandbox_fs:
-        cmd = bwrap_wrap(cmd, workdir, C.REPO, AGY_CONFIG_DIRS,
-                         ro_binds=venv_binds)
+        cmd = bwrap_wrap(cmd, workdir, C.REPO, AGY_CONFIG_DIRS, ro_binds=venv_binds)
 
     if dry_run:
         print(f"\n===== fixture {uuid} =====")
         print(f"# cwd: {workdir}  (sandbox_fs={sandbox_fs})")
         if input_mode == "graph":
-            print(f"# write: {workdir / GRAPH_NAME} <- serialize_3d({graph_json}, "
-                  f"quant={quant}) = {n_graph_bytes:,} B")
+            print(
+                f"# write: {workdir / GRAPH_NAME} <- serialize_3d({graph_json}, "
+                f"quant={quant}) = {n_graph_bytes:,} B"
+            )
             print(f"# {GRAPH_NAME} first line: {graph_text.splitlines()[0]}")
         else:
             print(f"# copy: {drawing} -> {workdir / C.DRAWING_NAME}")
         # shell-quote for copy-paste fidelity
         import shlex
+
         print("$ " + " ".join(shlex.quote(c) for c in cmd))
         print("\n----- PROMPT -----")
         print(prompt)
@@ -655,24 +749,41 @@ def run_one(uuid: str, run_dir: Path, agy_bin: str, model: str | None,
         shutil.copy2(drawing, workdir / C.DRAWING_NAME)
 
     log_path = fx / "agy.log"
-    print(f"[agy] {uuid}: running (model={model_slug(model)}, "
-          f"print-timeout={int(print_timeout_s)}s, wall={int(wall_timeout_s)}s)")
+    print(
+        f"[agy] {uuid}: running (model={model_slug(model)}, "
+        f"print-timeout={int(print_timeout_s)}s, wall={int(wall_timeout_s)}s)"
+    )
     t0 = time.time()
     timed_out = False
     try:
-        proc = subprocess.run(cmd, cwd=str(workdir), capture_output=True,
-                              text=True, timeout=wall_timeout_s)
+        proc = subprocess.run(
+            cmd,
+            cwd=str(workdir),
+            capture_output=True,
+            text=True,
+            timeout=wall_timeout_s,
+        )
         rc = proc.returncode
         stdout, stderr = proc.stdout, proc.stderr
     except subprocess.TimeoutExpired as e:
         rc = -1
         timed_out = True
-        stdout = (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
-        stderr = (e.stderr or b"").decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        stdout = (
+            (e.stdout or b"").decode(errors="replace")
+            if isinstance(e.stdout, bytes)
+            else (e.stdout or "")
+        )
+        stderr = (
+            (e.stderr or b"").decode(errors="replace")
+            if isinstance(e.stderr, bytes)
+            else (e.stderr or "")
+        )
         stderr += "\n[agy] wall-clock timeout"
     except FileNotFoundError:
-        print(f"[agy] agy binary not found at {agy_bin}. Install/point --agy-bin.",
-              file=sys.stderr)
+        print(
+            f"[agy] agy binary not found at {agy_bin}. Install/point --agy-bin.",
+            file=sys.stderr,
+        )
         return "no-agy"
     dt = time.time() - t0
 
@@ -682,8 +793,11 @@ def run_one(uuid: str, run_dir: Path, agy_bin: str, model: str | None,
     )
 
     if looks_unauthenticated(stdout, stderr):
-        print(f"[agy] {uuid}: agy appears UNAUTHENTICATED — run `agy` once to "
-              f"sign in, then retry. (see {log_path})", file=sys.stderr)
+        print(
+            f"[agy] {uuid}: agy appears UNAUTHENTICATED — run `agy` once to "
+            f"sign in, then retry. (see {log_path})",
+            file=sys.stderr,
+        )
         return "unauth"
 
     produced = workdir / OUTPUT_STEP_NAME
@@ -691,140 +805,228 @@ def run_one(uuid: str, run_dir: Path, agy_bin: str, model: str | None,
         # Integrity gate: reject a candidate that is just the GT re-exported.
         gt = C.GT_DIR / uuid / C.GT_STEP_NAME
         if is_leaked_gt(produced, gt):
-            print(f"[agy] {uuid}: REJECTED — output.step is the ground truth "
-                  f"re-exported (test-set contamination). Not accepted as a result. "
-                  f"Use --sandbox-fs. (see {log_path})", file=sys.stderr)
+            print(
+                f"[agy] {uuid}: REJECTED — output.step is the ground truth "
+                f"re-exported (test-set contamination). Not accepted as a result. "
+                f"Use --sandbox-fs. (see {log_path})",
+                file=sys.stderr,
+            )
             if sandbox_fs:
-                _copy_work_back(workdir, fx)   # keep artefacts for forensics
+                _copy_work_back(workdir, fx)  # keep artefacts for forensics
             return "leaked"
         shutil.copy2(produced, fx / "output.step")
         if sandbox_fs:
-            _copy_work_back(workdir, fx)        # external workdir -> keep for debugging
+            _copy_work_back(workdir, fx)  # external workdir -> keep for debugging
         print(f"[agy] {uuid}: output.step ({produced.stat().st_size} B, {dt:.1f}s)")
         return "step"
 
     # No STEP. Distinguish a usage/rate limit (caller should STOP + resume later)
     # from an ordinary failure (agy tried but produced nothing).
     if looks_rate_limited(stdout, stderr):
-        print(f"[agy] {uuid}: hit a USAGE/RATE LIMIT — stopping so you can resume "
-              f"later. (see {log_path})", file=sys.stderr)
+        print(
+            f"[agy] {uuid}: hit a USAGE/RATE LIMIT — stopping so you can resume "
+            f"later. (see {log_path})",
+            file=sys.stderr,
+        )
         return "limit"
-    print(f"[agy] {uuid}: no output.step produced (exit={rc}, {dt:.1f}s). "
-          f"See {log_path}.", file=sys.stderr)
+    print(
+        f"[agy] {uuid}: no output.step produced (exit={rc}, {dt:.1f}s). "
+        f"See {log_path}.",
+        file=sys.stderr,
+    )
     return "missing"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model", default="Gemini 3.1 Pro (High)",
-                    help="agy model id (see `agy models`)")
-    parser.add_argument("--input", choices=("png", "graph"), default="png",
-                    help="what the agent gets per fixture: png = the rendered "
-                         "drawing (control); graph = graph.txt, the serialized "
-                         "AMVDG text our model receives (representation "
-                         "ablation; prompt carries a format legend; results "
-                         "under agy-graph_<modelslug>/)")
-    parser.add_argument("--shots", type=int, choices=(0, 1, 2, 3), default=0,
-                    help="graph mode: 0 = zero-shot (default; the legend alone "
-                         "carries the format, matching the PNG control which "
-                         "had no worked example; prompt stays byte-identical to "
-                         "the control). K in 1..3 = prepend K worked examples "
-                         "(never-a-bench-fixture val graphs + their blend-"
-                         "stripped GT CadQuery): example 1 = the shortest, the "
-                         "rest span complexity at spaced percentiles under "
-                         "--max-shot-bytes. Writes to agy-graph-Kshot_<slug>/ "
-                         "(K=1 -> agy-graph-1shot_<slug>/).")
-    parser.add_argument("--max-shot-bytes", type=int, default=45000,
-                    help="graph mode, --shots>=2: total byte budget over the "
-                         "chosen examples (serialized graph text + GT code). A "
-                         "percentile pick that would exceed it walks down to the "
-                         "next shorter eligible graph (keeps the prompt bounded).")
-    parser.add_argument("--shot-graph-dir", type=Path,
-                    default=C.REPO / "experiments" / "dataset_z2c_train",
-                    help="graph mode, --shots>=1: dir of {uuid}.graph.json to "
-                         "draw worked examples from (default the Z2C TRAIN set — "
-                         "disjoint by construction from the val-derived bench "
-                         "fixtures, so examples never leak a graded part). "
-                         "Relative paths resolve against the repo root.")
-    parser.add_argument("--shot-code-dir", type=Path,
-                    default=C.REPO / "experiments" / "stage_z2c_train_noblend",
-                    help="graph mode, --shots>=1: dir of blend-stripped GT "
-                         "{uuid}.cadquery.py paired with --shot-graph-dir for the "
-                         "worked-example solutions (default stage_z2c_train_noblend). "
-                         "Relative paths resolve against the repo root.")
-    parser.add_argument("--shot-pool-cap", type=int, default=500,
-                    help="graph mode, --shots>=1: if the candidate pool exceeds "
-                         "this, uniformly subsample (seed 0) to this many BEFORE "
-                         "serializing — bounds selection time on a huge source "
-                         "like the train split (~9e4 graphs). 0 = no cap (use the "
-                         "whole pool; fine for a small dir like the val set).")
-    parser.add_argument("--exclude-ids-from", type=Path, nargs="*", default=[],
-                    help="graph mode, --shots>=1: extra id sources (each a "
-                         "manifest.json or a newline id list) whose uuids are "
-                         "ALSO barred from the worked-example pool, on top of the "
-                         "active bench's own fixtures (always excluded). With the "
-                         "default train pool this is a no-op safety net (train is "
-                         "already disjoint from the val bench); use it when drawing "
-                         "examples from a val-derived pool. Relative paths resolve "
-                         "against the repo root.")
-    parser.add_argument("--quant", type=int, default=1024,
-                    help="graph mode: serialize_3d coordinate quantization "
-                         "(= serialize.CANON_QUANT). MUST match what our model "
-                         "receives at bench time (run_ours.py --quant 1024), "
-                         "or the ablation compares different texts.")
-    parser.add_argument("--serialize-python",
-                    default=os.environ.get("DRAWING2CAD_PY", sys.executable),
-                    help="interpreter that imports scripts/train3d/serialize.py "
-                         "(stdlib-only; default $DRAWING2CAD_PY or this python)")
-    parser.add_argument("--graph-dir", type=Path, default=None,
-                    help="graph mode: {uuid}.graph.json source dir (default: "
-                         "the manifest's sources.graph_png_dir — the graphs the "
-                         "fixtures were built from)")
-    parser.add_argument("--max-graph-bytes", type=int, default=2_000_000,
-                    help="graph mode: a fixture whose serialized graph.txt "
-                         "exceeds this many bytes gets status too_large and is "
-                         "skipped WITHOUT invoking agy (quota guard for "
-                         "oversized parts, e.g. future data_new sets; 0 = off)")
-    parser.add_argument("--ids", nargs="*", default=None,
-                    help="explicit fixture uuids to run")
-    parser.add_argument("--limit", type=int, default=None,
-                    help="cap number of fixtures (smoke tests)")
-    parser.add_argument("--all", action="store_true",
-                    help="run every fixture in the manifest")
-    parser.add_argument("--print-timeout", type=float, default=900.0,
-                    help="agy --print-timeout, seconds (default 900; sent as Ns)")
-    parser.add_argument("--wall-timeout", type=float, default=None,
-                    help="hard subprocess wall-clock cap, seconds "
-                         "(default: print-timeout + 120)")
-    parser.add_argument("--sandbox", action="store_true",
-                    help="pass agy --sandbox (restricted terminal)")
-    parser.add_argument("--sandbox-fs", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="run agy inside a bubblewrap FS jail that HIDES the repo "
-                         "(so the ground-truth STEP files are unreachable and the "
-                         "agent cannot read the answer off disk). Uses an opaque "
-                         "workdir under --work-root, OUTSIDE the repo. Requires bwrap. "
-                         "**ON BY DEFAULT** — pass --no-sandbox-fs to disable (⚠️ then "
-                         "the agent can and does find + re-export the GT: contamination).")
-    parser.add_argument("--work-root", default=str(DEFAULT_WORK_ROOT),
-                    help=f"parent dir for per-fixture --sandbox-fs workdirs; MUST be "
-                         f"outside the repo (default {DEFAULT_WORK_ROOT})")
-    parser.add_argument("--agy-bin", default=AGY_BIN_DEFAULT,
-                    help=f"path to the agy binary (default {AGY_BIN_DEFAULT})")
-    parser.add_argument("--cadquery-python", default=sys.executable,
-                    help="interpreter agy is told to execute the script with "
-                         "(default the current drawing2cad env, which includes "
-                         "CadQuery/OCC)")
-    parser.add_argument("--run-name", default=None,
-                    help="results/<run_name>/ (default agy_<modelslug>, date-less so "
-                         "re-runs resume in place)")
-    parser.add_argument("--force", action="store_true",
-                    help="re-run fixtures even if they already have an output.step "
-                         "(default: skip done ones = resume)")
-    parser.add_argument("--dry-run", action="store_true",
-                    help="print the exact agy command + prompt per fixture and "
-                         "invoke nothing")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--model",
+        default="Gemini 3.1 Pro (High)",
+        help="agy model id (see `agy models`)",
+    )
+    parser.add_argument(
+        "--input",
+        choices=("png", "graph"),
+        default="png",
+        help="what the agent gets per fixture: png = the rendered "
+        "drawing (control); graph = graph.txt, the serialized "
+        "AMVDG text our model receives (representation "
+        "ablation; prompt carries a format legend; results "
+        "under agy-graph_<modelslug>/)",
+    )
+    parser.add_argument(
+        "--shots",
+        type=int,
+        choices=(0, 1, 2, 3),
+        default=0,
+        help="graph mode: 0 = zero-shot (default; the legend alone "
+        "carries the format, matching the PNG control which "
+        "had no worked example; prompt stays byte-identical to "
+        "the control). K in 1..3 = prepend K worked examples "
+        "(never-a-bench-fixture val graphs + their blend-"
+        "stripped GT CadQuery): example 1 = the shortest, the "
+        "rest span complexity at spaced percentiles under "
+        "--max-shot-bytes. Writes to agy-graph-Kshot_<slug>/ "
+        "(K=1 -> agy-graph-1shot_<slug>/).",
+    )
+    parser.add_argument(
+        "--max-shot-bytes",
+        type=int,
+        default=45000,
+        help="graph mode, --shots>=2: total byte budget over the "
+        "chosen examples (serialized graph text + GT code). A "
+        "percentile pick that would exceed it walks down to the "
+        "next shorter eligible graph (keeps the prompt bounded).",
+    )
+    parser.add_argument(
+        "--shot-graph-dir",
+        type=Path,
+        default=C.REPO / "experiments" / "dataset_z2c_train",
+        help="graph mode, --shots>=1: dir of {uuid}.graph.json to "
+        "draw worked examples from (default the Z2C TRAIN set — "
+        "disjoint by construction from the val-derived bench "
+        "fixtures, so examples never leak a graded part). "
+        "Relative paths resolve against the repo root.",
+    )
+    parser.add_argument(
+        "--shot-code-dir",
+        type=Path,
+        default=C.REPO / "experiments" / "stage_z2c_train_noblend",
+        help="graph mode, --shots>=1: dir of blend-stripped GT "
+        "{uuid}.cadquery.py paired with --shot-graph-dir for the "
+        "worked-example solutions (default stage_z2c_train_noblend). "
+        "Relative paths resolve against the repo root.",
+    )
+    parser.add_argument(
+        "--shot-pool-cap",
+        type=int,
+        default=500,
+        help="graph mode, --shots>=1: if the candidate pool exceeds "
+        "this, uniformly subsample (seed 0) to this many BEFORE "
+        "serializing — bounds selection time on a huge source "
+        "like the train split (~9e4 graphs). 0 = no cap (use the "
+        "whole pool; fine for a small dir like the val set).",
+    )
+    parser.add_argument(
+        "--exclude-ids-from",
+        type=Path,
+        nargs="*",
+        default=[],
+        help="graph mode, --shots>=1: extra id sources (each a "
+        "manifest.json or a newline id list) whose uuids are "
+        "ALSO barred from the worked-example pool, on top of the "
+        "active bench's own fixtures (always excluded). With the "
+        "default train pool this is a no-op safety net (train is "
+        "already disjoint from the val bench); use it when drawing "
+        "examples from a val-derived pool. Relative paths resolve "
+        "against the repo root.",
+    )
+    parser.add_argument(
+        "--quant",
+        type=int,
+        default=1024,
+        help="graph mode: serialize_3d coordinate quantization "
+        "(= serialize.CANON_QUANT). MUST match what our model "
+        "receives at bench time (run_ours.py --quant 1024), "
+        "or the ablation compares different texts.",
+    )
+    parser.add_argument(
+        "--serialize-python",
+        default=os.environ.get("DRAWING2CAD_PY", sys.executable),
+        help="interpreter that imports scripts/train3d/serialize.py "
+        "(stdlib-only; default $DRAWING2CAD_PY or this python)",
+    )
+    parser.add_argument(
+        "--graph-dir",
+        type=Path,
+        default=None,
+        help="graph mode: {uuid}.graph.json source dir (default: "
+        "the manifest's sources.graph_png_dir — the graphs the "
+        "fixtures were built from)",
+    )
+    parser.add_argument(
+        "--max-graph-bytes",
+        type=int,
+        default=2_000_000,
+        help="graph mode: a fixture whose serialized graph.txt "
+        "exceeds this many bytes gets status too_large and is "
+        "skipped WITHOUT invoking agy (quota guard for "
+        "oversized parts, e.g. future data_new sets; 0 = off)",
+    )
+    parser.add_argument(
+        "--ids", nargs="*", default=None, help="explicit fixture uuids to run"
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None, help="cap number of fixtures (smoke tests)"
+    )
+    parser.add_argument(
+        "--all", action="store_true", help="run every fixture in the manifest"
+    )
+    parser.add_argument(
+        "--print-timeout",
+        type=float,
+        default=900.0,
+        help="agy --print-timeout, seconds (default 900; sent as Ns)",
+    )
+    parser.add_argument(
+        "--wall-timeout",
+        type=float,
+        default=None,
+        help="hard subprocess wall-clock cap, seconds (default: print-timeout + 120)",
+    )
+    parser.add_argument(
+        "--sandbox",
+        action="store_true",
+        help="pass agy --sandbox (restricted terminal)",
+    )
+    parser.add_argument(
+        "--sandbox-fs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="run agy inside a bubblewrap FS jail that HIDES the repo "
+        "(so the ground-truth STEP files are unreachable and the "
+        "agent cannot read the answer off disk). Uses an opaque "
+        "workdir under --work-root, OUTSIDE the repo. Requires bwrap. "
+        "**ON BY DEFAULT** — pass --no-sandbox-fs to disable (⚠️ then "
+        "the agent can and does find + re-export the GT: contamination).",
+    )
+    parser.add_argument(
+        "--work-root",
+        default=str(DEFAULT_WORK_ROOT),
+        help=f"parent dir for per-fixture --sandbox-fs workdirs; MUST be "
+        f"outside the repo (default {DEFAULT_WORK_ROOT})",
+    )
+    parser.add_argument(
+        "--agy-bin",
+        default=AGY_BIN_DEFAULT,
+        help=f"path to the agy binary (default {AGY_BIN_DEFAULT})",
+    )
+    parser.add_argument(
+        "--cadquery-python",
+        default=sys.executable,
+        help="interpreter agy is told to execute the script with "
+        "(default the current drawing2cad env, which includes "
+        "CadQuery/OCC)",
+    )
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="results/<run_name>/ (default agy_<modelslug>, date-less so "
+        "re-runs resume in place)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="re-run fixtures even if they already have an output.step "
+        "(default: skip done ones = resume)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the exact agy command + prompt per fixture and invoke nothing",
+    )
     args = parser.parse_args()
 
     if not C.INPUTS_DIR.exists():
@@ -846,37 +1048,65 @@ def main() -> int:
         if not graph_dir.is_dir():
             raise SystemExit(f"--input graph: graph dir not found: {graph_dir}")
         if args.shots >= 1:
-            shot_graph_dir = (args.shot_graph_dir if args.shot_graph_dir.is_absolute()
-                              else C.REPO / args.shot_graph_dir)
-            shot_code_dir = (args.shot_code_dir if args.shot_code_dir.is_absolute()
-                             else C.REPO / args.shot_code_dir)
-            for label, d in (("--shot-graph-dir", shot_graph_dir),
-                             ("--shot-code-dir", shot_code_dir)):
+            shot_graph_dir = (
+                args.shot_graph_dir
+                if args.shot_graph_dir.is_absolute()
+                else C.REPO / args.shot_graph_dir
+            )
+            shot_code_dir = (
+                args.shot_code_dir
+                if args.shot_code_dir.is_absolute()
+                else C.REPO / args.shot_code_dir
+            )
+            for label, d in (
+                ("--shot-graph-dir", shot_graph_dir),
+                ("--shot-code-dir", shot_code_dir),
+            ):
                 if not d.is_dir():
                     raise SystemExit(f"--shots {args.shots}: {label} not found: {d}")
-            exclude_files = [f if f.is_absolute() else C.REPO / f
-                             for f in args.exclude_ids_from]
-            print(f"[agy] --shots {args.shots}: selecting worked example(s) "
-                  f"from {shot_graph_dir} (pool cap {args.shot_pool_cap}; "
-                  f"serialize+sort ~20 s) ...", file=sys.stderr)
+            exclude_files = [
+                f if f.is_absolute() else C.REPO / f for f in args.exclude_ids_from
+            ]
+            print(
+                f"[agy] --shots {args.shots}: selecting worked example(s) "
+                f"from {shot_graph_dir} (pool cap {args.shot_pool_cap}; "
+                f"serialize+sort ~20 s) ...",
+                file=sys.stderr,
+            )
             shots_list = select_shot_examples(
-                args.serialize_python, args.quant, args.shots,
-                args.max_shot_bytes, shot_graph_dir, shot_code_dir,
-                exclude_files, args.shot_pool_cap)
+                args.serialize_python,
+                args.quant,
+                args.shots,
+                args.max_shot_bytes,
+                shot_graph_dir,
+                shot_code_dir,
+                exclude_files,
+                args.shot_pool_cap,
+            )
             total = sum(s.get("bytes", 0) for s in shots_list)
-            print(f"[agy] --shots {args.shots}: {len(shots_list)} example(s), "
-                  f"{total:,} B total (budget {args.max_shot_bytes:,}):",
-                  file=sys.stderr)
+            print(
+                f"[agy] --shots {args.shots}: {len(shots_list)} example(s), "
+                f"{total:,} B total (budget {args.max_shot_bytes:,}):",
+                file=sys.stderr,
+            )
             for i, s in enumerate(shots_list, 1):
-                print(f"[agy]   example {i}: {s['uuid']} "
-                      f"({len(s['text'])} chars graph, {len(s['code'])} chars "
-                      f"code, {s.get('bytes', 0):,} B)", file=sys.stderr)
-    prompt = (build_graph_prompt(args.cadquery_python, shots_list)
-              if args.input == "graph" else build_prompt(args.cadquery_python))
+                print(
+                    f"[agy]   example {i}: {s['uuid']} "
+                    f"({len(s['text'])} chars graph, {len(s['code'])} chars "
+                    f"code, {s.get('bytes', 0):,} B)",
+                    file=sys.stderr,
+                )
+    prompt = (
+        build_graph_prompt(args.cadquery_python, shots_list)
+        if args.input == "graph"
+        else build_prompt(args.cadquery_python)
+    )
     if len(prompt) > 100_000:
-        raise SystemExit(f"prompt is {len(prompt)} chars — too close to the "
-                         f"kernel's ~128 KiB single-argv limit; slim the "
-                         f"example/legend.")
+        raise SystemExit(
+            f"prompt is {len(prompt)} chars — too close to the "
+            f"kernel's ~128 KiB single-argv limit; slim the "
+            f"example/legend."
+        )
 
     ids = args.ids
     if ids is None:
@@ -887,23 +1117,32 @@ def main() -> int:
         raise SystemExit("No ids selected.")
 
     if not args.dry_run and not Path(args.agy_bin).exists():
-        print(f"[agy] WARNING: agy binary not found at {args.agy_bin}. "
-              f"Install it or pass --agy-bin; runs will report 'no-agy'.",
-              file=sys.stderr)
+        print(
+            f"[agy] WARNING: agy binary not found at {args.agy_bin}. "
+            f"Install it or pass --agy-bin; runs will report 'no-agy'.",
+            file=sys.stderr,
+        )
 
-    wall = args.wall_timeout if args.wall_timeout is not None else args.print_timeout + 120.0
+    wall = (
+        args.wall_timeout
+        if args.wall_timeout is not None
+        else args.print_timeout + 120.0
+    )
 
     work_root = Path(args.work_root)
     venv_binds: list[tuple[str, str]] = []
     if args.sandbox_fs:
         if shutil.which("bwrap") is None:
-            raise SystemExit("--sandbox-fs requires bubblewrap (bwrap), not found "
-                             "on PATH. Install it (apt install bubblewrap) or drop "
-                             "--sandbox-fs (⚠️ then the agent can read the GT).")
+            raise SystemExit(
+                "--sandbox-fs requires bubblewrap (bwrap), not found "
+                "on PATH. Install it (apt install bubblewrap) or drop "
+                "--sandbox-fs (⚠️ then the agent can read the GT)."
+            )
         # The work-root MUST be outside the repo, else masking the repo hides it.
         if C.REPO in work_root.resolve().parents or work_root.resolve() == C.REPO:
-            raise SystemExit(f"--work-root must be OUTSIDE the repo ({C.REPO}); "
-                             f"got {work_root}.")
+            raise SystemExit(
+                f"--work-root must be OUTSIDE the repo ({C.REPO}); got {work_root}."
+            )
         if not args.dry_run:
             work_root.mkdir(parents=True, exist_ok=True)
         # If the executing interpreter is invoked via a path inside the repo
@@ -913,12 +1152,16 @@ def main() -> int:
         venv_binds = repo_venv_binds(args.cadquery_python, C.REPO)
         print(f"[agy] sandbox-fs ON (bwrap): repo hidden, workdirs under {work_root}")
         if venv_binds:
-            print(f"[agy] sandbox-fs: re-binding repo-internal interpreter venv "
-                  f"read-only: {venv_binds[0][1]} <- {venv_binds[0][0]}")
+            print(
+                f"[agy] sandbox-fs: re-binding repo-internal interpreter venv "
+                f"read-only: {venv_binds[0][1]} <- {venv_binds[0][0]}"
+            )
     else:
-        print("[agy] ⚠️ sandbox-fs OFF: the agent can read the ground-truth STEP "
-              "files off disk. Pass --sandbox-fs to prevent contamination.",
-              file=sys.stderr)
+        print(
+            "[agy] ⚠️ sandbox-fs OFF: the agent can read the ground-truth STEP "
+            "files off disk. Pass --sandbox-fs to prevent contamination.",
+            file=sys.stderr,
+        )
 
     if args.run_name:
         run_name = args.run_name
@@ -948,24 +1191,36 @@ def main() -> int:
             n_skipped += 1
             continue
         statuses[uuid] = run_one(
-            uuid, run_dir, args.agy_bin, args.model, args.print_timeout, wall,
-            args.sandbox, prompt, args.dry_run,
-            sandbox_fs=args.sandbox_fs, work_root=work_root,
-            input_mode=args.input, graph_dir=graph_dir, quant=args.quant,
+            uuid,
+            run_dir,
+            args.agy_bin,
+            args.model,
+            args.print_timeout,
+            wall,
+            args.sandbox,
+            prompt,
+            args.dry_run,
+            sandbox_fs=args.sandbox_fs,
+            work_root=work_root,
+            input_mode=args.input,
+            graph_dir=graph_dir,
+            quant=args.quant,
             serialize_python=args.serialize_python,
             max_graph_bytes=args.max_graph_bytes,
             venv_binds=venv_binds,
         )
         if statuses[uuid] == "limit":
             stopped_on_limit = True
-            print("[agy] usage/rate limit reached — stopping. Re-run the same "
-                  "command later to resume the remaining fixtures.", file=sys.stderr)
+            print(
+                "[agy] usage/rate limit reached — stopping. Re-run the same "
+                "command later to resume the remaining fixtures.",
+                file=sys.stderr,
+            )
             break
 
     n_too_large = sum(1 for s in statuses.values() if s == "too_large")
     if args.dry_run:
-        extra = (f" ({n_too_large} would be skipped as too_large)"
-                 if n_too_large else "")
+        extra = f" ({n_too_large} would be skipped as too_large)" if n_too_large else ""
         print(f"\n[agy] dry-run: {len(ids)} fixture(s), invoked nothing.{extra}")
         return 0
 
@@ -993,10 +1248,13 @@ def main() -> int:
         "wall_timeout_s": wall,
         "n_fixtures": len(ids),
         "n_output_step": n_step_total,
-        "last_run": {"n_step": n_step_this, "n_skipped_done": n_skipped,
-                     "n_leaked_rejected": n_leaked,
-                     "stopped_on_limit": stopped_on_limit,
-                     "sandbox_fs": args.sandbox_fs},
+        "last_run": {
+            "n_step": n_step_this,
+            "n_skipped_done": n_skipped,
+            "n_leaked_rejected": n_leaked,
+            "stopped_on_limit": stopped_on_limit,
+            "sandbox_fs": args.sandbox_fs,
+        },
         "per_fixture": merged,
     }
     if args.input == "graph":
@@ -1015,21 +1273,33 @@ def main() -> int:
         meta["max_graph_bytes"] = args.max_graph_bytes
         meta["last_run"]["n_too_large"] = n_too_large
     meta_path.write_text(json.dumps(meta, indent=2))
-    print(f"[agy] this run: +{n_step_this} step, {n_skipped} already done | "
-          f"cumulative {n_step_total}/{len(ids)} have output.step -> {run_dir}")
+    print(
+        f"[agy] this run: +{n_step_this} step, {n_skipped} already done | "
+        f"cumulative {n_step_total}/{len(ids)} have output.step -> {run_dir}"
+    )
     if n_too_large:
-        print(f"[agy] {n_too_large} fixture(s) skipped as too_large "
-              f"(serialized graph.txt > --max-graph-bytes "
-              f"{args.max_graph_bytes:,} B); agy was NOT invoked for them.",
-              file=sys.stderr)
+        print(
+            f"[agy] {n_too_large} fixture(s) skipped as too_large "
+            f"(serialized graph.txt > --max-graph-bytes "
+            f"{args.max_graph_bytes:,} B); agy was NOT invoked for them.",
+            file=sys.stderr,
+        )
     if n_leaked:
-        print(f"[agy] ⚠️ {n_leaked} fixture(s) REJECTED as GT-leak (agent re-exported "
-              f"the ground truth). Re-run those with --sandbox-fs.", file=sys.stderr)
+        print(
+            f"[agy] ⚠️ {n_leaked} fixture(s) REJECTED as GT-leak (agent re-exported "
+            f"the ground truth). Re-run those with --sandbox-fs.",
+            file=sys.stderr,
+        )
     if stopped_on_limit:
-        print("[agy] stopped early on a usage limit — re-run to resume.", file=sys.stderr)
+        print(
+            "[agy] stopped early on a usage limit — re-run to resume.", file=sys.stderr
+        )
     if any(s == "unauth" for s in statuses.values()):
-        print("[agy] some fixtures reported UNAUTHENTICATED — run `agy` once to "
-              "sign in, then re-run.", file=sys.stderr)
+        print(
+            "[agy] some fixtures reported UNAUTHENTICATED — run `agy` once to "
+            "sign in, then re-run.",
+            file=sys.stderr,
+        )
     return 0
 
 

@@ -18,6 +18,7 @@ Usage:
     python bench/report.py --run ours=results/ours_noblend_v1 \
                            --run baseline=results/<...>
 """
+
 from __future__ import annotations
 
 import argparse
@@ -90,10 +91,14 @@ def build_report(runs: dict[str, Path]) -> dict:
     all_ids: set[str] = set()
     for fx in loaded.values():
         all_ids |= set(fx)
-    common_ids = set.intersection(*(set(fx) for fx in loaded.values())) if loaded else set()
+    common_ids = (
+        set.intersection(*(set(fx) for fx in loaded.values())) if loaded else set()
+    )
 
     per_run = {label: aggregate(fx) for label, fx in loaded.items()}
-    per_run_paired = {label: aggregate(fx, sorted(common_ids)) for label, fx in loaded.items()}
+    per_run_paired = {
+        label: aggregate(fx, sorted(common_ids)) for label, fx in loaded.items()
+    }
 
     per_fixture = {}
     for uuid in sorted(all_ids):
@@ -117,9 +122,11 @@ def build_report(runs: dict[str, Path]) -> dict:
 def to_markdown(rep: dict) -> str:
     labels = list(rep["runs"])
     lines = ["# Pseudo-CADGenBench: ours vs LLM baseline", ""]
-    lines.append("Metric = CADGenBench CAD Score. Our fixtures have no interface "
-                 "jig sub-volumes, so CAD Score = shape 0.4 / topology 0.2 "
-                 "renormalized => shape 2/3, topology 1/3. Invalid/missing => 0.")
+    lines.append(
+        "Metric = CADGenBench CAD Score. Our fixtures have no interface "
+        "jig sub-volumes, so CAD Score = shape 0.4 / topology 0.2 "
+        "renormalized => shape 2/3, topology 1/3. Invalid/missing => 0."
+    )
     lines.append("")
     lines.append("## Runs")
     for label, d in rep["runs"].items():
@@ -150,10 +157,15 @@ def to_markdown(rep: dict) -> str:
         out.append("")
         return out
 
-    lines += agg_table(rep["per_run_aggregate"], "Per-run aggregate (all fixtures in each run)")
+    lines += agg_table(
+        rep["per_run_aggregate"], "Per-run aggregate (all fixtures in each run)"
+    )
     paired = rep["paired_aggregate"]
-    lines += agg_table(paired["by_run"], "Paired aggregate (fixtures common to all runs)",
-                       f"— n_common={paired['n_common']}")
+    lines += agg_table(
+        paired["by_run"],
+        "Paired aggregate (fixtures common to all runs)",
+        f"— n_common={paired['n_common']}",
+    )
 
     lines.append("## Per-fixture CAD Score")
     lines.append("")
@@ -171,21 +183,33 @@ def to_markdown(rep: dict) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--ours", type=Path, default=None, help="ours run dir")
     parser.add_argument("--baseline", type=Path, default=None, help="baseline run dir")
-    parser.add_argument("--run", action="append", default=[], metavar="LABEL=DIR",
-                    help="add a labelled run (repeatable)")
-    parser.add_argument("--out", type=Path, default=C.RESULTS_DIR / "report",
-                    help="output path stem (writes .json + .md)")
+    parser.add_argument(
+        "--run",
+        action="append",
+        default=[],
+        metavar="LABEL=DIR",
+        help="add a labelled run (repeatable)",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=C.RESULTS_DIR / "report",
+        help="output path stem (writes .json + .md)",
+    )
     args = parser.parse_args()
 
     runs: dict[str, Path] = {}
     if args.ours:
         runs["ours"] = args.ours if args.ours.is_absolute() else C.REPO / args.ours
     if args.baseline:
-        runs["baseline"] = args.baseline if args.baseline.is_absolute() else C.REPO / args.baseline
+        runs["baseline"] = (
+            args.baseline if args.baseline.is_absolute() else C.REPO / args.baseline
+        )
     for spec in args.run:
         if "=" not in spec:
             raise SystemExit(f"--run expects LABEL=DIR, got {spec!r}")
@@ -205,7 +229,9 @@ def main() -> int:
     md = to_markdown(rep)
     (out_stem.with_suffix(".md")).write_text(md)
     print(md)
-    print(f"\n[report] wrote {out_stem.with_suffix('.json')} and {out_stem.with_suffix('.md')}")
+    print(
+        f"\n[report] wrote {out_stem.with_suffix('.json')} and {out_stem.with_suffix('.md')}"
+    )
     return 0
 
 

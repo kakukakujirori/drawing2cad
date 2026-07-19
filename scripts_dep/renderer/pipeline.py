@@ -7,7 +7,12 @@
 #   5) writes manifest.jsonl
 #
 # Usage:  ./venv/bin/python pipeline.py
-import os, sys, json, subprocess, math, random
+import os
+import sys
+import json
+import subprocess
+import math
+import random
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
@@ -21,16 +26,28 @@ RENDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "render_datase
 WIDTH = int(os.environ.get("RF_WIDTH", "1800"))
 
 _STEP_DIR = os.environ.get("STEP_DIR", ".")
-JOBS = [(os.path.join(_STEP_DIR, "Bracket.step"), "Bracket"),
-        (os.path.join(_STEP_DIR, "Flange.step"), "Flange")]
+JOBS = [
+    (os.path.join(_STEP_DIR, "Bracket.step"), "Bracket"),
+    (os.path.join(_STEP_DIR, "Flange.step"), "Flange"),
+]
 
 
 def run_freecad():
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
     logp = os.path.join(OUT, "render_dataset.log")
-    cmd = [FREECAD, RENDER, "--step-dir", _STEP_DIR, "--out-dir", OUT,
-           "--width", str(WIDTH), "--log", logp]
+    cmd = [
+        FREECAD,
+        RENDER,
+        "--step-dir",
+        _STEP_DIR,
+        "--out-dir",
+        OUT,
+        "--width",
+        str(WIDTH),
+        "--log",
+        logp,
+    ]
     r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
     log = open(logp).read() if os.path.exists(logp) else ""
     return r.returncode, log
@@ -38,18 +55,22 @@ def run_freecad():
 
 def rasterize(svg_path, png_path, width=WIDTH):
     import cairosvg
-    cairosvg.svg2png(url=svg_path, write_to=png_path, output_width=width, background_color="white")
+
+    cairosvg.svg2png(
+        url=svg_path, write_to=png_path, output_width=width, background_color="white"
+    )
 
 
 # ---------------------------------------------------------------------------
 #  scan-noise augmentation
 # ---------------------------------------------------------------------------
 
+
 def scan_augment(png_path, out_path, seed=0):
     """Turn a clean vector PNG into a realistic scanned drawing.
     Returns the applied affine {rotation_deg, tx, ty, scale} (maps clean px -> scanned px)."""
     rng = random.Random(seed)
-    img = Image.open(png_path).convert("L")   # grayscale
+    img = Image.open(png_path).convert("L")  # grayscale
     W, H = img.size
 
     # 1) paper tone: very light grey background instead of pure white
@@ -69,9 +90,12 @@ def scan_augment(png_path, out_path, seed=0):
     # 3) affine: small rotation + translation + scale (simulate scanner misalignment)
     rot = rng.uniform(-1.6, 1.6)
     sc = rng.uniform(0.992, 1.008)
-    tx = rng.uniform(-6, 6); ty = rng.uniform(-6, 6)
+    tx = rng.uniform(-6, 6)
+    ty = rng.uniform(-6, 6)
     # PIL rotate about center; record the composite affine (clean_px -> scan_px)
-    img3 = img2.rotate(rot, resample=Image.BICUBIC, fillcolor=paper, center=(W / 2, H / 2))
+    img3 = img2.rotate(
+        rot, resample=Image.BICUBIC, fillcolor=paper, center=(W / 2, H / 2)
+    )
     if abs(sc - 1.0) > 1e-4:
         nw, nh = int(W * sc), int(H * sc)
         img3 = img3.resize((nw, nh), Image.BICUBIC)
@@ -79,8 +103,13 @@ def scan_augment(png_path, out_path, seed=0):
         canvas.paste(img3, (int((W - nw) / 2), int((H - nh) / 2)))
         img3 = canvas
     if tx or ty:
-        img3 = img3.transform((W, H), Image.AFFINE, (1, 0, -tx, 0, 1, -ty),
-                              resample=Image.BICUBIC, fillcolor=paper)
+        img3 = img3.transform(
+            (W, H),
+            Image.AFFINE,
+            (1, 0, -tx, 0, 1, -ty),
+            resample=Image.BICUBIC,
+            fillcolor=paper,
+        )
 
     # 4) blur (scan softness)
     img3 = img3.filter(ImageFilter.GaussianBlur(rng.uniform(0.4, 0.9)))
@@ -102,15 +131,21 @@ def scan_augment(png_path, out_path, seed=0):
         os.remove(tmp)
     img4.save(out_path)
 
-    return {"rotation_deg": round(rot, 4), "scale": round(sc, 5),
-            "tx": round(tx, 3), "ty": round(ty, 3),
-            "center_px": [W / 2, H / 2],
-            "note": "scan_px = R(rot)·S(scale) about center, then +(tx,ty); apply to clean-px GT coords to map onto scan.png"}
+    return {
+        "rotation_deg": round(rot, 4),
+        "scale": round(sc, 5),
+        "tx": round(tx, 3),
+        "ty": round(ty, 3),
+        "center_px": [W / 2, H / 2],
+        "note": "scan_px = R(rot)·S(scale) about center, then +(tx,ty); apply to clean-px GT coords to map onto scan.png",
+    }
 
 
 def apply_affine(pt, aff):
     """Map a clean-px point onto the scanned image using the recorded affine."""
-    cx, cy = aff["center_px"]; rot = math.radians(aff["rotation_deg"]); sc = aff["scale"]
+    cx, cy = aff["center_px"]
+    rot = math.radians(aff["rotation_deg"])
+    sc = aff["scale"]
     x, y = pt[0] - cx, pt[1] - cy
     # rotate (PIL rotate by +rot is counter-clockwise visually => forward map uses -rot)
     ca, sa = math.cos(-rot), math.sin(-rot)
@@ -123,13 +158,16 @@ def apply_affine(pt, aff):
 #  verifier: overlay GT onto the clean PNG
 # ---------------------------------------------------------------------------
 
+
 def verify(png_path, graph_path, out_path):
     g = json.load(open(graph_path))
     img = Image.open(png_path).convert("RGB")
     d = ImageDraw.Draw(img, "RGBA")
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
-        fontb = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+        fontb = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18
+        )
     except Exception:
         font = fontb = ImageFont.load_default()
 
@@ -142,9 +180,14 @@ def verify(png_path, graph_path, out_path):
     for gv in g["views"]:
         for p in gv["primitives"]:
             prim_by_id[p["id"]] = p
-            col = COL_VIS if p.get("line_role", p.get("visibility")) == "visible" else COL_HID
+            col = (
+                COL_VIS
+                if p.get("line_role", p.get("visibility")) == "visible"
+                else COL_HID
+            )
             if p["type"] in ("circle", "arc"):
-                cx, cy = p["center"]; r = p["r_px"]
+                cx, cy = p["center"]
+                r = p["r_px"]
                 d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=COL_CIRC, width=2)
                 d.line([cx - 4, cy, cx + 4, cy], fill=COL_CIRC, width=1)
                 d.line([cx, cy - 4, cx, cy + 4], fill=COL_CIRC, width=1)
@@ -162,11 +205,15 @@ def verify(png_path, graph_path, out_path):
             p = prim_by_id.get(ref)
             if not p:
                 continue
-            bb = p["bbox_px"]; mx = (bb[0] + bb[2]) / 2; my = (bb[1] + bb[3]) / 2
+            bb = p["bbox_px"]
+            mx = (bb[0] + bb[2]) / 2
+            my = (bb[1] + bb[3]) / 2
             d.line([tx, ty, mx, my], fill=(220, 0, 0, 120), width=1)
 
     # legend
-    leg = ["GT OVERLAY  green=visible prim bbox  orange=hidden  blue=circle  red=dim anchor+refs"]
+    leg = [
+        "GT OVERLAY  green=visible prim bbox  orange=hidden  blue=circle  red=dim anchor+refs"
+    ]
     d.rectangle([8, 8, 8 + 760, 34], fill=(255, 255, 255, 220))
     d.text((12, 10), leg[0], fill=(0, 0, 0, 255), font=fontb)
     img.save(out_path)
@@ -176,13 +223,15 @@ def verify(png_path, graph_path, out_path):
 #  main
 # ---------------------------------------------------------------------------
 
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     rc, log = run_freecad()
     print("freecad rc=", rc)
     print(log.strip())
     if "FAIL" in log:
-        print("RENDER FAILED — aborting"); sys.exit(1)
+        print("RENDER FAILED — aborting")
+        sys.exit(1)
 
     manifest = open(os.path.join(OUT, "manifest.jsonl"), "w")
     summary = []
@@ -190,14 +239,16 @@ def main():
         svg = os.path.join(OUT, name + ".svg")
         graph_path = os.path.join(OUT, name + ".graph.json")
         if not os.path.exists(graph_path):
-            print("MISSING graph for", name); continue
+            print("MISSING graph for", name)
+            continue
         clean = os.path.join(OUT, name + ".png")
         scan = os.path.join(OUT, name + ".scan.png")
         verifyp = os.path.join(OUT, name + ".verify.png")
 
         rasterize(svg, clean)
         import zlib
-        aff = scan_augment(clean, scan, seed=zlib.crc32(name.encode()) & 0xffff)
+
+        aff = scan_augment(clean, scan, seed=zlib.crc32(name.encode()) & 0xFFFF)
 
         # record affine into graph.json so labels map onto scan.png
         g = json.load(open(graph_path))
@@ -207,11 +258,18 @@ def main():
         verify(clean, graph_path, verifyp)
 
         counts = g.get("_counts") or _counts(g)
-        row = {"part_id": name, "step": step,
-               "png": clean, "scan_png": scan, "graph": graph_path, "verify": verifyp,
-               "bbox_3d": (g.get("world") or {}).get("bbox_3d") or g.get("bbox_3d"),
-               "scale": g["sheet"]["scale"],
-               "counts": counts, "scan_affine": aff}
+        row = {
+            "part_id": name,
+            "step": step,
+            "png": clean,
+            "scan_png": scan,
+            "graph": graph_path,
+            "verify": verifyp,
+            "bbox_3d": (g.get("world") or {}).get("bbox_3d") or g.get("bbox_3d"),
+            "scale": g["sheet"]["scale"],
+            "counts": counts,
+            "scan_affine": aff,
+        }
         manifest.write(json.dumps(row) + "\n")
         summary.append((name, counts))
         print("DONE", name, counts)
@@ -223,15 +281,21 @@ def main():
 
 def _counts(g):
     from collections import Counter
+
     _anns = g.get("annotations", g.get("dimensions", []))
     _vis = lambda p: p.get("line_role", p.get("visibility"))
     nv = sum(1 for gv in g["views"] for p in gv["primitives"] if _vis(p) == "visible")
     nh = sum(1 for gv in g["views"] for p in gv["primitives"] if _vis(p) == "hidden")
     by_type = Counter(d.get("kind", d.get("type")) for d in _anns)
     nrefless = sum(1 for d in _anns if not d["refs"])
-    return {"prim_visible": nv, "prim_hidden": nh, "dims_total": len(_anns),
-            "dims_by_type": dict(by_type), "dims_without_refs": nrefless,
-            "features": len(g.get("features", g.get("correspondences", [])))}
+    return {
+        "prim_visible": nv,
+        "prim_hidden": nh,
+        "dims_total": len(_anns),
+        "dims_by_type": dict(by_type),
+        "dims_without_refs": nrefless,
+        "features": len(g.get("features", g.get("correspondences", []))),
+    }
 
 
 if __name__ == "__main__":

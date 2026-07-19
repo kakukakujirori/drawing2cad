@@ -11,20 +11,33 @@ leaks/hangs). We mirror that.
   PYTHONPATH unneeded. Run in the `cadrille` env (has cadquery + trimesh):
     python scripts/b2_cadrille_execute.py --dir experiments/b2_cadrille/whole268
 """
-import os, json, glob, argparse, traceback
+
+import os
+import json
+import glob
+import argparse
+import traceback
 from multiprocessing import Process, Queue
 
 
 def _worker(py_path, step_path, stl_path, q):
-    rec = {"executed_ok": False, "exported_step": False, "n_faces": 0,
-           "watertight": False, "volume": None, "bbox": None, "err": None}
+    rec = {
+        "executed_ok": False,
+        "exported_step": False,
+        "n_faces": 0,
+        "watertight": False,
+        "volume": None,
+        "bbox": None,
+        "err": None,
+    }
     try:
         import cadquery as cq
         import trimesh
+
         with open(py_path) as f:
             code = f.read()
         g = {}
-        exec(code, g)                      # cadrille puts the result in `r`
+        exec(code, g)  # cadrille puts the result in `r`
         compound = g["r"].val()
         rec["executed_ok"] = True
         try:
@@ -53,37 +66,52 @@ def run_one(py_path, step_path, stl_path, timeout=15):
     p.start()
     p.join(timeout)
     if p.is_alive():
-        p.terminate(); p.join()
+        p.terminate()
+        p.join()
         return {"executed_ok": False, "err": f"timeout>{timeout}s"}
-    return q.get() if not q.empty() else {"executed_ok": False, "err": "no result (crash)"}
+    return (
+        q.get() if not q.empty() else {"executed_ok": False, "err": "no result (crash)"}
+    )
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dir", required=True, help="dir with <id>.py from generation step")
+    ap.add_argument(
+        "--dir", required=True, help="dir with <id>.py from generation step"
+    )
     ap.add_argument("--timeout", type=int, default=15)
     args = ap.parse_args()
 
-    step_dir = os.path.join(args.dir, "step"); os.makedirs(step_dir, exist_ok=True)
-    stl_dir = os.path.join(args.dir, "stl"); os.makedirs(stl_dir, exist_ok=True)
+    step_dir = os.path.join(args.dir, "step")
+    os.makedirs(step_dir, exist_ok=True)
+    stl_dir = os.path.join(args.dir, "stl")
+    os.makedirs(stl_dir, exist_ok=True)
 
     pys = sorted(glob.glob(os.path.join(args.dir, "*.py")))
     out = []
     for py in pys:
         fid = os.path.splitext(os.path.basename(py))[0]
-        rec = run_one(py, os.path.join(step_dir, f"{fid}.step"),
-                      os.path.join(stl_dir, f"{fid}.stl"), timeout=args.timeout)
+        rec = run_one(
+            py,
+            os.path.join(step_dir, f"{fid}.step"),
+            os.path.join(stl_dir, f"{fid}.stl"),
+            timeout=args.timeout,
+        )
         rec["id"] = fid
         out.append(rec)
-        print(f"[exec] {fid}: ok={rec.get('executed_ok')} watertight={rec.get('watertight')} "
-              f"vol={rec.get('volume')} bbox={rec.get('bbox')} err={rec.get('err')}")
+        print(
+            f"[exec] {fid}: ok={rec.get('executed_ok')} watertight={rec.get('watertight')} "
+            f"vol={rec.get('volume')} bbox={rec.get('bbox')} err={rec.get('err')}"
+        )
 
     with open(os.path.join(args.dir, "exec_summary.json"), "w") as f:
         json.dump(out, f, indent=2)
     n = len(out)
     ok = sum(r.get("executed_ok") for r in out)
     wt = sum(bool(r.get("watertight")) for r in out)
-    print(f"[exec] {ok}/{n} executed, {wt}/{n} watertight -> {args.dir}/exec_summary.json")
+    print(
+        f"[exec] {ok}/{n} executed, {wt}/{n} watertight -> {args.dir}/exec_summary.json"
+    )
 
 
 if __name__ == "__main__":

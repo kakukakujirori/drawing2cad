@@ -73,9 +73,9 @@ class PrimitiveEncoderTest(unittest.TestCase):
             batch_index, primitive_index = index.tolist()
             sample_count = int(batch.sample_mask[batch_index, primitive_index].sum())
             reversed_features[batch_index, primitive_index, :sample_count] = (
-                batch.sample_features[
-                    batch_index, primitive_index, :sample_count
-                ].flip(0)
+                batch.sample_features[batch_index, primitive_index, :sample_count].flip(
+                    0
+                )
             )
         reversed_batch = replace_primitive_batch(
             batch, sample_features=reversed_features
@@ -87,7 +87,9 @@ class PrimitiveEncoderTest(unittest.TestCase):
     def test_padded_values_do_not_affect_output(self) -> None:
         batch = make_primitive_batch((2, 5))
         changed = batch.sample_features.clone()
-        changed[~batch.sample_mask] = torch.randn_like(changed[~batch.sample_mask]) * 1e7
+        changed[~batch.sample_mask] = (
+            torch.randn_like(changed[~batch.sample_mask]) * 1e7
+        )
         changed_batch = replace_primitive_batch(batch, sample_features=changed)
         original, _ = self.model(batch)
         changed_output, _ = self.model(changed_batch)
@@ -142,7 +144,9 @@ class PrimitiveEncoderTest(unittest.TestCase):
             primitive_group_ids=torch.full_like(batch.primitive_group_ids, -1),
         )
         local = self.model.encode_local(batch)
-        self.assertTrue(torch.equal(local, self.model.apply_group_context(local, batch)))
+        self.assertTrue(
+            torch.equal(local, self.model.apply_group_context(local, batch))
+        )
 
         no_ids_batch = make_primitive_batch((4,), with_groups=False)
         no_ids_local = self.model.encode_local(no_ids_batch)

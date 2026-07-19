@@ -35,8 +35,12 @@ def _add_edges(msp, edges, linetype):
         major = (e.rmaj * math.cos(e.rot), e.rmaj * math.sin(e.rot), 0.0)
         ratio = (e.rmin / e.rmaj) if e.rmaj else 1.0
         msp.add_ellipse(
-            (e.center[0], e.center[1], 0.0), major, ratio,
-            e.a0, e.a1, dxfattribs=attribs,
+            (e.center[0], e.center[1], 0.0),
+            major,
+            ratio,
+            e.a0,
+            e.a1,
+            dxfattribs=attribs,
         )
     for pl in edges.polylines:
         if len(pl.pts) >= 4:

@@ -16,7 +16,12 @@ Sources (any combination):
   --manifest <dataset>/manifest.jsonl   # uses png + scan_png + graph
   --glob '<dataset>/*.graph.json'        # pairs each with sibling .png/.scan.png
 """
-import os, json, glob, shutil, argparse
+
+import os
+import json
+import glob
+import shutil
+import argparse
 from serialize import graph_to_text, PROMPT, SER_VERSION
 
 
@@ -27,8 +32,14 @@ def stage(png, gjson, file_name, variant, out, rows):
     target = graph_to_text(graph)
     dst = os.path.join(out, "images", f"{file_name}.png")
     shutil.copyfile(png, dst)
-    rows.append({"image": f"images/{file_name}.png", "target": target,
-                 "file_name": file_name, "variant": variant})
+    rows.append(
+        {
+            "image": f"images/{file_name}.png",
+            "target": target,
+            "file_name": file_name,
+            "variant": variant,
+        }
+    )
 
 
 def main():
@@ -38,8 +49,12 @@ def main():
     ap.add_argument("--out", default="data_bundle")
     ap.add_argument("--include-scan", action="store_true", default=True)
     ap.add_argument("--no-scan", dest="include_scan", action="store_false")
-    ap.add_argument("--val-frac", type=float, default=0.0,
-                    help="fraction held out for val; 0 -> val=train (smoke/overfit)")
+    ap.add_argument(
+        "--val-frac",
+        type=float,
+        default=0.0,
+        help="fraction held out for val; 0 -> val=train (smoke/overfit)",
+    )
     args = ap.parse_args()
 
     os.makedirs(os.path.join(args.out, "images"), exist_ok=True)
@@ -54,11 +69,22 @@ def main():
             pid = m.get("part_id") or os.path.basename(m["graph"]).split(".")[0]
             stage(m.get("png"), m["graph"], f"{pid}__clean", "clean", args.out, rows)
             if args.include_scan and m.get("scan_png"):
-                stage(m.get("scan_png"), m["graph"], f"{pid}__scan", "scan", args.out, rows)
+                stage(
+                    m.get("scan_png"),
+                    m["graph"],
+                    f"{pid}__scan",
+                    "scan",
+                    args.out,
+                    rows,
+                )
 
     if args.glob:
         for gjson in sorted(glob.glob(args.glob)):
-            base = gjson[:-len(".graph.json")] if gjson.endswith(".graph.json") else os.path.splitext(gjson)[0]
+            base = (
+                gjson[: -len(".graph.json")]
+                if gjson.endswith(".graph.json")
+                else os.path.splitext(gjson)[0]
+            )
             pid = os.path.basename(base)
             stage(base + ".png", gjson, f"{pid}__clean", "clean", args.out, rows)
             if args.include_scan and os.path.isfile(base + ".scan.png"):
@@ -81,11 +107,25 @@ def main():
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
     chars = [len(r["target"]) for r in rows]
-    meta = {"ser_version": SER_VERSION, "prompt": PROMPT, "n": len(rows),
-            "n_train": len(train), "n_val": len(val),
-            "variants": sorted({r["variant"] for r in rows}),
-            "target_chars": {"min": min(chars), "max": max(chars), "mean": sum(chars) // len(chars)}}
-    json.dump(meta, open(os.path.join(args.out, "meta.json"), "w"), indent=2, ensure_ascii=False)
+    meta = {
+        "ser_version": SER_VERSION,
+        "prompt": PROMPT,
+        "n": len(rows),
+        "n_train": len(train),
+        "n_val": len(val),
+        "variants": sorted({r["variant"] for r in rows}),
+        "target_chars": {
+            "min": min(chars),
+            "max": max(chars),
+            "mean": sum(chars) // len(chars),
+        },
+    }
+    json.dump(
+        meta,
+        open(os.path.join(args.out, "meta.json"), "w"),
+        indent=2,
+        ensure_ascii=False,
+    )
     print(json.dumps(meta, ensure_ascii=False, indent=2))
     print(f"\nbundle -> {args.out}  ({len(rows)} samples)")
 

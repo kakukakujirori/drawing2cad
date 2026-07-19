@@ -16,11 +16,12 @@ def ellipse_from_conjugate(f1: tuple[float, float], f2: tuple[float, float]):
     rot_deg is the major-axis direction in [0,180)."""
     ax, ay = f1
     bx, by = f2
-    t0 = 0.5 * math.atan2(2 * (ax * bx + ay * by),
-                          (ax * ax + ay * ay) - (bx * bx + by * by))
+    t0 = 0.5 * math.atan2(
+        2 * (ax * bx + ay * by), (ax * ax + ay * ay) - (bx * bx + by * by)
+    )
     c0, s0 = math.cos(t0), math.sin(t0)
-    A = (c0 * ax + s0 * bx, c0 * ay + s0 * by)          # semi-axis at t0
-    B = (-s0 * ax + c0 * bx, -s0 * ay + c0 * by)        # semi-axis at t0+90
+    A = (c0 * ax + s0 * bx, c0 * ay + s0 * by)  # semi-axis at t0
+    B = (-s0 * ax + c0 * bx, -s0 * ay + c0 * by)  # semi-axis at t0+90
     la, lb = math.hypot(*A), math.hypot(*B)
     (rmaj, rmin, mv) = (la, lb, A) if la >= lb else (lb, la, B)
     return rmaj, rmin, math.degrees(math.atan2(mv[1], mv[0])) % 180.0
@@ -33,7 +34,9 @@ class EllipseProjector(BaseProjector):
     def get_supported_types(self) -> list[str]:
         return ["Part::GeomEllipse"]
 
-    def project(self, view_direction: tuple[float, float, float]) -> list[dict[str, Any]]:
+    def project(
+        self, view_direction: tuple[float, float, float]
+    ) -> list[dict[str, Any]]:
         cur = self.shape.Curve
         loc = cur.Center
         u = cur.XAxis
@@ -48,13 +51,21 @@ class EllipseProjector(BaseProjector):
         rmaj, rmin, rot = ellipse_from_conjugate(f1, f2)
         if rmaj < 1e-9:
             return []
-        return [{"type": "ellipse", "center": self._format_pt(o2),
-                 "rmaj": round(rmaj, 3), "rmin": round(rmin, 3),
-                 "rot_deg": round(rot, 3), "role": "edge"}]
+        return [
+            {
+                "type": "ellipse",
+                "center": self._format_pt(o2),
+                "rmaj": round(rmaj, 3),
+                "rmin": round(rmin, 3),
+                "rot_deg": round(rot, 3),
+                "role": "edge",
+            }
+        ]
 
 
 if __name__ == "__main__":
     import Part
+
     print("=== Unit Test: EllipseProjector ===")
     # a real elliptical edge: cut a cylinder with a tilted plane is nontrivial; instead
     # build an ellipse edge directly and project it head-on (identity) + tilted.

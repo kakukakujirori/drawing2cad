@@ -31,7 +31,9 @@ def causal_token_accuracy(
             f"{tuple(logits.shape[:2])} != {tuple(labels.shape)}"
         )
     if labels.shape[1] < 2:
-        raise ValueError("causal token accuracy requires a sequence length of at least two")
+        raise ValueError(
+            "causal token accuracy requires a sequence length of at least two"
+        )
 
     shifted_labels = labels[:, 1:]
     supervised = shifted_labels.ne(ignore_index)
@@ -61,7 +63,9 @@ def exact_match_rate(
         )
     else:
         pairs = zip(predictions, references)
-    return sum(prediction == reference for prediction, reference in pairs) / len(predictions)
+    return sum(prediction == reference for prediction, reference in pairs) / len(
+        predictions
+    )
 
 
 def mean_edit_similarity(

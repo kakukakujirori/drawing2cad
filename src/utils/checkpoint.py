@@ -59,7 +59,9 @@ class CheckpointManager:
             "index_filename": index_filename,
         }.items():
             if not value or Path(value).name != value:
-                raise ValueError(f"{label} must be a single path component, got {value!r}")
+                raise ValueError(
+                    f"{label} must be a single path component, got {value!r}"
+                )
         if latest_dirname == topk_dirname:
             raise ValueError("latest_dirname and topk_dirname must differ")
         self.root_dir = Path(root_dir)
@@ -125,7 +127,9 @@ class CheckpointManager:
         try:
             payload = json.loads(self.index_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
-            raise RuntimeError(f"invalid checkpoint index: {self.index_path}") from error
+            raise RuntimeError(
+                f"invalid checkpoint index: {self.index_path}"
+            ) from error
         if payload.get("monitor") != self.monitor or payload.get("mode") != self.mode:
             raise ValueError(
                 "existing checkpoint index policy does not match configuration: "
@@ -173,16 +177,22 @@ class CheckpointManager:
                 monitor_value=value,
             )
         except (KeyError, ValueError, IndexError) as error:
-            raise ValueError(f"invalid checkpoint filename template: {self.filename!r}") from error
+            raise ValueError(
+                f"invalid checkpoint filename template: {self.filename!r}"
+            ) from error
         if not name or Path(name).name != name or name in {".", ".."}:
-            raise ValueError(f"checkpoint filename must produce one safe component, got {name!r}")
+            raise ValueError(
+                f"checkpoint filename must produce one safe component, got {name!r}"
+            )
         return name
 
     @staticmethod
     def _write_metadata(path: Path, payload: Mapping[str, Any]) -> None:
         metadata_path = path / "checkpoint_metadata.json"
         metadata_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False)
+            json.dumps(
+                payload, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False
+            )
             + "\n",
             encoding="utf-8",
         )
@@ -208,7 +218,9 @@ class CheckpointManager:
         metadata: Mapping[str, Any],
     ) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.tmp-", dir=target.parent))
+        temporary = Path(
+            tempfile.mkdtemp(prefix=f".{target.name}.tmp-", dir=target.parent)
+        )
         try:
             save_state(temporary)
             self._write_metadata(temporary, metadata)
@@ -281,7 +293,9 @@ class CheckpointManager:
         """Atomically snapshot immutable latest state into the top-K set."""
 
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.tmp-", dir=target.parent))
+        temporary = Path(
+            tempfile.mkdtemp(prefix=f".{target.name}.tmp-", dir=target.parent)
+        )
         try:
             shutil.copytree(
                 source,
@@ -323,7 +337,9 @@ class CheckpointManager:
         os.replace(temporary, self.index_path)
 
     def _candidate_entries(self, candidate: CheckpointEntry) -> list[CheckpointEntry]:
-        without_same_step = [entry for entry in self._entries if entry.step != candidate.step]
+        without_same_step = [
+            entry for entry in self._entries if entry.step != candidate.step
+        ]
         return self._sort([*without_same_step, candidate])[: self.top_k]
 
     def save(
@@ -406,14 +422,20 @@ class CheckpointManager:
         """Restore the complete latest state and return its bookkeeping metadata."""
 
         if not self.latest_dir.is_dir():
-            raise FileNotFoundError(f"latest checkpoint does not exist: {self.latest_dir}")
+            raise FileNotFoundError(
+                f"latest checkpoint does not exist: {self.latest_dir}"
+            )
         metadata_path = self.latest_dir / "checkpoint_metadata.json"
         if not metadata_path.is_file():
-            raise RuntimeError(f"latest checkpoint metadata is missing: {metadata_path}")
+            raise RuntimeError(
+                f"latest checkpoint metadata is missing: {metadata_path}"
+            )
         try:
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as error:
-            raise RuntimeError(f"latest checkpoint metadata is invalid: {metadata_path}") from error
+            raise RuntimeError(
+                f"latest checkpoint metadata is invalid: {metadata_path}"
+            ) from error
         load_state(self.latest_dir)
         return metadata
 

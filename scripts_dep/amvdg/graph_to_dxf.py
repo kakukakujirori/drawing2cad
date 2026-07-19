@@ -9,7 +9,9 @@ angles in the intra-view schema, so they export as full circles on layer ARC (ap
 
 Usage:  python graph_to_dxf.py GRAPH.json OUT.dxf [--height H]
 """
-import argparse, json, sys
+
+import argparse
+import json
 import ezdxf
 
 
@@ -22,15 +24,22 @@ def load_prims(g):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("graph"); ap.add_argument("out")
-    ap.add_argument("--height", type=int, default=0, help="image height for y-flip (else inferred)")
+    ap.add_argument("graph")
+    ap.add_argument("out")
+    ap.add_argument(
+        "--height", type=int, default=0, help="image height for y-flip (else inferred)"
+    )
     a = ap.parse_args()
 
     g = json.load(open(a.graph))
     prims = load_prims(g)
 
     # y-flip reference height
-    H = a.height or (g.get("sheet") or {}).get("height_px") or (g.get("image_size_px") or [0, 0])[1]
+    H = (
+        a.height
+        or (g.get("sheet") or {}).get("height_px")
+        or (g.get("image_size_px") or [0, 0])[1]
+    )
     if not H:
         ys = []
         for p in prims:
@@ -42,8 +51,13 @@ def main():
     fy = lambda y: H - y
 
     doc = ezdxf.new(setup=True)  # standard linetypes incl. DASHED/CENTER
-    for name, lt in (("VISIBLE", "CONTINUOUS"), ("HIDDEN", "DASHED"),
-                     ("CENTER", "CENTER"), ("ARC", "CONTINUOUS"), ("DIM", "CONTINUOUS")):
+    for name, lt in (
+        ("VISIBLE", "CONTINUOUS"),
+        ("HIDDEN", "DASHED"),
+        ("CENTER", "CENTER"),
+        ("ARC", "CONTINUOUS"),
+        ("DIM", "CONTINUOUS"),
+    ):
         doc.layers.add(name, linetype=lt)
     msp = doc.modelspace()
 
@@ -53,10 +67,12 @@ def main():
         lay = _ROLE_LAYER.get(p.get("line_role", p.get("visibility")), "VISIBLE")
         if p["type"] == "line":
             (x1, y1), (x2, y2) = p["p1"], p["p2"]
-            msp.add_line((x1, fy(y1)), (x2, fy(y2)), dxfattribs={"layer": lay}); nline += 1
+            msp.add_line((x1, fy(y1)), (x2, fy(y2)), dxfattribs={"layer": lay})
+            nline += 1
         elif p["type"] == "circle":
             cx, cy = p["center"]
-            msp.add_circle((cx, fy(cy)), p["r_px"], dxfattribs={"layer": lay}); ncirc += 1
+            msp.add_circle((cx, fy(cy)), p["r_px"], dxfattribs={"layer": lay})
+            ncirc += 1
         elif p["type"] == "arc":
             cx, cy = p["center"]
             sa = p.get("start_angle", p.get("a1"))
@@ -64,10 +80,17 @@ def main():
             if sa is not None and ea is not None:
                 # graph angles are y-DOWN increasing-theta; DXF arcs are y-up CCW:
                 # theta -> -theta and swap endpoints
-                msp.add_arc((cx, fy(cy)), p["r_px"], -float(ea), -float(sa),
-                            dxfattribs={"layer": lay}); narc += 1
+                msp.add_arc(
+                    (cx, fy(cy)),
+                    p["r_px"],
+                    -float(ea),
+                    -float(sa),
+                    dxfattribs={"layer": lay},
+                )
+                narc += 1
             else:
-                msp.add_circle((cx, fy(cy)), p["r_px"], dxfattribs={"layer": "ARC"}); narc += 1
+                msp.add_circle((cx, fy(cy)), p["r_px"], dxfattribs={"layer": "ARC"})
+                narc += 1
 
     # dimension callouts as text (geometry-light: schema carries value/type, sometimes text_px)
     pid = {p.get("id"): p for p in prims}
@@ -85,12 +108,16 @@ def main():
                 x, y = refp["p1"]
             else:
                 x, y = 20, 20 + i * 30
-        msp.add_text(label, height=14, dxfattribs={"layer": "DIM"}).set_placement((x, fy(y)))
+        msp.add_text(label, height=14, dxfattribs={"layer": "DIM"}).set_placement(
+            (x, fy(y))
+        )
         ndim += 1
 
     doc.saveas(a.out)
-    print("wrote %s | lines=%d circles=%d arcs=%d dim-texts=%d (H=%d)"
-          % (a.out, nline, ncirc, narc, ndim, H))
+    print(
+        "wrote %s | lines=%d circles=%d arcs=%d dim-texts=%d (H=%d)"
+        % (a.out, nline, ncirc, narc, ndim, H)
+    )
 
 
 if __name__ == "__main__":

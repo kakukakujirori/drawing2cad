@@ -73,9 +73,7 @@ class AdapterCheckpointIO:
         model.save_pretrained(adapter_dir, safe_serialization=True)
         torch.save(self.optimizer.state_dict(), directory / "optimizer.pt")
         torch.save(self.scheduler.state_dict(), directory / "scheduler.pt")
-        torch.save(
-            _rng_state(self.dataloader_generator), directory / "rng_state.pt"
-        )
+        torch.save(_rng_state(self.dataloader_generator), directory / "rng_state.pt")
         (directory / "training_progress.json").write_text(
             json.dumps(asdict(self.progress), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

@@ -17,9 +17,7 @@ class CheckpointManagerTest(unittest.TestCase):
     def test_latest_and_max_topk_retention(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "checkpoints"
-            manager = CheckpointManager(
-                root, monitor="val/iou", mode="max", top_k=2
-            )
+            manager = CheckpointManager(root, monitor="val/iou", mode="max", top_k=2)
             for step, value in [(1, 0.2), (2, 0.8), (3, 0.5), (4, 0.1)]:
                 manager.save(
                     step=step,
@@ -36,17 +34,13 @@ class CheckpointManagerTest(unittest.TestCase):
             self.assertEqual([entry["step"] for entry in index["checkpoints"]], [2, 3])
             self.assertFalse(any(root.glob(".topk.json.tmp-*")))
 
-            reloaded = CheckpointManager(
-                root, monitor="val/iou", mode="max", top_k=2
-            )
+            reloaded = CheckpointManager(root, monitor="val/iou", mode="max", top_k=2)
             self.assertEqual(reloaded.entries, manager.entries)
 
     def test_min_mode_and_latest_resume(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "checkpoints"
-            manager = CheckpointManager(
-                root, monitor="val/loss", mode="min", top_k=1
-            )
+            manager = CheckpointManager(root, monitor="val/loss", mode="min", top_k=1)
             manager.save(
                 step=5,
                 metrics={"val/loss": 3.0},
@@ -93,9 +87,7 @@ class CheckpointManagerTest(unittest.TestCase):
     def test_failed_save_does_not_replace_previous_latest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            manager = CheckpointManager(
-                root, monitor="val/loss", mode="min", top_k=0
-            )
+            manager = CheckpointManager(root, monitor="val/loss", mode="min", top_k=0)
             manager.save(
                 step=1,
                 metrics={"val/loss": 1.0},
@@ -107,9 +99,7 @@ class CheckpointManagerTest(unittest.TestCase):
                 raise RuntimeError("save failed")
 
             with self.assertRaisesRegex(RuntimeError, "save failed"):
-                manager.save(
-                    step=2, metrics={"val/loss": 0.5}, save_state=fail
-                )
+                manager.save(step=2, metrics={"val/loss": 0.5}, save_state=fail)
             self.assertEqual((root / "latest" / "state.txt").read_text(), "good")
 
     def test_non_main_manager_is_a_noop(self) -> None:

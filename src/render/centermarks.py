@@ -16,7 +16,6 @@ arms with the center-line dash pattern.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 from src.render.config import CENTERMARK_CROSS_MM, CENTERMARK_EXT_MM, CENTERMARK_GAP_MM
@@ -27,8 +26,8 @@ from src.render.layout import PlacedView
 class CenterMark:
     cx: float
     cy: float
-    r: float           # circle radius (sheet-mm)
-    L: float           # arm half-length = r + EXT
+    r: float  # circle radius (sheet-mm)
+    L: float  # arm half-length = r + EXT
 
 
 def _dedupe_circles(circles, tol=0.15):
@@ -91,6 +90,6 @@ def mark_svg_arms(mark: CenterMark):
     L = mark.L
     cx, cy = mark.cx, mark.cy
     return [
-        ((cx, cy - L), (cx, cy + L)),   # vertical
-        ((cx - L, cy), (cx + L, cy)),   # horizontal
+        ((cx, cy - L), (cx, cy + L)),  # vertical
+        ((cx - L, cy), (cx + L, cy)),  # horizontal
     ]

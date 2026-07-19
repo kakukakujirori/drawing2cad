@@ -13,7 +13,11 @@ overlaps live here so the consumer just hands back per-tile graphs.
 CLI:  python crop_tile.py IMAGE OUTDIR [--tile 1024] [--overlap 0.18]
       -> writes OUTDIR/tile_XX.png + OUTDIR/tiles.json (manifest w/ global offsets)
 """
-import argparse, json, math, os
+
+import argparse
+import json
+import math
+import os
 from PIL import Image
 
 # keep tiles under the vision long-edge cap (~2576) so they are NOT downsampled
@@ -24,19 +28,31 @@ DEFAULT_OVERLAP = 0.18
 def make_tiles(W, H, tile=DEFAULT_TILE, overlap=DEFAULT_OVERLAP):
     """Grid of overlapping tiles covering WxH. Returns list of dicts with global box."""
     stride = max(1, int(round(tile * (1.0 - overlap))))
+
     def starts(extent):
         if extent <= tile:
             return [0]
         n = math.ceil((extent - tile) / stride) + 1
         # distribute so the last tile ends exactly at `extent`
-        return [min(int(round(i * (extent - tile) / (n - 1))), extent - tile) for i in range(n)]
+        return [
+            min(int(round(i * (extent - tile) / (n - 1))), extent - tile)
+            for i in range(n)
+        ]
+
     xs, ys = starts(W), starts(H)
     tiles = []
     k = 0
     for y0 in ys:
         for x0 in xs:
-            tiles.append({"i": k, "x0": x0, "y0": y0,
-                          "x1": min(x0 + tile, W), "y1": min(y0 + tile, H)})
+            tiles.append(
+                {
+                    "i": k,
+                    "x0": x0,
+                    "y0": y0,
+                    "x1": min(x0 + tile, W),
+                    "y1": min(y0 + tile, H),
+                }
+            )
             k += 1
     return tiles
 
@@ -51,8 +67,13 @@ def tile_image(path, outdir, tile=DEFAULT_TILE, overlap=DEFAULT_OVERLAP):
         fn = os.path.join(outdir, "tile_%02d.png" % t["i"])
         crop.save(fn)
         t["file"] = fn
-    manifest = {"source": path, "image_size_px": [W, H], "tile": tile,
-                "overlap": overlap, "tiles": tiles}
+    manifest = {
+        "source": path,
+        "image_size_px": [W, H],
+        "tile": tile,
+        "overlap": overlap,
+        "tiles": tiles,
+    }
     json.dump(manifest, open(os.path.join(outdir, "tiles.json"), "w"), indent=1)
     return manifest
 
@@ -75,8 +96,9 @@ def _dist(a, b):
 
 
 def _same_curve(a, b, ctol=20.0, rrel=0.2):
-    return (_dist(a["center"], b["center"]) < ctol
-            and abs(a.get("r_px", 0) - b.get("r_px", 0)) < max(8.0, rrel * a.get("r_px", 0)))
+    return _dist(a["center"], b["center"]) < ctol and abs(
+        a.get("r_px", 0) - b.get("r_px", 0)
+    ) < max(8.0, rrel * a.get("r_px", 0))
 
 
 def _same_line(a, b, tol=20.0):
@@ -89,8 +111,8 @@ def merge_graphs(tiles, graphs, image_size_px):
     """tiles: list from make_tiles (same order as graphs). graphs[i] is the intra-view
     graph extracted from tile i (LOCAL px). Returns one merged global-px graph with
     overlap duplicates collapsed and dim refs remapped to surviving primitive ids."""
-    kept = []            # canonical global primitives
-    idmap = {}           # per-tile global-id -> canonical kept id
+    kept = []  # canonical global primitives
+    idmap = {}  # per-tile global-id -> canonical kept id
     for t, g in zip(tiles, graphs):
         if not g:
             continue
@@ -102,12 +124,17 @@ def merge_graphs(tiles, graphs, image_size_px):
                 gp["id"] = gid
                 dup = None
                 for kp in kept:
-                    if kp["type"] in ("circle", "arc") and gp["type"] in ("circle", "arc"):
+                    if kp["type"] in ("circle", "arc") and gp["type"] in (
+                        "circle",
+                        "arc",
+                    ):
                         if _same_curve(kp, gp):
-                            dup = kp; break
+                            dup = kp
+                            break
                     elif kp["type"] == "line" and gp["type"] == "line":
                         if _same_line(kp, gp):
-                            dup = kp; break
+                            dup = kp
+                            break
                 if dup is not None:
                     idmap[gid] = dup["id"]
                 else:
@@ -123,31 +150,50 @@ def merge_graphs(tiles, graphs, image_size_px):
         for dim in g.get("annotations", g.get("dimensions", [])):
             refs = [idmap.get("t%d_%s" % (t["i"], r)) for r in (dim.get("refs") or [])]
             refs = [r for r in refs if r]
-            key = (dim.get("kind", dim.get("type")), round(float(dim.get("value", 0)), 1), frozenset(refs))
+            key = (
+                dim.get("kind", dim.get("type")),
+                round(float(dim.get("value", 0)), 1),
+                frozenset(refs),
+            )
             if key in seen:
                 continue
             seen.add(key)
-            q = dict(dim); q["refs"] = refs
+            q = dict(dim)
+            q["refs"] = refs
             q["id"] = "D%d" % (len(dims) + 1)
             dims.append(q)
 
-    return {"image_size_px": image_size_px,
-            "views": [{"name": "merged", "primitives": kept}],
-            "annotations": dims}
+    return {
+        "image_size_px": image_size_px,
+        "views": [{"name": "merged", "primitives": kept}],
+        "annotations": dims,
+    }
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("image"); ap.add_argument("outdir")
+    ap.add_argument("image")
+    ap.add_argument("outdir")
     ap.add_argument("--tile", type=int, default=DEFAULT_TILE)
     ap.add_argument("--overlap", type=float, default=DEFAULT_OVERLAP)
     a = ap.parse_args()
     m = tile_image(a.image, a.outdir, a.tile, a.overlap)
-    print("%s %dx%d -> %d tiles (%dpx, %.0f%% overlap) in %s"
-          % (os.path.basename(a.image), *m["image_size_px"], len(m["tiles"]),
-             m["tile"], m["overlap"] * 100, a.outdir))
+    print(
+        "%s %dx%d -> %d tiles (%dpx, %.0f%% overlap) in %s"
+        % (
+            os.path.basename(a.image),
+            *m["image_size_px"],
+            len(m["tiles"]),
+            m["tile"],
+            m["overlap"] * 100,
+            a.outdir,
+        )
+    )
     for t in m["tiles"]:
-        print("  tile %02d  global [%d,%d]-[%d,%d]" % (t["i"], t["x0"], t["y0"], t["x1"], t["y1"]))
+        print(
+            "  tile %02d  global [%d,%d]-[%d,%d]"
+            % (t["i"], t["x0"], t["y0"], t["x1"], t["y1"])
+        )
 
 
 if __name__ == "__main__":

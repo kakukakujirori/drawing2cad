@@ -23,6 +23,7 @@ Usage:
         --step-dir experiments/stage_z2c_bench \
         --graph-dir experiments/dataset_z2c_bench
 """
+
 from __future__ import annotations
 
 import argparse
@@ -54,9 +55,7 @@ def _load_selection_params(step_dir: Path) -> dict | None:
 def build(step_dir: Path, graph_dir: Path) -> dict:
     ids_all = C.eligible_ids(step_dir, graph_dir)
     if not ids_all:
-        raise SystemExit(
-            f"No eligible parts found under {step_dir} ∩ {graph_dir}"
-        )
+        raise SystemExit(f"No eligible parts found under {step_dir} ∩ {graph_dir}")
 
     shutil.rmtree(C.INPUTS_DIR, ignore_errors=True)
     shutil.rmtree(C.GT_DIR, ignore_errors=True)
@@ -71,14 +70,19 @@ def build(step_dir: Path, graph_dir: Path) -> dict:
 
         shutil.copy2(graph_dir / f"{uuid}.png", in_dir / C.DRAWING_NAME)
         C.write_description_yaml(
-            in_dir / C.DESC_NAME, C.TASK_DESCRIPTION, [C.DRAWING_NAME],
+            in_dir / C.DESC_NAME,
+            C.TASK_DESCRIPTION,
+            [C.DRAWING_NAME],
         )
         shutil.copy2(step_dir / f"{uuid}.step", gt_dir / C.GT_STEP_NAME)
 
     # Document achieved complexity: OCC face counts over the selected GT STEPs.
     face_counts: dict = {}
     faces_dist: dict = {}
-    print(f"[build_fixtures] counting B-rep faces for {len(ids_all)} parts ...", file=sys.stderr)
+    print(
+        f"[build_fixtures] counting B-rep faces for {len(ids_all)} parts ...",
+        file=sys.stderr,
+    )
     face_counts = C.count_faces({u: (C.GT_DIR / u / C.GT_STEP_NAME) for u in ids_all})
     faces_dist = C.faces_distribution(face_counts)
 
@@ -90,7 +94,9 @@ def build(step_dir: Path, graph_dir: Path) -> dict:
             "gt_step_dir": str(step_dir),
             "graph_png_dir": str(graph_dir),
             "dataset": "Zero-To-CAD-1m validation",
-            "selection": sel if sel is not None else (
+            "selection": sel
+            if sel is not None
+            else (
                 "unknown -- no _select_params.json in step_dir "
                 "(staged before select_zero_to_cad.py recorded selection params)"
             ),
@@ -112,13 +118,21 @@ def build(step_dir: Path, graph_dir: Path) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--step-dir", type=Path, help=f"GT STEP source dir")
-    parser.add_argument("--graph-dir", type=Path, help=f"Drawing PNG + AMVDG graph source dir; the clean {{uuid}}.png is used as the fixture input")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--step-dir", type=Path, help="GT STEP source dir")
+    parser.add_argument(
+        "--graph-dir",
+        type=Path,
+        help="Drawing PNG + AMVDG graph source dir; the clean {uuid}.png is used as the fixture input",
+    )
     args = parser.parse_args()
 
     step_dir = args.step_dir if args.step_dir.is_absolute() else C.REPO / args.step_dir
-    graph_dir = args.graph_dir if args.graph_dir.is_absolute() else C.REPO / args.graph_dir
+    graph_dir = (
+        args.graph_dir if args.graph_dir.is_absolute() else C.REPO / args.graph_dir
+    )
 
     m = build(step_dir, graph_dir)
     print(f"Built {m['num']} fixtures.")
@@ -126,9 +140,11 @@ def main() -> int:
     print(f"           graph={graph_dir}")
     fd = m["faces"]["distribution"]
     if fd.get("n"):
-        print(f"  faces (n={fd['n']}): min={fd['min']} p25={fd['p25']} "
-              f"median={fd['median']} p75={fd['p75']} max={fd['max']}  "
-              f"(real CADGenBench: p25 93 / median 173 / p75 373)")
+        print(
+            f"  faces (n={fd['n']}): min={fd['min']} p25={fd['p25']} "
+            f"median={fd['median']} p75={fd['p75']} max={fd['max']}  "
+            f"(real CADGenBench: p25 93 / median 173 / p75 373)"
+        )
     print(f"  inputs: {C.INPUTS_DIR}")
     print(f"  gt:     {C.GT_DIR}")
     print(f"  manifest: {C.MANIFEST}")

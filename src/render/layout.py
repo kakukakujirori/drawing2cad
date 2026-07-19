@@ -12,7 +12,6 @@ centred on the sheet.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 from src.render.config import (
@@ -43,10 +42,16 @@ def _t(p, s, tx, ty):
     return (p[0] * s + tx, p[1] * s + ty)
 
 
-def transform_edges(e: ProjectedEdges, s: float, tx: float, ty: float) -> ProjectedEdges:
+def transform_edges(
+    e: ProjectedEdges, s: float, tx: float, ty: float
+) -> ProjectedEdges:
     out = ProjectedEdges()
-    out.segments = [Segment(_t(g.p0, s, tx, ty), _t(g.p1, s, tx, ty)) for g in e.segments]
-    out.arcs = [Arc(_t(g.center, s, tx, ty), g.radius * s, g.a0, g.a1, g.ccw) for g in e.arcs]
+    out.segments = [
+        Segment(_t(g.p0, s, tx, ty), _t(g.p1, s, tx, ty)) for g in e.segments
+    ]
+    out.arcs = [
+        Arc(_t(g.center, s, tx, ty), g.radius * s, g.a0, g.a1, g.ccw) for g in e.arcs
+    ]
     out.circles = [Circle(_t(g.center, s, tx, ty), g.radius * s) for g in e.circles]
     out.ellipses = [
         Ellipse(_t(g.center, s, tx, ty), g.rmaj * s, g.rmin * s, g.rot, g.a0, g.a1)
@@ -94,8 +99,9 @@ def _local_bbox(vp: ViewProjection) -> tuple[float, float, float, float]:
     return vp.bbox(include_hidden=True)
 
 
-def build_layout(front: ViewProjection, top: ViewProjection,
-                 right: ViewProjection) -> Layout:
+def build_layout(
+    front: ViewProjection, top: ViewProjection, right: ViewProjection
+) -> Layout:
     fb = _local_bbox(front)
     tb = _local_bbox(top)
     rb = _local_bbox(right)
@@ -130,8 +136,12 @@ def build_layout(front: ViewProjection, top: ViewProjection,
         ty = cy - lcy * scale
         vis = transform_edges(vp.visible, scale, tx, ty)
         hid = transform_edges(vp.hidden, scale, tx, ty)
-        bb = (lb[0] * scale + tx, lb[1] * scale + ty,
-              lb[2] * scale + tx, lb[3] * scale + ty)
+        bb = (
+            lb[0] * scale + tx,
+            lb[1] * scale + ty,
+            lb[2] * scale + tx,
+            lb[3] * scale + ty,
+        )
         return PlacedView(name, vis, hid, bb)
 
     pv_front = place(front, fb, fcx, fcy, "front")
@@ -151,8 +161,12 @@ def build_layout(front: ViewProjection, top: ViewProjection,
     for v in views:
         vis = transform_edges(v.visible, 1.0, shift_x, shift_y)
         hid = transform_edges(v.hidden, 1.0, shift_x, shift_y)
-        bb = (v.bbox[0] + shift_x, v.bbox[1] + shift_y,
-              v.bbox[2] + shift_x, v.bbox[3] + shift_y)
+        bb = (
+            v.bbox[0] + shift_x,
+            v.bbox[1] + shift_y,
+            v.bbox[2] + shift_x,
+            v.bbox[3] + shift_y,
+        )
         placed.append(PlacedView(v.name, vis, hid, bb))
 
     cluster = (cx0 + shift_x, cy0 + shift_y, cx1 + shift_x, cy1 + shift_y)

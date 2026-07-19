@@ -67,7 +67,9 @@ def _to_resolved_container(config: Any) -> Any:
     if OmegaConf is not None and OmegaConf.is_config(config):
         return OmegaConf.to_container(config, resolve=True, enum_to_str=True)
     if isinstance(config, Mapping):
-        return {str(key): _to_resolved_container(value) for key, value in config.items()}
+        return {
+            str(key): _to_resolved_container(value) for key, value in config.items()
+        }
     if isinstance(config, (list, tuple)):
         return [_to_resolved_container(value) for value in config]
     if isinstance(config, Path):
@@ -165,7 +167,9 @@ def setup_run(
         raise ValueError(f"invalid distributed rank/world size: {rank}/{world_size}")
 
     if project_root is None:
-        project_root = _nested_get(resolved, "paths", "project_root", default=Path.cwd())
+        project_root = _nested_get(
+            resolved, "paths", "project_root", default=Path.cwd()
+        )
     project_root_path = Path(project_root).expanduser().resolve()
 
     if output_dir is None:

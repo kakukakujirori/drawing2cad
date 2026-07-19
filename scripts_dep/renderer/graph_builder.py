@@ -1,6 +1,6 @@
-import FreeCAD as App
 import Part
 from typing import Any
+
 
 class GraphBuilder:
     def __init__(self, shape: Part.Shape):
@@ -9,18 +9,18 @@ class GraphBuilder:
         """
         self.shape = shape
         self.edge_to_faces = self._build_edge_to_face_map()
-        
+
     def _build_edge_to_face_map(self) -> dict[str, list[str]]:
         """
         Traverses the B-Rep DAG to map each Edge (by its identifier) to its parent Faces.
         Returns a dictionary mapping Edge identifiers to lists of Face identifiers.
         """
         edge_map = {}
-        
+
         # FreeCAD edges preserve their hashCode() between shape.Edges and face.Edges.
         # We can map the hashCode to the global e_idx.
         global_edge_map = {e.hashCode(): i for i, e in enumerate(self.shape.Edges)}
-        
+
         faces = self.shape.Faces
         for f_idx, face in enumerate(faces):
             face_id = f"Face_{f_idx}"
@@ -29,15 +29,17 @@ class GraphBuilder:
                 if h in global_edge_map:
                     e_idx = global_edge_map[h]
                     edge_id = f"Edge_{e_idx}"
-                    
+
                     if edge_id not in edge_map:
                         edge_map[edge_id] = []
                     if face_id not in edge_map[edge_id]:
                         edge_map[edge_id].append(face_id)
-                        
+
         return edge_map
-        
-    def enrich_topo_origins(self, primitives: list[dict[str, Any]]) -> list[dict[str, Any]]:
+
+    def enrich_topo_origins(
+        self, primitives: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """
         Injects parent Face IDs into the `topo_origins` list of the 2D primitives
         based on the edge-to-face map (Type 2 correspondence: different edges of
@@ -49,16 +51,18 @@ class GraphBuilder:
         :return: Enriched list of 2D primitives.
         """
         for prim in primitives:
-            if 'topo_origins' in prim:
-                origins = list(prim['topo_origins'])
-                seen = {o['id'] for o in origins}
-                for origin in prim['topo_origins']:
-                    if origin['dim'] != 1:
+            if "topo_origins" in prim:
+                origins = list(prim["topo_origins"])
+                seen = {o["id"] for o in origins}
+                for origin in prim["topo_origins"]:
+                    if origin["dim"] != 1:
                         continue
-                    for face_id in self.edge_to_faces.get(origin['id'], []):
+                    for face_id in self.edge_to_faces.get(origin["id"], []):
                         if face_id not in seen:
                             seen.add(face_id)
-                            origins.append({"dim": 2, "id": face_id, "role": "parent_face"})
-                prim['topo_origins'] = origins
+                            origins.append(
+                                {"dim": 2, "id": face_id, "role": "parent_face"}
+                            )
+                prim["topo_origins"] = origins
 
         return primitives

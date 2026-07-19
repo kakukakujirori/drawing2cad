@@ -58,19 +58,41 @@ def dxf_polylines(path, layer="0"):
         t = e.dxftype()
         try:
             if t == "LINE":
-                out.append(([(e.dxf.start.x, e.dxf.start.y), (e.dxf.end.x, e.dxf.end.y)], lt))
+                out.append(
+                    ([(e.dxf.start.x, e.dxf.start.y), (e.dxf.end.x, e.dxf.end.y)], lt)
+                )
             elif t == "CIRCLE":
                 c, r = e.dxf.center, e.dxf.radius
-                out.append(([(c.x + r * math.cos(2 * math.pi * i / 64),
-                              c.y + r * math.sin(2 * math.pi * i / 64)) for i in range(65)], lt))
+                out.append(
+                    (
+                        [
+                            (
+                                c.x + r * math.cos(2 * math.pi * i / 64),
+                                c.y + r * math.sin(2 * math.pi * i / 64),
+                            )
+                            for i in range(65)
+                        ],
+                        lt,
+                    )
+                )
             elif t == "ARC":
                 c, r = e.dxf.center, e.dxf.radius
                 a0, a1 = math.radians(e.dxf.start_angle), math.radians(e.dxf.end_angle)
                 if a1 < a0:
                     a1 += 2 * math.pi
                 n = max(4, int((a1 - a0) / (2 * math.pi) * 64))
-                out.append(([(c.x + r * math.cos(a0 + (a1 - a0) * i / n),
-                              c.y + r * math.sin(a0 + (a1 - a0) * i / n)) for i in range(n + 1)], lt))
+                out.append(
+                    (
+                        [
+                            (
+                                c.x + r * math.cos(a0 + (a1 - a0) * i / n),
+                                c.y + r * math.sin(a0 + (a1 - a0) * i / n),
+                            )
+                            for i in range(n + 1)
+                        ],
+                        lt,
+                    )
+                )
             elif t == "ELLIPSE":
                 out.append(([(p.x, p.y) for p in e.flattening(0.02)], lt))
             elif t == "SPLINE":
@@ -183,9 +205,11 @@ def dxf_counts(path):
 
 def _worker(step, out_dir, stem, q):
     import rootutils as _r
+
     _r.setup_root(str(Path(__file__)), indicator=".project-root", pythonpath=True)
     from src.render.techdraw import generate_techdraw
     from src.render.config import techdraw_paths as _tp
+
     try:
         info = generate_techdraw(Path(step), _tp(Path(out_dir), stem))
         q.put(("ok", info))
@@ -196,7 +220,9 @@ def _worker(step, out_dir, stem, q):
 def run_isolated(step, out_dir, stem, timeout):
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
-    p = ctx.Process(target=_worker, args=(str(step), str(out_dir), stem, q), daemon=True)
+    p = ctx.Process(
+        target=_worker, args=(str(step), str(out_dir), stem, q), daemon=True
+    )
     p.start()
     p.join(timeout)
     if p.is_alive():
@@ -214,7 +240,9 @@ def run_isolated(step, out_dir, stem, timeout):
 
 
 def svg_gray(path, w=1200, h=849):
-    png = cairosvg.svg2png(url=str(path), output_width=w, output_height=h, background_color="white")
+    png = cairosvg.svg2png(
+        url=str(path), output_width=w, output_height=h, background_color="white"
+    )
     return np.array(Image.open(io.BytesIO(png)).convert("L")) < 128
 
 
@@ -271,10 +299,15 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=24)
     ap.add_argument("--stems", type=str, default="")
-    ap.add_argument("--out", type=Path,
-                    default=Path("/tmp/claude-1001/-home-ryotaro-my-works-drawing2cad/"
-                                 "dcd1cb76-d8cd-436c-b767-6583954aaf3a/scratchpad/"
-                                 "techdraw_agent/calib"))
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=Path(
+            "/tmp/claude-1001/-home-ryotaro-my-works-drawing2cad/"
+            "dcd1cb76-d8cd-436c-b767-6583954aaf3a/scratchpad/"
+            "techdraw_agent/calib"
+        ),
+    )
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--real-dir", type=Path, default=None)
     ap.add_argument("--real-n", type=int, default=3)
@@ -302,35 +335,45 @@ def main(argv=None):
         pv = r["perview_iou"]
         ious += list(pv.values())
         dmarks = r["n_marks"] - r["gt_types"].get("INSERT", 0)
-        print(f"{stem}: iou={pv} scale={r['scale']} marks={r['n_marks']}"
-              f"(GT {r['gt_types'].get('INSERT',0)}) arrange={r['arrangement_ok']}")
+        print(
+            f"{stem}: iou={pv} scale={r['scale']} marks={r['n_marks']}"
+            f"(GT {r['gt_types'].get('INSERT', 0)}) arrange={r['arrangement_ok']}"
+            f"{dmarks=}"
+        )
 
     ok = [r for r in results if r["status"] == "ok"]
     print("\n== Summary ==")
-    print(f"ran={len(results)} ok={len(ok)} "
-          f"failed={len(results)-len(ok)}")
+    print(f"ran={len(results)} ok={len(ok)} failed={len(results) - len(ok)}")
     if ious:
         arr = np.array(ious)
-        print(f"per-view IoU  n={len(arr)}  mean={arr.mean():.3f}  median={np.median(arr):.3f}"
-              f"  p10={np.percentile(arr,10):.3f}  min={arr.min():.3f}")
+        print(
+            f"per-view IoU  n={len(arr)}  mean={arr.mean():.3f}  median={np.median(arr):.3f}"
+            f"  p10={np.percentile(arr, 10):.3f}  min={arr.min():.3f}"
+        )
     arr_ok = sum(r["arrangement_ok"] for r in ok)
     print(f"arrangement correct: {arr_ok}/{len(ok)}")
+
     # entity count aggregate deltas
     def agg(key, sub):
         return sum(r[key].get(sub, 0) for r in ok)
+
     for et in ("LINE", "CIRCLE", "ARC", "SPLINE", "LWPOLYLINE", "ELLIPSE", "INSERT"):
-        print(f"  {et:11s} ours={agg('our_types',et):5d} gt={agg('gt_types',et):5d}")
+        print(f"  {et:11s} ours={agg('our_types', et):5d} gt={agg('gt_types', et):5d}")
     for lt in ("Continuous", "HIDDEN"):
-        print(f"  lt {lt:10s} ours={agg('our_lt',lt):5d} gt={agg('gt_lt',lt):5d}")
+        print(f"  lt {lt:10s} ours={agg('our_lt', lt):5d} gt={agg('gt_lt', lt):5d}")
 
     # real-input smoke test
     if args.real_dir:
         print("\n== Real-input smoke test ==")
         reals = sorted(args.real_dir.glob("*.step"))[: args.real_n]
         for step in reals:
-            status, info = run_isolated(step, args.out / "real", step.stem, args.timeout)
-            print(f"{step.name}: {status} "
-                  f"{ {k: info[k] for k in ('scale','n_center_marks')} if status=='ok' else ''}")
+            status, info = run_isolated(
+                step, args.out / "real", step.stem, args.timeout
+            )
+            print(
+                f"{step.name}: {status} "
+                f"{ {k: info[k] for k in ('scale', 'n_center_marks')} if status == 'ok' else '' }"
+            )
     return 0
 
 

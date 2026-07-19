@@ -38,7 +38,9 @@ class SetupRunTest(unittest.TestCase):
             self.assertEqual(context.metrics_path.name, "scalars.jsonl")
             self.assertTrue(context.checkpoints_dir.is_dir())
             self.assertTrue(context.predictions_dir.is_dir())
-            saved_config = yaml.safe_load(context.config_path.read_text(encoding="utf-8"))
+            saved_config = yaml.safe_load(
+                context.config_path.read_text(encoding="utf-8")
+            )
             self.assertEqual(saved_config["model"]["model_name_or_path"], "local/model")
             metadata = json.loads(context.metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(metadata["base_checkpoint"], "local/model")
@@ -93,4 +95,3 @@ class SetupRunTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -22,11 +22,7 @@ class TrainingConfigTest(unittest.TestCase):
     def test_root_composes_all_required_groups(self) -> None:
         root = self._load("train_sft.yaml")
         defaults = root["defaults"]
-        groups = {
-            next(iter(item))
-            for item in defaults
-            if isinstance(item, dict)
-        }
+        groups = {next(iter(item)) for item in defaults if isinstance(item, dict)}
         self.assertTrue(
             {
                 "data",
@@ -91,9 +87,7 @@ class TrainingConfigTest(unittest.TestCase):
             )
         self.assertEqual(config.hydra.runtime.choices["debug"], "smoke")
         self.assertEqual(config.hydra.runtime.choices["data"], "z2c_smoke")
-        self.assertEqual(
-            config.hydra.runtime.choices["utils/progress_bar"], "rich"
-        )
+        self.assertEqual(config.hydra.runtime.choices["utils/progress_bar"], "rich")
         self.assertEqual(config.training.max_steps, 2)
         self.assertEqual(config.data.train_max_samples, 4)
         self.assertEqual(

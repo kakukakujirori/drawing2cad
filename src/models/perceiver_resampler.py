@@ -142,7 +142,9 @@ class PerceiverResampler(nn.Module):
         if batch_size == 0:
             return primitive_tokens.new_empty((0, self.num_latents, self.dim))
         if not torch.all(primitive_mask.any(dim=-1)):
-            raise ValueError("every resampled sample must contain at least one primitive")
+            raise ValueError(
+                "every resampled sample must contain at least one primitive"
+            )
 
         latents = self.queries.unsqueeze(0).expand(batch_size, -1, -1)
 

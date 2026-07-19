@@ -32,6 +32,7 @@ Usage:
 Then (in the drawing2cad env):
   python scripts/renderer/batch_dataset.py <stage_dir> <out_dir>
 """
+
 import argparse
 import json
 import os
@@ -89,21 +90,41 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n", type=int, help="number of parts to stage")
     parser.add_argument("--stage_dir", type=str)
-    parser.add_argument("--split", default="validation", help="validation/test (10k each) or train (~980k); default validation")
+    parser.add_argument(
+        "--split",
+        default="validation",
+        help="validation/test (10k each) or train (~980k); default validation",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--min-faces", type=int, default=6)
     parser.add_argument("--max-faces", type=int, default=200)
-    parser.add_argument("--no-code", action="store_true", help="don't also write {uuid}.cadquery.py")
-    parser.add_argument("--stratify", action="store_true",
-                         help="complexity-balanced sampling across num_faces bins instead of plain IID "
-                              "(default: off => legacy behavior, unchanged file output for a given --seed)")
-    parser.add_argument("--n-bins", type=int, default=7,
-                         help="number of log-spaced num_faces bins for --stratify (ignored if --bin-edges given)")
-    parser.add_argument("--bin-edges", type=str, default=None,
-                         help="comma-separated interior num_faces edges for --stratify, "
-                              "e.g. '30,50,90,145,200,285' (overrides --n-bins)")
-    parser.add_argument("--dry-run", action="store_true",
-                         help="print the pool/allocation plan and exit without touching --stage_dir")
+    parser.add_argument(
+        "--no-code", action="store_true", help="don't also write {uuid}.cadquery.py"
+    )
+    parser.add_argument(
+        "--stratify",
+        action="store_true",
+        help="complexity-balanced sampling across num_faces bins instead of plain IID "
+        "(default: off => legacy behavior, unchanged file output for a given --seed)",
+    )
+    parser.add_argument(
+        "--n-bins",
+        type=int,
+        default=7,
+        help="number of log-spaced num_faces bins for --stratify (ignored if --bin-edges given)",
+    )
+    parser.add_argument(
+        "--bin-edges",
+        type=str,
+        default=None,
+        help="comma-separated interior num_faces edges for --stratify, "
+        "e.g. '30,50,90,145,200,285' (overrides --n-bins)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the pool/allocation plan and exit without touching --stage_dir",
+    )
     args = parser.parse_args()
 
     if os.path.isdir(args.stage_dir):
@@ -112,7 +133,9 @@ def main():
 
     # select only the light columns -- a bare row also carries 8 PNGs + an STL,
     # so pulling those per-row would be much slower.
-    cols = ["uuid", "num_faces", "step_file"] + ([] if args.no_code else ["cadquery_file"])
+    cols = ["uuid", "num_faces", "step_file"] + (
+        [] if args.no_code else ["cadquery_file"]
+    )
     ds = load_dataset("ADSKAILab/Zero-To-CAD-1m", split=args.split).select_columns(cols)
     n_total = len(ds)
 
@@ -121,11 +144,15 @@ def main():
     bin_of_kept_idx = {}
 
     if args.stratify or args.dry_run:
-        nf_all = np.asarray(ds["num_faces"], dtype=np.float64)  # cheap: Arrow columnar slice, no step_file decode
+        nf_all = np.asarray(
+            ds["num_faces"], dtype=np.float64
+        )  # cheap: Arrow columnar slice, no step_file decode
         in_band = (nf_all >= args.min_faces) & (nf_all <= args.max_faces)
         pool_total = int(in_band.sum())
-        print("pool: split=%s band=[%d,%d] -> %d/%d parts eligible"
-              % (args.split, args.min_faces, args.max_faces, pool_total, n_total))
+        print(
+            "pool: split=%s band=[%d,%d] -> %d/%d parts eligible"
+            % (args.split, args.min_faces, args.max_faces, pool_total, n_total)
+        )
 
     if args.stratify:
         if args.bin_edges:
@@ -147,10 +174,20 @@ def main():
         for i in range(len(bin_indices)):
             lo, hi = bin_bounds[i], bin_bounds[i + 1]
             close = "]" if i == len(bin_indices) - 1 else ")"
-            print("  bin[%4d,%4d%s  pool=%7d  alloc=%7d" % (lo, hi, close, pool_sizes[i], alloc[i]))
+            print(
+                "  bin[%4d,%4d%s  pool=%7d  alloc=%7d"
+                % (lo, hi, close, pool_sizes[i], alloc[i])
+            )
         total_alloc = sum(alloc)
-        print("  -> %d parts will be staged%s"
-              % (total_alloc, "" if total_alloc == args.n else " (< requested %d: bins exhausted)" % args.n))
+        print(
+            "  -> %d parts will be staged%s"
+            % (
+                total_alloc,
+                ""
+                if total_alloc == args.n
+                else " (< requested %d: bins exhausted)" % args.n,
+            )
+        )
 
         order = []
         for i, idxs in enumerate(bin_indices):
@@ -189,8 +226,14 @@ def main():
             code = row.get("cadquery_file")
             if code:
                 try:
-                    txt = code.decode("utf-8") if isinstance(code, (bytes, bytearray)) else str(code)
-                    with open(os.path.join(args.stage_dir, uid + ".cadquery.py"), "w") as f:
+                    txt = (
+                        code.decode("utf-8")
+                        if isinstance(code, (bytes, bytearray))
+                        else str(code)
+                    )
+                    with open(
+                        os.path.join(args.stage_dir, uid + ".cadquery.py"), "w"
+                    ) as f:
                         f.write(txt)
                 except Exception:
                     pass
@@ -200,23 +243,45 @@ def main():
         if kept % 50 == 0:
             print("  staged %d/%d (scanned %d)" % (kept, args.n, scanned), flush=True)
 
-    print("split=%s total=%d scanned=%d staged=%d (band[%d,%d] skip=%d, empty=%d) -> %s (seed=%d, stratify=%s)"
-          % (args.split, n_total, scanned, kept, args.min_faces, args.max_faces,
-             skipped_band, skipped_empty, args.stage_dir, args.seed, args.stratify), flush=True)
+    print(
+        "split=%s total=%d scanned=%d staged=%d (band[%d,%d] skip=%d, empty=%d) -> %s (seed=%d, stratify=%s)"
+        % (
+            args.split,
+            n_total,
+            scanned,
+            kept,
+            args.min_faces,
+            args.max_faces,
+            skipped_band,
+            skipped_empty,
+            args.stage_dir,
+            args.seed,
+            args.stratify,
+        ),
+        flush=True,
+    )
     if bin_kept_counts is not None:
         for i, c in enumerate(bin_kept_counts):
             lo, hi = bin_bounds[i], bin_bounds[i + 1]
             close = "]" if i == len(bin_kept_counts) - 1 else ")"
             print("  achieved bin[%4d,%4d%s  staged=%7d" % (lo, hi, close, c))
     if kept < args.n:
-        print("WARNING: only staged %d of requested %d (band too tight, bins exhausted, or split exhausted)"
-              % (kept, args.n), flush=True)
+        print(
+            "WARNING: only staged %d of requested %d (band too tight, bins exhausted, or split exhausted)"
+            % (kept, args.n),
+            flush=True,
+        )
 
     # Self-documenting provenance: downstream tools (bench/build_fixtures.py) read
     # this instead of guessing/hardcoding the selection params that produced stage_dir.
     params = {
-        "split": args.split, "seed": args.seed, "n_requested": args.n, "n_staged": kept,
-        "min_faces": args.min_faces, "max_faces": args.max_faces, "stratify": args.stratify,
+        "split": args.split,
+        "seed": args.seed,
+        "n_requested": args.n,
+        "n_staged": kept,
+        "min_faces": args.min_faces,
+        "max_faces": args.max_faces,
+        "stratify": args.stratify,
         "n_bins": args.n_bins if (args.stratify and not args.bin_edges) else None,
         "bin_edges_arg": args.bin_edges,
         "bin_bounds": bin_bounds,

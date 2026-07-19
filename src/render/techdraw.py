@@ -29,14 +29,14 @@ from src.render.writers.svg_writer import write_svg
 
 
 # Third-angle view frames (view_dir, up_dir), verified by raster-IoU vs GT.
-FRONT = ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0))   # look -Z, up +Y  -> screen (X, Y)
-TOP = ((0.0, 1.0, 0.0), (0.0, 0.0, -1.0))    # look -Y, up -Z  -> screen (X, Z)
-RIGHT = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))   # look -X, up +Y  -> screen (-Z, Y)
+FRONT = ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0))  # look -Z, up +Y  -> screen (X, Y)
+TOP = ((0.0, 1.0, 0.0), (0.0, 0.0, -1.0))  # look -Y, up -Z  -> screen (X, Z)
+RIGHT = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))  # look -X, up +Y  -> screen (-Z, Y)
 
 
 @dataclass
 class TechdrawConfig:
-    deflection: float = 0.02     # b-spline discretisation (model units)
+    deflection: float = 0.02  # b-spline discretisation (model units)
     include_smooth: bool = False  # tangent/smooth (Rg1) edges; GT suppresses them
     center_marks: bool = True
 
@@ -64,7 +64,9 @@ def _diag(shape) -> float:
     return max((dx * dx + dy * dy + dz * dz) ** 0.5, 1e-6)
 
 
-def _project_nonempty(shape, view_dir, up_dir, *, deflection, include_smooth, merge_tol):
+def _project_nonempty(
+    shape, view_dir, up_dir, *, deflection, include_smooth, merge_tol
+):
     """Project one view, guarding against the OCC HLR exact-axis degeneracy.
 
     ``HLRBRep_Algo`` occasionally returns *zero* edges when the view direction is
@@ -75,20 +77,34 @@ def _project_nonempty(shape, view_dir, up_dir, *, deflection, include_smooth, me
     only ever applied to views that would otherwise be empty, so non-degenerate
     views are bit-for-bit unchanged.  This keeps the renderer at 3 views always.
     """
-    vp = project(shape, view_dir, up_dir, deflection=deflection,
-                 include_smooth=include_smooth, merge_tol=merge_tol)
+    vp = project(
+        shape,
+        view_dir,
+        up_dir,
+        deflection=deflection,
+        include_smooth=include_smooth,
+        merge_tol=merge_tol,
+    )
     if vp.visible.count() + vp.hidden.count() > 0:
         return vp
     for eps in (1e-3, 3e-3, 1e-2):
         vd = (view_dir[0] + eps, view_dir[1] + eps, view_dir[2] + eps)
-        vp = project(shape, vd, up_dir, deflection=deflection,
-                     include_smooth=include_smooth, merge_tol=merge_tol)
+        vp = project(
+            shape,
+            vd,
+            up_dir,
+            deflection=deflection,
+            include_smooth=include_smooth,
+            merge_tol=merge_tol,
+        )
         if vp.visible.count() + vp.hidden.count() > 0:
             return vp
     return vp
 
 
-def generate_techdraw(step_path: Path, paths: TechdrawPaths, cfg: TechdrawConfig | None = None) -> dict:
+def generate_techdraw(
+    step_path: Path, paths: TechdrawPaths, cfg: TechdrawConfig | None = None
+) -> dict:
     step_path = Path(step_path)
     cfg = cfg or TechdrawConfig()
 
@@ -99,9 +115,23 @@ def generate_techdraw(step_path: Path, paths: TechdrawPaths, cfg: TechdrawConfig
     defl = cfg.deflection * diag
     mtol = 5e-4 * diag
 
-    front = _project_nonempty(shape, *FRONT, deflection=defl, include_smooth=cfg.include_smooth, merge_tol=mtol)
-    top = _project_nonempty(shape, *TOP, deflection=defl, include_smooth=cfg.include_smooth, merge_tol=mtol)
-    right = _project_nonempty(shape, *RIGHT, deflection=defl, include_smooth=cfg.include_smooth, merge_tol=mtol)
+    front = _project_nonempty(
+        shape,
+        *FRONT,
+        deflection=defl,
+        include_smooth=cfg.include_smooth,
+        merge_tol=mtol,
+    )
+    top = _project_nonempty(
+        shape, *TOP, deflection=defl, include_smooth=cfg.include_smooth, merge_tol=mtol
+    )
+    right = _project_nonempty(
+        shape,
+        *RIGHT,
+        deflection=defl,
+        include_smooth=cfg.include_smooth,
+        merge_tol=mtol,
+    )
 
     layout = build_layout(front, top, right)
     marks = all_marks(layout.views) if cfg.center_marks else []
@@ -129,8 +159,10 @@ def generate_techdraw(step_path: Path, paths: TechdrawPaths, cfg: TechdrawConfig
             "y_axis": "up",
         },
         "cluster_bbox": [round(x, 3) for x in layout.cluster_bbox],
-        "views": {v.name: {"bbox": [round(x, 3) for x in v.bbox], **_counts(v)}
-                  for v in layout.views},
+        "views": {
+            v.name: {"bbox": [round(x, 3) for x in v.bbox], **_counts(v)}
+            for v in layout.views
+        },
         "n_center_marks": len(marks),
     }
     return info

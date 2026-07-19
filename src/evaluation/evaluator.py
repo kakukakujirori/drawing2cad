@@ -39,9 +39,13 @@ class EvaluationItem:
     target_code: str | None = None
 
     def __post_init__(self) -> None:
-        available = int(self.target_step_path is not None) + int(self.target_code is not None)
+        available = int(self.target_step_path is not None) + int(
+            self.target_code is not None
+        )
         if available != 1:
-            raise ValueError("exactly one of target_step_path and target_code is required")
+            raise ValueError(
+                "exactly one of target_step_path and target_code is required"
+            )
 
 
 def _load_mesh(path: Path):

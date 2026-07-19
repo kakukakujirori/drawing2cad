@@ -15,7 +15,9 @@ class TrainingProgress:
         for name in ("global_step", "epoch", "batches_seen_in_epoch"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+                raise ValueError(
+                    f"{name} must be a non-negative integer, got {value!r}"
+                )
 
 
 __all__ = ["TrainingProgress"]
