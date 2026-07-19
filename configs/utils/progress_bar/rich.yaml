@@ -1,0 +1,14 @@
+# @package utils.progress_bar
+enabled: true
+refresh_rate: 10
+leave: false
+styles:
+  epoch: bold cyan
+  bar: grey37
+  complete: cyan
+  finished: green
+  pulse: cyan
+  count: bold cyan
+  metrics: italic
+  time: dim
+  speed: dim underline

@@ -68,12 +68,32 @@ class TrainingConfigTest(unittest.TestCase):
         self.assertGreater(checkpoint["top_k"], 0)
         self.assertEqual(checkpoint["latest_dirname"], "latest")
 
-    def test_hydra_composes_smoke_overrides(self) -> None:
+    def test_hydra_composes_production_defaults(self) -> None:
         with initialize_config_dir(
             config_dir=str(CONFIG_ROOT.resolve()), version_base="1.3"
         ):
             config = compose(config_name="train_sft", return_hydra_config=True)
+        self.assertIsNone(config.hydra.runtime.choices["debug"])
+        self.assertEqual(config.hydra.runtime.choices["data"], "z2c")
+        self.assertEqual(config.training.max_steps, 1000)
+        self.assertEqual(config.training.gradient_accumulation_steps, 8)
+        self.assertIsNone(config.data.train_max_samples)
+        self.assertTrue(config.utils.progress_bar.enabled)
+
+    def test_hydra_composes_explicit_smoke_overrides(self) -> None:
+        with initialize_config_dir(
+            config_dir=str(CONFIG_ROOT.resolve()), version_base="1.3"
+        ):
+            config = compose(
+                config_name="train_sft",
+                overrides=["data=z2c_smoke", "debug=smoke"],
+                return_hydra_config=True,
+            )
         self.assertEqual(config.hydra.runtime.choices["debug"], "smoke")
+        self.assertEqual(config.hydra.runtime.choices["data"], "z2c_smoke")
+        self.assertEqual(
+            config.hydra.runtime.choices["utils/progress_bar"], "rich"
+        )
         self.assertEqual(config.training.max_steps, 2)
         self.assertEqual(config.data.train_max_samples, 4)
         self.assertEqual(

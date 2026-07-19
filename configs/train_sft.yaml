@@ -5,6 +5,7 @@ defaults:
   - scheduler: cosine
   - logger: wandb
   - checkpoint: topk
+  - utils/progress_bar: rich
   - hydra: default
   - _self_
   - debug: null

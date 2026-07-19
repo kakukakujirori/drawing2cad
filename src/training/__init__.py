@@ -1,19 +1,14 @@
-"""Explicit training loops for Drawing2CAD."""
+"""Explicit training loops and their training-specific state."""
 
-from .sft import (
-    AdapterCheckpointIO,
-    TrainingProgress,
-    apply_language_lora,
-    evaluate_loss,
-    freeze_vision_encoder,
-    run_sft,
-)
+from .checkpoint import AdapterCheckpointIO
+from .sft import SFTLoopConfig, TrainingSchedule, evaluate_loss, run_sft
+from .state import TrainingProgress
 
 __all__ = [
     "AdapterCheckpointIO",
+    "SFTLoopConfig",
     "TrainingProgress",
-    "apply_language_lora",
+    "TrainingSchedule",
     "evaluate_loss",
-    "freeze_vision_encoder",
     "run_sft",
 ]

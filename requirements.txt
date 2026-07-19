@@ -16,6 +16,7 @@ pytest
 pyyaml
 rich
 rootutils
+ruff
 safetensors
 scipy
 tensorboard

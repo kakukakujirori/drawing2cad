@@ -5,12 +5,9 @@ import unittest
 from accelerate import Accelerator
 import torch
 
-from src.training.sft import (
-    AdapterCheckpointIO,
-    TrainingProgress,
-    apply_language_lora,
-    freeze_vision_encoder,
-)
+from src.models.factory import apply_language_lora, freeze_vision_encoder
+from src.training.checkpoint import AdapterCheckpointIO
+from src.training.state import TrainingProgress
 from tests.model_helpers import make_primitive_batch, tiny_drawing_model
 
 

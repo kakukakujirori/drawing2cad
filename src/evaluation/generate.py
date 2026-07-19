@@ -1,8 +1,7 @@
-"""Deterministic Qwen generation and CAD scoring for SFT validation."""
+"""Deterministic Qwen generation and CAD scoring for model validation."""
 
 from __future__ import annotations
 
-from dataclasses import asdict
 import json
 from pathlib import Path
 import random
@@ -46,7 +45,7 @@ def _atomic_json(path: Path, payload: Any) -> None:
     temporary.replace(path)
 
 
-class SFTGenerationEvaluator:
+class CADGenerationEvaluator:
     """Generate a fixed validation subset on rank zero and broadcast metrics."""
 
     def __init__(
@@ -137,7 +136,9 @@ class SFTGenerationEvaluator:
             collate_fn=collator,
         )
 
-    def _generate_on_main(self, model: torch.nn.Module, step: int) -> dict[str, float | int]:
+    def _generate_on_main(
+        self, model: torch.nn.Module, step: int
+    ) -> dict[str, float | int]:
         unwrapped = self.accelerator.unwrap_model(model)
         was_training = unwrapped.training
         unwrapped.eval()
@@ -165,15 +166,7 @@ class SFTGenerationEvaluator:
                 )
                 codes.update(zip(batch.sample_ids, decoded, strict=True))
         finally:
-            if was_training:
-                unwrapped.train()
-                # Keep the frozen native vision tower deterministic.
-                visual = getattr(getattr(unwrapped, "base_model", None), "model", None)
-                visual = getattr(getattr(visual, "model", None), "visual", None)
-                if visual is None:
-                    visual = getattr(getattr(unwrapped, "model", None), "visual", None)
-                if visual is not None:
-                    visual.eval()
+            unwrapped.train(was_training)
 
         step_dir = self.predictions_dir / f"step_{step:08d}"
         step_dir.mkdir(parents=True, exist_ok=True)
@@ -201,27 +194,21 @@ class SFTGenerationEvaluator:
             volume_tolerance=float(
                 self.evaluation_config.get("volume_tolerance", 1e-6)
             ),
-            voxel_resolution=int(
-                self.evaluation_config.get("voxel_resolution", 64)
-            ),
+            voxel_resolution=int(self.evaluation_config.get("voxel_resolution", 64)),
             compute_normalized_iou=bool(
                 self.evaluation_config.get("compute_normalized_iou", False)
             ),
-            compute_chamfer=bool(
-                self.evaluation_config.get("compute_chamfer", False)
-            ),
-            chamfer_points=int(
-                self.evaluation_config.get("chamfer_points", 8192)
-            ),
-            chamfer_seed=int(
-                self.evaluation_config.get("generation_seed", 42)
-            ),
+            compute_chamfer=bool(self.evaluation_config.get("compute_chamfer", False)),
+            chamfer_points=int(self.evaluation_config.get("chamfer_points", 8192)),
+            chamfer_seed=int(self.evaluation_config.get("generation_seed", 42)),
         )
         rows = evaluate_predictions(items, config=config)
         metrics = aggregate_evaluation_metrics(rows, prefix="val")
         _atomic_json(step_dir / "rows.json", rows)
         _atomic_json(step_dir / "metrics.json", metrics)
-        _atomic_json(step_dir / "error_histogram.json", evaluation_error_histogram(rows))
+        _atomic_json(
+            step_dir / "error_histogram.json", evaluation_error_histogram(rows)
+        )
         return metrics
 
     def __call__(self, model: torch.nn.Module, step: int) -> dict[str, float | int]:
@@ -241,4 +228,4 @@ class SFTGenerationEvaluator:
         return metrics
 
 
-__all__ = ["SFTGenerationEvaluator"]
+__all__ = ["CADGenerationEvaluator"]

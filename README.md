@@ -86,22 +86,11 @@ We use the [Zero-to-CAD](https://huggingface.co/datasets/ADSKAILab/Zero-To-CAD-1
 
 ## DXF + raster -> CadQuery SFT
 
-The default Hydra composition is the smoke profile.
-A short verified end-to-end run (training, validation generation, isolated CadQuery execution, geometry metrics, and checkpointing) is:
-
 ```bash
-python src/train_sft.py \
-    training.max_steps=1 \
-    data.train_max_samples=1 \
-    data.val_max_samples=1 \
-    data.image_max_edge=224 \
-    evaluation.generation_subset_size=1 \
-    evaluation.max_new_tokens=8 \
-    checkpoint.top_k=1
+python src/train_sft.py
 ```
 
 Runs are written to `logs/train_sft/<yyyy-mm-dd_hh-mm-ss>/`.
-Each directory contains the fully resolved `config.yaml`, `run_metadata.json`, JSONL metrics, generated validation code/results, `checkpoints/latest`, and the configured metric-driven top-K checkpoints.
 
 Resume an interrupted run into the same directory with its original planned
 step limit:
@@ -115,5 +104,4 @@ conda run -n drawing2cad python src/train_sft.py \
 Resume restores the saved scheduler as well as model/optimizer state.
 Extending a run that already reached its original `max_steps` therefore requires an explicit new scheduler policy; merely increasing `max_steps` does not restart or stretch the completed schedule.
 
-For a non-smoke run remove the debug config with `~debug`, point `data.train_root` at the prepared training split, and override hyperparameters as needed.
 Enable W&B with `logger.wandb.enabled=true`.

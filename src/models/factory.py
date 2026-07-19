@@ -1,0 +1,154 @@
+"""Build the Qwen/primitive SFT model and enforce its train-mode policy."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from peft import LoraConfig, TaskType, get_peft_model
+import torch
+from transformers import AutoProcessor
+
+from .model import Drawing2CADQwen3VLForConditionalGeneration
+from .primitive_encoder import PrimitiveEncoderConfig
+
+
+@dataclass(frozen=True)
+class SFTModelBundle:
+    model: torch.nn.Module
+    processor: Any
+    primitive_config: PrimitiveEncoderConfig
+
+
+def _mapping(value: Any, *, name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping, got {type(value)}")
+    return dict(value)
+
+
+def _torch_dtype(name: str | torch.dtype) -> torch.dtype:
+    if isinstance(name, torch.dtype):
+        return name
+    aliases = {
+        "float32": torch.float32,
+        "fp32": torch.float32,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+    }
+    try:
+        return aliases[str(name).lower()]
+    except KeyError as error:
+        raise ValueError(f"unsupported torch dtype: {name!r}") from error
+
+
+def vision_module(model: torch.nn.Module) -> torch.nn.Module:
+    """Locate Qwen3-VL's visual tower before/after PEFT and DDP wrapping."""
+
+    current_model = model
+    while isinstance(getattr(current_model, "module", None), torch.nn.Module):
+        current_model = current_model.module
+    candidates = (
+        ("model", "visual"),
+        ("base_model", "model", "model", "visual"),
+        ("base_model", "model", "model", "model", "visual"),
+    )
+    for path in candidates:
+        current: Any = current_model
+        for component in path:
+            current = getattr(current, component, None)
+            if current is None:
+                break
+        if isinstance(current, torch.nn.Module):
+            return current
+    raise AttributeError("could not locate Qwen3-VL visual tower")
+
+
+def freeze_vision_encoder(model: torch.nn.Module) -> torch.nn.Module:
+    visual = vision_module(model)
+    visual.requires_grad_(False)
+    visual.eval()
+    return visual
+
+
+def apply_language_lora(
+    model: torch.nn.Module, config: Mapping[str, Any]
+) -> torch.nn.Module:
+    lora = _mapping(config, name="model.lora")
+    if not bool(lora.get("enabled", True)):
+        raise ValueError(
+            "baseline SFT requires model.lora.enabled=true; full fine-tuning is "
+            "intentionally unsupported"
+        )
+    target_modules = tuple(str(value) for value in lora.get("target_modules", ()))
+    if not target_modules:
+        raise ValueError("model.lora.target_modules must not be empty")
+    peft_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        r=int(lora.get("rank", lora.get("r", 16))),
+        lora_alpha=int(lora.get("alpha", 32)),
+        lora_dropout=float(lora.get("dropout", 0.05)),
+        bias=str(lora.get("bias", "none")),
+        target_modules=list(target_modules),
+        modules_to_save=["primitive_encoder"],
+    )
+    output = get_peft_model(model, peft_config)
+    primitive_parameters = [
+        parameter
+        for name, parameter in output.named_parameters()
+        if "primitive_encoder.modules_to_save" in name
+    ]
+    if not primitive_parameters or not all(
+        parameter.requires_grad for parameter in primitive_parameters
+    ):
+        raise RuntimeError("PEFT did not retain a trainable primitive_encoder copy")
+    return output
+
+
+def set_sft_train_mode(model: torch.nn.Module) -> None:
+    """Enable train mode while keeping the frozen vision tower deterministic."""
+
+    model.train()
+    vision_module(model).eval()
+
+
+def build_sft_model(config: Mapping[str, Any]) -> SFTModelBundle:
+    model_config = _mapping(config, name="model")
+    primitive_config = PrimitiveEncoderConfig(
+        **_mapping(model_config["primitive"], name="model.primitive")
+    )
+    model_name = str(model_config["model_name_or_path"])
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    model = Drawing2CADQwen3VLForConditionalGeneration.from_qwen_pretrained(
+        model_name,
+        primitive_config=primitive_config,
+        attn_implementation=str(model_config.get("attn_implementation", "auto")),
+        dtype=_torch_dtype(model_config.get("torch_dtype", "bfloat16")),
+    )
+    if not bool(model_config.get("freeze_vision_encoder", True)):
+        raise ValueError("the baseline requires freeze_vision_encoder=true")
+    freeze_vision_encoder(model)
+    model = apply_language_lora(
+        model, _mapping(model_config["lora"], name="model.lora")
+    )
+    freeze_vision_encoder(model)
+    if bool(model_config.get("gradient_checkpointing", True)):
+        model.gradient_checkpointing_enable()
+        model.config.use_cache = False
+    return SFTModelBundle(
+        model=model,
+        processor=processor,
+        primitive_config=primitive_config,
+    )
+
+
+__all__ = [
+    "SFTModelBundle",
+    "apply_language_lora",
+    "build_sft_model",
+    "freeze_vision_encoder",
+    "set_sft_train_mode",
+    "vision_module",
+]

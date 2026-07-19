@@ -12,13 +12,13 @@ from .evaluator import (
     evaluate_predictions,
     evaluation_error_histogram,
 )
-from .generate import SFTGenerationEvaluator
+from .generate import CADGenerationEvaluator
 
 __all__ = [
     "CadExecutionResult",
     "EvaluationConfig",
     "EvaluationItem",
-    "SFTGenerationEvaluator",
+    "CADGenerationEvaluator",
     "aggregate_evaluation_metrics",
     "evaluate_prediction",
     "evaluate_predictions",

@@ -5,7 +5,7 @@ import unittest
 import torch
 
 from src.data import Drawing2CADBatch, SampleMetadata, ViewBBox
-from src.evaluation.generate import SFTGenerationEvaluator
+from src.evaluation.generate import CADGenerationEvaluator
 from src.models import PrimitiveBatch, PrimitiveEncoderConfig
 
 
@@ -79,7 +79,7 @@ def _batch() -> Drawing2CADBatch:
     )
 
 
-class SFTGenerationEvaluatorTest(unittest.TestCase):
+class CADGenerationEvaluatorTest(unittest.TestCase):
     def test_generation_writes_artifacts_and_stable_checkpoint_metric(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
             root = Path(temporary)
@@ -109,7 +109,7 @@ class SFTGenerationEvaluatorTest(unittest.TestCase):
             (root / "manifest.jsonl").write_text(
                 json.dumps(manifest) + "\n", encoding="utf-8"
             )
-            evaluator = SFTGenerationEvaluator(
+            evaluator = CADGenerationEvaluator(
                 accelerator=_Accelerator(),
                 processor=_Processor(),
                 data_config={"val_root": str(root)},

@@ -19,7 +19,7 @@ from src.models import (
 )
 
 
-DATASET_ROOT = Path("experiments/dataset_z2c_eccv_val")
+DATASET_ROOT = Path("data/z2c_val")
 CHECKPOINT = "ADSKAILab/Zero-To-CAD-Qwen3-VL-2B"
 
 
