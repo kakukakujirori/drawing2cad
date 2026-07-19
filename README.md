@@ -106,5 +106,3 @@ python src/train_sft.py \
 
 Resume restores the saved scheduler as well as model/optimizer state.
 Extending a run that already reached its original `max_steps` therefore requires an explicit new scheduler policy; merely increasing `max_steps` does not restart or stretch the completed schedule.
-
-Enable W&B with `logger.wandb.enabled=true`.

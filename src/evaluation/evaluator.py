@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import tempfile
@@ -174,19 +175,45 @@ def evaluate_predictions(
     *,
     config: EvaluationConfig | None = None,
     on_item: Callable[[int], None] | None = None,
+    max_workers: int | None = None,
 ) -> list[dict[str, object]]:
-    """Evaluate a deterministic item sequence in its supplied order.
+    """Evaluate an item sequence and return rows in the supplied order.
 
     ``on_item`` is invoked with ``1`` after each prediction is scored so callers
     can drive a progress bar over the slow isolated-execution loop.
+
+    ``max_workers`` controls concurrency. Each ``evaluate_prediction`` is
+    independent (its own tempdir and its own ``spawn`` CadQuery subprocesses) and
+    spends nearly all its wall-clock time blocked in ``process.join``, so a
+    thread pool overlaps those waits without touching shared state. ``None`` or
+    a value ``<= 1`` keeps the original strictly-sequential behavior. Output
+    order always matches input order regardless of completion order.
     """
 
-    rows: list[dict[str, object]] = []
-    for item in items:
-        rows.append(evaluate_prediction(item, config=config))
-        if on_item is not None:
-            on_item(1)
-    return rows
+    materialized = list(items)
+    if not materialized:
+        return []
+    workers = 1 if max_workers is None else max_workers
+    if workers <= 1 or len(materialized) == 1:
+        rows: list[dict[str, object]] = []
+        for item in materialized:
+            rows.append(evaluate_prediction(item, config=config))
+            if on_item is not None:
+                on_item(1)
+        return rows
+
+    results: list[dict[str, object] | None] = [None] * len(materialized)
+    with ThreadPoolExecutor(max_workers=min(workers, len(materialized))) as pool:
+        future_to_index = {
+            pool.submit(evaluate_prediction, item, config=config): index
+            for index, item in enumerate(materialized)
+        }
+        for future in as_completed(future_to_index):
+            results[future_to_index[future]] = future.result()
+            if on_item is not None:
+                on_item(1)
+    # Every slot is filled once as_completed drains; assert to satisfy typing.
+    return [row for row in results if row is not None]
 
 
 def aggregate_evaluation_metrics(

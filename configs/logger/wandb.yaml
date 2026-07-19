@@ -3,7 +3,7 @@ jsonl:
   filename: metrics.jsonl
 
 wandb:
-  enabled: false
+  enabled: true
   project: drawing2cad
   entity: null
   group: null
@@ -11,4 +11,3 @@ wandb:
   tags: []
   mode: online
   log_model: false
-

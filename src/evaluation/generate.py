@@ -231,7 +231,10 @@ class CADGenerationEvaluator:
             for sample_id in sample_ids
         ]
         return evaluate_predictions(
-            items, config=self._evaluation_config(), on_item=on_evaluated
+            items,
+            config=self._evaluation_config(),
+            on_item=on_evaluated,
+            max_workers=int(self.evaluation_config.get("execution_workers", 1)),
         )
 
     def __call__(

@@ -19,12 +19,12 @@ paths:
   output_dir: ${hydra:runtime.output_dir}
 
 training:
-  max_steps: 1000
-  num_train_epochs: null
+  max_steps: null
+  num_train_epochs: 1
   gradient_accumulation_steps: 8
   mixed_precision: bf16
-  eval_every_steps: 100
-  save_every_steps: 100
+  eval_every_steps: 1000
+  save_every_steps: 1000
   log_every_steps: 1
   max_grad_norm: 1.0
   tokens_per_second: true
@@ -38,6 +38,10 @@ evaluation:
   generation_strategy: greedy
   max_new_tokens: 1024
   cadquery_timeout_seconds: 30.0
+  # Concurrency for the isolated CadQuery execution/scoring loop. Each worker
+  # blocks on a spawned subprocess, so this overlaps their wall-clock waits;
+  # per-rank, so the machine sees up to execution_workers * num_processes procs.
+  execution_workers: 8
   tessellation_tolerance: 0.1
   volume_tolerance: 1.0e-6
   voxel_resolution: 64
