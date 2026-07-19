@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import random
@@ -163,7 +164,11 @@ class CADGenerationEvaluator:
         )
 
     def _generate_codes(
-        self, model: torch.nn.Module, sample_ids: Sequence[str]
+        self,
+        model: torch.nn.Module,
+        sample_ids: Sequence[str],
+        *,
+        on_generated: Callable[[int], None] | None = None,
     ) -> dict[str, str]:
         """Greedily decode CadQuery source for one shard of sample IDs."""
 
@@ -195,12 +200,19 @@ class CADGenerationEvaluator:
                     clean_up_tokenization_spaces=False,
                 )
                 codes.update(zip(batch.sample_ids, decoded, strict=True))
+                if on_generated is not None:
+                    on_generated(len(decoded))
         finally:
             unwrapped.train(was_training)
         return codes
 
     def _write_and_evaluate(
-        self, codes: Mapping[str, str], sample_ids: Sequence[str], step_dir: Path
+        self,
+        codes: Mapping[str, str],
+        sample_ids: Sequence[str],
+        step_dir: Path,
+        *,
+        on_evaluated: Callable[[int], None] | None = None,
     ) -> list[dict[str, object]]:
         """Persist this shard's completions and score them against targets."""
 
@@ -218,9 +230,17 @@ class CADGenerationEvaluator:
             )
             for sample_id in sample_ids
         ]
-        return evaluate_predictions(items, config=self._evaluation_config())
+        return evaluate_predictions(
+            items, config=self._evaluation_config(), on_item=on_evaluated
+        )
 
-    def __call__(self, model: torch.nn.Module, step: int) -> dict[str, float | int]:
+    def __call__(
+        self,
+        model: torch.nn.Module,
+        step: int,
+        *,
+        progress_bar: Any = None,
+    ) -> dict[str, float | int]:
         # Every rank generates and scores a disjoint shard in parallel, then all
         # ranks all-gather the per-sample rows. Because the gathered rows are
         # re-sorted into a single deterministic order, every rank aggregates
@@ -229,8 +249,21 @@ class CADGenerationEvaluator:
         step_dir = self.predictions_dir / f"step_{step:08d}"
         self.accelerator.wait_for_everyone()
         shard_ids = self._shard_sample_ids()
-        codes = self._generate_codes(model, shard_ids)
-        shard_rows = self._write_and_evaluate(codes, shard_ids, step_dir)
+
+        # A no-op factory keeps the call sites branch-free when no bar is wired
+        # (non-main ranks pass a disabled bar whose sub_task is already a no-op).
+        def _null_sub_task(_description: str, _total: int) -> Any:
+            return nullcontext(lambda _steps=1: None)
+
+        sub_task = (
+            progress_bar.sub_task if progress_bar is not None else _null_sub_task
+        )
+        with sub_task("eval generate", len(shard_ids)) as advance:
+            codes = self._generate_codes(model, shard_ids, on_generated=advance)
+        with sub_task("eval execute", len(shard_ids)) as advance:
+            shard_rows = self._write_and_evaluate(
+                codes, shard_ids, step_dir, on_evaluated=advance
+            )
 
         gathered = gather_object(shard_rows)
         rows: list[dict[str, object]] = []

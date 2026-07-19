@@ -14,15 +14,16 @@ primitives -> scale + centre layout (sheet-mm) -> center marks -> write DXF
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
 from OCC.Core.STEPControl import STEPControl_Reader
 
 from src.render.centermarks import all_marks
-from src.render.config import TechdrawPaths
+from src.render.config import SHEET_H_MM, SHEET_W_MM, TechdrawPaths
 from src.render.hlr import project
-from src.render.layout import build_layout
+from src.render.layout import Layout, build_layout
 from src.render.writers.dxf_writer import write_dxf
 from src.render.writers.pdf_writer import write_pdf
 from src.render.writers.svg_writer import write_svg
@@ -39,6 +40,56 @@ class TechdrawConfig:
     deflection: float = 0.02  # b-spline discretisation (model units)
     include_smooth: bool = False  # tangent/smooth (Rg1) edges; GT suppresses them
     center_marks: bool = True
+
+
+# A placed view narrower than this (sheet-mm, either axis) carries no recoverable
+# shape and violates the manifest's positive-area bbox contract. It only ever
+# fires on pathological inputs: an empty HLR projection (0 edges, e.g. an OCC
+# axis-degeneracy the tilt fallback could not recover) or a knife-edge view of a
+# near-zero-thickness plate that collapses to a single line.
+MIN_VIEW_EXTENT_MM = 0.05
+# Every view is laid out to fit the A4 sheet; a bbox this far outside it means the
+# projection ran away (observed on corrupt STEPs whose model AABB is astronomical,
+# so OCC HLR emits outline curves at 1e5+ mm). Reject rather than record garbage.
+SHEET_MARGIN_MM = 10.0
+
+
+class DegenerateDrawingError(RuntimeError):
+    """A view could not be rendered into a valid positive-area, on-sheet bbox."""
+
+
+def _validate_layout(layout: Layout) -> None:
+    """Fail the part if any placed view bbox is degenerate or off-sheet.
+
+    ``generate_techdraw`` runs one part per isolated process; raising here makes
+    ``render_dataset`` record ``ok=False`` so the sample is dropped from the
+    manifest instead of poisoning it with an invalid bbox that the data loader's
+    metadata validator would later reject at train time.
+    """
+    for v in layout.views:
+        x_min, y_min, x_max, y_max = v.bbox
+        values = (x_min, y_min, x_max, y_max)
+        if not all(math.isfinite(c) for c in values):
+            raise DegenerateDrawingError(
+                f"view {v.name!r} bbox is not finite: {values}"
+            )
+        width = x_max - x_min
+        height = y_max - y_min
+        if width < MIN_VIEW_EXTENT_MM or height < MIN_VIEW_EXTENT_MM:
+            raise DegenerateDrawingError(
+                f"view {v.name!r} has near-zero extent "
+                f"(w={width:.4f}, h={height:.4f} mm): {values}"
+            )
+        if (
+            x_min < -SHEET_MARGIN_MM
+            or y_min < -SHEET_MARGIN_MM
+            or x_max > SHEET_W_MM + SHEET_MARGIN_MM
+            or y_max > SHEET_H_MM + SHEET_MARGIN_MM
+        ):
+            raise DegenerateDrawingError(
+                f"view {v.name!r} bbox runs off the sheet "
+                f"(sheet {SHEET_W_MM}x{SHEET_H_MM} mm): {values}"
+            )
 
 
 def _load_shape(step_path: Path):
@@ -134,6 +185,9 @@ def generate_techdraw(
     )
 
     layout = build_layout(front, top, right)
+    # Reject degenerate / runaway projections before writing any output so the
+    # part is recorded ok=False and dropped, never emitting an invalid bbox.
+    _validate_layout(layout)
     marks = all_marks(layout.views) if cfg.center_marks else []
 
     for p in (paths.svg, paths.dxf, paths.pdf):

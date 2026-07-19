@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import tempfile
@@ -172,10 +173,20 @@ def evaluate_predictions(
     items: Iterable[EvaluationItem],
     *,
     config: EvaluationConfig | None = None,
+    on_item: Callable[[int], None] | None = None,
 ) -> list[dict[str, object]]:
-    """Evaluate a deterministic item sequence in its supplied order."""
+    """Evaluate a deterministic item sequence in its supplied order.
 
-    return [evaluate_prediction(item, config=config) for item in items]
+    ``on_item`` is invoked with ``1`` after each prediction is scored so callers
+    can drive a progress bar over the slow isolated-execution loop.
+    """
+
+    rows: list[dict[str, object]] = []
+    for item in items:
+        rows.append(evaluate_prediction(item, config=config))
+        if on_item is not None:
+            on_item(1)
+    return rows
 
 
 def aggregate_evaluation_metrics(

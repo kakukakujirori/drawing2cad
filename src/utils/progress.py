@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import Any
 
@@ -22,7 +23,12 @@ class _EpochColumn(ProgressColumn):
         self.style = style
 
     def render(self, task: Task) -> Text:
-        return Text(f"[epoch {task.fields['epoch']}] |", style=self.style)
+        # Secondary tasks (e.g. an evaluation sub-bar) carry no ``epoch`` field;
+        # they render their own description in the same leading column instead.
+        epoch = task.fields.get("epoch")
+        if epoch is None:
+            return Text(f"{task.description} |", style=self.style)
+        return Text(f"[epoch {epoch}] |", style=self.style)
 
 
 class _StepColumn(ProgressColumn):
@@ -218,6 +224,33 @@ class RichEpochProgressBar:
         self._progress.update(self._task_id, completed=self._total_steps)
         self._progress.stop_task(self._task_id)
         self._progress.refresh()
+
+    @contextmanager
+    def sub_task(
+        self, description: str, total: int
+    ) -> Generator[Callable[[int], None]]:
+        """Show a transient secondary bar and yield an ``advance`` callable.
+
+        Used for long synchronous phases that would otherwise freeze the display
+        (validation loss, generation, CadQuery execution): the epoch bar stays
+        put while a second line under it animates. The bar shares the epoch
+        ``Progress`` so Rich drives a single Live region with no conflict.
+
+        On a disabled bar (non-main rank, display off, or empty phase) this
+        yields a no-op callable so every caller stays branch-free across ranks.
+        """
+
+        def _noop(_steps: int = 1) -> None:
+            return None
+
+        if not self.enabled or not self._started or total <= 0:
+            yield _noop
+            return
+        task_id = self._progress.add_task(description, total=total)
+        try:
+            yield lambda steps=1: self._progress.advance(task_id, steps)
+        finally:
+            self._progress.remove_task(task_id)
 
     def update_metrics(self, metrics: Mapping[str, str]) -> None:
         if not isinstance(metrics, Mapping):

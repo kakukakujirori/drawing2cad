@@ -26,7 +26,17 @@ from src.utils.progress import RichEpochProgressBar
 from .state import TrainingProgress
 
 
-GenerationEvaluator = Callable[[torch.nn.Module, int], Mapping[str, float | int]]
+class GenerationEvaluator(Protocol):
+    def __call__(
+        self,
+        model: torch.nn.Module,
+        step: int,
+        *,
+        progress_bar: "RichEpochProgressBar | None" = None,
+    ) -> Mapping[str, float | int]: ...
+
+
+
 TrainModeSetter = Callable[[torch.nn.Module], None]
 
 
@@ -215,6 +225,7 @@ def evaluate_loss(
     dataloader: Any,
     *,
     set_train_mode: TrainModeSetter,
+    on_batch: Callable[[int], None] | None = None,
 ) -> dict[str, float]:
     """Compute distributed token-weighted SFT validation cross entropy."""
 
@@ -233,6 +244,8 @@ def evaluate_loss(
             raise FloatingPointError("validation produced a non-finite loss")
         total_loss += outputs.loss.detach().to(torch.float64) * token_count
         total_tokens += token_count
+        if on_batch is not None:
+            on_batch(1)
     totals = accelerator.reduce(
         torch.stack((total_loss, total_tokens)), reduction="sum"
     )
@@ -340,16 +353,23 @@ def _evaluate(
     validation_dataloader: Any,
     set_train_mode: TrainModeSetter,
     generation_evaluator: GenerationEvaluator | None,
+    progress_bar: RichEpochProgressBar,
     step: int,
 ) -> dict[str, float | int]:
-    values: dict[str, float | int] = evaluate_loss(
-        accelerator,
-        model,
-        validation_dataloader,
-        set_train_mode=set_train_mode,
-    )
+    try:
+        loss_total = len(validation_dataloader)
+    except TypeError:
+        loss_total = 0
+    with progress_bar.sub_task("eval loss", loss_total) as advance:
+        values: dict[str, float | int] = evaluate_loss(
+            accelerator,
+            model,
+            validation_dataloader,
+            set_train_mode=set_train_mode,
+            on_batch=advance,
+        )
     if generation_evaluator is not None:
-        values.update(generation_evaluator(model, step))
+        values.update(generation_evaluator(model, step, progress_bar=progress_bar))
         set_train_mode(model)
     return values
 
@@ -497,6 +517,7 @@ def run_sft(
                     validation_dataloader=validation_dataloader,
                     set_train_mode=set_train_mode,
                     generation_evaluator=generation_evaluator,
+                    progress_bar=progress_bar,
                     step=state.global_step,
                 )
                 _log_evaluation(metrics, last_metrics, step=state.global_step)
@@ -539,6 +560,7 @@ def run_sft(
             validation_dataloader=validation_dataloader,
             set_train_mode=set_train_mode,
             generation_evaluator=generation_evaluator,
+            progress_bar=progress_bar,
             step=state.global_step,
         )
         _log_evaluation(metrics, last_metrics, step=state.global_step)
