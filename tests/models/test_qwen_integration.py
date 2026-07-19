@@ -142,8 +142,8 @@ class QwenIntegrationTest(unittest.TestCase):
         self.assertEqual(output.logits.shape, (1, 8, 128))
         self.assertIsNotNone(self.model.model.rope_deltas)
 
-    def test_mixed_view_counts_work_in_one_batch(self) -> None:
-        primitive_batch = make_primitive_batch((0, 3))
+    def test_mixed_primitive_counts_use_one_placeholder_block_each(self) -> None:
+        primitive_batch = make_primitive_batch((1, 7))
         input_ids = torch.tensor(
             [
                 [5, 6, 7, 8, 9, 10, 11, 12],
@@ -151,7 +151,7 @@ class QwenIntegrationTest(unittest.TestCase):
             ]
         )
         primitive_mask = torch.zeros_like(input_ids, dtype=torch.bool)
-        primitive_mask[1, 1:7] = True
+        primitive_mask[:, 1:3] = True
         with torch.no_grad():
             output = self.model(
                 input_ids=input_ids,

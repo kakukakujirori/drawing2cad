@@ -1,0 +1,38 @@
+model_name_or_path: ADSKAILab/Zero-To-CAD-Qwen3-VL-2B
+attn_implementation: auto
+torch_dtype: bfloat16
+gradient_checkpointing: true
+freeze_vision_encoder: true
+
+primitive:
+  sample_feature_dim: 3
+  num_primitive_types: 7
+  primitive_dim: 256
+  num_primitive_latents: 32
+  primitive_encoder_layers: 2
+  resampler_layers: 2
+  resampler_heads: 8
+  dropout: 0.1
+  use_group_context: true
+  view_directions:
+    - front
+    - top
+    - right
+
+lora:
+  enabled: true
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  bias: none
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+vision_lora:
+  enabled: false

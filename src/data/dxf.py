@@ -11,6 +11,8 @@ import ezdxf
 from ezdxf.entities import DXFEntity
 import torch
 
+from .metadata import VIEW_DIRECTIONS, ViewBBox
+
 
 # Stable IDs shared by the dataset and PrimitiveEncoderConfig. New entity types
 # must be appended so existing checkpoints keep their meaning.
@@ -52,6 +54,7 @@ class DXFPrimitiveConfig:
     normalized_longest_side: float = 1.8
     discard_outside_sheet: bool = True
     sheet_tolerance_mm: float = 1.0
+    view_bbox_tolerance_mm: float = 0.1
     strict_entity_types: bool = False
 
     def __post_init__(self) -> None:
@@ -68,6 +71,8 @@ class DXFPrimitiveConfig:
             raise ValueError("normalized_longest_side must be positive")
         if self.sheet_tolerance_mm < 0:
             raise ValueError("sheet_tolerance_mm must be non-negative")
+        if self.view_bbox_tolerance_mm < 0:
+            raise ValueError("view_bbox_tolerance_mm must be non-negative")
         if not self.include_visible and not self.include_hidden:
             raise ValueError("at least one of visible or hidden entities must be enabled")
 
@@ -86,8 +91,11 @@ class DXFPrimitiveData:
 
     sample_features: torch.FloatTensor  # [N, S, 3]
     primitive_type_ids: torch.LongTensor  # [N]
+    view_direction_ids: torch.LongTensor  # [N]
     entity_handles: tuple[str, ...]
     entity_type_names: tuple[str, ...]
+    primitive_group_ids: torch.LongTensor | None = None
+    num_skipped_degenerate_entities: int = 0
 
     @property
     def num_primitives(self) -> int:
@@ -364,7 +372,49 @@ class DXFPrimitiveParser:
             for x, y in points
         )
 
-    def parse(self, path: str | Path) -> DXFPrimitiveData:
+    def _assign_view_direction(
+        self,
+        points: Sequence[tuple[float, float]],
+        view_bboxes: Sequence[ViewBBox],
+        *,
+        sample_id: str,
+        entity_handle: str,
+        entity_type: str,
+    ) -> int:
+        representative_x = sum(point[0] for point in points) / len(points)
+        representative_y = sum(point[1] for point in points) / len(points)
+        matches = tuple(
+            bbox
+            for bbox in view_bboxes
+            if bbox.contains(
+                representative_x,
+                representative_y,
+                tolerance_mm=self.config.view_bbox_tolerance_mm,
+            )
+        )
+        if len(matches) != 1:
+            candidates = {
+                bbox.direction: tuple(round(value, 6) for value in bbox.xyxy_mm)
+                for bbox in view_bboxes
+            }
+            raise DXFParseError(
+                "primitive view assignment requires exactly one bbox match: "
+                f"sample_id={sample_id!r}, entity_handle={entity_handle!r}, "
+                f"entity_type={entity_type!r}, "
+                f"representative_point=({representative_x:.6f}, "
+                f"{representative_y:.6f}), "
+                f"matched_directions={[bbox.direction for bbox in matches]}, "
+                f"candidate_bboxes={candidates}"
+            )
+        return matches[0].direction_id
+
+    def parse(
+        self,
+        path: str | Path,
+        *,
+        view_bboxes: Sequence[ViewBBox],
+        sample_id: str | None = None,
+    ) -> DXFPrimitiveData:
         path = Path(path)
         if not path.is_file():
             raise FileNotFoundError(f"DXF file does not exist: {path}")
@@ -373,10 +423,23 @@ class DXFPrimitiveParser:
         except (OSError, ezdxf.DXFError) as error:
             raise DXFParseError(f"failed to read DXF {path}: {error}") from error
 
+        view_bboxes = tuple(view_bboxes)
+        directions = tuple(bbox.direction for bbox in view_bboxes)
+        if len(view_bboxes) != len(VIEW_DIRECTIONS) or set(directions) != set(
+            VIEW_DIRECTIONS
+        ):
+            raise DXFParseError(
+                "DXF parsing requires exactly one bbox for each view direction "
+                f"{VIEW_DIRECTIONS}, got {directions}"
+            )
+        resolved_sample_id = sample_id or path.stem
+
         features: list[list[tuple[float, float, float]]] = []
         type_ids: list[int] = []
+        view_direction_ids: list[int] = []
         handles: list[str] = []
         type_names: list[str] = []
+        num_skipped_degenerate_entities = 0
         included_layers = set(self.config.included_layers)
 
         for entity in document.modelspace():
@@ -398,31 +461,45 @@ class DXFPrimitiveParser:
                 continue
             try:
                 points = sample_dxf_entity(entity, self.config)
-            except DXFParseError:
+            except DXFParseError as error:
                 if self.config.strict_entity_types:
                     raise
+                if "zero" in str(error) or "fewer than two distinct" in str(error):
+                    num_skipped_degenerate_entities += 1
                 continue
             if not self._is_inside_sheet(points):
                 continue
+            entity_handle = str(entity.dxf.get("handle", ""))
+            view_direction_id = self._assign_view_direction(
+                points,
+                view_bboxes,
+                sample_id=resolved_sample_id,
+                entity_handle=entity_handle,
+                entity_type=entity_type,
+            )
             visibility = -1.0 if hidden else 1.0
             features.append(
                 [self._normalize_point(point, visibility) for point in points]
             )
             type_ids.append(DXF_PRIMITIVE_TYPE_TO_ID[entity_type])
-            handles.append(str(entity.dxf.get("handle", "")))
+            view_direction_ids.append(view_direction_id)
+            handles.append(entity_handle)
             type_names.append(entity_type)
 
         if not features:
             raise DXFParseError(f"DXF contains no usable primitives: {path}")
         sample_features = torch.tensor(features, dtype=torch.float32)
         primitive_type_ids = torch.tensor(type_ids, dtype=torch.long)
+        direction_ids = torch.tensor(view_direction_ids, dtype=torch.long)
         if not torch.isfinite(sample_features).all():
             raise DXFParseError(f"DXF produced non-finite sample features: {path}")
         return DXFPrimitiveData(
             sample_features=sample_features,
             primitive_type_ids=primitive_type_ids,
+            view_direction_ids=direction_ids,
             entity_handles=tuple(handles),
             entity_type_names=tuple(type_names),
+            num_skipped_degenerate_entities=num_skipped_degenerate_entities,
         )
 
 

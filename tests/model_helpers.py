@@ -27,69 +27,59 @@ def primitive_config(*, use_group_context: bool = True) -> PrimitiveEncoderConfi
 
 
 def make_primitive_batch(
-    active_view_counts: tuple[int, ...] = (2, 3),
+    active_primitive_counts: tuple[int, ...] = (4, 7),
     *,
     with_groups: bool = True,
 ) -> PrimitiveBatch:
+    if not active_primitive_counts or any(count <= 0 for count in active_primitive_counts):
+        raise ValueError("every active primitive count must be positive")
+
     generator = torch.Generator().manual_seed(123)
-    batch_size = len(active_view_counts)
-    view_count, primitive_count, sample_count, feature_dim = 5, 4, 6, 2
+    batch_size = len(active_primitive_counts)
+    primitive_count = max(active_primitive_counts)
+    sample_count, feature_dim = 6, 2
     features = torch.randn(
         batch_size,
-        view_count,
         primitive_count,
         sample_count,
         feature_dim,
         generator=generator,
     )
     sample_mask = torch.zeros(
-        batch_size, view_count, primitive_count, sample_count, dtype=torch.bool
+        batch_size, primitive_count, sample_count, dtype=torch.bool
     )
-    primitive_mask = torch.zeros(
-        batch_size, view_count, primitive_count, dtype=torch.bool
-    )
+    primitive_mask = torch.zeros(batch_size, primitive_count, dtype=torch.bool)
     primitive_type_ids = torch.full(
-        (batch_size, view_count, primitive_count), -1, dtype=torch.long
+        (batch_size, primitive_count), -1, dtype=torch.long
     )
+    view_direction_ids = torch.full_like(primitive_type_ids, -1)
     group_ids = torch.full_like(primitive_type_ids, -1)
-    view_type_ids = torch.full((batch_size, view_count), -1, dtype=torch.long)
-    view_mask = torch.zeros(batch_size, view_count, dtype=torch.bool)
 
-    for batch_index, active_view_count in enumerate(active_view_counts):
-        if not 0 <= active_view_count <= view_count:
-            raise ValueError("active_view_count must lie in [0, 5]")
-        # Reverse semantic IDs in physical slots to exercise canonical sorting.
-        for slot in range(active_view_count):
-            semantic_id = active_view_count - 1 - slot
-            view_mask[batch_index, slot] = True
-            view_type_ids[batch_index, slot] = semantic_id
-            active_primitives = 1 + (slot % primitive_count)
-            primitive_mask[batch_index, slot, :active_primitives] = True
-            for primitive_index in range(active_primitives):
-                primitive_type_ids[batch_index, slot, primitive_index] = (
-                    batch_index + slot + primitive_index
-                ) % 7
-                valid_samples = 2 + ((slot + primitive_index) % (sample_count - 1))
-                sample_mask[
-                    batch_index, slot, primitive_index, :valid_samples
-                ] = True
+    for batch_index, active_count in enumerate(active_primitive_counts):
+        primitive_mask[batch_index, :active_count] = True
+        for primitive_index in range(active_count):
+            primitive_type_ids[batch_index, primitive_index] = (
+                batch_index + primitive_index
+            ) % 7
+            view_direction_ids[batch_index, primitive_index] = primitive_index % 3
+            valid_samples = 2 + (primitive_index % (sample_count - 1))
+            sample_mask[batch_index, primitive_index, :valid_samples] = True
 
-        if with_groups and active_view_count:
-            # Group 10 spans views when possible; group 20 remains view-local.
-            group_ids[batch_index, 0, 0] = 10
-            if active_view_count > 1:
-                group_ids[batch_index, 1, 0] = 10
-            if primitive_mask[batch_index, 0, 1]:
-                group_ids[batch_index, 0, 1] = 20
+        if with_groups:
+            # Group 10 spans directions; group 20 is a separate local group.
+            group_ids[batch_index, 0] = 10
+            if active_count > 1:
+                group_ids[batch_index, 1] = 10
+            if active_count > 2:
+                group_ids[batch_index, 2] = 20
 
     return PrimitiveBatch(
         sample_features=features,
         sample_mask=sample_mask,
         primitive_mask=primitive_mask,
         primitive_type_ids=primitive_type_ids,
+        view_direction_ids=view_direction_ids,
         primitive_group_ids=group_ids if with_groups else None,
-        view_type_ids=view_type_ids,
-        view_mask=view_mask,
     )
 
 

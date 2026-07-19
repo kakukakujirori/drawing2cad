@@ -1,4 +1,4 @@
-"""Masked 2D drawing-primitive encoding and per-view resampling."""
+"""Masked 2D drawing-primitive encoding and global resampling."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from torch import nn
 from .perceiver_resampler import PerceiverResampler
 
 
-DEFAULT_VIEW_TYPES = ("front", "top", "side", "drawing", "isometric")
+DEFAULT_VIEW_DIRECTIONS = ("front", "top", "right")
 
 
 @dataclass(frozen=True)
@@ -27,10 +27,10 @@ class PrimitiveEncoderConfig:
     resampler_heads: int = 8
     dropout: float = 0.1
     use_group_context: bool = True
-    view_types: tuple[str, ...] = DEFAULT_VIEW_TYPES
+    view_directions: tuple[str, ...] = DEFAULT_VIEW_DIRECTIONS
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "view_types", tuple(self.view_types))
+        object.__setattr__(self, "view_directions", tuple(self.view_directions))
         positive_fields = (
             "sample_feature_dim",
             "num_primitive_types",
@@ -51,16 +51,18 @@ class PrimitiveEncoderConfig:
             )
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError(f"dropout must be in [0, 1), got {self.dropout}")
-        if not self.view_types:
-            raise ValueError("view_types must not be empty")
-        if len(set(self.view_types)) != len(self.view_types):
-            raise ValueError(f"view_types must be unique, got {self.view_types!r}")
-        if any(not isinstance(name, str) or not name for name in self.view_types):
-            raise ValueError("every view type must be a non-empty string")
+        if not self.view_directions:
+            raise ValueError("view_directions must not be empty")
+        if len(set(self.view_directions)) != len(self.view_directions):
+            raise ValueError(
+                f"view_directions must be unique, got {self.view_directions!r}"
+            )
+        if any(not isinstance(name, str) or not name for name in self.view_directions):
+            raise ValueError("every view direction must be a non-empty string")
 
     def to_dict(self) -> dict[str, Any]:
         output = asdict(self)
-        output["view_types"] = list(self.view_types)
+        output["view_directions"] = list(self.view_directions)
         return output
 
     @classmethod
@@ -72,31 +74,28 @@ class PrimitiveEncoderConfig:
 
 @dataclass(frozen=True)
 class PrimitiveBatch:
-    """Padded tensor contract consumed by :class:`PrimitiveEncoder`.
+    """Padded flat primitive-set contract consumed by :class:`PrimitiveEncoder`.
 
     Shapes:
 
-    * ``sample_features``: ``[B, V, N, S, C]`` floating point features.
-    * ``sample_mask``: ``[B, V, N, S]`` valid-sample mask.
-    * ``primitive_mask``: ``[B, V, N]`` valid-primitive mask.
-    * ``primitive_type_ids``: ``[B, V, N]`` upstream DXF type IDs.
-    * ``primitive_group_ids``: optional ``[B, V, N]`` sample-local group IDs;
+    * ``sample_features``: ``[B, N, S, C]`` floating point features.
+    * ``sample_mask``: ``[B, N, S]`` valid-sample mask.
+    * ``primitive_mask``: ``[B, N]`` valid-primitive mask.
+    * ``primitive_type_ids``: ``[B, N]`` upstream DXF type IDs.
+    * ``view_direction_ids``: ``[B, N]`` per-primitive direction IDs.
+    * ``primitive_group_ids``: optional ``[B, N]`` sample-local group IDs;
       ``-1`` means ungrouped.
-    * ``view_type_ids``: ``[B, V]`` semantic IDs indexing the configured view
-      vocabulary, independent of physical view-slot order.
-    * ``view_mask``: ``[B, V]`` valid-view mask.
 
-    Masks use ``True`` for real values. Valid samples must be a contiguous
-    prefix so reversal keeps padding at the end. Group IDs may span views of one
-    sample but are never interpreted across different batch items.
+    Masks use ``True`` for real values. Valid curve samples must be a
+    contiguous prefix so curve reversal keeps padding at the end. Every batch
+    item must contain at least one active primitive.
     """
 
     sample_features: torch.Tensor
     sample_mask: torch.Tensor
     primitive_mask: torch.Tensor
     primitive_type_ids: torch.Tensor
-    view_type_ids: torch.Tensor
-    view_mask: torch.Tensor
+    view_direction_ids: torch.Tensor
     primitive_group_ids: torch.Tensor | None = None
 
     @property
@@ -117,13 +116,12 @@ class PrimitiveBatch:
             sample_mask=self.sample_mask.to(device=device),
             primitive_mask=self.primitive_mask.to(device=device),
             primitive_type_ids=self.primitive_type_ids.to(device=device),
+            view_direction_ids=self.view_direction_ids.to(device=device),
             primitive_group_ids=(
                 None
                 if self.primitive_group_ids is None
                 else self.primitive_group_ids.to(device=device)
             ),
-            view_type_ids=self.view_type_ids.to(device=device),
-            view_mask=self.view_mask.to(device=device),
         )
 
     def repeat_interleave(self, repeats: int) -> "PrimitiveBatch":
@@ -139,9 +137,8 @@ class PrimitiveBatch:
             sample_mask=repeat(self.sample_mask),
             primitive_mask=repeat(self.primitive_mask),
             primitive_type_ids=repeat(self.primitive_type_ids),
+            view_direction_ids=repeat(self.view_direction_ids),
             primitive_group_ids=repeat(self.primitive_group_ids),
-            view_type_ids=repeat(self.view_type_ids),
-            view_mask=repeat(self.view_mask),
         )
 
 
@@ -243,8 +240,7 @@ class _GroupContext(nn.Module):
             return primitive_tokens
 
         output = primitive_tokens.clone()
-        batch_size = primitive_tokens.shape[0]
-        for batch_index in range(batch_size):
+        for batch_index in range(primitive_tokens.shape[0]):
             grouped = primitive_mask[batch_index] & (group_ids[batch_index] >= 0)
             if not torch.any(grouped):
                 continue
@@ -264,7 +260,7 @@ class _GroupContext(nn.Module):
 
 
 class PrimitiveEncoder(nn.Module):
-    """Encode padded primitives and emit fixed-K Qwen-width tokens per active view."""
+    """Encode a flat primitive set into one fixed-size latent sequence per sample."""
 
     def __init__(
         self,
@@ -282,7 +278,9 @@ class PrimitiveEncoder(nn.Module):
             config.primitive_encoder_layers,
         )
         self.primitive_type_embedding = nn.Embedding(config.num_primitive_types, dim)
-        self.view_embedding = nn.Embedding(len(config.view_types), dim)
+        self.view_direction_embedding = nn.Embedding(
+            len(config.view_directions), dim
+        )
         self.local_feature_norm = nn.LayerNorm(dim)
         self.group_context = _GroupContext(dim) if config.use_group_context else None
         self.resampler = PerceiverResampler(
@@ -297,14 +295,7 @@ class PrimitiveEncoder(nn.Module):
         nn.init.normal_(self.primitive_modality_embedding, std=dim**-0.5)
 
     def reset_parameters(self) -> None:
-        """Initialize every added parameter after loading a base Qwen checkpoint.
-
-        Hugging Face constructs models under a no-initialization context during
-        ``from_pretrained``. Standard missing ``Linear`` weights are recovered by
-        its loader, but compound PyTorch modules and bare learned parameters are
-        not guaranteed to be. The base-checkpoint factory calls this method only
-        after it has verified that every missing key belongs to this encoder.
-        """
+        """Initialize every added parameter after loading a base Qwen checkpoint."""
         for module in self.modules():
             if isinstance(module, nn.MultiheadAttention):
                 module._reset_parameters()
@@ -322,14 +313,13 @@ class PrimitiveEncoder(nn.Module):
             std=self.config.primitive_dim**-0.5,
         )
 
-    def _validate_batch(self, batch: PrimitiveBatch) -> tuple[int, int, int, int]:
+    def _validate_batch(self, batch: PrimitiveBatch) -> tuple[int, int, int]:
         fields = {
             "sample_features": batch.sample_features,
             "sample_mask": batch.sample_mask,
             "primitive_mask": batch.primitive_mask,
             "primitive_type_ids": batch.primitive_type_ids,
-            "view_type_ids": batch.view_type_ids,
-            "view_mask": batch.view_mask,
+            "view_direction_ids": batch.view_direction_ids,
         }
         if batch.primitive_group_ids is not None:
             fields["primitive_group_ids"] = batch.primitive_group_ids
@@ -337,16 +327,16 @@ class PrimitiveEncoder(nn.Module):
             if not isinstance(value, torch.Tensor):
                 raise TypeError(f"{name} must be a torch.Tensor, got {type(value)}")
 
-        if batch.sample_features.ndim != 5:
+        if batch.sample_features.ndim != 4:
             raise ValueError(
-                "sample_features must have shape [B, V, N, S, C], got "
+                "sample_features must have shape [B, N, S, C], got "
                 f"{tuple(batch.sample_features.shape)}"
             )
-        batch_size, view_count, primitive_count, sample_count, feature_dim = (
+        batch_size, primitive_count, sample_count, feature_dim = (
             batch.sample_features.shape
         )
-        if min(batch_size, view_count, primitive_count, sample_count) <= 0:
-            raise ValueError("B, V, N, and S dimensions must all be positive")
+        if min(batch_size, primitive_count, sample_count) <= 0:
+            raise ValueError("B, N, and S dimensions must all be positive")
         if feature_dim != self.config.sample_feature_dim:
             raise ValueError(
                 f"expected sample feature dim {self.config.sample_feature_dim}, "
@@ -358,28 +348,23 @@ class PrimitiveEncoder(nn.Module):
             )
 
         expected_shapes = {
-            "sample_mask": (batch_size, view_count, primitive_count, sample_count),
-            "primitive_mask": (batch_size, view_count, primitive_count),
-            "primitive_type_ids": (batch_size, view_count, primitive_count),
-            "view_type_ids": (batch_size, view_count),
-            "view_mask": (batch_size, view_count),
+            "sample_mask": (batch_size, primitive_count, sample_count),
+            "primitive_mask": (batch_size, primitive_count),
+            "primitive_type_ids": (batch_size, primitive_count),
+            "view_direction_ids": (batch_size, primitive_count),
         }
         if batch.primitive_group_ids is not None:
-            expected_shapes["primitive_group_ids"] = (
-                batch_size,
-                view_count,
-                primitive_count,
-            )
+            expected_shapes["primitive_group_ids"] = (batch_size, primitive_count)
         for name, shape in expected_shapes.items():
             actual = getattr(batch, name)
             if actual.shape != shape:
                 raise ValueError(f"{name} must have shape {shape}, got {tuple(actual.shape)}")
 
-        for name in ("sample_mask", "primitive_mask", "view_mask"):
+        for name in ("sample_mask", "primitive_mask"):
             value = getattr(batch, name)
             if value.dtype != torch.bool:
                 raise TypeError(f"{name} must be a BoolTensor, got {value.dtype}")
-        for name in ("primitive_type_ids", "view_type_ids"):
+        for name in ("primitive_type_ids", "view_direction_ids"):
             value = getattr(batch, name)
             if value.dtype != torch.long:
                 raise TypeError(f"{name} must be a LongTensor, got {value.dtype}")
@@ -396,16 +381,13 @@ class PrimitiveEncoder(nn.Module):
         if len(devices) != 1:
             raise ValueError(f"all primitive tensors must share one device, got {devices}")
 
-        if torch.any(batch.primitive_mask & ~batch.view_mask.unsqueeze(-1)):
-            raise ValueError("absent view slots must not contain active primitives")
         if torch.any(batch.sample_mask & ~batch.primitive_mask.unsqueeze(-1)):
             raise ValueError("inactive primitive slots must not contain valid samples")
         active_sample_counts = batch.sample_mask.sum(dim=-1)
         if torch.any(batch.primitive_mask & (active_sample_counts == 0)):
             raise ValueError("every active primitive must contain at least one valid sample")
-        active_primitive_counts = batch.primitive_mask.sum(dim=-1)
-        if torch.any(batch.view_mask & (active_primitive_counts == 0)):
-            raise ValueError("every active primitive view must contain at least one primitive")
+        if not torch.all(batch.primitive_mask.any(dim=-1)):
+            raise ValueError("every sample must contain at least one active primitive")
 
         positions = torch.arange(sample_count, device=batch.sample_mask.device)
         prefix_mask = positions < active_sample_counts.unsqueeze(-1)
@@ -420,34 +402,24 @@ class PrimitiveEncoder(nn.Module):
                 "active primitive_type_ids must lie in [0, "
                 f"{self.config.num_primitive_types})"
             )
-        active_views = batch.view_type_ids[batch.view_mask]
-        if torch.any(active_views < 0) or torch.any(
-            active_views >= len(self.config.view_types)
+        active_directions = batch.view_direction_ids[batch.primitive_mask]
+        if torch.any(active_directions < 0) or torch.any(
+            active_directions >= len(self.config.view_directions)
         ):
             raise ValueError(
-                f"active view_type_ids must lie in [0, {len(self.config.view_types)})"
+                "active view_direction_ids must lie in [0, "
+                f"{len(self.config.view_directions)})"
             )
-        for sample_index in range(batch_size):
-            ids = batch.view_type_ids[sample_index][batch.view_mask[sample_index]]
-            if ids.numel() != torch.unique(ids).numel():
-                raise ValueError(
-                    f"active view_type_ids must be unique within sample {sample_index}"
-                )
         if batch.primitive_group_ids is not None and torch.any(
             batch.primitive_group_ids < -1
         ):
             raise ValueError("primitive_group_ids must be -1 or non-negative")
-        return batch_size, view_count, primitive_count, sample_count
+        return batch_size, primitive_count, sample_count
 
     def encode_local(self, batch: PrimitiveBatch) -> torch.Tensor:
-        """Return masked local primitive tokens with shape ``[B, V, N, D]``."""
-        batch_size, view_count, primitive_count, _ = self._validate_batch(batch)
+        """Return masked local primitive tokens with shape ``[B, N, D]``."""
+        batch_size, primitive_count, _ = self._validate_batch(batch)
         dim = self.config.primitive_dim
-        output = batch.sample_features.new_zeros(
-            (batch_size, view_count, primitive_count, dim)
-        )
-        if not torch.any(batch.primitive_mask):
-            return output
 
         active_features = batch.sample_features[batch.primitive_mask]
         active_sample_mask = batch.sample_mask[batch.primitive_mask]
@@ -455,13 +427,17 @@ class PrimitiveEncoder(nn.Module):
         primitive_types = self.primitive_type_embedding(
             batch.primitive_type_ids[batch.primitive_mask]
         )
-        expanded_views = batch.view_type_ids.unsqueeze(-1).expand_as(
-            batch.primitive_type_ids
+        directions = self.view_direction_embedding(
+            batch.view_direction_ids[batch.primitive_mask]
         )
-        views = self.view_embedding(expanded_views[batch.primitive_mask])
-        output[batch.primitive_mask] = self.local_feature_norm(
-            geometry + primitive_types + views
+        active_tokens = self.local_feature_norm(
+            geometry + primitive_types + directions
         )
+        # LayerNorm may intentionally run in float32 under autocast even when
+        # sampled inputs and module parameters are bf16. Allocate from the
+        # fused result so masked assignment never mixes those dtypes.
+        output = active_tokens.new_zeros((batch_size, primitive_count, dim))
+        output[batch.primitive_mask] = active_tokens
         return output
 
     def apply_group_context(
@@ -478,57 +454,32 @@ class PrimitiveEncoder(nn.Module):
             batch.primitive_group_ids,
         )
 
-    def resample_views(
+    def resample_global(
         self,
         primitive_tokens: torch.Tensor,
         batch: PrimitiveBatch,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return ``[active_views, Kp, D]`` latents in canonical sample/view order."""
-        tokens: list[torch.Tensor] = []
-        masks: list[torch.Tensor] = []
-        view_ids: list[torch.Tensor] = []
-        active_view_counts: list[int] = []
-
-        for batch_index in range(batch.sample_features.shape[0]):
-            slots = torch.nonzero(batch.view_mask[batch_index], as_tuple=False).squeeze(-1)
-            if slots.numel():
-                semantic_ids = batch.view_type_ids[batch_index, slots]
-                slots = slots[torch.argsort(semantic_ids)]
-                for slot in slots:
-                    tokens.append(primitive_tokens[batch_index, slot])
-                    masks.append(batch.primitive_mask[batch_index, slot])
-                    view_ids.append(batch.view_type_ids[batch_index, slot])
-            active_view_counts.append(int(slots.numel()))
-
-        counts = torch.tensor(
-            active_view_counts,
+        """Return one ``[K, D]`` global latent sequence for every batch item."""
+        latents = self.resampler(primitive_tokens, batch.primitive_mask)
+        counts = torch.full(
+            (batch.batch_size,),
+            self.config.num_primitive_latents,
             dtype=torch.long,
             device=batch.sample_features.device,
-        ) * self.config.num_primitive_latents
-        if not tokens:
-            return primitive_tokens.new_empty(
-                (0, self.config.num_primitive_latents, self.config.primitive_dim)
-            ), counts
-
-        token_batch = torch.stack(tokens)
-        mask_batch = torch.stack(masks)
-        view_id_batch = torch.stack(view_ids)
-        view_embeddings = self.view_embedding(view_id_batch)
-        latents = self.resampler(token_batch, mask_batch, view_embeddings)
+        )
         return latents, counts
 
     def forward(self, batch: PrimitiveBatch) -> tuple[torch.Tensor, torch.Tensor]:
         local_tokens = self.encode_local(batch)
         grouped_tokens = self.apply_group_context(local_tokens, batch)
-        view_latents, counts = self.resample_views(grouped_tokens, batch)
-        if view_latents.numel() == 0:
-            return view_latents.new_empty((0, self.output_dim)), counts
-        view_latents = view_latents + self.primitive_modality_embedding
-        projected = self.output_projection(view_latents)
+        global_latents, counts = self.resample_global(grouped_tokens, batch)
+        global_latents = global_latents + self.primitive_modality_embedding
+        projected = self.output_projection(global_latents)
         return projected.reshape(-1, self.output_dim), counts
 
 
 __all__ = [
+    "DEFAULT_VIEW_DIRECTIONS",
     "PrimitiveBatch",
     "PrimitiveEncoder",
     "PrimitiveEncoderConfig",

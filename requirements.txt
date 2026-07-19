@@ -1,18 +1,20 @@
 accelerate
-build123d
-cadquery
 cairosvg
 datasets
 einops
 ezdxf
 hatchling
 huggingface_hub
+hydra-core
+hydra-colorlog
 jsonschema
 manifold3d
 opencv-python-headless
 peft
 Pillow
+pytest
 pyyaml
+rich
 rootutils
 safetensors
 scipy
@@ -20,3 +22,4 @@ tensorboard
 tqdm
 transformers
 trimesh
+wandb

@@ -50,7 +50,7 @@ class PerceiverResamplerTest(unittest.TestCase):
         self.assertIsNotNone(tokens.grad)
         self.assertGreater(tokens.grad.abs().sum().item(), 0.0)
 
-    def test_rejects_an_empty_active_view(self) -> None:
+    def test_rejects_an_empty_sample(self) -> None:
         with self.assertRaisesRegex(ValueError, "at least one primitive"):
             self.model(
                 torch.randn(1, 3, 16),

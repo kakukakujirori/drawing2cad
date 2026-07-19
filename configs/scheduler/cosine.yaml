@@ -1,0 +1,5 @@
+name: cosine
+warmup_ratio: 0.03
+warmup_steps: null
+num_cycles: 0.5
+

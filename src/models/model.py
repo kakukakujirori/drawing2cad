@@ -217,8 +217,8 @@ class Drawing2CADQwen3VLForConditionalGeneration(Qwen3VLForConditionalGeneration
         if not torch.equal(actual_counts, primitive_latent_counts):
             raise ValueError(
                 "primitive placeholder count mismatch: primitive_token_mask contains "
-                f"{actual_counts.tolist()} positions per sample, but active primitive "
-                f"views require {primitive_latent_counts.tolist()}"
+                f"{actual_counts.tolist()} positions per sample, but global primitive "
+                f"latents require {primitive_latent_counts.tolist()}"
             )
 
         if attention_mask is None:

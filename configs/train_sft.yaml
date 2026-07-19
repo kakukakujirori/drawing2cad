@@ -1,0 +1,46 @@
+defaults:
+  - data: z2c
+  - model: qwen3vl_primitive_lora
+  - optimizer: adamw
+  - scheduler: cosine
+  - logger: wandb
+  - checkpoint: topk
+  - hydra: default
+  - _self_
+  - debug: null
+
+task_name: train_sft
+seed: 42
+
+paths:
+  project_root: ${oc.env:DRAWING2CAD_ROOT,${hydra:runtime.cwd}}
+  log_root: ${paths.project_root}/logs/${task_name}
+  output_dir: ${hydra:runtime.output_dir}
+
+training:
+  max_steps: 1000
+  num_train_epochs: null
+  gradient_accumulation_steps: 8
+  mixed_precision: bf16
+  eval_every_steps: 100
+  save_every_steps: 100
+  log_every_steps: 1
+  max_grad_norm: 1.0
+  tokens_per_second: true
+  resume_from_latest: false
+  final_evaluation: true
+
+evaluation:
+  generation_enabled: true
+  generation_subset_size: 32
+  generation_seed: 42
+  generation_strategy: greedy
+  max_new_tokens: 1024
+  cadquery_timeout_seconds: 30.0
+  tessellation_tolerance: 0.1
+  volume_tolerance: 1.0e-6
+  voxel_resolution: 64
+  compute_normalized_iou: false
+  compute_chamfer: false
+  chamfer_points: 8192
+  predictions_dirname: val_predictions

@@ -1,0 +1,35 @@
+train_root: ${paths.project_root}/data/z2c_train
+val_root: ${paths.project_root}/data/z2c_val
+image_sources:
+  - style: isometric
+    directory: render_3d/hlg_perspective
+include_target: true
+strict_files: true
+scale_augmentation: false
+image_max_edge: null
+max_sequence_length: null
+
+dxf:
+  samples_per_primitive: 16
+  spline_flattening_distance_mm: 0.05
+  included_layers:
+    - "0"
+  include_visible: true
+  include_hidden: true
+  sheet_width_mm: 297.0
+  sheet_height_mm: 210.0
+  normalized_longest_side: 1.8
+  discard_outside_sheet: true
+  sheet_tolerance_mm: 1.0
+  view_bbox_tolerance_mm: 0.1
+  strict_entity_types: false
+
+train_max_samples: null
+val_max_samples: null
+train_batch_size: 1
+val_batch_size: 1
+num_workers: 0
+pin_memory: true
+persistent_workers: false
+shuffle_train: true
+drop_last: false

@@ -1,0 +1,14 @@
+jsonl:
+  enabled: true
+  filename: metrics.jsonl
+
+wandb:
+  enabled: false
+  project: drawing2cad
+  entity: null
+  group: null
+  name: null
+  tags: []
+  mode: online
+  log_model: false
+

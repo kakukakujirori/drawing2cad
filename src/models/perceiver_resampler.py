@@ -1,4 +1,4 @@
-"""Per-view Perceiver resampling for variable-sized primitive sets."""
+"""Global Perceiver resampling for variable-sized primitive sets."""
 
 from __future__ import annotations
 
@@ -76,13 +76,13 @@ class PerceiverResampler(nn.Module):
 
     Args:
         dim: Primitive feature width.
-        num_latents: Number of output tokens per active view.
+        num_latents: Number of output tokens per sample.
         num_layers: Number of Perceiver blocks.
         num_heads: Attention head count.
         dropout: Attention and feed-forward dropout.
 
-    Inputs use ``True`` in ``primitive_mask`` for real primitives. Every row must
-    contain at least one real primitive; absent views must be removed by the caller.
+    Inputs use ``True`` in ``primitive_mask`` for real primitives. Every sample
+    must contain at least one real primitive.
     """
 
     def __init__(
@@ -121,17 +121,16 @@ class PerceiverResampler(nn.Module):
         self,
         primitive_tokens: torch.Tensor,
         primitive_mask: torch.Tensor,
-        view_embeddings: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if primitive_tokens.ndim != 3:
             raise ValueError(
-                "primitive_tokens must have shape [active_views, primitives, dim], "
+                "primitive_tokens must have shape [B, N, D], "
                 f"got {tuple(primitive_tokens.shape)}"
             )
-        active_views, primitive_count, dim = primitive_tokens.shape
+        batch_size, primitive_count, dim = primitive_tokens.shape
         if dim != self.dim:
             raise ValueError(f"expected primitive dim {self.dim}, got {dim}")
-        if primitive_mask.shape != (active_views, primitive_count):
+        if primitive_mask.shape != (batch_size, primitive_count):
             raise ValueError(
                 "primitive_mask must match the first two primitive token dimensions; "
                 f"got {tuple(primitive_mask.shape)}"
@@ -140,19 +139,12 @@ class PerceiverResampler(nn.Module):
             raise TypeError(
                 f"primitive_mask must be a BoolTensor, got {primitive_mask.dtype}"
             )
-        if active_views == 0:
+        if batch_size == 0:
             return primitive_tokens.new_empty((0, self.num_latents, self.dim))
         if not torch.all(primitive_mask.any(dim=-1)):
-            raise ValueError("every resampled view must contain at least one primitive")
+            raise ValueError("every resampled sample must contain at least one primitive")
 
-        latents = self.queries.unsqueeze(0).expand(active_views, -1, -1)
-        if view_embeddings is not None:
-            if view_embeddings.shape != (active_views, self.dim):
-                raise ValueError(
-                    f"view_embeddings must have shape {(active_views, self.dim)}, "
-                    f"got {tuple(view_embeddings.shape)}"
-                )
-            latents = latents + view_embeddings.unsqueeze(1)
+        latents = self.queries.unsqueeze(0).expand(batch_size, -1, -1)
 
         for layer in self.layers:
             latents = layer(latents, primitive_tokens, primitive_mask)

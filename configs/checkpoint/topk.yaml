@@ -1,0 +1,9 @@
+monitor: val/mean_iou_including_failures
+mode: max
+top_k: 3
+root_dirname: checkpoints
+latest_dirname: latest
+topk_dirname: topk
+index_filename: topk.json
+filename: "step_{step:08d}-{monitor_name}_{monitor_value:.4f}"
+

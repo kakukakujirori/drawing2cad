@@ -1,4 +1,4 @@
-"""Qwen3-VL prompt and tensor collation for drawing-to-CAD samples."""
+"""Pure batching for preprocessed Drawing2CAD samples."""
 
 from __future__ import annotations
 
@@ -7,23 +7,20 @@ from typing import Any, Sequence
 
 import torch
 
-from src.models import PrimitiveBatch, PrimitiveEncoderConfig
+from src.models import PrimitiveBatch
 
-from .dataset import Drawing2CADSample
-
-
-DEFAULT_INSTRUCTION = (
-    "Generate CadQuery Python code for the depicted part and assign the final "
-    "CadQuery object to `result`."
-)
+from .dxf import DXF_PRIMITIVE_TYPES
+from .metadata import SampleMetadata, VIEW_DIRECTIONS
+from .preprocessing import PreparedDrawing2CADSample
 
 
 @dataclass(frozen=True)
 class Drawing2CADBatch:
-    """DataLoader output with model kwargs separated from sample metadata."""
+    """DataLoader output with model kwargs and non-model sample metadata."""
 
     model_inputs: dict[str, Any]
     sample_ids: tuple[str, ...]
+    sample_metadata: tuple[SampleMetadata, ...]
 
     def to(self, device: torch.device | str) -> "Drawing2CADBatch":
         moved: dict[str, Any] = {}
@@ -34,271 +31,261 @@ class Drawing2CADBatch:
                 moved[key] = value.to(device)
             else:
                 moved[key] = value
-        return Drawing2CADBatch(model_inputs=moved, sample_ids=self.sample_ids)
-
-
-def _find_last_subsequence(sequence: torch.Tensor, pattern: Sequence[int]) -> int:
-    pattern_length = len(pattern)
-    if pattern_length == 0:
-        raise ValueError("assistant prefix token pattern must not be empty")
-    pattern_tensor = torch.tensor(pattern, dtype=sequence.dtype, device=sequence.device)
-    for start in range(sequence.numel() - pattern_length, -1, -1):
-        if torch.equal(sequence[start : start + pattern_length], pattern_tensor):
-            return start
-    return -1
+        return Drawing2CADBatch(
+            model_inputs=moved,
+            sample_ids=self.sample_ids,
+            sample_metadata=self.sample_metadata,
+        )
 
 
 class Drawing2CADCollator:
-    """Create native Qwen image inputs plus padded :class:`PrimitiveBatch`.
+    """Pad/stack prepared tensors without constructing sample semantics."""
 
-    Primitive placeholders use the processor tokenizer's existing pad token in
-    attended prompt positions. Their identity is immaterial because the model
-    overwrites those embeddings; using an existing token avoids resizing Qwen's
-    vocabulary. Right-padding occurrences are excluded by ``attention_mask``.
-    """
+    _PAD_VALUES = {
+        "attention_mask": 0,
+        "mm_token_type_ids": 0,
+        "primitive_token_mask": False,
+        "labels": -100,
+    }
+    _VISION_CONCAT_KEYS = (
+        "pixel_values",
+        "image_grid_thw",
+        "pixel_values_videos",
+        "video_grid_thw",
+    )
 
-    def __init__(
+    def __init__(self, pad_token_id: int, *, padding_side: str = "right") -> None:
+        if not isinstance(pad_token_id, int) or pad_token_id < 0:
+            raise ValueError("pad_token_id must be a non-negative integer")
+        if padding_side not in {"left", "right"}:
+            raise ValueError("padding_side must be 'left' or 'right'")
+        self.pad_token_id = pad_token_id
+        self.padding_side = padding_side
+
+    def _pad_sequences(
         self,
-        processor,
-        primitive_config: PrimitiveEncoderConfig,
-        *,
-        instruction: str = DEFAULT_INSTRUCTION,
-        include_labels: bool = True,
-        max_length: int | None = None,
-    ) -> None:
-        if not hasattr(processor, "tokenizer"):
-            raise TypeError("processor must expose a tokenizer")
-        tokenizer = processor.tokenizer
-        if tokenizer.pad_token_id is None or tokenizer.pad_token is None:
-            raise ValueError("processor tokenizer must define a pad token")
-        if "drawing" not in primitive_config.view_types:
-            raise ValueError("primitive view vocabulary must contain 'drawing'")
-        if not instruction.strip():
-            raise ValueError("instruction must not be empty")
-        if max_length is not None and max_length <= 0:
-            raise ValueError("max_length must be positive when provided")
-
-        self.processor = processor
-        self.primitive_config = primitive_config
-        self.instruction = instruction
-        self.include_labels = include_labels
-        self.max_length = max_length
-        self.drawing_view_id = primitive_config.view_types.index("drawing")
-        self.placeholder_token_id = tokenizer.pad_token_id
-        self.placeholder_text = (
-            tokenizer.pad_token * primitive_config.num_primitive_latents
+        samples: Sequence[PreparedDrawing2CADSample],
+    ) -> dict[str, torch.Tensor]:
+        keys = ("input_ids", *self._PAD_VALUES)
+        label_presence = ["labels" in sample.model_inputs for sample in samples]
+        if any(label_presence) and not all(label_presence):
+            raise ValueError("a batch cannot mix labelled and unlabelled samples")
+        active_keys = keys if all(label_presence) else keys[:-1]
+        max_length = max(
+            int(sample.model_inputs["input_ids"].numel()) for sample in samples
         )
-        self.assistant_prefix_ids = tokenizer.encode(
-            "<|im_start|>assistant\n",
-            add_special_tokens=False,
-        )
-
-    def _conversation(self, sample: Drawing2CADSample) -> list[dict[str, Any]]:
-        content: list[dict[str, Any]] = [
-            {
-                "type": "text",
-                "text": (
-                    "drawing view vector primitives:\n"
-                    f"{self.placeholder_text}\n"
-                ),
-            }
-        ]
-        for style, image in zip(sample.image_styles, sample.images, strict=True):
-            content.extend(
-                [
-                    {
-                        "type": "text",
-                        "text": f"isometric view image ({style}):\n",
-                    },
-                    {"type": "image", "image": image},
-                ]
+        output: dict[str, torch.Tensor] = {}
+        for key in active_keys:
+            tensors = [sample.model_inputs[key] for sample in samples]
+            for sample, tensor in zip(samples, tensors, strict=True):
+                if tensor.ndim != 1:
+                    raise ValueError(
+                        f"sample {sample.sample_id} input {key!r} must have shape [T], "
+                        f"got {tuple(tensor.shape)}"
+                    )
+            pad_value = (
+                self.pad_token_id if key == "input_ids" else self._PAD_VALUES[key]
             )
-        content.append({"type": "text", "text": self.instruction})
-        conversation: list[dict[str, Any]] = [
-            {"role": "user", "content": content}
-        ]
-        if self.include_labels:
-            if sample.target_code is None:
-                raise ValueError(
-                    f"sample {sample.sample_id} has no target code but labels are enabled"
-                )
-            conversation.append(
-                {"role": "assistant", "content": sample.target_code}
+            padded = tensors[0].new_full(
+                (len(samples), max_length), pad_value
             )
-        return conversation
+            for batch_index, tensor in enumerate(tensors):
+                length = tensor.numel()
+                if self.padding_side == "right":
+                    padded[batch_index, :length] = tensor
+                else:
+                    padded[batch_index, max_length - length :] = tensor
+            output[key] = padded
+        return output
 
+    @staticmethod
     def _collate_primitives(
-        self,
-        samples: Sequence[Drawing2CADSample],
+        samples: Sequence[PreparedDrawing2CADSample],
     ) -> PrimitiveBatch:
         batch_size = len(samples)
         max_primitives = max(sample.primitives.num_primitives for sample in samples)
-        sample_count = samples[0].primitives.sample_features.shape[1]
+        max_sample_count = max(
+            sample.primitives.sample_features.shape[1] for sample in samples
+        )
         feature_dim = samples[0].primitives.sample_features.shape[2]
-        if feature_dim != self.primitive_config.sample_feature_dim:
-            raise ValueError(
-                f"dataset sample feature dim {feature_dim} does not match model config "
-                f"{self.primitive_config.sample_feature_dim}"
-            )
 
         features = torch.zeros(
             batch_size,
-            1,
             max_primitives,
-            sample_count,
+            max_sample_count,
             feature_dim,
             dtype=torch.float32,
         )
         sample_mask = torch.zeros(
             batch_size,
-            1,
             max_primitives,
-            sample_count,
+            max_sample_count,
             dtype=torch.bool,
         )
         primitive_mask = torch.zeros(
-            batch_size, 1, max_primitives, dtype=torch.bool
+            batch_size, max_primitives, dtype=torch.bool
         )
         primitive_type_ids = torch.full(
-            (batch_size, 1, max_primitives), -1, dtype=torch.long
+            (batch_size, max_primitives), -1, dtype=torch.long
         )
-        primitive_group_ids = torch.full_like(primitive_type_ids, -1)
-        view_type_ids = torch.full((batch_size, 1), self.drawing_view_id, dtype=torch.long)
-        view_mask = torch.ones(batch_size, 1, dtype=torch.bool)
+        view_direction_ids = torch.full_like(primitive_type_ids, -1)
+        any_groups = any(
+            sample.primitives.primitive_group_ids is not None for sample in samples
+        )
+        primitive_group_ids = (
+            torch.full_like(primitive_type_ids, -1) if any_groups else None
+        )
 
         for batch_index, sample in enumerate(samples):
             primitive_data = sample.primitives
             if primitive_data.sample_features.ndim != 3:
                 raise ValueError(
-                    f"sample {sample.sample_id} primitive features must have shape [N, S, C]"
+                    f"sample {sample.sample_id} primitive features must have shape "
+                    "[N,S,C]"
                 )
-            if primitive_data.sample_features.shape[1:] != (sample_count, feature_dim):
-                raise ValueError(
-                    "all samples in a batch must share samples_per_primitive and "
-                    "sample_feature_dim"
-                )
-            primitive_count = primitive_data.num_primitives
+            primitive_count, sample_count, current_feature_dim = (
+                primitive_data.sample_features.shape
+            )
             if primitive_count == 0:
                 raise ValueError(f"sample {sample.sample_id} contains no primitives")
+            if current_feature_dim != feature_dim:
+                raise ValueError(
+                    "all samples in a batch must share sample_feature_dim; "
+                    f"expected {feature_dim}, got {current_feature_dim} for "
+                    f"{sample.sample_id}"
+                )
+            expected_shape = (primitive_count,)
+            if primitive_data.primitive_type_ids.shape != expected_shape:
+                raise ValueError(
+                    f"sample {sample.sample_id} primitive_type_ids must have shape "
+                    f"{expected_shape}"
+                )
+            if primitive_data.view_direction_ids.shape != expected_shape:
+                raise ValueError(
+                    f"sample {sample.sample_id} view_direction_ids must have shape "
+                    f"{expected_shape}"
+                )
             if torch.any(primitive_data.primitive_type_ids < 0) or torch.any(
-                primitive_data.primitive_type_ids
-                >= self.primitive_config.num_primitive_types
+                primitive_data.primitive_type_ids >= len(DXF_PRIMITIVE_TYPES)
             ):
                 raise ValueError(
-                    f"sample {sample.sample_id} has primitive type IDs outside model config"
+                    f"sample {sample.sample_id} has invalid primitive type IDs"
                 )
-            features[batch_index, 0, :primitive_count] = (
-                primitive_data.sample_features
-            )
-            sample_mask[batch_index, 0, :primitive_count] = True
-            primitive_mask[batch_index, 0, :primitive_count] = True
-            primitive_type_ids[batch_index, 0, :primitive_count] = (
+            if torch.any(primitive_data.view_direction_ids < 0) or torch.any(
+                primitive_data.view_direction_ids >= len(VIEW_DIRECTIONS)
+            ):
+                raise ValueError(
+                    f"sample {sample.sample_id} has invalid view direction IDs"
+                )
+
+            features[
+                batch_index, :primitive_count, :sample_count
+            ] = primitive_data.sample_features
+            sample_mask[batch_index, :primitive_count, :sample_count] = True
+            primitive_mask[batch_index, :primitive_count] = True
+            primitive_type_ids[batch_index, :primitive_count] = (
                 primitive_data.primitive_type_ids
             )
+            view_direction_ids[batch_index, :primitive_count] = (
+                primitive_data.view_direction_ids
+            )
+            if primitive_group_ids is not None:
+                groups = primitive_data.primitive_group_ids
+                if groups is not None:
+                    if groups.shape != expected_shape:
+                        raise ValueError(
+                            f"sample {sample.sample_id} primitive_group_ids must have "
+                            f"shape {expected_shape}"
+                        )
+                    primitive_group_ids[batch_index, :primitive_count] = groups
 
         return PrimitiveBatch(
             sample_features=features,
             sample_mask=sample_mask,
             primitive_mask=primitive_mask,
             primitive_type_ids=primitive_type_ids,
+            view_direction_ids=view_direction_ids,
             primitive_group_ids=primitive_group_ids,
-            view_type_ids=view_type_ids,
-            view_mask=view_mask,
         )
 
-    def _build_labels(
+    def _concatenate_vision_inputs(
         self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, int]:
-        full_labels = input_ids.clone()
-        answer_starts: list[int] = []
-        for batch_index in range(input_ids.shape[0]):
-            valid_length = int(attention_mask[batch_index].sum().item())
-            prefix_start = _find_last_subsequence(
-                input_ids[batch_index, :valid_length],
-                self.assistant_prefix_ids,
-            )
-            if prefix_start < 0:
+        samples: Sequence[PreparedDrawing2CADSample],
+    ) -> dict[str, torch.Tensor]:
+        output: dict[str, torch.Tensor] = {}
+        for key in self._VISION_CONCAT_KEYS:
+            presence = [key in sample.model_inputs for sample in samples]
+            if any(presence) and not all(presence):
                 raise ValueError(
-                    "could not locate assistant answer boundary in processor output"
+                    f"a batch cannot mix samples with and without vision input {key!r}"
                 )
-            answer_start = prefix_start + len(self.assistant_prefix_ids)
-            answer_starts.append(answer_start)
-            full_labels[batch_index, :answer_start] = -100
-            full_labels[batch_index, valid_length:] = -100
+            if not any(presence):
+                continue
+            values = [sample.model_inputs[key] for sample in samples]
+            if any(value.ndim == 0 for value in values):
+                raise ValueError(f"vision input {key!r} must have a concat dimension")
+            trailing_shape = values[0].shape[1:]
+            if any(value.shape[1:] != trailing_shape for value in values[1:]):
+                raise ValueError(
+                    f"vision input {key!r} has incompatible trailing dimensions"
+                )
+            output[key] = torch.cat(values, dim=0)
+        return output
 
-        sequence_length = input_ids.shape[1]
-        logits_to_keep = sequence_length - min(answer_starts) + 1
-        labels = torch.cat(
-            (
-                torch.full(
-                    (input_ids.shape[0], 1),
-                    -100,
-                    dtype=input_ids.dtype,
-                    device=input_ids.device,
-                ),
-                full_labels[:, sequence_length - logits_to_keep + 1 :],
-            ),
-            dim=1,
-        )
-        return labels, logits_to_keep
-
-    def __call__(self, samples: Sequence[Drawing2CADSample]) -> Drawing2CADBatch:
+    def __call__(
+        self,
+        samples: Sequence[PreparedDrawing2CADSample],
+    ) -> Drawing2CADBatch:
         if not samples:
             raise ValueError("cannot collate an empty batch")
-        conversations = [self._conversation(sample) for sample in samples]
-        encoded = self.processor.apply_chat_template(
-            conversations,
-            tokenize=True,
-            add_generation_prompt=not self.include_labels,
-            return_dict=True,
-            return_tensors="pt",
-            processor_kwargs={"padding": True},
-        )
-        model_inputs = dict(encoded)
-        required = {"input_ids", "attention_mask", "mm_token_type_ids"}
-        missing = required.difference(model_inputs)
-        if missing:
-            raise ValueError(f"processor output is missing required Qwen inputs: {missing}")
-        input_ids = model_inputs["input_ids"]
-        attention_mask = model_inputs["attention_mask"]
-        if self.max_length is not None and input_ids.shape[1] > self.max_length:
+        model_inputs: dict[str, Any] = self._pad_sequences(samples)
+        model_inputs.update(self._concatenate_vision_inputs(samples))
+
+        handled_keys = {
+            *model_inputs.keys(),
+            *self._VISION_CONCAT_KEYS,
+        }
+        unexpected = set().union(
+            *(set(sample.model_inputs) for sample in samples)
+        ).difference(handled_keys)
+        if unexpected:
             raise ValueError(
-                f"batch sequence length {input_ids.shape[1]} exceeds max_length="
-                f"{self.max_length}; examples are not truncated because that would "
-                "corrupt image/primitive placeholders or CadQuery targets"
+                "collator has no declared padding/stacking rule for processor "
+                f"inputs: {sorted(unexpected)}"
             )
 
-        primitive_token_mask = (
-            (input_ids == self.placeholder_token_id) & attention_mask.bool()
-        )
-        actual_counts = primitive_token_mask.sum(dim=-1)
-        expected_count = self.primitive_config.num_primitive_latents
-        if torch.any(actual_counts != expected_count):
-            raise ValueError(
-                "primitive placeholder construction failed: expected "
-                f"{expected_count} per sample, got {actual_counts.tolist()}"
-            )
-        if torch.any(model_inputs["mm_token_type_ids"][primitive_token_mask] != 0):
-            raise ValueError("processor assigned non-text modality to primitive placeholders")
-
-        model_inputs["primitive_batch"] = self._collate_primitives(samples)
-        model_inputs["primitive_token_mask"] = primitive_token_mask
-        if self.include_labels:
-            labels, logits_to_keep = self._build_labels(input_ids, attention_mask)
-            model_inputs["labels"] = labels
-            model_inputs["logits_to_keep"] = logits_to_keep
+        # Qwen can project only the completion window instead of materializing
+        # vocabulary logits for the full multimodal prompt.  Keep one ignored
+        # position immediately before the earliest supervised token so causal
+        # label shifting remains correct.  This is a batch-shape optimization:
+        # answer semantics were already encoded as -100 by the preprocessor.
+        if "labels" in model_inputs:
+            labels = model_inputs["labels"]
+            supervised_starts: list[int] = []
+            for batch_index in range(labels.shape[0]):
+                supervised = torch.nonzero(
+                    labels[batch_index] != -100, as_tuple=False
+                ).squeeze(-1)
+                if supervised.numel() == 0:
+                    raise ValueError(
+                        f"sample {samples[batch_index].sample_id} has no supervised "
+                        "tokens after batching"
+                    )
+                supervised_starts.append(int(supervised[0].item()))
+            window_start = min(supervised_starts) - 1
+            if window_start < 0:
+                raise ValueError("completion labels require a preceding causal position")
+            model_inputs["labels"] = labels[:, window_start:]
+            model_inputs["logits_to_keep"] = labels.shape[1] - window_start
         else:
             model_inputs["logits_to_keep"] = 1
+
+        model_inputs["primitive_batch"] = self._collate_primitives(samples)
         return Drawing2CADBatch(
             model_inputs=model_inputs,
             sample_ids=tuple(sample.sample_id for sample in samples),
+            sample_metadata=tuple(sample.metadata for sample in samples),
         )
 
 
-__all__ = [
-    "DEFAULT_INSTRUCTION",
-    "Drawing2CADBatch",
-    "Drawing2CADCollator",
-]
+__all__ = ["Drawing2CADBatch", "Drawing2CADCollator"]
