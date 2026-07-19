@@ -28,8 +28,8 @@ train_max_samples: null
 val_max_samples: null
 train_batch_size: 1
 val_batch_size: 1
-num_workers: 0
+num_workers: 8
 pin_memory: true
-persistent_workers: false
+persistent_workers: true
 shuffle_train: true
 drop_last: false

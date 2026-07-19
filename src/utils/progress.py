@@ -229,6 +229,16 @@ class RichEpochProgressBar:
         current.update({str(key): str(value) for key, value in metrics.items()})
         self._progress.update(self._task_id, metrics=current)
 
+    def log_line(self, message: str) -> None:
+        """Print a persistent line, coordinated with the live progress bar.
+
+        Rich renders this above the transient bar and keeps it on screen, so
+        periodic validation results survive even though the epoch bar itself is
+        erased. Callers must invoke this on the main process only.
+        """
+
+        self._progress.console.print(message)
+
     def refresh(self) -> None:
         if self._started:
             self._progress.refresh()

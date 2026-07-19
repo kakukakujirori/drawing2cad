@@ -87,7 +87,9 @@ We use the [Zero-to-CAD](https://huggingface.co/datasets/ADSKAILab/Zero-To-CAD-1
 ## DXF + raster -> CadQuery SFT
 
 ```bash
-python src/train_sft.py
+accelerate launch \
+  --num_processes 2 \ # GPU num
+  src/train_sft.py
 ```
 
 Runs are written to `logs/train_sft/<yyyy-mm-dd_hh-mm-ss>/`.
@@ -96,9 +98,10 @@ Resume an interrupted run into the same directory with its original planned
 step limit:
 
 ```bash
-conda run -n drawing2cad python src/train_sft.py \
-  training.resume_from_latest=true training.max_steps=<ORIGINAL_MAX_STEPS> \
-  hydra.run.dir=logs/train_sft/<RUN_DIRECTORY>
+python src/train_sft.py \
+    training.resume_from_latest=true \
+    training.max_steps=<ORIGINAL_MAX_STEPS> \
+    hydra.run.dir=logs/train_sft/<RUN_DIRECTORY>
 ```
 
 Resume restores the saved scheduler as well as model/optimizer state.

@@ -32,6 +32,7 @@ class CadExecutionResult:
     is_valid: bool = False
     volume: float = 0.0
     valid: bool = False
+    step_ok: bool = False
     error: str | None = None
 
     @classmethod
@@ -42,6 +43,7 @@ class CadExecutionResult:
             is_valid=bool(payload.get("is_valid", False)),
             volume=float(payload.get("volume", 0.0)),
             valid=bool(payload.get("valid", False)),
+            step_ok=bool(payload.get("step_ok", False)),
             error=None if payload.get("error") is None else str(payload["error"]),
         )
 
@@ -82,6 +84,7 @@ def _execute_worker(
     source: str,
     child: Connection,
     mesh_output_path: str | None,
+    step_output_path: str | None,
     tessellation_tolerance: float,
     volume_tolerance: float,
 ) -> None:
@@ -124,6 +127,15 @@ def _execute_worker(
             child.send(payload)
             return
         payload["has_result"] = True
+
+        # Export the recovered shape as STEP whenever a shape exists, so callers
+        # obtain a neutral CAD artifact even when the solid is not watertight.
+        if step_output_path is not None:
+            try:
+                shape.exportStep(step_output_path)
+                payload["step_ok"] = True
+            except BaseException:
+                payload["step_ok"] = False
 
         try:
             payload["is_valid"] = bool(shape.isValid())
@@ -181,6 +193,7 @@ def execute_cadquery(
     *,
     timeout_s: float = 120.0,
     mesh_output_path: str | Path | None = None,
+    step_output_path: str | Path | None = None,
     tessellation_tolerance: float = 0.1,
     volume_tolerance: float = 1e-6,
 ) -> CadExecutionResult:
@@ -189,6 +202,10 @@ def execute_cadquery(
     When ``mesh_output_path`` is supplied, a valid result is exported as a
     neutral NumPy vertex/face archive. The output must not already exist, which
     prevents a failed process from being mistaken for a successful stale result.
+
+    When ``step_output_path`` is supplied, any recovered shape (even a
+    non-watertight one) is exported as STEP; ``step_ok`` reports whether the
+    export succeeded.
 
     This is crash containment, not a security sandbox. Only evaluate completions
     from trusted datasets/models on an appropriately isolated machine.
@@ -210,6 +227,14 @@ def execute_cadquery(
             raise FileNotFoundError(
                 f"mesh output parent does not exist: {output.parent}"
             )
+    step_output = None if step_output_path is None else Path(step_output_path)
+    if step_output is not None:
+        if step_output.exists():
+            raise FileExistsError(f"step output already exists: {step_output}")
+        if not step_output.parent.is_dir():
+            raise FileNotFoundError(
+                f"step output parent does not exist: {step_output.parent}"
+            )
 
     context = mp.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
@@ -219,6 +244,7 @@ def execute_cadquery(
             source,
             child,
             None if output is None else str(output),
+            None if step_output is None else str(step_output),
             float(tessellation_tolerance),
             float(volume_tolerance),
         ),

@@ -8,7 +8,7 @@ from typing import Any
 import hydra
 import rootutils
 from accelerate import Accelerator
-from accelerate.utils import set_seed
+from accelerate.utils import DistributedDataParallelKwargs, set_seed
 from omegaconf import DictConfig, OmegaConf
 
 ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
@@ -59,14 +59,36 @@ def execute(config: Any) -> dict[str, float | int]:
     # Gradient accumulation is owned by run_sft's explicit group loop so each
     # optimizer step can be token-weighted; the Accelerator must not divide
     # losses or gate optimizer/scheduler stepping itself.
-    accelerator = Accelerator(mixed_precision=_mixed_precision(training))
+    #
+    # The primitive encoder's group-context branch is skipped for samples that
+    # contain no grouped primitives, so those parameters receive no gradient on
+    # steps whose batch happens to be ungrouped. Under DDP this is a
+    # data-dependent unused-parameter pattern (it varies per step, so a static
+    # graph would be unsafe), which requires find_unused_parameters. The flag
+    # only affects the multi-process DDP wrapper and is inert on a single GPU.
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(
+        mixed_precision=_mixed_precision(training),
+        kwargs_handlers=[ddp_kwargs],
+    )
     seed = int(cfg.get("seed", 42))
     set_seed(seed)
     resume = bool(training.get("resume_from_latest", False))
     paths: Mapping[str, Any] = cfg.get("paths", {})
+    # Hydra resolves ${now:...} independently per process, so under a multi-GPU
+    # `accelerate launch` each rank would otherwise pick its own timestamped run
+    # directory. Broadcast rank zero's directory so every rank agrees without the
+    # caller having to pin hydra.run.dir on the command line.
+    output_dir = paths.get("output_dir")
+    if accelerator.num_processes > 1:
+        from accelerate.utils import broadcast_object_list
+
+        payload = [output_dir]
+        broadcast_object_list(payload, from_process=0)
+        output_dir = payload[0]
     run_context = setup_run(
         cfg,
-        output_dir=paths.get("output_dir"),
+        output_dir=output_dir,
         project_root=paths.get("project_root"),
         is_main_process=accelerator.is_main_process,
         rank=accelerator.process_index,

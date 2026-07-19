@@ -1,7 +1,7 @@
 model_name_or_path: ADSKAILab/Zero-To-CAD-Qwen3-VL-2B
-attn_implementation: auto
+attn_implementation: flash_attention_2
 torch_dtype: bfloat16
-gradient_checkpointing: true
+gradient_checkpointing: false
 freeze_vision_encoder: true
 
 primitive:
@@ -13,7 +13,7 @@ primitive:
   resampler_layers: 2
   resampler_heads: 8
   dropout: 0.1
-  use_group_context: true
+  use_group_context: false
   view_directions:
     - front
     - top

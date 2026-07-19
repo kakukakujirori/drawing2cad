@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import json
 from pathlib import Path
 import random
 from typing import Any, Mapping
 
+from accelerate.utils import gather_object
 import torch
 from torch.utils.data import DataLoader
 
@@ -86,7 +88,19 @@ class CADGenerationEvaluator:
         # Sort after sampling so execution and artifacts have a stable order.
         return tuple(sorted(generator.sample(available, requested)))
 
-    def _loader(self) -> DataLoader:
+    def _shard_sample_ids(self) -> tuple[str, ...]:
+        """Return this rank's disjoint, deterministic slice of the subset.
+
+        A strided split keeps every rank's shard a contiguous stride of the
+        globally sorted ``sample_ids``, so the union is exactly the subset for
+        any world size and the per-rank sizes differ by at most one.
+        """
+
+        index = int(self.accelerator.process_index)
+        stride = int(self.accelerator.num_processes)
+        return tuple(self.sample_ids[index::stride])
+
+    def _loader(self, sample_ids: Sequence[str]) -> DataLoader:
         dxf_config = DXFPrimitiveConfig(**self.data_config["dxf"])
         image_sources = tuple(
             RasterImageSource(str(item["style"]), str(item["directory"]))
@@ -103,7 +117,7 @@ class CADGenerationEvaluator:
             dxf_parser=DXFPrimitiveParser(dxf_config),
             image_sources=image_sources,
             include_target=False,
-            sample_ids=self.sample_ids,
+            sample_ids=tuple(sample_ids),
             strict_files=bool(self.data_config.get("strict_files", True)),
             image_max_edge=self.data_config.get("image_max_edge"),
             transform=preprocessor,
@@ -128,15 +142,39 @@ class CADGenerationEvaluator:
             collate_fn=collator,
         )
 
-    def _generate_on_main(
-        self, model: torch.nn.Module, step: int
-    ) -> dict[str, float | int]:
+    def _evaluation_config(self) -> EvaluationConfig:
+        return EvaluationConfig(
+            timeout_s=float(
+                self.evaluation_config.get("cadquery_timeout_seconds", 30.0)
+            ),
+            tessellation_tolerance=float(
+                self.evaluation_config.get("tessellation_tolerance", 0.1)
+            ),
+            volume_tolerance=float(
+                self.evaluation_config.get("volume_tolerance", 1e-6)
+            ),
+            voxel_resolution=int(self.evaluation_config.get("voxel_resolution", 64)),
+            compute_normalized_iou=bool(
+                self.evaluation_config.get("compute_normalized_iou", False)
+            ),
+            compute_chamfer=bool(self.evaluation_config.get("compute_chamfer", False)),
+            chamfer_points=int(self.evaluation_config.get("chamfer_points", 8192)),
+            chamfer_seed=int(self.evaluation_config.get("generation_seed", 42)),
+        )
+
+    def _generate_codes(
+        self, model: torch.nn.Module, sample_ids: Sequence[str]
+    ) -> dict[str, str]:
+        """Greedily decode CadQuery source for one shard of sample IDs."""
+
+        if not sample_ids:
+            return {}
         unwrapped = self.accelerator.unwrap_model(model)
         was_training = unwrapped.training
         unwrapped.eval()
         codes: dict[str, str] = {}
         try:
-            for batch in self._loader():
+            for batch in self._loader(sample_ids):
                 if not isinstance(batch, Drawing2CADBatch):
                     raise TypeError("generation loader must emit Drawing2CADBatch")
                 inputs = batch.to(self.accelerator.device).model_inputs
@@ -159,14 +197,18 @@ class CADGenerationEvaluator:
                 codes.update(zip(batch.sample_ids, decoded, strict=True))
         finally:
             unwrapped.train(was_training)
+        return codes
 
-        step_dir = self.predictions_dir / f"step_{step:08d}"
+    def _write_and_evaluate(
+        self, codes: Mapping[str, str], sample_ids: Sequence[str], step_dir: Path
+    ) -> list[dict[str, object]]:
+        """Persist this shard's completions and score them against targets."""
+
         step_dir.mkdir(parents=True, exist_ok=True)
-        for sample_id in self.sample_ids:
+        for sample_id in sample_ids:
             (step_dir / f"{sample_id}.cadquery.py").write_text(
                 codes[sample_id], encoding="utf-8"
             )
-
         target_root = Path(self.data_config["val_root"]) / "target"
         items = [
             EvaluationItem(
@@ -174,49 +216,41 @@ class CADGenerationEvaluator:
                 prediction=codes[sample_id],
                 target_step_path=target_root / f"{sample_id}.step",
             )
-            for sample_id in self.sample_ids
+            for sample_id in sample_ids
         ]
-        config = EvaluationConfig(
-            timeout_s=float(
-                self.evaluation_config.get("cadquery_timeout_seconds", 30.0)
-            ),
-            tessellation_tolerance=float(
-                self.evaluation_config.get("tessellation_tolerance", 0.1)
-            ),
-            volume_tolerance=float(
-                self.evaluation_config.get("volume_tolerance", 1e-6)
-            ),
-            voxel_resolution=int(self.evaluation_config.get("voxel_resolution", 64)),
-            compute_normalized_iou=bool(
-                self.evaluation_config.get("compute_normalized_iou", False)
-            ),
-            compute_chamfer=bool(self.evaluation_config.get("compute_chamfer", False)),
-            chamfer_points=int(self.evaluation_config.get("chamfer_points", 8192)),
-            chamfer_seed=int(self.evaluation_config.get("generation_seed", 42)),
-        )
-        rows = evaluate_predictions(items, config=config)
-        metrics = aggregate_evaluation_metrics(rows, prefix="val")
-        _atomic_json(step_dir / "rows.json", rows)
-        _atomic_json(step_dir / "metrics.json", metrics)
-        _atomic_json(
-            step_dir / "error_histogram.json", evaluation_error_histogram(rows)
-        )
-        return metrics
+        return evaluate_predictions(items, config=self._evaluation_config())
 
     def __call__(self, model: torch.nn.Module, step: int) -> dict[str, float | int]:
-        metrics: dict[str, float | int] | None = None
+        # Every rank generates and scores a disjoint shard in parallel, then all
+        # ranks all-gather the per-sample rows. Because the gathered rows are
+        # re-sorted into a single deterministic order, every rank aggregates
+        # identical metrics without a separate broadcast, and the result is
+        # independent of world size.
+        step_dir = self.predictions_dir / f"step_{step:08d}"
         self.accelerator.wait_for_everyone()
-        if self.accelerator.is_main_process:
-            metrics = self._generate_on_main(model, step)
-        if self.accelerator.num_processes > 1:
-            from accelerate.utils import broadcast_object_list
+        shard_ids = self._shard_sample_ids()
+        codes = self._generate_codes(model, shard_ids)
+        shard_rows = self._write_and_evaluate(codes, shard_ids, step_dir)
 
-            payload: list[Any] = [metrics]
-            broadcast_object_list(payload, from_process=0)
-            metrics = payload[0]
+        gathered = gather_object(shard_rows)
+        rows: list[dict[str, object]] = []
+        for entry in gathered:
+            # gather_object concatenates list inputs, but flatten defensively in
+            # case an implementation nests each rank's list.
+            if isinstance(entry, list):
+                rows.extend(entry)
+            else:
+                rows.append(entry)
+        rows.sort(key=lambda row: str(row.get("id", "")))
+
+        metrics = aggregate_evaluation_metrics(rows, prefix="val")
+        if self.accelerator.is_main_process:
+            _atomic_json(step_dir / "rows.json", rows)
+            _atomic_json(step_dir / "metrics.json", metrics)
+            _atomic_json(
+                step_dir / "error_histogram.json", evaluation_error_histogram(rows)
+            )
         self.accelerator.wait_for_everyone()
-        if not isinstance(metrics, dict):
-            raise RuntimeError("rank zero did not broadcast generation metrics")
         return metrics
 
 

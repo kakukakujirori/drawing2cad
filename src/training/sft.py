@@ -291,6 +291,31 @@ def _log_train_step(
     metrics.log(values, step=step)
 
 
+def _print_evaluation(
+    progress_bar: RichEpochProgressBar,
+    values: Mapping[str, float | int],
+    *,
+    step: int,
+) -> None:
+    """Emit a compact, persistent validation line to the terminal."""
+
+    preferred = (
+        "val/loss",
+        "val/valid_rate",
+        "val/mean_iou_including_failures",
+        "val/median_iou",
+        "val/mean_iou_valid_only",
+    )
+    parts: list[str] = []
+    for key in preferred:
+        if key in values:
+            parts.append(f"{key.removeprefix('val/')}={float(values[key]):.4f}")
+    # Fall back to every scalar when the preferred set is absent (loss-only eval).
+    if not parts:
+        parts = [f"{key}={value}" for key, value in sorted(values.items())]
+    progress_bar.log_line(f"[eval @ step {step}] " + " ".join(parts))
+
+
 def _log_evaluation(
     router: MetricRouter,
     values: Mapping[str, float | int],
@@ -475,6 +500,10 @@ def run_sft(
                     step=state.global_step,
                 )
                 _log_evaluation(metrics, last_metrics, step=state.global_step)
+                if accelerator.is_main_process:
+                    _print_evaluation(
+                        progress_bar, last_metrics, step=state.global_step
+                    )
                 last_evaluated_step = state.global_step
                 if should_save:
                     checkpoint_io.set_progress(state)
@@ -513,6 +542,8 @@ def run_sft(
             step=state.global_step,
         )
         _log_evaluation(metrics, last_metrics, step=state.global_step)
+        if accelerator.is_main_process:
+            _print_evaluation(progress_bar, last_metrics, step=state.global_step)
     if needs_final_save:
         checkpoint_io.set_progress(state)
         accelerator.wait_for_everyone()
