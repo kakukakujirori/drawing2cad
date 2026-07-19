@@ -28,9 +28,18 @@ class PrimitiveEncoderConfig:
     dropout: float = 0.1
     use_group_context: bool = True
     view_directions: tuple[str, ...] = DEFAULT_VIEW_DIRECTIONS
+    # Sample-feature channels that follow the curve traversal direction (for
+    # example tangents); they are negated in the internally reversed copy used
+    # for reversal symmetrization.
+    oriented_feature_indices: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "view_directions", tuple(self.view_directions))
+        object.__setattr__(
+            self,
+            "oriented_feature_indices",
+            tuple(self.oriented_feature_indices),
+        )
         positive_fields = (
             "sample_feature_dim",
             "num_primitive_types",
@@ -61,10 +70,29 @@ class PrimitiveEncoderConfig:
             )
         if any(not isinstance(name, str) or not name for name in self.view_directions):
             raise ValueError("every view direction must be a non-empty string")
+        for index in self.oriented_feature_indices:
+            if (
+                not isinstance(index, int)
+                or isinstance(index, bool)
+                or not 0 <= index < self.sample_feature_dim
+            ):
+                raise ValueError(
+                    "oriented_feature_indices must be integers in "
+                    f"[0, {self.sample_feature_dim}), got "
+                    f"{self.oriented_feature_indices!r}"
+                )
+        if len(set(self.oriented_feature_indices)) != len(
+            self.oriented_feature_indices
+        ):
+            raise ValueError(
+                "oriented_feature_indices must be unique, got "
+                f"{self.oriented_feature_indices!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         output = asdict(self)
         output["view_directions"] = list(self.view_directions)
+        output["oriented_feature_indices"] = list(self.oriented_feature_indices)
         return output
 
     @classmethod
@@ -164,8 +192,18 @@ class _MaskedResidualConvBlock(nn.Module):
 class _CurveEncoder(nn.Module):
     """UV-Net-inspired shared 1D encoder with masked reversal symmetry."""
 
-    def __init__(self, input_dim: int, dim: int, num_layers: int) -> None:
+    def __init__(
+        self,
+        input_dim: int,
+        dim: int,
+        num_layers: int,
+        oriented_feature_indices: tuple[int, ...] = (),
+    ) -> None:
         super().__init__()
+        # Deliberately not a registered buffer: checkpoint loading materializes
+        # modules on the meta device and only checkpoint entries are restored,
+        # so a non-persistent buffer would come back as uninitialized memory.
+        self.oriented_feature_indices = tuple(oriented_feature_indices)
         self.input_projection = nn.Linear(input_dim, dim)
         self.blocks = nn.ModuleList(
             [_MaskedResidualConvBlock(dim) for _ in range(num_layers)]
@@ -218,6 +256,13 @@ class _CurveEncoder(nn.Module):
         reversed_features, reversed_mask = self.reverse_valid_samples(
             sample_features, sample_mask
         )
+        # A reversed traversal flips direction-following channels (tangents,
+        # signed curvature, centered arc position), so the internally reversed
+        # copy must flip them too or the two averaged halves would disagree.
+        if self.oriented_feature_indices:
+            signs = reversed_features.new_ones(reversed_features.shape[-1])
+            signs[list(self.oriented_feature_indices)] = -1.0
+            reversed_features = reversed_features * signs
         forward = self._encode_sequence(sample_features, sample_mask)
         backward = self._encode_sequence(reversed_features, reversed_mask)
         return 0.5 * (forward + backward)
@@ -280,6 +325,7 @@ class PrimitiveEncoder(nn.Module):
             config.sample_feature_dim,
             dim,
             config.primitive_encoder_layers,
+            oriented_feature_indices=config.oriented_feature_indices,
         )
         self.primitive_type_embedding = nn.Embedding(config.num_primitive_types, dim)
         self.view_direction_embedding = nn.Embedding(len(config.view_directions), dim)

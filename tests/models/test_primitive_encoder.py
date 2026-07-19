@@ -84,6 +84,78 @@ class PrimitiveEncoderTest(unittest.TestCase):
         reversed_output, _ = self.model(reversed_batch)
         torch.testing.assert_close(original, reversed_output)
 
+    def test_oriented_channels_flip_during_reversal_symmetrization(self) -> None:
+        config = PrimitiveEncoderConfig(
+            sample_feature_dim=2,
+            num_primitive_types=7,
+            primitive_dim=16,
+            num_primitive_latents=4,
+            primitive_encoder_layers=2,
+            resampler_layers=2,
+            resampler_heads=4,
+            dropout=0.0,
+            oriented_feature_indices=(1,),
+        )
+        torch.manual_seed(7)
+        model = PrimitiveEncoder(config, output_dim=32).eval()
+        batch = make_primitive_batch((5,))
+        flipped = batch.sample_features.clone()
+        for index in batch.primitive_mask.nonzero(as_tuple=False):
+            batch_index, primitive_index = index.tolist()
+            sample_count = int(batch.sample_mask[batch_index, primitive_index].sum())
+            flipped[batch_index, primitive_index, :sample_count] = (
+                batch.sample_features[
+                    batch_index, primitive_index, :sample_count
+                ].flip(0)
+            )
+
+        # An upstream re-traversal reverses sample order AND negates oriented
+        # channels; the encoder must be exactly invariant to that combination.
+        contract = flipped.clone()
+        contract[..., 1] = -contract[..., 1]
+        original, _ = model(batch)
+        contract_output, _ = model(
+            replace_primitive_batch(batch, sample_features=contract)
+        )
+        torch.testing.assert_close(original, contract_output)
+
+        # Reversing order without the negation is a different curve.
+        plain_output, _ = model(
+            replace_primitive_batch(batch, sample_features=flipped)
+        )
+        self.assertFalse(torch.allclose(original, plain_output))
+
+    def test_oriented_feature_indices_round_trip_and_validation(self) -> None:
+        config = PrimitiveEncoderConfig(
+            sample_feature_dim=4,
+            num_primitive_types=7,
+            primitive_dim=16,
+            num_primitive_latents=4,
+            primitive_encoder_layers=1,
+            resampler_layers=1,
+            resampler_heads=4,
+            dropout=0.0,
+            oriented_feature_indices=(2, 3),
+        )
+        self.assertEqual(config.oriented_feature_indices, (2, 3))
+        serialized = config.to_dict()
+        # JSON/YAML deliver lists; from_dict must coerce them back to a tuple.
+        self.assertEqual(serialized["oriented_feature_indices"], [2, 3])
+        restored = PrimitiveEncoderConfig.from_dict(serialized)
+        self.assertEqual(restored.oriented_feature_indices, (2, 3))
+        with self.assertRaisesRegex(ValueError, "oriented_feature_indices"):
+            PrimitiveEncoderConfig(
+                sample_feature_dim=4,
+                num_primitive_types=7,
+                primitive_dim=16,
+                num_primitive_latents=4,
+                primitive_encoder_layers=1,
+                resampler_layers=1,
+                resampler_heads=4,
+                dropout=0.0,
+                oriented_feature_indices=(4,),
+            )
+
     def test_padded_values_do_not_affect_output(self) -> None:
         batch = make_primitive_batch((2, 5))
         changed = batch.sample_features.clone()

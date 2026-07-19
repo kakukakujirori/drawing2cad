@@ -28,7 +28,19 @@ DXF_PRIMITIVE_TYPES = (
 DXF_PRIMITIVE_TYPE_TO_ID = {
     entity_type: index for index, entity_type in enumerate(DXF_PRIMITIVE_TYPES)
 }
-DXF_SAMPLE_FEATURE_NAMES = ("x", "y", "visibility")
+DXF_SAMPLE_FEATURE_NAMES = (
+    "x",
+    "y",
+    "visibility",
+    "tangent_x",
+    "tangent_y",
+    "curvature",
+    "arc_length_position",
+)
+# Channels that follow the traversal direction and must be negated whenever a
+# sample sequence is reversed (model-side reversal symmetrization relies on
+# this contract through PrimitiveEncoderConfig.oriented_feature_indices).
+DXF_ORIENTED_SAMPLE_FEATURE_INDICES = (3, 4, 5, 6)
 
 
 class DXFParseError(ValueError):
@@ -74,7 +86,9 @@ class DXFPrimitiveConfig:
         if self.view_bbox_tolerance_mm < 0:
             raise ValueError("view_bbox_tolerance_mm must be non-negative")
         if not self.include_visible and not self.include_hidden:
-            raise ValueError("at least one of visible or hidden entities must be enabled")
+            raise ValueError(
+                "at least one of visible or hidden entities must be enabled"
+            )
 
     @property
     def sample_feature_dim(self) -> int:
@@ -89,7 +103,7 @@ class DXFPrimitiveConfig:
 class DXFPrimitiveData:
     """Unpadded primitive tensors for one complete technical drawing sheet."""
 
-    sample_features: torch.FloatTensor  # [N, S, 3]
+    sample_features: torch.FloatTensor  # [N, S, len(DXF_SAMPLE_FEATURE_NAMES)]
     primitive_type_ids: torch.LongTensor  # [N]
     view_direction_ids: torch.LongTensor  # [N]
     entity_handles: tuple[str, ...]
@@ -110,6 +124,114 @@ def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(b[0] - a[0], b[1] - a[1])
 
 
+def _signed_menger_curvature(
+    previous: tuple[float, float],
+    current: tuple[float, float],
+    following: tuple[float, float],
+) -> float:
+    """Curvature of the circumcircle through three points, positive for a left
+    turn in traversal order. Exact for points sampled from a circular arc."""
+    a = _distance(previous, current)
+    b = _distance(current, following)
+    c = _distance(previous, following)
+    denominator = a * b * c
+    if denominator <= 1e-30:
+        return 0.0
+    cross = (current[0] - previous[0]) * (following[1] - current[1]) - (
+        current[1] - previous[1]
+    ) * (following[0] - current[0])
+    return 2.0 * cross / denominator
+
+
+def _sample_geometry(
+    points: Sequence[tuple[float, float]],
+) -> tuple[list[tuple[float, float]], list[float], list[float]]:
+    """Per-sample unit tangent, signed curvature, and centered arc position.
+
+    All values follow the traversal direction of ``points`` and are exactly
+    negated by reversing the sequence. Sequences whose first and last point
+    coincide are treated as closed and wrap across the seam, so the duplicated
+    endpoint carries the same tangent and curvature as the start.
+    """
+    count = len(points)
+    if count < 2:
+        raise DXFParseError("geometry features require at least two samples")
+    segment_lengths = [
+        _distance(points[index], points[index + 1]) for index in range(count - 1)
+    ]
+    total_length = sum(segment_lengths)
+    if total_length <= 1e-12:
+        raise DXFParseError("primitive has zero geometric length")
+    arc_positions = [-0.5]
+    cumulative = 0.0
+    for length in segment_lengths:
+        cumulative += length
+        arc_positions.append(cumulative / total_length - 0.5)
+
+    closed = count > 3 and _distance(points[0], points[-1]) < 1e-9
+    cycle = points[:-1] if closed else points
+
+    def neighbors(
+        index: int,
+    ) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
+        if closed:
+            wrapped = index % len(cycle)
+            return (
+                cycle[(wrapped - 1) % len(cycle)],
+                cycle[(wrapped + 1) % len(cycle)],
+            )
+        return (
+            points[index - 1] if index > 0 else None,
+            points[index + 1] if index < count - 1 else None,
+        )
+
+    tangents: list[tuple[float, float]] = []
+    curvatures: list[float | None] = []
+    for index in range(count):
+        current = points[index]
+        previous, following = neighbors(index)
+        candidate_chords = []
+        if previous is not None and following is not None:
+            candidate_chords.append(
+                (following[0] - previous[0], following[1] - previous[1])
+            )
+        if following is not None:
+            candidate_chords.append(
+                (following[0] - current[0], following[1] - current[1])
+            )
+        if previous is not None:
+            candidate_chords.append(
+                (current[0] - previous[0], current[1] - previous[1])
+            )
+        # Hairpins can zero the central chord; fall back to one-sided chords so
+        # the tangent stays finite.
+        tangent = (0.0, 0.0)
+        for chord in candidate_chords:
+            norm = math.hypot(chord[0], chord[1])
+            if norm > 1e-12:
+                tangent = (chord[0] / norm, chord[1] / norm)
+                break
+        tangents.append(tangent)
+        curvatures.append(
+            _signed_menger_curvature(previous, current, following)
+            if previous is not None and following is not None
+            else None
+        )
+    # Open endpoints copy the nearest interior curvature estimate.
+    interior = [value for value in curvatures if value is not None]
+    filled: list[float] = []
+    for index, value in enumerate(curvatures):
+        if value is not None:
+            filled.append(value)
+        elif not interior:
+            filled.append(0.0)
+        elif index == 0:
+            filled.append(interior[0])
+        else:
+            filled.append(interior[-1])
+    return tangents, filled, arc_positions
+
+
 def _deduplicate_neighbors(
     points: Iterable[tuple[float, float]],
     tolerance: float = 1e-10,
@@ -126,7 +248,10 @@ def _rotate_closed_to_canonical_start(
 ) -> list[tuple[float, float]]:
     """Choose a deterministic phase before closed-curve resampling."""
     unique_points = list(points)
-    if len(unique_points) > 1 and _distance(unique_points[0], unique_points[-1]) < 1e-10:
+    if (
+        len(unique_points) > 1
+        and _distance(unique_points[0], unique_points[-1]) < 1e-10
+    ):
         unique_points.pop()
     if not unique_points:
         return []
@@ -152,8 +277,7 @@ def _resample_polyline(
         raise DXFParseError("primitive degenerates to fewer than two distinct points")
 
     segment_lengths = [
-        _distance(points[index], points[index + 1])
-        for index in range(len(points) - 1)
+        _distance(points[index], points[index + 1]) for index in range(len(points) - 1)
     ]
     total_length = sum(segment_lengths)
     if total_length <= 1e-12:
@@ -161,9 +285,7 @@ def _resample_polyline(
 
     # Closed curves deliberately duplicate the canonical start at both ends.
     # This makes sequence reversal retain the same phase in the model encoder.
-    target_distances = [
-        total_length * index / (count - 1) for index in range(count)
-    ]
+    target_distances = [total_length * index / (count - 1) for index in range(count)]
     output: list[tuple[float, float]] = []
     segment_index = 0
     segment_start_distance = 0.0
@@ -262,7 +384,9 @@ def _dense_virtual_entity_points(
         start = float(entity.dxf.start_angle)
         span = (float(entity.dxf.end_angle) - start) % 360.0
         dense_count = max(8, math.ceil(count * 8 * span / 360.0))
-        angles = [start + span * index / (dense_count - 1) for index in range(dense_count)]
+        angles = [
+            start + span * index / (dense_count - 1) for index in range(dense_count)
+        ]
         return [_xy(point) for point in entity.vertices(angles)]
     if entity_type == "SPLINE":
         return [
@@ -342,11 +466,7 @@ class DXFPrimitiveParser:
                 linetype = "CONTINUOUS"
         return linetype.upper().startswith("HIDDEN")
 
-    def _normalize_point(
-        self,
-        point: tuple[float, float],
-        visibility: float,
-    ) -> tuple[float, float, float]:
+    def _normalize_xy(self, point: tuple[float, float]) -> tuple[float, float]:
         config = self.config
         scale = config.normalized_longest_side / max(
             config.sheet_width_mm,
@@ -355,8 +475,37 @@ class DXFPrimitiveParser:
         return (
             (point[0] - config.sheet_width_mm / 2.0) * scale,
             (point[1] - config.sheet_height_mm / 2.0) * scale,
-            visibility,
         )
+
+    def _sample_feature_rows(
+        self,
+        points: Sequence[tuple[float, float]],
+        visibility: float,
+    ) -> list[tuple[float, ...]]:
+        """Assemble the per-sample feature rows named by
+        ``DXF_SAMPLE_FEATURE_NAMES`` in one normalized coordinate frame.
+
+        The geometry is derived from the normalized points, so curvature is
+        already expressed in normalized units; ``log1p`` compresses its wide
+        dynamic range (a 1 mm-radius fillet reaches |curvature| ≈ 165) while
+        ``copysign`` keeps it an odd function of traversal direction.
+        """
+        normalized = [self._normalize_xy(point) for point in points]
+        tangents, curvatures, arc_positions = _sample_geometry(normalized)
+        return [
+            (
+                point[0],
+                point[1],
+                visibility,
+                tangent[0],
+                tangent[1],
+                math.copysign(math.log1p(abs(curvature)), curvature),
+                arc_position,
+            )
+            for point, tangent, curvature, arc_position in zip(
+                normalized, tangents, curvatures, arc_positions, strict=True
+            )
+        ]
 
     def _is_inside_sheet(
         self,
@@ -434,7 +583,7 @@ class DXFPrimitiveParser:
             )
         resolved_sample_id = sample_id or path.stem
 
-        features: list[list[tuple[float, float, float]]] = []
+        features: list[list[tuple[float, ...]]] = []
         type_ids: list[int] = []
         view_direction_ids: list[int] = []
         handles: list[str] = []
@@ -478,9 +627,7 @@ class DXFPrimitiveParser:
                 entity_type=entity_type,
             )
             visibility = -1.0 if hidden else 1.0
-            features.append(
-                [self._normalize_point(point, visibility) for point in points]
-            )
+            features.append(self._sample_feature_rows(points, visibility))
             type_ids.append(DXF_PRIMITIVE_TYPE_TO_ID[entity_type])
             view_direction_ids.append(view_direction_id)
             handles.append(entity_handle)
@@ -508,6 +655,7 @@ __all__ = [
     "DXFPrimitiveConfig",
     "DXFPrimitiveData",
     "DXFPrimitiveParser",
+    "DXF_ORIENTED_SAMPLE_FEATURE_INDICES",
     "DXF_PRIMITIVE_TYPES",
     "DXF_PRIMITIVE_TYPE_TO_ID",
     "DXF_SAMPLE_FEATURE_NAMES",

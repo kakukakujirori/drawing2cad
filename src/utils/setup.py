@@ -13,6 +13,8 @@ import socket
 import subprocess
 from typing import Any, Mapping
 
+import numpy as np
+from omegaconf import OmegaConf
 import torch
 import yaml
 
@@ -32,39 +34,16 @@ class RunContext:
     world_size: int
 
 
-def seed_everything(seed: int, *, deterministic: bool = False) -> None:
-    """Seed Python and PyTorch without silently changing backend policy."""
-
-    if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
-        raise ValueError(f"seed must be a non-negative integer, got {seed!r}")
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    if deterministic:
-        torch.use_deterministic_algorithms(True)
-
-
 def seed_worker(worker_id: int) -> None:
     """DataLoader ``worker_init_fn`` derived from PyTorch's worker seed."""
-
     del worker_id
     worker_seed = torch.initial_seed() % (2**32)
     random.seed(worker_seed)
-    try:
-        import numpy as np
-    except ImportError:
-        return
     np.random.seed(worker_seed)
 
 
 def _to_resolved_container(config: Any) -> Any:
-    try:
-        from omegaconf import OmegaConf
-    except ImportError:
-        OmegaConf = None  # type: ignore[assignment]
-    if OmegaConf is not None and OmegaConf.is_config(config):
+    if OmegaConf.is_config(config):
         return OmegaConf.to_container(config, resolve=True, enum_to_str=True)
     if isinstance(config, Mapping):
         return {
@@ -253,4 +232,4 @@ def setup_run(
     return context
 
 
-__all__ = ["RunContext", "seed_everything", "seed_worker", "setup_run"]
+__all__ = ["RunContext", "seed_worker", "setup_run"]

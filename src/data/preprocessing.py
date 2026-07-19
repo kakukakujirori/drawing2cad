@@ -94,8 +94,7 @@ class Drawing2CADPreprocessor:
             {
                 "type": "text",
                 "text": (
-                    "technical drawing vector primitives:\n"
-                    f"{self.placeholder_text}\n"
+                    f"technical drawing vector primitives:\n{self.placeholder_text}\n"
                 ),
             }
         ]
@@ -116,7 +115,7 @@ class Drawing2CADPreprocessor:
             if not sample.target_code.strip():
                 raise ValueError(f"sample {sample.sample_id} has an empty target")
             conversation.append(
-                {"role": "assistant", "content": sample.target_code}
+                {"role": "assistant", "content": sample.target_code.strip()}
             )
         return conversation
 
@@ -169,7 +168,9 @@ class Drawing2CADPreprocessor:
         attention_mask = model_inputs["attention_mask"]
         mm_token_type_ids = model_inputs["mm_token_type_ids"]
         if input_ids.ndim != 1 or attention_mask.shape != input_ids.shape:
-            raise ValueError("Qwen token tensors must have matching unbatched shape [T]")
+            raise ValueError(
+                "Qwen token tensors must have matching unbatched shape [T]"
+            )
         if mm_token_type_ids.shape != input_ids.shape:
             raise ValueError("mm_token_type_ids must have unbatched shape [T]")
         if self.max_length is not None and input_ids.numel() > self.max_length:
@@ -181,8 +182,8 @@ class Drawing2CADPreprocessor:
             )
 
         primitive_token_mask = (
-            (input_ids == self.placeholder_token_id) & attention_mask.bool()
-        )
+            input_ids == self.placeholder_token_id
+        ) & attention_mask.bool()
         actual_count = int(primitive_token_mask.sum().item())
         if actual_count != self.num_primitive_latents:
             raise ValueError(
@@ -196,9 +197,7 @@ class Drawing2CADPreprocessor:
         model_inputs["primitive_token_mask"] = primitive_token_mask
 
         if self.include_labels:
-            prefix_start = _find_last_subsequence(
-                input_ids, self.assistant_prefix_ids
-            )
+            prefix_start = _find_last_subsequence(input_ids, self.assistant_prefix_ids)
             if prefix_start < 0:
                 raise ValueError(
                     f"could not locate assistant answer boundary for sample "

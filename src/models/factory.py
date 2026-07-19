@@ -21,12 +21,6 @@ class SFTModelBundle:
     primitive_config: PrimitiveEncoderConfig
 
 
-def _mapping(value: Any, *, name: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{name} must be a mapping, got {type(value)}")
-    return dict(value)
-
-
 def _torch_dtype(name: str | torch.dtype) -> torch.dtype:
     if isinstance(name, torch.dtype):
         return name
@@ -74,23 +68,24 @@ def freeze_vision_encoder(model: torch.nn.Module) -> torch.nn.Module:
 
 
 def apply_language_lora(
-    model: torch.nn.Module, config: Mapping[str, Any]
+    model: torch.nn.Module, lora_config: Mapping[str, Any]
 ) -> torch.nn.Module:
-    lora = _mapping(config, name="model.lora")
-    if not bool(lora.get("enabled", True)):
+    if not bool(lora_config.get("enabled", True)):
         raise ValueError(
             "baseline SFT requires model.lora.enabled=true; full fine-tuning is "
             "intentionally unsupported"
         )
-    target_modules = tuple(str(value) for value in lora.get("target_modules", ()))
+    target_modules = tuple(
+        str(value) for value in lora_config.get("target_modules", ())
+    )
     if not target_modules:
         raise ValueError("model.lora.target_modules must not be empty")
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
-        r=int(lora.get("rank", lora.get("r", 16))),
-        lora_alpha=int(lora.get("alpha", 32)),
-        lora_dropout=float(lora.get("dropout", 0.05)),
-        bias=str(lora.get("bias", "none")),
+        r=int(lora_config.get("rank", lora_config.get("r", 16))),
+        lora_alpha=int(lora_config.get("alpha", 32)),
+        lora_dropout=float(lora_config.get("dropout", 0.05)),
+        bias=str(lora_config.get("bias", "none")),
         target_modules=list(target_modules),
         modules_to_save=["primitive_encoder"],
     )
@@ -114,11 +109,8 @@ def set_sft_train_mode(model: torch.nn.Module) -> None:
     vision_module(model).eval()
 
 
-def build_sft_model(config: Mapping[str, Any]) -> SFTModelBundle:
-    model_config = _mapping(config, name="model")
-    primitive_config = PrimitiveEncoderConfig(
-        **_mapping(model_config["primitive"], name="model.primitive")
-    )
+def build_sft_model(model_config: Mapping[str, Any]) -> SFTModelBundle:
+    primitive_config = PrimitiveEncoderConfig(**model_config["primitive"])
     model_name = str(model_config["model_name_or_path"])
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
     model = Drawing2CADQwen3VLForConditionalGeneration.from_qwen_pretrained(
@@ -128,11 +120,9 @@ def build_sft_model(config: Mapping[str, Any]) -> SFTModelBundle:
         dtype=_torch_dtype(model_config.get("torch_dtype", "bfloat16")),
     )
     if not bool(model_config.get("freeze_vision_encoder", True)):
-        raise ValueError("the baseline requires freeze_vision_encoder=true")
+        raise NotImplementedError("the baseline requires freeze_vision_encoder=true")
     freeze_vision_encoder(model)
-    model = apply_language_lora(
-        model, _mapping(model_config["lora"], name="model.lora")
-    )
+    model = apply_language_lora(model, model_config["lora"])
     freeze_vision_encoder(model)
     if bool(model_config.get("gradient_checkpointing", True)):
         model.gradient_checkpointing_enable()

@@ -4,7 +4,7 @@ from .checkpoint import CheckpointEntry, CheckpointManager
 from .logging import ExperimentLogger, JSONLMetricLogger, WandbMetricLogger
 from .metric_router import LoggedMetric, MetricRouter
 from .progress import RichEpochProgressBar
-from .setup import RunContext, seed_everything, seed_worker, setup_run
+from .setup import RunContext, seed_worker, setup_run
 
 __all__ = [
     "CheckpointEntry",
@@ -16,7 +16,6 @@ __all__ = [
     "RichEpochProgressBar",
     "RunContext",
     "WandbMetricLogger",
-    "seed_everything",
     "seed_worker",
     "setup_run",
 ]

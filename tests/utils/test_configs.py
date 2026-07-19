@@ -4,7 +4,7 @@ import unittest
 import yaml
 from hydra import compose, initialize_config_dir
 
-from src.data import DXFPrimitiveConfig
+from src.data import DXF_ORIENTED_SAMPLE_FEATURE_INDICES, DXFPrimitiveConfig
 from src.models import PrimitiveEncoderConfig
 
 
@@ -40,7 +40,7 @@ class TrainingConfigTest(unittest.TestCase):
     def test_data_and_primitive_configs_match_constructor_contracts(self) -> None:
         data = self._load("data/z2c_smoke.yaml")
         dxf = DXFPrimitiveConfig(**data["dxf"])
-        self.assertEqual(dxf.sample_feature_dim, 3)
+        self.assertEqual(dxf.sample_feature_dim, 7)
         self.assertFalse(data["scale_augmentation"])
         self.assertEqual(
             data["image_sources"],
@@ -56,6 +56,10 @@ class TrainingConfigTest(unittest.TestCase):
         self.assertEqual(primitive.view_directions, ("front", "top", "right"))
         self.assertEqual(primitive.sample_feature_dim, dxf.sample_feature_dim)
         self.assertEqual(primitive.num_primitive_types, dxf.num_primitive_types)
+        self.assertEqual(
+            primitive.oriented_feature_indices,
+            DXF_ORIENTED_SAMPLE_FEATURE_INDICES,
+        )
 
     def test_checkpoint_monitor_is_a_direct_log_key(self) -> None:
         checkpoint = self._load("checkpoint/topk.yaml")

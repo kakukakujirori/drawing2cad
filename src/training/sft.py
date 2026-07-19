@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -191,6 +193,21 @@ def _model_inputs(batch: Any, device: torch.device) -> dict[str, Any]:
     )
 
 
+def _accumulation_groups(loader: Any, group_size: int) -> Iterator[list[Any]]:
+    """Yield micro-batches in optimizer-step groups.
+
+    Token-weighted loss normalization needs every supervised-token count of a
+    group before the first backward, so the group is materialized up front.
+    """
+
+    iterator = iter(loader)
+    while True:
+        group = list(islice(iterator, group_size))
+        if not group:
+            return
+        yield group
+
+
 @torch.no_grad()
 def evaluate_loss(
     accelerator: Any,
@@ -231,7 +248,7 @@ def _log_train_step(
     *,
     accelerator: Any,
     step: int,
-    losses: Sequence[float],
+    loss_sum: float,
     optimizer: torch.optim.Optimizer,
     grad_norm: float | torch.Tensor | None,
     tokens: int,
@@ -239,9 +256,11 @@ def _log_train_step(
     include_tokens_per_second: bool,
 ) -> None:
     local = torch.tensor(
-        [sum(losses), len(losses)], device=accelerator.device, dtype=torch.float64
+        [loss_sum, float(tokens)], device=accelerator.device, dtype=torch.float64
     )
     reduced = accelerator.reduce(local, reduction="sum")
+    if reduced[1].item() <= 0:
+        raise ValueError("training log interval contains no supervised tokens")
     values: dict[str, Any] = {
         "train/loss": LoggedMetric(
             float((reduced[0] / reduced[1]).item()),
@@ -263,10 +282,8 @@ def _log_train_step(
             else grad_norm
         )
     if include_tokens_per_second and elapsed > 0:
-        token_tensor = torch.tensor(float(tokens), device=accelerator.device)
-        total_tokens = accelerator.reduce(token_tensor, reduction="sum")
         values["train/tokens_per_second"] = LoggedMetric(
-            float(total_tokens.item() / elapsed),
+            float(reduced[1].item() / elapsed),
             prog_bar=True,
             display_name="tok/s",
             format_spec=".1f",
@@ -329,12 +346,21 @@ def run_sft(
     set_train_mode: TrainModeSetter,
     progress: TrainingProgress | None = None,
     generation_evaluator: GenerationEvaluator | None = None,
+    dataloader_generator: torch.Generator | None = None,
+    dataloader_seed: int | None = None,
 ) -> dict[str, float | int]:
-    """Run SFT using components constructed by the application entrypoint."""
+    """Run SFT using components constructed by the application entrypoint.
+
+    Gradient accumulation is managed explicitly here rather than through
+    ``accelerator.accumulate`` so that each optimizer step minimizes the mean
+    cross entropy over every supervised token in its accumulation group across
+    all processes.  ``scheduler`` must be the raw (unprepared) scheduler; it is
+    advanced exactly once per optimizer step.
+    """
 
     state = progress if progress is not None else TrainingProgress()
-    accumulated_losses: list[float] = []
-    accumulated_tokens = 0
+    interval_loss_sum = 0.0
+    interval_tokens = 0
     interval_start = time.monotonic()
     last_metrics: dict[str, float | int] = {}
     last_evaluated_step: int | None = None
@@ -346,6 +372,11 @@ def run_sft(
     for epoch in range(state.epoch, schedule.num_epochs):
         if stop:
             break
+        if dataloader_generator is not None and dataloader_seed is not None:
+            # Draw each epoch's shuffle permutation from (seed, epoch) alone so
+            # a mid-epoch resume skips into the same permutation instead of one
+            # freshly drawn from the restored generator state.
+            dataloader_generator.manual_seed(dataloader_seed + epoch)
         active_loader = train_dataloader
         skip = state.batches_seen_in_epoch if epoch == state.epoch else 0
         if skip:
@@ -359,31 +390,61 @@ def run_sft(
             total_steps=schedule.steps_per_epoch,
             completed_steps=completed_epoch_steps,
         )
-        for relative_batch, batch in enumerate(active_loader):
-            batch_in_epoch = skip + relative_batch
-            inputs = _model_inputs(batch, accelerator.device)
-            labels = inputs.get("labels")
-            token_count = 0 if labels is None else int((labels != -100).sum().item())
-            with accelerator.accumulate(model):
-                outputs = model(**inputs, use_cache=False)
-                loss = outputs.loss
-                if loss is None or not torch.isfinite(loss):
-                    raise FloatingPointError("training produced a non-finite loss")
-                accelerator.backward(loss)
-                grad_norm = None
-                if accelerator.sync_gradients and loop_config.max_grad_norm > 0:
-                    grad_norm = accelerator.clip_grad_norm_(
-                        model.parameters(), loop_config.max_grad_norm
+        batches_consumed = skip
+        for group in _accumulation_groups(
+            active_loader, loop_config.gradient_accumulation_steps
+        ):
+            group_inputs = [_model_inputs(batch, accelerator.device) for batch in group]
+            token_counts: list[int] = []
+            for inputs in group_inputs:
+                labels = inputs.get("labels")
+                if labels is None:
+                    raise ValueError(
+                        "training batches must contain completion-only labels"
                     )
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
-            accumulated_losses.append(float(loss.detach().float().item()))
-            accumulated_tokens += token_count
-            state.batches_seen_in_epoch = batch_in_epoch + 1
+                token_counts.append(int((labels != -100).sum().item()))
+            group_tokens = float(
+                accelerator.reduce(
+                    torch.tensor(
+                        float(sum(token_counts)),
+                        device=accelerator.device,
+                        dtype=torch.float64,
+                    ),
+                    reduction="sum",
+                ).item()
+            )
+            if group_tokens <= 0:
+                raise ValueError("accumulation group contains no supervised tokens")
+            for index, (inputs, token_count) in enumerate(
+                zip(group_inputs, token_counts, strict=True)
+            ):
+                # DDP averages gradients across processes on the synchronized
+                # backward, hence the num_processes factor in the weight.
+                weight = token_count * accelerator.num_processes / group_tokens
+                sync_context = (
+                    nullcontext()
+                    if index == len(group_inputs) - 1
+                    else accelerator.no_sync(model)
+                )
+                with sync_context:
+                    outputs = model(**inputs, use_cache=False)
+                    loss = outputs.loss
+                    if loss is None or not torch.isfinite(loss):
+                        raise FloatingPointError("training produced a non-finite loss")
+                    accelerator.backward(loss * weight)
+                interval_loss_sum += float(loss.detach().float().item()) * token_count
+                interval_tokens += token_count
+                batches_consumed += 1
+                state.batches_seen_in_epoch = batches_consumed
+            grad_norm = None
+            if loop_config.max_grad_norm > 0:
+                grad_norm = accelerator.clip_grad_norm_(
+                    model.parameters(), loop_config.max_grad_norm
+                )
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
 
-            if not accelerator.sync_gradients:
-                continue
             state.global_step += 1
             progress_bar.advance()
             if state.global_step % loop_config.log_every_steps == 0:
@@ -391,15 +452,15 @@ def run_sft(
                     metrics,
                     accelerator=accelerator,
                     step=state.global_step,
-                    losses=accumulated_losses,
+                    loss_sum=interval_loss_sum,
                     optimizer=optimizer,
                     grad_norm=grad_norm,
-                    tokens=accumulated_tokens,
+                    tokens=interval_tokens,
                     elapsed=time.monotonic() - interval_start,
                     include_tokens_per_second=loop_config.tokens_per_second,
                 )
-                accumulated_losses.clear()
-                accumulated_tokens = 0
+                interval_loss_sum = 0.0
+                interval_tokens = 0
                 interval_start = time.monotonic()
 
             should_eval = state.global_step % loop_config.eval_every_steps == 0

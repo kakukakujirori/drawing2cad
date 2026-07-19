@@ -30,12 +30,6 @@ from src.evaluation.evaluator import (
 from src.models import PrimitiveEncoderConfig
 
 
-def _mapping(value: Any, *, name: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{name} must be a mapping, got {type(value)}")
-    return dict(value)
-
-
 def _atomic_json(path: Path, payload: Any) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(
@@ -60,8 +54,8 @@ class CADGenerationEvaluator:
     ) -> None:
         self.accelerator = accelerator
         self.processor = processor
-        self.data_config = _mapping(data_config, name="data")
-        self.evaluation_config = _mapping(evaluation_config, name="evaluation")
+        self.data_config = data_config
+        self.evaluation_config = evaluation_config
         self.primitive_config = primitive_config
         self.predictions_dir = Path(predictions_dir)
         self.sample_ids = self._select_sample_ids()
@@ -93,9 +87,7 @@ class CADGenerationEvaluator:
         return tuple(sorted(generator.sample(available, requested)))
 
     def _loader(self) -> DataLoader:
-        dxf_config = DXFPrimitiveConfig(
-            **_mapping(self.data_config["dxf"], name="data.dxf")
-        )
+        dxf_config = DXFPrimitiveConfig(**self.data_config["dxf"])
         image_sources = tuple(
             RasterImageSource(str(item["style"]), str(item["directory"]))
             for item in self.data_config["image_sources"]

@@ -1,14 +1,11 @@
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import random
 import tempfile
 import unittest
-
-import torch
 import yaml
 
-from src.utils.setup import seed_everything, setup_run
+from src.utils.setup import setup_run
 
 
 class SetupRunTest(unittest.TestCase):
@@ -81,16 +78,6 @@ class SetupRunTest(unittest.TestCase):
             )
             self.assertFalse(output.exists())
             self.assertEqual(context.rank, 1)
-
-    def test_seed_everything_repeats_python_and_torch_streams(self) -> None:
-        seed_everything(123)
-        first = (random.random(), torch.rand(3))
-        seed_everything(123)
-        second = (random.random(), torch.rand(3))
-        self.assertEqual(first[0], second[0])
-        torch.testing.assert_close(first[1], second[1])
-        with self.assertRaises(ValueError):
-            seed_everything(-1)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from .dataset import (
     RasterImageSource,
 )
 from .dxf import (
+    DXF_ORIENTED_SAMPLE_FEATURE_INDICES,
     DXFParseError,
     DXFPrimitiveConfig,
     DXFPrimitiveData,
@@ -38,6 +39,7 @@ __all__ = [
     "DEFAULT_IMAGE_SOURCES",
     "DEFAULT_IMAGE_STYLES",
     "DEFAULT_INSTRUCTION",
+    "DXF_ORIENTED_SAMPLE_FEATURE_INDICES",
     "DXFParseError",
     "DXFPrimitiveConfig",
     "DXFPrimitiveData",

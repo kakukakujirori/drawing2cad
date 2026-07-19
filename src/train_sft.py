@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from accelerate import Accelerator
 import hydra
-from omegaconf import DictConfig, OmegaConf
 import rootutils
-
+from accelerate import Accelerator
+from accelerate.utils import set_seed
+from omegaconf import DictConfig, OmegaConf
 
 ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # ruff: noqa: E402
@@ -30,7 +30,6 @@ from src.utils import (
     ExperimentLogger,
     MetricRouter,
     RichEpochProgressBar,
-    seed_everything,
     setup_run,
 )
 
@@ -47,12 +46,6 @@ def _plain_config(config: Any) -> dict[str, Any]:
     return dict(value)
 
 
-def _mapping(value: Any, *, name: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{name} must be a mapping, got {type(value)}")
-    return dict(value)
-
-
 def _mixed_precision(config: Mapping[str, Any]) -> str:
     value = str(config.get("mixed_precision", "no")).lower()
     return "no" if value in {"none", "null", "false"} else value
@@ -62,15 +55,15 @@ def execute(config: Any) -> dict[str, float | int]:
     """Construct every concrete dependency, then hand them to ``run_sft``."""
 
     cfg = _plain_config(config)
-    training = _mapping(cfg["training"], name="training")
-    accelerator = Accelerator(
-        gradient_accumulation_steps=int(training.get("gradient_accumulation_steps", 1)),
-        mixed_precision=_mixed_precision(training),
-    )
+    training: Mapping[str, Any] = cfg["training"]
+    # Gradient accumulation is owned by run_sft's explicit group loop so each
+    # optimizer step can be token-weighted; the Accelerator must not divide
+    # losses or gate optimizer/scheduler stepping itself.
+    accelerator = Accelerator(mixed_precision=_mixed_precision(training))
     seed = int(cfg.get("seed", 42))
-    seed_everything(seed)
+    set_seed(seed)
     resume = bool(training.get("resume_from_latest", False))
-    paths = _mapping(cfg.get("paths", {}), name="paths")
+    paths: Mapping[str, Any] = cfg.get("paths", {})
     run_context = setup_run(
         cfg,
         output_dir=paths.get("output_dir"),
@@ -82,41 +75,43 @@ def execute(config: Any) -> dict[str, float | int]:
     )
     accelerator.wait_for_everyone()
 
-    model_bundle = build_sft_model(_mapping(cfg["model"], name="model"))
-    data = build_sft_dataloaders(
-        _mapping(cfg["data"], name="data"),
+    model_bundle = build_sft_model(cfg["model"])
+    dataloaders = build_sft_dataloaders(
+        cfg["data"],
         processor=model_bundle.processor,
         primitive_config=model_bundle.primitive_config,
         seed=seed,
     )
     optimizer = build_optimizer(
         model_bundle.model,
-        _mapping(cfg["optimizer"], name="optimizer"),
+        cfg["optimizer"],
     )
     model, optimizer, train_loader, validation_loader = accelerator.prepare(
         model_bundle.model,
         optimizer,
-        data.train,
-        data.validation,
+        dataloaders.train,
+        dataloaders.validation,
     )
     schedule = resolve_training_schedule(training, len(train_loader))
+    # The scheduler stays unprepared: run_sft steps it exactly once per
+    # optimizer step, so total_steps is in true optimizer-step units and the
+    # schedule is identical for any number of processes.
     scheduler = build_scheduler(
         optimizer,
-        _mapping(cfg["scheduler"], name="scheduler"),
+        cfg["scheduler"],
         total_steps=schedule.max_steps,
     )
-    scheduler = accelerator.prepare(scheduler)
 
     checkpoint_io = AdapterCheckpointIO(
         accelerator=accelerator,
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
-        dataloader_generator=data.generator,
+        dataloader_generator=dataloaders.generator,
     )
     checkpoint_manager = CheckpointManager.from_config(
         run_context.run_dir,
-        _mapping(cfg["checkpoint"], name="checkpoint"),
+        cfg["checkpoint"],
         is_main_process=accelerator.is_main_process,
     )
     progress = TrainingProgress()
@@ -124,13 +119,13 @@ def execute(config: Any) -> dict[str, float | int]:
         progress = checkpoint_io.load(checkpoint_manager.latest_dir)
         accelerator.wait_for_everyone()
 
-    evaluation = _mapping(cfg.get("evaluation", {}), name="evaluation")
+    evaluation: Mapping[str, Any] = cfg.get("evaluation", {})
     generation_evaluator = None
     if bool(evaluation.get("generation_enabled", False)):
         generation_evaluator = CADGenerationEvaluator(
             accelerator=accelerator,
             processor=model_bundle.processor,
-            data_config=_mapping(cfg["data"], name="data"),
+            data_config=cfg["data"],
             evaluation_config=evaluation,
             primitive_config=model_bundle.primitive_config,
             predictions_dir=run_context.predictions_dir,
@@ -138,13 +133,13 @@ def execute(config: Any) -> dict[str, float | int]:
 
     logger = ExperimentLogger.from_config(
         run_context.run_dir,
-        _mapping(cfg["logger"], name="logger"),
+        cfg["logger"],
         resolved_config=cfg,
         is_main_process=accelerator.is_main_process,
     )
-    utils_config = _mapping(cfg.get("utils", {}), name="utils")
+    utils_config = cfg.get("utils", {})
     progress_bar = RichEpochProgressBar.from_config(
-        _mapping(utils_config.get("progress_bar", {}), name="utils.progress_bar"),
+        utils_config.get("progress_bar", {}),
         is_main_process=accelerator.is_main_process,
     )
     metrics = MetricRouter(logger, progress_bar)
@@ -165,6 +160,8 @@ def execute(config: Any) -> dict[str, float | int]:
             set_train_mode=set_sft_train_mode,
             progress=progress,
             generation_evaluator=generation_evaluator,
+            dataloader_generator=dataloaders.generator,
+            dataloader_seed=seed,
         )
     finally:
         progress_bar.stop()

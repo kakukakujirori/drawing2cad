@@ -68,7 +68,7 @@ class DatasetModelIntegrationTest(unittest.TestCase):
         dataset = self._dataset(include_target=True, max_samples=2)
         first = dataset[0]
         self.assertGreater(first.primitives.num_primitives, 0)
-        self.assertEqual(first.primitives.sample_features.shape[1:], (8, 3))
+        self.assertEqual(first.primitives.sample_features.shape[1:], (8, 7))
         self.assertEqual(
             first.primitives.view_direction_ids.shape,
             (first.primitives.num_primitives,),
@@ -112,7 +112,7 @@ class DatasetModelIntegrationTest(unittest.TestCase):
         primitive_batch = inputs["primitive_batch"]
         self.assertEqual(batch.sample_ids, tuple(r.sample_id for r in dataset.records))
         self.assertEqual(primitive_batch.sample_features.shape[0], 2)
-        self.assertEqual(primitive_batch.sample_features.shape[-2:], (8, 3))
+        self.assertEqual(primitive_batch.sample_features.shape[-2:], (8, 7))
         self.assertEqual(inputs["primitive_token_mask"].sum(dim=-1).tolist(), [2, 2])
         self.assertTrue(
             torch.all(inputs["attention_mask"][inputs["primitive_token_mask"]] == 1)

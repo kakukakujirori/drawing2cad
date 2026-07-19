@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -70,7 +71,7 @@ class DXFPrimitiveParserTest(unittest.TestCase):
                 path, view_bboxes=self._view_bboxes(), sample_id="fixture"
             )
 
-        self.assertEqual(parsed.sample_features.shape, (6, 17, 3))
+        self.assertEqual(parsed.sample_features.shape, (6, 17, 7))
         self.assertEqual(parsed.primitive_type_ids.shape, (6,))
         self.assertEqual(parsed.view_direction_ids.shape, (6,))
         self.assertTrue(torch.isfinite(parsed.sample_features).all())
@@ -79,9 +80,12 @@ class DXFPrimitiveParserTest(unittest.TestCase):
         line_index = parsed.entity_type_names.index("LINE")
         line = parsed.sample_features[line_index]
         scale = 1.8 / 297.0
-        torch.testing.assert_close(line[0], torch.tensor([0.0, 0.0, 1.0]))
         torch.testing.assert_close(
-            line[-1], torch.tensor([10.0 * scale, 0.0, 1.0])
+            line[0], torch.tensor([0.0, 0.0, 1.0, 1.0, 0.0, 0.0, -0.5])
+        )
+        torch.testing.assert_close(
+            line[-1],
+            torch.tensor([10.0 * scale, 0.0, 1.0, 1.0, 0.0, 0.0, 0.5]),
         )
         line_steps = torch.linalg.vector_norm(line[1:, :2] - line[:-1, :2], dim=-1)
         torch.testing.assert_close(
@@ -115,6 +119,47 @@ class DXFPrimitiveParserTest(unittest.TestCase):
                 VIEW_DIRECTION_TO_ID["right"],
             ],
         )
+
+    def test_geometry_channels_match_analytic_values(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            path = self._write_fixture(directory)
+            config = DXFPrimitiveConfig(samples_per_primitive=17)
+            parsed = DXFPrimitiveParser(config).parse(
+                path, view_bboxes=self._view_bboxes(), sample_id="fixture"
+            )
+        scale = 1.8 / 297.0
+        features = parsed.sample_features
+
+        tangent_norms = torch.linalg.vector_norm(features[..., 3:5], dim=-1)
+        torch.testing.assert_close(tangent_norms, torch.ones_like(tangent_norms))
+
+        arc_positions = features[..., 6]
+        torch.testing.assert_close(
+            arc_positions[:, 0], torch.full_like(arc_positions[:, 0], -0.5)
+        )
+        torch.testing.assert_close(
+            arc_positions[:, -1], torch.full_like(arc_positions[:, -1], 0.5)
+        )
+        self.assertTrue(torch.all(arc_positions[:, 1:] > arc_positions[:, :-1]))
+
+        line = features[parsed.entity_type_names.index("LINE")]
+        torch.testing.assert_close(line[:, 3], torch.ones(17))
+        torch.testing.assert_close(line[:, 4], torch.zeros(17))
+        torch.testing.assert_close(line[:, 5], torch.zeros(17))
+
+        # ezdxf circles/arcs are traversed counterclockwise, so the signed
+        # curvature is positive and Menger curvature on exact circle points is
+        # exact: log1p(1 / normalized_radius) at every sample.
+        circle = features[parsed.entity_type_names.index("CIRCLE")]
+        expected_circle = math.log1p(1.0 / (4.0 * scale))
+        torch.testing.assert_close(
+            circle[:, 5], torch.full((17,), expected_circle)
+        )
+        torch.testing.assert_close(circle[0, 3:5], circle[-1, 3:5])
+
+        arc = features[parsed.entity_type_names.index("ARC")]
+        expected_arc = math.log1p(1.0 / (5.0 * scale))
+        torch.testing.assert_close(arc[:, 5], torch.full((17,), expected_arc))
 
     def test_visibility_filters_and_strict_unsupported_entities(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
