@@ -8,7 +8,7 @@ primitive:
   sample_feature_dim: 7
   num_primitive_types: 7
   primitive_dim: 256
-  num_primitive_latents: 32
+  num_primitive_latents: 128  # key hyperparam
   primitive_encoder_layers: 2
   resampler_layers: 2
   resampler_heads: 8
