@@ -107,11 +107,15 @@ class CADGenerationEvaluator:
             RasterImageSource(str(item["style"]), str(item["directory"]))
             for item in self.data_config["image_sources"]
         )
+        # Generation is forward-only, so a long prompt does not carry the
+        # training memory cost that motivates max_sequence_length filtering.
+        # Leave it unset here: the validation benchmark must be scored over
+        # every sample, not silently pruned to the training length budget.
         preprocessor = Drawing2CADPreprocessor(
             self.processor,
             self.primitive_config.num_primitive_latents,
             include_labels=False,
-            max_length=self.data_config.get("max_sequence_length"),
+            max_length=None,
         )
         dataset = Drawing2CADDataset(
             self.data_config["val_root"],
@@ -258,9 +262,7 @@ class CADGenerationEvaluator:
         def _null_sub_task(_description: str, _total: int) -> Any:
             return nullcontext(lambda _steps=1: None)
 
-        sub_task = (
-            progress_bar.sub_task if progress_bar is not None else _null_sub_task
-        )
+        sub_task = progress_bar.sub_task if progress_bar is not None else _null_sub_task
         with sub_task("eval generate", len(shard_ids)) as advance:
             codes = self._generate_codes(model, shard_ids, on_generated=advance)
         with sub_task("eval execute", len(shard_ids)) as advance:

@@ -104,9 +104,9 @@ class PrimitiveEncoderTest(unittest.TestCase):
             batch_index, primitive_index = index.tolist()
             sample_count = int(batch.sample_mask[batch_index, primitive_index].sum())
             flipped[batch_index, primitive_index, :sample_count] = (
-                batch.sample_features[
-                    batch_index, primitive_index, :sample_count
-                ].flip(0)
+                batch.sample_features[batch_index, primitive_index, :sample_count].flip(
+                    0
+                )
             )
 
         # An upstream re-traversal reverses sample order AND negates oriented
@@ -120,9 +120,7 @@ class PrimitiveEncoderTest(unittest.TestCase):
         torch.testing.assert_close(original, contract_output)
 
         # Reversing order without the negation is a different curve.
-        plain_output, _ = model(
-            replace_primitive_batch(batch, sample_features=flipped)
-        )
+        plain_output, _ = model(replace_primitive_batch(batch, sample_features=flipped))
         self.assertFalse(torch.allclose(original, plain_output))
 
     def test_oriented_feature_indices_round_trip_and_validation(self) -> None:

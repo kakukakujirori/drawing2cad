@@ -103,6 +103,7 @@ def execute(config: Any) -> dict[str, float | int]:
         processor=model_bundle.processor,
         primitive_config=model_bundle.primitive_config,
         seed=seed,
+        show_progress=accelerator.is_main_process,
     )
     optimizer = build_optimizer(
         model_bundle.model,

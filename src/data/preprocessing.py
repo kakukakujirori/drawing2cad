@@ -119,6 +119,35 @@ class Drawing2CADPreprocessor:
             )
         return conversation
 
+    def sequence_length(self, sample: Drawing2CADSample) -> int:
+        """Exact token length of the fully rendered sample without raising.
+
+        Mirrors the tokenization performed in ``__call__`` (same conversation,
+        images, and target). Used to measure the fixed per-sample overhead once;
+        the bulk length filtering uses :meth:`target_token_count` instead.
+        """
+        conversation = self.build_conversation(sample)
+        encoded = self.processor.apply_chat_template(
+            conversation,
+            tokenize=True,
+            add_generation_prompt=not self.include_labels,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        return int(encoded["input_ids"].shape[-1])
+
+    def target_token_count(self, target_code: str) -> int:
+        """Token count of the assistant target text alone.
+
+        Everything else in the sequence (chat template, instruction, image
+        headings, the fixed image tokens, and the primitive placeholders) is a
+        constant that does not depend on the sample, so a full sequence length
+        is well approximated by this count plus that constant overhead.
+        """
+        return len(
+            self.processor.tokenizer(target_code, add_special_tokens=False)["input_ids"]
+        )
+
     def _unbatch_processor_output(
         self,
         encoded: Mapping[str, Any],

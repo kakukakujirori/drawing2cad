@@ -36,7 +36,6 @@ class GenerationEvaluator(Protocol):
     ) -> Mapping[str, float | int]: ...
 
 
-
 TrainModeSetter = Callable[[torch.nn.Module], None]
 
 

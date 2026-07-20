@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from src.models import PrimitiveEncoderConfig
 from src.utils import seed_worker
 
 from .collator import Drawing2CADCollator
 from .dataset import Drawing2CADDataset, RasterImageSource
+from .preprocessing import Drawing2CADPreprocessor
 from .dxf import (
     DXF_ORIENTED_SAMPLE_FEATURE_INDICES,
     DXFPrimitiveConfig,
@@ -29,12 +32,72 @@ class SFTDataLoaders:
     generator: torch.Generator
 
 
+def _filter_by_length(
+    dataset: Drawing2CADDataset,
+    preprocessor: Drawing2CADPreprocessor,
+    max_length: int,
+    *,
+    split: str,
+    show_progress: bool,
+) -> Subset:
+    """Drop samples whose fully rendered sequence exceeds ``max_length``.
+
+    Only the target text varies in length: the chat template, instruction,
+    image headings, the fixed-size render's image tokens, and the primitive
+    placeholders form a constant overhead. So the length is estimated as that
+    overhead (measured once from a reference sample) plus the target token
+    count, which avoids per-sample image decoding, DXF parsing, and image
+    processing -- roughly two orders of magnitude faster than an exact scan.
+    The estimate matches the exact length to within about one token and errs
+    high, so it never admits an overlength sample.
+
+    Runs identically on every rank (deterministic), so all ranks build the same
+    filtered dataset without any rank waiting on a collective while another
+    scans the corpus. Overlength samples are removed, never truncated.
+    """
+    total = len(dataset)
+    reference = dataset.load_sample(0)
+    if reference.target_code is None:
+        raise ValueError("length filtering requires targets (include_target=True)")
+    overhead = preprocessor.sequence_length(reference) - preprocessor.target_token_count(
+        reference.target_code
+    )
+    kept: list[int] = []
+    # The scan reads one small target file per sample; with a cold OS page cache
+    # each read is a random disk seek (~10 ms) and the corpus has 100k+ files, so
+    # a serial scan is dominated by seek latency. Issue the reads concurrently to
+    # let the disk pipeline them (they are latency-, not CPU-bound); the cheap
+    # tokenization stays on this thread because fast tokenizers are not guaranteed
+    # thread-safe. ``map`` preserves input order, so enumeration recovers the index.
+    io_workers = min(32, (os.cpu_count() or 4) * 4)
+    with ThreadPoolExecutor(max_workers=io_workers) as pool:
+        target_codes = pool.map(dataset.target_code, range(total))
+        for index, target_code in enumerate(target_codes):
+            length = overhead + preprocessor.target_token_count(target_code)
+            if length <= max_length:
+                kept.append(index)
+            done = index + 1
+            if show_progress and (done % 10000 == 0 or done == total):
+                print(
+                    f"[data:{split}] length filter {done}/{total} "
+                    f"(kept {len(kept)}, dropped {done - len(kept)}, "
+                    f"overhead={overhead}, max_length={max_length})",
+                    flush=True,
+                )
+    if not kept:
+        raise ValueError(
+            f"[data:{split}] every sample exceeds max_sequence_length={max_length}"
+        )
+    return Subset(dataset, kept)
+
+
 def build_sft_dataloaders(
     data_config: Mapping[str, Any],
     *,
     processor: Any,
     primitive_config: PrimitiveEncoderConfig,
     seed: int,
+    show_progress: bool = True,
 ) -> SFTDataLoaders:
     if bool(data_config.get("scale_augmentation", False)):
         raise ValueError("scale augmentation is not implemented for the SFT baseline")
@@ -70,8 +133,21 @@ def build_sft_dataloaders(
             transform=preprocessor,
         )
 
-    train_dataset = dataset("train_root", "train_max_samples")
-    validation_dataset = dataset("val_root", "val_max_samples")
+    def build_split(root_key: str, max_key: str, split: str) -> Dataset:
+        full = dataset(root_key, max_key)
+        max_sequence_length = data_config.get("max_sequence_length")
+        if max_sequence_length is None:
+            return full
+        return _filter_by_length(
+            full,
+            preprocessor,
+            int(max_sequence_length),
+            split=split,
+            show_progress=show_progress,
+        )
+
+    train_dataset = build_split("train_root", "train_max_samples", "train")
+    validation_dataset = build_split("val_root", "val_max_samples", "val")
     pad_token_id = processor.tokenizer.pad_token_id
     if pad_token_id is None:
         raise ValueError("processor tokenizer has no pad token ID")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Generic, Sequence, TypeVar, cast
+from typing import Any, Callable, Generic, Sequence
 
 from PIL import Image
 from torch.utils.data import Dataset
@@ -60,10 +60,7 @@ class Drawing2CADSample:
     target_code: str | None
 
 
-OutputT = TypeVar("OutputT")
-
-
-class Drawing2CADDataset(Dataset[OutputT], Generic[OutputT]):
+class Drawing2CADDataset(Dataset):
     """Load semantic, unpadded samples and optionally apply a sample transform.
 
     The default provider is the only component coupled to the current manifest
@@ -83,7 +80,7 @@ class Drawing2CADDataset(Dataset[OutputT], Generic[OutputT]):
         max_samples: int | None = None,
         strict_files: bool = True,
         image_max_edge: int | None = None,
-        transform: Callable[[Drawing2CADSample], OutputT] | None = None,
+        transform: Callable[[Drawing2CADSample], Any] | None = None,
     ) -> None:
         self.root = Path(root)
         if not self.root.is_dir():
@@ -188,7 +185,19 @@ class Drawing2CADDataset(Dataset[OutputT], Generic[OutputT]):
                 )
             return output.copy()
 
-    def __getitem__(self, index: int) -> OutputT:
+    def target_code(self, index: int) -> str:
+        """Read one sample's target source without loading images or DXF.
+
+        Used by length filtering, where only the (variable-length) target text
+        affects the token count.
+        """
+        path = self.records[index].target_path
+        if path is None:
+            raise ValueError("dataset has no targets to read (include_target=False)")
+        return path.read_text(encoding="utf-8")
+
+    def load_sample(self, index: int) -> Drawing2CADSample:
+        """Load one semantic sample without applying ``transform``."""
         record = self.records[index]
         metadata = self.metadata_provider.get(record.sample_id)
         primitives = self.dxf_parser.parse(
@@ -202,7 +211,7 @@ class Drawing2CADDataset(Dataset[OutputT], Generic[OutputT]):
             if record.target_path is None
             else record.target_path.read_text(encoding="utf-8")
         )
-        sample = Drawing2CADSample(
+        return Drawing2CADSample(
             sample_id=record.sample_id,
             metadata=metadata,
             primitives=primitives,
@@ -210,8 +219,11 @@ class Drawing2CADDataset(Dataset[OutputT], Generic[OutputT]):
             image_styles=self.image_styles,
             target_code=target_code,
         )
+
+    def __getitem__(self, index: int):
+        sample = self.load_sample(index)
         if self.transform is None:
-            return cast(OutputT, sample)
+            return sample
         return self.transform(sample)
 
 

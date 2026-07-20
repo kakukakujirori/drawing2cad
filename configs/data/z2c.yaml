@@ -7,7 +7,10 @@ include_target: true
 strict_files: true
 scale_augmentation: false
 image_max_edge: null
-max_sequence_length: null
+# Samples whose fully rendered token sequence exceeds this are dropped (never
+# truncated) before the DataLoader is built, bounding peak memory per step.
+# Set to null to disable filtering.
+max_sequence_length: 3072
 
 dxf:
   samples_per_primitive: 16
