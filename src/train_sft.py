@@ -159,6 +159,7 @@ def execute(config: Any) -> dict[str, float | int]:
         cfg["logger"],
         resolved_config=cfg,
         is_main_process=accelerator.is_main_process,
+        resume=resume,
     )
     utils_config = cfg.get("utils", {})
     progress_bar = RichEpochProgressBar.from_config(

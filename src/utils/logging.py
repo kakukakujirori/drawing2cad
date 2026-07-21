@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import logging
 import math
 from pathlib import Path
+import re
 import threading
 from typing import Any, Mapping, Protocol
 
 import torch
+
+log = logging.getLogger(__name__)
 
 
 class MetricSink(Protocol):
@@ -105,6 +109,27 @@ class JSONLMetricLogger:
         self.finish()
 
 
+def _wandb_run_id(run_dir: Path) -> str | None:
+    """Extract the most recent wandb run ID from the run directory.
+
+    Wandb stores runs under ``<run_dir>/wandb/run-YYYYMMDD_HHMMSS-<id>/``.
+    This function finds the latest such directory and parses the run ID.
+    """
+    wandb_dir = run_dir / "wandb"
+    if not wandb_dir.exists():
+        return None
+    candidates = [
+        path
+        for path in wandb_dir.iterdir()
+        if path.is_dir() and path.name.startswith("run-")
+    ]
+    if not candidates:
+        return None
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    match = re.match(r"run-\d{8}_\d{6}-(?P<id>.+)$", latest.name)
+    return match.group("id") if match else None
+
+
 class WandbMetricLogger:
     """Lazy W&B adapter; importing this module never requires ``wandb``."""
 
@@ -119,6 +144,7 @@ class WandbMetricLogger:
         tags: list[str] | tuple[str, ...] = (),
         mode: str = "online",
         run_dir: str | Path | None = None,
+        resume_id: str | None = None,
     ) -> None:
         if not project:
             raise ValueError("wandb project must not be empty")
@@ -138,6 +164,8 @@ class WandbMetricLogger:
             mode=mode,
             dir=None if run_dir is None else str(run_dir),
             config=None if config is None else dict(config),
+            id=resume_id,
+            resume="allow" if resume_id else None,
         )
 
     def log(self, metrics: Mapping[str, Any], *, step: int) -> None:
@@ -174,6 +202,7 @@ class ExperimentLogger:
         *,
         resolved_config: Mapping[str, Any] | None = None,
         is_main_process: bool = True,
+        resume: bool = False,
     ) -> "ExperimentLogger":
         if not is_main_process:
             return cls(())
@@ -188,6 +217,17 @@ class ExperimentLogger:
             )
         wandb_config = config.get("wandb", {})
         if bool(wandb_config.get("enabled", False)):
+            resume_id: str | None = None
+            if resume:
+                resume_id = _wandb_run_id(run_dir)
+                if resume_id is None:
+                    log.warning(
+                        "No wandb run id found under %s/wandb; "
+                        "starting a new wandb run.",
+                        run_dir,
+                    )
+                else:
+                    log.info("Resuming wandb run id %s", resume_id)
             sinks.append(
                 WandbMetricLogger(
                     project=wandb_config.get("project", "drawing2cad"),
@@ -198,6 +238,7 @@ class ExperimentLogger:
                     tags=wandb_config.get("tags", ()),
                     mode=wandb_config.get("mode", "online"),
                     run_dir=run_dir,
+                    resume_id=resume_id,
                 )
             )
         return cls(sinks)
