@@ -1,5 +1,6 @@
 import importlib.util
 import unittest
+from unittest.mock import patch
 
 HAS_CADQUERY = importlib.util.find_spec("cadquery") is not None
 
@@ -12,8 +13,10 @@ class SolidChecksTest(unittest.TestCase):
 
         from src.data.audit.solid_checks import (
             Severity,
+            MeshValidityResult,
             ShapeSignature,
             Thresholds,
+            TopologyResult,
             audit_shape,
             classify_severity,
             compare_signatures,
@@ -21,11 +24,38 @@ class SolidChecksTest(unittest.TestCase):
 
         cls.cq = cq
         cls.Severity = Severity
+        cls.MeshValidityResult = MeshValidityResult
         cls.ShapeSignature = ShapeSignature
         cls.Thresholds = Thresholds
+        cls.TopologyResult = TopologyResult
         cls.audit_shape = staticmethod(audit_shape)
         cls.classify_severity = staticmethod(classify_severity)
         cls.compare_signatures = staticmethod(compare_signatures)
+
+    def _clean_topology(self, **overrides):
+        """A valid single-solid TopologyResult; override fields per test."""
+        fields = dict(
+            brepcheck_valid=True,
+            brepcheck_status_histogram={},
+            bop_self_interference=False,
+            kernel_flags_small_edge=False,
+            has_open_boundary=False,
+            free_boundary_edge_count=0,
+            non_manifold_edge_count=0,
+            max_tolerance_mm=1e-7,
+            mean_tolerance_mm=1e-7,
+            n_solids=1,
+            n_faces=6,
+            solid_volumes=[1000.0],
+            n_small_edges_relative=0,
+            n_small_faces_relative=0,
+            volume=1000.0,
+            bbox_extents=(10.0, 10.0, 10.0),
+            bbox_diagonal=17.32,
+            aspect_ratio=1.0,
+        )
+        fields.update(overrides)
+        return self.TopologyResult(**fields)
 
     def test_clean_box_is_ok(self) -> None:
         box = self.cq.Workplane("XY").box(10, 10, 10).val()
@@ -34,6 +64,8 @@ class SolidChecksTest(unittest.TestCase):
         self.assertEqual(audit.reasons, [])
         self.assertEqual(audit.topology.n_solids, 1)
         self.assertAlmostEqual(audit.topology.volume, 1000.0, places=6)
+        self.assertIsNotNone(audit.mesh)
+        self.assertTrue(audit.mesh.watertight)
 
     def test_self_intersecting_bowtie_is_hard_invalid(self) -> None:
         bad = (
@@ -44,13 +76,8 @@ class SolidChecksTest(unittest.TestCase):
         )
         audit = self.audit_shape(bad.val(), self.Thresholds(thickness_samples=0))
         self.assertEqual(audit.severity, self.Severity.HARD_INVALID)
-        self.assertIn("self_intersection", audit.reasons)
-        self.assertTrue(audit.topology.self_intersects)
-        # On a real staged Zero-To-CAD part (not reproduced here to keep this
-        # test self-contained) BRepCheck_Analyzer.IsValid() was True while
-        # BOPAlgo_ArgumentAnalyzer still correctly flagged BOPAlgo_SelfIntersect
-        # on one face -- confirming isValid() alone is not sufficient, which is
-        # why check_self_intersection exists as its own check.
+        self.assertIn("brepcheck_invalid", audit.reasons)
+        self.assertTrue(audit.topology.bop_self_interference)
 
     def test_open_shell_is_hard_invalid_and_unsolidified(self) -> None:
         # A shell missing one face of a box: no TopAbs_SOLID exists at all
@@ -106,7 +133,39 @@ class SolidChecksTest(unittest.TestCase):
 
         self.assertFalse(diverges_same)
         self.assertTrue(diverges_diff)
-        self.assertGreater(metrics["volume_relative_diff"], thresholds.divergence_volume_relative)
+        self.assertGreater(
+            metrics["volume_relative_diff"], thresholds.divergence_volume_relative
+        )
+
+    def test_bop_self_interference_is_soft_when_mesh_is_watertight(self) -> None:
+        topology = self._clean_topology(bop_self_interference=True)
+        mesh = self.MeshValidityResult(True, 8, 12, True, None)
+        severity, reasons = self.classify_severity(
+            topology, None, self.Thresholds(), mesh=mesh
+        )
+        self.assertEqual(severity, self.Severity.SOFT_SUSPECT)
+        self.assertIn("bop_self_interference", reasons)
+        self.assertNotIn("mesh_not_watertight", reasons)
+
+    def test_non_watertight_mesh_is_hard_and_masks_bop_signal(self) -> None:
+        topology = self._clean_topology(bop_self_interference=True)
+        mesh = self.MeshValidityResult(True, 8, 12, False, None)
+        severity, reasons = self.classify_severity(
+            topology, None, self.Thresholds(), mesh=mesh
+        )
+        self.assertEqual(severity, self.Severity.HARD_INVALID)
+        self.assertIn("mesh_not_watertight", reasons)
+        self.assertNotIn("bop_self_interference", reasons)
+
+    def test_soft_bop_interference_still_runs_thickness(self) -> None:
+        box = self.cq.Workplane("XY").box(10, 10, 10).val()
+        topology = self._clean_topology(bop_self_interference=True)
+        with patch("src.data.audit.solid_checks.audit_topology", return_value=topology):
+            audit = self.audit_shape(box, self.Thresholds(thickness_samples=50))
+        self.assertEqual(audit.severity, self.Severity.SOFT_SUSPECT)
+        self.assertTrue(audit.mesh.watertight)
+        self.assertIsNotNone(audit.thickness)
+        self.assertIn("bop_self_interference", audit.reasons)
 
     def test_fully_enclosing_cut_leaves_empty_shape(self) -> None:
         # A cut whose tool fully encloses the base leaves an empty Compound
@@ -117,7 +176,9 @@ class SolidChecksTest(unittest.TestCase):
         audit = self.audit_shape(emptied, self.Thresholds(thickness_samples=0))
         self.assertEqual(audit.severity, self.Severity.HARD_INVALID)
         self.assertIn("empty_shape", audit.reasons)
-        self.assertNotIn("zero_or_negative_volume", audit.reasons)  # n_solids==0 already covers it
+        self.assertNotIn(
+            "zero_or_negative_volume", audit.reasons
+        )  # n_solids==0 already covers it
 
 
 if __name__ == "__main__":

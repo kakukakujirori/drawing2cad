@@ -62,13 +62,11 @@ class ManifestMetadataProviderTest(unittest.TestCase):
     def test_adapter_rejects_coordinate_and_bbox_schema_mismatch(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             bad_coordinate = _row("coordinate")
-            bad_coordinate["extra"]["techdraw"]["bbox_coordinate_system"][
-                "origin"
-            ] = "top_left"
+            bad_coordinate["extra"]["techdraw"]["bbox_coordinate_system"]["origin"] = (
+                "top_left"
+            )
             with self.assertRaisesRegex(MetadataError, "bbox_coordinate_system"):
-                ManifestSampleMetadataProvider(
-                    self._write(directory, [bad_coordinate])
-                )
+                ManifestSampleMetadataProvider(self._write(directory, [bad_coordinate]))
 
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             bad_views = _row("views")
@@ -84,9 +82,7 @@ class ManifestMetadataProviderTest(unittest.TestCase):
 
     def test_missing_sample_error_names_manifest(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
-            provider = ManifestSampleMetadataProvider(
-                self._write(directory, [_row()])
-            )
+            provider = ManifestSampleMetadataProvider(self._write(directory, [_row()]))
             with self.assertRaisesRegex(KeyError, "absent.*manifest"):
                 provider.get("unknown")
 

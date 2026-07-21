@@ -24,7 +24,9 @@ result = cq.Workplane("XY").box(10, 10, 10).edges("|Z").chamfer(1)
         methods = [entry.method for entry in trace]
         self.assertIn("chamfer", methods)
         for entry in trace:
-            self.assertTrue(entry.contributed, msg=f"{entry.method} should have contributed")
+            self.assertTrue(
+                entry.contributed, msg=f"{entry.method} should have contributed"
+            )
         self.assertEqual(self.noop_count(trace), 0)
 
     def test_non_intersecting_cut_is_a_noop(self) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Generic, Sequence
+from typing import Any, Callable, Sequence
 
 from PIL import Image
 from torch.utils.data import Dataset
@@ -34,9 +34,7 @@ class RasterImageSource:
         object.__setattr__(self, "directory", path)
 
 
-DEFAULT_IMAGE_SOURCES = (
-    RasterImageSource("isometric", "render_3d/hlg_perspective"),
-)
+DEFAULT_IMAGE_SOURCES = (RasterImageSource("isometric", "render_3d/hlg_perspective"),)
 # Kept as a convenient public semantic vocabulary value. Paths are configured
 # independently through RasterImageSource.
 DEFAULT_IMAGE_STYLES = tuple(source.style for source in DEFAULT_IMAGE_SOURCES)

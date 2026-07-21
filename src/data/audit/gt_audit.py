@@ -16,22 +16,23 @@ BOTH artifacts, for every staged part:
      target and the rendered input drawing describe different objects. This
      is the single highest-value check here -- see compare_signatures in
      solid_checks.py.
-  3. Runs geometry sanity checks on each shape (self-intersection, open/non-
-     manifold boundary, disjoint solids, micro edges/faces, kernel tolerance
-     blow-up, sampled wall thickness) -- see solid_checks.py for the full
-     battery and why each threshold is what it is.
+  3. Runs geometry sanity checks on each shape (soft OCCT Boolean-argument
+     self-interference, evaluator-compatible mesh validity, open/non-manifold
+     boundary, disjoint solids, micro edges/faces, kernel tolerance blow-up,
+     sampled wall thickness) -- see solid_checks.py for the full battery.
   4. Traces whether each chained solid-modifying call in the GT program
      actually changed the shape (op_trace.py) -- catches e.g. a union whose
      added body was already fully enclosed, a no-op by construction.
 
-Output tiers (see solid_checks.Severity): HARD_INVALID shapes are broken
-outright (self-intersecting, non-manifold, open, fragmented, zero-volume) --
-candidates for exclusion. SOFT_SUSPECT shapes are valid but smell (thin
-walls, micro features, tolerance bloat, no-op ops, GT/STEP divergence) --
-candidates for review, not automatic exclusion; the right threshold for e.g.
-"how thin is too thin" is a training-policy call this script deliberately
-does not make for you. UNAUDITABLE means the harness itself didn't finish
-(timeout/crash), not that the data is bad.
+Output tiers (see solid_checks.Severity): HARD_INVALID shapes are broken or
+unusable downstream (invalid/non-watertight mesh, non-manifold, open,
+fragmented, zero-volume) -- candidates for exclusion. SOFT_SUSPECT shapes are
+valid but smell (BOP self-interference, thin walls, micro features, tolerance
+bloat, no-op ops, GT/STEP divergence) -- candidates for review, not automatic
+exclusion; the right threshold for e.g. "how thin is too thin" is a
+training-policy call this script deliberately does not make for you.
+UNAUDITABLE means the harness itself didn't finish (timeout/crash), not that
+the data is bad.
 
 Usage:
     conda run -n drawing2cad python -m src.data.audit.gt_audit \\
@@ -181,11 +182,9 @@ def _audit_one(
         # not the full battery -- so fingerprint the code shape first and
         # compare. The executed code reproduces the shipped STEP in ~99.6% of
         # samples (only gt_mismatch differs), and when it matches, step_audit
-        # already covers that geometry; re-running the whole battery on the code
-        # shape would just audit the same solid twice (~38% of measured
-        # per-sample cost). So fall through to a full code audit ONLY when the
-        # code actually diverges from the STEP -- or when there is no step_audit
-        # to lean on (bad STEP), where the code shape must be judged on its own.
+        # already covers that geometry. The signature determines only whether
+        # the costly code-side wall-thickness sampling is necessary; topology
+        # and downstream mesh validity are always audited below.
         code_signature = None
         if code_shape is not None:
             try:
@@ -203,19 +202,15 @@ def _audit_one(
             except BaseException as exc:
                 record["divergence_error"] = _short_error(exc)
 
-        # Always audit the code shape's TOPOLOGY. A target program that
-        # re-executes to a broken solid (self-intersecting / non-manifold /
-        # open / fragmented) must still be caught even when its gross signature
-        # matches the shipped STEP: measured on 396 samples, skipping the code
-        # shape entirely on a signature match changed 2.5% of verdicts and
-        # missed ~0.8% hard-invalid whose defect is on the code shape only. All
-        # of the code battery except the wall-thickness Monte-Carlo is what
-        # provides that coverage, and it is cheap relative to thickness. What we
-        # DO skip when the code matches the STEP is only that thickness sampling
-        # -- the costliest check, and thin_wall is a noisy sampled upper-bound
-        # already run on the STEP, so re-sampling a same-signature code shape
-        # buys nothing but noise. On a genuine divergence the code shape is a
-        # different object, so run the full battery (thickness included) on it.
+        # Always audit the code shape's topology and downstream mesh. A target
+        # program that re-executes to a broken or non-watertight solid must still
+        # be caught even when its gross signature matches the shipped STEP:
+        # measured on 396 samples, skipping the code shape entirely on a
+        # signature match changed 2.5% of verdicts and missed ~0.8% hard-invalid
+        # whose defect is on the code shape only. What we skip on a signature
+        # match is only wall-thickness sampling -- the costliest check, and a
+        # noisy sampled upper-bound already run on the STEP. On a genuine
+        # divergence the code shape is different, so include thickness too.
         code_audit = None
         if code_shape is not None:
             diverges = bool(divergence and divergence.get("diverges"))

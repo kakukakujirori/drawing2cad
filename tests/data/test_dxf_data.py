@@ -152,9 +152,7 @@ class DXFPrimitiveParserTest(unittest.TestCase):
         # exact: log1p(1 / normalized_radius) at every sample.
         circle = features[parsed.entity_type_names.index("CIRCLE")]
         expected_circle = math.log1p(1.0 / (4.0 * scale))
-        torch.testing.assert_close(
-            circle[:, 5], torch.full((17,), expected_circle)
-        )
+        torch.testing.assert_close(circle[:, 5], torch.full((17,), expected_circle))
         torch.testing.assert_close(circle[0, 3:5], circle[-1, 3:5])
 
         arc = features[parsed.entity_type_names.index("ARC")]
@@ -170,9 +168,9 @@ class DXFPrimitiveParserTest(unittest.TestCase):
             self.assertTrue(torch.all(visible_only.sample_features[..., 2] == 1.0))
 
             with self.assertRaisesRegex(DXFParseError, "unsupported entity TEXT"):
-                DXFPrimitiveParser(
-                    DXFPrimitiveConfig(strict_entity_types=True)
-                ).parse(path, view_bboxes=self._view_bboxes())
+                DXFPrimitiveParser(DXFPrimitiveConfig(strict_entity_types=True)).parse(
+                    path, view_bboxes=self._view_bboxes()
+                )
 
     def test_degenerate_entities_are_skipped_or_reported(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
@@ -193,9 +191,7 @@ class DXFPrimitiveParserTest(unittest.TestCase):
             self.assertEqual(parsed.num_primitives, 1)
             self.assertEqual(parsed.num_skipped_degenerate_entities, 1)
             with self.assertRaisesRegex(DXFParseError, "zero geometric length"):
-                DXFPrimitiveParser(
-                    DXFPrimitiveConfig(strict_entity_types=True)
-                ).parse(
+                DXFPrimitiveParser(DXFPrimitiveConfig(strict_entity_types=True)).parse(
                     path,
                     view_bboxes=(
                         ViewBBox("front", (0.0, 0.0, 4.0, 4.0)),
@@ -237,9 +233,9 @@ class DXFPrimitiveParserTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 DXFParseError, "requires exactly one bbox match"
             ):
-                DXFPrimitiveParser(
-                    DXFPrimitiveConfig(strict_entity_types=True)
-                ).parse(path, view_bboxes=overlapping_bboxes, sample_id="overlap")
+                DXFPrimitiveParser(DXFPrimitiveConfig(strict_entity_types=True)).parse(
+                    path, view_bboxes=overlapping_bboxes, sample_id="overlap"
+                )
 
     def test_drawing_with_only_out_of_sheet_geometry_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
@@ -258,7 +254,9 @@ class DXFPrimitiveParserTest(unittest.TestCase):
                     ),
                 )
 
-    def test_assignment_uses_raw_mean_and_reports_zero_or_multiple_matches(self) -> None:
+    def test_assignment_uses_raw_mean_and_reports_zero_or_multiple_matches(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             path = Path(directory) / "assignment.dxf"
             document = ezdxf.new("R2000")
@@ -288,7 +286,8 @@ class DXFPrimitiveParserTest(unittest.TestCase):
                 ViewBBox("right", (4.0, 4.0, 5.0, 5.0)),
             )
             with self.assertRaisesRegex(
-                DXFParseError, "sample_id='zero-match'.*entity_handle=.*representative_point"
+                DXFParseError,
+                "sample_id='zero-match'.*entity_handle=.*representative_point",
             ):
                 DXFPrimitiveParser(strict).parse(
                     path, view_bboxes=no_match, sample_id="zero-match"
@@ -299,7 +298,9 @@ class DXFPrimitiveParserTest(unittest.TestCase):
                 ViewBBox("top", (100.0, 49.0, 110.0, 51.0)),
                 ViewBBox("right", (140.0, 49.0, 150.0, 51.0)),
             )
-            with self.assertRaisesRegex(DXFParseError, "matched_directions=.*front.*top"):
+            with self.assertRaisesRegex(
+                DXFParseError, "matched_directions=.*front.*top"
+            ):
                 DXFPrimitiveParser(strict).parse(
                     path, view_bboxes=ambiguous, sample_id="multiple-match"
                 )

@@ -86,9 +86,7 @@ class Drawing2CADCollator:
             pad_value = (
                 self.pad_token_id if key == "input_ids" else self._PAD_VALUES[key]
             )
-            padded = tensors[0].new_full(
-                (len(samples), max_length), pad_value
-            )
+            padded = tensors[0].new_full((len(samples), max_length), pad_value)
             for batch_index, tensor in enumerate(tensors):
                 length = tensor.numel()
                 if self.padding_side == "right":
@@ -122,9 +120,7 @@ class Drawing2CADCollator:
             max_sample_count,
             dtype=torch.bool,
         )
-        primitive_mask = torch.zeros(
-            batch_size, max_primitives, dtype=torch.bool
-        )
+        primitive_mask = torch.zeros(batch_size, max_primitives, dtype=torch.bool)
         primitive_type_ids = torch.full(
             (batch_size, max_primitives), -1, dtype=torch.long
         )
@@ -178,9 +174,9 @@ class Drawing2CADCollator:
                     f"sample {sample.sample_id} has invalid view direction IDs"
                 )
 
-            features[
-                batch_index, :primitive_count, :sample_count
-            ] = primitive_data.sample_features
+            features[batch_index, :primitive_count, :sample_count] = (
+                primitive_data.sample_features
+            )
             sample_mask[batch_index, :primitive_count, :sample_count] = True
             primitive_mask[batch_index, :primitive_count] = True
             primitive_type_ids[batch_index, :primitive_count] = (
@@ -245,9 +241,11 @@ class Drawing2CADCollator:
             *model_inputs.keys(),
             *self._VISION_CONCAT_KEYS,
         }
-        unexpected = set().union(
-            *(set(sample.model_inputs) for sample in samples)
-        ).difference(handled_keys)
+        unexpected = (
+            set()
+            .union(*(set(sample.model_inputs) for sample in samples))
+            .difference(handled_keys)
+        )
         if unexpected:
             raise ValueError(
                 "collator has no declared padding/stacking rule for processor "
@@ -274,7 +272,9 @@ class Drawing2CADCollator:
                 supervised_starts.append(int(supervised[0].item()))
             window_start = min(supervised_starts) - 1
             if window_start < 0:
-                raise ValueError("completion labels require a preceding causal position")
+                raise ValueError(
+                    "completion labels require a preceding causal position"
+                )
             model_inputs["labels"] = labels[:, window_start:]
             model_inputs["logits_to_keep"] = labels.shape[1] - window_start
         else:

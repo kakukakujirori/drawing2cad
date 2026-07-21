@@ -13,10 +13,11 @@ diffs the two, and traces whether each chained solid-modifying call in the
 program actually changed the shape. See the module docstrings for the full
 rationale and the exact OCCT/CadQuery APIs used:
 
-- `solid_checks.py` — the check battery (self-intersection, non-manifold
-  edges, open/unsolidified boundaries, kernel tolerance blow-up, micro
-  edges/faces, sampled wall thickness, connected-component count) and the
-  HARD_INVALID / SOFT_SUSPECT / OK / UNAUDITABLE severity classifier.
+- `solid_checks.py` — the check battery (soft OCCT Boolean-argument
+  self-interference, hard downstream mesh validity, non-manifold edges,
+  open/unsolidified boundaries, kernel tolerance blow-up, micro edges/faces,
+  sampled wall thickness, connected-component count) and the HARD_INVALID /
+  SOFT_SUSPECT / OK / UNAUDITABLE severity classifier.
 - `op_trace.py` — monkeypatch-based tracer: did each `cut`/`union`/`fillet`/...
   call in the GT program actually change the shape it was chained onto.
 - `gt_audit.py` — the multiprocessing CLI that runs both over a directory,
@@ -44,9 +45,10 @@ useful for a quick look before committing to a full run.
 - `results.jsonl` — one full record per uuid (both shapes' check batteries,
   the divergence between them, the op-contribution trace, the final verdict).
   The STEP always gets the full battery; the executed code always gets the
-  full *topology* battery, but its sampled wall-thickness pass runs only when
-  the code's shape diverges from the STEP — a matching signature means the two
-  describe the same solid, so the STEP-side thickness sample already covers it.
+  full topology and downstream-mesh battery, but its sampled wall-thickness
+  pass runs only when the code's shape diverges from the STEP — a matching
+  signature means the two describe the same solid, so the STEP-side thickness
+  sample already covers it.
   The `code_thickness_audited` field records whether that pass ran for the code
   shape. This is the source of truth; everything else is derived from it via
   `aggregate()`, which you can re-run standalone with `--report-only` (e.g.
@@ -76,8 +78,8 @@ The audit is a gate, not just a report. Both the SFT dataloader
 audit:
   train_dir: .../data/z2c_train/target_audit   # a gt_audit.py --out-dir
   val_dir:   .../data/z2c_val/target_audit
-  allow_reasons: [thin_wall, noop_operation, micro_edge, micro_face,
-                  tolerance_bloat, kernel_small_edge]
+  allow_reasons: [bop_self_interference, thin_wall, noop_operation, micro_edge,
+                  micro_face, tolerance_bloat, kernel_small_edge]
   allow_hard: false
   allow_unauditable: false
 # audit: null   # disable the gate entirely
@@ -99,13 +101,16 @@ re-render, since it runs at dataloader-build time.
 
 ## Severity tiers
 
-- **hard_invalid** → `hard_invalid.txt`. The shape itself is broken:
-  self-intersecting, non-manifold, an open/unsolidified boundary, fragmented
-  into >1 disjoint solid, zero/negative volume, or the STEP/code simply
-  failed to load/execute. Excluded by default (kept only with `allow_hard`).
+- **hard_invalid** → `hard_invalid.txt`. The shape itself is broken or cannot
+  be consumed by the evaluation geometry path: invalid/non-watertight mesh,
+  non-manifold or open/unsolidified boundary, fragmentation into >1 disjoint
+  solid, zero/negative volume, or STEP/code load/execute failure. Excluded by
+  default (kept only with `allow_hard`). `mesh_not_watertight` uses the same
+  CadQuery tessellation + processed-Trimesh check as the evaluator.
 - **soft_suspect** → `soft_suspect.txt`. A technically valid solid with a smell:
-  thin walls, micro edges/faces, kernel tolerance blow-up, a no-op operation
-  in the GT program, or the executed code diverging from the shipped STEP
+  OCCT Boolean-argument self-interference (`bop_self_interference`), thin walls,
+  micro edges/faces, kernel tolerance blow-up, a no-op operation in the GT
+  program, or the executed code diverging from the shipped STEP
   (`gt_mismatch` — the SFT target text and the rendered input drawing would
   describe different objects; on the one sample seen with real divergence in
   the smoke test it did not correspond to any other flag, so it is worth
@@ -120,35 +125,6 @@ re-render, since it runs at dataloader-build time.
 `sample_wall_thickness`'s docstring), not an exact thickness field. It will
 false-positive on legitimate acute corners/wedges, so treat its prevalence
 as an upper bound worth spot-checking, not a precise count.
-
-## Measured findings (`stage_z2c_train`, n=600, seed-shuffled, uncontended)
-
-```
-hard_invalid  66  (11.0%)
-soft_suspect 232  (38.7%)
-ok           300  (50.0%)
-unauditable    2  (0.33%, both driver-side hard timeout)
-```
-
-reason breakdown: self_intersection=38, non_manifold_edge=27, unsolidified_shell=8,
-brepcheck_invalid=3, code_exec_failed=3, zero_or_negative_volume=1, disjoint_solids=1
-(hard); noop_operation=122, thin_wall=91, micro_edge=50, tolerance_bloat=14,
-gt_mismatch=2, micro_face=6 (soft). An earlier n=400 run (before a shuffle fix
-that removed a possible sampling bias — see below) landed within ~2 points of
-every one of these rates, which is corroborating, not contradicting.
-
-Headline: **self_intersection fired on 38 samples vs. brepcheck_invalid
-(`shape.isValid()`) on only 3** — `isValid()` alone misses the large majority
-of self-intersecting shapes in this corpus, which is the main reason this
-tool exists rather than just gating on `isValid()`. All reason categories
-were cross-checked against a low-level `STEPControl_Reader` read (not just
-this tool's own high-level path) before being trusted as real defects rather
-than checker artifacts, including a `TopAbs_COMPOUND` of 2 open shells / 8
-faces / 0 solids shipped as one part's reference STEP (`unsolidified_shell`).
-
-The n=600 rate above is already a reasonably tight estimate (binomial 95% CI
-on 11.0% hard-invalid is roughly ±2.5 points) — a bigger sample mainly buys a
-*complete list* of which specific uuids are bad, not a materially better rate.
 
 ## Tests
 

@@ -23,7 +23,6 @@ from .dxf import (
     DXFPrimitiveConfig,
     DXFPrimitiveParser,
 )
-from .preprocessing import Drawing2CADPreprocessor
 
 
 @dataclass(frozen=True)
@@ -60,9 +59,9 @@ def _filter_by_length(
     reference = dataset.load_sample(0)
     if reference.target_code is None:
         raise ValueError("length filtering requires targets (include_target=True)")
-    overhead = preprocessor.sequence_length(reference) - preprocessor.target_token_count(
-        reference.target_code
-    )
+    overhead = preprocessor.sequence_length(
+        reference
+    ) - preprocessor.target_token_count(reference.target_code)
     kept: list[int] = []
     # The scan reads one small target file per sample; with a cold OS page cache
     # each read is a random disk seek (~10 ms) and the corpus has 100k+ files, so

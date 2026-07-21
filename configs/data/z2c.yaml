@@ -23,19 +23,22 @@ max_sequence_length: 3072
 # `allow_reasons`; `hard_invalid` / `unauditable` pass only via their blanket
 # flags. *_dir point at the `gt_audit.py --out-dir` for each split (must contain
 # results.jsonl). The same policy gates training and the validation benchmark.
-audit: null
-# audit:
-#   train_dir: ${paths.project_root}/data/z2c_train/target_audit
-#   val_dir: ${paths.project_root}/data/z2c_val/target_audit
-#   allow_reasons:
-#     - thin_wall
-#     - noop_operation
-#     - micro_edge
-#     - micro_face
-#     - tolerance_bloat
-#     - kernel_small_edge
-#   allow_hard: false
-#   allow_unauditable: false
+# audit: null
+audit:
+  train_dir: ${paths.project_root}/data/z2c_train/target_audit
+  val_dir: ${paths.project_root}/data/z2c_val/target_audit
+  allow_reasons:
+    # OCCT Boolean-argument self-interference is broader than material overlap;
+    # downstream-unusable cases are rejected separately as mesh_not_watertight.
+    - bop_self_interference
+    - thin_wall
+    - noop_operation
+    - micro_edge
+    - micro_face
+    - tolerance_bloat
+    - kernel_small_edge
+  allow_hard: false
+  allow_unauditable: false
 
 dxf:
   samples_per_primitive: 16

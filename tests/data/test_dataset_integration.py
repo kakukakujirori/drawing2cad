@@ -35,7 +35,9 @@ class DatasetModelIntegrationTest(unittest.TestCase):
                 local_files_only=True,
             )
         except OSError as error:
-            raise unittest.SkipTest(f"local Qwen processor unavailable: {error}") from error
+            raise unittest.SkipTest(
+                f"local Qwen processor unavailable: {error}"
+            ) from error
         cls.dxf_config = DXFPrimitiveConfig(samples_per_primitive=8)
         cls.primitive_config = PrimitiveEncoderConfig(
             sample_feature_dim=cls.dxf_config.sample_feature_dim,
@@ -133,9 +135,7 @@ class DatasetModelIntegrationTest(unittest.TestCase):
             )
             self.assertTrue(
                 torch.all(
-                    primitive_batch.view_direction_ids[
-                        batch_index, primitive_count:
-                    ]
+                    primitive_batch.view_direction_ids[batch_index, primitive_count:]
                     == -1
                 )
             )

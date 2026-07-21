@@ -2,11 +2,12 @@
 
 Targets concrete trust concerns about a synthetic (Zero-To-CAD-1m-derived)
 training corpus: zero/near-zero-volume material, micro edges/faces relative to
-both kernel tolerance and part scale, self-intersection, thin walls, solids
-fragmented into disjoint islands, and kernel tolerance blow-up (a proxy for
-"the boolean kernel struggled here"). Operation-contribution tracing (did a
-chained CadQuery call actually change the shape) lives in ``op_trace.py``
-since it needs to execute source code, not just inspect a finished shape.
+both kernel tolerance and part scale, BOP self-interference, downstream mesh
+validity, thin walls, solids fragmented into disjoint islands, and kernel
+tolerance blow-up (a proxy for "the boolean kernel struggled here").
+Operation-contribution tracing (did a chained CadQuery call actually change
+the shape) lives in ``op_trace.py`` since it needs to execute source code, not
+just inspect a finished shape.
 
 Every check takes a ``cadquery.Shape`` and returns a small immutable result.
 ``audit_shape`` runs the full battery and folds the results into a severity
@@ -137,7 +138,8 @@ class ShapeSignature:
         if abs(self.volume - other.volume) / denom > volume_tol:
             return False
         return all(
-            abs(a - b) <= extent_tol for a, b in zip(self.bbox_extents, other.bbox_extents)
+            abs(a - b) <= extent_tol
+            for a, b in zip(self.bbox_extents, other.bbox_extents)
         )
 
 
@@ -145,7 +147,7 @@ class ShapeSignature:
 class TopologyResult:
     brepcheck_valid: bool
     brepcheck_status_histogram: dict[str, int]
-    self_intersects: bool
+    bop_self_interference: bool
     kernel_flags_small_edge: bool
     has_open_boundary: bool
     free_boundary_edge_count: int
@@ -174,9 +176,21 @@ class ThicknessResult:
 
 
 @dataclass(frozen=True)
+class MeshValidityResult:
+    """Validity of the tessellated mesh used by the evaluation pipeline."""
+
+    tessellated: bool
+    n_vertices: int
+    n_faces: int
+    watertight: bool
+    error: str | None
+
+
+@dataclass(frozen=True)
 class ShapeAudit:
     signature: ShapeSignature
     topology: TopologyResult
+    mesh: MeshValidityResult | None
     thickness: ThicknessResult | None
     severity: Severity
     reasons: list[str]
@@ -239,18 +253,18 @@ def brepcheck_defect_histogram(shape: cq.Shape) -> tuple[bool, dict[str, int]]:
     return bool(analyzer.IsValid()), histogram
 
 
-def check_self_intersection(shape: cq.Shape) -> tuple[bool, bool]:
-    """Global 3D self-intersection + kernel-relative tiny-edge detection.
+def check_bop_self_interference(shape: cq.Shape) -> tuple[bool, bool]:
+    """Boolean-operation self-interference signal + tiny-edge detection.
 
-    BRepCheck_Analyzer does mostly local/parametric consistency checks; it
-    does not reliably catch two non-adjacent parts of a shape overlapping in
-    3D space (e.g. a botched union leaving interpenetrating material).
-    BOPAlgo_ArgumentAnalyzer is what the boolean-op pipeline itself uses for
-    that, so it is the authoritative source here. Confirmed empirically: a
-    self-crossing (bowtie) profile extrusion is flagged with
-    BOPAlgo_SelfIntersect in ~1-2ms; typical real parts take 5-200ms.
+    ``BOPAlgo_ArgumentAnalyzer`` checks whether a shape is a safe argument for
+    later OCCT Boolean operations. Its ``BOPAlgo_SelfIntersect`` status covers
+    geometrical coincidence between sub-shapes which do not share the matching
+    topology, including tolerance-level point/curve contacts. It therefore
+    does *not* prove that material overlaps in 3D and is retained as a soft
+    diagnostic signal. Downstream usability is checked independently by
+    :func:`check_mesh_validity`.
 
-    Returns (self_intersects, kernel_flags_small_edge).
+    Returns ``(bop_self_interference, kernel_flags_small_edge)``.
     """
 
     analyzer = BOPAlgo_ArgumentAnalyzer()
@@ -258,15 +272,15 @@ def check_self_intersection(shape: cq.Shape) -> tuple[bool, bool]:
     analyzer.SelfInterMode = True
     analyzer.SmallEdgeMode = True
     analyzer.Perform()
-    self_intersects = False
+    self_interference = False
     small_edge = False
     for result in analyzer.GetCheckResult():
         status = result.GetCheckStatus()
-        if status == BOPAlgo_CheckStatus.BOPAlgo_SelfIntersect:
-            self_intersects = True
-        elif status == BOPAlgo_CheckStatus.BOPAlgo_TooSmallEdge:
+        if status == BOPAlgo_CheckStatus.BOPAlgo_TooSmallEdge:
             small_edge = True
-    return self_intersects, small_edge
+        elif status == BOPAlgo_CheckStatus.BOPAlgo_SelfIntersect:
+            self_interference = True
+    return self_interference, small_edge
 
 
 def check_open_boundary(
@@ -356,7 +370,7 @@ def small_features(
 ) -> tuple[int, int]:
     """Count edges/faces small relative to the part's own bbox diagonal.
 
-    Distinct from check_self_intersection's kernel_flags_small_edge: that one
+    Distinct from check_bop_self_interference's kernel small-edge flag: that one
     is the kernel's own (tolerance-relative) opinion; this one is "is this
     edge/face a visually/semantically negligible sliver of THIS part,"
     e.g. a 0.01mm edge on a 500mm part is kernel-fine but design-degenerate.
@@ -367,8 +381,91 @@ def small_features(
     edge_floor = edge_relative * bbox_diagonal
     face_floor = face_relative * bbox_diagonal
     n_small_edges = sum(1 for e in shape.Edges() if e.Length() < edge_floor)
-    n_small_faces = sum(1 for f in shape.Faces() if math.sqrt(max(f.Area(), 0.0)) < face_floor)
+    n_small_faces = sum(
+        1 for f in shape.Faces() if math.sqrt(max(f.Area(), 0.0)) < face_floor
+    )
     return n_small_edges, n_small_faces
+
+
+def _tessellated_mesh(shape: cq.Shape, tessellation_tolerance: float):
+    """Build the same processed Trimesh representation as the evaluator."""
+
+    import trimesh
+
+    vertices, faces = shape.tessellate(tessellation_tolerance)
+    return trimesh.Trimesh(
+        vertices=[(v.x, v.y, v.z) for v in vertices],
+        faces=faces,
+        process=True,
+    )
+
+
+def _mesh_validity_result(mesh) -> MeshValidityResult:
+    n_faces = len(mesh.faces)
+    watertight = bool(n_faces >= 3 and mesh.is_watertight)
+    return MeshValidityResult(
+        tessellated=True,
+        n_vertices=len(mesh.vertices),
+        n_faces=n_faces,
+        watertight=watertight,
+        error=None,
+    )
+
+
+def _mesh_failure_result(exc: Exception) -> MeshValidityResult:
+    message = " ".join(str(exc).split())
+    label = type(exc).__name__
+    error = f"{label}: {message}" if message else label
+    return MeshValidityResult(False, 0, 0, False, error[:500])
+
+
+def check_mesh_validity(
+    shape: cq.Shape, *, tessellation_tolerance: float = 0.1
+) -> MeshValidityResult:
+    """Apply the evaluator's tessellation + processed-mesh validity check."""
+
+    try:
+        return _mesh_validity_result(_tessellated_mesh(shape, tessellation_tolerance))
+    except Exception as exc:
+        return _mesh_failure_result(exc)
+
+
+def _sample_wall_thickness_from_mesh(
+    mesh, *, bbox_diagonal: float, n_samples: int, seed: int
+) -> ThicknessResult:
+    import numpy as np
+    import trimesh
+
+    if n_samples <= 0:
+        return ThicknessResult(0, 0, None, None, None, None)
+    if len(mesh.faces) < 1:
+        return ThicknessResult(n_samples, 0, None, None, None, None)
+
+    points, face_idx = trimesh.sample.sample_surface(mesh, n_samples, seed=seed)
+    normals = mesh.face_normals[face_idx]
+    eps = 1e-6 * max(mesh.scale, 1e-9)
+    origins = points - normals * eps
+    directions = -normals
+    locations, index_ray, _ = mesh.ray.intersects_location(
+        origins, directions, multiple_hits=False
+    )
+    n_hits = len(locations)
+    if n_hits == 0:
+        return ThicknessResult(n_samples, 0, None, None, None, None)
+
+    dists = np.linalg.norm(locations - origins[index_ray], axis=1)
+    dists.sort()
+    min_thickness = float(dists[0])
+    return ThicknessResult(
+        n_rays=n_samples,
+        n_hits=int(n_hits),
+        min_thickness_mm=min_thickness,
+        p05_thickness_mm=float(dists[max(0, int(0.05 * len(dists)) - 1)]),
+        median_thickness_mm=float(dists[len(dists) // 2]),
+        min_thickness_relative=(
+            min_thickness / bbox_diagonal if bbox_diagonal > 0 else None
+        ),
+    )
 
 
 def sample_wall_thickness(
@@ -390,48 +487,21 @@ def sample_wall_thickness(
     rays on real ~100-face GT parts).
     """
 
-    import numpy as np
-    import trimesh
-
     if n_samples <= 0:
         return ThicknessResult(0, 0, None, None, None, None)
-
-    vertices, faces = shape.tessellate(tessellation_tolerance)
-    mesh = trimesh.Trimesh(
-        vertices=[(v.x, v.y, v.z) for v in vertices], faces=faces, process=True
-    )
-    if len(mesh.faces) < 1:
-        return ThicknessResult(n_samples, 0, None, None, None, None)
-
-    points, face_idx = trimesh.sample.sample_surface(mesh, n_samples, seed=seed)
-    normals = mesh.face_normals[face_idx]
-    eps = 1e-6 * max(mesh.scale, 1e-9)
-    origins = points - normals * eps
-    directions = -normals
-    locations, index_ray, _ = mesh.ray.intersects_location(
-        origins, directions, multiple_hits=False
-    )
-    n_hits = len(locations)
-    if n_hits == 0:
-        return ThicknessResult(n_samples, 0, None, None, None, None)
-
-    dists = np.linalg.norm(locations - origins[index_ray], axis=1)
-    dists.sort()
-    _, bbox_diag = _safe_bbox(shape)
-    min_thickness = float(dists[0])
-    return ThicknessResult(
-        n_rays=n_samples,
-        n_hits=int(n_hits),
-        min_thickness_mm=min_thickness,
-        p05_thickness_mm=float(dists[max(0, int(0.05 * len(dists)) - 1)]),
-        median_thickness_mm=float(dists[len(dists) // 2]),
-        min_thickness_relative=(min_thickness / bbox_diag if bbox_diag > 0 else None),
+    mesh = _tessellated_mesh(shape, tessellation_tolerance)
+    _, bbox_diagonal = _safe_bbox(shape)
+    return _sample_wall_thickness_from_mesh(
+        mesh,
+        bbox_diagonal=bbox_diagonal,
+        n_samples=n_samples,
+        seed=seed,
     )
 
 
 def audit_topology(shape: cq.Shape, thresholds: Thresholds) -> TopologyResult:
     brepcheck_valid, histogram = brepcheck_defect_histogram(shape)
-    self_intersects, kernel_small_edge = check_self_intersection(shape)
+    bop_self_interference, kernel_small_edge = check_bop_self_interference(shape)
     has_open_boundary, free_edge_count = check_open_boundary(
         shape, tolerance=thresholds.free_boundary_tolerance_mm
     )
@@ -449,7 +519,7 @@ def audit_topology(shape: cq.Shape, thresholds: Thresholds) -> TopologyResult:
     return TopologyResult(
         brepcheck_valid=brepcheck_valid,
         brepcheck_status_histogram=histogram,
-        self_intersects=self_intersects,
+        bop_self_interference=bop_self_interference,
         kernel_flags_small_edge=kernel_small_edge,
         has_open_boundary=has_open_boundary,
         free_boundary_edge_count=free_edge_count,
@@ -473,23 +543,25 @@ def classify_severity(
     thickness: ThicknessResult | None,
     thresholds: Thresholds,
     *,
+    mesh: MeshValidityResult | None = None,
     extra_soft_reasons: Sequence[str] = (),
 ) -> tuple[Severity, list[str]]:
     """Fold check results into one verdict + auditable reason codes.
 
-    HARD_INVALID: the shape itself is broken (self-intersecting, non-
-    manifold, open, fragmented, zero/negative volume) -- these are the
-    candidates for hard exclusion from training.
+    HARD_INVALID: the shape itself is broken or unusable downstream (invalid
+    B-rep, non-watertight evaluation mesh, non-manifold, open, fragmented,
+    zero/negative volume) -- candidates for hard exclusion from training.
     SOFT_SUSPECT: the shape is a technically valid solid but has a smell
-    (tolerance bloat, micro features, thin walls, extreme aspect) --
-    candidates for review/downweighting, not automatic exclusion.
+    (BOP self-interference, tolerance bloat, micro features, thin walls,
+    extreme aspect) -- candidates for review/downweighting, not automatic
+    exclusion.
     """
 
     hard: list[str] = []
     if not topology.brepcheck_valid:
         hard.append("brepcheck_invalid")
-    if topology.self_intersects:
-        hard.append("self_intersection")
+    if mesh is not None and not mesh.watertight:
+        hard.append("mesh_not_watertight")
     if topology.non_manifold_edge_count > 0:
         hard.append("non_manifold_edge")
     if topology.has_open_boundary:
@@ -507,15 +579,15 @@ def classify_severity(
         hard.append("unsolidified_shell" if topology.n_faces > 0 else "empty_shape")
     elif topology.n_solids > 1:
         hard.append("disjoint_solids")
-    if topology.n_solids >= 1 and (
-        topology.volume <= thresholds.zero_volume_abs_mm3
-    ):
+    if topology.n_solids >= 1 and (topology.volume <= thresholds.zero_volume_abs_mm3):
         hard.append("zero_or_negative_volume")
 
     if hard:
         return Severity.HARD_INVALID, hard
 
     soft: list[str] = list(extra_soft_reasons)
+    if topology.bop_self_interference:
+        soft.append("bop_self_interference")
     if topology.max_tolerance_mm > thresholds.tolerance_bloat_abs_mm:
         soft.append("tolerance_bloat")
     if topology.kernel_flags_small_edge:
@@ -547,30 +619,49 @@ def audit_shape(
     thresholds = thresholds or Thresholds()
     signature = ShapeSignature.of(shape)
     topology = audit_topology(shape, thresholds)
+    mesh_result = None
     thickness = None
-    # Thickness sampling needs a tessellatable, non-degenerate solid; skip it
-    # for shapes already hard-invalid at the topology level (garbage in,
-    # garbage out -- and tessellate() can itself throw on some invalid shapes).
+    tessellated_mesh = None
+    # Skip tessellation only when an independent topology check already proves
+    # the shape hard-invalid. BOP self-interference is deliberately absent: it
+    # is soft and must still receive the downstream mesh and thickness checks.
     hard_precheck = (
         not topology.brepcheck_valid
-        or topology.self_intersects
+        or topology.non_manifold_edge_count > 0
+        or topology.has_open_boundary
         or topology.n_solids != 1
         or topology.volume <= thresholds.zero_volume_abs_mm3
     )
-    if with_thickness and not hard_precheck:
+    if not hard_precheck:
         try:
-            thickness = sample_wall_thickness(
-                shape,
+            tessellated_mesh = _tessellated_mesh(
+                shape, thresholds.tessellation_tolerance_mm
+            )
+            mesh_result = _mesh_validity_result(tessellated_mesh)
+        except Exception as exc:
+            mesh_result = _mesh_failure_result(exc)
+    if (
+        with_thickness
+        and tessellated_mesh is not None
+        and mesh_result is not None
+        and mesh_result.watertight
+    ):
+        try:
+            thickness = _sample_wall_thickness_from_mesh(
+                tessellated_mesh,
+                bbox_diagonal=topology.bbox_diagonal,
                 n_samples=thresholds.thickness_samples,
                 seed=thresholds.thickness_seed,
-                tessellation_tolerance=thresholds.tessellation_tolerance_mm,
             )
         except Exception:
             thickness = None
-    severity, reasons = classify_severity(topology, thickness, thresholds)
+    severity, reasons = classify_severity(
+        topology, thickness, thresholds, mesh=mesh_result
+    )
     return ShapeAudit(
         signature=signature,
         topology=topology,
+        mesh=mesh_result,
         thickness=thickness,
         severity=severity,
         reasons=reasons,
@@ -592,7 +683,9 @@ def compare_signatures(
     volume_denom = max(abs(a.volume), abs(b.volume), 1e-12)
     volume_rel = abs(a.volume - b.volume) / volume_denom
     bbox_denom = max(a.bbox_diagonal, b.bbox_diagonal, 1e-12)
-    bbox_rel = max(abs(x - y) for x, y in zip(a.bbox_extents, b.bbox_extents)) / bbox_denom
+    bbox_rel = (
+        max(abs(x - y) for x, y in zip(a.bbox_extents, b.bbox_extents)) / bbox_denom
+    )
     diverges = (
         volume_rel > thresholds.divergence_volume_relative
         or bbox_rel > thresholds.divergence_bbox_relative
@@ -613,10 +706,12 @@ __all__ = [
     "Thresholds",
     "ShapeSignature",
     "TopologyResult",
+    "MeshValidityResult",
     "ThicknessResult",
     "ShapeAudit",
     "brepcheck_defect_histogram",
-    "check_self_intersection",
+    "check_bop_self_interference",
+    "check_mesh_validity",
     "check_open_boundary",
     "check_non_manifold_edges",
     "check_tolerance",

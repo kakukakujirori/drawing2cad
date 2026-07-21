@@ -174,9 +174,7 @@ class ManifestSampleMetadataProvider:
         if not isinstance(techdraw, dict):
             raise MetadataError("extra.techdraw must be an object")
         if techdraw.get("bbox_format") != "xyxy":
-            raise MetadataError(
-                "extra.techdraw.bbox_format must be exactly 'xyxy'"
-            )
+            raise MetadataError("extra.techdraw.bbox_format must be exactly 'xyxy'")
         coordinate_system = techdraw.get("bbox_coordinate_system")
         expected_coordinate_system = {
             "unit": "mm",
