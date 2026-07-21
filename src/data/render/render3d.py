@@ -16,7 +16,7 @@ Styles (data/eccv2026-cad-challenge-data/train/render_3d/<style>/NNNNNN.png):
     very faint translucent face fill (same camera, pixel-aligned).
 
 Camera (calibrated on data/eccv2026-cad-challenge-data/train, see
-calibrate_render3d.py): world up is +Y (matches src/render/techdraw.py's
+calibrate_render3d.py): world up is +Y (matches src/data/render/techdraw.py's
 IoU-verified FRONT/TOP/RIGHT frames: FRONT looks -Z with up +Y). The 3D
 renders use a single fixed SolidWorks-style trimetric/isometric direction
 (same relative camera for every part, auto-framed to each part's bounding
@@ -67,7 +67,7 @@ from OCC.Core.TopLoc import TopLoc_Location
 from OCC.Core.TopoDS import topods
 from OCC.Core.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
 
-from src.render.config import RENDER3D_SIZE, Render3dPaths
+from src.data.render.config import RENDER3D_SIZE, Render3dPaths
 
 
 # ---------------------------------------------------------------------------
@@ -1198,7 +1198,7 @@ def generate_render3d(
 if __name__ == "__main__":  # pragma: no cover - manual smoke test
     import sys
 
-    from src.render.config import render3d_paths
+    from src.data.render.config import render3d_paths
 
     step = Path(sys.argv[1])
     out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("/tmp/render3d_out")

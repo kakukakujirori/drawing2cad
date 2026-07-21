@@ -1,7 +1,7 @@
 """Batch renderer: STEP files -> ECCV-style techdraw (svg/dxf/pdf) + render_3d PNGs.
 
 Usage:
-    python src/render/render_dataset.py --input_dir <INPUT> --output_dir <OUTDIR> \
+    python src/data/render/render_dataset.py --input_dir <INPUT> --output_dir <OUTDIR> \
         [--workers N] [--timeout SEC] [--limit N] [--no-render3d] [--no-techdraw]
 
 INPUT is a flat folder containing ``{stem}.step`` files (``{stem}.cadquery.py``
@@ -34,7 +34,7 @@ import rootutils
 
 ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-from src.render.config import (  # noqa: E402
+from src.data.render.config import (  # noqa: E402
     PartResult,
     Render3dPaths,
     TechdrawPaths,
@@ -68,12 +68,12 @@ def _worker(
     result = PartResult(name=step_path.stem, ok=True)
     try:
         if td is not None:
-            from src.render.techdraw import generate_techdraw
+            from src.data.render.techdraw import generate_techdraw
 
             result.extra["techdraw"] = generate_techdraw(step_path, td)
             result.techdraw_ok = True
         if r3 is not None:
-            from src.render.render3d import generate_render3d
+            from src.data.render.render3d import generate_render3d
 
             generate_render3d(step_path, r3)
             result.render3d_ok = True

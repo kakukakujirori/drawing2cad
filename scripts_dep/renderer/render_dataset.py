@@ -30,9 +30,9 @@ import FreeCAD as App
 import Part
 import TechDraw
 
-from scripts.renderer.cad_projector import CADProjector
-from scripts.renderer.graph_builder import GraphBuilder
-from scripts.renderer.dimensioner import LegacyDimensioner
+from scripts_dep.renderer.cad_projector import CADProjector
+from scripts_dep.renderer.graph_builder import GraphBuilder
+from scripts_dep.renderer.dimensioner import LegacyDimensioner
 
 # projection_dir recorded per ortho view: unit vector from the part TOWARD the
 # viewer (= TechDraw Direction), third-angle. These are exactly the vectors

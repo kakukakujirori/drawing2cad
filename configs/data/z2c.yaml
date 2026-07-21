@@ -12,6 +12,31 @@ image_max_edge: null
 # Set to null to disable filtering.
 max_sequence_length: 3072
 
+# GT-audit gate (src/data/audit). Disabled by default: the gate is fail-closed
+# and intersects the rendered corpus with the audited allow-set, so enabling it
+# against an INCOMPLETE audit silently shrinks training to whatever was audited
+# (it only errors on an *empty* intersection). Enable only after Step 2 has
+# audited the FULL split. To enable, replace `audit: null` with the block below.
+#
+# Keeps a sample only if its audited verdict is acceptable: severity `ok` always
+# passes; `soft_suspect` passes iff every one of its reason codes is in
+# `allow_reasons`; `hard_invalid` / `unauditable` pass only via their blanket
+# flags. *_dir point at the `gt_audit.py --out-dir` for each split (must contain
+# results.jsonl). The same policy gates training and the validation benchmark.
+audit: null
+# audit:
+#   train_dir: ${paths.project_root}/data/z2c_train/target_audit
+#   val_dir: ${paths.project_root}/data/z2c_val/target_audit
+#   allow_reasons:
+#     - thin_wall
+#     - noop_operation
+#     - micro_edge
+#     - micro_face
+#     - tolerance_bloat
+#     - kernel_small_edge
+#   allow_hard: false
+#   allow_unauditable: false
+
 dxf:
   samples_per_primitive: 16
   spline_flattening_distance_mm: 0.05

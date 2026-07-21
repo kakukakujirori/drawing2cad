@@ -23,6 +23,7 @@ from src.data import (
     ManifestSampleMetadataProvider,
     RasterImageSource,
 )
+from src.data.audit.gate import gate_present_ids_from_config
 from src.evaluation.evaluator import (
     EvaluationConfig,
     EvaluationItem,
@@ -78,6 +79,19 @@ class CADGenerationEvaluator:
             Path(self.data_config["val_root"]) / "manifest.jsonl"
         )
         available = list(provider.sample_ids)
+        # Gate the benchmark on the same GT-audit allow policy as training, so a
+        # broken/mislabeled GT solid never contributes a meaningless IoU target.
+        audit_config = self.data_config.get("audit")
+        if audit_config:
+            allowed = gate_present_ids_from_config(
+                audit_config, "val_dir", available, context="val benchmark"
+            )
+            available = [sample_id for sample_id in available if sample_id in allowed]
+            if not available:
+                raise ValueError(
+                    "no validation samples pass the audit allow-list "
+                    "(is data.audit.val_dir correct and audited?)"
+                )
         requested = int(
             self.evaluation_config.get("generation_subset_size", len(available))
         )

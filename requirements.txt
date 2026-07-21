@@ -2,6 +2,7 @@ accelerate
 cairosvg
 datasets
 einops
+embreex
 ezdxf
 hatchling
 huggingface_hub
@@ -16,6 +17,7 @@ pytest
 pyyaml
 rich
 rootutils
+rtree
 ruff
 safetensors
 scipy

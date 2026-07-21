@@ -7,9 +7,9 @@ across MULTIPLE parts at once, since any single part can have symmetries that
 make the proxy metric ambiguous).
 
 Usage:
-    python src/render/calibrate_render3d.py search      # coarse+fine camera search
-    python src/render/calibrate_render3d.py compare      # render calibrated cfg vs GT
-    python src/render/calibrate_render3d.py smoke        # smoke-test on real-scale STEPs
+    python src/data/render/calibrate_render3d.py search      # coarse+fine camera search
+    python src/data/render/calibrate_render3d.py compare      # render calibrated cfg vs GT
+    python src/data/render/calibrate_render3d.py smoke        # smoke-test on real-scale STEPs
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 from scipy.ndimage import gaussian_filter  # noqa: E402
 
-from src.render.config import render3d_paths  # noqa: E402
-from src.render.render3d import (  # noqa: E402
+from src.data.render.config import render3d_paths  # noqa: E402
+from src.data.render.render3d import (  # noqa: E402
     Render3dConfig,
     _build_camera,
     _fit_transform,
@@ -102,7 +102,7 @@ def score_cfg_multi(stems: list[str], cfg: Render3dConfig) -> float:
 
 # --------------------------------------------------------------------------
 # Search: enumerate SolidWorks-standard candidate families (world Y-up,
-# confirmed by src/render/techdraw.py's IoU-verified front/top/right frames),
+# confirmed by src/data/render/techdraw.py's IoU-verified front/top/right frames),
 # each combined with a handful of roll values, scored against ALL calibration
 # parts jointly (kills the single-part symmetry degeneracy).
 # --------------------------------------------------------------------------

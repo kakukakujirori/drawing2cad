@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.render.config import CENTERMARK_CROSS_MM, CENTERMARK_EXT_MM, CENTERMARK_GAP_MM
-from src.render.layout import PlacedView
+from src.data.render.config import CENTERMARK_CROSS_MM, CENTERMARK_EXT_MM, CENTERMARK_GAP_MM
+from src.data.render.layout import PlacedView
 
 
 @dataclass

@@ -20,13 +20,13 @@ from pathlib import Path
 
 from OCC.Core.STEPControl import STEPControl_Reader
 
-from src.render.centermarks import all_marks
-from src.render.config import SHEET_H_MM, SHEET_W_MM, TechdrawPaths
-from src.render.hlr import project
-from src.render.layout import Layout, build_layout
-from src.render.writers.dxf_writer import write_dxf
-from src.render.writers.pdf_writer import write_pdf
-from src.render.writers.svg_writer import write_svg
+from src.data.render.centermarks import all_marks
+from src.data.render.config import SHEET_H_MM, SHEET_W_MM, TechdrawPaths
+from src.data.render.hlr import project
+from src.data.render.layout import Layout, build_layout
+from src.data.render.writers.dxf_writer import write_dxf
+from src.data.render.writers.pdf_writer import write_pdf
+from src.data.render.writers.svg_writer import write_svg
 
 
 # Third-angle view frames (view_dir, up_dir), verified by raster-IoU vs GT.
@@ -228,7 +228,7 @@ if __name__ == "__main__":  # pragma: no cover - manual smoke test
     import rootutils
 
     rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
-    from src.render.config import techdraw_paths
+    from src.data.render.config import techdraw_paths
 
     step = Path(sys.argv[1])
     out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("/tmp/td_out")

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 
-from src.render.config import (
+from src.data.render.config import (
     MM_TO_PT,
     SHEET_H_PT,
     SHEET_W_PT,
@@ -18,7 +18,7 @@ from src.render.config import (
     SVG_STYLE_VISIBLE,
     SVG_TRANSFORM,
 )
-from src.render.centermarks import mark_svg_arms
+from src.data.render.centermarks import mark_svg_arms
 
 
 def _num(v: float) -> str:

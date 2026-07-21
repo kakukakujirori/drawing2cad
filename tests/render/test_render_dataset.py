@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-from src.render.config import TechdrawPaths
-from src.render.render_dataset import _load_done, _worker
+from src.data.render.config import TechdrawPaths
+from src.data.render.render_dataset import _load_done, _worker
 
 
 def test_worker_records_techdraw_info_in_manifest_extra(monkeypatch) -> None:
@@ -26,9 +26,9 @@ def test_worker_records_techdraw_info_in_manifest_extra(monkeypatch) -> None:
             "right": {"bbox": [85.0, 20.0, 100.0, 60.0]},
         },
     }
-    techdraw_module = ModuleType("src.render.techdraw")
+    techdraw_module = ModuleType("src.data.render.techdraw")
     techdraw_module.generate_techdraw = lambda step, paths: info
-    monkeypatch.setitem(sys.modules, "src.render.techdraw", techdraw_module)
+    monkeypatch.setitem(sys.modules, "src.data.render.techdraw", techdraw_module)
 
     paths = TechdrawPaths(Path("part.svg"), Path("part.dxf"), Path("part.pdf"))
     result_queue: queue.Queue = queue.Queue()

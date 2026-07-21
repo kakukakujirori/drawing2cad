@@ -5,8 +5,8 @@ except ImportError:
 import FreeCAD as App
 import Part
 
-from scripts.renderer.cad_projector import CADProjector
-from scripts.renderer.graph_builder import GraphBuilder
+from scripts_dep.renderer.cad_projector import CADProjector
+from scripts_dep.renderer.graph_builder import GraphBuilder
 
 
 def test_ray_casting():
@@ -167,7 +167,11 @@ class _FakeShape:
 
 def test_classify_edge_fallback():
     print("\n=== classify_edge fallback (undefined curve type -> polyline) ===")
-    from scripts.renderer.render_dataset import classify_edge, edge_to_path, _FALLBACK
+    from scripts_dep.renderer.render_dataset import (
+        classify_edge,
+        edge_to_path,
+        _FALLBACK,
+    )
 
     _FALLBACK.clear()
     bad = _BadCurveEdge([(0, 0, 0), (5, 1, 0), (10, 0, 0)])
@@ -195,7 +199,7 @@ def test_classify_edge_fallback():
 
 def test_classify_edge_extent_guards():
     print("\n=== classify_edge finite-envelope guards ===")
-    from scripts.renderer.render_dataset import classify_edge, _FALLBACK
+    from scripts_dep.renderer.render_dataset import classify_edge, _FALLBACK
 
     env = (0, 0, 100, 100)
     _FALLBACK.clear()

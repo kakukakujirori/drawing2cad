@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.render.config import (
+from src.data.render.config import (
     ENVELOPE_H_MM,
     ENVELOPE_W_MM,
     SCALE_LADDER,
@@ -22,7 +22,7 @@ from src.render.config import (
     VIEW_GAP_H_MM,
     VIEW_GAP_V_MM,
 )
-from src.render.hlr import (
+from src.data.render.hlr import (
     Arc,
     Circle,
     Ellipse,

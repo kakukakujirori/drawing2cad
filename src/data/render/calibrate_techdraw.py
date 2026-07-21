@@ -13,7 +13,7 @@ the aligned GT drawing:
 Also smoke-tests real (original-scale, mm) STEP inputs.
 
 Usage:
-    python src/render/calibrate_techdraw.py [--n 24] [--stems 000000,...] \
+    python src/data/render/calibrate_techdraw.py [--n 24] [--stems 000000,...] \
         [--out DIR] [--timeout 60] [--real-dir DIR --real-n 3]
 """
 
@@ -37,7 +37,7 @@ import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 from scipy.ndimage import binary_dilation  # noqa: E402
 
-from src.render.config import techdraw_paths  # noqa: E402
+from src.data.render.config import techdraw_paths  # noqa: E402
 
 GT_DIR = ROOT / "data" / "eccv2026-cad-challenge-data" / "train"
 
@@ -207,8 +207,8 @@ def _worker(step, out_dir, stem, q):
     import rootutils as _r
 
     _r.setup_root(str(Path(__file__)), indicator=".project-root", pythonpath=True)
-    from src.render.techdraw import generate_techdraw
-    from src.render.config import techdraw_paths as _tp
+    from src.data.render.techdraw import generate_techdraw
+    from src.data.render.config import techdraw_paths as _tp
 
     try:
         info = generate_techdraw(Path(step), _tp(Path(out_dir), stem))

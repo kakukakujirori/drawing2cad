@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from src.models import PrimitiveEncoderConfig
 from src.utils import seed_worker
 
+from .audit.gate import gate_present_ids_from_config
 from .collator import Drawing2CADCollator
 from .dataset import Drawing2CADDataset, RasterImageSource
 from .preprocessing import Drawing2CADPreprocessor
@@ -91,6 +92,54 @@ def _filter_by_length(
     return Subset(dataset, kept)
 
 
+def _record_sample_ids(dataset: Drawing2CADDataset | Subset) -> list[str]:
+    """Sample id per positional index, for a raw dataset or a ``Subset`` of one.
+
+    ``_filter_by_length`` may already have wrapped the dataset in a ``Subset``
+    (which has no ``.records``), so resolve ids through the underlying dataset
+    when needed. This keeps the two filters composable in either order.
+    """
+    if isinstance(dataset, Subset):
+        base: Drawing2CADDataset = dataset.dataset  # type: ignore[assignment]
+        return [base.records[i].sample_id for i in dataset.indices]
+    return [record.sample_id for record in dataset.records]
+
+
+def _filter_by_audit(
+    dataset: Drawing2CADDataset | Subset,
+    allowed_ids: set[str],
+    *,
+    split: str,
+    show_progress: bool,
+) -> Subset:
+    """Keep only samples whose uuid passes the GT-audit allow policy.
+
+    ``allowed_ids`` is the verdict-derived allow-set (see
+    ``src.data.audit.gate``); it is intersected with the samples actually
+    present, so a clean verdict for a sample that never rendered is simply
+    absent here. Fail-closed: an empty intersection is an error, not a silent
+    empty corpus (it almost always means a wrong/missing audit directory).
+    """
+    kept = [
+        index
+        for index, sample_id in enumerate(_record_sample_ids(dataset))
+        if sample_id in allowed_ids
+    ]
+    if not kept:
+        raise ValueError(
+            f"[data:{split}] no samples pass the audit allow-list "
+            f"(is the audit dir correct and audited?)"
+        )
+    if show_progress:
+        total = len(dataset)
+        print(
+            f"[data:{split}] audit gate kept {len(kept)}/{total} "
+            f"(dropped {total - len(kept)})",
+            flush=True,
+        )
+    return Subset(dataset, kept)
+
+
 def build_sft_dataloaders(
     data_config: Mapping[str, Any],
     *,
@@ -133,21 +182,36 @@ def build_sft_dataloaders(
             transform=preprocessor,
         )
 
-    def build_split(root_key: str, max_key: str, split: str) -> Dataset:
-        full = dataset(root_key, max_key)
-        max_sequence_length = data_config.get("max_sequence_length")
-        if max_sequence_length is None:
-            return full
-        return _filter_by_length(
-            full,
-            preprocessor,
-            int(max_sequence_length),
-            split=split,
-            show_progress=show_progress,
-        )
+    audit_config = data_config.get("audit")
 
-    train_dataset = build_split("train_root", "train_max_samples", "train")
-    validation_dataset = build_split("val_root", "val_max_samples", "val")
+    def build_split(
+        root_key: str, max_key: str, split: str, audit_dir_key: str
+    ) -> Dataset:
+        full = dataset(root_key, max_key)
+        result: Drawing2CADDataset | Subset = full
+        max_sequence_length = data_config.get("max_sequence_length")
+        if max_sequence_length is not None:
+            result = _filter_by_length(
+                full,
+                preprocessor,
+                int(max_sequence_length),
+                split=split,
+                show_progress=show_progress,
+            )
+        if audit_config:
+            kept_ids = gate_present_ids_from_config(
+                audit_config,
+                audit_dir_key,
+                _record_sample_ids(result),
+                context=f"data:{split}",
+            )
+            result = _filter_by_audit(
+                result, kept_ids, split=split, show_progress=show_progress
+            )
+        return result
+
+    train_dataset = build_split("train_root", "train_max_samples", "train", "train_dir")
+    validation_dataset = build_split("val_root", "val_max_samples", "val", "val_dir")
     pad_token_id = processor.tokenizer.pad_token_id
     if pad_token_id is None:
         raise ValueError("processor tokenizer has no pad token ID")

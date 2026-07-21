@@ -8,6 +8,7 @@ strict_files: true
 scale_augmentation: false
 image_max_edge: null
 max_sequence_length: null
+audit: null  # smoke config must not depend on an audit run existing
 
 dxf:
   samples_per_primitive: 16

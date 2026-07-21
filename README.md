@@ -45,7 +45,7 @@ We use the [Zero-to-CAD](https://huggingface.co/datasets/ADSKAILab/Zero-To-CAD-1
 1. Randomly sample STEP files:
     ```bash
     # train
-    python src/render/select_zero_to_cad.py \
+    python src/data/render/select_zero_to_cad.py \
       --n 100000 \
       --stage_dir data/z2c_train/target \
       --split train \
@@ -53,7 +53,7 @@ We use the [Zero-to-CAD](https://huggingface.co/datasets/ADSKAILab/Zero-To-CAD-1
       --stratify  # ensure uniform diversity in difficulty
 
     # val
-    python src/render/select_zero_to_cad.py \
+    python src/data/render/select_zero_to_cad.py \
       --n 300 \
       --stage_dir data/z2c_val/target \
       --split validation \
@@ -61,16 +61,35 @@ We use the [Zero-to-CAD](https://huggingface.co/datasets/ADSKAILab/Zero-To-CAD-1
       --stratify
     ```
 
-2. Generate 2D drawings and isomentric renderings:
+2. Audit GT data:
     ```bash
     # train
-    python src/render/render_dataset.py \
-        --input_dir data/z2c_train/target \  # flat dir of {stem}.step ({stem}.cadquery.py ignored)
+    python src/data/audit/gt_audit.py \
+        --stage-dir data/z2c_train/target \
+        --out-dir data/z2c_train/target_audit \
+        --workers 30 \
+        --task-timeout-s 45
+
+    # val
+    python src/data/audit/gt_audit.py \
+        --stage-dir data/z2c_val/target \
+        --out-dir data/z2c_val/target_audit \
+        --workers 30 \
+        --task-timeout-s 45
+    ```
+
+    This generates `data/z2c_{train,val}/target_audit/results.json`. Based on this audit result and `configs/data/z2c.yaml` audit config, `Drawing2CADDataset` sieves training data samples.
+
+3. Generate 2D drawings and isomentric renderings:
+    ```bash
+    # train
+    python src/data/render/render_dataset.py \
+        --input_dir data/z2c_train/target \
         --output_dir data/z2c_train/ \
         [--workers N] [--timeout 120] [--limit N] [--no-render3d] [--no-techdraw]
 
     # val
-    python src/render/render_dataset.py \
+    python src/data/render/render_dataset.py \
         --input_dir data/z2c_val/target \
         --output_dir data/z2c_val/ \
         [--workers N] [--timeout 120] [--limit N] [--no-render3d] [--no-techdraw]
@@ -80,16 +99,16 @@ We use the [Zero-to-CAD](https://huggingface.co/datasets/ADSKAILab/Zero-To-CAD-1
 
     Resume: re-running with the same OUTPUT_DIR skips finished parts; each part runs in a killable subprocess because OCC HLR can hang in native code.
 
-    Calibration/verification harnesses: `src/render/calibrate_techdraw.py`, `src/render/calibrate_render3d.py`.
+    Calibration/verification harnesses: `src/data/render/calibrate_techdraw.py`, `src/data/render/calibrate_render3d.py`.
 
     Successful techdraw rows store layout metadata under `extra.techdraw`. View and cluster `bbox` values use `[xmin, ymin, xmax, ymax]` (`bbox_format="xyxy"`) in sheet-mm with a bottom-left origin. Manifests created before this metadata was added are refreshed on the next techdraw run; pass `--no-render3d` to avoid re-rendering the perspective images during that one-time migration.
 
 ## DXF + raster -> CadQuery SFT
 
+Specify the number of GPUs at `--num_processes`:
+
 ```bash
-accelerate launch \
-  --num_processes 2 \ # GPU num
-  src/train_sft.py
+accelerate launch --num_processes 2 src/train_sft.py
 ```
 
 Runs are written to `logs/train_sft/<yyyy-mm-dd_hh-mm-ss>/`.
@@ -98,9 +117,7 @@ Resume an interrupted run into the same directory with its original planned
 step limit:
 
 ```bash
-python src/train_sft.py \
-    training.resume_from_latest=true \
-    training.max_steps=<ORIGINAL_MAX_STEPS> \
+python src/train_sft.py training.resume_from_latest=true \
     hydra.run.dir=logs/train_sft/<RUN_DIRECTORY>
 ```
 
