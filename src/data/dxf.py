@@ -110,6 +110,7 @@ class DXFPrimitiveData:
     entity_type_names: tuple[str, ...]
     primitive_group_ids: torch.LongTensor | None = None
     num_skipped_degenerate_entities: int = 0
+    num_skipped_unassigned_view_entities: int = 0
 
     @property
     def num_primitives(self) -> int:
@@ -589,6 +590,7 @@ class DXFPrimitiveParser:
         handles: list[str] = []
         type_names: list[str] = []
         num_skipped_degenerate_entities = 0
+        num_skipped_unassigned_view_entities = 0
         included_layers = set(self.config.included_layers)
 
         for entity in document.modelspace():
@@ -619,13 +621,25 @@ class DXFPrimitiveParser:
             if not self._is_inside_sheet(points):
                 continue
             entity_handle = str(entity.dxf.get("handle", ""))
-            view_direction_id = self._assign_view_direction(
-                points,
-                view_bboxes,
-                sample_id=resolved_sample_id,
-                entity_handle=entity_handle,
-                entity_type=entity_type,
-            )
+            try:
+                view_direction_id = self._assign_view_direction(
+                    points,
+                    view_bboxes,
+                    sample_id=resolved_sample_id,
+                    entity_handle=entity_handle,
+                    entity_type=entity_type,
+                )
+            except DXFParseError:
+                # A few drawings (~0.01% of the corpus) have view bounding boxes
+                # that clip at a shared corner, so an entity's midpoint can fall
+                # in two views (or, rarely, none). Such an entity has no
+                # well-defined view; skip and count it, mirroring the
+                # degenerate-geometry path above. Strict mode still raises so
+                # audits keep surfacing the overlapping-bbox samples.
+                if self.config.strict_entity_types:
+                    raise
+                num_skipped_unassigned_view_entities += 1
+                continue
             visibility = -1.0 if hidden else 1.0
             features.append(self._sample_feature_rows(points, visibility))
             type_ids.append(DXF_PRIMITIVE_TYPE_TO_ID[entity_type])
@@ -647,6 +661,7 @@ class DXFPrimitiveParser:
             entity_handles=tuple(handles),
             entity_type_names=tuple(type_names),
             num_skipped_degenerate_entities=num_skipped_degenerate_entities,
+            num_skipped_unassigned_view_entities=num_skipped_unassigned_view_entities,
         )
 
 

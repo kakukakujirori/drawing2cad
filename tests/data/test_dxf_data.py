@@ -204,6 +204,43 @@ class DXFPrimitiveParserTest(unittest.TestCase):
                     ),
                 )
 
+    def test_entities_in_overlapping_view_bboxes_are_skipped_or_reported(
+        self,
+    ) -> None:
+        # A few real drawings have view bounding boxes that clip at a shared
+        # corner; an entity whose midpoint lands in the overlap belongs to no
+        # single view. Non-strict parsing must skip and count it (so one bad
+        # entity never kills a training run), while strict parsing still raises.
+        overlapping_bboxes = (
+            ViewBBox("front", (0.0, 0.0, 10.0, 10.0)),
+            ViewBBox("top", (5.0, 5.0, 15.0, 15.0)),  # clips front's corner
+            ViewBBox("right", (20.0, 20.0, 30.0, 30.0)),
+        )
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            path = Path(directory) / "overlap.dxf"
+            document = ezdxf.new("R2000")
+            modelspace = document.modelspace()
+            modelspace.add_line((1.0, 1.0), (3.0, 1.0))  # midpoint (2, 1): front only
+            modelspace.add_line((7.0, 7.0), (8.0, 8.0))  # midpoint (7.5, 7.5): overlap
+            document.saveas(path)
+
+            parsed = DXFPrimitiveParser().parse(
+                path, view_bboxes=overlapping_bboxes, sample_id="overlap"
+            )
+            self.assertEqual(parsed.num_primitives, 1)
+            self.assertEqual(parsed.num_skipped_unassigned_view_entities, 1)
+            self.assertEqual(parsed.num_skipped_degenerate_entities, 0)
+            self.assertEqual(
+                parsed.view_direction_ids.tolist(), [VIEW_DIRECTION_TO_ID["front"]]
+            )
+
+            with self.assertRaisesRegex(
+                DXFParseError, "requires exactly one bbox match"
+            ):
+                DXFPrimitiveParser(
+                    DXFPrimitiveConfig(strict_entity_types=True)
+                ).parse(path, view_bboxes=overlapping_bboxes, sample_id="overlap")
+
     def test_drawing_with_only_out_of_sheet_geometry_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             path = Path(directory) / "invalid_projection.dxf"
@@ -240,6 +277,11 @@ class DXFPrimitiveParserTest(unittest.TestCase):
                 [VIEW_DIRECTION_TO_ID["front"]],
             )
 
+            # Strict mode raises a detailed diagnostic for zero and multiple
+            # matches (audit path). Non-strict mode instead skips and counts the
+            # entity -- covered by
+            # test_entities_in_overlapping_view_bboxes_are_skipped_or_reported.
+            strict = DXFPrimitiveConfig(strict_entity_types=True)
             no_match = (
                 ViewBBox("front", (0.0, 0.0, 1.0, 1.0)),
                 ViewBBox("top", (2.0, 2.0, 3.0, 3.0)),
@@ -248,7 +290,7 @@ class DXFPrimitiveParserTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 DXFParseError, "sample_id='zero-match'.*entity_handle=.*representative_point"
             ):
-                DXFPrimitiveParser().parse(
+                DXFPrimitiveParser(strict).parse(
                     path, view_bboxes=no_match, sample_id="zero-match"
                 )
 
@@ -258,7 +300,7 @@ class DXFPrimitiveParserTest(unittest.TestCase):
                 ViewBBox("right", (140.0, 49.0, 150.0, 51.0)),
             )
             with self.assertRaisesRegex(DXFParseError, "matched_directions=.*front.*top"):
-                DXFPrimitiveParser().parse(
+                DXFPrimitiveParser(strict).parse(
                     path, view_bboxes=ambiguous, sample_id="multiple-match"
                 )
 
