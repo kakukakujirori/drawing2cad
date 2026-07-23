@@ -1,5 +1,13 @@
-train_root: ${paths.project_root}/data/z2c_train
-val_root: ${paths.project_root}/data/z2c_val
+# Each split is a list of dataset roots. Every root must provide
+# render_3d/, target/, target_audit/, techdraw/ and manifest.jsonl
+# (src/data/layout.py validates this up front). Roots are named by their
+# basename; the name namespaces validation metrics (val/<name>/...) and the
+# per-dataset prediction directory, so basenames must be unique.
+train_root:
+  - ${paths.project_root}/data/z2c_train
+val_root:
+  - ${paths.project_root}/data/z2c_val
+  - ${paths.project_root}/data/eccv2026-cad-challenge-data/my_codes/test_vlm
 image_sources:
   - style: isometric
     directory: render_3d/hlg_perspective
@@ -21,12 +29,11 @@ max_sequence_length: 3072
 # Keeps a sample only if its audited verdict is acceptable: severity `ok` always
 # passes; `soft_suspect` passes iff every one of its reason codes is in
 # `allow_reasons`; `hard_invalid` / `unauditable` pass only via their blanket
-# flags. *_dir point at the `gt_audit.py --out-dir` for each split (must contain
-# results.jsonl). The same policy gates training and the validation benchmark.
+# flags. The verdicts are read from `<root>/target_audit/results.jsonl` for each
+# root above (the `gt_audit.py --out-dir`), so this block carries the policy
+# only. The same policy gates training and the validation benchmark.
 # audit: null
 audit:
-  train_dir: ${paths.project_root}/data/z2c_train/target_audit
-  val_dir: ${paths.project_root}/data/z2c_val/target_audit
   allow_reasons:
     # OCCT Boolean-argument self-interference is broader than material overlap;
     # downstream-unusable cases are rejected separately as mesh_not_watertight.

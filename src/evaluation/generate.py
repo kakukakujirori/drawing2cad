@@ -23,6 +23,7 @@ from src.data import (
     ManifestSampleMetadataProvider,
     RasterImageSource,
 )
+from src.data.layout import DatasetRoot
 from src.data.audit.gate import gate_present_ids_from_config
 from src.evaluation.evaluator import (
     EvaluationConfig,
@@ -44,7 +45,13 @@ def _atomic_json(path: Path, payload: Any) -> None:
 
 
 class CADGenerationEvaluator:
-    """Generate a fixed validation subset on rank zero and broadcast metrics."""
+    """Generate a fixed validation subset on rank zero and broadcast metrics.
+
+    One instance scores exactly one dataset root. Its metrics are namespaced by
+    the root's name (``val/<name>/...``) so several roots can be evaluated in
+    the same run without their keys colliding. Only STEP answers are read, so a
+    root whose ``target/`` has no CadQuery sources is scored here all the same.
+    """
 
     def __init__(
         self,
@@ -52,6 +59,7 @@ class CADGenerationEvaluator:
         accelerator: Any,
         processor: Any,
         data_config: Mapping[str, Any],
+        dataset_root: DatasetRoot,
         evaluation_config: Mapping[str, Any],
         primitive_config: PrimitiveEncoderConfig,
         predictions_dir: str | Path,
@@ -59,6 +67,8 @@ class CADGenerationEvaluator:
         self.accelerator = accelerator
         self.processor = processor
         self.data_config = data_config
+        self.dataset_root = dataset_root
+        self.metric_prefix = f"val/{dataset_root.name}"
         self.evaluation_config = evaluation_config
         self.primitive_config = primitive_config
         self.predictions_dir = Path(predictions_dir)
@@ -76,7 +86,7 @@ class CADGenerationEvaluator:
 
     def _select_sample_ids(self) -> tuple[str, ...]:
         provider = ManifestSampleMetadataProvider(
-            Path(self.data_config["val_root"]) / "manifest.jsonl"
+            self.dataset_root.path / "manifest.jsonl"
         )
         available = list(provider.sample_ids)
         # Gate the benchmark on the same GT-audit allow policy as training, so a
@@ -84,13 +94,16 @@ class CADGenerationEvaluator:
         audit_config = self.data_config.get("audit")
         if audit_config:
             allowed = gate_present_ids_from_config(
-                audit_config, "val_dir", available, context="val benchmark"
+                audit_config,
+                self.dataset_root.audit_dir,
+                available,
+                context=f"val benchmark:{self.dataset_root.name}",
             )
             available = [sample_id for sample_id in available if sample_id in allowed]
             if not available:
                 raise ValueError(
-                    "no validation samples pass the audit allow-list "
-                    "(is data.audit.val_dir correct and audited?)"
+                    f"no validation samples of {self.dataset_root.name} pass the "
+                    f"audit allow-list (is {self.dataset_root.audit_dir} audited?)"
                 )
         requested = int(
             self.evaluation_config.get("generation_subset_size", len(available))
@@ -132,7 +145,7 @@ class CADGenerationEvaluator:
             max_length=None,
         )
         dataset = Drawing2CADDataset(
-            self.data_config["val_root"],
+            self.dataset_root.path,
             dxf_parser=DXFPrimitiveParser(dxf_config),
             image_sources=image_sources,
             include_target=False,
@@ -173,9 +186,6 @@ class CADGenerationEvaluator:
                 self.evaluation_config.get("volume_tolerance", 1e-6)
             ),
             voxel_resolution=int(self.evaluation_config.get("voxel_resolution", 64)),
-            compute_normalized_iou=bool(
-                self.evaluation_config.get("compute_normalized_iou", False)
-            ),
             compute_chamfer=bool(self.evaluation_config.get("compute_chamfer", False)),
             chamfer_points=int(self.evaluation_config.get("chamfer_points", 8192)),
             chamfer_seed=int(self.evaluation_config.get("generation_seed", 42)),
@@ -239,7 +249,7 @@ class CADGenerationEvaluator:
             (step_dir / f"{sample_id}.cadquery.py").write_text(
                 codes[sample_id], encoding="utf-8"
             )
-        target_root = Path(self.data_config["val_root"]) / "target"
+        target_root = self.dataset_root.path / "target"
         items = [
             EvaluationItem(
                 sample_id=sample_id,
@@ -277,9 +287,10 @@ class CADGenerationEvaluator:
             return nullcontext(lambda _steps=1: None)
 
         sub_task = progress_bar.sub_task if progress_bar is not None else _null_sub_task
-        with sub_task("eval generate", len(shard_ids)) as advance:
+        name = self.dataset_root.name
+        with sub_task(f"eval generate [{name}]", len(shard_ids)) as advance:
             codes = self._generate_codes(model, shard_ids, on_generated=advance)
-        with sub_task("eval execute", len(shard_ids)) as advance:
+        with sub_task(f"eval execute [{name}]", len(shard_ids)) as advance:
             shard_rows = self._write_and_evaluate(
                 codes, shard_ids, step_dir, on_evaluated=advance
             )
@@ -295,7 +306,7 @@ class CADGenerationEvaluator:
                 rows.append(entry)
         rows.sort(key=lambda row: str(row.get("id", "")))
 
-        metrics = aggregate_evaluation_metrics(rows, prefix="val")
+        metrics = aggregate_evaluation_metrics(rows, prefix=self.metric_prefix)
         if self.accelerator.is_main_process:
             _atomic_json(step_dir / "rows.json", rows)
             _atomic_json(step_dir / "metrics.json", metrics)

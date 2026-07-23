@@ -87,6 +87,15 @@ def _git_revision(project_root: Path) -> str | None:
     return revision or None
 
 
+def _root_list(value: Any) -> list[str] | None:
+    """Record a split's dataset roots as a list, whatever shape it was given."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    return [str(item) for item in value]
+
+
 def _run_metadata(
     config: Mapping[str, Any],
     *,
@@ -110,8 +119,10 @@ def _run_metadata(
             config, "model", "model_name_or_path", default=None
         ),
         "dataset_roots": {
-            "train": _nested_get(config, "data", "train_root", default=None),
-            "validation": _nested_get(config, "data", "val_root", default=None),
+            "train": _root_list(_nested_get(config, "data", "train_root", default=None)),
+            "validation": _root_list(
+                _nested_get(config, "data", "val_root", default=None)
+            ),
         },
     }
 

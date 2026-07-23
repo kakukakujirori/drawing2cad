@@ -1,5 +1,8 @@
-train_root: ${paths.project_root}/data/z2c_val
-val_root: ${paths.project_root}/data/z2c_val
+train_root:
+  - ${paths.project_root}/data/z2c_val
+val_root:
+  - ${paths.project_root}/data/z2c_val
+  - ${paths.project_root}/data/eccv2026-cad-challenge-data/my_codes/test_vlm
 image_sources:
   - style: isometric
     directory: render_3d/hlg_perspective

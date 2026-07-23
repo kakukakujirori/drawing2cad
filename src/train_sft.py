@@ -14,6 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # ruff: noqa: E402
 from src.data.factory import build_sft_dataloaders
+from src.data.layout import resolve_dataset_roots
 from src.evaluation import CADGenerationEvaluator
 from src.models.factory import build_sft_model, set_sft_train_mode
 from src.training.checkpoint import AdapterCheckpointIO
@@ -109,12 +110,17 @@ def execute(config: Any) -> dict[str, float | int]:
         model_bundle.model,
         cfg["optimizer"],
     )
-    model, optimizer, train_loader, validation_loader = accelerator.prepare(
+    model, optimizer, train_loader = accelerator.prepare(
         model_bundle.model,
         optimizer,
         dataloaders.train,
-        dataloaders.validation,
     )
+    # One loss loader per validation dataset, prepared in the factory's (config)
+    # order so every rank enters the eval collectives in the same sequence.
+    validation_loaders = {
+        name: accelerator.prepare(loader)
+        for name, loader in dataloaders.validation.items()
+    }
     schedule = resolve_training_schedule(training, len(train_loader))
     # The scheduler stays unprepared: run_sft steps it exactly once per
     # optimizer step, so total_steps is in true optimizer-step units and the
@@ -143,16 +149,22 @@ def execute(config: Any) -> dict[str, float | int]:
         accelerator.wait_for_everyone()
 
     evaluation: Mapping[str, Any] = cfg.get("evaluation", {})
-    generation_evaluator = None
+    generation_evaluators = []
     if bool(evaluation.get("generation_enabled", False)):
-        generation_evaluator = CADGenerationEvaluator(
-            accelerator=accelerator,
-            processor=model_bundle.processor,
-            data_config=cfg["data"],
-            evaluation_config=evaluation,
-            primitive_config=model_bundle.primitive_config,
-            predictions_dir=run_context.predictions_dir,
-        )
+        # Every validation root is benchmarked, including STEP-only roots that
+        # supply no loss above; predictions are kept under a per-root directory.
+        generation_evaluators = [
+            CADGenerationEvaluator(
+                accelerator=accelerator,
+                processor=model_bundle.processor,
+                data_config=cfg["data"],
+                dataset_root=root,
+                evaluation_config=evaluation,
+                primitive_config=model_bundle.primitive_config,
+                predictions_dir=run_context.predictions_dir / root.name,
+            )
+            for root in resolve_dataset_roots(cfg["data"]["val_root"], split="val")
+        ]
 
     logger = ExperimentLogger.from_config(
         run_context.run_dir,
@@ -174,7 +186,7 @@ def execute(config: Any) -> dict[str, float | int]:
             optimizer=optimizer,
             scheduler=scheduler,
             train_dataloader=train_loader,
-            validation_dataloader=validation_loader,
+            validation_dataloaders=validation_loaders,
             schedule=schedule,
             loop_config=SFTLoopConfig.from_mapping(training),
             metrics=metrics,
@@ -183,7 +195,7 @@ def execute(config: Any) -> dict[str, float | int]:
             checkpoint_manager=checkpoint_manager,
             set_train_mode=set_sft_train_mode,
             progress=progress,
-            generation_evaluator=generation_evaluator,
+            generation_evaluators=generation_evaluators,
             dataloader_generator=dataloaders.generator,
             dataloader_seed=seed,
         )

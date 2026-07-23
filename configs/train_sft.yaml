@@ -44,8 +44,9 @@ evaluation:
   execution_workers: 8
   tessellation_tolerance: 0.1
   volume_tolerance: 1.0e-6
+  # The voxel IoU is shape-only: both meshes are centred and normalized by their
+  # own maximum extent, because the drawings carry no dimension information.
   voxel_resolution: 64
-  compute_normalized_iou: false
   compute_chamfer: false
   chamfer_points: 8192
   predictions_dirname: val_predictions

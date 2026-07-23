@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
 
 from src.models import PrimitiveEncoderConfig
 from src.utils import seed_worker
@@ -17,6 +17,7 @@ from src.utils import seed_worker
 from .audit.gate import gate_present_ids_from_config
 from .collator import Drawing2CADCollator
 from .dataset import Drawing2CADDataset, RasterImageSource
+from .layout import DatasetRoot, resolve_dataset_roots
 from .preprocessing import Drawing2CADPreprocessor
 from .dxf import (
     DXF_ORIENTED_SAMPLE_FEATURE_INDICES,
@@ -27,8 +28,18 @@ from .dxf import (
 
 @dataclass(frozen=True)
 class SFTDataLoaders:
+    """Loaders for one SFT run.
+
+    ``train`` is a single loader over every configured training root (they are
+    concatenated and shuffled together) because the loop's epoch/step budget,
+    resume offset, and token-weighted accumulation are all defined against one
+    stream. ``validation`` stays split per dataset root, keyed by root name, so
+    each contributes its own ``val/<name>/loss``. Roots without CadQuery targets
+    have no labels and so are absent here; they are scored by generation only.
+    """
+
     train: DataLoader
-    validation: DataLoader
+    validation: Mapping[str, DataLoader]
     generator: torch.Generator
 
 
@@ -169,9 +180,13 @@ def build_sft_dataloaders(
         max_length=data_config.get("max_sequence_length"),
     )
 
-    def dataset(root_key: str, max_key: str) -> Drawing2CADDataset:
-        return Drawing2CADDataset(
-            data_config[root_key],
+    audit_config = data_config.get("audit")
+
+    def build_root(root: DatasetRoot, max_key: str, split: str) -> Dataset:
+        """Build one root's dataset with the length and audit filters applied."""
+        label = f"{split}:{root.name}"
+        full = Drawing2CADDataset(
+            root.path,
             dxf_parser=DXFPrimitiveParser(dxf_config),
             image_sources=image_sources,
             include_target=True,
@@ -180,13 +195,6 @@ def build_sft_dataloaders(
             image_max_edge=data_config.get("image_max_edge"),
             transform=preprocessor,
         )
-
-    audit_config = data_config.get("audit")
-
-    def build_split(
-        root_key: str, max_key: str, split: str, audit_dir_key: str
-    ) -> Dataset:
-        full = dataset(root_key, max_key)
         result: Drawing2CADDataset | Subset = full
         max_sequence_length = data_config.get("max_sequence_length")
         if max_sequence_length is not None:
@@ -194,23 +202,46 @@ def build_sft_dataloaders(
                 full,
                 preprocessor,
                 int(max_sequence_length),
-                split=split,
+                split=label,
                 show_progress=show_progress,
             )
         if audit_config:
             kept_ids = gate_present_ids_from_config(
                 audit_config,
-                audit_dir_key,
+                root.audit_dir,
                 _record_sample_ids(result),
-                context=f"data:{split}",
+                context=f"data:{label}",
             )
             result = _filter_by_audit(
-                result, kept_ids, split=split, show_progress=show_progress
+                result, kept_ids, split=label, show_progress=show_progress
             )
         return result
 
-    train_dataset = build_split("train_root", "train_max_samples", "train", "train_dir")
-    validation_dataset = build_split("val_root", "val_max_samples", "val", "val_dir")
+    train_roots = resolve_dataset_roots(data_config["train_root"], split="train")
+    unlabeled = [root.name for root in train_roots if not root.has_code_targets]
+    if unlabeled:
+        raise ValueError(
+            f"training roots {unlabeled} have no *.cadquery.py targets, so they "
+            f"carry no supervision; remove them from data.train_root"
+        )
+    train_parts = [
+        build_root(root, "train_max_samples", "train") for root in train_roots
+    ]
+    # Concatenating before the loader (rather than one loader per root) keeps a
+    # single shuffled stream, which is what run_sft's step budget, resume
+    # offset, and token-weighted accumulation are defined against.
+    train_dataset: Dataset = (
+        train_parts[0] if len(train_parts) == 1 else ConcatDataset(train_parts)
+    )
+
+    val_roots = resolve_dataset_roots(data_config["val_root"], split="val")
+    # Only roots shipping CadQuery sources can supply labels; a STEP-only root
+    # is still scored by the generation benchmark, which needs no labels.
+    validation_datasets = {
+        root.name: build_root(root, "val_max_samples", "val")
+        for root in val_roots
+        if root.has_code_targets
+    }
     pad_token_id = processor.tokenizer.pad_token_id
     if pad_token_id is None:
         raise ValueError("processor tokenizer has no pad token ID")
@@ -236,13 +267,16 @@ def build_sft_dataloaders(
         generator=generator,
         **common,
     )
-    validation = DataLoader(
-        validation_dataset,
-        batch_size=int(data_config.get("val_batch_size", 1)),
-        shuffle=False,
-        drop_last=False,
-        **common,
-    )
+    validation = {
+        name: DataLoader(
+            dataset,
+            batch_size=int(data_config.get("val_batch_size", 1)),
+            shuffle=False,
+            drop_last=False,
+            **common,
+        )
+        for name, dataset in validation_datasets.items()
+    }
     return SFTDataLoaders(train=train, validation=validation, generator=generator)
 
 

@@ -268,9 +268,13 @@ class RichEpochProgressBar:
         Rich renders this above the transient bar and keeps it on screen, so
         periodic validation results survive even though the epoch bar itself is
         erased. Callers must invoke this on the main process only.
+
+        Markup is disabled because these lines carry data, not styling: Rich
+        would otherwise read a bracketed prefix such as ``[eval @ step 10]`` as
+        a style tag and print nothing in its place.
         """
 
-        self._progress.console.print(message)
+        self._progress.console.print(message, markup=False, highlight=False)
 
     def refresh(self) -> None:
         if self._started:

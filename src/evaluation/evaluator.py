@@ -16,8 +16,9 @@ from src.metrics.cad import cad_error_histogram, cad_execution_metrics
 from src.metrics.geometry import (
     aggregate_geometry_metrics,
     bbox_dimension_error_mm,
+    bbox_dimension_error_relative,
+    normalized_voxel_iou,
     surface_chamfer_distance,
-    translation_aligned_voxel_iou,
 )
 
 
@@ -27,7 +28,6 @@ class EvaluationConfig:
     tessellation_tolerance: float = 0.1
     volume_tolerance: float = 1e-6
     voxel_resolution: int = 64
-    compute_normalized_iou: bool = False
     compute_chamfer: bool = True
     chamfer_points: int = 8192
     chamfer_seed: int = 0
@@ -69,11 +69,11 @@ def _empty_row(sample_id: str) -> dict[str, object]:
         "valid": False,
         "error": None,
         "iou": None,
-        "iou_normalized": None,
         "bbox_pred_mm": None,
         "bbox_target_mm": None,
         "bbox_error_mm": None,
         "max_bbox_error_mm": None,
+        "max_bbox_error_relative": None,
         "chamfer_mm2": None,
         "chamfer_normalized": None,
     }
@@ -137,31 +137,30 @@ def evaluate_prediction(
             row["bbox_target_mm"] = np.sort(target_mesh.extents).tolist()
             row["bbox_error_mm"] = bbox_error.tolist()
             row["max_bbox_error_mm"] = float(np.max(bbox_error))
-            row["iou"] = translation_aligned_voxel_iou(
+            row["max_bbox_error_relative"] = float(
+                np.max(bbox_dimension_error_relative(predicted_mesh, target_mesh))
+            )
+            row["iou"] = normalized_voxel_iou(
                 predicted_mesh,
                 target_mesh,
                 resolution=cfg.voxel_resolution,
             )
-            if cfg.compute_normalized_iou:
-                row["iou_normalized"] = translation_aligned_voxel_iou(
-                    predicted_mesh,
-                    target_mesh,
-                    resolution=cfg.voxel_resolution,
-                    normalize_scale=True,
-                )
             if cfg.compute_chamfer:
-                row["chamfer_mm2"] = surface_chamfer_distance(
-                    predicted_mesh,
-                    target_mesh,
-                    num_points=cfg.chamfer_points,
-                    seed=cfg.chamfer_seed,
-                )
+                # Both modes are spelled out rather than relying on the default,
+                # so the key and the scale convention it names cannot drift.
                 row["chamfer_normalized"] = surface_chamfer_distance(
                     predicted_mesh,
                     target_mesh,
                     num_points=cfg.chamfer_points,
                     seed=cfg.chamfer_seed,
                     normalize_scale=True,
+                )
+                row["chamfer_mm2"] = surface_chamfer_distance(
+                    predicted_mesh,
+                    target_mesh,
+                    num_points=cfg.chamfer_points,
+                    seed=cfg.chamfer_seed,
+                    normalize_scale=False,
                 )
             row["error"] = None
         except Exception as error:

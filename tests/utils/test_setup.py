@@ -13,7 +13,10 @@ class SetupRunTest(unittest.TestCase):
         return {
             "paths": {"project_root": str(root), "log_root": str(root / "logs")},
             "model": {"model_name_or_path": "local/model"},
-            "data": {"train_root": "train-data", "val_root": "val-data"},
+            "data": {
+                "train_root": ["train-data"],
+                "val_root": ["val-data", "other-val-data"],
+            },
             "logger": {"jsonl": {"filename": "scalars.jsonl"}},
             "checkpoint": {"root_dirname": "states"},
             "evaluation": {
@@ -41,7 +44,10 @@ class SetupRunTest(unittest.TestCase):
             self.assertEqual(saved_config["model"]["model_name_or_path"], "local/model")
             metadata = json.loads(context.metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(metadata["base_checkpoint"], "local/model")
-            self.assertEqual(metadata["dataset_roots"]["validation"], "val-data")
+            self.assertEqual(
+                metadata["dataset_roots"]["validation"],
+                ["val-data", "other-val-data"],
+            )
             self.assertEqual(metadata["world_size"], 1)
             self.assertNotIn("environment", metadata)
 

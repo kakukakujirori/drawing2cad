@@ -29,6 +29,7 @@ class EvaluatorTest(unittest.TestCase):
                 "valid": True,
                 "iou": 0.8,
                 "max_bbox_error_mm": 1.0,
+                "max_bbox_error_relative": 0.25,
                 "error": None,
             },
             {
@@ -37,12 +38,14 @@ class EvaluatorTest(unittest.TestCase):
                 "valid": False,
                 "iou": None,
                 "max_bbox_error_mm": None,
+                "max_bbox_error_relative": None,
                 "error": "timeout",
             },
         ]
         metrics = aggregate_evaluation_metrics(rows)
         self.assertEqual(metrics["val/mean_iou_including_failures"], 0.4)
         self.assertEqual(metrics["val/mean_iou_valid_only"], 0.8)
+        self.assertEqual(metrics["val/mean_max_bbox_error_relative"], 0.25)
         self.assertEqual(metrics["val/valid_rate"], 0.5)
         self.assertEqual(evaluation_error_histogram(rows), {"ok": 1, "timeout": 1})
 

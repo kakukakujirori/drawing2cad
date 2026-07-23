@@ -292,9 +292,6 @@ def main() -> None:
         tessellation_tolerance=tess,
         volume_tolerance=volume_tol,
         voxel_resolution=int(evaluation_config.get("voxel_resolution", 64)),
-        compute_normalized_iou=bool(
-            evaluation_config.get("compute_normalized_iou", False)
-        ),
         compute_chamfer=bool(evaluation_config.get("compute_chamfer", False)),
         chamfer_points=int(evaluation_config.get("chamfer_points", 8192)),
         chamfer_seed=args.seed,

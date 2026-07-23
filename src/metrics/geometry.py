@@ -1,4 +1,12 @@
-"""Translation-aligned, scale-preserving mesh geometry metrics."""
+"""Shape-only mesh geometry metrics.
+
+The drawings carry no dimension annotations and their sheet scale never reaches
+the model (``SampleMetadata.drawing_scale`` is parsed but unused), so absolute
+size is not recoverable from the input. Every headline metric here therefore
+compares shape alone: both meshes are centred on their bounding-box centre and
+divided by their own maximum extent. Absolute-millimetre variants remain
+available where they cost nothing and stay useful as diagnostics.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +18,7 @@ from numpy.typing import ArrayLike, NDArray
 
 
 FloatArray = NDArray[np.floating[Any]]
+IntArray = NDArray[np.int64]
 
 
 def _mesh_extents(mesh_or_extents: object) -> FloatArray:
@@ -54,23 +63,81 @@ def max_bbox_error_mm(
     )
 
 
-def _aligned_mesh(mesh: Any, *, normalize_scale: bool) -> Any:
+def bbox_dimension_error_relative(
+    predicted: object,
+    target: object,
+    *,
+    sort_dimensions: bool = True,
+) -> FloatArray:
+    """Return per-axis bounding-box errors as a fraction of the target's size.
+
+    Divided by the target's maximum extent so the result is comparable across
+    parts and across datasets stored in different units, which the millimetre
+    version is not.
+    """
+
+    reference = float(np.max(_mesh_extents(target)))
+    if reference <= 1e-12:
+        raise ValueError("target mesh has zero maximum extent")
+    absolute = bbox_dimension_error_mm(
+        predicted, target, sort_dimensions=sort_dimensions
+    )
+    return absolute / reference
+
+
+def max_bbox_error_relative(
+    predicted: object,
+    target: object,
+    *,
+    sort_dimensions: bool = True,
+) -> float:
+    return float(
+        np.max(
+            bbox_dimension_error_relative(
+                predicted, target, sort_dimensions=sort_dimensions
+            )
+        )
+    )
+
+
+def _centered_mesh(mesh: Any, *, normalize_scale: bool) -> Any:
     aligned = mesh.copy()
     bounds = np.asarray(aligned.bounds, dtype=np.float64)
     if bounds.shape != (2, 3) or not np.all(np.isfinite(bounds)):
         raise ValueError("mesh must have finite [2, 3] bounds")
+    aligned.apply_translation(-(bounds[0] + bounds[1]) / 2.0)
     if normalize_scale:
-        aligned.apply_translation(-(bounds[0] + bounds[1]) / 2.0)
         extent = float(np.max(_mesh_extents(aligned)))
         if extent <= 1e-12:
             raise ValueError("cannot normalize a mesh with zero maximum extent")
         aligned.apply_scale(1.0 / extent)
-    else:
-        aligned.apply_translation(-bounds[0])
     return aligned
 
 
-def _voxel_indices(mesh: Any, pitch: float) -> set[tuple[int, int, int]]:
+def align_meshes(
+    predicted_mesh: Any,
+    target_mesh: Any,
+    *,
+    normalize_scale: bool = True,
+) -> tuple[Any, Any]:
+    """Return copies of both meshes placed in a shared comparison frame.
+
+    Both are translated so their bounding-box centre sits at the origin. With
+    ``normalize_scale`` each is additionally divided by its own maximum extent,
+    which discards size entirely and leaves a shape-only comparison in a unit
+    box. Centring is the single alignment convention: every metric in this
+    module goes through here so they cannot drift apart.
+    """
+
+    return (
+        _centered_mesh(predicted_mesh, normalize_scale=normalize_scale),
+        _centered_mesh(target_mesh, normalize_scale=normalize_scale),
+    )
+
+
+def _voxel_indices(mesh: Any, pitch: float) -> IntArray:
+    """Return the unique occupied cell indices as an ``[N, 3]`` array."""
+
     grid = mesh.voxelized(pitch)
     try:
         grid = grid.fill()
@@ -80,24 +147,54 @@ def _voxel_indices(mesh: Any, pitch: float) -> set[tuple[int, int, int]]:
         pass
     points = np.asarray(grid.points, dtype=np.float64)
     if points.size == 0:
-        return set()
+        return np.empty((0, 3), dtype=np.int64)
     indices = np.floor(points / pitch + 1e-6).astype(np.int64)
-    return {tuple(int(value) for value in row) for row in indices}
+    return np.unique(indices, axis=0)
 
 
-def translation_aligned_voxel_iou(
+def _cell_set_iou(predicted_cells: IntArray, target_cells: IntArray) -> float:
+    """Return the IoU of two sets of unique integer cell indices.
+
+    The three axes are packed into one integer key so the set operations run in
+    numpy. Holding the cells as Python tuples instead costs roughly 200 bytes
+    each, which at the default resolution is two orders of magnitude more memory
+    than the grids themselves. The packing cannot overflow here: both meshes are
+    normalized before voxelization, so each axis spans at most ``resolution + 2``
+    cells and a resolution large enough to overflow an int64 key could not be
+    voxelized in the first place.
+    """
+
+    if predicted_cells.size == 0 or target_cells.size == 0:
+        return 0.0
+    low = np.minimum(predicted_cells.min(axis=0), target_cells.min(axis=0))
+    span = np.maximum(predicted_cells.max(axis=0), target_cells.max(axis=0)) - low + 1
+    strides = np.array([span[1] * span[2], span[2], 1], dtype=np.int64)
+    predicted_keys = ((predicted_cells - low) * strides).sum(axis=1)
+    target_keys = ((target_cells - low) * strides).sum(axis=1)
+    intersection = int(
+        np.intersect1d(predicted_keys, target_keys, assume_unique=True).size
+    )
+    union = predicted_keys.size + target_keys.size - intersection
+    return float(intersection / union) if union else 0.0
+
+
+def normalized_voxel_iou(
     predicted_mesh: Any,
     target_mesh: Any,
     *,
     resolution: int = 64,
-    normalize_scale: bool = False,
 ) -> float:
-    """Compute bbox-min-aligned voxel IoU in a shared scale-preserving grid.
+    """Compute voxel IoU over centred, unit-box-normalized meshes.
 
-    With ``normalize_scale=False`` the pitch is measured in millimetres from the
-    target maximum extent, so incorrect predicted dimensions reduce IoU. The
-    optional normalized mode is provided only for comparison with unit-box CAD
-    benchmarks.
+    Both meshes go through :func:`align_meshes`, so each spans at most one unit
+    along its longest axis and the pitch is exactly ``1 / resolution``. The
+    occupied-cell count is therefore bounded by ``(resolution + 1) ** 3`` per
+    mesh no matter how large the prediction is in its own units -- the metric
+    cannot be made to allocate an unbounded grid by a bad prediction.
+
+    Size is deliberately discarded: the drawings carry no dimension information,
+    so a prediction can only be scored on shape. Use the millimetre bounding-box
+    errors alongside this to see absolute-scale drift.
     """
 
     if (
@@ -106,18 +203,9 @@ def translation_aligned_voxel_iou(
         or resolution <= 0
     ):
         raise ValueError(f"resolution must be a positive integer, got {resolution!r}")
-    pred = _aligned_mesh(predicted_mesh, normalize_scale=normalize_scale)
-    gt = _aligned_mesh(target_mesh, normalize_scale=normalize_scale)
-    target_extent = 1.0 if normalize_scale else float(np.max(_mesh_extents(gt)))
-    if target_extent <= 1e-12:
-        raise ValueError("target mesh has zero maximum extent")
-    pitch = target_extent / resolution
-    pred_voxels = _voxel_indices(pred, pitch)
-    target_voxels = _voxel_indices(gt, pitch)
-    if not pred_voxels or not target_voxels:
-        return 0.0
-    union = pred_voxels | target_voxels
-    return float(len(pred_voxels & target_voxels) / len(union)) if union else 0.0
+    pred, gt = align_meshes(predicted_mesh, target_mesh, normalize_scale=True)
+    pitch = 1.0 / resolution
+    return _cell_set_iou(_voxel_indices(pred, pitch), _voxel_indices(gt, pitch))
 
 
 def symmetric_chamfer_distance(
@@ -167,12 +255,15 @@ def surface_chamfer_distance(
     *,
     num_points: int = 8192,
     seed: int = 0,
-    normalize_scale: bool = False,
+    normalize_scale: bool = True,
 ) -> float:
-    """Sample mesh surfaces and compute translation-aligned Chamfer distance.
+    """Sample mesh surfaces and compute a centre-aligned Chamfer distance.
 
-    The absolute result uses squared millimetres. In normalized mode each mesh is
-    independently divided by its maximum bbox extent.
+    Normalized by default, matching the voxel IoU. The absolute mode is kept
+    because it costs nothing: both the surface sampling and the nearest-neighbour
+    search are sized by ``num_points`` alone, so unlike voxelization this metric
+    never allocates in proportion to the meshes' physical size. Its result is in
+    squared millimetres and is only interpretable when the input carries scale.
     """
 
     if (
@@ -183,8 +274,9 @@ def surface_chamfer_distance(
         raise ValueError(f"num_points must be a positive integer, got {num_points!r}")
     import trimesh
 
-    pred = _aligned_mesh(predicted_mesh, normalize_scale=normalize_scale)
-    gt = _aligned_mesh(target_mesh, normalize_scale=normalize_scale)
+    pred, gt = align_meshes(
+        predicted_mesh, target_mesh, normalize_scale=normalize_scale
+    )
     pred_points, _ = trimesh.sample.sample_surface(pred, num_points, seed=seed)
     gt_points, _ = trimesh.sample.sample_surface(gt, num_points, seed=seed)
     return symmetric_chamfer_distance(pred_points, gt_points)
@@ -202,9 +294,9 @@ def aggregate_geometry_metrics(
     iou_with_failures: list[float] = []
     valid_ious: list[float] = []
     bbox_errors: list[float] = []
+    bbox_errors_relative: list[float] = []
     chamfer_mm2: list[float] = []
     chamfer_normalized: list[float] = []
-    normalized_ious: list[float] = []
     for row in materialized:
         raw_iou = row.get("iou")
         valid = bool(row.get("valid", False))
@@ -212,12 +304,12 @@ def aggregate_geometry_metrics(
         iou_with_failures.append(iou if valid and iou is not None else 0.0)
         if valid and iou is not None:
             valid_ious.append(iou)
-        normalized_iou = _finite_float(row.get("iou_normalized"))
-        if valid and normalized_iou is not None:
-            normalized_ious.append(normalized_iou)
         bbox = _finite_float(row.get("max_bbox_error_mm"))
         if bbox is not None:
             bbox_errors.append(bbox)
+        bbox_relative = _finite_float(row.get("max_bbox_error_relative"))
+        if bbox_relative is not None:
+            bbox_errors_relative.append(bbox_relative)
         chamfer = _finite_float(row.get("chamfer_mm2"))
         if chamfer is not None:
             chamfer_mm2.append(chamfer)
@@ -232,17 +324,19 @@ def aggregate_geometry_metrics(
         f"{stem}mean_iou_valid_only": _mean(valid_ious),
         f"{stem}median_iou": _median(iou_with_failures),
         f"{stem}bbox_scored_n": len(bbox_errors),
+        # Kept as a diagnostic: uninterpretable as a target while the input
+        # carries no scale, but it still exposes absolute-size drift.
         f"{stem}mean_max_bbox_error_mm": _mean(bbox_errors),
     }
+    if bbox_errors_relative:
+        metrics[f"{stem}bbox_relative_scored_n"] = len(bbox_errors_relative)
+        metrics[f"{stem}mean_max_bbox_error_relative"] = _mean(bbox_errors_relative)
     if chamfer_mm2:
         metrics[f"{stem}chamfer_mm2_scored_n"] = len(chamfer_mm2)
         metrics[f"{stem}mean_chamfer_mm2"] = _mean(chamfer_mm2)
     if chamfer_normalized:
         metrics[f"{stem}chamfer_normalized_scored_n"] = len(chamfer_normalized)
         metrics[f"{stem}mean_chamfer_normalized"] = _mean(chamfer_normalized)
-    if normalized_ious:
-        metrics[f"{stem}iou_normalized_scored_n"] = len(normalized_ious)
-        metrics[f"{stem}mean_iou_normalized"] = _mean(normalized_ious)
     if total == 0:
         # Keep the checkpoint monitor stable even for an accidentally empty subset.
         metrics[f"{stem}mean_iou_including_failures"] = 0.0
@@ -269,9 +363,12 @@ def _median(values: list[float]) -> float:
 
 __all__ = [
     "aggregate_geometry_metrics",
+    "align_meshes",
     "bbox_dimension_error_mm",
+    "bbox_dimension_error_relative",
     "max_bbox_error_mm",
+    "max_bbox_error_relative",
+    "normalized_voxel_iou",
     "surface_chamfer_distance",
     "symmetric_chamfer_distance",
-    "translation_aligned_voxel_iou",
 ]

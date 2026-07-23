@@ -5,6 +5,7 @@ import unittest
 import torch
 
 from src.data import Drawing2CADBatch, SampleMetadata, ViewBBox
+from src.data.layout import REQUIRED_SUBDIRS, resolve_dataset_roots
 from src.evaluation.generate import CADGenerationEvaluator
 from src.models import PrimitiveBatch, PrimitiveEncoderConfig
 
@@ -12,6 +13,7 @@ from src.models import PrimitiveBatch, PrimitiveEncoderConfig
 class _Accelerator:
     is_main_process = True
     num_processes = 1
+    process_index = 0
     device = torch.device("cpu")
 
     @staticmethod
@@ -82,7 +84,10 @@ def _batch() -> Drawing2CADBatch:
 class CADGenerationEvaluatorTest(unittest.TestCase):
     def test_generation_writes_artifacts_and_stable_checkpoint_metric(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
-            root = Path(temporary)
+            # The root's basename names the dataset in every metric key, so it
+            # must be stable rather than the random temporary directory name.
+            root = Path(temporary) / "bench_val"
+            root.mkdir()
             manifest = {
                 "name": "sample",
                 "ok": True,
@@ -109,10 +114,14 @@ class CADGenerationEvaluatorTest(unittest.TestCase):
             (root / "manifest.jsonl").write_text(
                 json.dumps(manifest) + "\n", encoding="utf-8"
             )
+            for name in REQUIRED_SUBDIRS:
+                (root / name).mkdir()
+            (dataset_root,) = resolve_dataset_roots(root, split="val")
             evaluator = CADGenerationEvaluator(
                 accelerator=_Accelerator(),
                 processor=_Processor(),
-                data_config={"val_root": str(root)},
+                data_config={},
+                dataset_root=dataset_root,
                 evaluation_config={
                     "generation_subset_size": 1,
                     "generation_seed": 7,
@@ -130,11 +139,11 @@ class CADGenerationEvaluatorTest(unittest.TestCase):
                 ),
                 predictions_dir=root / "predictions",
             )
-            evaluator._loader = lambda: [_batch()]
+            evaluator._loader = lambda sample_ids: [_batch()]
             model = _Model().train()
             metrics = evaluator(model, step=3)
 
-            self.assertEqual(metrics["val/mean_iou_including_failures"], 0.0)
+            self.assertEqual(metrics["val/bench_val/mean_iou_including_failures"], 0.0)
             self.assertTrue(model.training)
             step_dir = root / "predictions" / "step_00000003"
             self.assertEqual(

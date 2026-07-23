@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from itertools import islice
@@ -225,8 +225,13 @@ def evaluate_loss(
     *,
     set_train_mode: TrainModeSetter,
     on_batch: Callable[[int], None] | None = None,
+    prefix: str = "val",
 ) -> dict[str, float]:
-    """Compute distributed token-weighted SFT validation cross entropy."""
+    """Compute distributed token-weighted SFT validation cross entropy.
+
+    ``prefix`` namespaces the returned key (``<prefix>/loss``) so several
+    validation datasets can be evaluated in one pass without colliding.
+    """
 
     was_training = model.training
     model.eval()
@@ -252,7 +257,7 @@ def evaluate_loss(
         raise ValueError("validation loader contains no supervised tokens")
     if was_training:
         set_train_mode(model)
-    return {"val/loss": float((totals[0] / totals[1]).item())}
+    return {f"{prefix}/loss": float((totals[0] / totals[1]).item())}
 
 
 def _log_train_step(
@@ -303,29 +308,49 @@ def _log_train_step(
     metrics.log(values, step=step)
 
 
+PREFERRED_EVAL_METRICS = (
+    "loss",
+    "valid_rate",
+    "mean_iou_including_failures",
+    "median_iou",
+    "mean_iou_valid_only",
+)
+
+
+def _split_metric_key(key: str) -> tuple[str, str]:
+    """Split ``val/<dataset>/<metric>`` into its dataset name and metric name.
+
+    Keys are namespaced per validation dataset, so the dataset is the middle
+    segment. A key without one (``val/loss``) reports an empty dataset name.
+    """
+    head, _, metric = key.rpartition("/")
+    return head.removeprefix("val").strip("/"), metric
+
+
 def _print_evaluation(
     progress_bar: RichEpochProgressBar,
     values: Mapping[str, float | int],
     *,
     step: int,
 ) -> None:
-    """Emit a compact, persistent validation line to the terminal."""
+    """Emit one compact, persistent validation line per dataset."""
 
-    preferred = (
-        "val/loss",
-        "val/valid_rate",
-        "val/mean_iou_including_failures",
-        "val/median_iou",
-        "val/mean_iou_valid_only",
-    )
-    parts: list[str] = []
-    for key in preferred:
-        if key in values:
-            parts.append(f"{key.removeprefix('val/')}={float(values[key]):.4f}")
-    # Fall back to every scalar when the preferred set is absent (loss-only eval).
-    if not parts:
-        parts = [f"{key}={value}" for key, value in sorted(values.items())]
-    progress_bar.log_line(f"[eval @ step {step}] " + " ".join(parts))
+    grouped: dict[str, dict[str, float | int]] = {}
+    for key, value in values.items():
+        dataset, metric = _split_metric_key(key)
+        grouped.setdefault(dataset, {})[metric] = value
+    for dataset, metrics in grouped.items():
+        parts = [
+            f"{metric}={float(metrics[metric]):.4f}"
+            for metric in PREFERRED_EVAL_METRICS
+            if metric in metrics
+        ]
+        # Fall back to every scalar when none of the preferred metrics is
+        # present, so an unexpected metric set is still visible.
+        if not parts:
+            parts = [f"{key}={value}" for key, value in sorted(metrics.items())]
+        label = f" {dataset}" if dataset else ""
+        progress_bar.log_line(f"[eval @ step {step}]{label} " + " ".join(parts))
 
 
 def _log_evaluation(
@@ -335,11 +360,14 @@ def _log_evaluation(
     step: int,
 ) -> None:
     events: dict[str, float | int | LoggedMetric] = dict(values)
-    if "val/loss" in values:
-        events["val/loss"] = LoggedMetric(
-            values["val/loss"],
+    for key, value in values.items():
+        dataset, metric = _split_metric_key(key)
+        if metric != "loss":
+            continue
+        events[key] = LoggedMetric(
+            value,
             prog_bar=True,
-            display_name="val_loss",
+            display_name=f"{dataset}_loss" if dataset else "val_loss",
             format_spec=".3f",
         )
     router.log(events, step=step)
@@ -349,25 +377,36 @@ def _evaluate(
     *,
     accelerator: Any,
     model: torch.nn.Module,
-    validation_dataloader: Any,
+    validation_dataloaders: Mapping[str, Any],
     set_train_mode: TrainModeSetter,
-    generation_evaluator: GenerationEvaluator | None,
+    generation_evaluators: Sequence[GenerationEvaluator],
     progress_bar: RichEpochProgressBar,
     step: int,
 ) -> dict[str, float | int]:
-    try:
-        loss_total = len(validation_dataloader)
-    except TypeError:
-        loss_total = 0
-    with progress_bar.sub_task("eval loss", loss_total) as advance:
-        values: dict[str, float | int] = evaluate_loss(
-            accelerator,
-            model,
-            validation_dataloader,
-            set_train_mode=set_train_mode,
-            on_batch=advance,
-        )
-    if generation_evaluator is not None:
+    """Score every validation dataset, namespacing metrics by dataset name.
+
+    Both collections are iterated in their construction order, which is
+    identical on every rank; the collectives inside ``evaluate_loss`` and the
+    generation evaluators require all ranks to reach them in the same sequence.
+    """
+    values: dict[str, float | int] = {}
+    for name, dataloader in validation_dataloaders.items():
+        try:
+            loss_total = len(dataloader)
+        except TypeError:
+            loss_total = 0
+        with progress_bar.sub_task(f"eval loss [{name}]", loss_total) as advance:
+            values.update(
+                evaluate_loss(
+                    accelerator,
+                    model,
+                    dataloader,
+                    set_train_mode=set_train_mode,
+                    on_batch=advance,
+                    prefix=f"val/{name}",
+                )
+            )
+    for generation_evaluator in generation_evaluators:
         values.update(generation_evaluator(model, step, progress_bar=progress_bar))
         set_train_mode(model)
     return values
@@ -380,7 +419,7 @@ def run_sft(
     optimizer: torch.optim.Optimizer,
     scheduler: Any,
     train_dataloader: Any,
-    validation_dataloader: Any,
+    validation_dataloaders: Mapping[str, Any],
     schedule: TrainingSchedule,
     loop_config: SFTLoopConfig,
     metrics: MetricRouter,
@@ -389,7 +428,7 @@ def run_sft(
     checkpoint_manager: CheckpointController,
     set_train_mode: TrainModeSetter,
     progress: TrainingProgress | None = None,
-    generation_evaluator: GenerationEvaluator | None = None,
+    generation_evaluators: Sequence[GenerationEvaluator] = (),
     dataloader_generator: torch.Generator | None = None,
     dataloader_seed: int | None = None,
 ) -> dict[str, float | int]:
@@ -513,9 +552,9 @@ def run_sft(
                 last_metrics = _evaluate(
                     accelerator=accelerator,
                     model=model,
-                    validation_dataloader=validation_dataloader,
+                    validation_dataloaders=validation_dataloaders,
                     set_train_mode=set_train_mode,
-                    generation_evaluator=generation_evaluator,
+                    generation_evaluators=generation_evaluators,
                     progress_bar=progress_bar,
                     step=state.global_step,
                 )
@@ -556,9 +595,9 @@ def run_sft(
         last_metrics = _evaluate(
             accelerator=accelerator,
             model=model,
-            validation_dataloader=validation_dataloader,
+            validation_dataloaders=validation_dataloaders,
             set_train_mode=set_train_mode,
-            generation_evaluator=generation_evaluator,
+            generation_evaluators=generation_evaluators,
             progress_bar=progress_bar,
             step=state.global_step,
         )

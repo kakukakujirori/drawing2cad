@@ -6,6 +6,10 @@ allow policy, return the set of uuids whose audited verdict is acceptable to
 keep. Both the SFT dataloader factory and the generation evaluator call this so
 training and evaluation gate on exactly the same policy (no drift).
 
+The directory assumes ``<dataset root>/target_audit``
+(``src.data.layout.DatasetRoot.audit_dir``), so a split made of several roots
+cannot accidentally gate one root against another root's verdicts.
+
 Policy (see ``configs/data/*.yaml`` ``audit`` block):
 
 - ``ok``            -> always kept (no reasons).
@@ -161,18 +165,19 @@ def gate_present_ids(
 
 def gate_present_ids_from_config(
     audit_config: Mapping,
-    dir_key: str,
+    audit_dir: str | Path,
     present_ids: Iterable[str],
     *,
     context: str = "audit gate",
 ) -> set[str]:
     """:func:`gate_present_ids` driven by a data-config ``audit`` mapping.
 
-    ``dir_key`` selects the per-split audit directory (``"train_dir"`` /
-    ``"val_dir"``). The caller skips this entirely when ``audit`` is falsy.
+    The mapping supplies only the allow policy; ``audit_dir`` is derived by the
+    caller from the dataset root being gated. The caller skips this entirely
+    when ``audit`` is falsy.
     """
     return gate_present_ids(
-        audit_config[dir_key],
+        audit_dir,
         present_ids,
         allow_reasons=audit_config.get("allow_reasons", ()) or (),
         allow_hard=bool(audit_config.get("allow_hard", False)),
