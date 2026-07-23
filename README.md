@@ -103,6 +103,14 @@ We use the [Zero-to-CAD](https://huggingface.co/datasets/ADSKAILab/Zero-To-CAD-1
 
     Successful techdraw rows store layout metadata under `extra.techdraw`. View and cluster `bbox` values use `[xmin, ymin, xmax, ymax]` (`bbox_format="xyxy"`) in sheet-mm with a bottom-left origin. Manifests created before this metadata was added are refreshed on the next techdraw run; pass `--no-render3d` to avoid re-rendering the perspective images during that one-time migration.
 
+### NOTE
+
+`src/data/render/render_dataset.py` generates `manifest.jsonl`, which specifies the bboxes of front/top/right view positions. If you use another dataset that already prepares three-view techdraws, then you need to generate `manifest.jsonl` by the following command:
+
+```bash
+python src/data/render/manifest_from_techdraw.py --data_dir <DATA_DIR>
+```
+
 ## DXF + raster -> CadQuery SFT
 
 Specify the number of GPUs at `--num_processes`:
@@ -123,3 +131,12 @@ python src/train_sft.py training.resume_from_latest=true \
 
 Resume restores the saved scheduler as well as model/optimizer state.
 Extending a run that already reached its original `max_steps` therefore requires an explicit new scheduler policy; merely increasing `max_steps` does not restart or stretch the completed schedule.
+
+## Inference
+
+```bash
+python src/test.py \
+    --ckpt logs/train_sft/[yyyy-mm-dd_hh-mm-ss]/checkpoints/latest \
+    --test_dir data/z2c_val \
+    --out_dir outputs/z2c_val/[yyyy-mm-dd_hh-mm-ss]
+```

@@ -8,20 +8,22 @@ computed against the reference STEP files and written alongside the predictions.
 
 Example:
     python src/test.py \
-        --ckpt logs/train_sft/2026-07-19_19-35-06/checkpoints/latest \
+        --ckpt logs/train_sft/[yyyy-mm-dd_hh-mm-ss]/checkpoints/latest \
         --test_dir data/z2c_val \
-        --out_dir logs/test/z2c_val
+        --out_dir outputs/z2c_val/[yyyy-mm-dd_hh-mm-ss]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Mapping
 
 import rootutils
 import torch
+from tqdm import tqdm
 
 ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # ruff: noqa: E402
@@ -157,7 +159,7 @@ def _generate(
 ) -> dict[str, str]:
     model.eval()
     codes: dict[str, str] = {}
-    for batch in loader:
+    for batch in tqdm(loader, desc="Generating"):
         if not isinstance(batch, Drawing2CADBatch):
             raise TypeError("generation loader must emit Drawing2CADBatch")
         inputs = batch.to(device).model_inputs
@@ -199,8 +201,8 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=None, help="override run config")
     parser.add_argument("--subset_size", type=int, default=0, help="0 = all samples")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--num_workers", type=int, default=16)
     parser.add_argument("--max_new_tokens", type=int, default=1024)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
@@ -229,7 +231,7 @@ def main() -> None:
         num_workers=args.num_workers,
     )
 
-    print(f"Generating {len(sample_ids)} sample(s) on {device} ...", flush=True)
+    print(f"Generating {len(sample_ids)} samples on {device} ...", flush=True)
     codes = _generate(
         model=bundle.model,
         loader=loader,
@@ -243,8 +245,7 @@ def main() -> None:
     tess = float(evaluation_config.get("tessellation_tolerance", 0.1))
     volume_tol = float(evaluation_config.get("volume_tolerance", 1e-6))
 
-    exec_rows: list[dict[str, Any]] = []
-    for sample_id in sample_ids:
+    def _verify_one(sample_id: str) -> dict[str, Any]:
         code = codes[sample_id]
         (args.out_dir / f"{sample_id}.cadquery.py").write_text(code, encoding="utf-8")
         step_path = args.out_dir / f"{sample_id}.step"
@@ -257,7 +258,17 @@ def main() -> None:
             tessellation_tolerance=tess,
             volume_tolerance=volume_tol,
         )
-        exec_rows.append({"id": sample_id, **execution.__dict__})
+        return {"id": sample_id, **execution.__dict__}
+
+    print(f"Verifying {len(sample_ids)} CADQuery scripts ...", flush=True)
+    with ThreadPoolExecutor(max_workers=args.num_workers) as pool:
+        exec_rows = list(
+            tqdm(
+                pool.map(_verify_one, sample_ids),
+                total=len(sample_ids),
+                desc="Verifying",
+            )
+        )
     _atomic_json(args.out_dir / "execution.json", exec_rows)
     exec_ok = sum(1 for row in exec_rows if row["valid"])
     print(f"Wrote {len(sample_ids)} prediction(s); {exec_ok} produced a valid solid.")
