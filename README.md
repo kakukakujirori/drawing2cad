@@ -103,13 +103,21 @@ We use the [Zero-to-CAD](https://huggingface.co/datasets/ADSKAILab/Zero-To-CAD-1
 
     Successful techdraw rows store layout metadata under `extra.techdraw`. View and cluster `bbox` values use `[xmin, ymin, xmax, ymax]` (`bbox_format="xyxy"`) in sheet-mm with a bottom-left origin. Manifests created before this metadata was added are refreshed on the next techdraw run; pass `--no-render3d` to avoid re-rendering the perspective images during that one-time migration.
 
-### NOTE
+### When using other datasets
 
-`src/data/render/render_dataset.py` generates `manifest.jsonl`, which specifies the bboxes of front/top/right view positions. If you use another dataset that already prepares three-view techdraws, then you need to generate `manifest.jsonl` by the following command:
-
-```bash
-python src/data/render/manifest_from_techdraw.py --data_dir <DATA_DIR>
-```
+- For a GT split that ships only `{uuid}.step` with no generating `{uuid}.cadquery.py` (e.g. a STEP-only eval set), add `--no-cadquery` to run the STEP-only subset of checks — see `src/data/audit/README.md` for details. Without this flag, `.step` files with zero matching `.cadquery.py` raise instead of silently auditing nothing.
+    ```bash
+    python src/data/audit/gt_audit.py \
+        --stage-dir data/[my_dataset]/target \
+        --out-dir data/[my_dataset]/target_audit \
+        --workers 30 \
+        --task-timeout-s 45 \
+        --no-cadquery
+    ```
+- `src/data/render/render_dataset.py` generates `manifest.jsonl`, which specifies the bboxes of front/top/right view positions. If your dataset already prepares three-view techdraws, then you need to generate `manifest.jsonl` by the following command:
+    ```bash
+    python src/data/render/manifest_from_techdraw.py --data_dir data/[my_dataset]/
+    ```
 
 ## DXF + raster -> CadQuery SFT
 

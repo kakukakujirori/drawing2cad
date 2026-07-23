@@ -64,6 +64,17 @@ repeated wedges is the true culprit and, after a couple of wedges
 (max_attempts), is recorded as a hard timeout so the run always terminates.
 A crashed worker (SIGSEGV) is handled the same way, via the error the
 result iterator raises.
+
+--no-cadquery: some GT splits (e.g. a STEP-only eval set) ship only
+{uuid}.step, never the generating {uuid}.cadquery.py. Passing --no-cadquery
+switches to a reduced check battery that needs only the STEP -- everything in
+solid_checks.py except the sampled wall-thickness-on-divergence special case,
+which is moot with no code shape to diverge from. It cannot run op-trace
+no-op detection, GT-vs-STEP divergence, or the code-side re-audit, since all
+three require executing the GT program (see step_only_audit.py, the
+prototype this mode is ported from). Without --no-cadquery, a --stage-dir
+that has .step files but zero matching .cadquery.py raises immediately rather
+than silently auditing nothing -- see _discover_uuids.
 """
 
 from __future__ import annotations
@@ -275,6 +286,73 @@ def _audit_to_json(audit) -> dict | None:
     return payload
 
 
+def _audit_one_step_only(
+    uuid: str,
+    stage_dir: str,
+    thresholds,  # src.data.audit.solid_checks.Thresholds
+    per_sample_timeout_s: float,
+) -> dict:
+    """Worker entry point for --no-cadquery: the STEP-only subset of _audit_one.
+
+    Ported from data/eccv2026-cad-challenge-data/my_codes/step_only_audit.py
+    (prototyped there for a GT split that ships only {uuid}.step). Runs the
+    full solid_checks battery on the STEP shape alone -- everything _audit_one
+    runs on step_audit -- but skips op-trace, GT-vs-STEP divergence, and the
+    code-side re-audit, since all three need the generating .cadquery.py this
+    mode assumes does not exist. The record keeps gt_audit's own field names
+    (uuid/step_path/step_audit), not step_only_audit.py's (id/...), so
+    results.jsonl stays readable by gate.py regardless of which mode produced
+    it.
+    """
+
+    record: dict = {"uuid": uuid}
+    old_handler = signal.signal(signal.SIGALRM, _raise_soft_timeout)
+    signal.alarm(max(1, int(per_sample_timeout_s)))
+    try:
+        import cadquery as cq
+
+        from src.data.audit.solid_checks import audit_shape
+
+        step_path = os.path.join(stage_dir, f"{uuid}.step")
+        record["step_path"] = step_path
+
+        step_shape = None
+        try:
+            step_shape = cq.importers.importStep(step_path).val()
+            record["step_ok"] = True
+        except BaseException as exc:
+            record["step_ok"] = False
+            record["step_error"] = _short_error(exc)
+
+        if step_shape is not None:
+            try:
+                step_audit = audit_shape(step_shape, thresholds, with_thickness=True)
+                record["step_audit"] = _audit_to_json(step_audit)
+                record["severity"] = step_audit.severity.value
+                record["reasons"] = list(step_audit.reasons)
+            except BaseException as exc:
+                record["step_audit_error"] = _short_error(exc)
+                record["severity"] = "unauditable"
+                record["reasons"] = ["audit_exception"]
+        else:
+            # Mirrors _combine_severity: a STEP that won't even import is
+            # hard-invalid, not merely unauditable.
+            record["severity"] = "hard_invalid"
+            record["reasons"] = ["step_import_failed"]
+    except _SoftTimeout:
+        record["severity"] = "unauditable"
+        record["reasons"] = ["soft_timeout"]
+        record["error"] = f"exceeded per_sample_timeout_s={per_sample_timeout_s}"
+    except BaseException as exc:
+        record["severity"] = "unauditable"
+        record["reasons"] = ["harness_exception"]
+        record["error"] = _short_error(exc)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+    return record
+
+
 def _combine_severity(*, step_ok, code_ok, step_audit, code_audit, divergence, n_noop):
     from src.data.audit.solid_checks import Severity
 
@@ -307,12 +385,38 @@ def _combine_severity(*, step_ok, code_ok, step_audit, code_audit, divergence, n
     return Severity.OK, []
 
 
-def _discover_uuids(stage_dir: str) -> list[str]:
+def _discover_uuids(stage_dir: str, *, require_cadquery: bool = True) -> list[str]:
+    """Every {uuid}.step under stage_dir, paired with .cadquery.py by default.
+
+    With require_cadquery=False (--no-cadquery), a {uuid}.step alone is enough
+    -- for a GT split that never shipped the generating program.
+
+    With require_cadquery=True (the default), zero uuids surviving the pairing
+    filter while .step files exist is treated as a mis-invocation, not "a
+    corpus with 0 valid pairs": Zero-To-CAD always stages both artifacts
+    together, so the far likelier explanation is a GT split that has no
+    .cadquery.py by design (e.g. a STEP-only eval set) and needs
+    --no-cadquery, not a silent empty audit.
+    """
+
+    step_paths = sorted(glob.glob(os.path.join(stage_dir, "*.step")))
+    if not require_cadquery:
+        return [os.path.basename(p)[: -len(".step")] for p in step_paths]
+
     uuids = []
-    for step_path in sorted(glob.glob(os.path.join(stage_dir, "*.step"))):
+    for step_path in step_paths:
         uuid = os.path.basename(step_path)[: -len(".step")]
         if os.path.exists(os.path.join(stage_dir, f"{uuid}.cadquery.py")):
             uuids.append(uuid)
+
+    if step_paths and not uuids:
+        raise ValueError(
+            f"{stage_dir}: found {len(step_paths)} .step file(s) but none have "
+            f"a matching {{uuid}}.cadquery.py. If this GT dataset does not ship "
+            f"cadquery scripts to begin with, re-run with --no-cadquery to run "
+            f"the STEP-only checks. Otherwise the .cadquery.py files are "
+            f"unexpectedly missing from --stage-dir."
+        )
     return uuids
 
 
@@ -343,6 +447,7 @@ def _run_pool(
     per_sample_timeout_s: float,
     results_path: Path,
     max_attempts: int = 2,
+    no_cadquery: bool = False,
 ) -> None:
     """Audit ``uuids`` and append one JSON record per sample to ``results_path``.
 
@@ -368,7 +473,7 @@ def _run_pool(
 
     ctx = mp.get_context("spawn")
     worker = functools.partial(
-        _audit_one,
+        _audit_one_step_only if no_cadquery else _audit_one,
         stage_dir=stage_dir,
         thresholds=thresholds,
         per_sample_timeout_s=per_sample_timeout_s,
@@ -496,7 +601,11 @@ def aggregate(results_path: Path, out_dir: Path) -> dict:
         [],
     )
     for r in records:
-        noop_counts.append(r.get("op_trace", {}).get("n_noop", 0))
+        # Absent (not zero) for --no-cadquery records and driver-side
+        # give-up/timeout records: op-trace never ran for either, so counting
+        # them as a measured 0 would understate n_noop_operations_per_sample.
+        if "op_trace" in r:
+            noop_counts.append(r["op_trace"].get("n_noop", 0))
         for side in ("step_audit", "code_audit"):
             audit = r.get(side)
             if not audit:
@@ -618,6 +727,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="skip auditing; just re-aggregate stats.json and tier files from an existing results.jsonl",
     )
+    parser.add_argument(
+        "--no-cadquery",
+        action="store_true",
+        help=(
+            "audit {uuid}.step files alone, for a GT split that does not ship "
+            "the generating {uuid}.cadquery.py by design (e.g. a STEP-only "
+            "eval set). Skips op-trace no-op detection, GT-vs-STEP divergence, "
+            "and the code-side re-audit -- all three need the .cadquery.py. "
+            "Without this flag, a --stage-dir with .step files but zero "
+            "matching .cadquery.py raises instead of silently auditing "
+            "nothing."
+        ),
+    )
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
@@ -625,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
     results_path = out_dir / "results.jsonl"
 
     if not args.report_only:
-        uuids = _discover_uuids(args.stage_dir)
+        uuids = _discover_uuids(args.stage_dir, require_cadquery=not args.no_cadquery)
         if args.limit is not None:
             # _discover_uuids sorts lexicographically by uuid string, so a
             # bare prefix slice risks a hidden bias if uuids were ever
@@ -637,8 +759,9 @@ def main(argv: list[str] | None = None) -> int:
             uuids = uuids[: args.limit]
         done = _load_done_uuids(results_path)
         pending = [u for u in uuids if u not in done]
+        unit = "STEP files" if args.no_cadquery else "pairs"
         print(
-            f"discovered {len(uuids)} pairs in {args.stage_dir}, "
+            f"discovered {len(uuids)} {unit} in {args.stage_dir}, "
             f"{len(done)} already done, {len(pending)} pending"
         )
         if pending:
@@ -653,8 +776,9 @@ def main(argv: list[str] | None = None) -> int:
                 task_timeout_s=args.task_timeout_s,
                 per_sample_timeout_s=args.per_sample_timeout_s,
                 results_path=results_path,
+                no_cadquery=args.no_cadquery,
             )
-            print(f"audited {len(pending)} pairs in {time.time() - t0:.1f}s")
+            print(f"audited {len(pending)} {unit} in {time.time() - t0:.1f}s")
 
     stats = aggregate(results_path, out_dir)
     print(json.dumps(stats["severity_counts"], indent=2))

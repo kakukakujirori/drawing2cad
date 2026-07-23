@@ -40,6 +40,24 @@ so a Ctrl-C or crash only costs whatever was in flight. `--limit N` audits
 only the first N (seed-shuffled, not a raw directory-listing prefix) pairs —
 useful for a quick look before committing to a full run.
 
+## STEP-only GT (`--no-cadquery`)
+
+Some GT splits ship only `{uuid}.step`, never the generating
+`{uuid}.cadquery.py`. Pass `--no-cadquery` to audit those with the subset of `solid_checks.py` that needs only the STEP:
+
+```bash
+python src/data/audit/gt_audit.py \
+    --stage-dir data/[my_dataset]/target \
+    --out-dir data/[my_dataset]/target_audit \
+    --workers 30 \
+    --task-timeout-s 45 \
+    --no-cadquery
+```
+
+This cannot run op-trace no-op detection, GT-vs-STEP divergence (`gt_mismatch`), or the code-side re-audit, since all three require executing the GT program — see the module docstring and `data/[my_dataset]/my_codes/step_only_audit.py` (the prototype this mode is ported from) for exactly which reasons survive. Everything else (BRepCheck validity, mesh watertightness, open/non-manifold boundaries, disjoint solids, tolerance/micro-feature/aspect-ratio checks, sampled wall thickness) still runs, and `results.jsonl`/`stats.json`/the tier files are the same schema either way, so `gate.py` consumes them identically.
+
+**Without `--no-cadquery`, a `--stage-dir` with `.step` files but zero matching `.cadquery.py` raises immediately** rather than silently auditing nothing — a directory that should have both artifacts but is unintentionally missing the `.cadquery.py` side must not be mistaken for "0 valid pairs" and pass silently. If a `.step`/`.cadquery.py` pair is only partially present (some uuids paired, some not), the unpaired ones are still silently excluded as before — the raise only fires when *no* pairing survives at all.
+
 ## Output (in `--out-dir`)
 
 - `results.jsonl` — one full record per uuid (both shapes' check batteries,
