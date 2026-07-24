@@ -126,7 +126,7 @@ class CADGenerationEvaluatorTest(unittest.TestCase):
                     "generation_subset_size": 1,
                     "generation_seed": 7,
                     "max_new_tokens": 1,
-                    "compute_chamfer": False,
+                    "metrics": ["CadExecutionMetric", "VoxelIoUMetric"],
                 },
                 primitive_config=PrimitiveEncoderConfig(
                     sample_feature_dim=3,

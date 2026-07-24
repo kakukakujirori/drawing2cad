@@ -49,7 +49,21 @@ from src.evaluation.evaluator import (
     evaluation_error_histogram,
 )
 from src.evaluation.executor import execute_cadquery
+from src.metrics.registry import build_metrics
 from src.models.factory import build_sft_model
+
+
+# Offline scoring has no step budget to protect, so it defaults to every metric
+# family, including the two expensive B-Rep benchmarks that training-time
+# validation leaves off.
+TEST_METRICS: tuple[str, ...] = (
+    "CadExecutionMetric",
+    "VoxelIoUMetric",
+    "BoundingBoxMetric",
+    "ChamferMetric",
+    "CADGenBenchScoreMetric",
+    "ECCVChallengeMetric",
+)
 
 
 def _atomic_json(path: Path, payload: Any) -> None:
@@ -210,6 +224,16 @@ def main() -> None:
         action="store_true",
         help="skip scoring even if target/ is present",
     )
+    parser.add_argument(
+        "--metrics",
+        nargs="+",
+        default=None,
+        metavar="CLASS",
+        help=(
+            "metric class names to score with; defaults to every family "
+            f"({', '.join(TEST_METRICS)})"
+        ),
+    )
     args = parser.parse_args()
 
     device = torch.device(
@@ -287,18 +311,22 @@ def main() -> None:
         )
         for sample_id in sample_ids
     ]
+    metrics_spec = evaluation_config.get("metrics", TEST_METRICS)
+    if args.metrics:
+        metrics_spec = args.metrics
+    selected_metrics = build_metrics(metrics_spec)
     eval_config = EvaluationConfig(
         timeout_s=timeout_s,
         tessellation_tolerance=tess,
         volume_tolerance=volume_tol,
-        voxel_resolution=int(evaluation_config.get("voxel_resolution", 64)),
-        compute_chamfer=bool(evaluation_config.get("compute_chamfer", False)),
-        chamfer_points=int(evaluation_config.get("chamfer_points", 8192)),
-        chamfer_seed=args.seed,
+        metric_timeout_s=float(
+            evaluation_config.get("metric_timeout_seconds", 300.0)
+        ),
+        metrics=selected_metrics,
     )
     print("Scoring against target/ ...", flush=True)
     rows = evaluate_predictions(items, config=eval_config)
-    metrics = aggregate_evaluation_metrics(rows, prefix="test")
+    metrics = aggregate_evaluation_metrics(rows, metrics=selected_metrics, prefix="test")
     _atomic_json(args.out_dir / "rows.json", rows)
     _atomic_json(args.out_dir / "metrics.json", metrics)
     _atomic_json(

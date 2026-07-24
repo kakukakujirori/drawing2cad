@@ -9,6 +9,11 @@ from src.evaluation.evaluator import (
     evaluate_prediction,
     evaluation_error_histogram,
 )
+from src.metrics import (
+    BoundingBoxMetric,
+    CadExecutionMetric,
+    VoxelIoUMetric,
+)
 
 
 try:
@@ -18,6 +23,14 @@ try:
 except Exception:
     cq = None
     HAS_CADQUERY = False
+
+
+def _mesh_metrics(resolution: int) -> tuple:
+    return (
+        CadExecutionMetric(),
+        VoxelIoUMetric(resolution=resolution),
+        BoundingBoxMetric(),
+    )
 
 
 class EvaluatorTest(unittest.TestCase):
@@ -42,19 +55,31 @@ class EvaluatorTest(unittest.TestCase):
                 "error": "timeout",
             },
         ]
-        metrics = aggregate_evaluation_metrics(rows)
+        metrics = aggregate_evaluation_metrics(rows, metrics=_mesh_metrics(64))
         self.assertEqual(metrics["val/mean_iou_including_failures"], 0.4)
         self.assertEqual(metrics["val/mean_iou_valid_only"], 0.8)
         self.assertEqual(metrics["val/mean_max_bbox_error_relative"], 0.25)
         self.assertEqual(metrics["val/valid_rate"], 0.5)
         self.assertEqual(evaluation_error_histogram(rows), {"ok": 1, "timeout": 1})
 
+    def test_unselected_family_contributes_no_keys(self) -> None:
+        rows = [{"exec_ok": True, "has_result": True, "valid": True, "iou": 0.5}]
+        metrics = aggregate_evaluation_metrics(rows, metrics=(VoxelIoUMetric(),))
+        self.assertIn("val/mean_iou_including_failures", metrics)
+        self.assertNotIn("val/valid_rate", metrics)
+        self.assertNotIn("val/mean_max_bbox_error_mm", metrics)
+
     def test_missing_target_is_a_failed_row(self) -> None:
         row = evaluate_prediction(
-            EvaluationItem("missing", "result = None", "/not/a/real/target.step")
+            EvaluationItem("missing", "result = None", "/not/a/real/target.step"),
+            config=EvaluationConfig(metrics=_mesh_metrics(16)),
         )
         self.assertFalse(row["exec_ok"])
         self.assertEqual(row["error"], "missing_target_step")
+        # The row still carries every selected family's columns, so a failure
+        # aggregates identically to a scored sample.
+        self.assertIn("iou", row)
+        self.assertIsNone(row["iou"])
 
     def test_item_requires_exactly_one_target_source(self) -> None:
         with self.assertRaisesRegex(ValueError, "exactly one"):
@@ -80,11 +105,7 @@ class EvaluatorTest(unittest.TestCase):
                     "result = cq.Workplane('XY').box(2, 3, 4).translate((10, 20, 30))",
                     target_path,
                 ),
-                config=EvaluationConfig(
-                    timeout_s=30.0,
-                    voxel_resolution=20,
-                    compute_chamfer=False,
-                ),
+                config=EvaluationConfig(timeout_s=30.0, metrics=_mesh_metrics(20)),
             )
             self.assertTrue(row["valid"], row["error"])
             self.assertGreater(float(row["iou"]), 0.99)
@@ -98,11 +119,7 @@ class EvaluatorTest(unittest.TestCase):
                 "result = cq.Workplane('XY').box(2, 3, 4)",
                 target_code="result = cq.Workplane('XY').box(2, 3, 4)",
             ),
-            config=EvaluationConfig(
-                timeout_s=30.0,
-                voxel_resolution=16,
-                compute_chamfer=False,
-            ),
+            config=EvaluationConfig(timeout_s=30.0, metrics=_mesh_metrics(16)),
         )
         self.assertTrue(row["valid"], row["error"])
         self.assertGreater(float(row["iou"]), 0.99)

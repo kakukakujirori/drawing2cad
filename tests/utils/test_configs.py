@@ -68,6 +68,22 @@ class TrainingConfigTest(unittest.TestCase):
         self.assertGreater(checkpoint["top_k"], 0)
         self.assertEqual(checkpoint["latest_dirname"], "latest")
 
+    def test_configured_metrics_build_and_cover_the_checkpoint_monitor(self) -> None:
+        from src.metrics.registry import build_metrics
+
+        evaluation = self._load("train_sft.yaml")["evaluation"]
+        metrics = build_metrics(evaluation["metrics"])
+        self.assertTrue(metrics)
+        monitor = self._load("checkpoint/topk.yaml")["monitor"]
+        # `val/<root>/<key>`: the root is a dataset name known only at runtime,
+        # so only the metric key itself can be checked here.
+        produced = set()
+        for metric in metrics:
+            produced.update(
+                key.split("/")[-1] for key in metric.reduce([], prefix="val")
+            )
+        self.assertIn(monitor.split("/")[-1], produced)
+
     def test_hydra_composes_production_defaults(self) -> None:
         with initialize_config_dir(
             config_dir=str(CONFIG_ROOT.resolve()), version_base="1.3"

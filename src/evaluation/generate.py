@@ -32,6 +32,7 @@ from src.evaluation.evaluator import (
     evaluate_predictions,
     evaluation_error_histogram,
 )
+from src.metrics.registry import build_metrics
 from src.models import PrimitiveEncoderConfig
 
 
@@ -71,6 +72,9 @@ class CADGenerationEvaluator:
         self.metric_prefix = f"val/{dataset_root.name}"
         self.evaluation_config = evaluation_config
         self.primitive_config = primitive_config
+        # Built once here so a misspelled class name in the config fails at
+        # construction time rather than at the first validation step.
+        self.metrics = build_metrics(evaluation_config.get("metrics"))
         self.predictions_dir = Path(predictions_dir)
         self.sample_ids = self._select_sample_ids()
         if accelerator.is_main_process:
@@ -185,10 +189,10 @@ class CADGenerationEvaluator:
             volume_tolerance=float(
                 self.evaluation_config.get("volume_tolerance", 1e-6)
             ),
-            voxel_resolution=int(self.evaluation_config.get("voxel_resolution", 64)),
-            compute_chamfer=bool(self.evaluation_config.get("compute_chamfer", False)),
-            chamfer_points=int(self.evaluation_config.get("chamfer_points", 8192)),
-            chamfer_seed=int(self.evaluation_config.get("generation_seed", 42)),
+            metric_timeout_s=float(
+                self.evaluation_config.get("metric_timeout_seconds", 300.0)
+            ),
+            metrics=self.metrics,
         )
 
     def _generate_codes(
@@ -306,7 +310,9 @@ class CADGenerationEvaluator:
                 rows.append(entry)
         rows.sort(key=lambda row: str(row.get("id", "")))
 
-        metrics = aggregate_evaluation_metrics(rows, prefix=self.metric_prefix)
+        metrics = aggregate_evaluation_metrics(
+            rows, metrics=self.metrics, prefix=self.metric_prefix
+        )
         if self.accelerator.is_main_process:
             _atomic_json(step_dir / "rows.json", rows)
             _atomic_json(step_dir / "metrics.json", metrics)

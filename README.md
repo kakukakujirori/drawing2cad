@@ -140,6 +140,43 @@ python src/train_sft.py training.resume_from_latest=true \
 Resume restores the saved scheduler as well as model/optimizer state.
 Extending a run that already reached its original `max_steps` therefore requires an explicit new scheduler policy; merely increasing `max_steps` does not restart or stretch the completed schedule.
 
+## Evaluation metrics
+
+Validation scoring is a list of metric families in `configs/train_sft.yaml`:
+
+```yaml
+evaluation:
+  metrics:
+    - CadExecutionMetric
+    - VoxelIoUMetric
+    - BoundingBoxMetric
+    # - ChamferMetric
+    # - CADGenBenchScoreMetric
+    # - ECCVChallengeMetric
+```
+
+Each entry names a class in `src/metrics/` (registered by class name; a mapping
+with `name` plus that family's parameters configures it). Every family declares
+which artifacts it reads, and only those are produced, so an unused family costs
+nothing. Adding a metric means adding one file, not editing the evaluator.
+
+| Family | Reports |
+| --- | --- |
+| `CadExecutionMetric` | execution, result and validity rates |
+| `VoxelIoUMetric` | shape-only voxel IoU (the default checkpoint monitor) |
+| `BoundingBoxMetric` | absolute and target-relative bounding-box errors |
+| `ChamferMetric` | surface Chamfer distance, normalized and in mm² |
+| `CADGenBenchScoreMetric` | [CADGenBench](https://huggingface.co/spaces/HuggingAI4Engineering/CADGenBench) CAD Score, surface distance F1, volume IoU, topology match |
+| `ECCVChallengeMetric` | [ECCV 2026 CAD Challenge](https://huggingface.co/spaces/jingwei-xu-00/eccv2026-cad-challenge) valid ratio, surface/edge/vertex F1, topology F1, summary |
+
+The last two read B-Rep (STEP) rather than meshes and cost seconds to tens of
+seconds per sample, so they are off during training and on by default in
+`src/test.py`. Both are shape-only by default: `normalize_to_gt_bbox` rescales
+the prediction onto the target's bounding box because the drawings carry no
+dimensions. Set it to `false` for numbers directly comparable to the published
+leaderboards. All scoring runs in an isolated subprocess, so a CAD kernel fault
+or hang cannot take down training.
+
 ## Inference
 
 ```bash
@@ -148,3 +185,6 @@ python src/test.py \
     --test_dir data/z2c_val \
     --out_dir outputs/z2c_val/[yyyy-mm-dd_hh-mm-ss]
 ```
+
+Scores with every metric family; `--metrics VoxelIoUMetric BoundingBoxMetric`
+restricts that, and `--no_metrics` skips scoring entirely.

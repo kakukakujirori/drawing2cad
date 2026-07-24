@@ -44,9 +44,29 @@ evaluation:
   execution_workers: 8
   tessellation_tolerance: 0.1
   volume_tolerance: 1.0e-6
-  # The voxel IoU is shape-only: both meshes are centred and normalized by their
-  # own maximum extent, because the drawings carry no dimension information.
-  voxel_resolution: 64
-  compute_chamfer: false
-  chamfer_points: 8192
+  # Wall-clock budget for scoring one sample with every metric below, in its own
+  # subprocess (src/evaluation/scoring.py). Matches the per-sample budget the
+  # ECCV challenge evaluator allows itself.
+  metric_timeout_seconds: 600.0
+  # Metric families to score with (src/metrics, registered by class name). Each
+  # entry is either a class name or a mapping with `name` plus that family's
+  # parameters. Only the artifacts the listed families require are produced, so
+  # dropping a family also drops its cost.
+  #
+  # Every metric here is shape-only by default: the drawings carry no dimension
+  # information, so predictions are compared after being normalized onto the
+  # target (the voxel IoU normalizes both meshes by their own maximum extent;
+  # the two B-Rep benchmarks rescale the prediction onto the target's bounding
+  # box, which `normalize_to_gt_bbox: false` turns off).
+  #
+  # Keep VoxelIoUMetric while configs/checkpoint/topk.yaml monitors
+  # `val/<root>/mean_iou_including_failures`: that key is this family's.
+  metrics:
+    - CadExecutionMetric
+    - VoxelIoUMetric        # or {name: VoxelIoUMetric, resolution: 64}
+    - BoundingBoxMetric
+    # Off by default, all three cost real wall-clock time per sample:
+    # - ChamferMetric
+    # - CADGenBenchScoreMetric  # CAD Score, surface distance F1, volume IoU, topology
+    # - ECCVChallengeMetric     # valid ratio, surface/edge/vertex F1, topology F1
   predictions_dirname: val_predictions

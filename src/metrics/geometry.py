@@ -11,7 +11,7 @@ available where they cost nothing and stay useful as diagnostics.
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable, Mapping
+from typing import Any, Sequence
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -282,68 +282,15 @@ def surface_chamfer_distance(
     return symmetric_chamfer_distance(pred_points, gt_points)
 
 
-def aggregate_geometry_metrics(
-    rows: Iterable[Mapping[str, object]],
-    *,
-    prefix: str = "val",
-) -> dict[str, float | int]:
-    """Aggregate geometry rows, scoring failed/invalid predictions as zero IoU."""
+def finite_float(value: object) -> float | None:
+    """Return ``value`` as a finite float, or ``None`` when it is not one.
 
-    materialized = list(rows)
-    total = len(materialized)
-    iou_with_failures: list[float] = []
-    valid_ious: list[float] = []
-    bbox_errors: list[float] = []
-    bbox_errors_relative: list[float] = []
-    chamfer_mm2: list[float] = []
-    chamfer_normalized: list[float] = []
-    for row in materialized:
-        raw_iou = row.get("iou")
-        valid = bool(row.get("valid", False))
-        iou = _finite_float(raw_iou)
-        iou_with_failures.append(iou if valid and iou is not None else 0.0)
-        if valid and iou is not None:
-            valid_ious.append(iou)
-        bbox = _finite_float(row.get("max_bbox_error_mm"))
-        if bbox is not None:
-            bbox_errors.append(bbox)
-        bbox_relative = _finite_float(row.get("max_bbox_error_relative"))
-        if bbox_relative is not None:
-            bbox_errors_relative.append(bbox_relative)
-        chamfer = _finite_float(row.get("chamfer_mm2"))
-        if chamfer is not None:
-            chamfer_mm2.append(chamfer)
-        normalized = _finite_float(row.get("chamfer_normalized"))
-        if normalized is not None:
-            chamfer_normalized.append(normalized)
+    Shared by the metric families that aggregate these rows: a column is
+    missing (``None``), non-numeric, or NaN/inf for exactly the samples that
+    could not be scored, and those must drop out of a mean rather than poison
+    it.
+    """
 
-    stem = f"{prefix}/" if prefix else ""
-    metrics: dict[str, float | int] = {
-        f"{stem}iou_scored_n": len(valid_ious),
-        f"{stem}mean_iou_including_failures": _mean(iou_with_failures),
-        f"{stem}mean_iou_valid_only": _mean(valid_ious),
-        f"{stem}median_iou": _median(iou_with_failures),
-        f"{stem}bbox_scored_n": len(bbox_errors),
-        # Kept as a diagnostic: uninterpretable as a target while the input
-        # carries no scale, but it still exposes absolute-size drift.
-        f"{stem}mean_max_bbox_error_mm": _mean(bbox_errors),
-    }
-    if bbox_errors_relative:
-        metrics[f"{stem}bbox_relative_scored_n"] = len(bbox_errors_relative)
-        metrics[f"{stem}mean_max_bbox_error_relative"] = _mean(bbox_errors_relative)
-    if chamfer_mm2:
-        metrics[f"{stem}chamfer_mm2_scored_n"] = len(chamfer_mm2)
-        metrics[f"{stem}mean_chamfer_mm2"] = _mean(chamfer_mm2)
-    if chamfer_normalized:
-        metrics[f"{stem}chamfer_normalized_scored_n"] = len(chamfer_normalized)
-        metrics[f"{stem}mean_chamfer_normalized"] = _mean(chamfer_normalized)
-    if total == 0:
-        # Keep the checkpoint monitor stable even for an accidentally empty subset.
-        metrics[f"{stem}mean_iou_including_failures"] = 0.0
-    return metrics
-
-
-def _finite_float(value: object) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
@@ -353,16 +300,21 @@ def _finite_float(value: object) -> float | None:
     return result if math.isfinite(result) else None
 
 
-def _mean(values: list[float]) -> float:
-    return float(np.mean(values)) if values else 0.0
+def mean_or_zero(values: Sequence[float]) -> float:
+    """Mean of the scored values, or zero when nothing could be scored.
+
+    Zero keeps the checkpoint monitor a real number even for an empty or
+    fully-failed validation subset.
+    """
+
+    return float(np.mean(values)) if len(values) else 0.0
 
 
-def _median(values: list[float]) -> float:
-    return float(np.median(values)) if values else 0.0
+def median_or_zero(values: Sequence[float]) -> float:
+    return float(np.median(values)) if len(values) else 0.0
 
 
 __all__ = [
-    "aggregate_geometry_metrics",
     "align_meshes",
     "bbox_dimension_error_mm",
     "bbox_dimension_error_relative",
@@ -371,4 +323,7 @@ __all__ = [
     "normalized_voxel_iou",
     "surface_chamfer_distance",
     "symmetric_chamfer_distance",
+    "finite_float",
+    "mean_or_zero",
+    "median_or_zero",
 ]

@@ -13,15 +13,18 @@ from .evaluator import (
     evaluation_error_histogram,
 )
 from .generate import CADGenerationEvaluator
+from .scoring import ScoringResult, score_sample
 
 __all__ = [
     "CadExecutionResult",
     "EvaluationConfig",
     "EvaluationItem",
     "CADGenerationEvaluator",
+    "ScoringResult",
     "aggregate_evaluation_metrics",
     "evaluate_prediction",
     "evaluate_predictions",
     "evaluation_error_histogram",
     "execute_cadquery",
+    "score_sample",
 ]

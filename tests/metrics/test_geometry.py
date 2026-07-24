@@ -3,8 +3,8 @@ import unittest
 
 import numpy as np
 
+from src.metrics.bbox import BoundingBoxMetric
 from src.metrics.geometry import (
-    aggregate_geometry_metrics,
     align_meshes,
     bbox_dimension_error_mm,
     max_bbox_error_relative,
@@ -12,6 +12,7 @@ from src.metrics.geometry import (
     surface_chamfer_distance,
     symmetric_chamfer_distance,
 )
+from src.metrics.voxel_iou import VoxelIoUMetric
 
 
 HAS_TRIMESH = importlib.util.find_spec("trimesh") is not None
@@ -52,7 +53,9 @@ class GeometryMetricsTest(unittest.TestCase):
 
         translated = target.copy()
         translated.apply_translation([30.0, -12.0, 8.0])
-        self.assertGreater(normalized_voxel_iou(translated, target, resolution=24), 0.99)
+        self.assertGreater(
+            normalized_voxel_iou(translated, target, resolution=24), 0.99
+        )
 
         # Uniformly rescaled: the same shape, so the score must not drop. This
         # is the assertion that reverses under the old scale-preserving metric.
@@ -107,28 +110,30 @@ class GeometryMetricsTest(unittest.TestCase):
         )
 
     def test_aggregation_scores_failures_as_zero_iou(self) -> None:
-        metrics = aggregate_geometry_metrics(
-            [
-                {
-                    "valid": True,
-                    "iou": 1.0,
-                    "max_bbox_error_mm": 0.0,
-                    "max_bbox_error_relative": 0.0,
-                },
-                {
-                    "valid": True,
-                    "iou": 0.5,
-                    "max_bbox_error_mm": 2.0,
-                    "max_bbox_error_relative": 0.5,
-                },
-                {
-                    "valid": False,
-                    "iou": None,
-                    "max_bbox_error_mm": None,
-                    "max_bbox_error_relative": None,
-                },
-            ]
-        )
+        rows = [
+            {
+                "valid": True,
+                "iou": 1.0,
+                "max_bbox_error_mm": 0.0,
+                "max_bbox_error_relative": 0.0,
+            },
+            {
+                "valid": True,
+                "iou": 0.5,
+                "max_bbox_error_mm": 2.0,
+                "max_bbox_error_relative": 0.5,
+            },
+            {
+                "valid": False,
+                "iou": None,
+                "max_bbox_error_mm": None,
+                "max_bbox_error_relative": None,
+            },
+        ]
+        metrics = {
+            **VoxelIoUMetric().reduce(rows, prefix="val"),
+            **BoundingBoxMetric().reduce(rows, prefix="val"),
+        }
         self.assertEqual(metrics["val/iou_scored_n"], 2)
         self.assertAlmostEqual(metrics["val/mean_iou_including_failures"], 0.5)
         self.assertAlmostEqual(metrics["val/mean_iou_valid_only"], 0.75)
