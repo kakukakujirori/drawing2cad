@@ -30,6 +30,11 @@ def _add_edges(msp, edges, linetype, layer):
             sa, ea = math.degrees(a.a0), math.degrees(a.a1)
         else:
             sa, ea = math.degrees(a.a1), math.degrees(a.a0)
+        # DXF ARC traversal is always CCW.  Keep angles in the conventional
+        # [0, 360) range because several CAD readers mishandle negative or
+        # multi-turn values as full circles.
+        sa %= 360.0
+        ea %= 360.0
         msp.add_arc(a.center, a.radius, sa, ea, dxfattribs=attribs)
     for c in edges.circles:
         msp.add_circle(c.center, c.radius, dxfattribs=attribs)

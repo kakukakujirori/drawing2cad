@@ -539,12 +539,34 @@ def _plane_project(pts3, camera: Camera):
 def _silhouette_chains(verts, tris, eye):
     """Polyline chains (lists of vertex indices) along mesh edges where the
     facing of adjacent triangles flips -- the true outline/silhouette curves,
-    perspective-correct w.r.t. the eye point."""
+    perspective-correct w.r.t. the eye point.
+
+    OCC triangulates each BRep face with a private vertex array.  Vertices on a
+    shared smooth boundary therefore have different indices even though their
+    coordinates are identical.  Weld those exact duplicates for adjacency
+    only (the render mesh remains untouched); otherwise a silhouette that lands
+    on a STEP face split disappears, as happens on the upper cylindrical
+    fillet of 000775.
+    """
     v = verts[tris]
     n = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
     front = np.einsum("ij,ij->i", n, v.mean(axis=1) - np.asarray(eye)) < 0.0
 
-    e = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    # Map coincident per-face vertices to one representative raw index.  Exact
+    # equality is intentional: topological boundary nodes produced by OCC are
+    # identical, while a tolerance weld could join genuinely separate thin
+    # features.
+    _, first, inverse = np.unique(verts, axis=0, return_index=True, return_inverse=True)
+    canonical = first[inverse]
+    welded_tris = canonical[tris]
+
+    e = np.concatenate(
+        [
+            welded_tris[:, [0, 1]],
+            welded_tris[:, [1, 2]],
+            welded_tris[:, [2, 0]],
+        ]
+    )
     owner = np.tile(np.arange(len(tris)), 3)
     e.sort(axis=1)
     key = e[:, 0].astype(np.int64) * len(verts) + e[:, 1]
@@ -552,9 +574,9 @@ def _silhouette_chains(verts, tris, eye):
     ks, os_ = key[order], owner[order]
     starts = np.flatnonzero(np.concatenate([[True], ks[1:] != ks[:-1]]))
     counts = np.diff(np.concatenate([starts, [len(ks)]]))
-    # interior mesh edges (2 owners) with opposite facing; _tessellate keeps
-    # per-face vertex indexing, so these are silhouettes INSIDE smooth faces
-    # (cross-face contours coincide with real BRep edges, drawn separately).
+    # Manifold mesh edges (2 owners) with opposite facing.  This includes
+    # contours inside smooth faces and contours that land exactly on a welded
+    # smooth face boundary.
     pair = starts[counts == 2]
     flip = front[os_[pair]] != front[os_[pair + 1]]
     sil = ks[pair[flip]]

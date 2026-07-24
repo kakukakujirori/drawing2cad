@@ -434,8 +434,16 @@ def _safe_compound(hts: HLRBRep_HLRToShape, name: str):
 
 
 def _recombine_circles(edges: ProjectedEdges, tol: float) -> None:
-    """Merge arcs that share a centre+radius and together cover ~2pi into a
-    full Circle (OCC HLR splits circular edges at silhouette points)."""
+    """Coalesce arcs on the same circle.
+
+    OCC HLR commonly splits one topological circular edge at visibility or
+    face-boundary points.  Keeping those fragments independently is not only
+    noisy: clockwise fragments can be written with negative / >360 degree DXF
+    angles, and some CAD readers then display the almost-closed arc as a full
+    circle.  Union the fragments geometrically, preserving a real angular gap,
+    and promote to ``Circle`` only when the residual gap is within the model
+    tolerance.
+    """
     if not edges.arcs:
         return
     groups: dict = {}
@@ -447,10 +455,13 @@ def _recombine_circles(edges: ProjectedEdges, tol: float) -> None:
             round(a.radius * key_scale),
         )
         groups.setdefault(k, []).append(a)
-    remaining: list[Arc] = []
-    for k, arcs in groups.items():
-        # angular coverage as union of [a0,a1] intervals (normalised CCW)
-        intervals = []
+    coalesced: list[Arc] = []
+    for arcs in groups.values():
+        c = arcs[0]
+        # Angular tolerance implied by the linear merge tolerance.  Cap it so
+        # a deliberate slot in an almost-complete circle is never filled.
+        angle_tol = max(1e-7, min(0.02, 2.0 * tol / max(c.radius, tol)))
+        intervals: list[tuple[float, float]] = []
         for a in arcs:
             s = _norm_angle(a.a0)
             if a.ccw:
@@ -460,40 +471,111 @@ def _recombine_circles(edges: ProjectedEdges, tol: float) -> None:
                 s = _norm_angle(a.a1)
             if span < 1e-9:
                 span = _TWO_PI
-            intervals.append((s, s + span))
-        cov = _interval_union_len(intervals)
-        if cov >= _TWO_PI - 0.15:
-            c = arcs[0]
+            e = s + span
+            if e > _TWO_PI:
+                intervals.append((s, _TWO_PI))
+                intervals.append((0.0, e - _TWO_PI))
+            else:
+                intervals.append((s, e))
+
+        intervals.sort()
+        merged: list[list[float]] = []
+        for s, e in intervals:
+            if merged and s <= merged[-1][1] + angle_tol:
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e])
+
+        coverage = sum(e - s for s, e in merged)
+        if coverage >= _TWO_PI - angle_tol:
             edges.circles.append(Circle(c.center, c.radius))
-        else:
-            remaining.extend(arcs)
-    edges.arcs = remaining
+            continue
+
+        # Join the intervals on either side of angle zero into one wrapping
+        # ARC.  DXF arcs are CCW, so start > end is the canonical representation
+        # of an arc crossing zero (e.g. 15deg -> 1deg is almost a full circle).
+        if (
+            len(merged) >= 2
+            and merged[0][0] <= angle_tol
+            and merged[-1][1] >= _TWO_PI - angle_tol
+        ):
+            wrap = (merged[-1][0], merged[0][1])
+            merged = merged[1:-1]
+            coalesced.append(Arc(c.center, c.radius, *wrap, ccw=True))
+        for s, e in merged:
+            coalesced.append(
+                Arc(c.center, c.radius, _norm_angle(s), _norm_angle(e), ccw=True)
+            )
+    edges.arcs = coalesced
 
 
-def _interval_union_len(intervals) -> float:
-    segs = []
-    for s, e in intervals:
-        s %= _TWO_PI
-        e = s + (e - s) % _TWO_PI if e != s else s + _TWO_PI
-        if e > _TWO_PI:
-            segs.append((s, _TWO_PI))
-            segs.append((0.0, e - _TWO_PI))
+def _drop_hidden_duplicates(
+    visible: ProjectedEdges, hidden: ProjectedEdges, tol: float
+) -> None:
+    """Prefer visible ink when OCC emits the same projected edge twice.
+
+    A shared BRep edge can be returned by both ``VCompound`` and ``HCompound``
+    when one adjacent face is visible and the other is hidden.  SolidWorks
+    emits it once as visible; retaining both creates doubled DXF primitives and
+    can make a slotted arc look closed in downstream CAD viewers.
+    """
+
+    def point_close(p, q) -> bool:
+        return math.hypot(p[0] - q[0], p[1] - q[1]) <= tol
+
+    def same_segment(a: Segment, b: Segment) -> bool:
+        return (point_close(a.p0, b.p0) and point_close(a.p1, b.p1)) or (
+            point_close(a.p0, b.p1) and point_close(a.p1, b.p0)
+        )
+
+    def arc_signature(a: Arc) -> tuple[float, float]:
+        if a.ccw:
+            start = _norm_angle(a.a0)
+            span = (a.a1 - a.a0) % _TWO_PI
         else:
-            segs.append((s, e))
-    segs.sort()
-    total = 0.0
-    cur_s, cur_e = None, None
-    for s, e in segs:
-        if cur_s is None:
-            cur_s, cur_e = s, e
-        elif s <= cur_e + 1e-9:
-            cur_e = max(cur_e, e)
-        else:
-            total += cur_e - cur_s
-            cur_s, cur_e = s, e
-    if cur_s is not None:
-        total += cur_e - cur_s
-    return min(total, _TWO_PI)
+            start = _norm_angle(a.a1)
+            span = (a.a0 - a.a1) % _TWO_PI
+        return start, span
+
+    def angle_close(a: float, b: float, angle_tol: float) -> bool:
+        return abs((a - b + math.pi) % _TWO_PI - math.pi) <= angle_tol
+
+    def same_arc(a: Arc, b: Arc) -> bool:
+        if not point_close(a.center, b.center) or abs(a.radius - b.radius) > tol:
+            return False
+        angle_tol = max(1e-7, min(0.02, 2.0 * tol / max(a.radius, b.radius, tol)))
+        a_start, a_span = arc_signature(a)
+        b_start, b_span = arc_signature(b)
+        return angle_close(a_start, b_start, angle_tol) and abs(a_span - b_span) <= (
+            2.0 * angle_tol
+        )
+
+    def same_circle(a: Circle, b: Circle) -> bool:
+        return point_close(a.center, b.center) and abs(a.radius - b.radius) <= tol
+
+    def same_polyline(a: Polyline, b: Polyline) -> bool:
+        if len(a.pts) != len(b.pts):
+            return False
+        return all(point_close(p, q) for p, q in zip(a.pts, b.pts)) or all(
+            point_close(p, q) for p, q in zip(a.pts, reversed(b.pts))
+        )
+
+    hidden.segments = [
+        h
+        for h in hidden.segments
+        if not any(same_segment(h, v) for v in visible.segments)
+    ]
+    hidden.arcs = [
+        h for h in hidden.arcs if not any(same_arc(h, v) for v in visible.arcs)
+    ]
+    hidden.circles = [
+        h for h in hidden.circles if not any(same_circle(h, v) for v in visible.circles)
+    ]
+    hidden.polylines = [
+        h
+        for h in hidden.polylines
+        if not any(same_polyline(h, v) for v in visible.polylines)
+    ]
 
 
 def _merge_segments(edges: ProjectedEdges, tol: float) -> None:
@@ -614,5 +696,6 @@ def project(
 
     _cleanup(visible, merge_tol)
     _cleanup(hidden, merge_tol)
+    _drop_hidden_duplicates(visible, hidden, merge_tol)
 
     return ViewProjection(visible=visible, hidden=hidden)
