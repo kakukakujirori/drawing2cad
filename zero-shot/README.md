@@ -8,7 +8,11 @@
 
 All three providers are supported by one script. The provider is inferred from `--model`; use `--provider` only when an explicit override is necessary.
 
-Gemini model labels are passed to agy exactly as written. In particular, labels such as `Gemini 3.6 Flash (High)` already encode their variant and are not combined with a separate `--effort`, which agy rejects for that model. GPT reasoning-effort shorthand is handled separately through suffixes such as `-max`; Claude model names do not affect an effort option.
+All three providers use the same parenthetical convention for reasoning effort: append one of `(Low)`, `(Medium)`, `(High)`, `(Extra high)`, or `(Max)` to the model. `Max` is only available on some models, and the CLI reports an unsupported model/effort combination.
+
+- Gemini labels are passed to agy exactly as written, so the variant stays embedded in the label (e.g. `Gemini 3.6 Flash (High)`); agy rejects a separate `--effort` flag, so the runner never splits it off.
+- GPT maps the label to the Codex reasoning effort and passes the bare model on, e.g. `gpt-5.4-mini (Extra high)` runs `gpt-5.4-mini` at effort `xhigh`.
+- Claude maps the label to the `claude --effort` level and passes the bare model on, e.g. `claude-opus-4-8 (High)`.
 
 ## Prerequisites
 
@@ -46,18 +50,18 @@ python zero-shot/run_zero_shot.py \
   --model "Gemini 3.6 Flash (High)" \
   --format cadquery
 
-# GPT. The -max suffix is translated to Codex reasoning effort=max.
+# GPT. The (Max) label is translated to Codex reasoning effort=max.
 python zero-shot/run_zero_shot.py \
   --data_dir data/eccv2026-cad-challenge-data/my_codes/test_vlm \
   --out_dir outputs/eccv2026-cad-challenge-data/zero_shot_gpt_cadquery \
-  --model gpt-5.6-sol-max \
+  --model "gpt-5.6-sol (Max)" \
   --format cadquery
 
-# Claude
+# Claude. The (High) label is translated to `claude --effort high`.
 python zero-shot/run_zero_shot.py \
   --data_dir data/eccv2026-cad-challenge-data/my_codes/test_vlm \
   --out_dir outputs/eccv2026-cad-challenge-data/zero_shot_claude_cadquery \
-  --model claude-opus-4-8 \
+  --model "claude-opus-4-8 (High)" \
   --format cadquery
 ```
 

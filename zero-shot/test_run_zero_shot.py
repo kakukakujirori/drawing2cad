@@ -51,18 +51,26 @@ class DataDiscoveryTests(unittest.TestCase):
 class RoutingTests(unittest.TestCase):
     def test_provider_inference(self) -> None:
         self.assertEqual(runner.infer_provider("Gemini 3.6 Flash (High)"), "gemini")
-        self.assertEqual(runner.infer_provider("gpt-5.6-sol-max"), "gpt")
+        self.assertEqual(runner.infer_provider("gpt-5.6-sol (Max)"), "gpt")
         self.assertEqual(runner.infer_provider("claude-opus-4-8"), "claude")
 
-    def test_gpt_effort_shorthand(self) -> None:
+    def test_gpt_effort_parenthetical(self) -> None:
         self.assertEqual(
-            runner.split_gpt_model_effort("gpt-5.6-sol-max"),
+            runner.parse_model_effort("gpt-5.4-mini (Extra high)"),
+            ("gpt-5.4-mini", "xhigh"),
+        )
+        self.assertEqual(
+            runner.parse_model_effort("gpt-5.6-sol (Max)"),
             ("gpt-5.6-sol", "max"),
         )
         self.assertEqual(
-            runner.split_gpt_model_effort("gpt-5.6-sol"),
+            runner.parse_model_effort("gpt-5.6-sol"),
             ("gpt-5.6-sol", None),
         )
+
+    def test_gpt_effort_rejects_unknown_label(self) -> None:
+        with self.assertRaisesRegex(runner.RunnerError, "reasoning effort"):
+            runner.parse_model_effort("gpt-5.4-mini (Turbo)")
 
 
 class PromptAndValidationTests(unittest.TestCase):
@@ -659,7 +667,7 @@ class SandboxCommandTests(unittest.TestCase):
     def test_gpt_disables_external_tool_features(self) -> None:
         command, _ = runner.build_agent_command(
             "gpt",
-            "gpt-5.6-sol-max",
+            "gpt-5.6-sol (Max)",
             "prompt",
             Path("/tmp/codex"),
             Path("/tmp/work"),
@@ -669,12 +677,35 @@ class SandboxCommandTests(unittest.TestCase):
         )
         for feature in runner.GPT_DISABLED_FEATURES:
             self.assertIn(feature, command)
+        # The deprecated web-search feature flags are gone; web search is turned
+        # off through the top-level config the current Codex expects instead.
+        self.assertNotIn("web_search_cached", runner.GPT_DISABLED_FEATURES)
+        self.assertNotIn("web_search_request", runner.GPT_DISABLED_FEATURES)
+        self.assertIn('web_search="disabled"', command)
         self.assertIn("sandbox_workspace_write.network_access=false", command)
+        self.assertIn('model_reasoning_effort="max"', command)
 
-    def test_non_gemini_commands_do_not_use_gemini_effort_mapping(self) -> None:
+    def test_claude_effort_parenthetical_maps_to_effort_flag(self) -> None:
         command, _ = runner.build_agent_command(
             "claude",
-            "claude-sonnet-4-6 (Low)",
+            "claude-sonnet-4-6 (Extra high)",
+            "prompt",
+            Path("/tmp/claude"),
+            Path("/tmp/work"),
+            Path("/tmp/home"),
+            Path("/tmp/env"),
+            1800,
+        )
+        # The parenthetical is stripped from --model and mapped to --effort.
+        self.assertIn("--effort", command)
+        self.assertEqual(command[command.index("--effort") + 1], "xhigh")
+        self.assertIn("claude-sonnet-4-6", command)
+        self.assertNotIn("claude-sonnet-4-6 (Extra high)", command)
+
+    def test_claude_without_parenthetical_omits_effort_flag(self) -> None:
+        command, _ = runner.build_agent_command(
+            "claude",
+            "claude-opus-4-8",
             "prompt",
             Path("/tmp/claude"),
             Path("/tmp/work"),

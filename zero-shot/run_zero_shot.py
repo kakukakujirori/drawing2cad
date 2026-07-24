@@ -74,14 +74,27 @@ GPT_DISABLED_FEATURES = (
     "skill_mcp_dependency_install",
     "skill_search",
     "standalone_web_search",
-    "web_search_cached",
-    "web_search_request",
     "workspace_dependencies",
 )
 
+# Human-facing reasoning-effort labels (the same parenthetical style as the
+# Gemini "(High)" convention) mapped to the effort tokens the CLIs understand.
+# GPT (Codex `model_reasoning_effort`) and Claude (`--effort`) share this exact
+# set of levels.  "Max" is only available on some models; the CLI reports an
+# unsupported model/effort pair, so the runner validates the label spelling here
+# and leaves the per-model availability check to the CLI.  Gemini does not use
+# this map: its variant stays embedded in the label passed verbatim to agy.
+EFFORT_LABELS = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "extra high": "xhigh",
+    "max": "max",
+}
+
 DEFAULT_MODELS = {
     "gemini": "Gemini 3.6 Flash (High)",
-    "gpt": "gpt-5.6-sol-max",
+    "gpt": "gpt-5.6-sol (Max)",
     "claude": "claude-opus-4-8",
 }
 
@@ -811,13 +824,21 @@ def infer_provider(model: str, explicit: str = "auto") -> str:
     )
 
 
-def split_gpt_model_effort(model: str) -> tuple[str, str | None]:
-    """Accept README shorthand such as gpt-5.6-sol-max."""
-    match = re.fullmatch(r"(.+)-(low|medium|high|xhigh|max|ultra)", model.lower())
+def parse_model_effort(model: str) -> tuple[str, str | None]:
+    """Split a GPT/Claude model label such as 'gpt-5.4-mini (Extra high)' or
+    'claude-opus-4-8 (High)' into (base_model, effort), mirroring the Gemini
+    '(High)' convention.  Returns effort=None when no parenthetical is present."""
+    match = re.fullmatch(r"\s*(.+?)\s*\(([^()]+)\)\s*", model)
     if not match:
-        return model, None
-    base, effort = match.groups()
-    return model[: len(base)], effort
+        return model.strip(), None
+    base, label = match.group(1), match.group(2).strip()
+    effort = EFFORT_LABELS.get(label.lower())
+    if effort is None:
+        raise RunnerError(
+            f"Unknown reasoning effort {label!r}; "
+            "use one of Low, Medium, High, Extra high, Max"
+        )
+    return base, effort
 
 
 def cad_env_site_packages(python_env: Path) -> str:
@@ -1187,7 +1208,7 @@ def build_agent_command(
         return base + command, None
 
     if provider == "gpt":
-        base_model, effort = split_gpt_model_effort(model)
+        base_model, effort = parse_model_effort(model)
         command = [
             "/agent-bin",
             "exec",
@@ -1209,6 +1230,11 @@ def build_agent_command(
             "sandbox_workspace_write.network_access=false",
             "--config",
             'approval_policy="never"',
+            # Web search is on by default and runs server-side, outside the
+            # sandbox network namespace, so network_access=false does not stop
+            # it.  Disabling it here keeps the GPT path networkless like the rest.
+            "--config",
+            'web_search="disabled"',
             "--output-last-message",
             "/work/final_response.txt",
         ]
@@ -1223,11 +1249,12 @@ def build_agent_command(
         base += ["--setenv", "CODEX_HOME", "/home/runner/.codex"]
         return base + command, prompt
 
+    base_model, effort = parse_model_effort(model)
     command = [
         "/agent-bin",
         "--print",
         "--model",
-        model,
+        base_model,
         "--safe-mode",
         "--no-chrome",
         "--disable-slash-commands",
@@ -1264,6 +1291,8 @@ def build_agent_command(
         "--verbose",
         prompt,
     ]
+    if effort:
+        command += ["--effort", effort]
     base += ["--setenv", "CLAUDE_CONFIG_DIR", "/home/runner/.claude"]
     return base + command, None
 
@@ -2690,6 +2719,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     provider = infer_provider(args.model, args.provider)
+    if provider in {"gpt", "claude"}:
+        # Reject a mistyped effort label before launching any task rather than
+        # failing every task with an opaque CLI model/effort rejection error.
+        # Gemini is excluded: it carries its variant verbatim inside the label.
+        parse_model_effort(args.model)
     executable = _resolve_binary(provider, args.agent_bin)
     python_env = _python_env_from_interpreter(args.python)
     _require_cad_library(python_env, args.format)
