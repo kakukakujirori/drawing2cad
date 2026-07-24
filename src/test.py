@@ -38,8 +38,8 @@ from src.data import (
     Drawing2CADCollator,
     Drawing2CADDataset,
     Drawing2CADPreprocessor,
-    ManifestSampleMetadataProvider,
     RasterImageSource,
+    discover_sample_ids,
 )
 from src.evaluation.evaluator import (
     EvaluationConfig,
@@ -106,8 +106,7 @@ def _load_run_config(ckpt: Path, override: Path | None) -> Mapping[str, Any]:
 
 
 def _select_sample_ids(test_dir: Path, subset_size: int, seed: int) -> tuple[str, ...]:
-    provider = ManifestSampleMetadataProvider(test_dir / "manifest.jsonl")
-    available = list(provider.sample_ids)
+    available = list(discover_sample_ids(test_dir))
     if subset_size <= 0 or subset_size >= len(available):
         return tuple(available)
     import random

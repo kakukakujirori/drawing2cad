@@ -1,46 +1,54 @@
-"""Reconstruct ``manifest.jsonl`` from techdraw DXFs when no STEP source exists.
+"""Stamp foreign technical-drawing DXFs with per-entity view layer/linetype.
 
-``render_dataset.py`` emits the manifest as a *by-product* of the STEP -> techdraw
-projection: the per-view bounding boxes come straight out of the layout stage,
-which knows which projection produced which cluster of edges.  Datasets that ship
-the drawings already rendered (data/eccv2026-cad-challenge-data) have no such
-provenance, so the same metadata has to be recovered from the DXF alone.
+Real/GT technical drawings (e.g. data/eccv2026-cad-challenge-data, and the
+working test_vlm/techdraw_gt) are real SolidWorks DXFs: every primitive sits
+on layer "0" and carries no per-view provenance. The dataset loader instead
+reads each primitive's orthographic view straight off its DXF layer, using
+exactly the lowercase names "front" / "top" / "right" (see src/data/dxf.py).
+A drawing shipped this way has to be stamped before the loader can use it:
+every geometry entity's layer is rewritten to the view it belongs to, and its
+linetype is pinned explicitly to "Continuous" or "HIDDEN" so visible/hidden
+classification cannot silently flip when the layer -- and its default
+linetype -- changes underneath the entity. Geometry itself is never touched:
+entity types, counts, coordinates, arc angles, and spline points come out
+exactly as they went in.
 
-Recovery relies on the third-angle L-arrangement that ``layout.py`` encodes and
-that was verified against the GT drawings by raster IoU::
+View assignment relies on the third-angle L-arrangement that ``layout.py``
+encodes and that was verified against the GT drawings by raster IoU::
 
     front  (main, bottom-left) : screen (X, Y)
     top    (above front)       : screen (X, Z)   -> shares front's x-extent
     right  (right of front)    : screen (-Z, Y)  -> shares front's y-extent
 
 Because top reuses front's screen X and right reuses front's screen Y, one
-vertical line always separates {front, top} from {right} and one horizontal line
-always separates {front, right} from {top}.  So the sheet splits into an empty
-top-right quadrant plus the three views, and the shared-extent equalities above
-become a verification of the split rather than an assumption about it.
+vertical line always separates {front, top} from {right} and one horizontal
+line always separates {front, right} from {top}.  So the sheet splits into an
+empty top-right quadrant plus the three views, and the shared-extent
+equalities above become a verification of the split rather than an
+assumption about it.
 
-Entity selection mirrors :class:`~src.data.dxf.DXFPrimitiveParser` exactly (same
-layers, same sampling, same off-sheet rejection), so every primitive the loader
-will later assign to a view is guaranteed to fall inside the bbox written here.
-The renderer instead records the analytic HLR extent; the two differ only by the
-curve-flattening error (< 0.05 mm), and nothing downstream consumes the bbox for
-anything but view assignment.
+Entity selection for the split mirrors what the dataset loader keeps (same
+sampling, same off-sheet rejection), except it reads from the raw source
+layer "0" instead of the view layers that only exist after stamping. Once
+the three view bounding boxes are known, every qualifying entity is
+revisited and moved onto whichever box contains its sample centroid (the
+mean of the same points used for the split); an entity matching zero or more
+than one box is left on "0", where the loader's layer filter simply drops
+it, mirroring the ~0.01% corner-clip entities the old geometric recovery
+also had to skip.
 
 Usage:
-    python src/data/render/manifest_from_techdraw.py --data_dir <DATA_DIR>
+    python src/data/render/reformat_techdraw.py --techdraw_dir <TECHDRAW_DIR>
 
-DATA_DIR holds ``techdraw/dxf/{stem}.dxf``; ``manifest.jsonl`` is written into
-DATA_DIR itself, replacing any existing one (the result is a pure function of the
-DXFs, so there is nothing to resume).
+TECHDRAW_DIR holds ``dxf/{stem}.dxf``; each file is rewritten in place,
+so this is meant to run once per drawing while it is still in its raw,
+all-on-layer-"0" form.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import sys
-import time
 from pathlib import Path
 
 import ezdxf
@@ -52,10 +60,9 @@ from src.data.dxf import (  # noqa: E402
     DXF_PRIMITIVE_TYPE_TO_ID,
     DXFParseError,
     DXFPrimitiveConfig,
+    VIEW_DIRECTIONS,
     sample_dxf_entity,
 )
-from src.data.render.config import PartResult, render3d_paths  # noqa: E402
-from src.data.render.render_dataset import MANIFEST_NAME  # noqa: E402
 
 # Views are aligned to a hair by construction; this only absorbs the flattening
 # error of sampled splines/ellipses.  A mis-split shifts an extent by an entire
@@ -65,6 +72,12 @@ ALIGNMENT_TOLERANCE_MM = 1.0
 # inter-view spacing; the observed GT minimum is ~9 mm.
 MIN_VIEW_GAP_MM = 2.0
 CENTER_MARK_LAYER = "10"
+# Layer every geometry entity starts on in a foreign (unstamped) drawing, and
+# where an entity is left if its centroid cannot be assigned to one view.
+UNSTAMPED_LAYER = "0"
+# Generous relative to the >= MIN_VIEW_GAP_MM separation between view boxes;
+# only absorbs float noise between the split pass and the mutation pass.
+VIEW_MATCH_TOLERANCE_MM = 0.1
 
 
 class ViewSplitError(ValueError):
@@ -233,71 +246,84 @@ def split_views(
     )
 
 
-def build_record(dxf_path: Path, config: DXFPrimitiveConfig, data_dir: Path) -> dict:
-    """One manifest row, schema-identical to what ``render_dataset.py`` writes."""
-    started = time.time()
-    result = PartResult(name=dxf_path.stem, ok=True)
-    # Nothing here renders; the flag reports whether the shipped PNGs — which the
-    # loader needs as model input — are actually present for this part.
-    r3 = render3d_paths(data_dir, dxf_path.stem)
-    result.render3d_ok = all(
-        path.is_file() for path in (r3.hlg, r3.shaded, r3.hlg_translucent)
-    )
-    try:
-        entities, n_marks = read_entities(dxf_path, config)
-        boxes = split_views(entities)
-        views = {}
-        for name, box in boxes.items():
-            inside = [
-                e
-                for e in entities
-                if box[0] <= e.cx <= box[2] and box[1] <= e.cy <= box[3]
-            ]
-            views[name] = {
-                "bbox": [round(value, 3) for value in box],
-                "visible": sum(1 for e in inside if not e.hidden),
-                "hidden": sum(1 for e in inside if e.hidden),
-            }
-        result.extra["techdraw"] = {
-            # The drawing scale is provenance the DXF simply does not carry; the
-            # metadata contract already makes it optional.
-            "bbox_format": "xyxy",
-            "bbox_coordinate_system": {
-                "unit": "mm",
-                "origin": "sheet_bottom_left",
-                "x_axis": "right",
-                "y_axis": "up",
-            },
-            "cluster_bbox": [
-                round(value, 3)
-                for value in (
-                    min(box[0] for box in boxes.values()),
-                    min(box[1] for box in boxes.values()),
-                    max(box[2] for box in boxes.values()),
-                    max(box[3] for box in boxes.values()),
-                )
-            ],
-            "views": views,
-            "n_center_marks": n_marks,
-            "source": "manifest_from_techdraw",
-        }
-        result.techdraw_ok = True
-    except (ViewSplitError, DXFParseError, OSError, ezdxf.DXFError) as error:
-        result.ok = False
-        result.error = f"{type(error).__name__}: {error}"
-    result.seconds = round(time.time() - started, 3)
-    return result.__dict__
+def _containing_view(
+    cx: float,
+    cy: float,
+    boxes: dict[str, tuple[float, float, float, float]],
+    tolerance: float,
+) -> str | None:
+    """Name of the single view bbox containing (cx, cy), or None if 0 or 2+ do."""
+    matches = [
+        name
+        for name, (x0, y0, x1, y1) in boxes.items()
+        if x0 - tolerance <= cx <= x1 + tolerance
+        and y0 - tolerance <= cy <= y1 + tolerance
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def stamp_dxf(dxf_path: Path, config: DXFPrimitiveConfig) -> dict[str, int]:
+    """Rewrite one DXF's geometry entities onto their view layer, in place.
+
+    ``config.included_layers`` must name the layer the raw geometry lives on
+    (``UNSTAMPED_LAYER`` for foreign drawings), which is also where the split
+    is computed from. Returns the count assigned to each view plus the count
+    left on ``UNSTAMPED_LAYER`` (ambiguous or unmatched centroid).
+
+    Raises :class:`ViewSplitError` (via ``split_views``) if the drawing does
+    not decompose into a third-angle three-view arrangement.
+    """
+    entities, _n_marks = read_entities(dxf_path, config)
+    boxes = split_views(entities)
+
+    document = ezdxf.readfile(dxf_path)
+    for name in VIEW_DIRECTIONS:
+        if name not in document.layers:
+            document.layers.add(name)
+
+    included = set(config.included_layers)
+    counts = {name: 0 for name in VIEW_DIRECTIONS}
+    counts[UNSTAMPED_LAYER] = 0
+    for entity in document.modelspace():
+        layer = entity.dxf.layer
+        if layer not in included or entity.dxftype() not in DXF_PRIMITIVE_TYPE_TO_ID:
+            continue
+        hidden = _is_hidden(document, entity)
+        if (hidden and not config.include_hidden) or (
+            not hidden and not config.include_visible
+        ):
+            continue
+        try:
+            points = sample_dxf_entity(entity, config)
+        except DXFParseError:
+            continue  # degenerate; never entered `entities` either
+        parsed = _Entity(points, hidden)
+        if not _inside_sheet(parsed, config):
+            continue
+        # CRITICAL ordering: pin the linetype before any layer change. Moving
+        # an entity onto a layer whose default linetype differs, while the
+        # entity itself is BYLAYER, would otherwise silently flip its
+        # visible/hidden classification.
+        entity.dxf.linetype = "HIDDEN" if hidden else "Continuous"
+        view = _containing_view(parsed.cx, parsed.cy, boxes, VIEW_MATCH_TOLERANCE_MM)
+        if view is None:
+            counts[UNSTAMPED_LAYER] += 1
+            continue
+        entity.dxf.layer = view
+        counts[view] += 1
+    document.saveas(dxf_path)
+    return counts
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("--data_dir", type=Path, required=True)
+    parser.add_argument("--techdraw_dir", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=0, help="process at most N parts")
     args = parser.parse_args(argv)
 
-    dxf_dir = args.data_dir / "techdraw" / "dxf"
+    dxf_dir = args.techdraw_dir / "dxf"
     if not dxf_dir.is_dir():
-        print(f"no techdraw/dxf directory under {args.data_dir}", file=sys.stderr)
+        print(f"no dxf directory under {args.techdraw_dir}", file=sys.stderr)
         return 1
     dxf_files = sorted(dxf_dir.glob("*.dxf"))
     if args.limit:
@@ -306,21 +332,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no .dxf files found in {dxf_dir}", file=sys.stderr)
         return 1
 
-    config = DXFPrimitiveConfig()
-    manifest_path = args.data_dir / MANIFEST_NAME
-    tmp_path = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    # Foreign drawings carry every primitive on layer "0"; the split is
+    # computed from that raw layer and each entity's recovered view is then
+    # written onto it.
+    config = DXFPrimitiveConfig(included_layers=(UNSTAMPED_LAYER,))
     n_ok = n_fail = 0
-    with tmp_path.open("w") as handle:
-        for index, dxf_path in enumerate(dxf_files, start=1):
-            record = build_record(dxf_path, config, args.data_dir)
-            handle.write(json.dumps(record) + "\n")
-            n_ok += bool(record["ok"])
-            n_fail += not record["ok"]
-            if not record["ok"]:
-                name, error = record["name"], record["error"]
-                print(f"[{index}/{len(dxf_files)}] {name}: FAIL {error}")
-    os.replace(tmp_path, manifest_path)
-    print(f"done: {n_ok} ok, {n_fail} failed -> {manifest_path}")
+    for index, dxf_path in enumerate(dxf_files, start=1):
+        try:
+            counts = stamp_dxf(dxf_path, config)
+        except (ViewSplitError, DXFParseError, OSError, ezdxf.DXFError) as error:
+            n_fail += 1
+            print(
+                f"[{index}/{len(dxf_files)}] {dxf_path.name}: FAIL "
+                f"{type(error).__name__}: {error}"
+            )
+            continue
+        n_ok += 1
+        print(
+            f"[{index}/{len(dxf_files)}] {dxf_path.name}: "
+            f"front={counts['front']} top={counts['top']} right={counts['right']} "
+            f"unassigned={counts[UNSTAMPED_LAYER]}"
+        )
+    print(f"done: {n_ok} ok, {n_fail} failed")
     return 0 if n_fail == 0 else 2
 
 

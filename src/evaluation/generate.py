@@ -20,8 +20,8 @@ from src.data import (
     Drawing2CADCollator,
     Drawing2CADDataset,
     Drawing2CADPreprocessor,
-    ManifestSampleMetadataProvider,
     RasterImageSource,
+    discover_sample_ids,
 )
 from src.data.layout import DatasetRoot
 from src.data.audit.gate import gate_present_ids_from_config
@@ -89,10 +89,7 @@ class CADGenerationEvaluator:
         accelerator.wait_for_everyone()
 
     def _select_sample_ids(self) -> tuple[str, ...]:
-        provider = ManifestSampleMetadataProvider(
-            self.dataset_root.path / "manifest.jsonl"
-        )
-        available = list(provider.sample_ids)
+        available = list(discover_sample_ids(self.dataset_root.path))
         # Gate the benchmark on the same GT-audit allow policy as training, so a
         # broken/mislabeled GT solid never contributes a meaningless IoU target.
         audit_config = self.data_config.get("audit")

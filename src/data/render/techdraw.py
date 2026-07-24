@@ -2,7 +2,7 @@
 
 Public entry point::
 
-    generate_techdraw(step_path, paths, cfg=None) -> dict
+    generate_techdraw(step_path, paths, cfg=None) -> None
 
 Pure and synchronous: no multiprocessing, no timeouts, no import-time work.
 Batch isolation / timeouts are handled by render_dataset.py.
@@ -43,10 +43,9 @@ class TechdrawConfig:
 
 
 # A placed view narrower than this (sheet-mm, either axis) carries no recoverable
-# shape and violates the manifest's positive-area bbox contract. It only ever
-# fires on pathological inputs: an empty HLR projection (0 edges, e.g. an OCC
-# axis-degeneracy the tilt fallback could not recover) or a knife-edge view of a
-# near-zero-thickness plate that collapses to a single line.
+# shape. It only ever fires on pathological inputs: an empty HLR projection (0
+# edges, e.g. an OCC axis-degeneracy the tilt fallback could not recover) or a
+# knife-edge view of a near-zero-thickness plate that collapses to a single line.
 MIN_VIEW_EXTENT_MM = 0.05
 # Every view is laid out to fit the A4 sheet; a bbox this far outside it means the
 # projection ran away (observed on corrupt STEPs whose model AABB is astronomical,
@@ -62,9 +61,8 @@ def _validate_layout(layout: Layout) -> None:
     """Fail the part if any placed view bbox is degenerate or off-sheet.
 
     ``generate_techdraw`` runs one part per isolated process; raising here makes
-    ``render_dataset`` record ``ok=False`` so the sample is dropped from the
-    manifest instead of poisoning it with an invalid bbox that the data loader's
-    metadata validator would later reject at train time.
+    ``render_dataset`` record the part as failed so a degenerate or runaway
+    projection is dropped rather than written out as if it were a valid drawing.
     """
     for v in layout.views:
         x_min, y_min, x_max, y_max = v.bbox
@@ -155,7 +153,7 @@ def _project_nonempty(
 
 def generate_techdraw(
     step_path: Path, paths: TechdrawPaths, cfg: TechdrawConfig | None = None
-) -> dict:
+) -> None:
     step_path = Path(step_path)
     cfg = cfg or TechdrawConfig()
 
@@ -197,30 +195,6 @@ def generate_techdraw(
     write_dxf(Path(paths.dxf), layout.views, marks)
     write_pdf(Path(paths.pdf), svg_text)
 
-    def _counts(v):
-        return {
-            "visible": v.visible.count(),
-            "hidden": v.hidden.count(),
-        }
-
-    info = {
-        "scale": layout.scale,
-        "bbox_format": "xyxy",
-        "bbox_coordinate_system": {
-            "unit": "mm",
-            "origin": "sheet_bottom_left",
-            "x_axis": "right",
-            "y_axis": "up",
-        },
-        "cluster_bbox": [round(x, 3) for x in layout.cluster_bbox],
-        "views": {
-            v.name: {"bbox": [round(x, 3) for x in v.bbox], **_counts(v)}
-            for v in layout.views
-        },
-        "n_center_marks": len(marks),
-    }
-    return info
-
 
 if __name__ == "__main__":  # pragma: no cover - manual smoke test
     import sys
@@ -233,4 +207,5 @@ if __name__ == "__main__":  # pragma: no cover - manual smoke test
     step = Path(sys.argv[1])
     out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("/tmp/td_out")
     tp = techdraw_paths(out, step.stem)
-    print(generate_techdraw(step, tp))
+    generate_techdraw(step, tp)
+    print(f"wrote {tp.svg}, {tp.dxf}, {tp.pdf}")

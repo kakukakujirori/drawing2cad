@@ -3,8 +3,9 @@
 A split (``train`` / ``val``) is configured as a list of dataset roots, each of
 which is a self-contained staged corpus produced by
 ``src/data/render/render_dataset.py``. Every root must carry the same four
-subdirectories plus a manifest; the layout is checked up front so a typo in a
-path fails at composition time rather than after model loading.
+subdirectories; the layout is checked up front so a typo in a path fails at
+composition time rather than after model loading. Samples are discovered by
+enumerating ``techdraw/dxf/*.dxf`` -- there is no manifest.
 
 The one axis roots are allowed to differ on is whether ``target/`` holds
 CadQuery sources alongside the STEP answers. A root without them (an external
@@ -21,10 +22,21 @@ from pathlib import Path
 from typing import Sequence
 
 REQUIRED_SUBDIRS = ("render_3d", "target", "target_audit", "techdraw")
-MANIFEST_NAME = "manifest.jsonl"
 AUDIT_SUBDIR = "target_audit"
 TARGET_SUBDIR = "target"
+TECHDRAW_DXF_SUBDIR = Path("techdraw") / "dxf"
 CODE_TARGET_SUFFIX = ".cadquery.py"
+
+
+def discover_sample_ids(root: str | Path) -> tuple[str, ...]:
+    """Sample ids present under a root, sorted, from ``techdraw/dxf/*.dxf``.
+
+    This replaces the old manifest as the enumeration source: a sample exists
+    iff its technical-drawing DXF is on disk (a failed render simply leaves no
+    file). Callers that need images/targets too still validate those per sample.
+    """
+    dxf_dir = Path(root) / TECHDRAW_DXF_SUBDIR
+    return tuple(sorted(path.stem for path in dxf_dir.glob("*.dxf")))
 
 
 @dataclass(frozen=True)
@@ -42,12 +54,10 @@ def _resolve_one(value: str | Path, *, split: str) -> DatasetRoot:
     if not path.is_dir():
         raise FileNotFoundError(f"[{split}] dataset root does not exist: {path}")
     missing = [name for name in REQUIRED_SUBDIRS if not (path / name).is_dir()]
-    if not (path / MANIFEST_NAME).is_file():
-        missing.append(MANIFEST_NAME)
     if missing:
         raise FileNotFoundError(
             f"[{split}] dataset root {path} is missing {missing}; every root must "
-            f"provide {list(REQUIRED_SUBDIRS)} and {MANIFEST_NAME}"
+            f"provide {list(REQUIRED_SUBDIRS)}"
         )
     target_dir = path / TARGET_SUBDIR
     has_code_targets = any(target_dir.glob(f"*{CODE_TARGET_SUFFIX}"))
@@ -89,8 +99,9 @@ __all__ = [
     "AUDIT_SUBDIR",
     "CODE_TARGET_SUFFIX",
     "DatasetRoot",
-    "MANIFEST_NAME",
     "REQUIRED_SUBDIRS",
     "TARGET_SUBDIR",
+    "TECHDRAW_DXF_SUBDIR",
+    "discover_sample_ids",
     "resolve_dataset_roots",
 ]

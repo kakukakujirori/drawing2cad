@@ -15,9 +15,10 @@ layout of data/eccv2026-cad-challenge-data:
 Each part runs in its own process with a wall-clock timeout because OCC HLR can
 hang forever in native code (observed with FreeCAD TechDraw HLR as well); a
 try/except cannot recover from that, only SIGKILL can. Re-running with the same
-OUTDIR resumes: parts whose manifest entry exists (including current techdraw
-metadata when techdraw output is requested) and whose outputs are present are
-skipped.
+OUTDIR resumes purely on output existence: a part whose requested techdraw
+and/or render_3d output files are all already present is skipped. No manifest is
+kept; failures are appended to ``<output_dir>/render_errors.jsonl`` (a log only,
+never read back).
 """
 
 from __future__ import annotations
@@ -41,8 +42,6 @@ from src.data.render.config import (  # noqa: E402
     render3d_paths,
     techdraw_paths,
 )
-
-MANIFEST_NAME = "manifest.jsonl"
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -70,35 +69,19 @@ def _worker(
         if td is not None:
             from src.data.render.techdraw import generate_techdraw
 
-            result.extra["techdraw"] = generate_techdraw(step_path, td)
+            # generate_techdraw writes svg/dxf/pdf and returns None (no manifest).
+            generate_techdraw(step_path, td)
             result.techdraw_ok = True
         if r3 is not None:
             from src.data.render.render3d import generate_render3d
 
             generate_render3d(step_path, r3)
             result.render3d_ok = True
-    except Exception as exc:  # noqa: BLE001 — recorded in the manifest
+    except Exception as exc:  # noqa: BLE001 — surfaced via PartResult.error
         result.ok = False
         result.error = f"{type(exc).__name__}: {exc}"
     result.seconds = round(time.time() - t0, 2)
     queue.put(result.__dict__)
-
-
-def _load_done(manifest: Path, *, require_techdraw_info: bool = False) -> set[str]:
-    done: set[str] = set()
-    if manifest.exists():
-        for line in manifest.read_text().splitlines():
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            extra = rec.get("extra")
-            has_techdraw_info = isinstance(extra, dict) and isinstance(
-                extra.get("techdraw"), dict
-            )
-            if rec.get("ok") and (not require_techdraw_info or has_techdraw_info):
-                done.add(rec["name"])
-    return done
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -134,18 +117,12 @@ def main(argv: list[str] | None = None) -> int:
     ):
         (out / "render_3d" / sub).mkdir(parents=True, exist_ok=True)
 
-    manifest_path = out / MANIFEST_NAME
-    done = _load_done(
-        manifest_path,
-        require_techdraw_info=not args.no_techdraw,
-    )
-    manifest = manifest_path.open("a")
-
     todo = []
     for step in steps:
         td = None if args.no_techdraw else techdraw_paths(out, step.stem)
         r3 = None if args.no_render3d else render3d_paths(out, step.stem)
-        if step.stem in done and _outputs_exist(td, r3):
+        # Resume is purely output-existence based (no manifest is kept).
+        if _outputs_exist(td, r3):
             continue
         todo.append((step, td, r3))
 
@@ -159,8 +136,14 @@ def main(argv: list[str] | None = None) -> int:
     n_ok = n_fail = 0
     queue_iter = iter(todo)
 
+    # Failures are appended to a human-readable log. This is NOT a data contract
+    # and is never read back (resume is output-existence based); opened lazily so
+    # a clean run leaves no empty file behind.
+    error_log_path = out / "render_errors.jsonl"
+    error_log = None
+
     def _reap(proc, queue, name) -> None:
-        nonlocal n_ok, n_fail
+        nonlocal n_ok, n_fail, error_log
         rec = None
         try:
             rec = queue.get_nowait()
@@ -174,8 +157,11 @@ def main(argv: list[str] | None = None) -> int:
             ).__dict__
         n_ok += bool(rec["ok"])
         n_fail += not rec["ok"]
-        manifest.write(json.dumps(rec) + "\n")
-        manifest.flush()
+        if not rec["ok"]:
+            if error_log is None:
+                error_log = error_log_path.open("a")
+            error_log.write(json.dumps(rec) + "\n")
+            error_log.flush()
         status = "ok" if rec["ok"] else f"FAIL {rec['error']}"
         print(f"[{n_ok + n_fail}/{len(todo)}] {name}: {status}")
 
@@ -208,7 +194,8 @@ def main(argv: list[str] | None = None) -> int:
                 _reap(proc, q, name)
                 del live[pid]
 
-    manifest.close()
+    if error_log is not None:
+        error_log.close()
     print(f"done: {n_ok} ok, {n_fail} failed -> {out}")
     return 0 if n_fail == 0 else 2
 

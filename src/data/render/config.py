@@ -116,7 +116,7 @@ class Render3dPaths:
 
 @dataclass
 class PartResult:
-    """Per-part outcome recorded into the batch manifest."""
+    """Per-part render outcome (printed live; failures logged to render_errors.jsonl)."""
 
     name: str
     ok: bool

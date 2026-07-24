@@ -1,8 +1,8 @@
 """Shape-only mesh geometry metrics.
 
 The drawings carry no dimension annotations and their sheet scale never reaches
-the model (``SampleMetadata.drawing_scale`` is parsed but unused), so absolute
-size is not recoverable from the input. Every headline metric here therefore
+the model, so absolute size is not recoverable from the input. Every headline
+metric here therefore
 compares shape alone: both meshes are centred on their bounding-box centre and
 divided by their own maximum extent. Absolute-millimetre variants remain
 available where they cost nothing and stay useful as diagnostics.

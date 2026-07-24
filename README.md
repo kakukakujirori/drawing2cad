@@ -95,7 +95,7 @@ We use the [Zero-to-CAD](https://huggingface.co/datasets/ADSKAILab/Zero-To-CAD-1
         [--workers N] [--timeout 120] [--limit N] [--no-render3d] [--no-techdraw]
     ```
 
-    The script outputs `techdraw/{svg,dxf,pdf}/{stem}.*`, `render_3d/<style>/{stem}.png`, and `manifest.jsonl`.
+    The script outputs `techdraw/{svg,dxf,pdf}/{stem}.*` and `render_3d/<style>/{stem}.png`.
 
     Resume: re-running with the same OUTPUT_DIR skips finished parts; each part runs in a killable subprocess because OCC HLR can hang in native code.
 
@@ -114,9 +114,9 @@ We use the [Zero-to-CAD](https://huggingface.co/datasets/ADSKAILab/Zero-To-CAD-1
         --task-timeout-s 45 \
         --no-cadquery
     ```
-- `src/data/render/render_dataset.py` generates `manifest.jsonl`, which specifies the bboxes of front/top/right view positions. If your dataset already prepares three-view techdraws, then you need to generate `manifest.jsonl` by the following command:
+- `src/data/render/render_dataset.py` writes each view's geometry onto its own DXF layer (`front`/`top`/`right`); that layer is how the loader assigns every primitive to a view. If your dataset already ships three-view techdraw DXFs whose geometry sits on a single layer (e.g. real SolidWorks drawings on layer `0`), stamp them into the layered format with:
     ```bash
-    python src/data/render/manifest_from_techdraw.py --data_dir data/[my_dataset]/
+    python src/data/render/reformat_techdraw.py --techdraw_dir data/[my_dataset]/techdraw
     ```
 
 ## DXF + raster -> CadQuery SFT

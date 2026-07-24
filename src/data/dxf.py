@@ -11,7 +11,14 @@ import ezdxf
 from ezdxf.entities import DXFEntity
 import torch
 
-from .metadata import VIEW_DIRECTIONS, ViewBBox
+
+# The three orthographic views. A primitive's DXF layer *is* its view, so these
+# names double as the geometry layer names written by the renderer and the
+# stamping tool; the id is the stable class index consumed by the model.
+VIEW_DIRECTIONS = ("front", "top", "right")
+VIEW_DIRECTION_TO_ID = {
+    direction: index for index, direction in enumerate(VIEW_DIRECTIONS)
+}
 
 
 # Stable IDs shared by the dataset and PrimitiveEncoderConfig. New entity types
@@ -58,7 +65,7 @@ class DXFPrimitiveConfig:
 
     samples_per_primitive: int = 16
     spline_flattening_distance_mm: float = 0.05
-    included_layers: tuple[str, ...] = ("0",)
+    included_layers: tuple[str, ...] = VIEW_DIRECTIONS
     include_visible: bool = True
     include_hidden: bool = True
     sheet_width_mm: float = 297.0
@@ -66,7 +73,6 @@ class DXFPrimitiveConfig:
     normalized_longest_side: float = 1.8
     discard_outside_sheet: bool = True
     sheet_tolerance_mm: float = 1.0
-    view_bbox_tolerance_mm: float = 0.1
     strict_entity_types: bool = False
 
     def __post_init__(self) -> None:
@@ -83,8 +89,6 @@ class DXFPrimitiveConfig:
             raise ValueError("normalized_longest_side must be positive")
         if self.sheet_tolerance_mm < 0:
             raise ValueError("sheet_tolerance_mm must be non-negative")
-        if self.view_bbox_tolerance_mm < 0:
-            raise ValueError("view_bbox_tolerance_mm must be non-negative")
         if not self.include_visible and not self.include_hidden:
             raise ValueError(
                 "at least one of visible or hidden entities must be enabled"
@@ -110,7 +114,6 @@ class DXFPrimitiveData:
     entity_type_names: tuple[str, ...]
     primitive_group_ids: torch.LongTensor | None = None
     num_skipped_degenerate_entities: int = 0
-    num_skipped_unassigned_view_entities: int = 0
 
     @property
     def num_primitives(self) -> int:
@@ -522,49 +525,20 @@ class DXFPrimitiveParser:
             for x, y in points
         )
 
-    def _assign_view_direction(
-        self,
-        points: Sequence[tuple[float, float]],
-        view_bboxes: Sequence[ViewBBox],
-        *,
-        sample_id: str,
-        entity_handle: str,
-        entity_type: str,
-    ) -> int:
-        representative_x = sum(point[0] for point in points) / len(points)
-        representative_y = sum(point[1] for point in points) / len(points)
-        matches = tuple(
-            bbox
-            for bbox in view_bboxes
-            if bbox.contains(
-                representative_x,
-                representative_y,
-                tolerance_mm=self.config.view_bbox_tolerance_mm,
-            )
-        )
-        if len(matches) != 1:
-            candidates = {
-                bbox.direction: tuple(round(value, 6) for value in bbox.xyxy_mm)
-                for bbox in view_bboxes
-            }
-            raise DXFParseError(
-                "primitive view assignment requires exactly one bbox match: "
-                f"sample_id={sample_id!r}, entity_handle={entity_handle!r}, "
-                f"entity_type={entity_type!r}, "
-                f"representative_point=({representative_x:.6f}, "
-                f"{representative_y:.6f}), "
-                f"matched_directions={[bbox.direction for bbox in matches]}, "
-                f"candidate_bboxes={candidates}"
-            )
-        return matches[0].direction_id
-
     def parse(
         self,
         path: str | Path,
         *,
-        view_bboxes: Sequence[ViewBBox],
         sample_id: str | None = None,
     ) -> DXFPrimitiveData:
+        """Parse one sheet, reading each primitive's view from its DXF layer.
+
+        The renderer (and the stamping tool for foreign drawings) writes every
+        geometry entity onto the layer named for its orthographic view
+        (``front`` / ``top`` / ``right``), so view assignment is an exact layer
+        lookup rather than a geometric bounding-box match. ``sample_id`` is
+        accepted for caller symmetry and error context only.
+        """
         path = Path(path)
         if not path.is_file():
             raise FileNotFoundError(f"DXF file does not exist: {path}")
@@ -573,35 +547,35 @@ class DXFPrimitiveParser:
         except (OSError, ezdxf.DXFError) as error:
             raise DXFParseError(f"failed to read DXF {path}: {error}") from error
 
-        view_bboxes = tuple(view_bboxes)
-        directions = tuple(bbox.direction for bbox in view_bboxes)
-        if len(view_bboxes) != len(VIEW_DIRECTIONS) or set(directions) != set(
-            VIEW_DIRECTIONS
-        ):
-            raise DXFParseError(
-                "DXF parsing requires exactly one bbox for each view direction "
-                f"{VIEW_DIRECTIONS}, got {directions}"
-            )
-        resolved_sample_id = sample_id or path.stem
-
         features: list[list[tuple[float, ...]]] = []
         type_ids: list[int] = []
         view_direction_ids: list[int] = []
         handles: list[str] = []
         type_names: list[str] = []
         num_skipped_degenerate_entities = 0
-        num_skipped_unassigned_view_entities = 0
         included_layers = set(self.config.included_layers)
 
         for entity in document.modelspace():
-            if entity.dxf.layer not in included_layers:
+            layer = entity.dxf.layer
+            if layer not in included_layers:
+                continue
+            # The entity's layer is its orthographic view. A layer that is not a
+            # view direction (e.g. a stray or unassigned entity left on "0")
+            # carries no view and is not model input.
+            view_direction_id = VIEW_DIRECTION_TO_ID.get(layer)
+            if view_direction_id is None:
+                if self.config.strict_entity_types:
+                    raise DXFParseError(
+                        f"included layer {layer!r} is not a view direction "
+                        f"{VIEW_DIRECTIONS} in {path}"
+                    )
                 continue
             entity_type = entity.dxftype()
             if entity_type not in DXF_PRIMITIVE_TYPE_TO_ID:
                 if self.config.strict_entity_types:
                     raise DXFParseError(
                         f"unsupported entity {entity_type} on included layer "
-                        f"{entity.dxf.layer!r} in {path}"
+                        f"{layer!r} in {path}"
                     )
                 continue
 
@@ -621,25 +595,6 @@ class DXFPrimitiveParser:
             if not self._is_inside_sheet(points):
                 continue
             entity_handle = str(entity.dxf.get("handle", ""))
-            try:
-                view_direction_id = self._assign_view_direction(
-                    points,
-                    view_bboxes,
-                    sample_id=resolved_sample_id,
-                    entity_handle=entity_handle,
-                    entity_type=entity_type,
-                )
-            except DXFParseError:
-                # A few drawings (~0.01% of the corpus) have view bounding boxes
-                # that clip at a shared corner, so an entity's midpoint can fall
-                # in two views (or, rarely, none). Such an entity has no
-                # well-defined view; skip and count it, mirroring the
-                # degenerate-geometry path above. Strict mode still raises so
-                # audits keep surfacing the overlapping-bbox samples.
-                if self.config.strict_entity_types:
-                    raise
-                num_skipped_unassigned_view_entities += 1
-                continue
             visibility = -1.0 if hidden else 1.0
             features.append(self._sample_feature_rows(points, visibility))
             type_ids.append(DXF_PRIMITIVE_TYPE_TO_ID[entity_type])
@@ -661,7 +616,6 @@ class DXFPrimitiveParser:
             entity_handles=tuple(handles),
             entity_type_names=tuple(type_names),
             num_skipped_degenerate_entities=num_skipped_degenerate_entities,
-            num_skipped_unassigned_view_entities=num_skipped_unassigned_view_entities,
         )
 
 
@@ -674,5 +628,7 @@ __all__ = [
     "DXF_PRIMITIVE_TYPES",
     "DXF_PRIMITIVE_TYPE_TO_ID",
     "DXF_SAMPLE_FEATURE_NAMES",
+    "VIEW_DIRECTIONS",
+    "VIEW_DIRECTION_TO_ID",
     "sample_dxf_entity",
 ]

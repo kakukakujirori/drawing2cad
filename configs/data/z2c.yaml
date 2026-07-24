@@ -1,6 +1,7 @@
 # Each split is a list of dataset roots. Every root must provide
-# render_3d/, target/, target_audit/, techdraw/ and manifest.jsonl
-# (src/data/layout.py validates this up front). Roots are named by their
+# render_3d/, target/, target_audit/ and techdraw/ (src/data/layout.py
+# validates this up front; samples are discovered from techdraw/dxf/*.dxf).
+# Roots are named by their
 # basename; the name namespaces validation metrics (val/<name>/...) and the
 # per-dataset prediction directory, so basenames must be unique.
 train_root:
@@ -51,7 +52,9 @@ dxf:
   samples_per_primitive: 16
   spline_flattening_distance_mm: 0.05
   included_layers:
-    - "0"
+    - front
+    - top
+    - right
   include_visible: true
   include_hidden: true
   sheet_width_mm: 297.0
@@ -59,7 +62,6 @@ dxf:
   normalized_longest_side: 1.8
   discard_outside_sheet: true
   sheet_tolerance_mm: 1.0
-  view_bbox_tolerance_mm: 0.1
   strict_entity_types: false
 
 train_max_samples: null

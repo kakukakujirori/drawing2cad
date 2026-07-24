@@ -18,21 +18,15 @@ from .dxf import (
     DXF_PRIMITIVE_TYPES,
     DXF_PRIMITIVE_TYPE_TO_ID,
     DXF_SAMPLE_FEATURE_NAMES,
+    VIEW_DIRECTIONS,
+    VIEW_DIRECTION_TO_ID,
     sample_dxf_entity,
 )
 from .layout import (
     DatasetRoot,
     REQUIRED_SUBDIRS,
+    discover_sample_ids,
     resolve_dataset_roots,
-)
-from .metadata import (
-    ManifestSampleMetadataProvider,
-    MetadataError,
-    SampleMetadata,
-    SampleMetadataProvider,
-    VIEW_DIRECTIONS,
-    VIEW_DIRECTION_TO_ID,
-    ViewBBox,
 )
 from .preprocessing import (
     DEFAULT_INSTRUCTION,
@@ -58,17 +52,13 @@ __all__ = [
     "Drawing2CADPreprocessor",
     "Drawing2CADRecord",
     "Drawing2CADSample",
-    "ManifestSampleMetadataProvider",
-    "MetadataError",
     "DatasetRoot",
     "PreparedDrawing2CADSample",
     "REQUIRED_SUBDIRS",
     "RasterImageSource",
-    "SampleMetadata",
-    "SampleMetadataProvider",
     "VIEW_DIRECTIONS",
     "VIEW_DIRECTION_TO_ID",
-    "ViewBBox",
+    "discover_sample_ids",
     "resolve_dataset_roots",
     "sample_dxf_entity",
 ]

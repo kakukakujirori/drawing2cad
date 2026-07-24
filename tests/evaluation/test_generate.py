@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from src.data import Drawing2CADBatch, SampleMetadata, ViewBBox
+from src.data import Drawing2CADBatch
 from src.data.layout import REQUIRED_SUBDIRS, resolve_dataset_roots
 from src.evaluation.generate import CADGenerationEvaluator
 from src.models import PrimitiveBatch, PrimitiveEncoderConfig
@@ -47,18 +47,6 @@ class _Model(torch.nn.Module):
         return torch.cat((input_ids, suffix), dim=1)
 
 
-def _metadata() -> SampleMetadata:
-    return SampleMetadata(
-        sample_id="sample",
-        view_bboxes=(
-            ViewBBox("front", (0, 0, 1, 1)),
-            ViewBBox("top", (2, 2, 3, 3)),
-            ViewBBox("right", (4, 4, 5, 5)),
-        ),
-        drawing_scale=1.0,
-    )
-
-
 def _batch() -> Drawing2CADBatch:
     primitive_batch = PrimitiveBatch(
         sample_features=torch.zeros(1, 1, 2, 3),
@@ -77,7 +65,6 @@ def _batch() -> Drawing2CADBatch:
             "logits_to_keep": 1,
         },
         sample_ids=("sample",),
-        sample_metadata=(_metadata(),),
     )
 
 
@@ -88,34 +75,12 @@ class CADGenerationEvaluatorTest(unittest.TestCase):
             # must be stable rather than the random temporary directory name.
             root = Path(temporary) / "bench_val"
             root.mkdir()
-            manifest = {
-                "name": "sample",
-                "ok": True,
-                "extra": {
-                    "techdraw": {
-                        "scale": 1.0,
-                        "bbox_format": "xyxy",
-                        "bbox_coordinate_system": {
-                            "unit": "mm",
-                            "origin": "sheet_bottom_left",
-                            "x_axis": "right",
-                            "y_axis": "up",
-                        },
-                        "views": {
-                            "front": {"bbox": [0, 0, 1, 1]},
-                            "top": {"bbox": [2, 2, 3, 3]},
-                            "right": {"bbox": [4, 4, 5, 5]},
-                        },
-                    }
-                },
-            }
-            import json
-
-            (root / "manifest.jsonl").write_text(
-                json.dumps(manifest) + "\n", encoding="utf-8"
-            )
             for name in REQUIRED_SUBDIRS:
                 (root / name).mkdir()
+            # Samples are discovered from techdraw/dxf/*.dxf; the DXF itself is
+            # never read here because the data loader is monkeypatched below.
+            (root / "techdraw" / "dxf").mkdir()
+            (root / "techdraw" / "dxf" / "sample.dxf").write_text("", encoding="utf-8")
             (dataset_root,) = resolve_dataset_roots(root, split="val")
             evaluator = CADGenerationEvaluator(
                 accelerator=_Accelerator(),

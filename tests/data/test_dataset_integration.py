@@ -180,27 +180,6 @@ class DatasetModelIntegrationTest(unittest.TestCase):
             ),
         )
 
-    def test_dataset_accepts_substituted_typed_metadata_provider(self) -> None:
-        baseline = self._dataset(include_target=False, max_samples=1)
-        sample_id = baseline.records[0].sample_id
-        metadata = baseline.metadata_provider.get(sample_id)
-
-        class StaticProvider:
-            def get(self, requested_id):
-                if requested_id != sample_id:
-                    raise KeyError(requested_id)
-                return metadata
-
-        dataset = Drawing2CADDataset(
-            DATASET_ROOT,
-            metadata_provider=StaticProvider(),
-            dxf_parser=DXFPrimitiveParser(self.dxf_config),
-            include_target=False,
-            sample_ids=(sample_id,),
-            image_max_edge=64,
-        )
-        self.assertEqual(dataset[0].metadata, metadata)
-
     def _tiny_model(self):
         tokenizer = self.processor.tokenizer
         text_config = {

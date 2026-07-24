@@ -2,9 +2,11 @@
 
 Loads the embedded template (assets/techdraw_template.dxf) so the header
 tables (linetypes, the SolidWorks Chinese-named layer template, standard
-blocks) are byte-identical to GT.  Geometry goes on layer "0" with linetype
-Continuous (visible) or HIDDEN; center marks go on layer "10" as
-SW_CENTERMARKSYMBOL_k INSERT blocks with 8 line segments each.
+blocks) are byte-identical to GT.  Geometry goes on the per-view layer named
+for its orthographic view ("front"/"top"/"right") -- that layer *is* the view
+consumed by the DXF parser -- with linetype Continuous (visible) or HIDDEN;
+center marks go on layer "10" as SW_CENTERMARKSYMBOL_k INSERT blocks with 8
+line segments each.
 """
 
 from __future__ import annotations
@@ -19,8 +21,8 @@ from src.data.render.centermarks import mark_block_lines
 _TEMPLATE = Path(__file__).resolve().parent.parent / "assets" / "techdraw_template.dxf"
 
 
-def _add_edges(msp, edges, linetype):
-    attribs = {"layer": "0", "linetype": linetype}
+def _add_edges(msp, edges, linetype, layer):
+    attribs = {"layer": layer, "linetype": linetype}
     for s in edges.segments:
         msp.add_line(s.p0, s.p1, dxfattribs=attribs)
     for a in edges.arcs:
@@ -58,8 +60,12 @@ def write_dxf(path, views, marks):
     msp = doc.modelspace()
 
     for v in views:
-        _add_edges(msp, v.visible, "Continuous")
-        _add_edges(msp, v.hidden, "HIDDEN")
+        # The view's name is its DXF layer: the parser reads each primitive's
+        # orthographic view straight from entity.dxf.layer.
+        if v.name not in doc.layers:
+            doc.layers.add(v.name)
+        _add_edges(msp, v.visible, "Continuous", v.name)
+        _add_edges(msp, v.hidden, "HIDDEN", v.name)
 
     for i, m in enumerate(marks):
         name = f"SW_CENTERMARKSYMBOL_{i}"

@@ -9,7 +9,6 @@ import torch
 
 from .dataset import Drawing2CADSample
 from .dxf import DXFPrimitiveData
-from .metadata import SampleMetadata
 
 
 DEFAULT_INSTRUCTION = (
@@ -31,10 +30,9 @@ def _find_last_subsequence(sequence: torch.Tensor, pattern: Sequence[int]) -> in
 
 @dataclass(frozen=True)
 class PreparedDrawing2CADSample:
-    """Unbatched Qwen tensors plus semantic primitive/sample metadata."""
+    """Unbatched Qwen tensors plus the semantic primitive data."""
 
     sample_id: str
-    metadata: SampleMetadata
     primitives: DXFPrimitiveData
     model_inputs: Mapping[str, torch.Tensor]
 
@@ -244,7 +242,6 @@ class Drawing2CADPreprocessor:
 
         return PreparedDrawing2CADSample(
             sample_id=sample.sample_id,
-            metadata=sample.metadata,
             primitives=sample.primitives,
             model_inputs=model_inputs,
         )

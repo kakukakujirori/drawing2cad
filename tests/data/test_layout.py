@@ -2,7 +2,11 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from src.data.layout import REQUIRED_SUBDIRS, resolve_dataset_roots
+from src.data.layout import (
+    REQUIRED_SUBDIRS,
+    discover_sample_ids,
+    resolve_dataset_roots,
+)
 
 
 def _stage(parent: Path, name: str, *, code_targets: bool = True) -> Path:
@@ -10,7 +14,6 @@ def _stage(parent: Path, name: str, *, code_targets: bool = True) -> Path:
     root = parent / name
     for subdir in REQUIRED_SUBDIRS:
         (root / subdir).mkdir(parents=True)
-    (root / "manifest.jsonl").write_text("", encoding="utf-8")
     (root / "target" / "sample.step").write_text("", encoding="utf-8")
     if code_targets:
         (root / "target" / "sample.cadquery.py").write_text("", encoding="utf-8")
@@ -48,14 +51,6 @@ class ResolveDatasetRootsTest(unittest.TestCase):
                 resolve_dataset_roots([str(root)], split="val")
             self.assertIn("target_audit", str(error.exception))
 
-    def test_missing_manifest_is_an_error(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = _stage(Path(temporary), "z2c_val")
-            (root / "manifest.jsonl").unlink()
-            with self.assertRaises(FileNotFoundError) as error:
-                resolve_dataset_roots([str(root)], split="val")
-            self.assertIn("manifest.jsonl", str(error.exception))
-
     def test_nonexistent_root_is_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaises(FileNotFoundError):
@@ -75,6 +70,24 @@ class ResolveDatasetRootsTest(unittest.TestCase):
     def test_empty_root_list_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             resolve_dataset_roots([], split="val")
+
+
+class DiscoverSampleIdsTest(unittest.TestCase):
+    def test_ids_come_from_techdraw_dxfs_sorted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            dxf_dir = Path(temporary) / "techdraw" / "dxf"
+            dxf_dir.mkdir(parents=True)
+            for stem in ("000200", "000100", "000300"):
+                (dxf_dir / f"{stem}.dxf").write_text("", encoding="utf-8")
+            # A non-DXF sibling must not be enumerated.
+            (dxf_dir / "notes.txt").write_text("", encoding="utf-8")
+            self.assertEqual(
+                discover_sample_ids(temporary), ("000100", "000200", "000300")
+            )
+
+    def test_missing_dxf_dir_yields_no_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(discover_sample_ids(temporary), ())
 
 
 if __name__ == "__main__":

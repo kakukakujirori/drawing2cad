@@ -252,7 +252,7 @@ def compare_part(stem, out_dir, timeout):
     gt_dxf = GT_DIR / "techdraw" / "dxf" / f"{stem}.dxf"
     tp = techdraw_paths(Path(out_dir), stem)
 
-    status, info = run_isolated(step, out_dir, stem, timeout)
+    status, _ = run_isolated(step, out_dir, stem, timeout)
     if status != "ok":
         return {"stem": stem, "status": status}
 
@@ -283,8 +283,7 @@ def compare_part(stem, out_dir, timeout):
     return {
         "stem": stem,
         "status": "ok",
-        "scale": info["scale"],
-        "n_marks": info["n_center_marks"],
+        "n_marks": ot.get("INSERT", 0),
         "arrangement_ok": arrangement_ok,
         "perview_iou": pv,
         "our_types": ot,
@@ -336,7 +335,7 @@ def main(argv=None):
         ious += list(pv.values())
         dmarks = r["n_marks"] - r["gt_types"].get("INSERT", 0)
         print(
-            f"{stem}: iou={pv} scale={r['scale']} marks={r['n_marks']}"
+            f"{stem}: iou={pv} marks={r['n_marks']}"
             f"(GT {r['gt_types'].get('INSERT', 0)}) arrange={r['arrangement_ok']}"
             f"{dmarks=}"
         )
@@ -367,13 +366,10 @@ def main(argv=None):
         print("\n== Real-input smoke test ==")
         reals = sorted(args.real_dir.glob("*.step"))[: args.real_n]
         for step in reals:
-            status, info = run_isolated(
+            status, _ = run_isolated(
                 step, args.out / "real", step.stem, args.timeout
             )
-            print(
-                f"{step.name}: {status} "
-                f"{ {k: info[k] for k in ('scale', 'n_center_marks')} if status == 'ok' else '' }"
-            )
+            print(f"{step.name}: {status}")
     return 0
 
 

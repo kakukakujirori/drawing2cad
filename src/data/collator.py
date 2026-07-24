@@ -9,18 +9,16 @@ import torch
 
 from src.models import PrimitiveBatch
 
-from .dxf import DXF_PRIMITIVE_TYPES
-from .metadata import SampleMetadata, VIEW_DIRECTIONS
+from .dxf import DXF_PRIMITIVE_TYPES, VIEW_DIRECTIONS
 from .preprocessing import PreparedDrawing2CADSample
 
 
 @dataclass(frozen=True)
 class Drawing2CADBatch:
-    """DataLoader output with model kwargs and non-model sample metadata."""
+    """DataLoader output with model kwargs and the per-sample ids."""
 
     model_inputs: dict[str, Any]
     sample_ids: tuple[str, ...]
-    sample_metadata: tuple[SampleMetadata, ...]
 
     def to(self, device: torch.device | str) -> "Drawing2CADBatch":
         moved: dict[str, Any] = {}
@@ -34,7 +32,6 @@ class Drawing2CADBatch:
         return Drawing2CADBatch(
             model_inputs=moved,
             sample_ids=self.sample_ids,
-            sample_metadata=self.sample_metadata,
         )
 
 
@@ -284,7 +281,6 @@ class Drawing2CADCollator:
         return Drawing2CADBatch(
             model_inputs=model_inputs,
             sample_ids=tuple(sample.sample_id for sample in samples),
-            sample_metadata=tuple(sample.metadata for sample in samples),
         )
 
 
