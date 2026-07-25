@@ -1,11 +1,20 @@
-"""Resolve and validate the on-disk layout of one or more dataset roots.
+"""Dataset-root layout: where a sample's files live, and which samples exist.
 
 A split (``train`` / ``val``) is configured as a list of dataset roots, each of
 which is a self-contained staged corpus produced by
 ``src/data/render/render_dataset.py``. Every root must carry the same four
 subdirectories; the layout is checked up front so a typo in a path fails at
-composition time rather than after model loading. Samples are discovered by
-enumerating ``techdraw/dxf/*.dxf`` -- there is no manifest.
+composition time rather than after model loading.
+
+This module is also the only place that maps a sample id onto files, and the
+only place that decides whether a sample exists at all. That decision is an
+intersection, not an assertion: rendering is expected to lose parts -- OCC HLR
+hangs in native code on the complex tail and the batch driver can only SIGKILL
+it -- so a sample counts as available once its technical-drawing DXF, every
+configured raster, and (where supervision is required) its CadQuery target are
+all on disk. Partial samples are reported by :func:`take_inventory` and left
+out; they are never an error, because a lost render is a property of the corpus
+rather than a misconfiguration.
 
 The one axis roots are allowed to differ on is whether ``target/`` holds
 CadQuery sources alongside the STEP answers. A root without them (an external
@@ -28,15 +37,48 @@ TECHDRAW_DXF_SUBDIR = Path("techdraw") / "dxf"
 CODE_TARGET_SUFFIX = ".cadquery.py"
 
 
-def discover_sample_ids(root: str | Path) -> tuple[str, ...]:
-    """Sample ids present under a root, sorted, from ``techdraw/dxf/*.dxf``.
+def code_target_path(root: str | Path, sample_id: str) -> Path:
+    """The CadQuery source that supervises a sample, when the root ships one."""
+    return Path(root) / TARGET_SUBDIR / f"{sample_id}{CODE_TARGET_SUFFIX}"
 
-    This replaces the old manifest as the enumeration source: a sample exists
-    iff its technical-drawing DXF is on disk (a failed render simply leaves no
-    file). Callers that need images/targets too still validate those per sample.
+
+def take_inventory(
+    root: str | Path,
+    *,
+    image_dirs: Sequence[str | Path] = (),
+    require_target: bool = False,
+) -> tuple[tuple[str, ...], dict[str, Path]]:
+    """Partition a root's samples into the complete ones and the rest.
+
+    Candidates come from ``techdraw/dxf/*.dxf``: the drawing is the one artifact
+    every consumer needs, and a part the renderer could not project at all
+    leaves no DXF behind. Each candidate must then carry one raster per entry of
+    ``image_dirs`` (the configured ``image_sources``) and, when
+    ``require_target`` is set, its CadQuery label.
+
+    Returns the usable ids sorted (so every rank derives an identical corpus
+    without communicating), plus each unusable id mapped to the first required
+    file found absent -- enough for the caller to report what it skipped and
+    why.
     """
-    dxf_dir = Path(root) / TECHDRAW_DXF_SUBDIR
-    return tuple(sorted(path.stem for path in dxf_dir.glob("*.dxf")))
+    root = Path(root)
+    directories = tuple(Path(directory) for directory in image_dirs)
+    complete: list[str] = []
+    incomplete: dict[str, Path] = {}
+    for sample_id in sorted(
+        path.stem for path in (root / TECHDRAW_DXF_SUBDIR).glob("*.dxf")
+    ):
+        required = [
+            root / directory / f"{sample_id}.png" for directory in directories
+        ]
+        if require_target:
+            required.append(code_target_path(root, sample_id))
+        missing = next((path for path in required if not path.is_file()), None)
+        if missing is None:
+            complete.append(sample_id)
+        else:
+            incomplete[sample_id] = missing
+    return tuple(complete), incomplete
 
 
 @dataclass(frozen=True)
@@ -45,8 +87,12 @@ class DatasetRoot:
 
     name: str
     path: Path
-    audit_dir: Path
     has_code_targets: bool
+
+    @property
+    def audit_dir(self) -> Path:
+        """Where ``gt_audit.py --out-dir`` wrote this root's verdicts."""
+        return self.path / AUDIT_SUBDIR
 
 
 def _resolve_one(value: str | Path, *, split: str) -> DatasetRoot:
@@ -64,7 +110,6 @@ def _resolve_one(value: str | Path, *, split: str) -> DatasetRoot:
     return DatasetRoot(
         name=path.name,
         path=path,
-        audit_dir=path / AUDIT_SUBDIR,
         has_code_targets=has_code_targets,
     )
 
@@ -102,6 +147,7 @@ __all__ = [
     "REQUIRED_SUBDIRS",
     "TARGET_SUBDIR",
     "TECHDRAW_DXF_SUBDIR",
-    "discover_sample_ids",
+    "code_target_path",
     "resolve_dataset_roots",
+    "take_inventory",
 ]

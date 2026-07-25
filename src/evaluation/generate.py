@@ -13,18 +13,9 @@ from accelerate.utils import gather_object
 import torch
 from torch.utils.data import DataLoader
 
-from src.data import (
-    DXFPrimitiveConfig,
-    DXFPrimitiveParser,
-    Drawing2CADBatch,
-    Drawing2CADCollator,
-    Drawing2CADDataset,
-    Drawing2CADPreprocessor,
-    RasterImageSource,
-    discover_sample_ids,
-)
+from src.data import Drawing2CADBatch, Drawing2CADPreprocessor
+from src.data.factory import build_collator, build_dataset, select_sample_ids
 from src.data.layout import DatasetRoot
-from src.data.audit.gate import gate_present_ids_from_config
 from src.evaluation.evaluator import (
     EvaluationConfig,
     EvaluationItem,
@@ -89,23 +80,19 @@ class CADGenerationEvaluator:
         accelerator.wait_for_everyone()
 
     def _select_sample_ids(self) -> tuple[str, ...]:
-        available = list(discover_sample_ids(self.dataset_root.path))
-        # Gate the benchmark on the same GT-audit allow policy as training, so a
-        # broken/mislabeled GT solid never contributes a meaningless IoU target.
-        audit_config = self.data_config.get("audit")
-        if audit_config:
-            allowed = gate_present_ids_from_config(
-                audit_config,
-                self.dataset_root.audit_dir,
-                available,
+        # Shared with training: the benchmark scores the same complete samples
+        # under the same GT-audit allow policy, so a broken/mislabeled GT solid
+        # never contributes a meaningless IoU target. Only the STEP answer is
+        # read here, so a CadQuery target is not required.
+        available = list(
+            select_sample_ids(
+                self.dataset_root,
+                self.data_config,
+                require_target=False,
                 context=f"val benchmark:{self.dataset_root.name}",
+                show_progress=bool(self.accelerator.is_main_process),
             )
-            available = [sample_id for sample_id in available if sample_id in allowed]
-            if not available:
-                raise ValueError(
-                    f"no validation samples of {self.dataset_root.name} pass the "
-                    f"audit allow-list (is {self.dataset_root.audit_dir} audited?)"
-                )
+        )
         requested = int(
             self.evaluation_config.get("generation_subset_size", len(available))
         )
@@ -130,11 +117,6 @@ class CADGenerationEvaluator:
         return tuple(self.sample_ids[index::stride])
 
     def _loader(self, sample_ids: Sequence[str]) -> DataLoader:
-        dxf_config = DXFPrimitiveConfig(**self.data_config["dxf"])
-        image_sources = tuple(
-            RasterImageSource(str(item["style"]), str(item["directory"]))
-            for item in self.data_config["image_sources"]
-        )
         # Generation is forward-only, so a long prompt does not carry the
         # training memory cost that motivates max_sequence_length filtering.
         # Leave it unset here: the validation benchmark must be scored over
@@ -145,21 +127,15 @@ class CADGenerationEvaluator:
             include_labels=False,
             max_length=None,
         )
-        dataset = Drawing2CADDataset(
+        dataset = build_dataset(
             self.dataset_root.path,
-            dxf_parser=DXFPrimitiveParser(dxf_config),
-            image_sources=image_sources,
+            self.data_config,
+            sample_ids=sample_ids,
             include_target=False,
-            sample_ids=tuple(sample_ids),
-            strict_files=bool(self.data_config.get("strict_files", True)),
-            image_max_edge=self.data_config.get("image_max_edge"),
             transform=preprocessor,
         )
-        pad_token_id = self.processor.tokenizer.pad_token_id
-        if pad_token_id is None:
-            raise ValueError("processor tokenizer has no pad token ID")
         # Decoder-only batched generation requires left padding.
-        collator = Drawing2CADCollator(int(pad_token_id), padding_side="left")
+        collator = build_collator(self.processor, padding_side="left")
         workers = int(self.data_config.get("num_workers", 0))
         return DataLoader(
             dataset,

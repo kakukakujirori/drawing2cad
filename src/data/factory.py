@@ -1,23 +1,35 @@
-"""Construct SFT datasets and dataloaders from the data config boundary."""
+"""Construct SFT datasets and dataloaders from the data config boundary.
+
+Selection happens before construction: :func:`select_sample_ids` narrows a root
+to the ids that are complete on disk and pass the GT-audit policy, the optional
+length filter narrows that list further, and the dataset is then built once from
+the result. Nothing downstream has to re-derive which samples are in play.
+
+``select_sample_ids``, :func:`build_dataset` and :func:`build_collator` are also
+what ``src/evaluation/generate.py`` and ``src/test.py`` assemble their loaders
+from, so training, in-run validation and offline testing cannot drift apart on
+which samples exist or which audit policy applies to them.
+"""
 
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 import torch
-from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
 from src.models import PrimitiveEncoderConfig
 from src.utils import seed_worker
 
 from .audit.gate import gate_present_ids_from_config
 from .collator import Drawing2CADCollator
-from .dataset import Drawing2CADDataset, RasterImageSource
-from .layout import DatasetRoot, resolve_dataset_roots
+from .dataset import Drawing2CADDataset, Drawing2CADSample, RasterImageSource
+from .layout import DatasetRoot, code_target_path, resolve_dataset_roots, take_inventory
 from .preprocessing import Drawing2CADPreprocessor
 from .dxf import (
     DXF_ORIENTED_SAMPLE_FEATURE_INDICES,
@@ -43,15 +55,110 @@ class SFTDataLoaders:
     generator: torch.Generator
 
 
-def _filter_by_length(
-    dataset: Drawing2CADDataset,
+def image_sources_from_config(
+    data_config: Mapping[str, Any],
+) -> tuple[RasterImageSource, ...]:
+    """The rasters every sample must carry, as configured under ``image_sources``."""
+    return tuple(
+        RasterImageSource(str(item["style"]), str(item["directory"]))
+        for item in data_config["image_sources"]
+    )
+
+
+def select_sample_ids(
+    root: DatasetRoot,
+    data_config: Mapping[str, Any],
+    *,
+    require_target: bool,
+    context: str,
+    show_progress: bool = True,
+) -> tuple[str, ...]:
+    """Ids of ``root`` that are complete on disk and pass the GT-audit policy.
+
+    Both halves of the question are answered here so every consumer agrees on
+    them: which samples the renderer actually produced (an incomplete sample is
+    reported and dropped -- see ``src.data.layout``), and which of those the
+    audit policy admits (fail-closed -- see ``src.data.audit.gate``).
+    """
+    ids, incomplete = take_inventory(
+        root.path,
+        image_dirs=[
+            source.directory for source in image_sources_from_config(data_config)
+        ],
+        require_target=require_target,
+    )
+    if incomplete and show_progress:
+        example_id, missing = next(iter(incomplete.items()))
+        print(
+            f"[{context}] skipped {len(incomplete)}/{len(ids) + len(incomplete)} "
+            f"incomplete samples (e.g. {example_id} is missing {missing})",
+            flush=True,
+        )
+    if not ids:
+        raise ValueError(
+            f"[{context}] {root.path} yields no complete samples "
+            f"({len(incomplete)} drawing(s) found); has it been rendered?"
+        )
+    audit_config = data_config.get("audit")
+    if not audit_config:
+        return ids
+    allowed = gate_present_ids_from_config(
+        audit_config, root.audit_dir, ids, context=context
+    )
+    gated = tuple(sample_id for sample_id in ids if sample_id in allowed)
+    if not gated:
+        raise ValueError(
+            f"[{context}] no samples pass the audit allow-list "
+            f"(is {root.audit_dir} audited?)"
+        )
+    if show_progress:
+        print(
+            f"[{context}] audit gate kept {len(gated)}/{len(ids)} "
+            f"(dropped {len(ids) - len(gated)})",
+            flush=True,
+        )
+    return gated
+
+
+def build_dataset(
+    root: str | Path,
+    data_config: Mapping[str, Any],
+    *,
+    sample_ids: Sequence[str],
+    include_target: bool,
+    transform: Callable[[Drawing2CADSample], Any] | None,
+) -> Drawing2CADDataset:
+    """One root's dataset over an already-selected id list."""
+    return Drawing2CADDataset(
+        root,
+        sample_ids,
+        dxf_parser=DXFPrimitiveParser(DXFPrimitiveConfig(**data_config["dxf"])),
+        image_sources=image_sources_from_config(data_config),
+        include_target=include_target,
+        image_max_edge=data_config.get("image_max_edge"),
+        transform=transform,
+    )
+
+
+def build_collator(processor: Any, *, padding_side: str) -> Drawing2CADCollator:
+    """Batching collator for ``processor``'s pad token."""
+    pad_token_id = processor.tokenizer.pad_token_id
+    if pad_token_id is None:
+        raise ValueError("processor tokenizer has no pad token ID")
+    return Drawing2CADCollator(int(pad_token_id), padding_side=padding_side)
+
+
+def _length_filtered_ids(
+    root: str | Path,
+    data_config: Mapping[str, Any],
+    *,
+    sample_ids: Sequence[str],
     preprocessor: Drawing2CADPreprocessor,
     max_length: int,
-    *,
-    split: str,
+    context: str,
     show_progress: bool,
-) -> Subset:
-    """Drop samples whose fully rendered sequence exceeds ``max_length``.
+) -> tuple[str, ...]:
+    """Drop ids whose fully rendered sequence would exceed ``max_length``.
 
     Only the target text varies in length: the chat template, instruction,
     image headings, the fixed-size render's image tokens, and the primitive
@@ -62,92 +169,52 @@ def _filter_by_length(
     The estimate matches the exact length to within about one token and errs
     high, so it never admits an overlength sample.
 
-    Runs identically on every rank (deterministic), so all ranks build the same
-    filtered dataset without any rank waiting on a collective while another
-    scans the corpus. Overlength samples are removed, never truncated.
+    Runs identically on every rank (deterministic), so all ranks derive the same
+    id list without any rank waiting on a collective while another scans the
+    corpus. Overlength samples are removed, never truncated.
     """
-    total = len(dataset)
-    reference = dataset.load_sample(0)
+    probe = build_dataset(
+        root,
+        data_config,
+        sample_ids=sample_ids[:1],
+        include_target=True,
+        transform=None,
+    )
+    reference = probe.load_sample(0)
     if reference.target_code is None:
         raise ValueError("length filtering requires targets (include_target=True)")
     overhead = preprocessor.sequence_length(
         reference
     ) - preprocessor.target_token_count(reference.target_code)
-    kept: list[int] = []
+    total = len(sample_ids)
+    kept: list[str] = []
     # The scan reads one small target file per sample; with a cold OS page cache
     # each read is a random disk seek (~10 ms) and the corpus has 100k+ files, so
     # a serial scan is dominated by seek latency. Issue the reads concurrently to
     # let the disk pipeline them (they are latency-, not CPU-bound); the cheap
     # tokenization stays on this thread because fast tokenizers are not guaranteed
-    # thread-safe. ``map`` preserves input order, so enumeration recovers the index.
+    # thread-safe. ``map`` preserves input order, so enumeration recovers the id.
     io_workers = min(32, (os.cpu_count() or 4) * 4)
+    paths = [code_target_path(root, sample_id) for sample_id in sample_ids]
     with ThreadPoolExecutor(max_workers=io_workers) as pool:
-        target_codes = pool.map(dataset.target_code, range(total))
+        target_codes = pool.map(lambda path: path.read_text(encoding="utf-8"), paths)
         for index, target_code in enumerate(target_codes):
             length = overhead + preprocessor.target_token_count(target_code)
             if length <= max_length:
-                kept.append(index)
+                kept.append(sample_ids[index])
             done = index + 1
             if show_progress and (done % 10000 == 0 or done == total):
                 print(
-                    f"[data:{split}] length filter {done}/{total} "
+                    f"[{context}] length filter {done}/{total} "
                     f"(kept {len(kept)}, dropped {done - len(kept)}, "
                     f"overhead={overhead}, max_length={max_length})",
                     flush=True,
                 )
     if not kept:
         raise ValueError(
-            f"[data:{split}] every sample exceeds max_sequence_length={max_length}"
+            f"[{context}] every sample exceeds max_sequence_length={max_length}"
         )
-    return Subset(dataset, kept)
-
-
-def _record_sample_ids(dataset: Drawing2CADDataset | Subset) -> list[str]:
-    """Sample id per positional index, for a raw dataset or a ``Subset`` of one.
-
-    ``_filter_by_length`` may already have wrapped the dataset in a ``Subset``
-    (which has no ``.records``), so resolve ids through the underlying dataset
-    when needed. This keeps the two filters composable in either order.
-    """
-    if isinstance(dataset, Subset):
-        base: Drawing2CADDataset = dataset.dataset  # type: ignore[assignment]
-        return [base.records[i].sample_id for i in dataset.indices]
-    return [record.sample_id for record in dataset.records]
-
-
-def _filter_by_audit(
-    dataset: Drawing2CADDataset | Subset,
-    allowed_ids: set[str],
-    *,
-    split: str,
-    show_progress: bool,
-) -> Subset:
-    """Keep only samples whose uuid passes the GT-audit allow policy.
-
-    ``allowed_ids`` is the verdict-derived allow-set (see
-    ``src.data.audit.gate``); it is intersected with the samples actually
-    present, so a clean verdict for a sample that never rendered is simply
-    absent here. Fail-closed: an empty intersection is an error, not a silent
-    empty corpus (it almost always means a wrong/missing audit directory).
-    """
-    kept = [
-        index
-        for index, sample_id in enumerate(_record_sample_ids(dataset))
-        if sample_id in allowed_ids
-    ]
-    if not kept:
-        raise ValueError(
-            f"[data:{split}] no samples pass the audit allow-list "
-            f"(is the audit dir correct and audited?)"
-        )
-    if show_progress:
-        total = len(dataset)
-        print(
-            f"[data:{split}] audit gate kept {len(kept)}/{total} "
-            f"(dropped {total - len(kept)})",
-            flush=True,
-        )
-    return Subset(dataset, kept)
+    return tuple(kept)
 
 
 def build_sft_dataloaders(
@@ -169,53 +236,48 @@ def build_sft_dataloaders(
             f"{primitive_config.oriented_feature_indices} must match the DXF "
             f"oriented sample channels {DXF_ORIENTED_SAMPLE_FEATURE_INDICES}"
         )
-    image_sources = tuple(
-        RasterImageSource(str(item["style"]), str(item["directory"]))
-        for item in data_config["image_sources"]
-    )
+    max_sequence_length = data_config.get("max_sequence_length")
     preprocessor = Drawing2CADPreprocessor(
         processor,
         primitive_config.num_primitive_latents,
         include_labels=True,
-        max_length=data_config.get("max_sequence_length"),
+        max_length=max_sequence_length,
     )
 
-    audit_config = data_config.get("audit")
-
     def build_root(root: DatasetRoot, max_key: str, split: str) -> Dataset:
-        """Build one root's dataset with the length and audit filters applied."""
-        label = f"{split}:{root.name}"
-        full = Drawing2CADDataset(
-            root.path,
-            dxf_parser=DXFPrimitiveParser(dxf_config),
-            image_sources=image_sources,
-            include_target=True,
-            max_samples=data_config.get(max_key),
-            strict_files=bool(data_config.get("strict_files", True)),
-            image_max_edge=data_config.get("image_max_edge"),
-            transform=preprocessor,
+        """Select this root's ids, then build its dataset once from them."""
+        context = f"data:{split}:{root.name}"
+        ids = select_sample_ids(
+            root,
+            data_config,
+            require_target=True,
+            context=context,
+            show_progress=show_progress,
         )
-        result: Drawing2CADDataset | Subset = full
-        max_sequence_length = data_config.get("max_sequence_length")
+        limit = data_config.get(max_key)
+        if limit is not None:
+            if int(limit) <= 0:
+                raise ValueError(f"[{context}] {max_key} must be positive when set")
+            ids = ids[: int(limit)]
+        # After the audit gate, so no target file is read for a sample the
+        # policy has already rejected.
         if max_sequence_length is not None:
-            result = _filter_by_length(
-                full,
-                preprocessor,
-                int(max_sequence_length),
-                split=label,
+            ids = _length_filtered_ids(
+                root.path,
+                data_config,
+                sample_ids=ids,
+                preprocessor=preprocessor,
+                max_length=int(max_sequence_length),
+                context=context,
                 show_progress=show_progress,
             )
-        if audit_config:
-            kept_ids = gate_present_ids_from_config(
-                audit_config,
-                root.audit_dir,
-                _record_sample_ids(result),
-                context=f"data:{label}",
-            )
-            result = _filter_by_audit(
-                result, kept_ids, split=label, show_progress=show_progress
-            )
-        return result
+        return build_dataset(
+            root.path,
+            data_config,
+            sample_ids=ids,
+            include_target=True,
+            transform=preprocessor,
+        )
 
     train_roots = resolve_dataset_roots(data_config["train_root"], split="train")
     unlabeled = [root.name for root in train_roots if not root.has_code_targets]
@@ -242,12 +304,7 @@ def build_sft_dataloaders(
         for root in val_roots
         if root.has_code_targets
     }
-    pad_token_id = processor.tokenizer.pad_token_id
-    if pad_token_id is None:
-        raise ValueError("processor tokenizer has no pad token ID")
-    collator = Drawing2CADCollator(
-        int(pad_token_id), padding_side=processor.tokenizer.padding_side
-    )
+    collator = build_collator(processor, padding_side=processor.tokenizer.padding_side)
     generator = torch.Generator().manual_seed(seed)
     workers = int(data_config.get("num_workers", 0))
     common = {
@@ -280,4 +337,11 @@ def build_sft_dataloaders(
     return SFTDataLoaders(train=train, validation=validation, generator=generator)
 
 
-__all__ = ["SFTDataLoaders", "build_sft_dataloaders"]
+__all__ = [
+    "SFTDataLoaders",
+    "build_collator",
+    "build_dataset",
+    "build_sft_dataloaders",
+    "image_sources_from_config",
+    "select_sample_ids",
+]

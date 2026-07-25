@@ -1,4 +1,4 @@
-"""Dataset records joining typed metadata, DXF, raster images, and targets."""
+"""Dataset records joining DXF primitives, raster images, and CadQuery targets."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from .dxf import DXFPrimitiveData, DXFPrimitiveParser
-from .layout import discover_sample_ids
+from .layout import TECHDRAW_DXF_SUBDIR, code_target_path
 
 
 @dataclass(frozen=True)
@@ -56,20 +56,20 @@ class Drawing2CADSample:
 class Drawing2CADDataset(Dataset):
     """Load semantic, unpadded samples and optionally apply a sample transform.
 
-    Samples are discovered from ``techdraw/dxf/*.dxf`` and each primitive's view
-    is read from its DXF layer, so the dataset needs no sidecar metadata.
+    The dataset is handed the ids it should serve; deciding which samples exist
+    belongs to :func:`src.data.layout.take_inventory`, which owns the
+    completeness rule for the whole codebase. Each primitive's view is read from
+    its DXF layer, so no sidecar metadata is needed either.
     """
 
     def __init__(
         self,
         root: str | Path,
+        sample_ids: Sequence[str],
         *,
         dxf_parser: DXFPrimitiveParser | None = None,
         image_sources: Sequence[RasterImageSource] = DEFAULT_IMAGE_SOURCES,
         include_target: bool = True,
-        sample_ids: Sequence[str] | None = None,
-        max_samples: int | None = None,
-        strict_files: bool = True,
         image_max_edge: int | None = None,
         transform: Callable[[Drawing2CADSample], Any] | None = None,
     ) -> None:
@@ -89,62 +89,29 @@ class Drawing2CADDataset(Dataset):
             raise ValueError(
                 f"raster image styles must be unique, got {self.image_styles}"
             )
-        if max_samples is not None and max_samples <= 0:
-            raise ValueError("max_samples must be positive when provided")
         if image_max_edge is not None and image_max_edge <= 0:
             raise ValueError("image_max_edge must be positive when provided")
 
-        if sample_ids is None:
-            selected_ids = list(discover_sample_ids(self.root))
-            if not selected_ids:
-                raise ValueError(
-                    f"no techdraw DXFs found to enumerate under {self.root}"
-                )
-        else:
-            selected_ids = list(sample_ids)
-        if len(set(selected_ids)) != len(selected_ids):
+        selected = tuple(sample_ids)
+        if not selected:
+            raise ValueError(f"no sample ids were selected for {self.root}")
+        if len(set(selected)) != len(selected):
             raise ValueError("sample_ids must not contain duplicates")
-        if max_samples is not None:
-            selected_ids = selected_ids[:max_samples]
 
-        records: list[Drawing2CADRecord] = []
-        skipped: list[str] = []
-        for sample_id in selected_ids:
-            dxf_path = self.root / "techdraw" / "dxf" / f"{sample_id}.dxf"
-            image_paths = tuple(
-                self.root / source.directory / f"{sample_id}.png"
-                for source in self.image_sources
+        self.records = tuple(
+            Drawing2CADRecord(
+                sample_id=sample_id,
+                dxf_path=self.root / TECHDRAW_DXF_SUBDIR / f"{sample_id}.dxf",
+                image_paths=tuple(
+                    self.root / source.directory / f"{sample_id}.png"
+                    for source in self.image_sources
+                ),
+                target_path=(
+                    code_target_path(self.root, sample_id) if include_target else None
+                ),
             )
-            target_path = (
-                self.root / "target" / f"{sample_id}.cadquery.py"
-                if include_target
-                else None
-            )
-            required_paths = [dxf_path, *image_paths]
-            if target_path is not None:
-                required_paths.append(target_path)
-            missing_paths = [path for path in required_paths if not path.is_file()]
-            if missing_paths:
-                if strict_files:
-                    raise FileNotFoundError(
-                        f"sample {sample_id} is missing required files: {missing_paths}"
-                    )
-                skipped.append(sample_id)
-                continue
-            records.append(
-                Drawing2CADRecord(
-                    sample_id=sample_id,
-                    dxf_path=dxf_path,
-                    image_paths=image_paths,
-                    target_path=target_path,
-                )
-            )
-
-        if not records:
-            suffix = f"; skipped missing samples: {skipped}" if skipped else ""
-            raise ValueError(f"dataset contains no usable records{suffix}")
-        self.records = tuple(records)
-        self.skipped_sample_ids = tuple(skipped)
+            for sample_id in selected
+        )
 
     def __len__(self) -> int:
         return len(self.records)
@@ -158,17 +125,6 @@ class Drawing2CADDataset(Dataset):
                     Image.Resampling.LANCZOS,
                 )
             return output.copy()
-
-    def target_code(self, index: int) -> str:
-        """Read one sample's target source without loading images or DXF.
-
-        Used by length filtering, where only the (variable-length) target text
-        affects the token count.
-        """
-        path = self.records[index].target_path
-        if path is None:
-            raise ValueError("dataset has no targets to read (include_target=False)")
-        return path.read_text(encoding="utf-8")
 
     def load_sample(self, index: int) -> Drawing2CADSample:
         """Load one semantic sample without applying ``transform``."""

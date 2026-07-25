@@ -7,11 +7,13 @@ from torch.utils.data import DataLoader
 from transformers import AutoProcessor, Qwen3VLConfig
 
 from src.data import (
+    DEFAULT_IMAGE_SOURCES,
     DXFPrimitiveConfig,
     DXFPrimitiveParser,
     Drawing2CADCollator,
     Drawing2CADDataset,
     Drawing2CADPreprocessor,
+    take_inventory,
 )
 from src.models import (
     Drawing2CADQwen3VLForConditionalGeneration,
@@ -57,11 +59,16 @@ class DatasetModelIntegrationTest(unittest.TestCase):
         max_samples: int,
         transform=None,
     ):
+        complete, _ = take_inventory(
+            DATASET_ROOT,
+            image_dirs=[source.directory for source in DEFAULT_IMAGE_SOURCES],
+            require_target=include_target,
+        )
         return Drawing2CADDataset(
             DATASET_ROOT,
+            complete[:max_samples],
             dxf_parser=DXFPrimitiveParser(self.dxf_config),
             include_target=include_target,
-            max_samples=max_samples,
             image_max_edge=64,
             transform=transform,
         )

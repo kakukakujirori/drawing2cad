@@ -77,15 +77,23 @@ class CADGenerationEvaluatorTest(unittest.TestCase):
             root.mkdir()
             for name in REQUIRED_SUBDIRS:
                 (root / name).mkdir()
-            # Samples are discovered from techdraw/dxf/*.dxf; the DXF itself is
-            # never read here because the data loader is monkeypatched below.
+            # A sample must carry its drawing and every configured raster to be
+            # selected; the files themselves are never read here because the data
+            # loader is monkeypatched below.
+            image_dir = Path("render_3d") / "hlg_perspective"
             (root / "techdraw" / "dxf").mkdir()
+            (root / image_dir).mkdir(parents=True)
             (root / "techdraw" / "dxf" / "sample.dxf").write_text("", encoding="utf-8")
+            (root / image_dir / "sample.png").write_text("", encoding="utf-8")
             (dataset_root,) = resolve_dataset_roots(root, split="val")
             evaluator = CADGenerationEvaluator(
                 accelerator=_Accelerator(),
                 processor=_Processor(),
-                data_config={},
+                data_config={
+                    "image_sources": [
+                        {"style": "isometric", "directory": str(image_dir)}
+                    ]
+                },
                 dataset_root=dataset_root,
                 evaluation_config={
                     "generation_subset_size": 1,

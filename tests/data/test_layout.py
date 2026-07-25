@@ -4,8 +4,8 @@ import unittest
 
 from src.data.layout import (
     REQUIRED_SUBDIRS,
-    discover_sample_ids,
     resolve_dataset_roots,
+    take_inventory,
 )
 
 
@@ -72,22 +72,73 @@ class ResolveDatasetRootsTest(unittest.TestCase):
             resolve_dataset_roots([], split="val")
 
 
-class DiscoverSampleIdsTest(unittest.TestCase):
+IMAGE_DIR = Path("render_3d") / "hlg_perspective"
+
+
+def _stage_sample(
+    root: Path, sample_id: str, *, image: bool = True, target: bool = True
+) -> None:
+    """Write the files one sample is made of, optionally leaving some out."""
+    for directory in (root / "techdraw" / "dxf", root / IMAGE_DIR, root / "target"):
+        directory.mkdir(parents=True, exist_ok=True)
+    (root / "techdraw" / "dxf" / f"{sample_id}.dxf").write_text("", encoding="utf-8")
+    if image:
+        (root / IMAGE_DIR / f"{sample_id}.png").write_text("", encoding="utf-8")
+    if target:
+        (root / "target" / f"{sample_id}.cadquery.py").write_text("", encoding="utf-8")
+
+
+class TakeInventoryTest(unittest.TestCase):
     def test_ids_come_from_techdraw_dxfs_sorted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            dxf_dir = Path(temporary) / "techdraw" / "dxf"
-            dxf_dir.mkdir(parents=True)
+            root = Path(temporary)
             for stem in ("000200", "000100", "000300"):
-                (dxf_dir / f"{stem}.dxf").write_text("", encoding="utf-8")
+                _stage_sample(root, stem)
             # A non-DXF sibling must not be enumerated.
-            (dxf_dir / "notes.txt").write_text("", encoding="utf-8")
-            self.assertEqual(
-                discover_sample_ids(temporary), ("000100", "000200", "000300")
-            )
+            (root / "techdraw" / "dxf" / "notes.txt").write_text("", encoding="utf-8")
+            complete, incomplete = take_inventory(root)
+            self.assertEqual(complete, ("000100", "000200", "000300"))
+            self.assertEqual(incomplete, {})
 
     def test_missing_dxf_dir_yields_no_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            self.assertEqual(discover_sample_ids(temporary), ())
+            self.assertEqual(take_inventory(temporary), ((), {}))
+
+    def test_sample_without_its_raster_is_incomplete_not_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _stage_sample(root, "000100")
+            # The renderer projected the drawing but was killed during render_3d.
+            _stage_sample(root, "000200", image=False)
+            complete, incomplete = take_inventory(root, image_dirs=[IMAGE_DIR])
+            self.assertEqual(complete, ("000100",))
+            self.assertEqual(incomplete, {"000200": root / IMAGE_DIR / "000200.png"})
+
+    def test_targets_are_only_required_when_asked_for(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _stage_sample(root, "000100", target=False)
+            self.assertEqual(
+                take_inventory(root, image_dirs=[IMAGE_DIR])[0], ("000100",)
+            )
+            complete, incomplete = take_inventory(
+                root, image_dirs=[IMAGE_DIR], require_target=True
+            )
+            self.assertEqual(complete, ())
+            self.assertEqual(
+                incomplete, {"000100": root / "target" / "000100.cadquery.py"}
+            )
+
+    def test_every_configured_raster_must_be_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _stage_sample(root, "000100")
+            second = Path("render_3d") / "transparent_shaded_edges_perspective"
+            complete, incomplete = take_inventory(
+                root, image_dirs=[IMAGE_DIR, second]
+            )
+            self.assertEqual(complete, ())
+            self.assertEqual(incomplete, {"000100": root / second / "000100.png"})
 
 
 if __name__ == "__main__":

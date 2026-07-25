@@ -6,8 +6,6 @@ val_root:
 image_sources:
   - style: isometric
     directory: render_3d/hlg_perspective
-include_target: true
-strict_files: true
 scale_augmentation: false
 image_max_edge: null
 max_sequence_length: null

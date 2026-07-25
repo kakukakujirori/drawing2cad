@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Mapping
@@ -31,16 +32,9 @@ from omegaconf import OmegaConf
 from peft.utils.save_and_load import load_peft_weights, set_peft_model_state_dict
 from torch.utils.data import DataLoader
 
-from src.data import (
-    DXFPrimitiveConfig,
-    DXFPrimitiveParser,
-    Drawing2CADBatch,
-    Drawing2CADCollator,
-    Drawing2CADDataset,
-    Drawing2CADPreprocessor,
-    RasterImageSource,
-    discover_sample_ids,
-)
+from src.data import Drawing2CADBatch, Drawing2CADPreprocessor
+from src.data.factory import build_collator, build_dataset, select_sample_ids
+from src.data.layout import DatasetRoot, resolve_dataset_roots
 from src.evaluation.evaluator import (
     EvaluationConfig,
     EvaluationItem,
@@ -105,12 +99,28 @@ def _load_run_config(ckpt: Path, override: Path | None) -> Mapping[str, Any]:
     return {str(key): value for key, value in config.items()}
 
 
-def _select_sample_ids(test_dir: Path, subset_size: int, seed: int) -> tuple[str, ...]:
-    available = list(discover_sample_ids(test_dir))
+def _select_sample_ids(
+    root: DatasetRoot,
+    data_config: Mapping[str, Any],
+    subset_size: int,
+    seed: int,
+) -> tuple[str, ...]:
+    """Complete, audit-approved ids of ``root``, optionally a fixed random subset.
+
+    Selection is the shared one, so offline scoring covers exactly the samples
+    training and in-run validation consider valid. Only the STEP answer is read,
+    so a CadQuery target is not required.
+    """
+    available = list(
+        select_sample_ids(
+            root,
+            data_config,
+            require_target=False,
+            context=f"test:{root.name}",
+        )
+    )
     if subset_size <= 0 or subset_size >= len(available):
         return tuple(available)
-    import random
-
     generator = random.Random(seed)
     return tuple(sorted(generator.sample(available, subset_size)))
 
@@ -125,32 +135,24 @@ def _build_loader(
     batch_size: int,
     num_workers: int,
 ) -> DataLoader:
-    dxf_config = DXFPrimitiveConfig(**data_config["dxf"])
-    image_sources = tuple(
-        RasterImageSource(str(item["style"]), str(item["directory"]))
-        for item in data_config["image_sources"]
-    )
+    # max_length stays unset for the same reason as the in-run benchmark: scoring
+    # is forward-only, and every selected sample must be scored rather than
+    # rejected for exceeding the training length budget.
     preprocessor = Drawing2CADPreprocessor(
         processor,
         num_primitive_latents,
         include_labels=False,
-        max_length=data_config.get("max_sequence_length"),
+        max_length=None,
     )
-    dataset = Drawing2CADDataset(
+    dataset = build_dataset(
         test_dir,
-        dxf_parser=DXFPrimitiveParser(dxf_config),
-        image_sources=image_sources,
-        include_target=False,
+        data_config,
         sample_ids=sample_ids,
-        strict_files=bool(data_config.get("strict_files", True)),
-        image_max_edge=data_config.get("image_max_edge"),
+        include_target=False,
         transform=preprocessor,
     )
-    pad_token_id = processor.tokenizer.pad_token_id
-    if pad_token_id is None:
-        raise ValueError("processor tokenizer has no pad token ID")
     # Decoder-only batched generation requires left padding.
-    collator = Drawing2CADCollator(int(pad_token_id), padding_side="left")
+    collator = build_collator(processor, padding_side="left")
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -243,7 +245,10 @@ def main() -> None:
     evaluation_config = cfg.get("evaluation", {})
 
     bundle = _load_model(cfg, args.ckpt, device)
-    sample_ids = _select_sample_ids(args.test_dir, args.subset_size, args.seed)
+    (test_root,) = resolve_dataset_roots(args.test_dir, split="test")
+    sample_ids = _select_sample_ids(
+        test_root, data_config, args.subset_size, args.seed
+    )
     loader = _build_loader(
         data_config=data_config,
         processor=bundle.processor,

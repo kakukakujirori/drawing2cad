@@ -101,8 +101,6 @@ We use the [Zero-to-CAD](https://huggingface.co/datasets/ADSKAILab/Zero-To-CAD-1
 
     Calibration/verification harnesses: `src/data/render/calibrate_techdraw.py`, `src/data/render/calibrate_render3d.py`.
 
-    Successful techdraw rows store layout metadata under `extra.techdraw`. View and cluster `bbox` values use `[xmin, ymin, xmax, ymax]` (`bbox_format="xyxy"`) in sheet-mm with a bottom-left origin. Manifests created before this metadata was added are refreshed on the next techdraw run; pass `--no-render3d` to avoid re-rendering the perspective images during that one-time migration.
-
 ### When using other datasets
 
 - For a GT split that ships only `{uuid}.step` with no generating `{uuid}.cadquery.py` (e.g. a STEP-only eval set), add `--no-cadquery` to run the STEP-only subset of checks — see `src/data/audit/README.md` for details. Without this flag, `.step` files with zero matching `.cadquery.py` raise instead of silently auditing nothing.

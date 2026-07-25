@@ -1,9 +1,12 @@
 # Each split is a list of dataset roots. Every root must provide
-# render_3d/, target/, target_audit/ and techdraw/ (src/data/layout.py
-# validates this up front; samples are discovered from techdraw/dxf/*.dxf).
-# Roots are named by their
-# basename; the name namespaces validation metrics (val/<name>/...) and the
-# per-dataset prediction directory, so basenames must be unique.
+# render_3d/, target/, target_audit/ and techdraw/ (src/data/layout.py validates
+# this up front). Within a root, a sample counts as available only when its
+# techdraw/dxf/ drawing, every raster named under `image_sources` below, and (for
+# training) its target/*.cadquery.py are all on disk; parts the renderer lost to
+# an OCC hang are reported at startup and skipped, not treated as an error.
+# Roots are named by their basename; the name namespaces validation metrics
+# (val/<name>/...) and the per-dataset prediction directory, so basenames must be
+# unique.
 train_root:
   - ${paths.project_root}/data/z2c_train
 val_root:
@@ -12,8 +15,6 @@ val_root:
 image_sources:
   - style: isometric
     directory: render_3d/hlg_perspective
-include_target: true
-strict_files: true
 scale_augmentation: false
 image_max_edge: null
 # Samples whose fully rendered token sequence exceeds this are dropped (never

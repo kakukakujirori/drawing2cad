@@ -25,8 +25,9 @@ from .dxf import (
 from .layout import (
     DatasetRoot,
     REQUIRED_SUBDIRS,
-    discover_sample_ids,
+    code_target_path,
     resolve_dataset_roots,
+    take_inventory,
 )
 from .preprocessing import (
     DEFAULT_INSTRUCTION,
@@ -58,7 +59,8 @@ __all__ = [
     "RasterImageSource",
     "VIEW_DIRECTIONS",
     "VIEW_DIRECTION_TO_ID",
-    "discover_sample_ids",
+    "code_target_path",
     "resolve_dataset_roots",
     "sample_dxf_entity",
+    "take_inventory",
 ]
