@@ -9,6 +9,9 @@ huggingface_hub
 hydra-core
 hydra-colorlog
 jsonschema
+langchain
+langchain-openai
+langgraph
 manifold3d
 opencv-python-headless
 peft
@@ -20,6 +23,7 @@ rootutils
 rtree
 ruff
 safetensors
+sglang[all]
 scipy
 tensorboard
 tqdm

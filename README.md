@@ -27,6 +27,7 @@ pip install -r requirements.txt
 pip install "cadgenbench @ git+https://github.com/huggingface/cadgenbench.git@main" --no-deps --no-build-isolation
 
 # ABI symbol resolution
+conda env config vars set LD_PRELOAD=$CONDA_PREFIX/lib/libjpeg.so
 conda env config vars set LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 conda deactivate && conda activate drawing2cad
 
