@@ -246,9 +246,7 @@ def main() -> None:
 
     bundle = _load_model(cfg, args.ckpt, device)
     (test_root,) = resolve_dataset_roots(args.test_dir, split="test")
-    sample_ids = _select_sample_ids(
-        test_root, data_config, args.subset_size, args.seed
-    )
+    sample_ids = _select_sample_ids(test_root, data_config, args.subset_size, args.seed)
     loader = _build_loader(
         data_config=data_config,
         processor=bundle.processor,
@@ -323,14 +321,14 @@ def main() -> None:
         timeout_s=timeout_s,
         tessellation_tolerance=tess,
         volume_tolerance=volume_tol,
-        metric_timeout_s=float(
-            evaluation_config.get("metric_timeout_seconds", 300.0)
-        ),
+        metric_timeout_s=float(evaluation_config.get("metric_timeout_seconds", 300.0)),
         metrics=selected_metrics,
     )
     print("Scoring against target/ ...", flush=True)
     rows = evaluate_predictions(items, config=eval_config)
-    metrics = aggregate_evaluation_metrics(rows, metrics=selected_metrics, prefix="test")
+    metrics = aggregate_evaluation_metrics(
+        rows, metrics=selected_metrics, prefix="test"
+    )
     _atomic_json(args.out_dir / "rows.json", rows)
     _atomic_json(args.out_dir / "metrics.json", metrics)
     _atomic_json(

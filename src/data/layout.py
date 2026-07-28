@@ -68,9 +68,7 @@ def take_inventory(
     for sample_id in sorted(
         path.stem for path in (root / TECHDRAW_DXF_SUBDIR).glob("*.dxf")
     ):
-        required = [
-            root / directory / f"{sample_id}.png" for directory in directories
-        ]
+        required = [root / directory / f"{sample_id}.png" for directory in directories]
         if require_target:
             required.append(code_target_path(root, sample_id))
         missing = next((path for path in required if not path.is_file()), None)

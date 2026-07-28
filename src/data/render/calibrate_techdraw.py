@@ -366,9 +366,7 @@ def main(argv=None):
         print("\n== Real-input smoke test ==")
         reals = sorted(args.real_dir.glob("*.step"))[: args.real_n]
         for step in reals:
-            status, _ = run_isolated(
-                step, args.out / "real", step.stem, args.timeout
-            )
+            status, _ = run_isolated(step, args.out / "real", step.stem, args.timeout)
             print(f"{step.name}: {status}")
     return 0
 

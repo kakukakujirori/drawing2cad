@@ -73,7 +73,6 @@ render_3d/transparent_shaded_edges_perspective/<id>.png
 ### 3.3 初回入力のaccess config
 
 ```yaml
-access_dxf: path                 # path | dxf
 access_render3d: image           # none | path | image
 access_render3d_styles:
   - hlg_perspective
@@ -83,18 +82,16 @@ access_render3d_styles:
 
 意味は以下の通り。
 
-- `access_dxf: path`: DXFの論理パスと役割だけを初回user messageに入れる
-- `access_dxf: dxf`: DXF textを初回user messageへ直接入れる
+- DXFは必須入力として、`SampleManifest`が持つinput DXF pathと役割を常に初回user messageへ入れる
 - `access_render3d: none`: 初回は3D renderを与えない
-- `access_render3d: path`: 選択styleの論理パスとstyle名だけを伝える
+- `access_render3d: path`: 選択styleのpathとstyle名だけを伝える
 - `access_render3d: image`: 選択styleの画像をmultimodal user messageへ添付する
 
-`access_dxf: none`は設けない。DXFはタスク成立に必須である。
+`access_dxf` configは設けない。raw DXF textまたはDXF JSON tagsをmessageへ直接注入せず、modelが必要に応じてDXF解析toolを使う。
 
 ### 3.4 次ターンのfeedback config
 
 ```yaml
-feedback_dxf: dxf               # none | path | dxf
 feedback_render3d: image         # none | path | image
 feedback_render3d_styles:
   - hlg_perspective
@@ -104,14 +101,16 @@ feedback_render3d_styles:
 
 意味は以下の通り。
 
-- `feedback_dxf: none`: 候補から再生成したDXFを返さない
-- `feedback_dxf: path`: 再生成DXFの論理パスだけを返す
-- `feedback_dxf: dxf`: 再生成DXF textを次のfeedback user messageへ直接入れる
+- verified STEPからfeedback DXFを生成できた場合、そのpathを次のfeedback user messageへ常に入れる
 - `feedback_render3d: none`: 候補の3D renderを返さない
-- `feedback_render3d: path`: 選択styleの論理パスだけを返す
+- `feedback_render3d: path`: 選択styleのpathだけを返す
 - `feedback_render3d: image`: 選択styleの画像を次のmultimodal feedback user messageへ添付する
 
 `access_render3d_styles`と`feedback_render3d_styles`は独立させる。初回入力とfeedbackで異なるstyle集合を使えるようにし、別々にアブレーションする。
+
+`feedback_dxf` configは設けない。DXF feedback機能が実装された後はpathを常に返す。ただしsyntax error、timeout、invalid STEP、projection failureなど、DXFが存在しない場合は架空のpathを返さず、生成不能理由をexecution feedbackへ含める。
+
+`feedback_render3d_paths`には生成に成功したstyleのキーとpathだけを入れ、失敗したstyleのキーを入れない。valueへ`None`を入れない。MessageBuilderは存在するstyleだけを返し、0枚ならrender用content block自体を追加しない。欠損理由は必須のexecution feedbackへ含める。
 
 `feedback_execution`を無効化するconfigは設けない。実行成否、syntax/AST error、timeout、STEP生成、solid数、kernel validityなど、信頼済み実行器が得た結果は必ずmessage historyと監査logへ残す。runが継続する場合は必ず次のmodel turnへ返す。
 
@@ -157,36 +156,28 @@ workflowはprovider名、base URL、credentialへ依存させない。API版で�
 
 ### 4.1 信頼境界
 
-処理を次の3領域へ分ける。
+処理を次の4領域へ分ける。
 
 | 領域 | 役割 | GT access |
 |---|---|---|
 | Agent workflow | message、tool選択、candidate提出 | 禁止 |
-| Trusted reconstruction runtime | code検証、隔離実行、STEP検証、feedback生成 | 禁止 |
+| Shared Python sandbox | model生成Pythonによる入力解析、数値計算、CAD試行、候補生成 | 禁止 |
+| Trusted reconstruction runtime | sandbox起動、候補登録、STEP検証、feedback生成 | 禁止 |
 | Offline evaluator | 完了した予測STEPとGT STEPの比較 | 許可 |
 
-model生成codeはuntrustedとする。通常のPython processで直接実行せず、timeout可能な隔離processで実行する。
+model生成codeは入力解析用もCAD生成用もuntrustedとする。通常のPython processで直接実行せず、共通の`PythonSandbox`からtool callごとにfreshなtimeout可能隔離processを起動する。常駐Python processを共有せず、過去の変数、import、生成fileへ暗黙に依存させない。
 
-### 4.2 Artifactの扱い
+`run_python`と`execute_cad_candidate`は同じsandbox基盤とfilesystem viewを使うが、toolとしての意味は分ける。`run_python`は探索用codeのstdout/stderr/statusだけを返し、そこで生成されたfileを候補artifactへ昇格しない。`execute_cad_candidate`はcandidate IDとsourceを登録し、生成STEPをtrusted runtimeが回収・検証してexecution feedbackを作る。
 
-modelへホスト絶対パスを渡さない。サンプルごとの`ArtifactStore`が、次のような論理パスを実体へ解決する。
+### 4.2 Pathと生成artifactの扱い
 
-```text
-input/drawing.dxf
-input/render3d/hlg_perspective.png
-candidate/<candidate_id>/model.py
-candidate/<candidate_id>/output.step
-candidate/<candidate_id>/feedback/drawing.dxf
-candidate/<candidate_id>/feedback/render3d/<style>.png
-```
+独自のlogical path namespaceは作らない。`SampleManifest`は通常の`Path`で必須のinput DXF、input render mappingと、optionalなactive candidateのfeedback DXF、feedback render mappingを保持する。style名の固定listをpipeline内へ重複定義せず、manifestのinput render key集合をそのsampleで利用可能なstyleのsource of truthとする。`view_render3d_artifact`はconfigで許可されたactiveな`SampleManifest`のpathとの完全一致だけを許可し、任意のpathを開かない。`target/`と`target_step/`は`SampleManifest`へ含めない。
 
-`ArtifactStore`は以下を保証する。
+shared Python sandboxにはactive sampleのDXFを常にread-onlyでcopyまたはmountする。renderは`access_render3d`または`feedback_render3d`でmodelへ許可されたstyleだけをread-onlyで見せ、`none`のrenderや未選択styleをfilesystem探索で取得できないようにする。feedback DXFが生成された後は、元DXFとactive candidate自身のfeedback DXFを見せる。
 
-- `..`、絶対パス、symlink escapeを拒否する
-- 現在のsample以外のartifactを参照させない
-- `target/`、`target_step/`を登録しない
-- candidate codeと実行結果をimmutableに保存する
-- content hash、生成元、作成時刻、media typeをmanifestへ記録する
+sandbox内で有効な通常pathを持つ一時的な`SampleManifest`を新しく作り、初回message、`run_python`、`execute_cad_candidate`で同じfilesystem viewを使う。元の`SampleManifest`はmutationしない。candidateまたはfeedbackが変わるたびに新しいsnapshotを作る。入力DXFは正規の問題入力なので、CAD候補codeから読み取ることも許可する。一方、GT、repository、他sample、credential、networkはどのmodel生成codeからも到達不能にする。
+
+candidate code、STEP、feedback画像、execution logなどの生成artifactは、それを最初に生成する責務のmoduleが保存する。複数領域で共通の登録・hash・manifest処理が実際に重複した時点で`ArtifactStore`を抽出する。配置は責務に応じて`execution/`、`audit/`またはtop-levelから選び、現段階では決めない。
 
 ### 4.3 依存方向
 
@@ -197,7 +188,7 @@ run_pipeline
   -> workflow
        -> models
        -> tools
-            -> artifacts
+            -> inputs
             -> execution
             -> feedback
                  -> src.data.render
@@ -218,14 +209,13 @@ offline evaluation
 zeroshot/
 ├── __init__.py
 ├── run_zero_shot.py                 # 既存CLI baseline。再実装中は変更しない
-├── run_pipeline.py                  # 新pipelineの薄いCLI
+├── run_pipeline.py                  # 後続: 新pipelineの薄いHydra composition root
 ├── pipeline/
 │   ├── __init__.py
-│   ├── config.py                    # config schemaとvalidation
-│   ├── inputs.py                    # sample discoveryとInputManifest
-│   ├── artifacts.py                 # logical path、manifest、immutable保存
+│   ├── manifest.py                  # SampleManifestとinput/feedback path検証
 │   ├── messages.py                  # access/feedback message builder
 │   ├── runner.py                    # 後続: application wiringとsample loop
+│   ├── sandbox.py                   # Phase 2: 全model生成Python用の共通隔離実行基盤
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── base.py                  # normalized AgentModel protocol
@@ -233,7 +223,7 @@ zeroshot/
 │   │   └── cli.py                   # 後続: Gemini / Claude CLI
 │   ├── tools/
 │   │   ├── __init__.py
-│   │   ├── read_dxf.py
+│   │   ├── run_python.py
 │   │   ├── view_render3d.py
 │   │   ├── execute_candidate.py
 │   │   └── submit_final.py
@@ -265,24 +255,27 @@ zeroshot/
 │   │   ├── summary.py
 │   │   └── pose.py
 └── configs/
-    └── default.yaml
+    ├── default.yaml
+    └── model/                       # Phase 4で追加
+        ├── gpt.yaml
+        └── qwen_sglang.yaml
 
 tests/
 └── zeroshot/
-    └── pipeline/
-        ├── fixtures/
-        ├── test_config.py
-        ├── test_inputs.py
-        ├── test_artifacts.py
-        ├── test_messages.py
-        ├── test_execution.py
-        ├── test_tools.py
-        ├── test_graph.py
-        ├── test_feedback.py
-        └── test_leakage.py
+    ├── fixtures/
+    ├── test_hydra_config.py
+    ├── test_manifest.py
+    ├── test_messages.py
+    ├── test_execution.py
+    ├── test_tools.py
+    ├── test_graph.py
+    ├── test_feedback.py
+    └── test_leakage.py
 ```
 
-`run_pipeline.py`は引数解析と内部pipelineの呼び出しだけを担当し、sample loopやworkflow構築を置かない。Phase 1では`pipeline/`直下の`config.py`、`inputs.py`、`artifacts.py`、`messages.py`だけを追加する。`runner.py`を含む後続ファイルは必要になるphaseまで作らない。
+`run_pipeline.py`はHydraによるconfig composition、依存objectの生成、内部pipelineの呼び出しだけを担当し、sample loopやworkflow構築を置かない。Phase 1では`zeroshot/configs/default.yaml`と、`pipeline/`直下の`manifest.py`、`messages.py`だけを追加する。`run_pipeline.py`と`runner.py`を含む後続ファイルは必要になるphaseまで作らない。
+
+設定専用の`config.py`は作らない。YAMLの`_target_`と各runtime classのconstructorをcontractにし、`hydra.utils.instantiate()`で生成する。未知の引数や不足した必須引数はinstantiate時に拒否し、値の許容範囲や組合せのようなsemantic validationは、その値を所有するclass自身が行う。
 
 ファイルが大きくなってから責務に沿って分割する。最初から`constants.py`、`provider.py`、`credentials.py`などを機械的に量産しない。
 
@@ -316,18 +309,22 @@ class ReconstructionState(TypedDict, total=False):
     safety_stop_reason: str | None
 ```
 
-巨大なDXF text、画像bytes、candidate code、render画像をstateへ直接蓄積しない。stateにはartifact IDまたは論理パスを保持する。
+`run_python`の長いstdout/stderr、画像bytes、candidate code、render画像をstateへ直接蓄積しない。stateには切り詰めたtool result、検証済みfilesystem pathまたは保存済みartifact IDを保持する。
 
 ### 6.2 bindするtool
 
 初期agentへ次の4toolを公開する。
 
-1. `read_dxf_artifact(logical_path)`
-2. `view_render3d_artifact(logical_path)`
+1. `run_python(code)`
+2. `view_render3d_artifact(path)`
 3. `execute_cad_candidate(code, cad_format)`
 4. `submit_final_candidate(code, cad_format)`
 
-`read_dxf_artifact`と`view_render3d_artifact`は分ける。textとimageでは返却形式、size制約、provider互換性、監査項目が異なるためである。
+`run_python`はmodel生成Pythonをshared sandboxで実行し、stdout、stderr、exit status、timeoutを返す探索toolである。sandboxには`ezdxf`、Pillow、NumPyと、現在対応しているCAD libraryを用意する。初期vertical sliceではCadQueryを対象とし、build123dはcandidate executor対応後に同じ環境へ追加する。個別libraryのAPI、query方法、出力形式をpipeline側で限定しない。一方で、許可されていないsample/render、GT、repository、credential、networkへ到達させず、process tree、CPU、memory、wall time、stdout/stderr量を制限する。`run_python`が作ったfileはscratch扱いとし、trusted artifactとして採用しない。
+
+system promptには「正確な図面情報の確認や計算には`run_python`を使える」ことだけを記述する。利用可能package、sandbox内の許可済みpath、tool result contractはtool descriptionへ記述し、ezdxfやCAD libraryの個別API tutorialをsystem promptへ埋め込まない。
+
+`run_python`と`execute_cad_candidate`は同じ`PythonSandbox`実装を使い、呼び出しごとにfresh processと一時作業directoryを作る。両者ともactive DXFとconfig上許可されたrender/feedbackをread-onlyで参照できる。違いはsandbox権限ではなく、探索結果を返すだけか、candidate sourceとSTEPを登録・検証するかというapplication上の責務に置く。
 
 `execute_cad_candidate`はmodelが自発的に呼ぶ中間検証toolである。tool protocolを閉じる`ToolMessage`を追加した後、実行結果と設定されたfeedbackを次のuser messageとして組み立て、model turnへ返す。
 
@@ -359,8 +356,11 @@ flowchart TD
     START --> build_initial_message
     build_initial_message --> agent
 
-    agent -->|read_dxf / view_render3d| artifact_tools
-    artifact_tools --> agent
+    agent -->|run_python| python_sandbox
+    python_sandbox --> agent
+
+    agent -->|view_render3d| image_tool
+    image_tool --> agent
 
     agent -->|execute_cad_candidate| execute_intermediate
     execute_intermediate --> build_feedback
@@ -404,6 +404,7 @@ LangGraphを採用する主目的の一つは、agentの外部から観測可能
 - graph nodeと遷移元・遷移先
 - provider、model、base URL識別子、sampling parameter
 - access/feedback configとeffective style
+- Hydraでresolveした実効config
 - system/user/tool messageの再現に必要なpayloadまたはartifact参照
 - prompt template versionとrendered prompt hash
 - tool名、検証済み引数、tool call ID
@@ -469,38 +470,58 @@ modelもLangGraphも呼ばず、20件の入力集合が揃っていることと�
 
 結果は39 test passed、40 subtests passed。`data/test_vlm`は20 IDすべてについてDXF、3種類のrender、GT STEPのID集合が一致したため、Phase 0を完了とする。
 
-### Phase 1: Config、入力、ArtifactStore、message builder
+### ✅ Phase 1: Hydra component config、入力、message builder
 
 #### 実装するもの
 
-- `config.py`
-- `inputs.py`
-- `artifacts.py`
+- `zeroshot/configs/default.yaml`
+- `manifest.py`
 - `messages.py`
 - 対応するunit test
 
 #### 順序
 
-1. `InputManifest`で4入力の存在、拡張子、重複、symlinkを検証する
-2. `ArtifactStore`で論理パスを解決する
-3. access configだけで初回messageを構築する
-4. feedback configを使うmessage builderのinterfaceだけ作る
-5. 全config組合せをtable-driven testにする
+1. `SampleManifest`を実装し、必須input DXF/input render mappingとoptional feedback DXF/feedback render mappingを保持する。全pathの存在とDXFの拡張子を検証し、render画像の拡張子は固定しない
+2. 選択されたinput/feedback render bytesを`SampleManifest`から必要時に読めるようにする
+3. DXF pathを常に含め、render access configをconstructor引数に持つmessage builderで初回messageを構築する
+4. execution feedbackと`SampleManifest`を受け取り、存在するDXF/render feedbackだけを返すfeedback構築methodを作る
+5. `default.yaml`からmessage builderを`hydra.utils.instantiate()`できることをtestする
+6. 全config組合せをtable-driven testにする
+
+dataset全体のsample列挙はPhase 1で抽象化しない。Phase 3でsample loopが必要になった時点で、まず`runner.py`内の短い処理として実装し、複数箇所から必要になるか複雑になった場合だけ関数またはclassへ抽出する。
+
+`SampleManifest`は通常のfilesystem pathを持ち、original inputと現在のactive candidate feedbackを一つのimmutable snapshotとして表す。feedback fieldは未生成時に`None`または空mappingとし、candidateが変わるたびに新しいmanifestを作る。独自のlogical path DTOや汎用`dto/`packageは作らない。生成artifactの管理抽象と配置も、具体的な重複が現れるまで延期する。
+
+`DEFAULT_SYSTEM_PROMPT`と、renderの`none | path | image`およびfeedback種別に応じて追加する文言は`messages.py`に置く。現段階では別の`prompts.py`やHydra prompt configへ分割しない。system promptにはsampleに依存しない役割、出力contract、必要時にtoolを利用できることだけを簡潔に置き、具体的なtool名とschemaは各tool descriptionに置く。sample固有pathと選択されたmodalityの説明は`HumanMessage`側で組み立てる。`none`でも「提供されている場合はperspective renderを併用する」という条件付き一般文はsystem promptへ残してよい。
+
+render styleの固定listを`src.data.render.config`からimportせず、pipeline内にも重複定義しない。MessageBuilderは選択されたaccess/feedback styleが`SampleManifest.input_render3d_paths`のキーに含まれることを検証する。これにより現在の3 styleを固定せず、manifestへ追加された将来の画像styleへ対応する。feedback mappingはその部分集合を許可する。
 
 #### 必須test
 
-- `none`のmodalityがpromptにもpayloadにも現れない
-- `path`では論理パスとstyle名だけが現れる
-- `dxf`では正しいDXF textがdelimiter付きで入る
+- DXF pathが全ての初回messageに現れ、raw DXF textは現れない
+- renderの`none`では個別のrender style、path、画像payloadがHumanMessageに現れない
+- renderの`path`では`SampleManifest`のpathとstyle名だけが現れる
 - `image`では選択された画像だけが宣言順に添付される
+- 複数画像は各style名のtext blockと対応するimage blockの順に並ぶ
 - access styleとfeedback styleが混ざらない
-- 未知styleと重複styleを拒否する
-- targetのpathをArtifactStoreで解決できない
-- host絶対パスがmodel-facing messageに現れない
+- manifestのinput render keyにない選択styleと重複styleを拒否する
+- feedback renderが3/2/1枚なら存在するstyleだけを返し、0枚ならrender blockを追加しない
+- feedback mappingのvalueへ`None`を許可しない
 
 #### 完了条件
 
-modelとCADを使わず、全message payloadをtestで目視・比較できる。
+modelとCADを使わず、Hydraからcomponentを生成し、全message payloadをtestで目視・比較できる。
+
+#### 完了記録
+
+2026-07-28にPhase 1を完了した。
+
+- `SampleManifest`でinput/feedback pathを検証し、render mappingをimmutableなsnapshotとして保持する
+- `MessageBuilder`で初回入力とexecution/DXF/render feedbackを構築し、access/feedbackのmodeとstyleを独立に検証する
+- render styleの固定listを設けず、各sampleのinput render mappingを利用可能styleのsource of truthとする
+- Hydraの`ListConfig`をconstructor内でtupleへ正規化し、`default.yaml`から`MessageBuilder`を生成できる
+- `tests/zeroshot`は42 test passed
+- `ruff check`と`ruff format --check`はPhase 1対象の全fileで通過した
 
 ### Phase 2: Trusted CAD execution
 
@@ -521,7 +542,10 @@ modelとCADを使わず、全message payloadをtestで目視・比較できる�
 #### 重要方針
 
 - model codeをpipeline process内で`exec`しない
-- 入力DXF、画像、GT、repositoryを実行sandboxへ渡さない
+- `run_python`とcandidate実行が再利用する共通`PythonSandbox`をここで実装する
+- 入力DXFとconfigで許可されたrender/feedbackだけをread-onlyでsandboxへ渡す
+- GT、repository、他sample、未許可render、credentialをsandboxへ渡さない
+- candidate codeが入力DXFを解析して形状を生成することを許可する
 - timeout時はterminate後、必要ならkillする
 - validation失敗とinfra failureを区別する
 - 既存runnerのsecurity testを、コードではなくfixture/期待結果として参照する
@@ -531,7 +555,8 @@ modelとCADを使わず、全message payloadをtestで目視・比較できる�
 - valid single box
 - syntax error
 - denied import
-- filesystem探索またはnetwork/subprocess使用
+- filesystem探索で許可外入力、GT、repositoryへ到達できない
+- network/subprocess使用
 - STEP未生成
 - zero solid / multi-solid
 - invalid STEP
@@ -551,23 +576,31 @@ modelとCADを使わず、全message payloadをtestで目視・比較できる�
 - `workflow/agent.py`
 - `workflow/routing.py`
 - `workflow/graph.py`
+- `tools/run_python.py`
+- `pipeline/runner.py`
+- `zeroshot/run_pipeline.py`を薄いHydra composition rootとして実装
 - 最小監査writer
 - scripted fake chat model
 
 #### 作る順序
 
-1. fake modelが`read_dxf_artifact`を呼ぶ
+1. fake modelが`run_python`を呼び、scriptedな解析結果を受け取る
 2. fake modelが`execute_cad_candidate`を呼ぶ
 3. execution feedbackを受けてcodeを修正する
 4. fake modelが`submit_final_candidate`を呼ぶ
 5. workflowが強制最終実行する
 6. verified STEPと監査logを保存する
 
-このphaseでは`feedback_dxf: none`、`feedback_render3d: none`とし、execution feedbackだけでloopを完成させる。
+このphaseでは候補STEPのDXF再投影がまだ未実装なので、execution feedbackだけでloopを完成させる。Phase 5でDXF feedbackを実装した後は、生成成功時にpathを常に返す。render feedbackは`none`とする。
 
 #### 必須test
 
 - tool call IDとToolMessage IDが一致する
+- shared Python sandboxがactive DXFをread-onlyで読める
+- `access_render3d: none`または未選択styleのrenderをsandboxから読めない
+- shared Python sandboxからGT、repository、他sample、networkへ到達できない
+- `run_python`のtimeoutと出力上限がrun全体を落とさない
+- `run_python`が生成したscratch fileをcandidate artifactへ昇格しない
 - model主導実行後に必ずagentへ戻る
 - 最終提出後にworkflowが再実行する
 - 最終提出と他toolの混在を拒否する
@@ -588,6 +621,7 @@ modelとCADを使わず、全message payloadをtestで目視・比較できる�
 - normalized `AgentModel` boundary
 - GPT model factory
 - SGLang OpenAI-compatible model factory
+- `configs/model/gpt.yaml`と`configs/model/qwen_sglang.yaml`
 - credential redaction
 - backend capability smoke test
 - one-sample live CLI
@@ -600,7 +634,8 @@ SGLang serverはpipelineと別process、可能なら別environmentで起動す�
 
 - `bind_tools()`したschemaを認識する
 - structured tool argumentsを返す
-- 複数のread-only tool callを扱える
+- `run_python`へPython codeを渡し結果を利用できる
+- 複数のPython/image tool callを扱える
 - multimodal initial user messageを扱える
 - imageを含むtool resultの共通形式を扱える
 - token usage、finish reason、tool call IDを取得できる
@@ -611,7 +646,7 @@ SGLang serverはpipelineと別process、可能なら別environmentで起動す�
 
 #### 完了条件
 
-GPTとQwenの双方で、少なくともtool read、任意実行、最終提出、強制実行のprotocolが同じgraph上で動く。
+GPTとQwenの双方で、少なくともDXF Python解析、画像参照、任意CAD実行、最終提出、強制実行のprotocolが同じgraph上で動く。
 
 このlive smoke testで動作したagent側とSGLang server側のdependency versionをそれぞれ記録し、以後の再現可能な基準とする。
 
@@ -620,8 +655,8 @@ GPTとQwenの双方で、少なくともtool read、任意実行、最終提出�
 #### 実装順
 
 1. verified STEPから再投影DXFを生成する
-2. `feedback_dxf: path`
-3. `feedback_dxf: dxf`
+2. 生成成功時、DXF pathをfeedback user messageへ常に入れる
+3. shared Python sandboxから元DXFとfeedback DXFをread-onlyで参照できるようにする
 4. 候補の3D renderを生成する
 5. `feedback_render3d: path`
 6. `feedback_render3d: image`
@@ -641,17 +676,18 @@ renderer本体は再実装せず、以下をtrusted child processから呼ぶ。
 
 #### 必須test
 
-- feedback `none`で該当rendererを呼ばない
-- `path`で内容を自動注入しない
-- `dxf`で候補自身のDXFだけを入れる
+- verified STEPとprojection成功時にfeedback DXF pathを必ず返す
+- DXF pathだけではraw DXF内容を自動注入しない
+- shared Python sandboxが元DXFと候補自身のfeedback DXFだけを参照できる
 - `image`で選択styleだけを添付する
+- render生成が部分失敗した場合は成功したstyleだけを返し、0枚ならrender blockを作らない
 - input画像とcandidate画像を取り違えない
 - renderer timeoutをexecution failureと混同しない
 - feedback artifactがcandidate directory外へ出ない
 
 #### 完了条件
 
-accessとfeedbackの全modeが、fake modelと両live backendで意図したmessageになる。
+必須DXF feedbackとrender access/feedbackの全modeが、fake modelと両live backendで意図したmessageになる。
 
 ### Phase 6: 評価と段階的アブレーション
 
@@ -692,12 +728,11 @@ evaluatorは`src.evaluation.scoring`と`src.metrics`をimportして使い、metr
 
 全configの直積を最初から回さない。次の順で原因を分離する。
 
-1. access modality: DXF `path/dxf`、render `none/path/image`
+1. render access modality: `none/path/image`
 2. access render style
-3. DXF feedback `none/path/dxf`
-4. render feedback `none/path/image`
-5. feedback render style
-6. DrawingIRなし/あり
+3. render feedback: `none/path/image`
+4. feedback render style
+5. DrawingIRなし/あり
 
 比較は可能な限り同一sampleのpaired resultで行う。小規模runでは平均値だけで結論を出さず、sample別の改善・悪化とfailure classを読む。
 
@@ -751,7 +786,7 @@ cube、直方体、軸対称形状、非対称形状をfixtureにする。
 use_drawing_ir: false
 ```
 
-で無効化可能にする。生DXF baselineと同一条件で比較し、次のどちらかを説明できた場合のみ標準化を検討する。
+で無効化可能にする。modelが`run_python`で自由にezdxf解析するbaselineと同一条件で比較し、次のどちらかを説明できた場合のみ標準化を検討する。
 
 - GT metricを改善する
 - failure解析を明確に改善する
@@ -792,6 +827,7 @@ use_drawing_ir: false
 <out_dir>/
 ├── run_manifest.json
 ├── run_summary.json
+├── resolved_config.yaml
 └── <sample_id>/
     ├── result.json
     ├── events.jsonl
@@ -818,7 +854,7 @@ use_drawing_ir: false
 ### Unit test
 
 - config validation
-- logical path resolution
+- `SampleManifest`のinput/feedback path、拡張子、optional field、読取validation
 - message builderの全mode
 - tool schemaと引数validation
 - routing
@@ -836,7 +872,8 @@ use_drawing_ir: false
 
 - target path拒否
 - symlink escape拒否
-- model codeからinput/repository/GTを読めない
+- `run_python`とCAD候補codeはactive DXFとconfigで許可されたrender/feedbackだけを読める
+- `run_python`とCAD候補codeはrepository、GT、他sample、未許可renderを読めない
 - network/subprocess/他CAD kernelの拒否
 - credentialがlog/artifactへ残らない
 
@@ -847,8 +884,8 @@ GPT/Qwenのlive testは通常のunit testから分離し、明示的markerまた
 基本commandは次とする。
 
 ```bash
-python -m pytest -q tests/zeroshot/pipeline
-ruff check zeroshot tests/zeroshot/pipeline
+python -m pytest -q tests/zeroshot
+ruff check zeroshot tests/zeroshot
 python -m zeroshot.run_pipeline --help
 ```
 
@@ -866,14 +903,14 @@ python -m zeroshot.run_pipeline --help
 - empty hidden maskをIoU失敗として扱わないこと
 - mean scoreが一つの悪いviewを隠さないこと
 
-また、DXF textがcontextを圧迫する可能性、provider間でimage tool result仕様が異なる可能性、OCCがnative hang/crashする可能性をrun manifestとfailure taxonomyへ反映する。
+また、DXF analysis codeのstdout/stderrがcontextを圧迫する可能性、provider間でimage tool result仕様が異なる可能性、OCCがnative hang/crashする可能性をrun manifestとfailure taxonomyへ反映する。
 
 ## 12. 実装順の要約
 
 ```text
-Phase 0  評価器・contract・fixture
+Phase 0  dataset・既存評価器の基準線
    ↓
-Phase 1  config・input・artifact・message
+Phase 1  Hydra config・input・message
    ↓
 Phase 2  trusted CAD execution
    ↓

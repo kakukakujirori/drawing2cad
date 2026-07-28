@@ -39,7 +39,9 @@ def stamped_dxf(tmp_path):
 
 def test_stamp_preserves_geometry_and_handles(stamped_dxf) -> None:
     target, before, _counts = stamped_dxf
-    after = {entity.dxf.handle: entity for entity in ezdxf.readfile(target).modelspace()}
+    after = {
+        entity.dxf.handle: entity for entity in ezdxf.readfile(target).modelspace()
+    }
 
     # Same set of entities: the stamper mutates in place, it never deletes,
     # adds, or recreates (recreation would assign fresh handles).
@@ -64,7 +66,9 @@ def test_stamp_assigns_view_layers_and_parses(stamped_dxf) -> None:
 
 def test_stamp_leaves_center_marks_and_other_layers_untouched(stamped_dxf) -> None:
     target, before, _counts = stamped_dxf
-    after = {entity.dxf.handle: entity for entity in ezdxf.readfile(target).modelspace()}
+    after = {
+        entity.dxf.handle: entity for entity in ezdxf.readfile(target).modelspace()
+    }
 
     for handle, (_dxftype, layer_before, _tags_before) in before.items():
         if layer_before != UNSTAMPED_LAYER:
@@ -73,7 +77,9 @@ def test_stamp_leaves_center_marks_and_other_layers_untouched(stamped_dxf) -> No
 
 def test_stamp_only_moves_entities_onto_known_view_layers(stamped_dxf) -> None:
     target, before, _counts = stamped_dxf
-    after = {entity.dxf.handle: entity for entity in ezdxf.readfile(target).modelspace()}
+    after = {
+        entity.dxf.handle: entity for entity in ezdxf.readfile(target).modelspace()
+    }
 
     allowed = set(VIEW_DIRECTIONS) | {UNSTAMPED_LAYER}
     for handle, (_dxftype, layer_before, _tags_before) in before.items():

@@ -27,10 +27,9 @@ import tempfile
 import textwrap
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
-
 
 RENDER_INPUT_NAMES = (
     "render_1.png",
@@ -1314,7 +1313,7 @@ def run_agent(
 
     def capture(stream: object, stream_name: str, destination: list[str]) -> None:
         nonlocal sequence
-        readline = getattr(stream, "readline")
+        readline = stream.readline
         with stream_audit_path.open("a") as audit_file:
             while True:
                 chunk = readline()
@@ -1532,7 +1531,7 @@ def agy_trajectory_events(
             connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
             rows = connection.execute(
                 f"SELECT idx, metadata, error_details, step_payload "
-                f"FROM {AGY_TRAJECTORY_TABLE} ORDER BY idx"  # noqa: S608
+                f"FROM {AGY_TRAJECTORY_TABLE} ORDER BY idx"
             ).fetchall()
         except sqlite3.Error as exc:
             parse_errors.append(f"{database.name}: {exc}")

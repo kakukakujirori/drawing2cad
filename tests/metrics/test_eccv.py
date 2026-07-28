@@ -168,15 +168,9 @@ class ECCVPortFidelityTest(unittest.TestCase):
                     (official["n_faces"], official["n_edges"], official["n_verts"]),
                     (ported.n_faces, ported.n_edges, ported.n_verts),
                 )
-                self.assertTrue(
-                    np.array_equal(official["fe_matrix"], ported.fe_matrix)
-                )
-                self.assertTrue(
-                    np.array_equal(official["ev_matrix"], ported.ev_matrix)
-                )
-                self.assertTrue(
-                    np.array_equal(official["vertex_pc"], ported.vertex_pc)
-                )
+                self.assertTrue(np.array_equal(official["fe_matrix"], ported.fe_matrix))
+                self.assertTrue(np.array_equal(official["ev_matrix"], ported.ev_matrix))
+                self.assertTrue(np.array_equal(official["vertex_pc"], ported.vertex_pc))
                 self.assertTrue(np.array_equal(official["edge_pc"], ported.edge_pc))
                 self.assertTrue(
                     np.array_equal(official["edge_labels"], ported.edge_labels)
@@ -209,9 +203,7 @@ class ECCVPortFidelityTest(unittest.TestCase):
                     official["face_labels"],
                     threshold=self.official.F1_threshold,
                 )
-                self.assertAlmostEqual(
-                    official_faces[0], ported_faces.f1, places=12
-                )
+                self.assertAlmostEqual(official_faces[0], ported_faces.f1, places=12)
                 self.assertEqual(official_face_match, ported_faces.matches)
 
                 official_edges, official_edge_match = self.official.compute_metric(
@@ -227,9 +219,7 @@ class ECCVPortFidelityTest(unittest.TestCase):
                     official["edge_labels"],
                     threshold=self.official.F1_threshold,
                 )
-                self.assertAlmostEqual(
-                    official_edges[0], ported_edges.f1, places=12
-                )
+                self.assertAlmostEqual(official_edges[0], ported_edges.f1, places=12)
                 self.assertEqual(official_edge_match, ported_edges.matches)
 
                 official_topology = self.official.compute_topo_metric(
@@ -244,9 +234,7 @@ class ECCVPortFidelityTest(unittest.TestCase):
                     ported_faces.matches,
                     ported_edges.matches,
                 )
-                self.assertAlmostEqual(
-                    official_topology[0], ported_topology, places=12
-                )
+                self.assertAlmostEqual(official_topology[0], ported_topology, places=12)
 
     def test_chamfer_distance_agrees_on_shared_inputs(self) -> None:
         from scipy.spatial import cKDTree
@@ -272,9 +260,7 @@ class ECCVPortFidelityTest(unittest.TestCase):
                     d2, _ = gt_t.query(ported.edge_pc, k=1)
                     official_cd_edge = (d1.mean() + d2.mean()) / 2
                     ported_cd_edge = _chamfer(ported.edge_pc, official["edge_pc"])
-                    self.assertAlmostEqual(
-                        official_cd_edge, ported_cd_edge, places=12
-                    )
+                    self.assertAlmostEqual(official_cd_edge, ported_cd_edge, places=12)
 
                 # Vertex Chamfer
                 if len(ported.vertex_pc) and len(official["vertex_pc"]):
@@ -283,9 +269,7 @@ class ECCVPortFidelityTest(unittest.TestCase):
                     d1, _ = pt.query(official["vertex_pc"], k=1)
                     d2, _ = gt_t.query(ported.vertex_pc, k=1)
                     official_cd_vertex = (d1.mean() + d2.mean()) / 2
-                    ported_cd_vertex = _chamfer(
-                        ported.vertex_pc, official["vertex_pc"]
-                    )
+                    ported_cd_vertex = _chamfer(ported.vertex_pc, official["vertex_pc"])
                     self.assertAlmostEqual(
                         official_cd_vertex, ported_cd_vertex, places=12
                     )

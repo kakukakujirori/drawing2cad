@@ -54,9 +54,7 @@ class ResolveDatasetRootsTest(unittest.TestCase):
     def test_nonexistent_root_is_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaises(FileNotFoundError):
-                resolve_dataset_roots(
-                    [str(Path(temporary) / "absent")], split="train"
-                )
+                resolve_dataset_roots([str(Path(temporary) / "absent")], split="train")
 
     def test_duplicate_basenames_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -134,9 +132,7 @@ class TakeInventoryTest(unittest.TestCase):
             root = Path(temporary)
             _stage_sample(root, "000100")
             second = Path("render_3d") / "transparent_shaded_edges_perspective"
-            complete, incomplete = take_inventory(
-                root, image_dirs=[IMAGE_DIR, second]
-            )
+            complete, incomplete = take_inventory(root, image_dirs=[IMAGE_DIR, second])
             self.assertEqual(complete, ())
             self.assertEqual(incomplete, {"000100": root / second / "000100.png"})
 

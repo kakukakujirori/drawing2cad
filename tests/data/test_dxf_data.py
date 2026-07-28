@@ -36,7 +36,9 @@ class DXFPrimitiveParserTest(unittest.TestCase):
                 document.layers.add(layer)
         modelspace = document.modelspace()
         # front view: LINE, ARC, CIRCLE (hidden)
-        modelspace.add_line((148.5, 105.0), (158.5, 105.0), dxfattribs={"layer": "front"})
+        modelspace.add_line(
+            (148.5, 105.0), (158.5, 105.0), dxfattribs={"layer": "front"}
+        )
         modelspace.add_arc(
             (160.0, 105.0), 5.0, 0.0, 180.0, dxfattribs={"layer": "front"}
         )
@@ -211,9 +213,7 @@ class DXFPrimitiveParserTest(unittest.TestCase):
 
             # An included non-view layer is silently dropped, or raises in strict
             # mode so an unexpected layer surfaces during audits.
-            config = DXFPrimitiveConfig(
-                included_layers=("front", "top", "right", "0")
-            )
+            config = DXFPrimitiveConfig(included_layers=("front", "top", "right", "0"))
             self.assertEqual(DXFPrimitiveParser(config).parse(path).num_primitives, 3)
             strict = DXFPrimitiveConfig(
                 included_layers=("front", "top", "right", "0"),

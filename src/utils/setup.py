@@ -119,7 +119,9 @@ def _run_metadata(
             config, "model", "model_name_or_path", default=None
         ),
         "dataset_roots": {
-            "train": _root_list(_nested_get(config, "data", "train_root", default=None)),
+            "train": _root_list(
+                _nested_get(config, "data", "train_root", default=None)
+            ),
             "validation": _root_list(
                 _nested_get(config, "data", "val_root", default=None)
             ),
