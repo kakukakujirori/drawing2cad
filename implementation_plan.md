@@ -136,12 +136,11 @@ workflowはprovider名、base URL、credentialへ依存させない。API版で�
 - `run_id`
 - `sample_id`
 - `agent_id`
-- `candidate_id`
-- 親candidate ID
+- `verification_id`
 - tool call ID
-- artifact IDと所有candidate
+- artifact IDと所有verification
 
-比較実験用の`max_model_turns`、`max_cad_executions`などは初期graphへ固定実装しない。並列構成が決まった後、graphから独立した`BudgetPolicy`として設計する。
+比較実験用の`max_model_turns`、`max_verifications`などは初期graphへ固定実装しない。並列構成が決まった後、graphから独立した`BudgetPolicy`として設計する。
 
 ただし、運用上の安全装置として以下は初期版から必要である。
 
@@ -160,24 +159,24 @@ workflowはprovider名、base URL、credentialへ依存させない。API版で�
 
 | 領域 | 役割 | GT access |
 |---|---|---|
-| Agent workflow | message、tool選択、candidate提出 | 禁止 |
-| Shared Python sandbox | model生成Pythonによる入力解析、数値計算、CAD試行、候補生成 | 禁止 |
-| Trusted reconstruction runtime | sandbox起動、候補登録、STEP検証、feedback生成 | 禁止 |
+| Agent workflow | message、tool選択、`model.py`編集、検証要求 | 禁止 |
+| Persistent workspace sandbox | model生成shell/Pythonによる入力解析、数値計算、CAD試行 | 禁止 |
+| Trusted reconstruction runtime | sandbox起動、verification登録、STEP検証、feedback生成 | 禁止 |
 | Offline evaluator | 完了した予測STEPとGT STEPの比較 | 許可 |
 
-model生成codeは入力解析用もCAD生成用もuntrustedとする。通常のPython processで直接実行せず、共通の`SandboxRunner`からtool callごとにfreshなtimeout可能隔離processを起動する。Linuxの`bwrap --unshare-all`を必須の隔離境界とし、`bwrap`が見つからない場合は`SandboxRunner`の構築を失敗させ、非隔離subprocessへfallbackしない。実行時にsandbox processを起動できない場合は`INFRA_ERROR`としてfail closedにする。常駐Python processを共有せず、過去の変数、import、生成fileへ暗黙に依存させない。
+model生成commandとcodeはすべてuntrustedとする。通常のprocessで直接実行せず、共通の`SandboxRunner`からtool callごとにfreshなtimeout可能隔離processを起動する。Linuxの`bwrap --unshare-all`を必須の隔離境界とし、`bwrap`が見つからない場合は`SandboxRunner`の構築を失敗させ、非隔離subprocessへfallbackしない。実行時にsandbox processを起動できない場合は`INFRA_ERROR`としてfail closedにする。
 
-`run_python`と`execute_cad_candidate`は同じsandbox基盤とfilesystem viewを使うが、toolとしての意味は分ける。`run_python`は探索用codeのstdout/stderr/statusだけを返し、そこで生成されたfileを候補artifactへ昇格しない。`execute_cad_candidate`はcandidate IDとsourceを登録し、生成STEPをtrusted runtimeが回収・検証してexecution feedbackを作る。
+sampleごと・agentごとに一つのhost側workspaceを作り、run終了まで保持する。`run_shell`と`verify_output`はtool callごとにfreshなbwrap processを起動するが、毎回同じworkspaceをread-writeの`/work`へbindする。これによりprocess、Python変数、環境変数は共有しない一方、modelが作成・編集した`model.py`、解析script、JSON、dump画像などの中間fileはtool call間で保持する。
 
 ### 4.2 Pathと生成artifactの扱い
 
-独自のlogical path namespaceは作らない。`SampleManifest`は通常の`Path`で必須のinput DXF、input render mappingと、optionalなactive candidateのfeedback DXF、feedback render mappingを保持する。style名の固定listをpipeline内へ重複定義せず、manifestのinput render key集合をそのsampleで利用可能なstyleのsource of truthとする。`view_render3d_artifact`はconfigで許可されたactiveな`SampleManifest`のpathとの完全一致だけを許可し、任意のpathを開かない。`target/`と`target_step/`は`SampleManifest`へ含めない。
+`SampleManifest`はhost側の通常の`Path`で必須のinput DXF、input render mappingと、optionalなfeedback DXF、feedback render mappingを保持する。style名の固定listをpipeline内へ重複定義せず、manifestのinput render key集合をそのsampleで利用可能なstyleのsource of truthとする。`target/`と`target_step/`は`SampleManifest`へ含めない。
 
-shared Python sandboxにはactive sampleのDXFを常にsandbox-privateな一時copyとしてstageする。renderは`access_render3d`または`feedback_render3d`でmodelへ許可されたstyleだけを同様にstageし、`none`のrenderや未選択styleをfilesystem探索で取得できないようにする。host側の元fileをmountしないため、sandbox内でcopyが変更されても元fileには影響せず、次のtool callでは新しいcopyを作る。feedback DXFが生成された後は、元DXFとactive candidate自身のfeedback DXFを見せる。
+workspace作成時に、active sampleのDXFとconfigで許可されたinput renderだけを固定の相対pathへcopyする。この初期copyをstagingと呼ぶ。host側の元fileをmountしないため、workspace内のcopyをmodelが変更しても元fileには影響しない。`verify_output`がfeedback DXFとperspective viewsを生成した後は、そのverificationの生成物をworkspaceへ追加する。GT、repository、他sample、未許可render、credentialはworkspaceへstageしない。
 
-sandbox内で有効な通常pathを持つ一時的な`SampleManifest`を新しく作り、初回message、`run_python`、`execute_cad_candidate`で同じfilesystem viewを使う。元の`SampleManifest`はmutationしない。candidateまたはfeedbackが変わるたびに新しいsnapshotを作る。入力DXFは正規の問題入力なので、CAD候補codeから読み取ることも許可する。一方、GT、repository、他sample、credential、networkはどのmodel生成codeからも到達不能にする。
+modelへはhost pathや`/work`を教えず、workspace rootからの相対pathだけを提示する。`run_shell`のcwdは常にworkspace rootである。`load_image`はworkspace配下の画像だけを読み、path traversalとworkspace外を指すsymlinkを拒否する。入力DXFは正規の問題入力なので`model.py`や解析scriptから自由に読み取れる。一方、GT、repository、他sample、credential、networkはどのmodel生成commandからも到達不能にする。
 
-candidate code、STEP、feedback画像、execution logなどの生成artifactは、それを最初に生成する責務のmoduleが保存する。複数領域で共通の登録・hash・manifest処理が実際に重複した時点で`ArtifactStore`を抽出する。配置は責務に応じて`execution/`、`audit/`またはtop-levelから選び、現段階では決めない。
+workspace内fileはmodelが自由に変更できるscratchであり、それだけではtrusted artifactとしない。`verify_output`ごとに現在の`model.py`をhash付きimmutable artifactとして保存し、verified STEPと対応するDXF/renderを同じverification IDへ紐付ける。複数領域で共通の登録・hash・manifest処理が実際に重複した時点で`ArtifactStore`を抽出する。
 
 ### 4.3 依存方向
 
@@ -189,8 +188,8 @@ run_pipeline
        -> models
        -> tools
             -> inputs
-            -> execution
-            -> feedback
+            -> workspace
+            -> verification
                  -> src.data.render
   -> audit
 
@@ -215,7 +214,8 @@ zeroshot/
 │   ├── manifest.py                  # SampleManifestとinput/feedback path検証
 │   ├── messages.py                  # access/feedback message builder
 │   ├── runner.py                    # 後続: application wiringとsample loop
-│   ├── sandbox.py                   # Phase 2: 全model生成Python用の共通隔離実行基盤
+│   ├── workspace.py                 # persistent workspace作成・staging・path検証
+│   ├── sandbox.py                   # Phase 2: 全model生成command用の共通隔離実行基盤
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── base.py                  # normalized AgentModel protocol
@@ -223,17 +223,14 @@ zeroshot/
 │   │   └── cli.py                   # 後続: Gemini / Claude CLI
 │   ├── tools/
 │   │   ├── __init__.py
-│   │   ├── run_python.py
-│   │   ├── view_render3d.py
-│   │   ├── execute_candidate.py
-│   │   └── submit_final.py
-│   ├── execution/
+│   │   ├── run_shell.py
+│   │   ├── load_image.py
+│   │   └── verify_output_tool.py
+│   ├── verification/
 │   │   ├── __init__.py
-│   │   └── run_code.py             # source検証、CadQuery実行、STEP検証
-│   ├── feedback/
-│   │   ├── __init__.py
-│   │   ├── render.py
-│   │   └── build_message.py
+│   │   ├── run_cadquery.py         # CadQuery実行、STEP生成・検証
+│   │   ├── verify_output.py        # source保存とCadQuery実行の固定順序
+│   │   └── render.py               # Phase 5: 三面図DXF・perspective views生成
 │   ├── workflow/
 │   │   ├── __init__.py
 │   │   ├── state.py
@@ -264,7 +261,7 @@ tests/
     ├── test_hydra_config.py
     ├── test_manifest.py
     ├── test_messages.py
-    ├── test_execution.py
+    ├── test_verification.py
     ├── test_sandbox.py
     ├── test_tools.py
     ├── test_graph.py
@@ -297,10 +294,9 @@ class ReconstructionState(TypedDict, total=False):
     access_config: dict
     feedback_config: dict
 
-    candidate_ids: list[str]
-    active_candidate_id: str | None
-    final_candidate_id: str | None
-    last_execution: dict | None
+    verification_ids: list[str]
+    last_verification: dict | None
+    final_verification_id: str | None
 
     artifact_manifest_path: str
     audit_path: str
@@ -308,71 +304,68 @@ class ReconstructionState(TypedDict, total=False):
     safety_stop_reason: str | None
 ```
 
-`run_python`の長いstdout/stderr、画像bytes、candidate code、render画像をstateへ直接蓄積しない。stateには切り詰めたtool result、検証済みfilesystem pathまたは保存済みartifact IDを保持する。
+workspace path、`SandboxRunner`、renderer、model objectなどのruntime dependencyはstateへ入れない。長いstdout/stderr、画像bytes、`model.py`本文、render画像もstateへ直接蓄積しない。stateにはmessage history、verification ID、最後の構造化結果、検証済みfilesystem pathまたは保存済みartifact IDを保持する。
 
 ### 6.2 bindするtool
 
-初期agentへ次の4toolを公開する。
+初期agentへ次の3toolを公開する。
 
-1. `run_python(code)`
-2. `view_render3d_artifact(path)`
-3. `execute_cad_candidate(code, cad_format)`
-4. `submit_final_candidate(code, cad_format)`
+1. `run_shell(command)`
+2. `load_image(path)`
+3. `verify_output()`
 
-`run_python`はmodel生成Pythonをshared sandboxで実行し、stdout、stderr、exit status、timeoutを返す探索toolである。sandboxには`ezdxf`、Pillow、NumPyと、現在対応しているCAD libraryを用意する。初期vertical sliceではCadQueryを対象とし、build123dはcandidate executor対応後に同じ環境へ追加する。個別libraryのAPI、query方法、出力形式をpipeline側で限定しない。一方で、許可されていないsample/render、GT、repository、credential、networkへ到達させず、process tree、CPU、memory、wall time、stdout/stderr量を制限する。`run_python`が作ったfileはscratch扱いとし、trusted artifactとして採用しない。
+`run_shell`はmodelが生成した任意のbash commandを、persistent workspaceをbindしたsandbox内で実行し、stdout、stderr、exit status、timeoutを返す。modelはshell、Python、標準commandを使ってworkspace内のfileを自由に読み書きし、`model.py`、解析script、JSON、dump画像をtool call間で継続利用できる。sandboxには`ezdxf`、Pillow、NumPyと、現在対応しているCAD libraryを用意する。初期vertical sliceではCadQueryを対象とする。workspace以外のhost filesystem、GT、repository、credential、networkへ到達させない。
 
-Phase 2の`SandboxRunner`が提供するresource guardはwall timeoutと返却するstdout/stderrの切り詰めまでである。`capture_output=True`によるprocess実行中のbuffer量、CPU、memory、PID数のhard limitはまだ提供しない。固定fixtureとfake modelだけを扱うPhase 2/3ではこの範囲とし、実model生成codeを動かすPhase 4のlive smoke test前に、bounded log captureとcgroup等によるresource limitを追加する。
+`load_image`はworkspace相対pathを受け取り、workspace外へのescapeとsymlinkを拒否した上で画像をmultimodal contentとしてmodelへ返す。これによりmodelはinput/feedback renderだけでなく、自ら生成したdump画像も確認できる。
 
-system promptには「正確な図面情報の確認や計算には`run_python`を使える」ことだけを記述する。利用可能package、sandbox内の許可済みpath、tool result contractはtool descriptionへ記述し、ezdxfやCAD libraryの個別API tutorialをsystem promptへ埋め込まない。
+modelへ公開する`verify_output` toolは引数を取らず、workspace rootの`model.py`だけを対象とする。toolから呼ぶtrusted側の関数は`render_views: bool = False`を受け取る。`verification/verify_output.py`は現在のsourceをimmutable artifactへ保存し、`run_cadquery.py`でtrusted export epilogue付きwrapperをfreshなbwrap process内で実行し、STEP再読込、single solid、kernel validityを確認する。
 
-`run_python`と`execute_cad_candidate`は同じ`SandboxRunner`実装を使い、呼び出しごとにfresh processと一時作業directoryを作る。両者ともactive DXFとconfig上許可されたrender/feedbackのsandbox-private copyだけを参照できる。違いはsandbox権限ではなく、探索結果を返すだけか、candidate sourceとSTEPを登録・検証するかというapplication上の責務に置く。
+Phase 3/4では`render_views=False`だけを使い、`True`なら明示的に`NotImplementedError`を送出する。この例外はmodel reconstruction failureではなく、未実装機能を有効にしたconfiguration errorとしてrun開始前またはtrusted runtime境界で扱う。Phase 5で`True`を実装し、verifiedの場合だけ`render.py`で三面図DXFとperspective viewsを生成してverification ID配下のartifactとworkspace内feedbackへ保存する。
 
-`execute_cad_candidate`はmodelが自発的に呼ぶ中間検証toolである。tool protocolを閉じる`ToolMessage`を追加した後、実行結果と設定されたfeedbackを次のuser messageとして組み立て、model turnへ返す。
+Phase 2の`SandboxRunner`が提供するresource guardはwall timeoutと返却するstdout/stderrの切り詰めまでである。`capture_output=True`によるprocess実行中のbuffer量、CPU、memory、PID数、workspaceのdisk使用量のhard limitはまだ提供しない。固定fixtureとfake modelだけを扱うPhase 2/3ではこの範囲とし、実model生成commandを動かすPhase 4のlive smoke test前に、bounded log captureとcgroupまたは同等機構によるresource limitを追加する。
 
-`submit_final_candidate`は実行toolではない。「このcodeを最終候補とする」という構造化された宣言である。通常のAIMessage本文やMarkdown code blockを最終codeとして暗黙抽出しない。
+system promptには「workspace内の`model.py`へ最終CadQuery Solidを`result`変数として保存する」「shellで自由に解析・試行できる」「必要な時に`verify_output`を呼べる」「完成したらtool callなしで応答する」を記述する。利用可能package、workspaceの相対path、tool result contractはtool descriptionへ記述し、ezdxfやCadQueryの個別API tutorialをsystem promptへ埋め込まない。
 
 ### 6.3 中間実行と最終実行
 
-CAD実行には次の2経路を両方持つ。
+同じ`verification.verify_output()`を次の2経路から使う。
 
-1. modelが`execute_cad_candidate`を自発的に呼ぶ
-2. modelが`submit_final_candidate`を呼んだ後、workflowが同じtrusted executorを必ず呼ぶ
+1. modelが`verify_output` toolを自発的に呼ぶ中間検証
+2. modelがtool callなしで完成を表明した後、workflowが呼ぶ最終検証
 
-最終候補は、中間実行済みで同じcode hashだったとしても再実行する。監査eventには呼び出し元を`model`または`workflow`として記録する。
+最終検証では、中間検証済みで`model.py`のhashが同じでも再実行する。これによりworkspaceに残った古いSTEPではなく、現在の`model.py`と対応するSTEPであることを保証する。監査eventには呼び出し元を`model`または`workflow`として記録する。
 
-`submit_final_candidate`は一つのAIMessage内で他toolと混在させない。複数の読み取りtoolは許可してよいが、実行や最終提出のような副作用を持つtoolは一度に一つだけ処理する。
-
-最終実行結果は対応する`ToolMessage`としてmessage historyへ追加する。runを継続する場合、`build_feedback` nodeが`feedback_execution`と設定されたDXF/renderを含む`HumanMessage`を続けて追加してからagentへ戻す。
+model主導の`verify_output`は対応する`ToolMessage`でtool protocolを閉じる。中間検証後は`build_feedback` nodeがexecutionとSTEP verificationを含む`HumanMessage`を追加してagentへ戻す。Phase 5でvisual feedbackを実装した後はDXF/render pathもここへ加える。最終検証はtool callに対応しないworkflow actionなので、成功時はそのまま終了し、修正可能な失敗時だけfeedback `HumanMessage`を追加してagentへ戻す。
 
 - 成功: verified STEPをfinal artifactに昇格し、そのmodelを再呼び出さず終了する
-- 失敗: safety stopでなければexecution feedbackを返してagentへ戻す
+- source、execution、STEP、renderの修正可能な失敗: feedbackを返してagentへ戻す
 - safety stop: 未検証成果物を成功扱いせず、理由を保存して終了する
 
 ### 6.4 Graph topology
 
-`create_react_agent`で隠蔽せず、学習のため`StateGraph`、`ToolNode`、conditional edgeを明示的に組み立てる。
+`create_react_agent`で隠蔽せず、学習のため`StateGraph`とconditional edgeを明示的に組み立てる。3toolは遷移先と副作用が異なるため、一つの汎用`ToolNode`へまとめず専用nodeで実行する。
 
 ```mermaid
 flowchart TD
     START --> build_initial_message
     build_initial_message --> agent
 
-    agent -->|run_python| python_sandbox
-    python_sandbox --> agent
+    agent -->|run_shell| shell_tool
+    shell_tool --> agent
 
-    agent -->|view_render3d| image_tool
-    image_tool --> agent
+    agent -->|load_image| load_image_tool
+    load_image_tool --> agent
 
-    agent -->|execute_cad_candidate| execute_intermediate
-    execute_intermediate --> build_feedback
+    agent -->|verify_output| verify_intermediate
+    verify_intermediate -->|result| build_feedback
     build_feedback --> agent
 
-    agent -->|submit_final_candidate| execute_final
-    execute_final -->|verified| finalize
-    execute_final -->|failed, continue| build_feedback
-    execute_final -->|safety stop| finalize
+    agent -->|tool callなし| verify_final
+    verify_final -->|verified| finalize
+    verify_final -->|failed, continue| build_feedback
+    verify_final -->|safety stop| finalize
 
-    agent -->|tool callなし・protocol違反| protocol_feedback
+    agent -->|未知tool・protocol違反| protocol_feedback
     protocol_feedback --> agent
 
     finalize --> END
@@ -384,7 +377,7 @@ tool callを生成するかはmodelが決める。tool callの引数検証、実
 
 初回の`image` modeは通常のmultimodal user messageとして送る。
 
-`view_render3d_artifact`では、tool call IDに対応する`ToolMessage`を必ず作る。その上で画像content blockを同じToolMessageで扱えるか、GPT backendとSGLang/Qwen backendのlive capability testを行う。
+`load_image`では、tool call IDに対応する`ToolMessage`を必ず作る。その上で画像content blockを同じToolMessageで扱えるか、GPT backendとSGLang/Qwen backendのlive capability testを行う。
 
 両backendで同じ形式が使えない場合は、全backendで次へ統一する。
 
@@ -393,7 +386,7 @@ tool callを生成するかはmodelが決める。tool callの引数検証、実
 
 providerごとに異なる会話意味論を使うのではなく、両者がサポートする共通形式を採用する。
 
-`feedback_render3d: image`は実行toolそのものの返却値へ混ぜず、対応する`ToolMessage`の後に`build_feedback` nodeが作るmultimodal user messageへ添付する。これにより、tool protocolと「feedbackを次のuser instructionで返す」という実験条件を分離する。
+Phase 5で`feedback_render3d: image`を実装する際は、`verify_output`のToolMessageへ直接混ぜず、対応するToolMessageの後に`build_feedback` nodeが作るmultimodal user messageへ添付する。これによりtool protocolと「feedbackを次のuser instructionで返す」という実験条件を分離する。modelが自発的に生成したdump画像はPhase 3から`load_image`で個別に確認できる。
 
 ## 7. 監査設計
 
@@ -401,7 +394,7 @@ LangGraphを採用する主目的の一つは、agentの外部から観測可能
 
 各runで少なくとも次を保存する。
 
-- run/sample/agent/candidate ID
+- run/sample/agent/verification ID
 - graph nodeと遷移元・遷移先
 - provider、model、base URL識別子、sampling parameter
 - access/feedback configとeffective style
@@ -411,7 +404,7 @@ LangGraphを採用する主目的の一つは、agentの外部から観測可能
 - tool名、検証済み引数、tool call ID
 - toolの呼び出し元`model | workflow`
 - 開始・終了時刻、duration、status、短いerror
-- candidate code hash
+- verification時の`model.py` hash
 - execution、STEP verification、render結果
 - token usageなどproviderが返すusage
 - safety stopとinfra error
@@ -491,7 +484,7 @@ modelもLangGraphも呼ばず、20件の入力集合が揃っていることと�
 
 dataset全体のsample列挙はPhase 1で抽象化しない。Phase 3でsample loopが必要になった時点で、まず`runner.py`内の短い処理として実装し、複数箇所から必要になるか複雑になった場合だけ関数またはclassへ抽出する。
 
-`SampleManifest`は通常のfilesystem pathを持ち、original inputと現在のactive candidate feedbackを一つのimmutable snapshotとして表す。feedback fieldは未生成時に`None`または空mappingとし、candidateが変わるたびに新しいmanifestを作る。独自のlogical path DTOや汎用`dto/`packageは作らない。生成artifactの管理抽象と配置も、具体的な重複が現れるまで延期する。
+`SampleManifest`は通常のfilesystem pathを持ち、original inputと現在のverification feedbackを一つのimmutable snapshotとして表す。feedback fieldは未生成時に`None`または空mappingとし、別のverification結果をmessageへ使う場合は新しいmanifestを作る。独自のlogical path DTOや汎用`dto/`packageは作らない。生成artifactの管理抽象と配置も、具体的な重複が現れるまで延期する。
 
 `DEFAULT_SYSTEM_PROMPT`と、renderの`none | path | image`およびfeedback種別に応じて追加する文言は`messages.py`に置く。現段階では別の`prompts.py`やHydra prompt configへ分割しない。system promptにはsampleに依存しない役割、出力contract、必要時にtoolを利用できることだけを簡潔に置き、具体的なtool名とschemaは各tool descriptionに置く。sample固有pathと選択されたmodalityの説明は`HumanMessage`側で組み立てる。`none`でも「提供されている場合はperspective renderを併用する」という条件付き一般文はsystem promptへ残してよい。
 
@@ -543,7 +536,7 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 #### 重要方針
 
 - model codeをpipeline process内で`exec`しない
-- `run_python`とCAD実行が再利用する共通`SandboxRunner`をここで実装する
+- 後続の`run_shell`と`verify_output`内部のCadQuery実行が再利用する共通`SandboxRunner`をここで実装する
 - `SandboxRunner`はLinuxの`bwrap --unshare-all`を必須とし、利用不能時に非隔離subprocessへfallbackしない
 - `CadQueryExecutor`の`artifact_root`はtrusted runtimeだけが読書きする永続artifact置き場であり、sandboxの一時work directoryとして公開またはmountしない
 - `SandboxRunner.run(command, work_dir, timeout_s)`は`work_dir`だけをread-writeの`/work`として公開し、host pathのstaging方針を持たない
@@ -589,50 +582,65 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 
 #### 実装するもの
 
+- `workspace.py`
+- `tools/run_shell.py`
+- `tools/load_image.py`
+- `tools/verify_output_tool.py`
+- `verification/run_cadquery.py`
+- `verification/verify_output.py`
 - `workflow/state.py`
-- 4tool
 - `workflow/agent.py`
 - `workflow/routing.py`
 - `workflow/graph.py`
-- `tools/run_python.py`
 - `pipeline/runner.py`
 - `zeroshot/run_pipeline.py`を薄いHydra composition rootとして実装
 - 最小監査writer
 - scripted fake chat model
 
+Phase 2の`execution/run_code.py`は`verification/run_cadquery.py`へ移動する。`CadQueryExecutionReport`、source validation、STEP validationの責務は維持するが、実行場所はPhase 2の一時directoryからpersistent workspaceへ変更する。現在の`model.py`がworkspace内の補助moduleや入力fileを参照できる状態で、元の`model.py`を変更せずtrusted export処理を加えて実行する。sourceとverified STEPはverification ID配下へimmutable artifactとして保存する。
+
+`verification/verify_output.py`は、source保存とこの低水準処理を固定順序で呼ぶuse caseであり、LangGraph tool固有の型へ依存させない。`tools/verify_output_tool.py`はtool callをこのuse caseへ接続する薄いadapterにする。
+
 #### 作る順序
 
-1. fake modelが`run_python`を呼び、scriptedな解析結果を受け取る
-2. fake modelが`execute_cad_candidate`を呼ぶ
-3. execution feedbackを受けてcodeを修正する
-4. fake modelが`submit_final_candidate`を呼ぶ
-5. workflowが強制最終実行する
-6. verified STEPと監査logを保存する
+1. sample/agent用のpersistent workspaceを一度作り、active DXFと許可されたinput renderを固定の相対pathへstageする
+2. fake modelが`run_shell`で解析fileを作り、次の`run_shell`から同じfileを読めることを確認する
+3. fake modelがworkspace rootへ`result`を定義した`model.py`を保存する
+4. fake modelがtool callなしで完成を表明し、workflowが`verify_output(render_views=False)`で最終検証する
+5. verified STEP、対応する`model.py`、監査logを保存し、feedback loopなしの直線経路を完成させる
+6. fake modelが中間で`verify_output` toolを呼ぶ経路を追加する
+7. execution/STEP verification feedbackを受けて`model.py`を修正し、再度最終検証するloopを追加する
+8. `load_image`でinput画像またはmodel自身のdump画像を確認する経路を追加する
 
-このphaseでは候補STEPのDXF再投影がまだ未実装なので、execution feedbackだけでloopを完成させる。Phase 5でDXF feedbackを実装した後は、生成成功時にpathを常に返す。render feedbackは`none`とする。
+workspaceはtool callごとに作り直さない。processだけを毎回freshにし、同じhost workspaceを`/work`へbindする。stagingはworkspace作成時の一度だけ行い、それ以降はmodelが作った中間fileをrun終了まで保持する。Phase 5でvisual feedbackを追加した後は、そのfileも同じworkspaceへ蓄積する。host側の元fileや`SampleManifest` pathをsandboxへ直接公開せず、Phase 2の`SandboxRunner`へstaging責務も追加しない。
 
-`run_python`とCAD実行toolは、tool層で呼び出しごとのfreshなwork directoryを作り、active DXFとその時点で許可されたrender/feedbackだけを固定名でcopyしてから`SandboxRunner`へ渡す。host側の元fileや`SampleManifest` pathをsandboxへ直接公開しない。Phase 2の`SandboxRunner`へstaging責務を追加しない。
+Phase 3ではvisual feedbackを実装しない。trusted側のverification関数は将来の拡張点として`render_views: bool = False`を持つが、`True`は`NotImplementedError`とする。LangGraph tool schemaにはこのflagを公開せず、Phase 3のtool wrapperとworkflowはいずれも必ず`False`で呼ぶ。最初に直線経路を通してから中間検証loopを足すことで、graph/routingの問題とrendererの問題を分離する。
 
 #### 必須test
 
 - tool call IDとToolMessage IDが一致する
-- shared Python sandboxがactive DXFの一時copyを読め、変更してもhost側の元fileへ影響しない
-- `access_render3d: none`または未選択styleのrenderをsandboxから読めない
-- shared Python sandboxからGT、repository、他sample、networkへ到達できない
-- `run_python`のtimeoutと出力上限がrun全体を落とさない
-- `run_python`が生成したscratch fileをcandidate artifactへ昇格しない
-- model主導実行後に必ずagentへ戻る
-- 最終提出後にworkflowが再実行する
-- 最終提出と他toolの混在を拒否する
-- toolなしresponseを最終成果物として採用しない
-- 最終実行失敗後にfeedbackを返す
+- `run_shell`がbash、Python、workspace内fileのread/writeを行える
+- 別々の`run_shell` callから同じ中間fileを読み書きできる
+- workspace内のinput copyを変更してもhost側の元fileへ影響しない
+- `access_render3d: none`または未選択styleのrenderをworkspaceから読めない
+- `run_shell`と`verify_output`からGT、repository、他sample、networkへ到達できない
+- `run_shell`のtimeoutと出力上限がrun全体を落とさない
+- `load_image`がworkspace内画像だけを返し、path traversalとsymlink escapeを拒否する
+- `run_shell`が生成したscratch fileをverified artifactへ自動昇格しない
+- `verify_output`がworkspace rootの`model.py`だけを読み、source hash付きimmutable artifactを作る
+- `verify_output(render_views=False)`がverified STEPを生成する
+- `verify_output(render_views=True)`が`NotImplementedError`を送出する
+- 最初のfake model scenarioがfeedback loopなしの直線経路で完了する
+- model主導の中間検証後にfeedbackを追加してagentへ戻る
+- tool callなしresponseの後にworkflowが最終検証を再実行する
+- 最終検証失敗後にfeedbackを返してagentへ戻る
 - safety stopで未検証STEPを成功扱いしない
 - graph図が設計図と一致する
 - eventsを順番に再生するとrunを説明できる
 
 #### 完了条件
 
-外部APIなしで、入力からverified STEPまで一周する。
+外部APIとvisual feedbackなしで、入力staging、複数回のshell作業、`model.py`の作成、workflow主導の最終検証、verified STEP保存までの直線経路を通す。その後、同じPhase内でmodel主導の中間検証とtext feedbackによる修正loopまで通す。
 
 ### Phase 4: GPT APIとQwen/SGLangを接続する
 
@@ -655,56 +663,59 @@ SGLang serverはpipelineと別process、可能なら別environmentで起動す�
 
 - `bind_tools()`したschemaを認識する
 - structured tool argumentsを返す
-- `run_python`へPython codeを渡し結果を利用できる
-- 複数のPython/image tool callを扱える
+- `run_shell`へcommandを渡し結果を利用できる
+- 複数turnにわたるshell/image/verification tool callを扱える
 - multimodal initial user messageを扱える
 - imageを含むtool resultの共通形式を扱える
 - token usage、finish reason、tool call IDを取得できる
 
 #### live smoke test
 
-最初は1 sample、1 model、CadQuery、execution feedbackのみで実行する。成功率を論じる段階ではなく、messageとstate遷移を一行ずつ追う。
+最初は1 sample、1 model、CadQueryで実行する。成功率を論じる段階ではなく、workspaceの変更、message、tool call、verification、state遷移を一行ずつ追う。
 
 #### 完了条件
 
-GPTとQwenの双方で、少なくともDXF Python解析、画像参照、任意CAD実行、最終提出、強制実行のprotocolが同じgraph上で動く。
+GPTとQwenの双方で、少なくともDXF解析、workspace内file編集、画像参照、中間検証、toolなし完成表明、workflow主導の最終検証が同じgraph上で動く。
 
 このlive smoke testで動作したagent側とSGLang server側のdependency versionをそれぞれ記録し、以後の再現可能な基準とする。
 
-### Phase 5: DXFと3D render feedback
+### Phase 5: Feedback modeとrenderer calibration
+
+Phase 3/4で未実装としていた`verify_output(render_views=True)`をここで実装する。LangGraphの遷移は変えず、verified STEPに対するvisual feedback生成と提示方法を追加する。
 
 #### 実装順
 
-1. verified STEPから再投影DXFを生成する
-2. 生成成功時、DXF pathをfeedback user messageへ常に入れる
-3. shared Python sandboxから元DXFとfeedback DXFのsandbox-private copyを参照できるようにする
-4. 候補の3D renderを生成する
-5. `feedback_render3d: path`
-6. `feedback_render3d: image`
-7. style選択と組合せtest
+1. `verification/render.py`を追加し、verified STEPから三面図DXFとperspective viewsを生成する
+2. `verify_output(render_views=True)`から、STEP検証成功時だけrendererを呼ぶ
+3. 生成成功時、三面図DXF pathをfeedback user messageへ常に入れる
+4. workspaceから元DXFと各verificationのfeedback DXFを参照できるようにする
+5. `feedback_render3d: none`
+6. `feedback_render3d: path`
+7. `feedback_render3d: image`
+8. style選択、部分失敗、message形式の組合せtest
+9. identical STEP再renderと既知形状fixtureでrendererの再現性を測る
 
-renderer本体は再実装せず、以下をtrusted child processから呼ぶ。
+renderer本体は再実装せず、trusted側から以下を呼ぶ。
 
 - `src.data.render.techdraw.generate_techdraw`
 - `src.data.render.render3d.generate_render3d`
 - `src.data.render.config`のpath/style contract
 
-これらの関数は同期処理なので、pipeline側でkill可能なprocessとtimeoutを提供する。
+これらは同期処理なので、kill可能なchild processとtimeoutを設ける。CadQuery実行またはSTEP検証に失敗した場合はrenderしない。renderだけ失敗した場合は、実行・STEP検証の成功とrender failureを別statusで返す。
 
-実行に失敗してSTEPが存在しない場合、DXF/render feedbackを無理に生成しない。execution feedbackだけを返す。renderだけ失敗した場合は、execution成功とrender failureを別々に報告する。
-
-初期版では、再投影DXFの自動IoU閾値による候補棄却を行わない。まずartifactをmodelへ返し、精度向上効果を測る。数値projection checkは後続の独立機能とする。
+初期版では、再投影DXFの自動IoU閾値によるverification失敗判定を行わない。まずartifactをmodelへ返し、精度向上効果を測る。数値projection checkは後続の独立機能とする。
 
 #### 必須test
 
 - verified STEPとprojection成功時にfeedback DXF pathを必ず返す
+- STEP未生成またはinvalid STEPではDXF/renderを生成しない
 - DXF pathだけではraw DXF内容を自動注入しない
-- shared Python sandboxが元DXFと候補自身のfeedback DXFだけを参照できる
+- workspaceが元DXFと同じagentのverification feedbackだけを参照できる
 - `image`で選択styleだけを添付する
 - render生成が部分失敗した場合は成功したstyleだけを返し、0枚ならrender blockを作らない
-- input画像とcandidate画像を取り違えない
+- input画像とverification feedback画像を取り違えない
 - renderer timeoutをexecution failureと混同しない
-- feedback artifactがcandidate directory外へ出ない
+- feedback artifactがverification directory外へ出ない
 
 #### 完了条件
 
@@ -807,7 +818,7 @@ cube、直方体、軸対称形状、非対称形状をfixtureにする。
 use_drawing_ir: false
 ```
 
-で無効化可能にする。modelが`run_python`で自由にezdxf解析するbaselineと同一条件で比較し、次のどちらかを説明できた場合のみ標準化を検討する。
+で無効化可能にする。modelが`run_shell`から自由にezdxf解析するbaselineと同一条件で比較し、次のどちらかを説明できた場合のみ標準化を検討する。
 
 - GT metricを改善する
 - failure解析を明確に改善する
@@ -827,7 +838,7 @@ use_drawing_ir: false
 #### 並列agent
 
 - 単一agent loopをsubgraph化する
-- candidateごとに独立artifact namespaceを持つ
+- agentごとに独立workspaceとartifact namespaceを持つ
 - merge policyと最終選択基準を明示する
 - その段階でrun-level `BudgetPolicy`を設計する
 
@@ -854,21 +865,23 @@ use_drawing_ir: false
     ├── events.jsonl
     ├── artifact_manifest.json
     ├── messages.jsonl
-    ├── candidates/
-    │   └── <candidate_id>/
+    ├── verifications/
+    │   └── <verification_id>/
     │       ├── model.py
-    │       ├── execution.json
+    │       ├── source.json
+    │       ├── verification.json
     │       ├── execution.log
     │       ├── output.step
-    │       └── feedback/
-    │           ├── drawing.dxf
-    │           └── render3d/
+    │       ├── drawing.dxf
+    │       └── render3d/
     └── final/
         ├── model.py
         └── output.step
 ```
 
-`final/`へ昇格できるのは、workflow主導の最終実行でsingle valid solidを確認したcandidateだけとする。失敗runにroot-levelの信頼済みSTEPがあるように見せない。
+`verifications/`にはmodel主導の中間検証とworkflow主導の最終検証を同じ形式で保存する。`source.json`には少なくともsource hashと保存時刻を記録し、`verification.json`には呼び出し元`model | workflow`、CadQuery実行、STEP検証、renderの各statusを記録する。
+
+`final/`へ昇格できるのは、workflow主導の最終検証でsingle valid solidを確認したverificationだけとする。失敗runにroot-levelの信頼済みSTEPがあるように見せない。
 
 ## 10. Test方針
 
@@ -880,7 +893,7 @@ use_drawing_ir: false
 - tool schemaと引数validation
 - routing
 - audit event serialization
-- execution report / feedback report
+- sandbox result / CadQuery execution report / verification report
 
 ### Integration test
 
@@ -893,9 +906,10 @@ use_drawing_ir: false
 
 - target path拒否
 - symlink escape拒否
-- `run_python`とCAD候補codeはactive DXFとconfigで許可されたrender/feedbackだけを読める
-- `run_python`とCAD候補codeはrepository、GT、他sample、未許可renderを読めない
-- network/subprocess/他CAD kernelの拒否
+- `run_shell`と`model.py`はactive DXF、configで許可されたinput render、同じworkspaceのfeedbackだけを読める
+- `run_shell`と`model.py`はrepository、GT、他sample、未許可renderを読めない
+- network accessを拒否する
+- modelが起動した子processも同じfilesystem/network境界に閉じる
 - credentialがlog/artifactへ残らない
 
 ### Live test
@@ -939,7 +953,7 @@ Phase 3  fake model LangGraph vertical slice
    ↓
 Phase 4  GPT / Qwen API
    ↓
-Phase 5  DXF / render feedback
+Phase 5  feedback mode・renderer calibration
    ↓
 Phase 6  評価・アブレーション
    ↓

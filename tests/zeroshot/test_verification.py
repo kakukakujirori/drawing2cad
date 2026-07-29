@@ -8,7 +8,7 @@ from uuid import UUID
 import cadquery as cq
 import pytest
 
-from zeroshot.pipeline.execution.run_code import (
+from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
     ExecutionStatus,
@@ -347,7 +347,7 @@ def test_execute_refuses_to_overwrite_existing_artifact(
 ) -> None:
     fixed_exec_id = UUID("00000000-0000-0000-0000-000000000001")
     monkeypatch.setattr(
-        "zeroshot.pipeline.execution.run_code.uuid4",
+        "zeroshot.pipeline.verification.run_cadquery.uuid4",
         lambda: fixed_exec_id,
     )
     executor, _, artifact_root = _executor(
