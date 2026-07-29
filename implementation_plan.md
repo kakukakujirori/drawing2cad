@@ -165,7 +165,7 @@ workflowはprovider名、base URL、credentialへ依存させない。API版で�
 | Trusted reconstruction runtime | sandbox起動、候補登録、STEP検証、feedback生成 | 禁止 |
 | Offline evaluator | 完了した予測STEPとGT STEPの比較 | 許可 |
 
-model生成codeは入力解析用もCAD生成用もuntrustedとする。通常のPython processで直接実行せず、共通の`PythonSandbox`からtool callごとにfreshなtimeout可能隔離processを起動する。常駐Python processを共有せず、過去の変数、import、生成fileへ暗黙に依存させない。
+model生成codeは入力解析用もCAD生成用もuntrustedとする。通常のPython processで直接実行せず、共通の`SandboxRunner`からtool callごとにfreshなtimeout可能隔離processを起動する。Linuxの`bwrap --unshare-all`を必須の隔離境界とし、`bwrap`が見つからない場合は`SandboxRunner`の構築を失敗させ、非隔離subprocessへfallbackしない。実行時にsandbox processを起動できない場合は`INFRA_ERROR`としてfail closedにする。常駐Python processを共有せず、過去の変数、import、生成fileへ暗黙に依存させない。
 
 `run_python`と`execute_cad_candidate`は同じsandbox基盤とfilesystem viewを使うが、toolとしての意味は分ける。`run_python`は探索用codeのstdout/stderr/statusだけを返し、そこで生成されたfileを候補artifactへ昇格しない。`execute_cad_candidate`はcandidate IDとsourceを登録し、生成STEPをtrusted runtimeが回収・検証してexecution feedbackを作る。
 
@@ -173,7 +173,7 @@ model生成codeは入力解析用もCAD生成用もuntrustedとする。通常�
 
 独自のlogical path namespaceは作らない。`SampleManifest`は通常の`Path`で必須のinput DXF、input render mappingと、optionalなactive candidateのfeedback DXF、feedback render mappingを保持する。style名の固定listをpipeline内へ重複定義せず、manifestのinput render key集合をそのsampleで利用可能なstyleのsource of truthとする。`view_render3d_artifact`はconfigで許可されたactiveな`SampleManifest`のpathとの完全一致だけを許可し、任意のpathを開かない。`target/`と`target_step/`は`SampleManifest`へ含めない。
 
-shared Python sandboxにはactive sampleのDXFを常にread-onlyでcopyまたはmountする。renderは`access_render3d`または`feedback_render3d`でmodelへ許可されたstyleだけをread-onlyで見せ、`none`のrenderや未選択styleをfilesystem探索で取得できないようにする。feedback DXFが生成された後は、元DXFとactive candidate自身のfeedback DXFを見せる。
+shared Python sandboxにはactive sampleのDXFを常にsandbox-privateな一時copyとしてstageする。renderは`access_render3d`または`feedback_render3d`でmodelへ許可されたstyleだけを同様にstageし、`none`のrenderや未選択styleをfilesystem探索で取得できないようにする。host側の元fileをmountしないため、sandbox内でcopyが変更されても元fileには影響せず、次のtool callでは新しいcopyを作る。feedback DXFが生成された後は、元DXFとactive candidate自身のfeedback DXFを見せる。
 
 sandbox内で有効な通常pathを持つ一時的な`SampleManifest`を新しく作り、初回message、`run_python`、`execute_cad_candidate`で同じfilesystem viewを使う。元の`SampleManifest`はmutationしない。candidateまたはfeedbackが変わるたびに新しいsnapshotを作る。入力DXFは正規の問題入力なので、CAD候補codeから読み取ることも許可する。一方、GT、repository、他sample、credential、networkはどのmodel生成codeからも到達不能にする。
 
@@ -229,9 +229,7 @@ zeroshot/
 │   │   └── submit_final.py
 │   ├── execution/
 │   │   ├── __init__.py
-│   │   ├── validate_code.py
-│   │   ├── run_code.py
-│   │   └── verify_step.py
+│   │   └── run_code.py             # source検証、CadQuery実行、STEP検証
 │   ├── feedback/
 │   │   ├── __init__.py
 │   │   ├── render.py
@@ -267,6 +265,7 @@ tests/
     ├── test_manifest.py
     ├── test_messages.py
     ├── test_execution.py
+    ├── test_sandbox.py
     ├── test_tools.py
     ├── test_graph.py
     ├── test_feedback.py
@@ -322,9 +321,11 @@ class ReconstructionState(TypedDict, total=False):
 
 `run_python`はmodel生成Pythonをshared sandboxで実行し、stdout、stderr、exit status、timeoutを返す探索toolである。sandboxには`ezdxf`、Pillow、NumPyと、現在対応しているCAD libraryを用意する。初期vertical sliceではCadQueryを対象とし、build123dはcandidate executor対応後に同じ環境へ追加する。個別libraryのAPI、query方法、出力形式をpipeline側で限定しない。一方で、許可されていないsample/render、GT、repository、credential、networkへ到達させず、process tree、CPU、memory、wall time、stdout/stderr量を制限する。`run_python`が作ったfileはscratch扱いとし、trusted artifactとして採用しない。
 
+Phase 2の`SandboxRunner`が提供するresource guardはwall timeoutと返却するstdout/stderrの切り詰めまでである。`capture_output=True`によるprocess実行中のbuffer量、CPU、memory、PID数のhard limitはまだ提供しない。固定fixtureとfake modelだけを扱うPhase 2/3ではこの範囲とし、実model生成codeを動かすPhase 4のlive smoke test前に、bounded log captureとcgroup等によるresource limitを追加する。
+
 system promptには「正確な図面情報の確認や計算には`run_python`を使える」ことだけを記述する。利用可能package、sandbox内の許可済みpath、tool result contractはtool descriptionへ記述し、ezdxfやCAD libraryの個別API tutorialをsystem promptへ埋め込まない。
 
-`run_python`と`execute_cad_candidate`は同じ`PythonSandbox`実装を使い、呼び出しごとにfresh processと一時作業directoryを作る。両者ともactive DXFとconfig上許可されたrender/feedbackをread-onlyで参照できる。違いはsandbox権限ではなく、探索結果を返すだけか、candidate sourceとSTEPを登録・検証するかというapplication上の責務に置く。
+`run_python`と`execute_cad_candidate`は同じ`SandboxRunner`実装を使い、呼び出しごとにfresh processと一時作業directoryを作る。両者ともactive DXFとconfig上許可されたrender/feedbackのsandbox-private copyだけを参照できる。違いはsandbox権限ではなく、探索結果を返すだけか、candidate sourceとSTEPを登録・検証するかというapplication上の責務に置く。
 
 `execute_cad_candidate`はmodelが自発的に呼ぶ中間検証toolである。tool protocolを閉じる`ToolMessage`を追加した後、実行結果と設定されたfeedbackを次のuser messageとして組み立て、model turnへ返す。
 
@@ -523,7 +524,7 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 - `tests/zeroshot`は42 test passed
 - `ruff check`と`ruff format --check`はPhase 1対象の全fileで通過した
 
-### Phase 2: Trusted CAD execution
+### ✅ Phase 2: Trusted CAD execution
 
 #### 最初の対象
 
@@ -532,40 +533,57 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 #### 実装するもの
 
 - AST/source validation
-- candidate IDとimmutable source保存
+- trusted executorが実行ごとにUUIDのexecution IDを発番し、immutable sourceを保存
 - kill可能な隔離subprocess
 - `output.step`生成contract
 - STEP再読込
-- solid数とkernel validityの検証
-- execution report
+- single solidとkernel validityの検証
+- `CadQueryExecutionReport`
 
 #### 重要方針
 
 - model codeをpipeline process内で`exec`しない
-- `run_python`とcandidate実行が再利用する共通`PythonSandbox`をここで実装する
-- 入力DXFとconfigで許可されたrender/feedbackだけをread-onlyでsandboxへ渡す
+- `run_python`とCAD実行が再利用する共通`SandboxRunner`をここで実装する
+- `SandboxRunner`はLinuxの`bwrap --unshare-all`を必須とし、利用不能時に非隔離subprocessへfallbackしない
+- `CadQueryExecutor`の`artifact_root`はtrusted runtimeだけが読書きする永続artifact置き場であり、sandboxの一時work directoryとして公開またはmountしない
+- `SandboxRunner.run(command, work_dir, timeout_s)`は`work_dir`だけをread-writeの`/work`として公開し、host pathのstaging方針を持たない
+- Python専用runnerにはせず、`command`はsandbox内の`bash -c`へ渡す。Pythonおよびその子processは同じfilesystem/network境界に閉じ込める
+- AST validationはPython構文だけを確認し、import allowlistを設けない。利用可能moduleとfilesystem accessはsandbox viewで制御する
+- 固定fixtureを対象とするPhase 2ではsample入力をstageしない。active DXFと許可済みrender/feedbackのstagingは、具体的なtool contractを実装するPhase 3で追加する
 - GT、repository、他sample、未許可render、credentialをsandboxへ渡さない
-- candidate codeが入力DXFを解析して形状を生成することを許可する
-- timeout時はterminate後、必要ならkillする
+- wall timeout時はbwrap processをkillし、`--die-with-parent`で子processを残さない
 - validation失敗とinfra failureを区別する
 - 既存runnerのsecurity testを、コードではなくfixture/期待結果として参照する
+- STEP検証は再import後のsingle solidとCadQuery/OpenCascadeの`isValid()`をPhase 2の最小条件とする。free edge検査やmesh watertightness監査は必要性を評価して後続で追加する
 
 #### 必須test
 
 - valid single box
 - syntax error
-- denied import
+- sandbox外fileを指定した動的importが失敗する
 - filesystem探索で許可外入力、GT、repositoryへ到達できない
-- network/subprocess使用
+- host networkへ到達できない
+- 子processを起動してもsandbox外filesystemへ到達できない
 - STEP未生成
 - zero solid / multi-solid
 - invalid STEP
 - infinite loop timeout
-- 同じcandidate fileの上書き拒否
+- 同じexecution artifactの上書き拒否
 
 #### 完了条件
 
-固定code fixtureだけを用い、安全に`ExecutionReport`とverified STEPを生成できる。
+固定code fixtureだけを用い、安全に`CadQueryExecutionReport`とverified STEPを生成できる。
+
+2026-07-29にPhase 2を完了した。
+
+- `SandboxRunner`は`bwrap`でhost filesystemとnetworkを隔離し、fresh process、wall timeout、stdout/stderrの返却時切り詰めを提供する
+- `CadQueryExecutor`は元sourceをexecution ID配下へ保存し、sandbox用sourceにtrusted export epilogueを追加して`result`を`output.step`へexportする
+- verified STEPはtrusted側で再importし、single solidとkernel validityを確認したものだけを永続artifactへ移動する
+- subprocess failure、timeout、sandbox infrastructure failureを別statusで返す
+- `CadQueryExecutionReport`はsandbox内processのstdout/stderrを加工せず保持し、trusted executor側のvalidation/verification errorは`executor_error`へ分離する
+- 実bwrapを用いるCadQuery boxのend-to-end testを含め、Phase 2対象は29 test passed
+- `tests/zeroshot`全体は71 test passed
+- `ruff check`と`ruff format --check`はPhase 2対象fileで通過した
 
 ### Phase 3: Fake modelによるLangGraph vertical slice
 
@@ -593,10 +611,12 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 
 このphaseでは候補STEPのDXF再投影がまだ未実装なので、execution feedbackだけでloopを完成させる。Phase 5でDXF feedbackを実装した後は、生成成功時にpathを常に返す。render feedbackは`none`とする。
 
+`run_python`とCAD実行toolは、tool層で呼び出しごとのfreshなwork directoryを作り、active DXFとその時点で許可されたrender/feedbackだけを固定名でcopyしてから`SandboxRunner`へ渡す。host側の元fileや`SampleManifest` pathをsandboxへ直接公開しない。Phase 2の`SandboxRunner`へstaging責務を追加しない。
+
 #### 必須test
 
 - tool call IDとToolMessage IDが一致する
-- shared Python sandboxがactive DXFをread-onlyで読める
+- shared Python sandboxがactive DXFの一時copyを読め、変更してもhost側の元fileへ影響しない
 - `access_render3d: none`または未選択styleのrenderをsandboxから読めない
 - shared Python sandboxからGT、repository、他sample、networkへ到達できない
 - `run_python`のtimeoutと出力上限がrun全体を落とさない
@@ -623,6 +643,7 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 - SGLang OpenAI-compatible model factory
 - `configs/model/gpt.yaml`と`configs/model/qwen_sglang.yaml`
 - credential redaction
+- bounded log captureとCPU/memory/PID数のresource limit
 - backend capability smoke test
 - one-sample live CLI
 
@@ -656,7 +677,7 @@ GPTとQwenの双方で、少なくともDXF Python解析、画像参照、任意
 
 1. verified STEPから再投影DXFを生成する
 2. 生成成功時、DXF pathをfeedback user messageへ常に入れる
-3. shared Python sandboxから元DXFとfeedback DXFをread-onlyで参照できるようにする
+3. shared Python sandboxから元DXFとfeedback DXFのsandbox-private copyを参照できるようにする
 4. 候補の3D renderを生成する
 5. `feedback_render3d: path`
 6. `feedback_render3d: image`
