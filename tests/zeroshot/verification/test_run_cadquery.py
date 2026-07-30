@@ -18,6 +18,7 @@ from zeroshot.pipeline.sandbox import (
     SandboxResult,
     SandboxRunner,
     SandboxStatus,
+    SandboxWorkdir,
 )
 
 VALID_BOX_SOURCE = """\
@@ -35,18 +36,18 @@ class StubSandboxRunner:
     ) -> None:
         self.result = result
         self.step_writer = step_writer
-        self.calls: list[tuple[str, Path]] = []
+        self.calls: list[tuple[str, SandboxWorkdir]] = []
 
     def run(
         self,
         command: str,
-        work_dir: Path,
+        workdir: SandboxWorkdir,
         timeout_s: float | None = None,
     ) -> SandboxResult:
         del timeout_s
-        self.calls.append((command, work_dir))
+        self.calls.append((command, workdir))
         if self.step_writer is not None:
-            self.step_writer(work_dir / "output.step")
+            self.step_writer(workdir.host_bind_dir / "output.step")
         return self.result
 
 
@@ -193,7 +194,10 @@ def test_execute_creates_verified_artifacts(tmp_path: Path) -> None:
     assert report.status is ExecutionStatus.VERIFIED
     assert report.returncode == 0
     assert report.source_path == artifact_root / report.exec_id / "model.py"
-    assert report.source_path and report.source_path.read_text(encoding="utf-8") == VALID_BOX_SOURCE
+    assert (
+        report.source_path
+        and report.source_path.read_text(encoding="utf-8") == VALID_BOX_SOURCE
+    )
     assert report.source_sha256 == sha256(VALID_BOX_SOURCE.encode("utf-8")).hexdigest()
     assert report.step_path == artifact_root / report.exec_id / "output.step"
     assert report.step_path and report.step_path.is_file()
@@ -339,6 +343,30 @@ def test_execute_preserves_process_output_on_step_verification_failure(
     assert "Failed to import STEP" in report.executor_error
     assert report.stdout == "construction log"
     assert report.stderr == ""
+
+
+def test_execute_rejects_sandbox_output_symlink(
+    tmp_path: Path,
+) -> None:
+    outside_step_path = tmp_path / "outside.step"
+    _write_valid_box_step(outside_step_path)
+
+    def write_output_symlink(path: Path) -> None:
+        path.symlink_to(outside_step_path)
+
+    executor, _, artifact_root = _executor(
+        tmp_path,
+        _sandbox_result(),
+        write_output_symlink,
+    )
+
+    report = executor.execute(source=VALID_BOX_SOURCE)
+
+    assert report.status is ExecutionStatus.FAILED
+    assert report.executor_error is not None
+    assert "symlink" in report.executor_error
+    assert report.step_path is None
+    assert not (artifact_root / report.exec_id / "output.step").exists()
 
 
 def test_execute_refuses_to_overwrite_existing_artifact(

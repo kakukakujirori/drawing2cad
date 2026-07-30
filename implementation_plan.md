@@ -82,7 +82,7 @@ access_render3d_styles:
 
 意味は以下の通り。
 
-- DXFは必須入力として、`SampleManifest`が持つinput DXF pathと役割を常に初回user messageへ入れる
+- DXFは必須入力として、`InputManifest`が持つinput DXF pathと役割を常に初回user messageへ入れる
 - `access_render3d: none`: 初回は3D renderを与えない
 - `access_render3d: path`: 選択styleのpathとstyle名だけを伝える
 - `access_render3d: image`: 選択styleの画像をmultimodal user messageへ添付する
@@ -110,7 +110,7 @@ feedback_render3d_styles:
 
 `feedback_dxf` configは設けない。DXF feedback機能が実装された後はpathを常に返す。ただしsyntax error、timeout、invalid STEP、projection failureなど、DXFが存在しない場合は架空のpathを返さず、生成不能理由をexecution feedbackへ含める。
 
-`feedback_render3d_paths`には生成に成功したstyleのキーとpathだけを入れ、失敗したstyleのキーを入れない。valueへ`None`を入れない。MessageBuilderは存在するstyleだけを返し、0枚ならrender用content block自体を追加しない。欠損理由は必須のexecution feedbackへ含める。
+`FeedbackManifest.render3d_paths`には生成に成功したstyleのキーとpathだけを入れ、失敗したstyleのキーを入れない。valueへ`None`を入れない。MessageBuilderは存在するstyleだけを返し、0枚ならrender用content block自体を追加しない。欠損理由は必須のexecution feedbackへ含める。
 
 `feedback_execution`を無効化するconfigは設けない。実行成否、syntax/AST error、timeout、STEP生成、solid数、kernel validityなど、信頼済み実行器が得た結果は必ずmessage historyと監査logへ残す。runが継続する場合は必ず次のmodel turnへ返す。
 
@@ -160,23 +160,23 @@ workflowはprovider名、base URL、credentialへ依存させない。API版で�
 | 領域 | 役割 | GT access |
 |---|---|---|
 | Agent workflow | message、tool選択、`model.py`編集、検証要求 | 禁止 |
-| Persistent workspace sandbox | model生成shell/Pythonによる入力解析、数値計算、CAD試行 | 禁止 |
+| Persistent sandbox workdir | model生成shell/Pythonによる入力解析、数値計算、CAD試行 | 禁止 |
 | Trusted reconstruction runtime | sandbox起動、verification登録、STEP検証、feedback生成 | 禁止 |
 | Offline evaluator | 完了した予測STEPとGT STEPの比較 | 許可 |
 
 model生成commandとcodeはすべてuntrustedとする。通常のprocessで直接実行せず、共通の`SandboxRunner`からtool callごとにfreshなtimeout可能隔離processを起動する。Linuxの`bwrap --unshare-all`を必須の隔離境界とし、`bwrap`が見つからない場合は`SandboxRunner`の構築を失敗させ、非隔離subprocessへfallbackしない。実行時にsandbox processを起動できない場合は`INFRA_ERROR`としてfail closedにする。
 
-sampleごと・agentごとに一つのhost側workspaceを作り、run終了まで保持する。`run_shell`と`verify_output`はtool callごとにfreshなbwrap processを起動するが、毎回同じworkspaceをread-writeの`/work`へbindする。これによりprocess、Python変数、環境変数は共有しない一方、modelが作成・編集した`model.py`、解析script、JSON、dump画像などの中間fileはtool call間で保持する。
+sampleごと・agentごとに一つの`SandboxWorkdir`を作り、run終了まで保持する。`SandboxWorkdir`は、内部生成した一時`host_bind_dir`を所有するmodeと、trusted callerから渡された既存directoryを借用するmodeを持つ。どちらのmodeでもsandbox側のbind先は`/work`である。`run_shell`と`verify_output`はtool callごとにfreshなbwrap processを起動するが、毎回同じ`SandboxWorkdir`をread-writeでbindする。これによりprocess、Python変数、環境変数は共有しない一方、modelが作成・編集した`model.py`、解析script、JSON、dump画像などの中間fileはtool call間で保持する。
 
 ### 4.2 Pathと生成artifactの扱い
 
-`SampleManifest`はhost側の通常の`Path`で必須のinput DXF、input render mappingと、optionalなfeedback DXF、feedback render mappingを保持する。style名の固定listをpipeline内へ重複定義せず、manifestのinput render key集合をそのsampleで利用可能なstyleのsource of truthとする。`target/`と`target_step/`は`SampleManifest`へ含めない。
+`InputManifest`はhost側の通常の`Path`で必須のinput DXFとinput render mappingを保持する。`FeedbackManifest`はverification ID、必須のexecution feedback、optionalなfeedback DXFとfeedback render mappingを保持する。original inputとverification feedbackは寿命と生成元が異なるため、一つのcombined manifestへまとめない。style名の固定listをpipeline内へ重複定義せず、`InputManifest.render3d_paths`のkey集合をそのsampleで利用可能なstyleのsource of truthとする。`target/`と`target_step/`はいずれのmanifestにも含めない。
 
-workspace作成時に、active sampleのDXFとconfigで許可されたinput renderだけを固定の相対pathへcopyする。この初期copyをstagingと呼ぶ。host側の元fileをmountしないため、workspace内のcopyをmodelが変更しても元fileには影響しない。`verify_output`がfeedback DXFとperspective viewsを生成した後は、そのverificationの生成物をworkspaceへ追加する。GT、repository、他sample、未許可render、credentialはworkspaceへstageしない。
+`SandboxWorkdir`作成後、trusted callerが`Path`と`shutil`を使い、active sampleのDXFとconfigで許可されたinput renderだけを`host_bind_dir`配下の固定pathへcopyする。この初期copyをstagingと呼ぶ。`SandboxWorkdir`と`SandboxRunner`はmanifest、file配置、staging policyを知らない。専用の`Workspace` class、`WorkspacePath`、host/sandbox pathの再帰変換API、`copy_in`/`copy_out` wrapperも作らない。host側の元fileをmountしないため、workdir内のcopyをmodelが変更しても元fileには影響しない。`verify_output`がfeedback DXFとperspective viewsを生成した後は、trusted callerがそのverificationの生成物を同じworkdirへ追加する。GT、repository、他sample、未許可render、credentialはstageしない。
 
-modelへはhost pathや`/work`を教えず、workspace rootからの相対pathだけを提示する。`run_shell`のcwdは常にworkspace rootである。`load_image`はworkspace配下の画像だけを読み、path traversalとworkspace外を指すsymlinkを拒否する。入力DXFは正規の問題入力なので`model.py`や解析scriptから自由に読み取れる。一方、GT、repository、他sample、credential、networkはどのmodel生成commandからも到達不能にする。
+modelへは`host_bind_dir`を教えず、`/work`配下のsandbox pathのみを提示する。`run_shell`のcwdは常に`/work`である。manifestはtrusted host fileの存在検証とmessage用画像読取に使い、modelへ提示するpath文字列はstaging時に決めたpathを使う。`load_image`は`host_bind_dir`配下の画像だけを読み、path traversalとworkdir外を指すsymlinkを拒否する。入力DXFは正規の問題入力なので`model.py`や解析scriptから自由に読み取れる。一方、GT、repository、他sample、credential、networkはどのmodel生成commandからも到達不能にする。
 
-workspace内fileはmodelが自由に変更できるscratchであり、それだけではtrusted artifactとしない。`verify_output`ごとに現在の`model.py`をhash付きimmutable artifactとして保存し、verified STEPと対応するDXF/renderを同じverification IDへ紐付ける。複数領域で共通の登録・hash・manifest処理が実際に重複した時点で`ArtifactStore`を抽出する。
+workdir内fileはmodelが自由に変更できるscratchであり、それだけではtrusted artifactとしない。`verify_output`ごとに現在の`model.py`をhash付きimmutable artifactとして保存し、verified STEPと対応するDXF/renderを同じverification IDへ紐付ける。複数領域で共通の登録・hash・manifest処理が実際に重複した時点で`ArtifactStore`を抽出する。
 
 ### 4.3 依存方向
 
@@ -188,7 +188,7 @@ run_pipeline
        -> models
        -> tools
             -> inputs
-            -> workspace
+            -> sandbox
             -> verification
                  -> src.data.render
   -> audit
@@ -211,11 +211,10 @@ zeroshot/
 ├── run_pipeline.py                  # 後続: 新pipelineの薄いHydra composition root
 ├── pipeline/
 │   ├── __init__.py
-│   ├── manifest.py                  # SampleManifestとinput/feedback path検証
+│   ├── manifest.py                  # InputManifest / FeedbackManifestとpath検証
 │   ├── messages.py                  # access/feedback message builder
 │   ├── runner.py                    # 後続: application wiringとsample loop
-│   ├── workspace.py                 # persistent workspace作成・staging・path検証
-│   ├── sandbox.py                   # Phase 2: 全model生成command用の共通隔離実行基盤
+│   ├── sandbox.py                   # SandboxWorkdirと全model生成command用の共通隔離実行基盤
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── base.py                  # normalized AgentModel protocol
@@ -304,7 +303,7 @@ class ReconstructionState(TypedDict, total=False):
     safety_stop_reason: str | None
 ```
 
-workspace path、`SandboxRunner`、renderer、model objectなどのruntime dependencyはstateへ入れない。長いstdout/stderr、画像bytes、`model.py`本文、render画像もstateへ直接蓄積しない。stateにはmessage history、verification ID、最後の構造化結果、検証済みfilesystem pathまたは保存済みartifact IDを保持する。
+`SandboxWorkdir`、`SandboxRunner`、renderer、model objectなどのruntime dependencyはstateへ入れない。長いstdout/stderr、画像bytes、`model.py`本文、render画像もstateへ直接蓄積しない。stateにはmessage history、verification ID、最後の構造化結果、検証済みfilesystem pathまたは保存済みartifact IDを保持する。
 
 ### 6.2 bindするtool
 
@@ -314,17 +313,17 @@ workspace path、`SandboxRunner`、renderer、model objectなどのruntime depen
 2. `load_image(path)`
 3. `verify_output()`
 
-`run_shell`はmodelが生成した任意のbash commandを、persistent workspaceをbindしたsandbox内で実行し、stdout、stderr、exit status、timeoutを返す。modelはshell、Python、標準commandを使ってworkspace内のfileを自由に読み書きし、`model.py`、解析script、JSON、dump画像をtool call間で継続利用できる。sandboxには`ezdxf`、Pillow、NumPyと、現在対応しているCAD libraryを用意する。初期vertical sliceではCadQueryを対象とする。workspace以外のhost filesystem、GT、repository、credential、networkへ到達させない。
+`run_shell`はmodelが生成した任意のbash commandを、run中共有する`SandboxWorkdir`をbindしたsandbox内で実行する。modelに公開するtool引数は`command`だけとし、timeoutはtrusted側の`SandboxRunner`設定を使う。`SandboxRunner`と`SandboxWorkdir`はtool factoryのclosureで保持する。tool resultは`SandboxResult`を`status`、`returncode`、`stdout`、`stderr`からなるJSON化可能なmappingへ変換し、non-zero exit、`TIMEOUT`、`INFRA_ERROR`もtool自体の未処理例外にせず結果として返す。modelはshell、Python、標準commandを使ってworkdir内のfileを自由に読み書きし、`model.py`、解析script、JSON、dump画像をtool call間で継続利用できる。sandboxには`ezdxf`、Pillow、NumPyと、現在対応しているCAD libraryを用意する。初期vertical sliceではCadQueryを対象とする。workdir以外のhost filesystem、GT、repository、credential、networkへ到達させない。
 
-`load_image`はworkspace相対pathを受け取り、workspace外へのescapeとsymlinkを拒否した上で画像をmultimodal contentとしてmodelへ返す。これによりmodelはinput/feedback renderだけでなく、自ら生成したdump画像も確認できる。
+`load_image`はworkdir pathを受け取り、workdir外へのescapeとsymlinkを拒否した上で画像をmultimodal contentとしてmodelへ返す。これによりmodelはinput/feedback renderだけでなく、自ら生成したdump画像も確認できる。
 
-modelへ公開する`verify_output` toolは引数を取らず、workspace rootの`model.py`だけを対象とする。toolから呼ぶtrusted側の関数は`render_views: bool = False`を受け取る。`verification/verify_output.py`は現在のsourceをimmutable artifactへ保存し、`run_cadquery.py`でtrusted export epilogue付きwrapperをfreshなbwrap process内で実行し、STEP再読込、single solid、kernel validityを確認する。
+modelへ公開する`verify_output` toolは引数を取らず、共有`SandboxWorkdir` rootの`model.py`だけを対象とする。toolから呼ぶtrusted側の関数は`render_views: bool = False`を受け取る。`verification/verify_output.py`は現在のsourceをimmutable artifactへ保存し、同じ`SandboxWorkdir`を`run_cadquery.py`へ渡してtrusted export epilogue付きwrapperをfreshなbwrap process内で実行し、STEP再読込、single solid、kernel validityを確認する。
 
-Phase 3/4では`render_views=False`だけを使い、`True`なら明示的に`NotImplementedError`を送出する。この例外はmodel reconstruction failureではなく、未実装機能を有効にしたconfiguration errorとしてrun開始前またはtrusted runtime境界で扱う。Phase 5で`True`を実装し、verifiedの場合だけ`render.py`で三面図DXFとperspective viewsを生成してverification ID配下のartifactとworkspace内feedbackへ保存する。
+Phase 3/4では`render_views=False`だけを使い、`True`なら明示的に`NotImplementedError`を送出する。この例外はmodel reconstruction failureではなく、未実装機能を有効にしたconfiguration errorとしてrun開始前またはtrusted runtime境界で扱う。Phase 5で`True`を実装し、verifiedの場合だけ`render.py`で三面図DXFとperspective viewsを生成してverification ID配下のartifactとworkdir内feedbackへ保存する。
 
-Phase 2の`SandboxRunner`が提供するresource guardはwall timeoutと返却するstdout/stderrの切り詰めまでである。`capture_output=True`によるprocess実行中のbuffer量、CPU、memory、PID数、workspaceのdisk使用量のhard limitはまだ提供しない。固定fixtureとfake modelだけを扱うPhase 2/3ではこの範囲とし、実model生成commandを動かすPhase 4のlive smoke test前に、bounded log captureとcgroupまたは同等機構によるresource limitを追加する。
+Phase 2の`SandboxRunner`が提供するresource guardはwall timeoutと返却するstdout/stderrの切り詰めまでである。`capture_output=True`によるprocess実行中のbuffer量、CPU、memory、PID数、workdirのdisk使用量のhard limitはまだ提供しない。固定fixtureとfake modelだけを扱うPhase 2/3ではこの範囲とし、実model生成commandを動かすPhase 4のlive smoke test前に、bounded log captureとcgroupまたは同等機構によるresource limitを追加する。
 
-system promptには「workspace内の`model.py`へ最終CadQuery Solidを`result`変数として保存する」「shellで自由に解析・試行できる」「必要な時に`verify_output`を呼べる」「完成したらtool callなしで応答する」を記述する。利用可能package、workspaceの相対path、tool result contractはtool descriptionへ記述し、ezdxfやCadQueryの個別API tutorialをsystem promptへ埋め込まない。
+system promptには「workdir内の`model.py`へ最終CadQuery Solidを`result`変数として保存する」「shellで自由に解析・試行できる」「必要な時に`verify_output`を呼べる」「完成したらtool callなしで応答する」を記述する。利用可能package、workdirのpath、tool result contractはtool descriptionへ記述し、ezdxfやCadQueryの個別API tutorialをsystem promptへ埋め込まない。
 
 ### 6.3 中間実行と最終実行
 
@@ -333,7 +332,7 @@ system promptには「workspace内の`model.py`へ最終CadQuery Solidを`result
 1. modelが`verify_output` toolを自発的に呼ぶ中間検証
 2. modelがtool callなしで完成を表明した後、workflowが呼ぶ最終検証
 
-最終検証では、中間検証済みで`model.py`のhashが同じでも再実行する。これによりworkspaceに残った古いSTEPではなく、現在の`model.py`と対応するSTEPであることを保証する。監査eventには呼び出し元を`model`または`workflow`として記録する。
+最終検証では、中間検証済みで`model.py`のhashが同じでも再実行する。これによりworkdirに残った古いSTEPではなく、現在の`model.py`と対応するSTEPであることを保証する。監査eventには呼び出し元を`model`または`workflow`として記録する。
 
 model主導の`verify_output`は対応する`ToolMessage`でtool protocolを閉じる。中間検証後は`build_feedback` nodeがexecutionとSTEP verificationを含む`HumanMessage`を追加してagentへ戻す。Phase 5でvisual feedbackを実装した後はDXF/render pathもここへ加える。最終検証はtool callに対応しないworkflow actionなので、成功時はそのまま終了し、修正可能な失敗時だけfeedback `HumanMessage`を追加してagentへ戻す。
 
@@ -475,26 +474,27 @@ modelもLangGraphも呼ばず、20件の入力集合が揃っていることと�
 
 #### 順序
 
-1. `SampleManifest`を実装し、必須input DXF/input render mappingとoptional feedback DXF/feedback render mappingを保持する。全pathの存在とDXFの拡張子を検証し、render画像の拡張子は固定しない
-2. 選択されたinput/feedback render bytesを`SampleManifest`から必要時に読めるようにする
-3. DXF pathを常に含め、render access configをconstructor引数に持つmessage builderで初回messageを構築する
-4. execution feedbackと`SampleManifest`を受け取り、存在するDXF/render feedbackだけを返すfeedback構築methodを作る
-5. `default.yaml`からmessage builderを`hydra.utils.instantiate()`できることをtestする
-6. 全config組合せをtable-driven testにする
+1. `InputManifest`を実装し、必須input DXFとinput render mappingを保持する。全pathの存在とDXFの拡張子を検証し、render画像の拡張子は固定しない
+2. `FeedbackManifest`を別に実装し、verification ID、必須execution feedback、optional feedback DXFとfeedback render mappingを保持する
+3. 選択されたinput/feedback render bytesをそれぞれのmanifestから必要時に読めるようにする
+4. `InputManifest`を受け取り、DXF pathを常に含め、render access configをconstructor引数に持つmessage builderで初回messageを構築する
+5. `FeedbackManifest`を受け取り、存在するDXF/render feedbackだけを返すfeedback構築methodを作る
+6. `default.yaml`からmessage builderを`hydra.utils.instantiate()`できることをtestする
+7. 全config組合せをtable-driven testにする
 
 dataset全体のsample列挙はPhase 1で抽象化しない。Phase 3でsample loopが必要になった時点で、まず`runner.py`内の短い処理として実装し、複数箇所から必要になるか複雑になった場合だけ関数またはclassへ抽出する。
 
-`SampleManifest`は通常のfilesystem pathを持ち、original inputと現在のverification feedbackを一つのimmutable snapshotとして表す。feedback fieldは未生成時に`None`または空mappingとし、別のverification結果をmessageへ使う場合は新しいmanifestを作る。独自のlogical path DTOや汎用`dto/`packageは作らない。生成artifactの管理抽象と配置も、具体的な重複が現れるまで延期する。
+`InputManifest`と`FeedbackManifest`は通常のfilesystem pathを持つ独立したimmutable snapshotとする。original inputはsample単位、feedbackはverification単位であり、ID、必須field、生成時期が異なるため一つのmanifestへ統合しない。独自のlogical path DTOや汎用`dto/`packageは作らない。生成artifactの管理抽象と配置も、具体的な重複が現れるまで延期する。
 
 `DEFAULT_SYSTEM_PROMPT`と、renderの`none | path | image`およびfeedback種別に応じて追加する文言は`messages.py`に置く。現段階では別の`prompts.py`やHydra prompt configへ分割しない。system promptにはsampleに依存しない役割、出力contract、必要時にtoolを利用できることだけを簡潔に置き、具体的なtool名とschemaは各tool descriptionに置く。sample固有pathと選択されたmodalityの説明は`HumanMessage`側で組み立てる。`none`でも「提供されている場合はperspective renderを併用する」という条件付き一般文はsystem promptへ残してよい。
 
-render styleの固定listを`src.data.render.config`からimportせず、pipeline内にも重複定義しない。MessageBuilderは選択されたaccess/feedback styleが`SampleManifest.input_render3d_paths`のキーに含まれることを検証する。これにより現在の3 styleを固定せず、manifestへ追加された将来の画像styleへ対応する。feedback mappingはその部分集合を許可する。
+render styleの固定listを`src.data.render.config`からimportせず、pipeline内にも重複定義しない。MessageBuilderは選択されたaccess/feedback styleが`InputManifest.render3d_paths`のキーに含まれることを検証する。これにより現在の3 styleを固定せず、manifestへ追加された将来の画像styleへ対応する。`FeedbackManifest.render3d_paths`はその部分集合を許可する。
 
 #### 必須test
 
 - DXF pathが全ての初回messageに現れ、raw DXF textは現れない
 - renderの`none`では個別のrender style、path、画像payloadがHumanMessageに現れない
-- renderの`path`では`SampleManifest`のpathとstyle名だけが現れる
+- renderの`path`では`InputManifest`のpathとstyle名だけが現れる
 - `image`では選択された画像だけが宣言順に添付される
 - 複数画像は各style名のtext blockと対応するimage blockの順に並ぶ
 - access styleとfeedback styleが混ざらない
@@ -510,7 +510,7 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 
 2026-07-28にPhase 1を完了した。
 
-- `SampleManifest`でinput/feedback pathを検証し、render mappingをimmutableなsnapshotとして保持する
+- `InputManifest`と`FeedbackManifest`を分離し、それぞれのpathを検証してrender mappingをimmutableなsnapshotとして保持する
 - `MessageBuilder`で初回入力とexecution/DXF/render feedbackを構築し、access/feedbackのmodeとstyleを独立に検証する
 - render styleの固定listを設けず、各sampleのinput render mappingを利用可能styleのsource of truthとする
 - Hydraの`ListConfig`をconstructor内でtupleへ正規化し、`default.yaml`から`MessageBuilder`を生成できる
@@ -527,6 +527,7 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 
 - AST/source validation
 - trusted executorが実行ごとにUUIDのexecution IDを発番し、immutable sourceを保存
+- owned/borrowedの両modeを持つ`SandboxWorkdir`
 - kill可能な隔離subprocess
 - `output.step`生成contract
 - STEP再読込
@@ -539,7 +540,9 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 - 後続の`run_shell`と`verify_output`内部のCadQuery実行が再利用する共通`SandboxRunner`をここで実装する
 - `SandboxRunner`はLinuxの`bwrap --unshare-all`を必須とし、利用不能時に非隔離subprocessへfallbackしない
 - `CadQueryExecutor`の`artifact_root`はtrusted runtimeだけが読書きする永続artifact置き場であり、sandboxの一時work directoryとして公開またはmountしない
-- `SandboxRunner.run(command, work_dir, timeout_s)`は`work_dir`だけをread-writeの`/work`として公開し、host pathのstaging方針を持たない
+- `SandboxRunner.run(command, workdir: SandboxWorkdir, timeout_s)`は`workdir.host_bind_dir`だけをread-writeの`workdir.sandbox_bind_dir`（初期値`/work`）として公開し、host pathのstaging方針を持たない
+- trusted callerは`SandboxWorkdir.host_bind_dir`を通常の`Path`として直接操作する。file stagingやartifact回収のためだけのwrapper methodは追加しない
+- `host_bind_dir=None`なら`SandboxWorkdir`が一時directoryを所有してcontext終了時に削除し、既存directoryを渡した場合は借用して削除しない
 - Python専用runnerにはせず、`command`はsandbox内の`bash -c`へ渡す。Pythonおよびその子processは同じfilesystem/network境界に閉じ込める
 - AST validationはPython構文だけを確認し、import allowlistを設けない。利用可能moduleとfilesystem accessはsandbox viewで制御する
 - 固定fixtureを対象とするPhase 2ではsample入力をstageしない。active DXFと許可済みrender/feedbackのstagingは、具体的なtool contractを実装するPhase 3で追加する
@@ -548,6 +551,7 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 - validation失敗とinfra failureを区別する
 - 既存runnerのsecurity testを、コードではなくfixture/期待結果として参照する
 - STEP検証は再import後のsingle solidとCadQuery/OpenCascadeの`isValid()`をPhase 2の最小条件とする。free edge検査やmesh watertightness監査は必要性を評価して後続で追加する
+- sandboxが生成した`output.step`は、symlinkでない通常fileであることとSTEP validityをtrusted側で確認してからartifact directoryへcopyする。検証前の`shutil.copyfile()`でsandbox生成symlinkをhost側から辿らない
 
 #### 必須test
 
@@ -557,6 +561,8 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 - filesystem探索で許可外入力、GT、repositoryへ到達できない
 - host networkへ到達できない
 - 子processを起動してもsandbox外filesystemへ到達できない
+- owned workdirの削除、borrowed workdirの存続、同じworkdirを使う複数process間のfile永続性
+- sandbox生成`output.step`がworkdir外を指すsymlinkなら拒否する
 - STEP未生成
 - zero solid / multi-solid
 - invalid STEP
@@ -567,22 +573,22 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 
 固定code fixtureだけを用い、安全に`CadQueryExecutionReport`とverified STEPを生成できる。
 
-2026-07-29にPhase 2を完了した。
+2026-07-30にPhase 2を完了した。
 
 - `SandboxRunner`は`bwrap`でhost filesystemとnetworkを隔離し、fresh process、wall timeout、stdout/stderrの返却時切り詰めを提供する
+- `SandboxWorkdir`は内部所有する一時directoryとcallerから借用する既存directoryの両方を、sandbox側の`/work`へ対応付ける
 - `CadQueryExecutor`は元sourceをexecution ID配下へ保存し、sandbox用sourceにtrusted export epilogueを追加して`result`を`output.step`へexportする
-- verified STEPはtrusted側で再importし、single solidとkernel validityを確認したものだけを永続artifactへ移動する
+- sandbox生成STEPはsymlink検査を含めtrusted側で再importし、single solidとkernel validityを確認したものだけを永続artifactへcopyする
 - subprocess failure、timeout、sandbox infrastructure failureを別statusで返す
 - `CadQueryExecutionReport`はsandbox内processのstdout/stderrを加工せず保持し、trusted executor側のvalidation/verification errorは`executor_error`へ分離する
-- 実bwrapを用いるCadQuery boxのend-to-end testを含め、Phase 2対象は29 test passed
-- `tests/zeroshot`全体は71 test passed
+- 実bwrapを用いるCadQuery boxのend-to-end testとsandbox生成symlinkの回帰testを含め、Sandbox/CadQuery対象は36 test passed
+- `tests/zeroshot`全体は90 test passed
 - `ruff check`と`ruff format --check`はPhase 2対象fileで通過した
 
 ### Phase 3: Fake modelによるLangGraph vertical slice
 
 #### 実装するもの
 
-- `workspace.py`
 - `tools/run_shell.py`
 - `tools/load_image.py`
 - `tools/verify_output_tool.py`
@@ -597,37 +603,39 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 - 最小監査writer
 - scripted fake chat model
 
-Phase 2の`execution/run_code.py`は`verification/run_cadquery.py`へ移動する。`CadQueryExecutionReport`、source validation、STEP validationの責務は維持するが、実行場所はPhase 2の一時directoryからpersistent workspaceへ変更する。現在の`model.py`がworkspace内の補助moduleや入力fileを参照できる状態で、元の`model.py`を変更せずtrusted export処理を加えて実行する。sourceとverified STEPはverification ID配下へimmutable artifactとして保存する。
+Phase 2の`execution/run_code.py`は`verification/run_cadquery.py`へ移動する。`CadQueryExecutionReport`、source validation、STEP validationの責務は維持するが、実行時に内部で一時`SandboxWorkdir`を作るPhase 2 contractから、callerがrun中共有する`SandboxWorkdir`を渡すcontractへ変更する。現在の`model.py`が同じworkdir内の補助moduleや入力fileを参照できる状態で、元の`model.py`を変更せずtrusted export処理を加えて実行する。sourceとverified STEPはverification ID配下へimmutable artifactとして保存する。
 
 `verification/verify_output.py`は、source保存とこの低水準処理を固定順序で呼ぶuse caseであり、LangGraph tool固有の型へ依存させない。`tools/verify_output_tool.py`はtool callをこのuse caseへ接続する薄いadapterにする。
 
 #### 作る順序
 
-1. sample/agent用のpersistent workspaceを一度作り、active DXFと許可されたinput renderを固定の相対pathへstageする
-2. fake modelが`run_shell`で解析fileを作り、次の`run_shell`から同じfileを読めることを確認する
-3. fake modelがworkspace rootへ`result`を定義した`model.py`を保存する
-4. fake modelがtool callなしで完成を表明し、workflowが`verify_output(render_views=False)`で最終検証する
-5. verified STEP、対応する`model.py`、監査logを保存し、feedback loopなしの直線経路を完成させる
-6. fake modelが中間で`verify_output` toolを呼ぶ経路を追加する
-7. execution/STEP verification feedbackを受けて`model.py`を修正し、再度最終検証するloopを追加する
-8. `load_image`でinput画像またはmodel自身のdump画像を確認する経路を追加する
+1. sample/agent用の`SandboxWorkdir`を一度作り、trusted callerがactive DXFと許可されたinput renderを`host_bind_dir`配下の固定pathへstageする
+2. `SandboxRunner`と共有`SandboxWorkdir`をclosureに保持し、modelへ`command`だけを公開する`run_shell` toolを実装する
+3. fake modelが`run_shell`で解析fileを作り、次の`run_shell`から同じfileを読めることを確認する
+4. fake modelがworkdir rootへ`result`を定義した`model.py`を保存する
+5. fake modelがtool callなしで完成を表明し、workflowが`verify_output(render_views=False)`で最終検証する
+6. verified STEP、対応する`model.py`、監査logを保存し、feedback loopなしの直線経路を完成させる
+7. fake modelが中間で`verify_output` toolを呼ぶ経路を追加する
+8. execution/STEP verification feedbackを受けて`model.py`を修正し、再度最終検証するloopを追加する
+9. `load_image`でinput画像またはmodel自身のdump画像を確認する経路を追加する
 
-workspaceはtool callごとに作り直さない。processだけを毎回freshにし、同じhost workspaceを`/work`へbindする。stagingはworkspace作成時の一度だけ行い、それ以降はmodelが作った中間fileをrun終了まで保持する。Phase 5でvisual feedbackを追加した後は、そのfileも同じworkspaceへ蓄積する。host側の元fileや`SampleManifest` pathをsandboxへ直接公開せず、Phase 2の`SandboxRunner`へstaging責務も追加しない。
+`SandboxWorkdir`はtool callごとに作り直さない。processだけを毎回freshにし、同じ`host_bind_dir`を`/work`へbindする。stagingはworkdir作成直後の一度だけ行い、それ以降はmodelが作った中間fileをrun終了まで保持する。Phase 5でvisual feedbackを追加した後は、そのfileも同じworkdirへ蓄積する。host側の元fileやmanifestのsource pathをsandboxへ直接公開せず、`SandboxRunner`へstaging責務も追加しない。staging処理が一箇所にしかない間はapplication wiring内の短い`Path`/`shutil`操作として書き、専用classへ抽出しない。
 
 Phase 3ではvisual feedbackを実装しない。trusted側のverification関数は将来の拡張点として`render_views: bool = False`を持つが、`True`は`NotImplementedError`とする。LangGraph tool schemaにはこのflagを公開せず、Phase 3のtool wrapperとworkflowはいずれも必ず`False`で呼ぶ。最初に直線経路を通してから中間検証loopを足すことで、graph/routingの問題とrendererの問題を分離する。
 
 #### 必須test
 
 - tool call IDとToolMessage IDが一致する
-- `run_shell`がbash、Python、workspace内fileのread/writeを行える
+- `run_shell`のtool schemaが`command`だけを公開し、runtime dependencyをmodelへ公開しない
+- `run_shell`がbash、Python、workdir内fileのread/writeを行える
 - 別々の`run_shell` callから同じ中間fileを読み書きできる
-- workspace内のinput copyを変更してもhost側の元fileへ影響しない
-- `access_render3d: none`または未選択styleのrenderをworkspaceから読めない
+- workdir内のinput copyを変更してもhost側の元fileへ影響しない
+- `access_render3d: none`または未選択styleのrenderをworkdirから読めない
 - `run_shell`と`verify_output`からGT、repository、他sample、networkへ到達できない
 - `run_shell`のtimeoutと出力上限がrun全体を落とさない
-- `load_image`がworkspace内画像だけを返し、path traversalとsymlink escapeを拒否する
+- `load_image`がworkdir内画像だけを返し、path traversalとsymlink escapeを拒否する
 - `run_shell`が生成したscratch fileをverified artifactへ自動昇格しない
-- `verify_output`がworkspace rootの`model.py`だけを読み、source hash付きimmutable artifactを作る
+- `verify_output`が共有workdir rootの`model.py`だけを読み、source hash付きimmutable artifactを作る
 - `verify_output(render_views=False)`がverified STEPを生成する
 - `verify_output(render_views=True)`が`NotImplementedError`を送出する
 - 最初のfake model scenarioがfeedback loopなしの直線経路で完了する
@@ -640,7 +648,7 @@ Phase 3ではvisual feedbackを実装しない。trusted側のverification関数
 
 #### 完了条件
 
-外部APIとvisual feedbackなしで、入力staging、複数回のshell作業、`model.py`の作成、workflow主導の最終検証、verified STEP保存までの直線経路を通す。その後、同じPhase内でmodel主導の中間検証とtext feedbackによる修正loopまで通す。
+外部APIとvisual feedbackなしで、`SandboxWorkdir`への入力staging、複数回のshell作業、`model.py`の作成、workflow主導の最終検証、verified STEP保存までの直線経路を通す。その後、同じPhase内でmodel主導の中間検証とtext feedbackによる修正loopまで通す。
 
 ### Phase 4: GPT APIとQwen/SGLangを接続する
 
@@ -671,11 +679,11 @@ SGLang serverはpipelineと別process、可能なら別environmentで起動す�
 
 #### live smoke test
 
-最初は1 sample、1 model、CadQueryで実行する。成功率を論じる段階ではなく、workspaceの変更、message、tool call、verification、state遷移を一行ずつ追う。
+最初は1 sample、1 model、CadQueryで実行する。成功率を論じる段階ではなく、workdirの変更、message、tool call、verification、state遷移を一行ずつ追う。
 
 #### 完了条件
 
-GPTとQwenの双方で、少なくともDXF解析、workspace内file編集、画像参照、中間検証、toolなし完成表明、workflow主導の最終検証が同じgraph上で動く。
+GPTとQwenの双方で、少なくともDXF解析、workdir内file編集、画像参照、中間検証、toolなし完成表明、workflow主導の最終検証が同じgraph上で動く。
 
 このlive smoke testで動作したagent側とSGLang server側のdependency versionをそれぞれ記録し、以後の再現可能な基準とする。
 
@@ -688,7 +696,7 @@ Phase 3/4で未実装としていた`verify_output(render_views=True)`をここ�
 1. `verification/render.py`を追加し、verified STEPから三面図DXFとperspective viewsを生成する
 2. `verify_output(render_views=True)`から、STEP検証成功時だけrendererを呼ぶ
 3. 生成成功時、三面図DXF pathをfeedback user messageへ常に入れる
-4. workspaceから元DXFと各verificationのfeedback DXFを参照できるようにする
+4. workdirから元DXFと各verificationのfeedback DXFを参照できるようにする
 5. `feedback_render3d: none`
 6. `feedback_render3d: path`
 7. `feedback_render3d: image`
@@ -710,7 +718,7 @@ renderer本体は再実装せず、trusted側から以下を呼ぶ。
 - verified STEPとprojection成功時にfeedback DXF pathを必ず返す
 - STEP未生成またはinvalid STEPではDXF/renderを生成しない
 - DXF pathだけではraw DXF内容を自動注入しない
-- workspaceが元DXFと同じagentのverification feedbackだけを参照できる
+- workdirが元DXFと同じagentのverification feedbackだけを参照できる
 - `image`で選択styleだけを添付する
 - render生成が部分失敗した場合は成功したstyleだけを返し、0枚ならrender blockを作らない
 - input画像とverification feedback画像を取り違えない
@@ -838,7 +846,7 @@ use_drawing_ir: false
 #### 並列agent
 
 - 単一agent loopをsubgraph化する
-- agentごとに独立workspaceとartifact namespaceを持つ
+- agentごとに独立`SandboxWorkdir`とartifact namespaceを持つ
 - merge policyと最終選択基準を明示する
 - その段階でrun-level `BudgetPolicy`を設計する
 
@@ -888,7 +896,7 @@ use_drawing_ir: false
 ### Unit test
 
 - config validation
-- `SampleManifest`のinput/feedback path、拡張子、optional field、読取validation
+- `InputManifest`と`FeedbackManifest`のpath、拡張子、必須/optional field、読取validation
 - message builderの全mode
 - tool schemaと引数validation
 - routing
@@ -906,7 +914,7 @@ use_drawing_ir: false
 
 - target path拒否
 - symlink escape拒否
-- `run_shell`と`model.py`はactive DXF、configで許可されたinput render、同じworkspaceのfeedbackだけを読める
+- `run_shell`と`model.py`はactive DXF、configで許可されたinput render、同じworkdirのfeedbackだけを読める
 - `run_shell`と`model.py`はrepository、GT、他sample、未許可renderを読めない
 - network accessを拒否する
 - modelが起動した子processも同じfilesystem/network境界に閉じる

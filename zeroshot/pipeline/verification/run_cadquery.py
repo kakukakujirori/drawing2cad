@@ -1,13 +1,16 @@
 import ast
 import shutil
-import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
-from zeroshot.pipeline.sandbox import SandboxRunner, SandboxStatus
+from zeroshot.pipeline.sandbox import (
+    SandboxRunner,
+    SandboxStatus,
+    SandboxWorkdir,
+)
 
 
 class ExecutionStatus(Enum):
@@ -72,9 +75,8 @@ _pipeline_cq.exporters.export(
             )
 
         # Prepare workdir to bind into the sandbox
-        with tempfile.TemporaryDirectory() as work_dir:
-            work_dir = Path(work_dir)
-            exec_path = work_dir / "model.py"
+        with SandboxWorkdir() as workdir:
+            exec_path = workdir.host_bind_dir / "model.py"
             exec_path.write_text(
                 source + self.EXPORT_EPILOGUE,
                 encoding="utf-8",
@@ -82,7 +84,7 @@ _pipeline_cq.exporters.export(
 
             sandbox_result = self.sandbox_runner.run(
                 command="python model.py",
-                work_dir=work_dir,
+                workdir=workdir,
             )
 
             if sandbox_result.status is SandboxStatus.TIMEOUT:
@@ -122,7 +124,7 @@ _pipeline_cq.exporters.export(
                 )
 
             # STEP file should be generated here
-            tmp_step_path = work_dir / "output.step"
+            tmp_step_path = workdir.host_bind_dir / "output.step"
             if not tmp_step_path.is_file():
                 return CadQueryExecutionReport(
                     exec_id=exec_id,
@@ -152,8 +154,8 @@ _pipeline_cq.exporters.export(
                     stderr=sandbox_result.stderr,
                 )
 
-            # Move STEP file to the artifact directory
-            shutil.move(tmp_step_path, step_path)
+            # Copy STEP
+            shutil.copyfile(tmp_step_path, step_path)
 
         return CadQueryExecutionReport(
             exec_id=exec_id,

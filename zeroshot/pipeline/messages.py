@@ -17,7 +17,7 @@ from langchain_core.messages.content import (
     create_text_block,
 )
 
-from zeroshot.pipeline.manifest import SampleManifest
+from zeroshot.pipeline.manifest import FeedbackManifest, InputManifest
 
 DEFAULT_SYSTEM_PROMPT = (
     """
@@ -72,12 +72,12 @@ class MessageBuilder:
         if mode != "none" and not styles:
             raise ValueError(f"{name}_styles must not be empty when mode={mode!r}")
 
-    def build_initial(self, manifest: SampleManifest) -> list[BaseMessage]:
+    def build_initial(self, manifest: InputManifest) -> list[BaseMessage]:
         blocks: list[ContentBlock] = [
             create_text_block(
                 "\n".join(
                     [
-                        f"[Input DXF path: {manifest.input_dxf_path}]",
+                        f"[Input DXF path: {manifest.dxf_path}]",
                         "The DXF contains the three-view 2D technical drawing.",
                         "The coordinate system of the 2D drawing is as follows:",
                         "- Front view: right=+x, up=+y",
@@ -90,12 +90,13 @@ class MessageBuilder:
         ]
 
         self._validate_requested_styles(self.access_render3d_styles, manifest)
+        self._validate_requested_styles(self.feedback_render3d_styles, manifest)
 
         blocks.extend(
             self._render_blocks(
                 mode=self.access_render3d,
                 render3d_styles=self.access_render3d_styles,
-                render3d_paths=manifest.input_render3d_paths,
+                render3d_paths=manifest.render3d_paths,
                 label="[Input perspective renders]",
             )
         )
@@ -105,27 +106,23 @@ class MessageBuilder:
             HumanMessage(content_blocks=blocks),
         ]
 
-    def build_feedback(
-        self, execution_feedback: str, manifest: SampleManifest
-    ) -> HumanMessage:
+    def build_feedback(self, manifest: FeedbackManifest) -> HumanMessage:
         blocks: list[ContentBlock] = [
-            create_text_block(f"[Candidate execution feedback]\n{execution_feedback}\n")
+            create_text_block(
+                f"[Candidate execution feedback]\n{manifest.execution_feedback}\n"
+            )
         ]
 
-        if manifest.feedback_dxf_path is not None:
+        if manifest.dxf_path is not None:
             blocks.append(
-                create_text_block(
-                    f"[Projected DXF path: {manifest.feedback_dxf_path}]\n"
-                )
+                create_text_block(f"[Projected DXF path: {manifest.dxf_path}]\n")
             )
-
-        self._validate_requested_styles(self.feedback_render3d_styles, manifest)
 
         blocks.extend(
             self._render_blocks(
                 mode=self.feedback_render3d,
                 render3d_styles=self.feedback_render3d_styles,
-                render3d_paths=manifest.feedback_render3d_paths,
+                render3d_paths=manifest.render3d_paths,
                 label="[Projected perspective renders]",
             )
         )
@@ -139,9 +136,9 @@ class MessageBuilder:
 
     @staticmethod
     def _validate_requested_styles(
-        styles: tuple[str, ...], manifest: SampleManifest
+        styles: tuple[str, ...], manifest: InputManifest
     ) -> None:
-        unknown_styles = set(styles) - set(manifest.input_render3d_paths)
+        unknown_styles = set(styles) - set(manifest.render3d_paths)
         if unknown_styles:
             raise ValueError(f"Unknown styles specified: {sorted(unknown_styles)}")
 

@@ -1,8 +1,9 @@
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class SandboxStatus(Enum):
@@ -19,7 +20,27 @@ class SandboxResult:
     stderr: str
 
 
-DEFAULT_LOG_LIMIT_BYTES = 1 * 1024 * 1024
+class SandboxWorkdir:
+    sandbox_bind_dir = PurePosixPath("/work")
+
+    def __init__(self, host_bind_dir: Path | None = None):
+        if host_bind_dir is None:
+            self._tmpdir_context = tempfile.TemporaryDirectory(
+                prefix="drawing2cad-sandbox-"
+            )
+            self.host_bind_dir = Path(self._tmpdir_context.name)
+        else:
+            self.host_bind_dir = host_bind_dir
+
+        if not self.host_bind_dir.is_dir():
+            raise FileNotFoundError(f"{self.host_bind_dir=} not found")
+
+    def __enter__(self) -> "SandboxWorkdir":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if hasattr(self, "_tmpdir_context"):
+            self._tmpdir_context.cleanup()
 
 
 class SandboxRunner:
@@ -27,8 +48,8 @@ class SandboxRunner:
         self,
         python_executable: Path,
         default_timeout_s: float,
-        max_stdout_bytes: int = DEFAULT_LOG_LIMIT_BYTES,
-        max_stderr_bytes: int = DEFAULT_LOG_LIMIT_BYTES,
+        max_stdout_bytes: int = 1024 * 1024,
+        max_stderr_bytes: int = 1024 * 1024,
     ) -> None:
         self.python_executable = python_executable
         self.default_timeout_s = default_timeout_s
@@ -57,15 +78,13 @@ class SandboxRunner:
     def run(
         self,
         command: str,
-        work_dir: Path,
+        workdir: SandboxWorkdir,
         timeout_s: float | None = None,
     ) -> SandboxResult:
 
         # sanity check
-        work_dir = work_dir.resolve()
-        if not work_dir.is_dir():
-            raise ValueError(f"work_dir must be a directory: {work_dir}")
-
+        host_workdir = workdir.host_bind_dir.resolve()
+        sandbox_workdir = workdir.sandbox_bind_dir
         py_path = self.python_executable.resolve()
         py_root_dir = py_path.parent.parent  # should include site-packages
 
@@ -85,11 +104,11 @@ class SandboxRunner:
             "--ro-bind", str(py_root_dir), "/cad-env",
             "--clearenv",
             "--setenv", "PATH", "/cad-env/bin:/usr/bin:/bin",
-            "--setenv", "HOME", "/work",
+            "--setenv", "HOME", str(sandbox_workdir),
             "--setenv", "LANG", "C.UTF-8",
             "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
-            "--bind", str(work_dir), "/work",
-            "--chdir", "/work",
+            "--bind", str(host_workdir), str(sandbox_workdir),
+            "--chdir", str(sandbox_workdir),
             "--", "/bin/bash", "-c", command,
         ]
         # fmt: on

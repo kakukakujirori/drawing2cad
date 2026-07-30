@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from zeroshot.pipeline.manifest import SampleManifest
+from zeroshot.pipeline.manifest import FeedbackManifest, InputManifest
 from zeroshot.pipeline.messages import DEFAULT_SYSTEM_PROMPT, MessageBuilder
 
 STYLES = ("style-a", "style-b", "style-c")
@@ -17,33 +17,43 @@ def _write(path: Path, content: bytes) -> Path:
     return path
 
 
-def _manifest(
+def _input_manifest(tmp_path: Path) -> InputManifest:
+    return InputManifest(
+        sample_id="sample-1",
+        dxf_path=_write(
+            tmp_path / "input.dxf",
+            b"RAW_DXF_MUST_NOT_BE_IN_PROMPT",
+        ),
+        render3d_paths={
+            style: _write(
+                tmp_path / f"input-{index}.png",
+                f"input-{style}".encode(),
+            )
+            for index, style in enumerate(STYLES)
+        },
+    )
+
+
+def _feedback_manifest(
     tmp_path: Path,
     *,
-    feedback_count: int = 0,
-    feedback_dxf: bool = False,
-) -> SampleManifest:
-    input_dxf = _write(tmp_path / "input.dxf", b"RAW_DXF_MUST_NOT_BE_IN_PROMPT")
-    input_renders = {
-        style: _write(tmp_path / f"input-{index}.png", f"input-{style}".encode())
-        for index, style in enumerate(STYLES)
-    }
-    feedback_renders = {
-        style: _write(
-            tmp_path / f"feedback-{index}.png",
-            f"feedback-{style}".encode(),
-        )
-        for index, style in enumerate(STYLES[:feedback_count])
-    }
-    feedback_dxf_path = (
-        _write(tmp_path / "feedback.dxf", b"FEEDBACK_DXF") if feedback_dxf else None
-    )
-    return SampleManifest(
-        sample_id="sample-1",
-        input_dxf_path=input_dxf,
-        input_render3d_paths=input_renders,
-        feedback_dxf_path=feedback_dxf_path,
-        feedback_render3d_paths=feedback_renders,
+    execution_feedback: str = "execution result",
+    render_count: int = 0,
+    include_dxf: bool = False,
+) -> FeedbackManifest:
+    return FeedbackManifest(
+        verification_id="verification-1",
+        execution_feedback=execution_feedback,
+        dxf_path=(
+            _write(tmp_path / "feedback.dxf", b"FEEDBACK_DXF") if include_dxf else None
+        ),
+        render3d_paths={
+            style: _write(
+                tmp_path / f"feedback-{index}.png",
+                f"feedback-{style}".encode(),
+            )
+            for index, style in enumerate(STYLES[:render_count])
+        },
     )
 
 
@@ -112,27 +122,27 @@ def test_non_none_mode_requires_at_least_one_style(
 def test_initial_message_always_contains_dxf_path_but_not_raw_dxf(
     tmp_path: Path,
 ) -> None:
-    manifest = _manifest(tmp_path)
+    manifest = _input_manifest(tmp_path)
     messages = _builder().build_initial(manifest)
 
     assert len(messages) == 2
     assert isinstance(messages[0], SystemMessage)
     assert isinstance(messages[1], HumanMessage)
     text = _text(_blocks(messages[1]))
-    assert str(manifest.input_dxf_path) in text
+    assert str(manifest.dxf_path) in text
     assert "RAW_DXF_MUST_NOT_BE_IN_PROMPT" not in text
 
 
 def test_initial_none_has_no_sample_specific_render_information(
     tmp_path: Path,
 ) -> None:
-    manifest = _manifest(tmp_path)
+    manifest = _input_manifest(tmp_path)
     human = _builder().build_initial(manifest)[1]
     blocks = _blocks(human)
     text = _text(blocks)
 
     assert [block["type"] for block in blocks] == ["text"]
-    for style, path in manifest.input_render3d_paths.items():
+    for style, path in manifest.render3d_paths.items():
         assert style not in text
         assert str(path) not in text
 
@@ -140,7 +150,7 @@ def test_initial_none_has_no_sample_specific_render_information(
 def test_initial_path_includes_only_selected_styles_in_order(
     tmp_path: Path,
 ) -> None:
-    manifest = _manifest(tmp_path)
+    manifest = _input_manifest(tmp_path)
     selected = ("style-c", "style-a")
     human = _builder(
         access_mode="path",
@@ -150,7 +160,7 @@ def test_initial_path_includes_only_selected_styles_in_order(
 
     assert text.index("style-c") < text.index("style-a")
     for style in selected:
-        assert str(manifest.input_render3d_paths[style]) in text
+        assert str(manifest.render3d_paths[style]) in text
     assert "style-b" not in text
     assert not any(block["type"] == "image" for block in _blocks(human))
 
@@ -158,7 +168,7 @@ def test_initial_path_includes_only_selected_styles_in_order(
 def test_initial_image_interleaves_style_labels_and_images(
     tmp_path: Path,
 ) -> None:
-    manifest = _manifest(tmp_path)
+    manifest = _input_manifest(tmp_path)
     selected = ("style-b", "style-a")
     human = _builder(
         access_mode="image",
@@ -180,13 +190,16 @@ def test_initial_image_interleaves_style_labels_and_images(
     ):
         assert style in blocks[label_index]["text"]
         assert base64.b64decode(blocks[image_index]["base64"]) == (
-            manifest.input_render3d_paths[style].read_bytes()
+            manifest.render3d_paths[style].read_bytes()
         )
         assert blocks[image_index]["mime_type"] == "image/png"
 
 
-def test_initial_rejects_style_missing_from_manifest(tmp_path: Path) -> None:
-    manifest = _manifest(tmp_path)
+def test_initial_rejects_access_style_missing_from_input_manifest(
+    tmp_path: Path,
+) -> None:
+    manifest = _input_manifest(tmp_path)
+
     with pytest.raises(ValueError, match="Unknown styles"):
         _builder(
             access_mode="image",
@@ -194,71 +207,90 @@ def test_initial_rejects_style_missing_from_manifest(tmp_path: Path) -> None:
         ).build_initial(manifest)
 
 
-def test_feedback_always_contains_execution_feedback(tmp_path: Path) -> None:
-    manifest = _manifest(tmp_path)
-    message = _builder().build_feedback("syntax error on line 3", manifest)
-
-    assert "syntax error on line 3" in _text(_blocks(message))
-
-
-def test_feedback_rejects_style_missing_from_input_manifest(
+def test_initial_rejects_feedback_style_missing_from_input_manifest(
     tmp_path: Path,
 ) -> None:
-    manifest = _manifest(tmp_path)
+    manifest = _input_manifest(tmp_path)
+
     with pytest.raises(ValueError, match="Unknown styles"):
         _builder(
             feedback_mode="image",
             feedback_styles=("missing-style",),
-        ).build_feedback("execution result", manifest)
+        ).build_initial(manifest)
+
+
+def test_feedback_always_contains_execution_feedback(tmp_path: Path) -> None:
+    manifest = _feedback_manifest(
+        tmp_path,
+        execution_feedback="syntax error on line 3",
+    )
+    message = _builder().build_feedback(manifest)
+
+    assert "syntax error on line 3" in _text(_blocks(message))
 
 
 def test_feedback_includes_projected_dxf_only_when_available(
     tmp_path: Path,
 ) -> None:
-    without_dxf = _builder().build_feedback("failed", _manifest(tmp_path))
+    without_dxf = _builder().build_feedback(_feedback_manifest(tmp_path))
     assert "Projected DXF path" not in _text(_blocks(without_dxf))
 
-    with_dxf_manifest = _manifest(tmp_path, feedback_dxf=True)
-    with_dxf = _builder().build_feedback("valid", with_dxf_manifest)
+    with_dxf_manifest = _feedback_manifest(tmp_path, include_dxf=True)
+    with_dxf = _builder().build_feedback(with_dxf_manifest)
     text = _text(_blocks(with_dxf))
     assert "Projected DXF path" in text
-    assert str(with_dxf_manifest.feedback_dxf_path) in text
+    assert str(with_dxf_manifest.dxf_path) in text
 
 
 @pytest.mark.parametrize("mode", ["path", "image"])
-@pytest.mark.parametrize("feedback_count", [0, 1, 2, 3])
+@pytest.mark.parametrize("render_count", [0, 1, 2, 3])
 def test_feedback_includes_only_available_renders(
     tmp_path: Path,
     mode: str,
-    feedback_count: int,
+    render_count: int,
 ) -> None:
-    manifest = _manifest(tmp_path, feedback_count=feedback_count)
-    message = _builder(
+    input_manifest = _input_manifest(tmp_path)
+    feedback_manifest = _feedback_manifest(
+        tmp_path,
+        render_count=render_count,
+    )
+    builder = _builder(
         feedback_mode=mode,
         feedback_styles=STYLES,
-    ).build_feedback("execution result", manifest)
+    )
+    builder.build_initial(input_manifest)
+
+    message = builder.build_feedback(feedback_manifest)
     blocks = _blocks(message)
     text = _text(blocks)
 
-    if feedback_count == 0:
+    if render_count == 0:
         assert "Projected perspective renders" not in text
         assert "attached images" not in text
     else:
         assert "Projected perspective renders" in text
 
-    for style in STYLES[:feedback_count]:
+    for style in STYLES[:render_count]:
         assert style in text
-    for style in STYLES[feedback_count:]:
+    for style in STYLES[render_count:]:
         assert style not in text
 
-    expected_image_count = feedback_count if mode == "image" else 0
-    assert sum(block["type"] == "image" for block in blocks) == expected_image_count
+    image_blocks = [block for block in blocks if block["type"] == "image"]
+    expected_image_count = render_count if mode == "image" else 0
+    assert len(image_blocks) == expected_image_count
+
+    if mode == "image":
+        assert [base64.b64decode(block["base64"]) for block in image_blocks] == [
+            feedback_manifest.render3d_paths[style].read_bytes()
+            for style in STYLES[:render_count]
+        ]
 
 
 def test_access_and_feedback_style_selections_do_not_mix(
     tmp_path: Path,
 ) -> None:
-    manifest = _manifest(tmp_path, feedback_count=3)
+    input_manifest = _input_manifest(tmp_path)
+    feedback_manifest = _feedback_manifest(tmp_path, render_count=3)
     builder = _builder(
         access_mode="path",
         access_styles=("style-a",),
@@ -266,8 +298,8 @@ def test_access_and_feedback_style_selections_do_not_mix(
         feedback_styles=("style-c",),
     )
 
-    initial_text = _text(_blocks(builder.build_initial(manifest)[1]))
-    feedback_text = _text(_blocks(builder.build_feedback("valid", manifest)))
+    initial_text = _text(_blocks(builder.build_initial(input_manifest)[1]))
+    feedback_text = _text(_blocks(builder.build_feedback(feedback_manifest)))
 
     assert "style-a" in initial_text
     assert "style-c" not in initial_text
