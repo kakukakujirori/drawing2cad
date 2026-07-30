@@ -5,7 +5,9 @@ from langchain_core.tools import BaseTool, tool
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 
 
-def create_run_shell_tool(sandbox_runner: SandboxRunner, workdir: SandboxWorkdir) -> BaseTool:
+def create_run_shell_tool(
+    sandbox_runner: SandboxRunner, workdir: SandboxWorkdir
+) -> BaseTool:
     description = cleandoc(
         f"""Run a Bash command in the isolated {workdir.sandbox_bind_dir} directory.
 

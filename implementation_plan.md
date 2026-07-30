@@ -321,6 +321,10 @@ modelへ公開する`verify_output` toolは引数を取らず、共有`SandboxWo
 
 Phase 3/4では`render_views=False`だけを使い、`True`なら明示的に`NotImplementedError`を送出する。この例外はmodel reconstruction failureではなく、未実装機能を有効にしたconfiguration errorとしてrun開始前またはtrusted runtime境界で扱う。Phase 5で`True`を実装し、verifiedの場合だけ`render.py`で三面図DXFとperspective viewsを生成してverification ID配下のartifactとworkdir内feedbackへ保存する。
 
+`verify_output`のmodel-visibleな戻り値は、Phase 5でもexecution status、verification ID、source hash、stdout/stderr、errorからなるJSON化可能な構造化reportに保つ。生成したDXF/renderの管理には`FeedbackManifest`を使い、構造化reportのJSON文字列を`execution_feedback`へ格納し、生成に成功したartifactのpathだけをoptional fieldへ登録する。`FeedbackManifest`自体や画像bytesをtool resultのJSONへ直接混ぜず、model-visibleな`ToolMessage.content`から分離したtrusted側handoffとしてworkflowへ保持する。具体的なtransportは`ToolMessage.artifact`またはgraph stateを候補とし、feedback node実装時に一方を選ぶ。
+
+`feedback_render3d: path | image`の選択と画像bytesの読込みは`verify_output`の責務にせず、`FeedbackManifest`を受け取る`MessageBuilder`が行う。`path` modeでagentへ提示するのはsandboxから参照できる`/work`配下のpathだけとし、manifestがartifact読取り用に保持するhost pathをそのままmessageへ出さない。host artifactをshared workdirへstageしてsandbox pathを組み立てる具体的なAPIは、visual feedbackを実装するPhase 5で決める。
+
 Phase 2の`SandboxRunner`が提供するresource guardはwall timeoutと返却するstdout/stderrの切り詰めまでである。`capture_output=True`によるprocess実行中のbuffer量、CPU、memory、PID数、workdirのdisk使用量のhard limitはまだ提供しない。固定fixtureとfake modelだけを扱うPhase 2/3ではこの範囲とし、実model生成commandを動かすPhase 4のlive smoke test前に、bounded log captureとcgroupまたは同等機構によるresource limitを追加する。
 
 system promptには「workdir内の`model.py`へ最終CadQuery Solidを`result`変数として保存する」「shellで自由に解析・試行できる」「必要な時に`verify_output`を呼べる」「完成したらtool callなしで応答する」を記述する。利用可能package、workdirのpath、tool result contractはtool descriptionへ記述し、ezdxfやCadQueryの個別API tutorialをsystem promptへ埋め込まない。
@@ -695,13 +699,15 @@ Phase 3/4で未実装としていた`verify_output(render_views=True)`をここ�
 
 1. `verification/render.py`を追加し、verified STEPから三面図DXFとperspective viewsを生成する
 2. `verify_output(render_views=True)`から、STEP検証成功時だけrendererを呼ぶ
-3. 生成成功時、三面図DXF pathをfeedback user messageへ常に入れる
-4. workdirから元DXFと各verificationのfeedback DXFを参照できるようにする
-5. `feedback_render3d: none`
-6. `feedback_render3d: path`
-7. `feedback_render3d: image`
-8. style選択、部分失敗、message形式の組合せtest
-9. identical STEP再renderと既知形状fixtureでrendererの再現性を測る
+3. 構造化reportと生成に成功したDXF/render pathから`FeedbackManifest`を作る
+4. `FeedbackManifest`をtool resultのJSONへ混ぜず、workflow内のtrusted artifactとしてfeedback message構築まで渡す
+5. 生成成功時、三面図DXF pathをfeedback user messageへ常に入れる
+6. workdirから元DXFと各verificationのfeedback DXFを参照できるようにする
+7. `feedback_render3d: none`
+8. `feedback_render3d: path`
+9. `feedback_render3d: image`
+10. style選択、部分失敗、message形式の組合せtest
+11. identical STEP再renderと既知形状fixtureでrendererの再現性を測る
 
 renderer本体は再実装せず、trusted側から以下を呼ぶ。
 

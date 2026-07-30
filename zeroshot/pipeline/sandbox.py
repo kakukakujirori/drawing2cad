@@ -42,6 +42,38 @@ class SandboxWorkdir:
         if hasattr(self, "_tmpdir_context"):
             self._tmpdir_context.cleanup()
 
+    def host_to_sandbox_path(self, host_path: str | Path) -> PurePosixPath:
+        host_path = Path(host_path)
+
+        if not host_path.is_absolute():
+            host_path = self.host_bind_dir / host_path
+
+        try:
+            relative_path = host_path.relative_to(self.host_bind_dir)
+        except ValueError as error:
+            raise ValueError(f"path must be inside {self.host_bind_dir}") from error
+
+        if ".." in relative_path.parts:
+            raise ValueError(f"path must not escape {self.host_bind_dir}")
+
+        return self.sandbox_bind_dir.joinpath(*relative_path.parts)
+
+    def sandbox_to_host_path(self, sandbox_path: str | PurePosixPath) -> Path:
+        sandbox_path = PurePosixPath(sandbox_path)
+
+        if not sandbox_path.is_absolute():
+            sandbox_path = self.sandbox_bind_dir / sandbox_path
+
+        try:
+            relative_path = sandbox_path.relative_to(self.sandbox_bind_dir)
+        except ValueError as error:
+            raise ValueError(f"path must be inside {self.sandbox_bind_dir}") from error
+
+        if ".." in relative_path.parts:
+            raise ValueError(f"path must not escape {self.sandbox_bind_dir}")
+
+        return self.host_bind_dir.joinpath(*relative_path.parts)
+
 
 class SandboxRunner:
     def __init__(
