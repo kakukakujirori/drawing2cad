@@ -1,18 +1,25 @@
-from collections.abc import Sequence
+from functools import partial
 
-from langchain_core.language_models import LanguageModelInput
+from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable
-from langchain_core.tools import BaseTool
 from langgraph.graph import START, END, StateGraph
 from langgraph.prebuilt import ToolNode
 
+from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.tools import (
+    create_load_image_tool,
+    create_run_shell_tool,
+    create_verify_output_tool,
+)
+from zeroshot.pipeline.verification import CadQueryExecutor
 from zeroshot.pipeline.workflow.state import ReconstructionState
 
 
 def create_reconstruction_graph(
-    agent_with_tools: Runnable[LanguageModelInput, AIMessage],
-    tools: Sequence[BaseTool],
+    model: BaseChatModel,
+    sandbox_runner: SandboxRunner,
+    sandbox_workdir: SandboxWorkdir,
 ):
     def should_continue(state: ReconstructionState):
         last_message = state["messages"][-1]
@@ -20,21 +27,55 @@ def create_reconstruction_graph(
             raise TypeError("agent node must append an AIMessage before routing")
         if last_message.tool_calls:
             return "tools"
-        return END
+        return "verify_final"
 
-    def call_agent(state: ReconstructionState):
-        response = agent_with_tools.invoke(state["messages"])
+    def call_agent(
+        state: ReconstructionState,
+        agent: Runnable[LanguageModelInput, AIMessage],
+    ):
+        response = agent.invoke(state["messages"])
         return {"messages": [response]}
 
+    # Create and bind tools
+    executor = CadQueryExecutor(
+        artifact_root=sandbox_workdir.host_bind_dir,
+        sandbox_runner=sandbox_runner,
+    )
+    tools = [
+        create_run_shell_tool(sandbox_runner, sandbox_workdir),
+        create_load_image_tool(sandbox_workdir),
+        create_verify_output_tool(
+            executor=executor,
+            workdir=sandbox_workdir,
+            render_views=False,
+            serialize_output=True,
+        ),
+    ]
+    agent = model.bind_tools(tools)
     tool_node = ToolNode(tools)
 
+    # Postprocess node
+    verify_final_tool = create_verify_output_tool(
+        executor=executor,
+        workdir=sandbox_workdir,
+        render_views=False,
+        serialize_output=False,
+    )
+
+    def verify_final(state: ReconstructionState):
+        report = verify_final_tool.invoke({})
+        return {"last_verification": report}
+
+    # Construct a graph
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
-    workflow.add_node("agent", call_agent)
+    workflow.add_node("agent", partial(call_agent, agent=agent))
     workflow.add_node("tools", tool_node)
+    workflow.add_node("verify_final", verify_final)
 
     workflow.add_edge(START, "agent")
-    workflow.add_conditional_edges("agent", should_continue, ["tools", END])
+    workflow.add_conditional_edges("agent", should_continue, ["tools", "verify_final"])
     workflow.add_edge("tools", "agent")
+    workflow.add_edge("verify_final", END)
 
     graph = workflow.compile()
     return graph
@@ -42,30 +83,33 @@ def create_reconstruction_graph(
 
 if __name__ == "__main__":
     import io
+    import sys
+    from pathlib import Path
+    from typing import cast
+    from unittest.mock import Mock
+
     from langchain_core.runnables import RunnableLambda
-    from langchain_core.tools import tool
     from PIL import Image
 
-    @tool
-    def preview_tool(command: str) -> str:
-        """Preview-only tool used to render the graph structure."""
-        return command
+    preview_model_mock = Mock(spec=BaseChatModel)
+    preview_model_mock.bind_tools.return_value = RunnableLambda(
+        lambda messages: AIMessage(content="")
+    )
+    preview_model = cast(BaseChatModel, preview_model_mock)
 
-    preview_agent = RunnableLambda(lambda messages: AIMessage(content=""))
-
-    graph = create_reconstruction_graph(
-        agent_with_tools=preview_agent,
-        tools=[preview_tool],
+    sandbox_runner = SandboxRunner(
+        python_executable=Path(sys.executable),
+        default_timeout_s=10,
     )
 
-    png_data = graph.get_graph().draw_mermaid_png()
+    with SandboxWorkdir() as workdir:
+        graph = create_reconstruction_graph(
+            model=preview_model,
+            sandbox_runner=sandbox_runner,
+            sandbox_workdir=workdir,
+        )
 
-    # Save to file
-    out_path = "workflow_graph.png"
-    # with open(out_path, "wb") as f:
-    #     f.write(png_data)
-    # print(f"Graph saved to {out_path}")
+        png_data = graph.get_graph().draw_mermaid_png()
 
-    # Open in a separate window
     img = Image.open(io.BytesIO(png_data))
     img.show()

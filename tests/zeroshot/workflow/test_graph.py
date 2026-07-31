@@ -3,13 +3,17 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
+from unittest.mock import Mock
 
-from langchain_core.language_models import LanguageModelInput
+import pytest
+from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableLambda
+from langchain_core.tools import BaseTool, tool
 
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
+from zeroshot.pipeline.tools import VerifyOutputResult
+from zeroshot.pipeline.workflow import graph as graph_module
 from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
 
 
@@ -53,15 +57,15 @@ def test_graph_runs_tools_until_agent_returns_without_tool_calls() -> None:
         agent_inputs.append(cast(list[BaseMessage], model_input))
         return next(responses)
 
-    agent_with_tools: Runnable[LanguageModelInput, AIMessage] = RunnableLambda(
-        scripted_agent
-    )
+    model_mock = Mock(spec=BaseChatModel)
+    model_mock.bind_tools.return_value = RunnableLambda(scripted_agent)
+    model = cast(BaseChatModel, model_mock)
 
     with SandboxWorkdir() as workdir:
-        run_shell = create_run_shell_tool(sandbox_runner, workdir)
         graph = create_reconstruction_graph(
-            agent_with_tools=agent_with_tools,
-            tools=[run_shell],
+            model=model,
+            sandbox_runner=sandbox_runner,
+            sandbox_workdir=workdir,
         )
 
         result = graph.invoke(
@@ -109,3 +113,104 @@ def test_graph_runs_tools_until_agent_returns_without_tool_calls() -> None:
     assert isinstance(messages[-1], AIMessage)
     assert messages[-1].content == "done"
     assert messages[-1].tool_calls == []
+
+    model_mock.bind_tools.assert_called_once()
+    bound_tools = model_mock.bind_tools.call_args.args[0]
+    assert [bound_tool.name for bound_tool in bound_tools] == [
+        "run_shell",
+        "load_image",
+        "verify_output",
+    ]
+
+    assert result["last_verification"] == VerifyOutputResult(
+        status="REJECTED",
+        executor_error="model.py was not found",
+    )
+
+
+def test_graph_repeats_verification_after_model_calls_verify_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox_runner = SandboxRunner(
+        python_executable=Path(sys.executable),
+        default_timeout_s=10,
+    )
+    responses: Iterator[AIMessage] = iter(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "verify_output",
+                        "args": {},
+                        "id": "call-intermediate-verification",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="done"),
+        ]
+    )
+    model_mock = Mock(spec=BaseChatModel)
+    model_mock.bind_tools.return_value = RunnableLambda(lambda _: next(responses))
+    model = cast(BaseChatModel, model_mock)
+
+    invocations: list[str] = []
+    final_report = VerifyOutputResult(
+        status="VERIFIED",
+        execution_id="final-verification",
+        source_sha256="final-source-hash",
+        returncode=0,
+    )
+
+    @tool("verify_output")
+    def model_verify_output() -> dict[str, str]:
+        """Stub the model-facing intermediate verification."""
+        invocations.append("model")
+        return {"status": "REJECTED"}
+
+    @tool("verify_output")
+    def final_verify_output() -> VerifyOutputResult:
+        """Stub the workflow-owned final verification."""
+        invocations.append("workflow")
+        return final_report
+
+    def create_stub_verify_output_tool(
+        *args: object,
+        serialize_output: bool = True,
+        **kwargs: object,
+    ) -> BaseTool:
+        del args, kwargs
+        return model_verify_output if serialize_output else final_verify_output
+
+    monkeypatch.setattr(
+        graph_module,
+        "create_verify_output_tool",
+        create_stub_verify_output_tool,
+    )
+
+    with SandboxWorkdir() as workdir:
+        graph = create_reconstruction_graph(
+            model=model,
+            sandbox_runner=sandbox_runner,
+            sandbox_workdir=workdir,
+        )
+        result = graph.invoke(
+            {"messages": [HumanMessage(content="Verify the candidate")]}
+        )
+
+    assert invocations == ["model", "workflow"]
+    assert result["last_verification"] == final_report
+
+    messages = result["messages"]
+    assert [type(message) for message in messages] == [
+        HumanMessage,
+        AIMessage,
+        ToolMessage,
+        AIMessage,
+    ]
+
+    intermediate_result = messages[2]
+    assert isinstance(intermediate_result, ToolMessage)
+    assert intermediate_result.tool_call_id == "call-intermediate-verification"
+    assert json.loads(cast(str, intermediate_result.content)) == {"status": "REJECTED"}

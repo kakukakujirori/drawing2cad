@@ -46,6 +46,7 @@ def create_verify_output_tool(
     workdir: SandboxWorkdir,
     render_views: bool = False,
     source_filename: str = "model.py",
+    serialize_output: bool = True,
 ) -> BaseTool:
     description = cleandoc(
         f"""
@@ -129,8 +130,9 @@ def create_verify_output_tool(
         return report
 
     @tool("verify_output", description=description)
-    def verify_output() -> dict[str, VerifyOutputValue]:
+    def verify_output() -> VerifyOutputResult | dict[str, VerifyOutputValue]:
         model_path = workdir.host_bind_dir / source_filename
-        return _verify(model_path).serialize()
+        ret = _verify(model_path)
+        return ret.serialize() if serialize_output else ret
 
     return verify_output

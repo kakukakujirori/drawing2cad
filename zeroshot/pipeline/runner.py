@@ -9,12 +9,6 @@ from langchain_core.language_models import BaseChatModel
 from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.tools import (
-    create_load_image_tool,
-    create_run_shell_tool,
-    create_verify_output_tool,
-)
-from zeroshot.pipeline.verification import CadQueryExecutor
 from zeroshot.pipeline.workflow import (
     create_reconstruction_graph,
     ReconstructionState,
@@ -38,11 +32,6 @@ class PipelineRunner:
         sample_artifact_root = self.artifact_root / manifest.sample_id / "verifications"
         sample_artifact_root.mkdir(parents=True, exist_ok=True)
 
-        executor = CadQueryExecutor(
-            artifact_root=sample_artifact_root,
-            sandbox_runner=self.sandbox_runner,
-        )
-
         with SandboxWorkdir() as workdir:
             staged_manifest = self._stage_inputs(
                 manifest=manifest,
@@ -54,24 +43,16 @@ class PipelineRunner:
                 workdir,
             )
 
-            tools = [
-                create_run_shell_tool(self.sandbox_runner, workdir),
-                create_load_image_tool(workdir),
-                create_verify_output_tool(
-                    executor=executor,
-                    workdir=workdir,
-                    render_views=False,
-                ),
-            ]
-
-            agent_with_tools = self.model.bind_tools(tools)
-
             graph = create_reconstruction_graph(
-                agent_with_tools=agent_with_tools,
-                tools=tools,
+                model=self.model,
+                sandbox_runner=self.sandbox_runner,
+                sandbox_workdir=workdir,
             )
 
             result = graph.invoke(ReconstructionState(messages=initial_messages))
+
+            # Save artifacts
+            # TODO: IMPLEMENT
 
         return cast(ReconstructionState, result)
 
