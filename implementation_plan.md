@@ -211,9 +211,10 @@ zeroshot/
 ├── run_pipeline.py                  # 後続: 新pipelineの薄いHydra composition root
 ├── pipeline/
 │   ├── __init__.py
+│   ├── event_log.py                 # run eventの正規化とJSONL逐次出力
 │   ├── manifest.py                  # InputManifest / FeedbackManifestとpath検証
 │   ├── messages.py                  # access/feedback message builder
-│   ├── runner.py                    # 後続: application wiringとsample loop
+│   ├── runner.py                    # application wiringとsample単位のrun lifecycle
 │   ├── sandbox.py                   # SandboxWorkdirと全model生成command用の共通隔離実行基盤
 │   ├── models/
 │   │   ├── __init__.py
@@ -232,10 +233,7 @@ zeroshot/
 │   ├── workflow/
 │   │   ├── __init__.py
 │   │   ├── state.py
-│   │   ├── (agent.py)
-│   │   ├── (routing.py)
-│   │   └── graph.py
-│   ├── event_log.py                # run eventの正規化とJSONL逐次出力
+│   │   └── graph.py                # node実装とroutingが小さい間は同居させる
 │   ├── evaluation/
 │   │   ├── __init__.py
 │   │   └── score_run.py
@@ -279,27 +277,12 @@ tests/
 概念上のstateは以下とする。
 
 ```python
-class ReconstructionState(TypedDict, total=False):
+class ReconstructionState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
-
-    run_id: str
-    sample_id: str
-    agent_id: str
-
-    access_config: dict
-    feedback_config: dict
-
-    verification_ids: list[str]
-    last_verification: dict | None
-    final_verification_id: str | None
-
-    artifact_manifest_path: str
-    audit_path: str
-    status: str
-    safety_stop_reason: str | None
+    last_verification: NotRequired[VerifyOutputResult]
 ```
 
-`SandboxWorkdir`、`SandboxRunner`、renderer、model objectなどのruntime dependencyはstateへ入れない。長いstdout/stderr、画像bytes、`model.py`本文、render画像もstateへ直接蓄積しない。stateにはmessage history、verification ID、最後の構造化結果、検証済みfilesystem pathまたは保存済みartifact IDを保持する。
+Phase 3ではgraph node間で実際に受け渡す`messages`と、workflow主導の最終検証結果`last_verification`だけをstateへ置く。run/sample IDは`PipelineRunner`、verification IDは`verify_output`とfilesystem、監査情報はevent logが所有する。`SandboxWorkdir`、`SandboxRunner`、renderer、model objectなどのruntime dependencyや、将来必要になるかもしれないだけのfieldをstateへ先回りして追加しない。新しいnode間で永続的に共有する値が具体化した時点で追加する。
 
 ### 6.2 bindするtool
 
@@ -317,57 +300,38 @@ modelへ公開する`verify_output` toolは引数を取らず、共有`SandboxWo
 
 Phase 3/4では`render_views=False`だけを使い、`True`なら明示的に`NotImplementedError`を送出する。この例外はmodel reconstruction failureではなく、未実装機能を有効にしたconfiguration errorとしてrun開始前またはtrusted runtime境界で扱う。Phase 5で`True`を実装し、verifiedの場合だけ`render.py`で三面図DXFとperspective viewsを生成してverification ID配下のartifactとworkdir内feedbackへ保存する。
 
-`verify_output`のmodel-visibleな戻り値は、Phase 5でもexecution status、verification ID、source hash、stdout/stderr、errorからなるJSON化可能な構造化reportに保つ。生成したDXF/renderの管理には`FeedbackManifest`を使い、構造化reportのJSON文字列を`execution_feedback`へ格納し、生成に成功したartifactのpathだけをoptional fieldへ登録する。`FeedbackManifest`自体や画像bytesをtool resultのJSONへ直接混ぜず、model-visibleな`ToolMessage.content`から分離したtrusted側handoffとしてworkflowへ保持する。具体的なtransportは`ToolMessage.artifact`またはgraph stateを候補とし、feedback node実装時に一方を選ぶ。
+`verify_output`のmodel-visibleな戻り値は、Phase 5でもexecution status、verification ID、stdout/stderr、errorからなるJSON化可能な構造化reportに保ち、source本文は含めない。trusted側の最終reportはsourceを保持し、監査eventでは本文を保存せずhashとbyte数へ要約する。生成したDXF/renderの管理には`FeedbackManifest`を使い、構造化reportのJSON文字列を`execution_feedback`へ格納し、生成に成功したartifactのpathだけをoptional fieldへ登録する。`FeedbackManifest`自体や画像bytesをtool resultのJSONへ直接混ぜず、model-visibleな`ToolMessage.content`から分離したtrusted側handoffとしてworkflowへ保持する。具体的なtransportは`ToolMessage.artifact`またはgraph stateを候補とし、feedback node実装時に一方を選ぶ。
 
 `feedback_render3d: path | image`の選択と画像bytesの読込みは`verify_output`の責務にせず、`FeedbackManifest`を受け取る`MessageBuilder`が行う。`path` modeでagentへ提示するのはsandboxから参照できる`/work`配下のpathだけとし、manifestがartifact読取り用に保持するhost pathをそのままmessageへ出さない。host artifactをshared workdirへstageしてsandbox pathを組み立てる具体的なAPIは、visual feedbackを実装するPhase 5で決める。
 
 Phase 2の`SandboxRunner`が提供するresource guardはwall timeoutと返却するstdout/stderrの切り詰めまでである。`capture_output=True`によるprocess実行中のbuffer量、CPU、memory、PID数、workdirのdisk使用量のhard limitはまだ提供しない。固定fixtureとfake modelだけを扱うPhase 2/3ではこの範囲とし、実model生成commandを動かすPhase 4のlive smoke test前に、bounded log captureとcgroupまたは同等機構によるresource limitを追加する。
 
-system promptには「workdir内の`model.py`へ最終CadQuery Solidを`result`変数として保存する」「shellで自由に解析・試行できる」「必要な時に`verify_output`を呼べる」「完成したらtool callなしで応答する」を記述する。利用可能package、workdirのpath、tool result contractはtool descriptionへ記述し、ezdxfやCadQueryの個別API tutorialをsystem promptへ埋め込まない。
+system promptはCadQuery scriptと`result`変数というtask contractに集中させる。利用可能toolは`bind_tools`でmodelへ提示し、shellで可能な操作、利用可能package、workdirのpath、tool result contractは各tool descriptionへ記述する。ezdxfやCadQueryの個別API tutorialをsystem promptへ埋め込まない。
 
 ### 6.3 中間実行と最終実行
 
-同じ`tools/verify_output.py`のtool instanceを次の2経路から使う。
+同じ`create_verify_output_tool()` factoryから、用途の異なる2つのtool instanceを作る。
 
-1. modelが`verify_output` toolを自発的に呼ぶ中間検証
-2. modelがtool callなしで完成を表明した後、workflowが呼ぶ最終検証
+1. modelが自発的に呼ぶ中間検証用。JSON化可能なmappingを返す
+2. modelがtool callなしで完成を表明した後にworkflowが呼ぶ最終検証用。`VerifyOutputResult`を返す
 
 最終検証では、中間検証済みで`model.py`のhashが同じでも再実行する。これによりworkdirに残った古いSTEPではなく、現在の`model.py`と対応するSTEPであることを保証する。監査eventには呼び出し元を`model`または`workflow`として記録する。
 
-model主導の`verify_output`は対応する`ToolMessage`でtool protocolを閉じる。中間検証後は`build_feedback` nodeがexecutionとSTEP verificationを含む`HumanMessage`を追加してagentへ戻す。Phase 5でvisual feedbackを実装した後はDXF/render pathもここへ加える。最終検証はtool callに対応しないworkflow actionなので、成功時はそのまま終了し、修正可能な失敗時だけfeedback `HumanMessage`を追加してagentへ戻す。
+model主導の`verify_output`は、`run_shell`、`load_image`と同様に対応する`ToolMessage`でtool protocolを閉じ、その構造化結果を次のagent turnが直接解釈する。Phase 3では追加の`build_feedback` nodeや`HumanMessage`を挟まない。Phase 5でvisual feedbackを追加するときに、画像をtool resultから分離する必要が生じた場合だけ専用nodeを導入する。
 
-- 成功: verified STEPをfinal artifactに昇格し、そのmodelを再呼び出さず終了する
-- source、execution、STEP、renderの修正可能な失敗: feedbackを返してagentへ戻す
-- safety stop: 未検証成果物を成功扱いせず、理由を保存して終了する
+workflow主導の最終検証は成功・失敗にかかわらず終了する。失敗後にagentへ戻すと停止条件が不明瞭な再試行loopになるため、Phase 3では行わない。最終検証は最後に新しいverification IDを発行するので、`model.py`が存在して検証が実行されたrunでは`attempts/`内の最大連番が最終提出物である。verified STEPを別の`final/`へ二重copyしない。
 
 ### 6.4 Graph topology
 
-`create_react_agent`で隠蔽せず、学習のため`StateGraph`とconditional edgeを明示的に組み立てる。3toolは遷移先と副作用が異なるため、一つの汎用`ToolNode`へまとめず専用nodeで実行する。
+`create_react_agent`で隠蔽せず、学習のため`StateGraph`とconditional edgeを明示的に組み立てる。Phase 3の3toolはいずれも「対応する`ToolMessage`を追加してagentへ戻る」という同じ遷移なので、一つの`ToolNode`へ渡す。tool固有の実行内容とschemaは各`create_*_tool()` factoryが所有する。nodeごとの遷移やretry policyが本当に分かれた時点で`agent.py`や`routing.py`への分割を検討する。
 
 ```mermaid
 flowchart TD
-    START --> build_initial_message
-    build_initial_message --> agent
-
-    agent -->|run_shell| shell_tool
-    shell_tool --> agent
-
-    agent -->|load_image| load_image_tool
-    load_image_tool --> agent
-
-    agent -->|verify_output| verify_intermediate
-    verify_intermediate -->|result| build_feedback
-    build_feedback --> agent
-
+    START --> agent
+    agent -->|tool callあり| tools
+    tools --> agent
     agent -->|tool callなし| verify_final
-    verify_final -->|verified| finalize
-    verify_final -->|failed, continue| build_feedback
-    verify_final -->|safety stop| finalize
-
-    agent -->|未知tool・protocol違反| protocol_feedback
-    protocol_feedback --> agent
-
-    finalize --> END
+    verify_final --> END
 ```
 
 tool callを生成するかはmodelが決める。tool callの引数検証、実行、次nodeへのroutingはworkflowが決める。
@@ -410,11 +374,11 @@ LangGraphを採用する主目的の一つは、agentの外部から観測可能
 
 監査対象はmessage、tool call、tool result、artifact、状態遷移である。非公開chain-of-thoughtの生成や保存を要求しない。
 
-LangGraphのcheckpointerだけを唯一の研究記録にしない。人間が読みやすくversionに依存しにくい`events.jsonl`と`artifact_manifest.json`をcanonical recordにする。checkpointerはresumeやdebugの補助として扱う。
+LangGraphのcheckpointerだけを唯一の研究記録にしない。Phase 3では人間が読みやすくversionに依存しにくい`events.jsonl`をcanonicalなrun logとし、checkpointerはresumeやdebugの補助として扱う。dataset全体を集約するrun manifestやartifact manifestは、実model、renderer、scorerの出力contractが具体化する後続phaseで追加する。
 
 Phase 3のevent正規化とJSONL出力は、規模が小さい間は`pipeline/event_log.py`へまとめる。`RunEventTransformer`がLangGraph protocol eventを安定したrun eventへ射影し、`JsonlEventWriter`が1 event 1行で逐次flushする。Transformerはgraph topologyへ埋め込まず、streamとwriterを所有する`PipelineRunner`が`stream_events()`のcall-time optionとして登録する。別形式のwriterや複数のconsumerが現れて変換処理を共有する段階まで、`events.py`と`writer.py`には分割しない。
 
-canonicalなrun metadataとsandbox workdirのsnapshotは同じdirectoryへmergeしない。前者はsample artifact root、後者はその`workspace/`配下へ保存し、modelが作成できる同名fileによる`events.jsonl`、checkpoint、result等の置換をdirectory境界で防ぐ。
+canonicalなrun metadataとsandbox workdirのsnapshotは同じdirectoryへmergeしない。前者はsample artifact root、後者はその`workspace/`配下へ保存し、modelが作成できる同名fileによる`events.jsonl`やcheckpointの置換をdirectory境界で防ぐ。`workspace/attempts/`だけはtrusted側の`verify_output`が作成し、sandboxへread-only bindするpipeline管理領域とする。
 
 credential、API key、authorization headerは保存しない。base URLにsecret queryが含まれる場合もredactする。
 
@@ -589,7 +553,7 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 - `tests/zeroshot`全体は90 test passed
 - `ruff check`と`ruff format --check`はPhase 2対象fileで通過した
 
-### Phase 3: Fake modelによるLangGraph vertical slice
+### ✅ Phase 3: Fake modelによるLangGraph vertical slice
 
 #### 実装するもの
 
@@ -598,8 +562,6 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 - `tools/verify_output.py`
 - `verification/run_cadquery.py`
 - `workflow/state.py`
-- `workflow/agent.py`
-- `workflow/routing.py`
 - `workflow/graph.py`
 - `pipeline/runner.py`
 - `zeroshot/run_pipeline.py`を薄いHydra composition rootとして実装
@@ -617,7 +579,7 @@ Phase 2の`execution/run_code.py`は`verification/run_cadquery.py`へ移動す�
 5. fake modelがtool callなしで完成を表明し、workflowが`verify_output(render_views=False)`で最終検証する
 6. verified STEP、対応する`model.py`、監査logを保存し、feedback loopなしの直線経路を完成させる
 7. fake modelが中間で`verify_output` toolを呼ぶ経路を追加する
-8. execution/STEP verification feedbackを受けて`model.py`を修正し、再度最終検証するloopを追加する
+8. その`ToolMessage`に含まれるexecution/STEP verification結果を受けて`model.py`を修正し、再度最終検証するloopを追加する
 9. `load_image`でinput画像またはmodel自身のdump画像を確認する経路を追加する
 
 `SandboxWorkdir`はtool callごとに作り直さない。processだけを毎回freshにし、同じ`host_bind_dir`を`/work`へbindする。stagingはworkdir作成直後の一度だけ行い、それ以降はmodelが作った中間fileをrun終了まで保持する。Phase 5でvisual feedbackを追加した後は、そのfileも同じworkdirへ蓄積する。host側の元fileやmanifestのsource pathをsandboxへ直接公開せず、`SandboxRunner`へstaging責務も追加しない。staging処理が一箇所にしかない間はapplication wiring内の短い`Path`/`shutil`操作として書き、専用classへ抽出しない。
@@ -636,20 +598,29 @@ Phase 3ではvisual feedbackを実装しない。trusted側のverification関数
 - `run_shell`のtimeoutと出力上限がrun全体を落とさない
 - `load_image`がworkdir内画像だけを返し、path traversalとsymlink escapeを拒否する
 - `run_shell`が生成したscratch fileをverified artifactへ自動昇格しない
-- `verify_output`が共有workdir rootの`model.py`だけを読み、source hash付きimmutable artifactを作る
+- `verify_output`が共有workdir rootの`model.py`だけを読み、source snapshotをverification ID配下へ保存する
 - `verify_output(render_views=False)`がverified STEPを生成する
 - `verify_output(render_views=True)`が`NotImplementedError`を送出する
 - 最初のfake model scenarioがfeedback loopなしの直線経路で完了する
-- model主導の中間検証後にfeedbackを追加してagentへ戻る
+- model主導の中間検証結果を`ToolMessage`としてagentへ返す
 - tool callなしresponseの後にworkflowが最終検証を再実行する
-- 最終検証失敗後にfeedbackを返してagentへ戻る
-- safety stopで未検証STEPを成功扱いしない
+- 最終検証失敗後はagentへ戻らず、未検証STEPを成功扱いせず終了する
 - graph図が設計図と一致する
 - eventsを順番に再生するとrunを説明できる
+- Hydra composition rootが依存objectとmanifestを構築でき、moduleの`--help`が成功する
 
 #### 完了条件
 
-外部APIとvisual feedbackなしで、`SandboxWorkdir`への入力staging、複数回のshell作業、`model.py`の作成、workflow主導の最終検証、verified STEP保存までの直線経路を通す。その後、同じPhase内でmodel主導の中間検証とtext feedbackによる修正loopまで通す。
+外部APIとvisual feedbackなしで、`SandboxWorkdir`への入力staging、複数回のshell作業、`load_image`、`model.py`の作成、workflow主導の最終検証、verified STEP保存までの直線経路を通す。その後、同じPhase内でmodel主導の中間検証結果を受けた修正loopまで通す。run終了後も`events.jsonl`、checkpoint、workdir snapshotと全verification attemptがsample artifact directoryに残り、成功runでは`attempts/`の最大verification IDから最終sourceとverified STEPを取得できる。
+
+2026-08-01にPhase 3を完了した。
+
+- scripted fake modelが複数回の`run_shell`、`load_image`、中間`verify_output`、tool callなしの完成表明を同じ明示的`StateGraph`上で実行する
+- valid boxの直線経路と、構文errorの中間検証結果を受けてsourceを修正する経路を、実bwrap・実CadQueryでend-to-end検証した
+- workflow主導の最終検証を常に最後に実行し、成功runでは最大verification IDのsourceとSTEPを最終提出物として保存する
+- `events.jsonl`は逐次flushされ、message、node、tool、verification、正常・異常終了を順序付きで記録する。SQLite checkpointは同じrun IDで保存する
+- `run_pipeline.py`はHydra composition rootに限定し、dependencyとmanifestの構築、およびmoduleの`--help`をtestした
+- `tests/zeroshot`は147 test passed、`ruff check`、`ruff format --check`、`git diff --check`も通過した
 
 ### Phase 4: GPT APIとQwen/SGLangを接続する
 
@@ -866,37 +837,28 @@ use_drawing_ir: false
 
 ## 9. 出力contract
 
+Phase 3で実装するsample単位のcontractは次のとおりとする。
+
 ```text
 <out_dir>/
-├── run_manifest.json
-├── run_summary.json
-├── resolved_config.yaml
 └── <sample_id>/
-    ├── result.json
     ├── events.jsonl
     ├── checkpoints.sqlite
-    ├── artifact_manifest.json
-    ├── messages.jsonl
-    ├── workspace/                   # sandbox workdirの未昇格snapshot
-    ├── verifications/
-    │   └── <verification_id>/
-    │       ├── model.py
-    │       ├── source.json
-    │       ├── verification.json
-    │       ├── execution.log
-    │       ├── output.step
-    │       ├── drawing.dxf
-    │       └── render3d/
-    └── final/
-        ├── model.py
-        └── output.step
+    └── workspace/
+        ├── inputs/                  # run開始時にstageした入力
+        ├── model.py                 # modelが最後に編集したactive source
+        ├── ...                      # modelのscratch file
+        └── attempts/                # sandboxからread-onlyのpipeline管理領域
+            └── <verification_id>/
+                ├── model.py
+                └── output.step      # verification成功時だけ存在
 ```
 
-`verifications/`にはmodel主導の中間検証とworkflow主導の最終検証を同じ形式で保存する。`source.json`には少なくともsource hashと保存時刻を記録し、`verification.json`には呼び出し元`model | workflow`、CadQuery実行、STEP検証、renderの各statusを記録する。
+model主導の中間検証とworkflow主導の最終検証は同じ`attempts/`へ単調増加するIDで保存する。workflow主導の最終検証が最後に実行されるため、`model.py`が存在するrunでは最大verification IDが最終提出物を表す。成功はgraph stateと`events.jsonl`に記録された最終status、およびそのdirectoryの検証済み`output.step`で判断する。`final/`への二重copyは行わない。
 
-`workspace/`はmodelが自由に変更できるscratchのrun終了時snapshotであり、内容を検証済みartifactとして扱わない。`events.jsonl`、`checkpoints.sqlite`、`artifact_manifest.json`、`result.json`等のtrusted metadataは`workspace/`外へ保存する。
+`workspace/`のうち`attempts/`以外はmodelが自由に変更できるscratchのrun終了時snapshotであり、検証済みartifactとして扱わない。`attempts/`はhost側がdirectoryと内容を作成し、sandboxからread-onlyにする。`events.jsonl`と`checkpoints.sqlite`はmodelから書き換えられないsample artifact rootへ保存する。
 
-`final/`へ昇格できるのは、workflow主導の最終検証でsingle valid solidを確認したverificationだけとする。失敗runにroot-levelの信頼済みSTEPがあるように見せない。
+`run_manifest.json`、`run_summary.json`、`resolved_config.yaml`、集約用artifact manifestなどのrun全体の出力は、Phase 4以降で複数sampleと実modelを接続するときに追加する。
 
 ## 10. Test方針
 

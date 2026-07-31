@@ -18,6 +18,14 @@ from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
+from zeroshot.pipeline.verification import CadQueryExecutor
+
+
+VALID_BOX_SOURCE = """\
+import cadquery as cq
+
+result = cq.Workplane("XY").box(10, 20, 30)
+"""
 
 
 class _ScriptedChatModel(BaseChatModel):
@@ -84,6 +92,40 @@ def _message_text(message: BaseMessage) -> str:
         block["text"]
         for block in message.content
         if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def _write_text_command(filename: str, content: str) -> str:
+    script = (
+        "from pathlib import Path; "
+        f"Path({filename!r}).write_text({content!r}, encoding='utf-8')"
+    )
+    return f"python -c {shlex.quote(script)}"
+
+
+def _manifest_without_renders(tmp_path: Path, sample_id: str) -> InputManifest:
+    dxf_path = tmp_path / f"{sample_id}.dxf"
+    dxf_path.write_text("DXF_FIXTURE", encoding="utf-8")
+    return InputManifest(
+        sample_id=sample_id,
+        dxf_path=dxf_path,
+        render3d_paths={},
+    )
+
+
+def _message_builder_without_renders() -> MessageBuilder:
+    return MessageBuilder(
+        access_render3d="none",
+        access_render3d_styles=(),
+        feedback_render3d="none",
+        feedback_render3d_styles=(),
+    )
+
+
+def _sandbox_runner() -> SandboxRunner:
+    return SandboxRunner(
+        python_executable=Path(sys.executable),
+        default_timeout_s=30,
     )
 
 
@@ -280,3 +322,138 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     }
     assert len(thread_ids) == 1
     assert thread_ids == {events[0]["run_id"]}
+
+
+def test_run_sample_verifies_and_preserves_valid_cadquery_output(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest_without_renders(tmp_path, "valid-box")
+    model = _ScriptedChatModel(
+        responses=(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "run_shell",
+                        "args": {
+                            "command": _write_text_command(
+                                "model.py",
+                                VALID_BOX_SOURCE,
+                            )
+                        },
+                        "id": "call-write-model",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="done"),
+        )
+    )
+    artifact_root = tmp_path / "artifacts"
+    runner = PipelineRunner(
+        model=model,
+        message_builder=_message_builder_without_renders(),
+        sandbox_runner=_sandbox_runner(),
+        artifact_root=artifact_root,
+    )
+
+    result = runner.run_sample(manifest)
+
+    report = result["last_verification"]
+    assert report.status == "VERIFIED"
+    assert report.verification_id == "000"
+
+    final_attempt = artifact_root / "valid-box" / "workspace" / "attempts" / "000"
+    assert (final_attempt / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE
+    CadQueryExecutor.verify_step(final_attempt / "output.step")
+
+    events = [
+        json.loads(line)
+        for line in (artifact_root / "valid-box" / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    verification = next(event for event in events if event["event"] == "verification")
+    assert verification["data"]["report"]["status"] == "VERIFIED"
+    assert verification["data"]["report"]["verification_id"] == "000"
+    assert verification["data"]["report"]["source"]["omitted"] == "source"
+
+
+def test_run_sample_repairs_model_after_intermediate_verification_failure(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest_without_renders(tmp_path, "repair-box")
+    model = _ScriptedChatModel(
+        responses=(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "run_shell",
+                        "args": {
+                            "command": _write_text_command("model.py", "result = (")
+                        },
+                        "id": "call-write-invalid-model",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "verify_output",
+                        "args": {},
+                        "id": "call-verify-invalid-model",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "run_shell",
+                        "args": {
+                            "command": _write_text_command(
+                                "model.py",
+                                VALID_BOX_SOURCE,
+                            )
+                        },
+                        "id": "call-repair-model",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="done"),
+        )
+    )
+    artifact_root = tmp_path / "artifacts"
+    runner = PipelineRunner(
+        model=model,
+        message_builder=_message_builder_without_renders(),
+        sandbox_runner=_sandbox_runner(),
+        artifact_root=artifact_root,
+    )
+
+    result = runner.run_sample(manifest)
+
+    intermediate_result = result["messages"][5]
+    assert isinstance(intermediate_result, ToolMessage)
+    assert intermediate_result.tool_call_id == "call-verify-invalid-model"
+    assert isinstance(intermediate_result.content, str)
+    intermediate_report = json.loads(intermediate_result.content)
+    assert intermediate_report["status"] == "REJECTED"
+    assert intermediate_report["verification_id"] == "000"
+
+    final_report = result["last_verification"]
+    assert final_report.status == "VERIFIED"
+    assert final_report.verification_id == "001"
+
+    attempts = artifact_root / "repair-box" / "workspace" / "attempts"
+    assert (attempts / "000" / "model.py").read_text(encoding="utf-8") == "result = ("
+    assert not (attempts / "000" / "output.step").exists()
+    assert (attempts / "001" / "model.py").read_text(
+        encoding="utf-8"
+    ) == VALID_BOX_SOURCE
+    CadQueryExecutor.verify_step(attempts / "001" / "output.step")
