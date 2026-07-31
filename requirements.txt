@@ -12,6 +12,7 @@ jsonschema
 langchain
 langchain-openai
 langgraph
+langgraph-checkpoint-sqlite
 manifold3d
 opencv-python-headless
 peft

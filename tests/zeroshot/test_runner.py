@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
+from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import PrivateAttr
 
 from zeroshot.pipeline.manifest import InputManifest
@@ -228,3 +229,15 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert not (saved_workdir / "inputs" / "style-b.png").exists()
     assert (saved_workdir / "scratch.txt").read_text(encoding="utf-8") == "persisted"
     assert (saved_workdir / "attempts").is_dir()
+
+    checkpoint_path = tmp_path / "artifacts" / ".langgraph" / "sample-1.sqlite"
+    assert checkpoint_path.is_file()
+    with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+        checkpoints = list(checkpointer.list(None))
+
+    assert checkpoints
+    thread_ids = {
+        checkpoint.config["configurable"]["thread_id"] for checkpoint in checkpoints
+    }
+    assert len(thread_ids) == 1
+    assert next(iter(thread_ids)).startswith("sample-1:")

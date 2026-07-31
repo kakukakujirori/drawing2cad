@@ -1,5 +1,7 @@
 # @package _global_
 
+artifact_root: outputs/zeroshot
+
 message_builder:
   _target_: zeroshot.pipeline.messages.MessageBuilder
   access_render3d: "path"
@@ -7,5 +9,25 @@ message_builder:
     - hlg_perspective
     - hlg_translucent_faces_perspective
     - transparent_shaded_edges_perspective
-  feedback_render3d: "none"
-  feedback_render3d_styles: []
+  feedback_render3d: "path"
+  feedback_render3d_styles:
+    - hlg_perspective
+    - hlg_translucent_faces_perspective
+    - transparent_shaded_edges_perspective
+
+model:
+  _target_: ???
+
+sandbox_runner:
+  python_executable: ${oc.env:CONDA_PREFIX}/bin/python
+  default_timeout_s: 30.0
+  max_stdout_bytes: 1048576
+  max_stderr_bytes: 1048576
+
+sample:
+  sample_id: "000364"
+  dxf_path: data/test_vlm/techdraw/dxf/000364.dxf
+  render3d_paths:
+    hlg_perspective: data/test_vlm/render_3d/hlg_perspective/000364.png
+    hlg_translucent_faces_perspective: data/test_vlm/render_3d/hlg_translucent_faces_perspective/000364.png
+    transparent_shaded_edges_perspective: data/test_vlm/render_3d/transparent_shaded_edges_perspective/000364.png

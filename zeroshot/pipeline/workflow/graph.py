@@ -1,8 +1,10 @@
 from functools import partial
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import START, END, StateGraph
 from langgraph.prebuilt import ToolNode
 
@@ -20,6 +22,7 @@ def create_reconstruction_graph(
     model: BaseChatModel,
     sandbox_runner: SandboxRunner,
     sandbox_workdir: SandboxWorkdir,
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
 ):
     def should_continue(state: ReconstructionState):
         last_message = state["messages"][-1]
@@ -74,7 +77,7 @@ def create_reconstruction_graph(
     workflow.add_edge("tools", "agent")
     workflow.add_edge("verify_final", END)
 
-    graph = workflow.compile()
+    graph = workflow.compile(checkpointer=checkpointer)
     return graph
 
 

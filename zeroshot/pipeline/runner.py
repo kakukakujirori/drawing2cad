@@ -3,8 +3,10 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 from typing import cast
+from uuid import uuid4
 
 from langchain_core.language_models import BaseChatModel
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.messages import MessageBuilder
@@ -29,6 +31,11 @@ class PipelineRunner:
         self.artifact_root = Path(artifact_root)
 
     def run_sample(self, manifest: InputManifest) -> ReconstructionState:
+        checkpoint_path = (
+            self.artifact_root / ".langgraph" / f"{manifest.sample_id}.sqlite"
+        )
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
         with SandboxWorkdir() as workdir:
             staged_manifest = self._stage_inputs(
                 manifest=manifest,
@@ -40,13 +47,25 @@ class PipelineRunner:
                 workdir,
             )
 
-            graph = create_reconstruction_graph(
-                model=self.model,
-                sandbox_runner=self.sandbox_runner,
-                sandbox_workdir=workdir,
-            )
+            with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+                graph = create_reconstruction_graph(
+                    model=self.model,
+                    sandbox_runner=self.sandbox_runner,
+                    sandbox_workdir=workdir,
+                    checkpointer=checkpointer,
+                )
 
-            result = graph.invoke(ReconstructionState(messages=initial_messages))
+                stream = graph.stream_events(
+                    ReconstructionState(messages=initial_messages),
+                    config={
+                        "configurable": {"thread_id": f"{manifest.sample_id}:{uuid4()}"}
+                    },
+                    version="v3",
+                    durability="sync",
+                )
+                for _ in stream:
+                    pass
+                result = stream.output
 
             # Save artifacts
             shutil.copytree(
