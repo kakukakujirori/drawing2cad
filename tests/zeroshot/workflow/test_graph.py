@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from langchain_core.runnables import Runnable, RunnableLambda
+from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, tool
 
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
@@ -157,9 +157,9 @@ def test_graph_repeats_verification_after_model_calls_verify_output(
 
     invocations: list[str] = []
     final_report = VerifyOutputResult(
+        verification_id="001",
         status="VERIFIED",
-        execution_id="final-verification",
-        source_sha256="final-source-hash",
+        source="result = object()",
         returncode=0,
     )
 

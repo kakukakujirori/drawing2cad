@@ -21,7 +21,7 @@ class PipelineRunner:
         model: BaseChatModel,
         message_builder: MessageBuilder,
         sandbox_runner: SandboxRunner,
-        artifact_root: Path,
+        artifact_root: str | Path,
     ) -> None:
         self.model = model
         self.message_builder = message_builder
@@ -29,9 +29,6 @@ class PipelineRunner:
         self.artifact_root = Path(artifact_root)
 
     def run_sample(self, manifest: InputManifest) -> ReconstructionState:
-        sample_artifact_root = self.artifact_root / manifest.sample_id / "verifications"
-        sample_artifact_root.mkdir(parents=True, exist_ok=True)
-
         with SandboxWorkdir() as workdir:
             staged_manifest = self._stage_inputs(
                 manifest=manifest,
@@ -52,7 +49,10 @@ class PipelineRunner:
             result = graph.invoke(ReconstructionState(messages=initial_messages))
 
             # Save artifacts
-            # TODO: IMPLEMENT
+            shutil.copytree(
+                workdir.host_bind_dir,
+                self.artifact_root / manifest.sample_id,
+            )
 
         return cast(ReconstructionState, result)
 

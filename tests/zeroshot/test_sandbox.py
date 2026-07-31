@@ -1,7 +1,7 @@
 import shlex
 import socket
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -67,6 +67,72 @@ def test_runner_uses_files_staged_directly_in_owned_workdir(
         assert (workdir.host_bind_dir / "output.txt").read_text(
             encoding="utf-8"
         ) == "STAGED"
+
+
+def test_read_only_subdir_is_readable_but_not_writable_in_sandbox(
+    tmp_path: Path,
+    sandbox_runner: SandboxRunner,
+) -> None:
+    work_dir = tmp_path / "work"
+    protected_dir = work_dir / "attempts"
+    protected_dir.mkdir(parents=True)
+    protected_file = protected_dir / "model.py"
+    protected_file.write_text("original", encoding="utf-8")
+
+    with SandboxWorkdir(
+        host_bind_dir=work_dir,
+        read_only_subdirs=[PurePosixPath("attempts")],
+    ) as sandbox_workdir:
+        read_result = sandbox_runner.run(
+            command="cat attempts/model.py",
+            workdir=sandbox_workdir,
+        )
+        overwrite_result = sandbox_runner.run(
+            command="printf changed > attempts/model.py",
+            workdir=sandbox_workdir,
+        )
+        create_result = sandbox_runner.run(
+            command="touch attempts/new.txt",
+            workdir=sandbox_workdir,
+        )
+        normal_write_result = sandbox_runner.run(
+            command="touch writable.txt",
+            workdir=sandbox_workdir,
+        )
+
+    assert read_result.returncode == 0
+    assert read_result.stdout == "original"
+    assert overwrite_result.returncode != 0
+    assert create_result.returncode != 0
+    assert normal_write_result.returncode == 0
+    assert protected_file.read_text(encoding="utf-8") == "original"
+    assert not (protected_dir / "new.txt").exists()
+    assert (work_dir / "writable.txt").is_file()
+
+
+@pytest.mark.parametrize(
+    "subdir",
+    [
+        PurePosixPath("."),
+        PurePosixPath(".."),
+        PurePosixPath("nested/attempts"),
+        PurePosixPath("/work/attempts"),
+    ],
+)
+def test_runner_rejects_non_basename_read_only_subdir(
+    tmp_path: Path,
+    sandbox_runner: SandboxRunner,
+    subdir: PurePosixPath,
+) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    workdir = SandboxWorkdir(
+        host_bind_dir=work_dir,
+        read_only_subdirs=[subdir],
+    )
+
+    with pytest.raises(ValueError, match="read_only_subdirs"):
+        sandbox_runner.run(command="true", workdir=workdir)
 
 
 def test_sandbox_can_read_and_write_only_inside_work_dir(

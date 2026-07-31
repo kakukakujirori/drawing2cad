@@ -1,12 +1,14 @@
-import errno
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from langchain_core.tools import BaseTool
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
+from zeroshot.pipeline.tools.verify_output import (
+    VerifyOutputResult,
+    create_verify_output_tool,
+)
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     ExecutionStatus,
@@ -22,15 +24,20 @@ result = cq.Workplane("XY").box(10, 20, 30)
 class StubCadQueryExecutor:
     def __init__(self, report: CadQueryExecutionReport) -> None:
         self.report = report
-        self.sources: list[str] = []
+        self.calls: list[tuple[Path, Path | None]] = []
 
-    def execute(self, source: str) -> CadQueryExecutionReport:
-        self.sources.append(source)
+    def execute(
+        self,
+        model_path: Path,
+        output_step_path: Path | None = None,
+    ) -> CadQueryExecutionReport:
+        self.calls.append((model_path, output_step_path))
         return self.report
 
 
 def _execution_report(
     *,
+    source: str | None = VALID_SOURCE,
     status: ExecutionStatus = ExecutionStatus.VERIFIED,
     returncode: int | None = 0,
     stdout: str = "construction log",
@@ -38,11 +45,8 @@ def _execution_report(
     executor_error: str | None = None,
 ) -> CadQueryExecutionReport:
     return CadQueryExecutionReport(
-        exec_id="verification-1",
-        source_path=Path("/trusted/artifacts/verification-1/model.py"),
-        source_sha256="source-hash",
+        source=source,
         status=status,
-        step_path=Path("/trusted/artifacts/verification-1/output.step"),
         executor_error=executor_error,
         returncode=returncode,
         stdout=stdout,
@@ -56,16 +60,22 @@ def _create_tool(
     *,
     render_views: bool = False,
     source_filename: str = "model.py",
+    output_dirname: PurePosixPath = PurePosixPath("attempts"),
+    serialize_output: bool = True,
 ) -> BaseTool:
     return create_verify_output_tool(
         executor,  # type: ignore[arg-type]
         workdir,
         render_views=render_views,
         source_filename=source_filename,
+        output_dirname=output_dirname,
+        serialize_output=serialize_output,
     )
 
 
-def test_tool_schema_exposes_no_runtime_arguments(tmp_path: Path) -> None:
+def test_tool_schema_and_factory_prepare_pipeline_managed_output(
+    tmp_path: Path,
+) -> None:
     executor = StubCadQueryExecutor(_execution_report())
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
 
@@ -78,11 +88,11 @@ def test_tool_schema_exposes_no_runtime_arguments(tmp_path: Path) -> None:
     assert verify_output.name == "verify_output"
     assert verify_output.get_input_jsonschema()["properties"] == {}
     assert "/work/candidate.py" in verify_output.description
+    assert (tmp_path / "attempts").is_dir()
+    assert workdir.read_only_subdirs == [PurePosixPath("attempts")]
 
 
-def test_tool_executes_exact_source_and_returns_json_safe_mapping(
-    tmp_path: Path,
-) -> None:
+def test_tool_delegates_paths_and_returns_json_safe_mapping(tmp_path: Path) -> None:
     executor = StubCadQueryExecutor(
         _execution_report(
             returncode=0,
@@ -96,11 +106,15 @@ def test_tool_executes_exact_source_and_returns_json_safe_mapping(
 
     result = verify_output.invoke({})
 
-    assert executor.sources == [VALID_SOURCE]
+    assert executor.calls == [
+        (
+            tmp_path / "model.py",
+            tmp_path / "attempts" / "000" / "output.step",
+        )
+    ]
     assert result == {
+        "verification_id": "000",
         "status": "VERIFIED",
-        "execution_id": "verification-1",
-        "source_sha256": "source-hash",
         "returncode": 0,
         "stdout": "construction log",
         "stderr": "construction warning",
@@ -108,12 +122,13 @@ def test_tool_executes_exact_source_and_returns_json_safe_mapping(
     }
     assert json.loads(json.dumps(result)) == result
     assert isinstance(result["returncode"], int)
-    assert result["executor_error"] is None
-    assert "source_path" not in result
-    assert "step_path" not in result
+    assert "source" not in result
+    assert (tmp_path / "attempts" / "000" / "model.py").read_text(
+        encoding="utf-8"
+    ) == VALID_SOURCE
 
 
-def test_tool_preserves_failed_execution_report(tmp_path: Path) -> None:
+def test_tool_preserves_failed_attempt_and_execution_report(tmp_path: Path) -> None:
     executor = StubCadQueryExecutor(
         _execution_report(
             status=ExecutionStatus.FAILED,
@@ -130,20 +145,34 @@ def test_tool_preserves_failed_execution_report(tmp_path: Path) -> None:
     result = verify_output.invoke({})
 
     assert result == {
+        "verification_id": "000",
         "status": "FAILED",
-        "execution_id": "verification-1",
-        "source_sha256": "source-hash",
         "returncode": 1,
         "stdout": "partial output",
         "stderr": "execution failed",
         "executor_error": "output.step was not generated",
     }
-    assert executor.sources == [VALID_SOURCE]
+    attempt_dir = tmp_path / "attempts" / "000"
+    assert (attempt_dir / "model.py").read_text(encoding="utf-8") == VALID_SOURCE
+    assert not (attempt_dir / "output.step").exists()
 
 
-def test_tool_rejects_missing_source_without_calling_executor(
-    tmp_path: Path,
-) -> None:
+def test_tool_assigns_incrementing_verification_ids(tmp_path: Path) -> None:
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verify_output = _create_tool(executor, workdir)
+
+    first = verify_output.invoke({})
+    second = verify_output.invoke({})
+
+    assert first["verification_id"] == "000"
+    assert second["verification_id"] == "001"
+    assert (tmp_path / "attempts" / "000").is_dir()
+    assert (tmp_path / "attempts" / "001").is_dir()
+
+
+def test_tool_rejects_missing_source_without_issuing_id(tmp_path: Path) -> None:
     executor = StubCadQueryExecutor(_execution_report())
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     verify_output = _create_tool(executor, workdir)
@@ -151,20 +180,18 @@ def test_tool_rejects_missing_source_without_calling_executor(
     result = verify_output.invoke({})
 
     assert result == {
+        "verification_id": None,
         "status": "REJECTED",
-        "execution_id": None,
-        "source_sha256": None,
         "returncode": None,
         "stdout": "",
         "stderr": "",
         "executor_error": "model.py was not found",
     }
-    assert executor.sources == []
+    assert executor.calls == []
+    assert list((tmp_path / "attempts").iterdir()) == []
 
 
-def test_tool_rejects_source_symlink_without_calling_executor(
-    tmp_path: Path,
-) -> None:
+def test_tool_rejects_source_symlink_without_issuing_id(tmp_path: Path) -> None:
     real_source = tmp_path / "real-model.py"
     real_source.write_text(VALID_SOURCE, encoding="utf-8")
     (tmp_path / "model.py").symlink_to(real_source)
@@ -174,84 +201,54 @@ def test_tool_rejects_source_symlink_without_calling_executor(
 
     result = verify_output.invoke({})
 
+    assert result["verification_id"] is None
     assert result["status"] == "REJECTED"
     assert result["executor_error"] == "model.py must not be a symlink"
-    assert executor.sources == []
+    assert executor.calls == []
+    assert list((tmp_path / "attempts").iterdir()) == []
 
 
-def test_tool_rejects_non_utf8_source_without_calling_executor(
+def test_tool_preserves_executor_rejection_without_source_snapshot(
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "model.py").write_bytes(b"\xff")
-    executor = StubCadQueryExecutor(_execution_report())
+    executor = StubCadQueryExecutor(
+        _execution_report(
+            source=None,
+            status=ExecutionStatus.REJECTED,
+            returncode=None,
+            stdout="",
+            stderr="",
+            executor_error="model.py must be valid UTF-8",
+        )
+    )
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_bytes(b"\xff")
     verify_output = _create_tool(executor, workdir)
 
     result = verify_output.invoke({})
 
+    assert result["verification_id"] == "000"
     assert result["status"] == "REJECTED"
     assert result["executor_error"] == "model.py must be valid UTF-8"
-    assert executor.sources == []
+    assert not (tmp_path / "attempts" / "000" / "model.py").exists()
+    assert len(executor.calls) == 1
 
 
-def test_tool_maps_permission_error_to_rejected(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    model_path = tmp_path / "model.py"
-    model_path.write_text(VALID_SOURCE, encoding="utf-8")
+def test_unserialized_tool_result_preserves_source(tmp_path: Path) -> None:
     executor = StubCadQueryExecutor(_execution_report())
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    verify_output = _create_tool(executor, workdir)
-
-    def raise_permission_error(
-        self: Path,
-        encoding: str | None = None,
-        errors: str | None = None,
-    ) -> str:
-        del self, encoding, errors
-        raise PermissionError
-
-    monkeypatch.setattr(Path, "read_text", raise_permission_error)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verify_output = _create_tool(executor, workdir, serialize_output=False)
 
     result = verify_output.invoke({})
 
-    assert result["status"] == "REJECTED"
-    assert result["executor_error"] == "model.py is not readable"
-    assert executor.sources == []
-
-
-def test_tool_maps_unexpected_read_error_without_exposing_host_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    model_path = tmp_path / "model.py"
-    model_path.write_text(VALID_SOURCE, encoding="utf-8")
-    executor = StubCadQueryExecutor(_execution_report())
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    verify_output = _create_tool(executor, workdir)
-    read_error = OSError(
-        errno.EIO,
-        "Input/output error",
-        str(model_path),
+    assert result == VerifyOutputResult(
+        verification_id="000",
+        status="VERIFIED",
+        source=VALID_SOURCE,
+        returncode=0,
+        stdout="construction log",
     )
-
-    def raise_read_error(
-        self: Path,
-        encoding: str | None = None,
-        errors: str | None = None,
-    ) -> str:
-        del self, encoding, errors
-        raise read_error
-
-    monkeypatch.setattr(Path, "read_text", raise_read_error)
-
-    result = verify_output.invoke({})
-
-    assert result["status"] == "INFRA_ERROR"
-    assert result["executor_error"] == "Failed to read model.py: Input/output error"
-    assert str(tmp_path) not in str(result["executor_error"])
-    assert executor.sources == []
 
 
 @pytest.mark.parametrize(
@@ -284,6 +281,39 @@ def test_tool_rejects_source_filename_outside_workdir_root(
         )
 
 
+@pytest.mark.parametrize(
+    "output_dirname",
+    [
+        PurePosixPath(""),
+        PurePosixPath("."),
+        PurePosixPath(".."),
+        PurePosixPath("../attempts"),
+        PurePosixPath("nested/attempts"),
+        PurePosixPath("/work/attempts"),
+    ],
+)
+def test_tool_rejects_output_dirname_outside_workdir_root(
+    tmp_path: Path,
+    output_dirname: PurePosixPath,
+) -> None:
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="output_dirname must be a directory basename"):
+        _create_tool(executor, workdir, output_dirname=output_dirname)
+
+
+def test_tool_rejects_symlink_output_directory(tmp_path: Path) -> None:
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (tmp_path / "attempts").symlink_to(outside_dir, target_is_directory=True)
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="output directory must not be a symlink"):
+        _create_tool(executor, workdir)
+
+
 def test_render_views_guard_runs_after_successful_verification(
     tmp_path: Path,
 ) -> None:
@@ -302,4 +332,4 @@ def test_render_views_guard_runs_after_successful_verification(
     ):
         verify_output.invoke({})
 
-    assert executor.sources == [VALID_SOURCE]
+    assert len(executor.calls) == 1

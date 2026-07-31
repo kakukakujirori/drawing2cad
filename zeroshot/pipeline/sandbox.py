@@ -1,6 +1,7 @@
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -23,7 +24,12 @@ class SandboxResult:
 class SandboxWorkdir:
     sandbox_bind_dir = PurePosixPath("/work")
 
-    def __init__(self, host_bind_dir: Path | None = None):
+    def __init__(
+        self,
+        host_bind_dir: Path | None = None,
+        read_only_subdirs: Sequence[PurePosixPath] = (),
+    ):
+        # host bind dir
         if host_bind_dir is None:
             self._tmpdir_context = tempfile.TemporaryDirectory(
                 prefix="drawing2cad-sandbox-"
@@ -34,6 +40,9 @@ class SandboxWorkdir:
 
         if not self.host_bind_dir.is_dir():
             raise FileNotFoundError(f"{self.host_bind_dir=} not found")
+
+        # read-only subdirs
+        self.read_only_subdirs = list(read_only_subdirs)
 
     def __enter__(self) -> "SandboxWorkdir":
         return self
@@ -141,13 +150,28 @@ class SandboxRunner:
             "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
             "--bind", str(host_workdir), str(sandbox_workdir),
             "--chdir", str(sandbox_workdir),
-            "--", "/bin/bash", "-c", command,
         ]
         # fmt: on
 
+        for subdir in workdir.read_only_subdirs:
+            if subdir.is_absolute() or len(subdir.parts) != 1:
+                raise ValueError(
+                    f"read_only_subdirs must specify directory basenames: {subdir}"
+                )
+            if ".." in subdir.parts:
+                raise ValueError(f"read_only_subdirs must not contain .. : {subdir}")
+
+            bwrap_command.extend(
+                [
+                    "--ro-bind",
+                    str(host_workdir / subdir),
+                    str(sandbox_workdir / subdir),
+                ]
+            )
+
         try:
             ret = subprocess.run(
-                bwrap_command,
+                bwrap_command + ["--", "/bin/bash", "-c", command],
                 shell=False,
                 capture_output=True,
                 check=False,

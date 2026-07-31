@@ -1,4 +1,4 @@
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass, replace
 from inspect import cleandoc
 from pathlib import Path, PurePosixPath
 from typing import Self, TypeAlias, cast
@@ -17,20 +17,19 @@ VerifyOutputValue: TypeAlias = str | int | None
 
 @dataclass(frozen=True)
 class VerifyOutputResult:
+    verification_id: str | None = None
     status: str = "UNINITIALIZED"
-    execution_id: str | None = None
-    source_sha256: str | None = None
+    source: str | None = None
     returncode: int | None = None
     stdout: str = ""
     stderr: str = ""
     executor_error: str | None = None
 
-    @classmethod
-    def import_from(cls, report: CadQueryExecutionReport) -> Self:
-        return cls(
+    def import_from(self, report: CadQueryExecutionReport) -> Self:
+        return replace(
+            self,
             status=report.status.value,
-            execution_id=report.exec_id,
-            source_sha256=report.source_sha256,
+            source=report.source,
             returncode=report.returncode,
             stdout=report.stdout,
             stderr=report.stderr,
@@ -38,7 +37,9 @@ class VerifyOutputResult:
         )
 
     def serialize(self) -> dict[str, VerifyOutputValue]:
-        return cast(dict[str, VerifyOutputValue], asdict(self))
+        ret = cast(dict[str, VerifyOutputValue], asdict(self))
+        ret.pop("source")
+        return ret
 
 
 def create_verify_output_tool(
@@ -46,6 +47,7 @@ def create_verify_output_tool(
     workdir: SandboxWorkdir,
     render_views: bool = False,
     source_filename: str = "model.py",
+    output_dirname: PurePosixPath = PurePosixPath("attempts"),
     serialize_output: bool = True,
 ) -> BaseTool:
     description = cleandoc(
@@ -59,11 +61,9 @@ def create_verify_output_tool(
         available to the program. The tool exports `result` to STEP and accepts it
         only when the exported file contains exactly one valid solid.
 
-        The result reports the execution status, execution ID, source hash,
-        return code, stdout, stderr, and any executor error. A `VERIFIED` status
-        means that the validated STEP artifact was saved by the pipeline. Other
-        statuses and errors are observations for you to interpret. Calling this
-        tool does not by itself finish the reconstruction task.
+        The result reports the execution status, return code, stdout, stderr, and
+        any executor error. Generated STEP and its rendered views are saved in
+        {workdir.sandbox_bind_dir}/{output_dirname}/<verification_id>/.
         """
     )
 
@@ -71,6 +71,33 @@ def create_verify_output_tool(
     source_name = PurePosixPath(source_filename)
     if source_name.name != source_filename or source_name.name in {"", ".", ".."}:
         raise ValueError("source_filename must be a filename in the workdir root")
+
+    # create output dir
+    if (
+        output_dirname.is_absolute()
+        or len(output_dirname.parts) != 1
+        or output_dirname.name in {"", ".", ".."}
+    ):
+        raise ValueError("output_dirname must be a directory basename")
+
+    host_outdir = workdir.host_bind_dir / output_dirname
+    if host_outdir.is_symlink():
+        raise ValueError("output directory must not be a symlink")
+    host_outdir.mkdir(parents=True, exist_ok=True)
+
+    # set output_dirname read-only
+    if output_dirname not in workdir.read_only_subdirs:
+        workdir.read_only_subdirs.append(output_dirname)
+
+    def _issue_verification_id_and_dir() -> tuple[str, Path]:
+        host_outdir = workdir.host_bind_dir / output_dirname
+        # issue an id
+        existing = [int(p.name) for p in host_outdir.iterdir() if p.name.isdigit()]
+        verification_id = f"{(max(existing, default=-1) + 1):03d}"
+        # create dir
+        host_verification_dir = host_outdir / verification_id
+        host_verification_dir.mkdir(parents=True, exist_ok=False)
+        return verification_id, host_verification_dir
 
     def _verify(model_path: Path) -> VerifyOutputResult:
         # file existence check
@@ -88,31 +115,26 @@ def create_verify_output_tool(
             )
             return report
 
-        # file read check
-        try:
-            source = model_path.read_text(encoding="utf-8")
-        except UnicodeError:
-            return VerifyOutputResult(
-                status="REJECTED",
-                executor_error=f"{source_filename} must be valid UTF-8",
-            )
-        except PermissionError:
-            return VerifyOutputResult(
-                status="REJECTED",
-                executor_error=f"{source_filename} is not readable",
-            )
-        except OSError as error:
-            reason = error.strerror or type(error).__name__
-            return VerifyOutputResult(
-                status="INFRA_ERROR",
-                executor_error=f"Failed to read {source_filename}: {reason}",
-            )
+        # prepare artifact save dir and report
+        verification_id, host_verification_dir = _issue_verification_id_and_dir()
+        report = VerifyOutputResult(verification_id=verification_id)
+        output_model_path = host_verification_dir / source_filename
+        output_step_path = host_verification_dir / "output.step"
 
         # execute
-        cq_report = executor.execute(source)
+        cq_report = executor.execute(model_path, output_step_path)
 
-        report = VerifyOutputResult.import_from(cq_report)
+        # copy source code to output dir
+        if cq_report.source is not None:
+            output_model_path.write_text(
+                cq_report.source,
+                encoding="utf-8",
+            )
 
+        # update report
+        report = report.import_from(cq_report)
+
+        # if verification failed, return early
         if not (report.status == "VERIFIED" and report.returncode == 0):
             return report
 

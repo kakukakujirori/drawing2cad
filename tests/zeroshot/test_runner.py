@@ -219,3 +219,12 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert dxf_path.read_text(encoding="utf-8") == "ORIGINAL_DXF"
     assert selected_render_path.read_bytes() == b"ALLOWED_RENDER"
     assert hidden_render_path.read_bytes() == b"HIDDEN_RENDER"
+
+    saved_workdir = tmp_path / "artifacts" / "sample-1"
+    assert (saved_workdir / "inputs" / "techdraw.dxf").read_text(
+        encoding="utf-8"
+    ) == "SANDBOX_MUTATION"
+    assert (saved_workdir / "inputs" / "style-a.png").read_bytes() == b"ALLOWED_RENDER"
+    assert not (saved_workdir / "inputs" / "style-b.png").exists()
+    assert (saved_workdir / "scratch.txt").read_text(encoding="utf-8") == "persisted"
+    assert (saved_workdir / "attempts").is_dir()

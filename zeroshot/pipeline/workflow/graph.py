@@ -37,10 +37,7 @@ def create_reconstruction_graph(
         return {"messages": [response]}
 
     # Create and bind tools
-    executor = CadQueryExecutor(
-        artifact_root=sandbox_workdir.host_bind_dir,
-        sandbox_runner=sandbox_runner,
-    )
+    executor = CadQueryExecutor(sandbox_runner=sandbox_runner)
     tools = [
         create_run_shell_tool(sandbox_runner, sandbox_workdir),
         create_load_image_tool(sandbox_workdir),

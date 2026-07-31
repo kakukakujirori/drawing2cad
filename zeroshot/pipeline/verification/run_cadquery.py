@@ -2,9 +2,7 @@ import ast
 import shutil
 from dataclasses import dataclass
 from enum import Enum
-from hashlib import sha256
 from pathlib import Path
-from uuid import uuid4
 
 from zeroshot.pipeline.sandbox import (
     SandboxRunner,
@@ -23,11 +21,8 @@ class ExecutionStatus(Enum):
 
 @dataclass(frozen=True)
 class CadQueryExecutionReport:
-    exec_id: str
-    source_path: Path | None
-    source_sha256: str | None
-    status: ExecutionStatus
-    step_path: Path | None
+    source: str | None = None
+    status: ExecutionStatus = ExecutionStatus.INFRA_ERROR
     executor_error: str | None = None
     returncode: int | None = None
     stdout: str = ""
@@ -35,8 +30,7 @@ class CadQueryExecutionReport:
 
 
 class CadQueryExecutor:
-    def __init__(self, artifact_root: Path, sandbox_runner: SandboxRunner) -> None:
-        self.artifact_root = artifact_root
+    def __init__(self, sandbox_runner: SandboxRunner) -> None:
         self.sandbox_runner = sandbox_runner
 
         self.EXPORT_EPILOGUE = """
@@ -50,26 +44,37 @@ _pipeline_cq.exporters.export(
 )
 """
 
-    def execute(self, source: str) -> CadQueryExecutionReport:
-        # Issue an ID and save source
-        exec_id = str(uuid4())
-        exec_dir = self.artifact_root / exec_id
-        source_path = exec_dir / "model.py"
-        step_path = exec_dir / "output.step"
-
-        exec_dir.mkdir(parents=True, exist_ok=False)
-        source_path.write_text(source, encoding="utf-8")
-        source_sha256 = sha256(source.encode("utf-8")).hexdigest()
+    def execute(
+        self,
+        model_path: Path,
+        output_step_path: Path | None = None,
+    ) -> CadQueryExecutionReport:
+        # file read check
+        try:
+            source = model_path.read_text(encoding="utf-8")
+        except UnicodeError:
+            return CadQueryExecutionReport(
+                status=ExecutionStatus.REJECTED,
+                executor_error=f"{model_path.name} must be valid UTF-8",
+            )
+        except PermissionError:
+            return CadQueryExecutionReport(
+                status=ExecutionStatus.REJECTED,
+                executor_error=f"{model_path.name} is not readable",
+            )
+        except OSError as error:
+            reason = error.strerror or type(error).__name__
+            return CadQueryExecutionReport(
+                status=ExecutionStatus.INFRA_ERROR,
+                executor_error=f"Failed to read {model_path.name}: {reason}",
+            )
 
         # Static check
         try:
             self.validate_source(source)
         except SyntaxError as e:
             return CadQueryExecutionReport(
-                exec_id=exec_id,
-                source_path=source_path,
-                source_sha256=source_sha256,
-                step_path=None,
+                source=source,
                 status=ExecutionStatus.REJECTED,
                 executor_error=str(e),
             )
@@ -89,10 +94,7 @@ _pipeline_cq.exporters.export(
 
             if sandbox_result.status is SandboxStatus.TIMEOUT:
                 return CadQueryExecutionReport(
-                    exec_id=exec_id,
-                    source_path=source_path,
-                    source_sha256=source_sha256,
-                    step_path=None,
+                    source=source,
                     status=ExecutionStatus.TIMEOUT,
                     returncode=sandbox_result.returncode,
                     stdout=sandbox_result.stdout,
@@ -101,10 +103,7 @@ _pipeline_cq.exporters.export(
 
             if sandbox_result.status is SandboxStatus.INFRA_ERROR:
                 return CadQueryExecutionReport(
-                    exec_id=exec_id,
-                    source_path=source_path,
-                    source_sha256=source_sha256,
-                    step_path=None,
+                    source=source,
                     status=ExecutionStatus.INFRA_ERROR,
                     returncode=sandbox_result.returncode,
                     stdout=sandbox_result.stdout,
@@ -113,10 +112,7 @@ _pipeline_cq.exporters.export(
 
             if sandbox_result.returncode != 0:
                 return CadQueryExecutionReport(
-                    exec_id=exec_id,
-                    source_path=source_path,
-                    source_sha256=source_sha256,
-                    step_path=None,
+                    source=source,
                     status=ExecutionStatus.FAILED,
                     returncode=sandbox_result.returncode,
                     stdout=sandbox_result.stdout,
@@ -127,10 +123,7 @@ _pipeline_cq.exporters.export(
             tmp_step_path = workdir.host_bind_dir / "output.step"
             if not tmp_step_path.is_file():
                 return CadQueryExecutionReport(
-                    exec_id=exec_id,
-                    source_path=source_path,
-                    source_sha256=source_sha256,
-                    step_path=None,
+                    source=source,
                     status=ExecutionStatus.FAILED,
                     executor_error="output.step was not generated",
                     returncode=sandbox_result.returncode,
@@ -143,10 +136,7 @@ _pipeline_cq.exporters.export(
                 self.verify_step(tmp_step_path)
             except StepVerificationError as e:
                 return CadQueryExecutionReport(
-                    exec_id=exec_id,
-                    source_path=source_path,
-                    source_sha256=source_sha256,
-                    step_path=None,
+                    source=source,
                     status=ExecutionStatus.FAILED,
                     executor_error=str(e),
                     returncode=sandbox_result.returncode,
@@ -155,14 +145,12 @@ _pipeline_cq.exporters.export(
                 )
 
             # Copy STEP
-            shutil.copyfile(tmp_step_path, step_path)
+            if output_step_path is not None:
+                shutil.copyfile(tmp_step_path, output_step_path)
 
         return CadQueryExecutionReport(
-            exec_id=exec_id,
-            source_path=source_path,
-            source_sha256=source_sha256,
+            source=source,
             status=ExecutionStatus.VERIFIED,
-            step_path=step_path,
             returncode=sandbox_result.returncode,
             stdout=sandbox_result.stdout,
             stderr=sandbox_result.stderr,

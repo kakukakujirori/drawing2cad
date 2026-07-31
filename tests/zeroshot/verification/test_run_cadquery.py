@@ -1,24 +1,23 @@
+import errno
 import sys
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError
-from hashlib import sha256
 from pathlib import Path
-from uuid import UUID
 
 import cadquery as cq
 import pytest
 
-from zeroshot.pipeline.verification.run_cadquery import (
-    CadQueryExecutionReport,
-    CadQueryExecutor,
-    ExecutionStatus,
-    StepVerificationError,
-)
 from zeroshot.pipeline.sandbox import (
     SandboxResult,
     SandboxRunner,
     SandboxStatus,
     SandboxWorkdir,
+)
+from zeroshot.pipeline.verification.run_cadquery import (
+    CadQueryExecutionReport,
+    CadQueryExecutor,
+    ExecutionStatus,
+    StepVerificationError,
 )
 
 VALID_BOX_SOURCE = """\
@@ -67,17 +66,20 @@ def _sandbox_result(
 
 
 def _executor(
-    tmp_path: Path,
     sandbox_result: SandboxResult,
     step_writer: Callable[[Path], None] | None = None,
-) -> tuple[CadQueryExecutor, StubSandboxRunner, Path]:
-    artifact_root = tmp_path / "artifacts"
+) -> tuple[CadQueryExecutor, StubSandboxRunner]:
     runner = StubSandboxRunner(sandbox_result, step_writer)
     executor = CadQueryExecutor(
-        artifact_root=artifact_root,
         sandbox_runner=runner,  # type: ignore[arg-type]
     )
-    return executor, runner, artifact_root
+    return executor, runner
+
+
+def _write_model(tmp_path: Path, source: str = VALID_BOX_SOURCE) -> Path:
+    model_path = tmp_path / "model.py"
+    model_path.write_text(source, encoding="utf-8")
+    return model_path
 
 
 def _write_valid_box_step(path: Path) -> None:
@@ -105,13 +107,10 @@ def test_execution_status_has_stable_serialized_value(
     assert status.value == serialized_value
 
 
-def test_execution_report_is_immutable(tmp_path: Path) -> None:
+def test_execution_report_is_immutable() -> None:
     report = CadQueryExecutionReport(
-        exec_id="exec-1",
-        source_path=tmp_path / "model.py",
-        source_sha256="source-hash",
+        source="result = None",
         status=ExecutionStatus.REJECTED,
-        step_path=None,
     )
 
     with pytest.raises(FrozenInstanceError):
@@ -178,60 +177,130 @@ def test_verify_step_rejects_multiple_solids(tmp_path: Path) -> None:
         CadQueryExecutor.verify_step(step_path)
 
 
-def test_execute_creates_verified_artifacts(tmp_path: Path) -> None:
-    executor, runner, artifact_root = _executor(
-        tmp_path,
+def test_execute_writes_verified_step_to_requested_path(tmp_path: Path) -> None:
+    executor, runner = _executor(
         _sandbox_result(
             stdout="construction log",
             stderr="construction warning",
         ),
         _write_valid_box_step,
     )
+    model_path = _write_model(tmp_path)
+    output_step_path = tmp_path / "saved" / "output.step"
+    output_step_path.parent.mkdir()
 
-    report = executor.execute(source=VALID_BOX_SOURCE)
+    report = executor.execute(model_path, output_step_path)
 
-    assert UUID(report.exec_id)
-    assert report.status is ExecutionStatus.VERIFIED
-    assert report.returncode == 0
-    assert report.source_path == artifact_root / report.exec_id / "model.py"
-    assert (
-        report.source_path
-        and report.source_path.read_text(encoding="utf-8") == VALID_BOX_SOURCE
+    assert report == CadQueryExecutionReport(
+        source=VALID_BOX_SOURCE,
+        status=ExecutionStatus.VERIFIED,
+        returncode=0,
+        stdout="construction log",
+        stderr="construction warning",
     )
-    assert report.source_sha256 == sha256(VALID_BOX_SOURCE.encode("utf-8")).hexdigest()
-    assert report.step_path == artifact_root / report.exec_id / "output.step"
-    assert report.step_path and report.step_path.is_file()
-    assert report.executor_error is None
-    assert report.stdout == "construction log"
-    assert report.stderr == "construction warning"
+    assert output_step_path.is_file()
     assert runner.calls[0][0] == "python model.py"
+    CadQueryExecutor.verify_step(output_step_path)
 
-    imported = cq.importers.importStep(str(report.step_path))
-    solids = imported.solids().vals()
-    assert len(solids) == 1
-    assert cq.Shape(solids[0].wrapped).isValid()  # type: ignore[union-attr]
+
+def test_execute_can_validate_without_persisting_step(tmp_path: Path) -> None:
+    executor, _ = _executor(_sandbox_result(), _write_valid_box_step)
+    model_path = _write_model(tmp_path)
+
+    report = executor.execute(model_path)
+
+    assert report.status is ExecutionStatus.VERIFIED
+    assert report.source == VALID_BOX_SOURCE
+    assert not (tmp_path / "output.step").exists()
 
 
 def test_execute_runs_valid_box_in_real_sandbox(tmp_path: Path) -> None:
     executor = CadQueryExecutor(
-        artifact_root=tmp_path / "artifacts",
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable),
             default_timeout_s=30.0,
         ),
     )
+    model_path = _write_model(tmp_path)
+    output_step_path = tmp_path / "output.step"
 
-    report = executor.execute(source=VALID_BOX_SOURCE)
+    report = executor.execute(model_path, output_step_path)
 
     assert report.status is ExecutionStatus.VERIFIED
     assert report.returncode == 0
-    assert report.step_path is not None
-    CadQueryExecutor.verify_step(report.step_path)
+    assert report.source == VALID_BOX_SOURCE
+    CadQueryExecutor.verify_step(output_step_path)
+
+
+def test_execute_rejects_non_utf8_source_before_running_sandbox(
+    tmp_path: Path,
+) -> None:
+    executor, runner = _executor(_sandbox_result())
+    model_path = tmp_path / "model.py"
+    model_path.write_bytes(b"\xff")
+
+    report = executor.execute(model_path)
+
+    assert report.status is ExecutionStatus.REJECTED
+    assert report.source is None
+    assert report.executor_error == "model.py must be valid UTF-8"
+    assert runner.calls == []
+
+
+def test_execute_maps_permission_error_before_running_sandbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor, runner = _executor(_sandbox_result())
+    model_path = _write_model(tmp_path)
+
+    def raise_permission_error(
+        self: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        del self, encoding, errors
+        raise PermissionError
+
+    monkeypatch.setattr(Path, "read_text", raise_permission_error)
+
+    report = executor.execute(model_path)
+
+    assert report.status is ExecutionStatus.REJECTED
+    assert report.source is None
+    assert report.executor_error == "model.py is not readable"
+    assert runner.calls == []
+
+
+def test_execute_maps_read_error_without_exposing_host_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor, runner = _executor(_sandbox_result())
+    model_path = _write_model(tmp_path)
+    read_error = OSError(errno.EIO, "Input/output error", str(model_path))
+
+    def raise_read_error(
+        self: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        del self, encoding, errors
+        raise read_error
+
+    monkeypatch.setattr(Path, "read_text", raise_read_error)
+
+    report = executor.execute(model_path)
+
+    assert report.status is ExecutionStatus.INFRA_ERROR
+    assert report.source is None
+    assert report.executor_error == "Failed to read model.py: Input/output error"
+    assert str(tmp_path) not in str(report.executor_error)
+    assert runner.calls == []
 
 
 def test_execute_maps_timeout_and_preserves_raw_output(tmp_path: Path) -> None:
-    executor, _, _ = _executor(
-        tmp_path,
+    executor, _ = _executor(
         _sandbox_result(
             status=SandboxStatus.TIMEOUT,
             returncode=None,
@@ -240,18 +309,17 @@ def test_execute_maps_timeout_and_preserves_raw_output(tmp_path: Path) -> None:
         ),
     )
 
-    report = executor.execute(source=VALID_BOX_SOURCE)
+    report = executor.execute(_write_model(tmp_path))
 
     assert report.status is ExecutionStatus.TIMEOUT
+    assert report.source == VALID_BOX_SOURCE
     assert report.returncode is None
     assert report.stdout == "partial output"
     assert report.stderr == ""
-    assert report.step_path is None
 
 
 def test_execute_maps_sandbox_infra_error(tmp_path: Path) -> None:
-    executor, _, _ = _executor(
-        tmp_path,
+    executor, _ = _executor(
         _sandbox_result(
             status=SandboxStatus.INFRA_ERROR,
             returncode=None,
@@ -259,17 +327,15 @@ def test_execute_maps_sandbox_infra_error(tmp_path: Path) -> None:
         ),
     )
 
-    report = executor.execute(source=VALID_BOX_SOURCE)
+    report = executor.execute(_write_model(tmp_path))
 
     assert report.status is ExecutionStatus.INFRA_ERROR
     assert report.returncode is None
     assert report.stderr == "bwrap failed"
-    assert report.step_path is None
 
 
 def test_execute_preserves_process_failure_and_empty_stderr(tmp_path: Path) -> None:
-    executor, _, _ = _executor(
-        tmp_path,
+    executor, _ = _executor(
         _sandbox_result(
             returncode=7,
             stdout="diagnostic",
@@ -277,47 +343,39 @@ def test_execute_preserves_process_failure_and_empty_stderr(tmp_path: Path) -> N
         ),
     )
 
-    report = executor.execute(source=VALID_BOX_SOURCE)
+    report = executor.execute(_write_model(tmp_path))
 
     assert report.status is ExecutionStatus.FAILED
     assert report.returncode == 7
     assert report.executor_error is None
     assert report.stdout == "diagnostic"
     assert report.stderr == ""
-    assert report.step_path is None
 
 
 def test_execute_rejects_missing_step_without_inventing_stderr(
     tmp_path: Path,
 ) -> None:
-    executor, _, _ = _executor(
-        tmp_path,
-        _sandbox_result(returncode=0, stderr=""),
-    )
+    executor, _ = _executor(_sandbox_result(returncode=0, stderr=""))
 
-    report = executor.execute(source=VALID_BOX_SOURCE)
+    report = executor.execute(_write_model(tmp_path))
 
     assert report.status is ExecutionStatus.FAILED
     assert report.returncode == 0
     assert report.executor_error == "output.step was not generated"
     assert report.stderr == ""
-    assert report.step_path is None
 
 
 def test_execute_rejects_syntax_before_running_sandbox(tmp_path: Path) -> None:
-    executor, runner, artifact_root = _executor(
-        tmp_path,
-        _sandbox_result(),
-    )
+    executor, runner = _executor(_sandbox_result())
+    invalid_source = "result = ("
 
-    report = executor.execute(source="result = (")
+    report = executor.execute(_write_model(tmp_path, invalid_source))
 
     assert report.status is ExecutionStatus.REJECTED
+    assert report.source == invalid_source
     assert report.executor_error is not None
     assert "was never closed" in report.executor_error
     assert report.stderr == ""
-    assert report.step_path is None
-    assert report.source_path == artifact_root / report.exec_id / "model.py"
     assert runner.calls == []
 
 
@@ -327,8 +385,7 @@ def test_execute_preserves_process_output_on_step_verification_failure(
     def write_invalid_step(path: Path) -> None:
         path.write_text("not a STEP file", encoding="utf-8")
 
-    executor, _, _ = _executor(
-        tmp_path,
+    executor, _ = _executor(
         _sandbox_result(
             stdout="construction log",
             stderr="",
@@ -336,7 +393,7 @@ def test_execute_preserves_process_output_on_step_verification_failure(
         write_invalid_step,
     )
 
-    report = executor.execute(source=VALID_BOX_SOURCE)
+    report = executor.execute(_write_model(tmp_path))
 
     assert report.status is ExecutionStatus.FAILED
     assert report.executor_error is not None
@@ -345,51 +402,19 @@ def test_execute_preserves_process_output_on_step_verification_failure(
     assert report.stderr == ""
 
 
-def test_execute_rejects_sandbox_output_symlink(
-    tmp_path: Path,
-) -> None:
+def test_execute_rejects_sandbox_output_symlink(tmp_path: Path) -> None:
     outside_step_path = tmp_path / "outside.step"
     _write_valid_box_step(outside_step_path)
 
     def write_output_symlink(path: Path) -> None:
         path.symlink_to(outside_step_path)
 
-    executor, _, artifact_root = _executor(
-        tmp_path,
-        _sandbox_result(),
-        write_output_symlink,
-    )
+    executor, _ = _executor(_sandbox_result(), write_output_symlink)
+    requested_output_path = tmp_path / "saved.step"
 
-    report = executor.execute(source=VALID_BOX_SOURCE)
+    report = executor.execute(_write_model(tmp_path), requested_output_path)
 
     assert report.status is ExecutionStatus.FAILED
     assert report.executor_error is not None
     assert "symlink" in report.executor_error
-    assert report.step_path is None
-    assert not (artifact_root / report.exec_id / "output.step").exists()
-
-
-def test_execute_refuses_to_overwrite_existing_artifact(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fixed_exec_id = UUID("00000000-0000-0000-0000-000000000001")
-    monkeypatch.setattr(
-        "zeroshot.pipeline.verification.run_cadquery.uuid4",
-        lambda: fixed_exec_id,
-    )
-    executor, _, artifact_root = _executor(
-        tmp_path,
-        _sandbox_result(),
-        _write_valid_box_step,
-    )
-
-    first_report = executor.execute(source=VALID_BOX_SOURCE)
-
-    with pytest.raises(FileExistsError):
-        executor.execute(source="result = 'must not overwrite'")
-
-    assert first_report.status is ExecutionStatus.VERIFIED
-    assert (artifact_root / str(fixed_exec_id) / "model.py").read_text(
-        encoding="utf-8"
-    ) == VALID_BOX_SOURCE
+    assert not requested_output_path.exists()
