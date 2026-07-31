@@ -8,6 +8,7 @@ from uuid import uuid4
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from zeroshot.pipeline.event_log import JsonlEventWriter, RunEventTransformer
 from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
@@ -31,47 +32,51 @@ class PipelineRunner:
         self.artifact_root = Path(artifact_root)
 
     def run_sample(self, manifest: InputManifest) -> ReconstructionState:
-        checkpoint_path = (
-            self.artifact_root / ".langgraph" / f"{manifest.sample_id}.sqlite"
-        )
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        sample_artifact_root = self.artifact_root / manifest.sample_id
+        sample_artifact_root.mkdir(parents=True, exist_ok=False)
 
-        with SandboxWorkdir() as workdir:
-            staged_manifest = self._stage_inputs(
-                manifest=manifest,
-                workdir=workdir,
-            )
+        run_id = f"{manifest.sample_id}:{uuid4()}"
+        checkpoint_path = sample_artifact_root / "checkpoints.sqlite"
 
-            initial_messages = self.message_builder.build_initial(
-                staged_manifest,
-                workdir,
-            )
-
-            with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
-                graph = create_reconstruction_graph(
-                    model=self.model,
-                    sandbox_runner=self.sandbox_runner,
-                    sandbox_workdir=workdir,
-                    checkpointer=checkpointer,
+        with JsonlEventWriter(
+            sample_artifact_root / "events.jsonl",
+            run_id=run_id,
+            sample_id=manifest.sample_id,
+        ) as event_writer:
+            with SandboxWorkdir() as workdir:
+                staged_manifest = self._stage_inputs(
+                    manifest=manifest,
+                    workdir=workdir,
                 )
 
-                stream = graph.stream_events(
-                    ReconstructionState(messages=initial_messages),
-                    config={
-                        "configurable": {"thread_id": f"{manifest.sample_id}:{uuid4()}"}
-                    },
-                    version="v3",
-                    durability="sync",
+                initial_messages = self.message_builder.build_initial(
+                    staged_manifest,
+                    workdir,
                 )
-                for _ in stream:
-                    pass
-                result = stream.output
 
-            # Save artifacts
-            shutil.copytree(
-                workdir.host_bind_dir,
-                self.artifact_root / manifest.sample_id,
-            )
+                with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+                    graph = create_reconstruction_graph(
+                        model=self.model,
+                        sandbox_runner=self.sandbox_runner,
+                        sandbox_workdir=workdir,
+                        checkpointer=checkpointer,
+                    )
+
+                    stream = graph.stream_events(
+                        ReconstructionState(messages=initial_messages),
+                        config={"configurable": {"thread_id": run_id}},
+                        version="v3",
+                        durability="sync",
+                        transformers=[RunEventTransformer],
+                    )
+                    for event in stream.extensions["run_events"]:
+                        event_writer.write(event)
+                    result = stream.output
+
+                shutil.copytree(
+                    workdir.host_bind_dir,
+                    sample_artifact_root / "workspace",
+                )
 
         return cast(ReconstructionState, result)
 

@@ -235,10 +235,7 @@ zeroshot/
 │   │   ├── (agent.py)
 │   │   ├── (routing.py)
 │   │   └── graph.py
-│   ├── audit/
-│   │   ├── __init__.py
-│   │   ├── events.py
-│   │   └── writer.py
+│   ├── event_log.py                # run eventの正規化とJSONL逐次出力
 │   ├── evaluation/
 │   │   ├── __init__.py
 │   │   └── score_run.py
@@ -414,6 +411,10 @@ LangGraphを採用する主目的の一つは、agentの外部から観測可能
 監査対象はmessage、tool call、tool result、artifact、状態遷移である。非公開chain-of-thoughtの生成や保存を要求しない。
 
 LangGraphのcheckpointerだけを唯一の研究記録にしない。人間が読みやすくversionに依存しにくい`events.jsonl`と`artifact_manifest.json`をcanonical recordにする。checkpointerはresumeやdebugの補助として扱う。
+
+Phase 3のevent正規化とJSONL出力は、規模が小さい間は`pipeline/event_log.py`へまとめる。`RunEventTransformer`がLangGraph protocol eventを安定したrun eventへ射影し、`JsonlEventWriter`が1 event 1行で逐次flushする。Transformerはgraph topologyへ埋め込まず、streamとwriterを所有する`PipelineRunner`が`stream_events()`のcall-time optionとして登録する。別形式のwriterや複数のconsumerが現れて変換処理を共有する段階まで、`events.py`と`writer.py`には分割しない。
+
+canonicalなrun metadataとsandbox workdirのsnapshotは同じdirectoryへmergeしない。前者はsample artifact root、後者はその`workspace/`配下へ保存し、modelが作成できる同名fileによる`events.jsonl`、checkpoint、result等の置換をdirectory境界で防ぐ。
 
 credential、API key、authorization headerは保存しない。base URLにsecret queryが含まれる場合もredactする。
 
@@ -602,7 +603,7 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 - `workflow/graph.py`
 - `pipeline/runner.py`
 - `zeroshot/run_pipeline.py`を薄いHydra composition rootとして実装
-- 最小監査writer
+- `pipeline/event_log.py`による最小監査event変換・JSONL writer
 - scripted fake chat model
 
 Phase 2の`execution/run_code.py`は`verification/run_cadquery.py`へ移動する。`CadQueryExecutionReport`、source validation、STEP validationの責務は維持する。`tools/verify_output.py`がrun中共有する`SandboxWorkdir`から現在の`model.py`を読み、source文字列だけを`CadQueryExecutor`へ渡す。`CadQueryExecutor`は実行ごとに内部で一時`SandboxWorkdir`を作るため、候補scriptは共有workdir内の補助fileへ依存しないself-containedなprogramとする。sourceとverified STEPはverification ID配下へimmutable artifactとして保存する。
@@ -873,8 +874,10 @@ use_drawing_ir: false
 └── <sample_id>/
     ├── result.json
     ├── events.jsonl
+    ├── checkpoints.sqlite
     ├── artifact_manifest.json
     ├── messages.jsonl
+    ├── workspace/                   # sandbox workdirの未昇格snapshot
     ├── verifications/
     │   └── <verification_id>/
     │       ├── model.py
@@ -890,6 +893,8 @@ use_drawing_ir: false
 ```
 
 `verifications/`にはmodel主導の中間検証とworkflow主導の最終検証を同じ形式で保存する。`source.json`には少なくともsource hashと保存時刻を記録し、`verification.json`には呼び出し元`model | workflow`、CadQuery実行、STEP検証、renderの各statusを記録する。
+
+`workspace/`はmodelが自由に変更できるscratchのrun終了時snapshotであり、内容を検証済みartifactとして扱わない。`events.jsonl`、`checkpoints.sqlite`、`artifact_manifest.json`、`result.json`等のtrusted metadataは`workspace/`外へ保存する。
 
 `final/`へ昇格できるのは、workflow主導の最終検証でsingle valid solidを確認したverificationだけとする。失敗runにroot-levelの信頼済みSTEPがあるように見せない。
 

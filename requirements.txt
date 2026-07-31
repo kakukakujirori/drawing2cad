@@ -24,7 +24,7 @@ rootutils
 rtree
 ruff
 safetensors
-sglang[all]
+sglang
 scipy
 tensorboard
 tqdm

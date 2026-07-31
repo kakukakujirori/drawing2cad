@@ -114,6 +114,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
             "assert not Path('/work/inputs/style-b.png').exists()",
             "dxf.write_text('SANDBOX_MUTATION')",
             "Path('/work/scratch.txt').write_text('persisted')",
+            "Path('/work/events.jsonl').write_text('FORGED')",
             "print('staged-ok')",
         ]
     )
@@ -221,7 +222,8 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert selected_render_path.read_bytes() == b"ALLOWED_RENDER"
     assert hidden_render_path.read_bytes() == b"HIDDEN_RENDER"
 
-    saved_workdir = tmp_path / "artifacts" / "sample-1"
+    sample_artifact_root = tmp_path / "artifacts" / "sample-1"
+    saved_workdir = sample_artifact_root / "workspace"
     assert (saved_workdir / "inputs" / "techdraw.dxf").read_text(
         encoding="utf-8"
     ) == "SANDBOX_MUTATION"
@@ -230,7 +232,44 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert (saved_workdir / "scratch.txt").read_text(encoding="utf-8") == "persisted"
     assert (saved_workdir / "attempts").is_dir()
 
-    checkpoint_path = tmp_path / "artifacts" / ".langgraph" / "sample-1.sqlite"
+    assert (saved_workdir / "events.jsonl").read_text(encoding="utf-8") == "FORGED"
+
+    event_log_path = sample_artifact_root / "events.jsonl"
+    events = [
+        json.loads(line)
+        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["event_index"] for event in events] == list(range(len(events)))
+    assert events[0]["event"] == "run_started"
+    assert events[-1]["event"] == "run_completed"
+    assert {event["sample_id"] for event in events} == {"sample-1"}
+    assert len({event["run_id"] for event in events}) == 1
+    assert sum(event["event"] == "input" for event in events) == 1
+
+    tool_events = [
+        event
+        for event in events
+        if event["event"] in {"tool_started", "tool_finished"}
+        and event["data"].get("tool_call_id")
+        in {"call-inspect-inputs", "call-read-scratch"}
+    ]
+    assert [event["event"] for event in tool_events] == [
+        "tool_started",
+        "tool_finished",
+        "tool_started",
+        "tool_finished",
+    ]
+
+    final_verify_started = next(
+        event
+        for event in events
+        if event["event"] == "tool_started"
+        and event["data"]["tool_name"] == "verify_output"
+    )
+    assert final_verify_started["data"]["caller"] == "workflow"
+    assert "output" not in {event["event"] for event in events}
+
+    checkpoint_path = sample_artifact_root / "checkpoints.sqlite"
     assert checkpoint_path.is_file()
     with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
         checkpoints = list(checkpointer.list(None))
@@ -240,4 +279,4 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         checkpoint.config["configurable"]["thread_id"] for checkpoint in checkpoints
     }
     assert len(thread_ids) == 1
-    assert next(iter(thread_ids)).startswith("sample-1:")
+    assert thread_ids == {events[0]["run_id"]}
