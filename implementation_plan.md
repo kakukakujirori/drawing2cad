@@ -224,17 +224,16 @@ zeroshot/
 │   │   ├── __init__.py
 │   │   ├── run_shell.py
 │   │   ├── load_image.py
-│   │   └── verify_output_tool.py
+│   │   └── verify_output.py
 │   ├── verification/
 │   │   ├── __init__.py
 │   │   ├── run_cadquery.py         # CadQuery実行、STEP生成・検証
-│   │   ├── verify_output.py        # source保存とCadQuery実行の固定順序
 │   │   └── render.py               # Phase 5: 三面図DXF・perspective views生成
 │   ├── workflow/
 │   │   ├── __init__.py
 │   │   ├── state.py
-│   │   ├── agent.py
-│   │   ├── routing.py
+│   │   ├── (agent.py)
+│   │   ├── (routing.py)
 │   │   └── graph.py
 │   ├── audit/
 │   │   ├── __init__.py
@@ -317,7 +316,7 @@ class ReconstructionState(TypedDict, total=False):
 
 `load_image`はworkdir pathを受け取り、workdir外へのescapeとsymlinkを拒否した上で画像をmultimodal contentとしてmodelへ返す。これによりmodelはinput/feedback renderだけでなく、自ら生成したdump画像も確認できる。
 
-modelへ公開する`verify_output` toolは引数を取らず、共有`SandboxWorkdir` rootの`model.py`だけを対象とする。toolから呼ぶtrusted側の関数は`render_views: bool = False`を受け取る。`verification/verify_output.py`は現在のsourceをimmutable artifactへ保存し、同じ`SandboxWorkdir`を`run_cadquery.py`へ渡してtrusted export epilogue付きwrapperをfreshなbwrap process内で実行し、STEP再読込、single solid、kernel validityを確認する。
+modelへ公開する`verify_output` toolは引数を取らず、共有`SandboxWorkdir` rootの`model.py`だけを対象とする。`tools/verify_output.py`がsourceを安全に読み、`CadQueryExecutor`へ渡し、model-visibleな構造化reportへ変換する。`CadQueryExecutor`はsourceをverification ID配下へimmutable artifactとして保存した後、内部でfreshな`SandboxWorkdir`を作り、trusted export epilogue付きwrapperをbwrap process内で実行して、STEP再読込、single solid、kernel validityを確認する。`verification/verify_output.py`という追加use case層と`tools/verify_output_tool.py`という別adapterは作らない。
 
 Phase 3/4では`render_views=False`だけを使い、`True`なら明示的に`NotImplementedError`を送出する。この例外はmodel reconstruction failureではなく、未実装機能を有効にしたconfiguration errorとしてrun開始前またはtrusted runtime境界で扱う。Phase 5で`True`を実装し、verifiedの場合だけ`render.py`で三面図DXFとperspective viewsを生成してverification ID配下のartifactとworkdir内feedbackへ保存する。
 
@@ -331,7 +330,7 @@ system promptには「workdir内の`model.py`へ最終CadQuery Solidを`result`�
 
 ### 6.3 中間実行と最終実行
 
-同じ`verification.verify_output()`を次の2経路から使う。
+同じ`tools/verify_output.py`のtool instanceを次の2経路から使う。
 
 1. modelが`verify_output` toolを自発的に呼ぶ中間検証
 2. modelがtool callなしで完成を表明した後、workflowが呼ぶ最終検証
@@ -595,9 +594,8 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 
 - `tools/run_shell.py`
 - `tools/load_image.py`
-- `tools/verify_output_tool.py`
+- `tools/verify_output.py`
 - `verification/run_cadquery.py`
-- `verification/verify_output.py`
 - `workflow/state.py`
 - `workflow/agent.py`
 - `workflow/routing.py`
@@ -607,9 +605,7 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 - 最小監査writer
 - scripted fake chat model
 
-Phase 2の`execution/run_code.py`は`verification/run_cadquery.py`へ移動する。`CadQueryExecutionReport`、source validation、STEP validationの責務は維持するが、実行時に内部で一時`SandboxWorkdir`を作るPhase 2 contractから、callerがrun中共有する`SandboxWorkdir`を渡すcontractへ変更する。現在の`model.py`が同じworkdir内の補助moduleや入力fileを参照できる状態で、元の`model.py`を変更せずtrusted export処理を加えて実行する。sourceとverified STEPはverification ID配下へimmutable artifactとして保存する。
-
-`verification/verify_output.py`は、source保存とこの低水準処理を固定順序で呼ぶuse caseであり、LangGraph tool固有の型へ依存させない。`tools/verify_output_tool.py`はtool callをこのuse caseへ接続する薄いadapterにする。
+Phase 2の`execution/run_code.py`は`verification/run_cadquery.py`へ移動する。`CadQueryExecutionReport`、source validation、STEP validationの責務は維持する。`tools/verify_output.py`がrun中共有する`SandboxWorkdir`から現在の`model.py`を読み、source文字列だけを`CadQueryExecutor`へ渡す。`CadQueryExecutor`は実行ごとに内部で一時`SandboxWorkdir`を作るため、候補scriptは共有workdir内の補助fileへ依存しないself-containedなprogramとする。sourceとverified STEPはverification ID配下へimmutable artifactとして保存する。
 
 #### 作る順序
 

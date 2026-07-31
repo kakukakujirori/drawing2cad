@@ -3,7 +3,8 @@ from __future__ import annotations
 import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PurePosixPath
+from types import MappingProxyType
 from typing import Literal
 
 from langchain_core.messages import (
@@ -17,7 +18,20 @@ from langchain_core.messages.content import (
     create_text_block,
 )
 
-from zeroshot.pipeline.manifest import FeedbackManifest, InputManifest
+from zeroshot.pipeline.manifest import InputManifest, FeedbackManifest
+from zeroshot.pipeline.sandbox import SandboxWorkdir
+
+
+@dataclass(frozen=True)
+class _SandboxManifest:
+    """Files exposed to the agent in the sandbox namespace."""
+
+    id: str
+    dxf_path: PurePosixPath | None
+    render3d_paths: Mapping[str, PurePosixPath]
+    render3d_bytes: Mapping[str, bytes]
+    execution_feedback: str | None
+
 
 DEFAULT_SYSTEM_PROMPT = (
     """
@@ -72,12 +86,91 @@ class MessageBuilder:
         if mode != "none" and not styles:
             raise ValueError(f"{name}_styles must not be empty when mode={mode!r}")
 
-    def build_initial(self, manifest: InputManifest) -> list[BaseMessage]:
+    @staticmethod
+    def _translate_paths(
+        manifest: InputManifest | FeedbackManifest,
+        workdir: SandboxWorkdir,
+        render3d_mode: Literal["none", "path", "image"],
+    ) -> _SandboxManifest:
+
+        # paths to translate
+        paths_to_translate = dict(manifest.render3d_paths).copy()
+        if manifest.dxf_path is not None:
+            assert "dxf" not in paths_to_translate  # NEVER HAPPENS
+            paths_to_translate["dxf"] = manifest.dxf_path
+
+        # existence check
+        for key, path in paths_to_translate.items():
+            if path.is_symlink():
+                raise ValueError(f"{path} must not be a symlink")
+            if not path.is_absolute():
+                raise ValueError(f"{path} must be absolute")
+            if not path.is_relative_to(workdir.host_bind_dir):
+                raise ValueError(f"{path} must be under {workdir.host_bind_dir}")
+            if not path.is_file():
+                raise FileNotFoundError(f"{key} not found: {path}")
+
+        # translate paths
+        translated_paths = {
+            key: workdir.host_to_sandbox_path(path)
+            for key, path in paths_to_translate.items()
+        }
+        translated_dxf_path = translated_paths.pop("dxf", None)
+        translated_render3d_paths = MappingProxyType(translated_paths)
+
+        # load images
+        translated_render3d_bytes = (
+            MappingProxyType(
+                {
+                    style: path.read_bytes()
+                    for style, path in manifest.render3d_paths.items()
+                }
+            )
+            if render3d_mode == "image"
+            else MappingProxyType({})
+        )
+
+        # other fields
+        manifest_id = (
+            manifest.sample_id
+            if isinstance(manifest, InputManifest)
+            else manifest.verification_id
+        )
+        execution_feedback = (
+            manifest.execution_feedback
+            if isinstance(manifest, FeedbackManifest)
+            else None
+        )
+
+        return _SandboxManifest(
+            id=manifest_id,
+            dxf_path=translated_dxf_path,
+            render3d_paths=translated_render3d_paths,
+            render3d_bytes=translated_render3d_bytes,
+            execution_feedback=execution_feedback,
+        )
+
+    def build_initial(
+        self,
+        manifest: InputManifest,
+        workdir: SandboxWorkdir,
+    ) -> list[BaseMessage]:
+        """
+        Build messages from files staged in workdir.host_bind_dir.
+        Paths included in text are translated to workdir.sandbox_bind_dir paths.
+        """
+        self._validate_requested_styles(self.access_render3d_styles, manifest)
+        self._validate_requested_styles(self.feedback_render3d_styles, manifest)
+
+        sandbox_manifest = self._translate_paths(
+            manifest, workdir, self.access_render3d
+        )
+
         blocks: list[ContentBlock] = [
             create_text_block(
                 "\n".join(
                     [
-                        f"[Input DXF path: {manifest.dxf_path}]",
+                        f"[Input DXF path: {sandbox_manifest.dxf_path}]",
                         "The DXF contains the three-view 2D technical drawing.",
                         "The coordinate system of the 2D drawing is as follows:",
                         "- Front view: right=+x, up=+y",
@@ -89,14 +182,12 @@ class MessageBuilder:
             )
         ]
 
-        self._validate_requested_styles(self.access_render3d_styles, manifest)
-        self._validate_requested_styles(self.feedback_render3d_styles, manifest)
-
         blocks.extend(
             self._render_blocks(
                 mode=self.access_render3d,
                 render3d_styles=self.access_render3d_styles,
-                render3d_paths=manifest.render3d_paths,
+                render3d_paths=sandbox_manifest.render3d_paths,
+                render3d_bytes=sandbox_manifest.render3d_bytes,
                 label="[Input perspective renders]",
             )
         )
@@ -106,23 +197,34 @@ class MessageBuilder:
             HumanMessage(content_blocks=blocks),
         ]
 
-    def build_feedback(self, manifest: FeedbackManifest) -> HumanMessage:
+    def build_feedback(
+        self,
+        manifest: FeedbackManifest,
+        workdir: SandboxWorkdir,
+    ) -> HumanMessage:
+        sandbox_manifest = self._translate_paths(
+            manifest, workdir, self.feedback_render3d
+        )
+
         blocks: list[ContentBlock] = [
             create_text_block(
-                f"[Candidate execution feedback]\n{manifest.execution_feedback}\n"
+                f"[Candidate execution feedback]\n{sandbox_manifest.execution_feedback}\n"
             )
         ]
 
-        if manifest.dxf_path is not None:
+        if sandbox_manifest.dxf_path is not None:
             blocks.append(
-                create_text_block(f"[Projected DXF path: {manifest.dxf_path}]\n")
+                create_text_block(
+                    f"[Projected DXF path: {sandbox_manifest.dxf_path}]\n"
+                )
             )
 
         blocks.extend(
             self._render_blocks(
                 mode=self.feedback_render3d,
                 render3d_styles=self.feedback_render3d_styles,
-                render3d_paths=manifest.render3d_paths,
+                render3d_paths=sandbox_manifest.render3d_paths,
+                render3d_bytes=sandbox_manifest.render3d_bytes,
                 label="[Projected perspective renders]",
             )
         )
@@ -146,7 +248,8 @@ class MessageBuilder:
     def _render_blocks(
         mode: Literal["none", "path", "image"],
         render3d_styles: tuple[str, ...],
-        render3d_paths: Mapping[str, Path],
+        render3d_paths: Mapping[str, PurePosixPath],
+        render3d_bytes: Mapping[str, bytes],
         label: str,
     ) -> list[ContentBlock]:
 
@@ -179,9 +282,7 @@ class MessageBuilder:
                 blocks.append(create_text_block(f"- {style}"))
                 blocks.append(
                     create_image_block(
-                        base64=base64.b64encode(
-                            render3d_paths[style].read_bytes()
-                        ).decode("ascii"),
+                        base64=base64.b64encode(render3d_bytes[style]).decode("ascii"),
                         mime_type="image/png",
                     )
                 )
