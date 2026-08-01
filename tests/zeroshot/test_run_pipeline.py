@@ -43,6 +43,7 @@ def test_run_composes_dependencies_and_manifest(
     config = OmegaConf.create(
         {
             "artifact_root": str(artifact_root),
+            "console": None,
             "message_builder": {
                 "_target_": "zeroshot.pipeline.messages.MessageBuilder",
                 "access_render3d": "none",
@@ -77,6 +78,7 @@ def test_run_composes_dependencies_and_manifest(
     assert isinstance(runner_options["message_builder"], MessageBuilder)
     assert isinstance(runner_options["sandbox_runner"], StubSandboxRunner)
     assert runner_options["artifact_root"] == artifact_root
+    assert runner_options["console_reporter"] is None
     assert captured["sandbox_options"] == {
         "python_executable": Path(sys.executable),
         "default_timeout_s": 30.0,

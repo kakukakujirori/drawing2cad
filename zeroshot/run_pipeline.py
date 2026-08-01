@@ -16,8 +16,8 @@ from zeroshot.pipeline.workflow import ReconstructionState
 def run(config: DictConfig) -> ReconstructionState:
     """Run one sample with already constructed model dependency."""
     message_builder = instantiate(config.message_builder)
-
     model = instantiate(config.model)
+    console_reporter = instantiate(config.console)
 
     sandbox_runner = SandboxRunner(
         python_executable=Path(
@@ -33,6 +33,7 @@ def run(config: DictConfig) -> ReconstructionState:
         message_builder=message_builder,
         sandbox_runner=sandbox_runner,
         artifact_root=Path(to_absolute_path(config.artifact_root)),
+        console_reporter=console_reporter,
     )
 
     manifest = InputManifest(

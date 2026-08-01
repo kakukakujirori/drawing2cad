@@ -2,6 +2,7 @@ import json
 import shlex
 import sys
 from collections.abc import Callable, Sequence
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,9 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import PrivateAttr
+from rich.console import Console
 
+from zeroshot.pipeline.event_logging import ConsoleReporter
 from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.runner import PipelineRunner
@@ -350,11 +353,20 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
         )
     )
     artifact_root = tmp_path / "artifacts"
+    console_output = StringIO()
     runner = PipelineRunner(
         model=model,
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
+        console_reporter=ConsoleReporter(
+            Console(
+                file=console_output,
+                color_system=None,
+                force_terminal=False,
+                highlight=False,
+            )
+        ),
     )
 
     result = runner.run_sample(manifest)
@@ -362,6 +374,12 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     report = result["last_verification"]
     assert report.status == "VERIFIED"
     assert report.verification_id == "000"
+    rendered_console = console_output.getvalue()
+    assert "[node] agent started — waiting for model" in rendered_console
+    assert "tool call: run_shell" in rendered_console
+    assert "done" in rendered_console
+    assert "[verification]" in rendered_console
+    assert "run completed" in rendered_console
 
     final_attempt = artifact_root / "valid-box" / "workspace" / "attempts" / "000"
     assert (final_attempt / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE

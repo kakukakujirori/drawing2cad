@@ -6,6 +6,9 @@ defaults:
 
 artifact_root: outputs/zeroshot
 
+console:
+  _target_: zeroshot.pipeline.event_logging.ConsoleReporter
+
 message_builder:
   _target_: zeroshot.pipeline.messages.MessageBuilder
   access_render3d: "path"

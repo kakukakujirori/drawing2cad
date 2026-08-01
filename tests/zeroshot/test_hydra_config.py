@@ -4,6 +4,7 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from langchain_openai import ChatOpenAI
 
+from zeroshot.pipeline.event_logging import ConsoleReporter
 from zeroshot.pipeline.messages import MessageBuilder
 
 CONFIG_DIR = Path(__file__).parents[2] / "zeroshot" / "configs"
@@ -20,7 +21,9 @@ def test_default_config_instantiates_message_builder() -> None:
         config = compose(config_name="default")
 
     builder = instantiate(config.message_builder)
+    console_reporter = instantiate(config.console)
     assert isinstance(builder, MessageBuilder)
+    assert isinstance(console_reporter, ConsoleReporter)
 
 
 def test_gemma4_ollama_config_instantiates_chat_openai() -> None:

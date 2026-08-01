@@ -211,7 +211,11 @@ zeroshot/
 ├── run_pipeline.py                  # 後続: 新pipelineの薄いHydra composition root
 ├── pipeline/
 │   ├── __init__.py
-│   ├── event_log.py                 # run eventの正規化とJSONL逐次出力
+│   ├── event_logging/               # run eventの正規化、JSONL、console表示
+│   │   ├── __init__.py
+│   │   ├── normalizer.py
+│   │   ├── jsonl.py
+│   │   └── console.py
 │   ├── manifest.py                  # InputManifest / FeedbackManifestとpath検証
 │   ├── messages.py                  # access/feedback message builder
 │   ├── runner.py                    # application wiringとsample単位のrun lifecycle
@@ -376,7 +380,9 @@ LangGraphを採用する主目的の一つは、agentの外部から観測可能
 
 LangGraphのcheckpointerだけを唯一の研究記録にしない。Phase 3では人間が読みやすくversionに依存しにくい`events.jsonl`をcanonicalなrun logとし、checkpointerはresumeやdebugの補助として扱う。dataset全体を集約するrun manifestやartifact manifestは、実model、renderer、scorerの出力contractが具体化する後続phaseで追加する。
 
-Phase 3のevent正規化とJSONL出力は、規模が小さい間は`pipeline/event_log.py`へまとめる。`RunEventTransformer`がLangGraph protocol eventを安定したrun eventへ射影し、`JsonlEventWriter`が1 event 1行で逐次flushする。Transformerはgraph topologyへ埋め込まず、streamとwriterを所有する`PipelineRunner`が`stream_events()`のcall-time optionとして登録する。別形式のwriterや複数のconsumerが現れて変換処理を共有する段階まで、`events.py`と`writer.py`には分割しない。
+Phase 3のevent正規化とJSONL出力は、規模が小さい間は`pipeline/event_log.py`へまとめる。`RunEventTransformer`がLangGraph protocol eventを安定したrun eventへ射影し、`JsonlEventWriter`が1 event 1行で逐次flushする。Transformerはgraph topologyへ埋め込まず、streamとwriterを所有する`PipelineRunner`が`stream_events()`のcall-time optionとして登録する。
+
+Phase 4でconsoleへのlive表示という二つ目のconsumerが必要になったため、`pipeline/event_logging/`へ分割する。`normalizer.py`は正規化、`jsonl.py`はcanonical logの永続化、`console.py`はRichによる人間向け表示だけを所有する。`PipelineRunner`は`run_events`と`messages` projectionを駆動して振り分けるが、表示形式は持たない。独立したstream抽象やreporter protocolは、二つ目の実装が必要になるまで追加しない。
 
 canonicalなrun metadataとsandbox workdirのsnapshotは同じdirectoryへmergeしない。前者はsample artifact root、後者はその`workspace/`配下へ保存し、modelが作成できる同名fileによる`events.jsonl`やcheckpointの置換をdirectory境界で防ぐ。`workspace/attempts/`だけはtrusted側の`verify_output`が作成し、sandboxへread-only bindするpipeline管理領域とする。
 
@@ -565,7 +571,7 @@ modelとCADを使わず、Hydraからcomponentを生成し、全message payload�
 - `workflow/graph.py`
 - `pipeline/runner.py`
 - `zeroshot/run_pipeline.py`を薄いHydra composition rootとして実装
-- `pipeline/event_log.py`による最小監査event変換・JSONL writer
+- `pipeline/event_logging/normalizer.py`と`jsonl.py`による最小監査event変換・JSONL writer
 - scripted fake chat model
 
 Phase 2の`execution/run_code.py`は`verification/run_cadquery.py`へ移動する。`CadQueryExecutionReport`、source validation、STEP validationの責務は維持する。`tools/verify_output.py`がrun中共有する`SandboxWorkdir`から現在の`model.py`を読み、source文字列だけを`CadQueryExecutor`へ渡す。`CadQueryExecutor`は実行ごとに内部で一時`SandboxWorkdir`を作るため、候補scriptは共有workdir内の補助fileへ依存しないself-containedなprogramとする。sourceとverified STEPはverification ID配下へimmutable artifactとして保存する。
@@ -634,6 +640,7 @@ Phase 3ではvisual feedbackを実装しない。trusted側のverification関数
 - bounded log captureとCPU/memory/PID数のresource limit
 - backend capability smoke test
 - one-sample live CLI
+- Rich consoleへのnode、tool、verification、model text/reasoningのlive表示
 
 SGLang serverはpipelineと別process、可能なら別environmentで起動する。pipeline側は`base_url`、`model`、認証情報だけを受け取り、`sglang[all]`へ直接依存しない。
 

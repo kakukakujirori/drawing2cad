@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import HumanMessage
 
-from zeroshot.pipeline.event_log import JsonlEventWriter, _safe_value
+from zeroshot.pipeline.event_logging.jsonl import JsonlEventWriter
+from zeroshot.pipeline.event_logging.normalizer import _safe_value
 
 
 def test_event_serialization_redacts_images_and_secrets() -> None:
