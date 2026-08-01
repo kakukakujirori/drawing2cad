@@ -9,7 +9,7 @@ api_key: ollama
 timeout: 600.0
 max_retries: 0
 
-temperature: 1.0
+temperature: 0.0
 top_p: 0.95
 seed: 0
 max_tokens: 4096

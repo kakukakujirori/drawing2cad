@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shutil
 from contextlib import ExitStack
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 from uuid import uuid4
 
@@ -30,12 +30,16 @@ class PipelineRunner:
         message_builder: MessageBuilder,
         sandbox_runner: SandboxRunner,
         artifact_root: str | Path,
+        output_filename: str = "model.py",
+        verification_dirname: PurePosixPath = PurePosixPath("attempts"),
         console_reporter: ConsoleReporter | None = None,
     ) -> None:
         self.model = model
         self.message_builder = message_builder
         self.sandbox_runner = sandbox_runner
         self.artifact_root = Path(artifact_root)
+        self.output_filename = output_filename
+        self.verification_dirname = verification_dirname
         self.console_reporter = console_reporter
 
     def run_sample(self, manifest: InputManifest) -> ReconstructionState:
@@ -73,8 +77,10 @@ class PipelineRunner:
 
             # prepare initial messages
             initial_messages = self.message_builder.build_initial(
-                staged_manifest,
-                workdir,
+                manifest=staged_manifest,
+                workdir=workdir,
+                output_filename=self.output_filename,
+                verification_dirname=self.verification_dirname,
             )
 
             # instantiate the graph
@@ -85,6 +91,8 @@ class PipelineRunner:
                 model=self.model,
                 sandbox_runner=self.sandbox_runner,
                 sandbox_workdir=workdir,
+                output_filename=self.output_filename,
+                verification_dirname=self.verification_dirname,
                 checkpointer=checkpointer,
             )
 

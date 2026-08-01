@@ -3,9 +3,10 @@ from __future__ import annotations
 import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
+from inspect import cleandoc
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Literal
+from typing import Callable, Literal
 
 from langchain_core.messages import (
     BaseMessage,
@@ -33,27 +34,39 @@ class _SandboxManifest:
     execution_feedback: str | None
 
 
-DEFAULT_SYSTEM_PROMPT = (
-    """
-You are an expert CAD engineer specializing in reconstructing parametric 3D models from engineering drawings.
-Your task is to convert a three-view DXF drawing into a valid 3D CAD model and produce a complete, executable CadQuery Python script.
-
-Note:
-- In the output CADQuery script, you must store the completed CADQuery solid in the `result` variable.
-- Use all available perspective renders together if provided.
-- Create and run temporary python scripts when you need exact geometry or numerical analysis.
-""".strip()
-    + "\n"
-)
-
-
 @dataclass(frozen=True)
 class MessageBuilder:
     access_render3d: Literal["none", "path", "image"]
     access_render3d_styles: tuple[str, ...]
     feedback_render3d: Literal["none", "path", "image"]
     feedback_render3d_styles: tuple[str, ...]
-    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    system_prompt: Callable[[str, str], str] = lambda output_path, verification_dir: (
+        cleandoc(
+            f"""
+        You are an expert CAD engineer specializing in reconstructing accurate parametric 3D models from engineering drawings.
+        Convert the provided three-view DXF drawing into a valid 3D CAD model and write a complete, executable CadQuery Python script to:
+
+        {output_path}
+
+        Requirements:
+        - The output CADQuery script must be self-contained and not load the input DXF or any external files.
+        - Store the completed CADQuery solid in the `result` variable in the output file.
+        - Use all available perspective renders together if provided.
+        - The generated geometry must be valid and exportable to STEP.
+
+        Tools:
+        - `run_shell` can call any bash functions. Use it to read, write and inspect any files.
+        - `load_image` loads the image data from the specified path.
+        - `verify_output` compiles {output_path} and generates a STEP file and its 2D renderings. It returns error messages when STEP generation fails.
+
+        Tips:
+        - You can create temporary python scripts and run them using the `run_shell` tool with the command `python <filename>` for quick analysis and validation.
+        - Based on the `verify_output` results, you can debug and refine the {output_path} script.
+        - You can review the past `verify_output` results under {verification_dir}.
+        """.strip()
+            + "\n"
+        )
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -154,6 +167,8 @@ class MessageBuilder:
         self,
         manifest: InputManifest,
         workdir: SandboxWorkdir,
+        output_filename: str = "model.py",
+        verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     ) -> list[BaseMessage]:
         """
         Build messages from files staged in workdir.host_bind_dir.
@@ -192,8 +207,10 @@ class MessageBuilder:
             )
         )
 
+        output_path = str(workdir.sandbox_bind_dir / output_filename)
+        verification_dir = str(workdir.sandbox_bind_dir / verification_dirname)
         return [
-            SystemMessage(content=self.system_prompt),
+            SystemMessage(content=self.system_prompt(output_path, verification_dir)),
             HumanMessage(content_blocks=blocks),
         ]
 

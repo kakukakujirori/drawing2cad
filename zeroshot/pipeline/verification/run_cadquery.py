@@ -36,12 +36,20 @@ class CadQueryExecutor:
         self.EXPORT_EPILOGUE = """
 
 # Added by trusted CadQueryExecutor.
+try:
+    result
+except NameError:
+    raise NameError("`result` not defined") from None
+
 import cadquery as _pipeline_cq
-_pipeline_cq.exporters.export(
-    result,
-    "output.step",
-    exportType="STEP",
-)
+try:
+    _pipeline_cq.exporters.export(
+        result,
+        "output.step",
+        exportType="STEP",
+    )
+except Exception as e:
+    raise RuntimeError("Failed to export `result` to STEP") from e
 """
 
     def execute(
@@ -69,9 +77,23 @@ _pipeline_cq.exporters.export(
                 executor_error=f"Failed to read {model_path.name}: {reason}",
             )
 
-        # Static check
+        # Static check (syntax and self-containedness)
         try:
-            self.validate_source(source)
+            ast_tree = ast.parse(source, filename=model_path.name, mode="exec")
+            for ast_node in ast.walk(ast_tree):
+                if (
+                    isinstance(ast_node, ast.Constant)
+                    and isinstance(ast_node.value, str)
+                    and ".dxf" in ast_node.value.lower()
+                ):
+                    return CadQueryExecutionReport(
+                        source=source,
+                        status=ExecutionStatus.REJECTED,
+                        executor_error=(
+                            f"DXF file reading is not allowed. "
+                            f"Modify '{model_path.name}' to be self-contained."
+                        ),
+                    )
         except SyntaxError as e:
             return CadQueryExecutionReport(
                 source=source,
@@ -81,14 +103,14 @@ _pipeline_cq.exporters.export(
 
         # Prepare workdir to bind into the sandbox
         with SandboxWorkdir() as workdir:
-            exec_path = workdir.host_bind_dir / "model.py"
+            exec_path = workdir.host_bind_dir / model_path.name
             exec_path.write_text(
                 source + self.EXPORT_EPILOGUE,
                 encoding="utf-8",
             )
 
             sandbox_result = self.sandbox_runner.run(
-                command="python model.py",
+                command=f"python {workdir.sandbox_bind_dir / model_path.name}",
                 workdir=workdir,
             )
 
@@ -155,15 +177,6 @@ _pipeline_cq.exporters.export(
             stdout=sandbox_result.stdout,
             stderr=sandbox_result.stderr,
         )
-
-    @staticmethod
-    def validate_source(source: str) -> None:
-        """Raise SyntaxError when *source* is not valid Python module code.
-
-        This function deliberately does not enforce import, API, filesystem, or
-        CAD-library policy. Those are controlled by the sandbox and runtime.
-        """
-        ast.parse(source, filename="model.py", mode="exec")
 
     @staticmethod
     def verify_step(step_path: Path) -> None:

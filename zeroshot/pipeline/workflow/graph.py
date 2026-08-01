@@ -1,4 +1,5 @@
 from functools import partial
+from pathlib import PurePosixPath
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
@@ -22,6 +23,8 @@ def create_reconstruction_graph(
     model: BaseChatModel,
     sandbox_runner: SandboxRunner,
     sandbox_workdir: SandboxWorkdir,
+    output_filename: str = "model.py",
+    verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ):
     def should_continue(state: ReconstructionState):
@@ -48,6 +51,8 @@ def create_reconstruction_graph(
             executor=executor,
             workdir=sandbox_workdir,
             render_views=False,
+            source_filename=output_filename,
+            output_dirname=verification_dirname,
             serialize_output=True,
         ),
     ]
@@ -59,6 +64,8 @@ def create_reconstruction_graph(
         executor=executor,
         workdir=sandbox_workdir,
         render_views=False,
+        source_filename=output_filename,
+        output_dirname=verification_dirname,
         serialize_output=False,
     )
 
