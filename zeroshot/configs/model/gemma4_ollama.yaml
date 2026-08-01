@@ -1,0 +1,15 @@
+_target_: langchain_openai.ChatOpenAI
+
+model: gemma4:e2b
+base_url: ${oc.env:OLLAMA_BASE_URL,http://127.0.0.1:11434/v1}
+api_key: ollama
+
+# A local CPU generation can be slow. Fail once instead of multiplying a long
+# request through automatic retries during the initial backend smoke tests.
+timeout: 600.0
+max_retries: 0
+
+temperature: 1.0
+top_p: 0.95
+seed: 0
+max_tokens: 4096

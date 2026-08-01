@@ -1,8 +1,11 @@
+import rootutils
 from pathlib import Path
 
 import hydra
 from hydra.utils import instantiate, to_absolute_path
 from omegaconf import DictConfig
+
+rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.runner import PipelineRunner

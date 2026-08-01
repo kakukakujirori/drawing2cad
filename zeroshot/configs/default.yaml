@@ -1,5 +1,9 @@
 # @package _global_
 
+defaults:
+  - _self_
+  - model: gemma4_ollama
+
 artifact_root: outputs/zeroshot
 
 message_builder:
@@ -14,9 +18,6 @@ message_builder:
     - hlg_perspective
     - hlg_translucent_faces_perspective
     - transparent_shaded_edges_perspective
-
-model:
-  _target_: ???
 
 sandbox_runner:
   python_executable: ${oc.env:CONDA_PREFIX}/bin/python
