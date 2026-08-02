@@ -26,24 +26,26 @@ def test_event_serialization_redacts_images_and_secrets() -> None:
 def test_writer_flushes_events_and_records_failure(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
 
-    with pytest.raises(RuntimeError, match="expected failure"):
-        with JsonlEventWriter(
+    with (
+        pytest.raises(RuntimeError, match="expected failure"),
+        JsonlEventWriter(
             path,
             run_id="run-1",
             sample_id="sample-1",
-        ) as writer:
-            writer.write(
-                {
-                    "event": "tool_started",
-                    "timestamp_ms": 1000,
-                    "namespace": [],
-                    "data": {"tool_name": "run_shell"},
-                }
-            )
+        ) as writer,
+    ):
+        writer.write(
+            {
+                "event": "tool_started",
+                "timestamp_ms": 1000,
+                "namespace": [],
+                "data": {"tool_name": "run_shell"},
+            }
+        )
 
-            lines_before_failure = path.read_text(encoding="utf-8").splitlines()
-            assert len(lines_before_failure) == 2
-            raise RuntimeError("expected failure")
+        lines_before_failure = path.read_text(encoding="utf-8").splitlines()
+        assert len(lines_before_failure) == 2
+        raise RuntimeError("expected failure")
 
     events = [
         json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()

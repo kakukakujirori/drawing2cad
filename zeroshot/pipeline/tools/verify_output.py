@@ -1,18 +1,17 @@
 from dataclasses import asdict, dataclass, replace
 from inspect import cleandoc
 from pathlib import Path, PurePosixPath
-from typing import Self, TypeAlias, cast
+from typing import Self, cast
 
 from langchain_core.tools import BaseTool, tool
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification.run_cadquery import (
-    CadQueryExecutor,
     CadQueryExecutionReport,
+    CadQueryExecutor,
 )
 
-
-VerifyOutputValue: TypeAlias = str | int | None
+VerifyOutputValue: type = str | int | None
 
 
 @dataclass(frozen=True)

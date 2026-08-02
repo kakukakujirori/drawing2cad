@@ -2,10 +2,12 @@ import json
 import shlex
 import sys
 from collections.abc import Callable, Sequence
+from inspect import cleandoc
 from io import StringIO
 from pathlib import Path
 from typing import Any
 
+import pytest
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -22,7 +24,6 @@ from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import CadQueryExecutor
-
 
 VALID_BOX_SOURCE = """\
 import cadquery as cq
@@ -150,18 +151,24 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
             "style-b": hidden_render_path,
         },
     )
-    inspect_inputs = "\n".join(
-        [
-            "from pathlib import Path",
-            "dxf = Path('/work/inputs/techdraw.dxf')",
-            "assert dxf.read_text() == 'ORIGINAL_DXF'",
-            "assert Path('/work/inputs/style-a.png').read_bytes() == b'ALLOWED_RENDER'",
-            "assert not Path('/work/inputs/style-b.png').exists()",
-            "dxf.write_text('SANDBOX_MUTATION')",
-            "Path('/work/scratch.txt').write_text('persisted')",
-            "Path('/work/events.jsonl').write_text('FORGED')",
-            "print('staged-ok')",
-        ]
+    inspect_inputs = cleandoc(
+        """
+        from pathlib import Path
+
+        dxf = Path('/work/inputs/techdraw.dxf')
+        assert dxf.read_text() == 'ORIGINAL_DXF'
+        assert Path('/work/inputs/style-a.png').read_bytes() == b'ALLOWED_RENDER'
+        assert not Path('/work/inputs/style-b.png').exists()
+        try:
+            dxf.write_text('SANDBOX_MUTATION')
+        except OSError:
+            pass
+        else:
+            raise AssertionError('sandbox input must be read-only')
+        Path('/work/scratch.txt').write_text('persisted')
+        Path('/work/events.jsonl').write_text('FORGED')
+        print('staged-ok')
+        """
     )
     model = _ScriptedChatModel(
         responses=(
@@ -271,7 +278,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     saved_workdir = sample_artifact_root / "workspace"
     assert (saved_workdir / "inputs" / "techdraw.dxf").read_text(
         encoding="utf-8"
-    ) == "SANDBOX_MUTATION"
+    ) == "ORIGINAL_DXF"
     assert (saved_workdir / "inputs" / "style-a.png").read_bytes() == b"ALLOWED_RENDER"
     assert not (saved_workdir / "inputs" / "style-b.png").exists()
     assert (saved_workdir / "scratch.txt").read_text(encoding="utf-8") == "persisted"
@@ -325,6 +332,49 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     }
     assert len(thread_ids) == 1
     assert thread_ids == {events[0]["run_id"]}
+
+
+def test_run_sample_preserves_workdir_when_graph_fails(tmp_path: Path) -> None:
+    manifest = _manifest_without_renders(tmp_path, "failed-run")
+    model = _ScriptedChatModel(
+        responses=(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "run_shell",
+                        "args": {
+                            "command": _write_text_command("failure.txt", "preserved")
+                        },
+                        "id": "call-write-before-failure",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+        )
+    )
+    artifact_root = tmp_path / "artifacts"
+    runner = PipelineRunner(
+        model=model,
+        message_builder=_message_builder_without_renders(),
+        sandbox_runner=_sandbox_runner(),
+        artifact_root=artifact_root,
+    )
+
+    with pytest.raises(AssertionError, match="ran out of responses"):
+        runner.run_sample(manifest)
+
+    sample_artifact_root = artifact_root / manifest.sample_id
+    assert (sample_artifact_root / "workspace" / "failure.txt").read_text(
+        encoding="utf-8"
+    ) == "preserved"
+    events = [
+        json.loads(line)
+        for line in (sample_artifact_root / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert events[-1]["event"] == "run_failed"
 
 
 def test_run_sample_verifies_and_preserves_valid_cadquery_output(

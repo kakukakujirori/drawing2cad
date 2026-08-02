@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
+from typing import Self
 
 
 class SandboxStatus(Enum):
@@ -44,7 +45,7 @@ class SandboxWorkdir:
         # read-only subdirs
         self.read_only_subdirs = list(read_only_subdirs)
 
-    def __enter__(self) -> "SandboxWorkdir":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
@@ -176,6 +177,8 @@ class SandboxRunner:
                 capture_output=True,
                 check=False,
                 text=True,
+                encoding="utf-8",
+                errors="replace",  # failed decode is denoted by �
                 timeout=timeout_s or self.default_timeout_s,
             )
             stdout = ret.stdout[: self.max_stdout_bytes] if ret.stdout else ""

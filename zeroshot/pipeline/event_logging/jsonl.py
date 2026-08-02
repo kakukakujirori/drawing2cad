@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 from types import TracebackType
-from typing import IO, Any
+from typing import IO, Any, Self
 
 from zeroshot.pipeline.event_logging.normalizer import RunEvent, _safe_value
 
@@ -21,7 +21,7 @@ class JsonlEventWriter:
         self._event_index = 0
         self._started_at = 0.0
 
-    def __enter__(self) -> JsonlEventWriter:
+    def __enter__(self) -> Self:
         self._handle = self.path.open("x", encoding="utf-8")
         self._started_at = perf_counter()
         self._write_synthetic("run_started", {})

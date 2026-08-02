@@ -1,6 +1,6 @@
 from .run_cadquery import (
-    CadQueryExecutor,
     CadQueryExecutionReport,
+    CadQueryExecutor,
 )
 
 __all__ = [

@@ -273,11 +273,7 @@ class ConsoleReporter:
     ) -> str:
         current_args = str(fields.get("args") or "")
         previous_args = args_by_index.get(index, "")
-        new_args = (
-            current_args[len(previous_args) :]
-            if current_args.startswith(previous_args)
-            else current_args
-        )
+        new_args = current_args.removeprefix(previous_args)
         if active_block != "tool_call":
             if active_block is not None:
                 self.console.print()
@@ -316,7 +312,7 @@ class ConsoleReporter:
         )
         try:
             safe_value = _safe_value(value)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - reporting must not break the run
             safe_value = {
                 "value_type": type(value).__name__,
                 "render_error": f"{type(error).__name__}: {error}",

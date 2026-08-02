@@ -1,0 +1,5 @@
+# @package server
+
+model_path: Qwen/Qwen3.6-27B-FP8
+reasoning_parser: qwen3
+tool_call_parser: qwen3_coder

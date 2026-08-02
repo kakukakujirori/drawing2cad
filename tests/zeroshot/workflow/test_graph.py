@@ -218,13 +218,24 @@ def test_graph_repeats_verification_after_model_calls_verify_output(
     assert json.loads(cast(str, intermediate_result.content)) == {"status": "REJECTED"}
 
 
-def test_graph_returns_loaded_image_to_agent(tmp_path: Path) -> None:
+def test_graph_returns_image_results_to_agent(tmp_path: Path) -> None:
     sandbox_runner = SandboxRunner(
         python_executable=Path(sys.executable),
         default_timeout_s=10,
     )
     responses: Iterator[AIMessage] = iter(
         [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "load_image",
+                        "args": {"image_path": "/work/missing.png"},
+                        "id": "call-load-missing-image",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
             AIMessage(
                 content="",
                 tool_calls=[
@@ -264,8 +275,14 @@ def test_graph_returns_loaded_image_to_agent(tmp_path: Path) -> None:
             {"messages": [HumanMessage(content="Inspect /work/view.png")]}
         )
 
-    assert len(agent_inputs) == 2
-    image_result = agent_inputs[1][-1]
+    assert len(agent_inputs) == 3
+    error_result = agent_inputs[1][-1]
+    assert isinstance(error_result, ToolMessage)
+    assert error_result.tool_call_id == "call-load-missing-image"
+    assert error_result.status == "error"
+    assert "Cannot access image: /work/missing.png" in error_result.text
+
+    image_result = agent_inputs[2][-1]
     assert isinstance(image_result, ToolMessage)
     assert image_result.tool_call_id == "call-load-image"
     assert isinstance(image_result.content, list)

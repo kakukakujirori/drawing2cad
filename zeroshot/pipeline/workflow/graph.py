@@ -6,7 +6,7 @@ from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.graph import START, END, StateGraph
+from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
@@ -57,7 +57,7 @@ def create_reconstruction_graph(
         ),
     ]
     agent = model.bind_tools(tools)
-    tool_node = ToolNode(tools)
+    tool_node = ToolNode(tools, handle_tool_errors=ValueError)
 
     # Postprocess node
     verify_final_tool = create_verify_output_tool(

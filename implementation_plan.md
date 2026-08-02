@@ -2,11 +2,11 @@
 
 ## 1. シニアレビュー結論
 
-Claude版の`zeroshot_dep/pipeline/`は、責務別のフォルダ分けには再利用価値がある。一方、今回の第一目的である「実装者自身が内部ロジックを理解し、将来一人で変更できること」に対して、元の実装計画は妥当ではない。
+旧Claude版pipelineは、責務別のフォルダ分けには再利用価値があった。一方、今回の第一目的である「実装者自身が内部ロジックを理解し、将来一人で変更できること」に対して、元の実装計画は妥当ではなかった。
 
 特に、次の点を修正する。
 
-- 巨大な`run_zero_shot.py`を先に多数のファイルへ切り出さない
+- 旧巨大runnerを先に多数のファイルへ切り出さない
 - CLI agent用sandbox、credential、provider監査をAPI版へ一括移植しない
 - DrawingIR、pose推定、仮説fan-outを、動くbaselineより先に実装しない
 - LangGraphのgraphだけ先に大きく作り、stub nodeを後から埋める方式を採らない
@@ -17,12 +17,14 @@ Claude版の`zeroshot_dep/pipeline/`は、責務別のフォルダ分けには�
 
 新実装では、最小のend-to-end経路を最初に完成させ、その後に一機能ずつ追加する。各追加機能は、単体テスト、少数サンプルでの観察、アブレーションの順で評価する。
 
-`zeroshot_dep/`はコピー元や完成形ではなく、次の用途に限定する。
+旧実装はコピー元や完成形とせず、再実装中は次の用途だけに参照した。
 
 - 入出力contractの確認
 - security、CAD実行、監査で考慮すべき失敗例の収集
 - DrawingIR、pose、projectionの研究仮説の参照
 - 新実装との回帰比較
+
+Phase 4完了時点で必要なcontractとtestの移植を終え、旧実装はworktreeから削除した。必要な場合はgit履歴を参照する。
 
 ## 2. 目的と優先順位
 
@@ -44,7 +46,6 @@ Claude版の`zeroshot_dep/pipeline/`は、責務別のフォルダ分けには�
 
 ```text
 zeroshot/
-zeroshot_dep/
 ```
 
 新実装の内部ロジックは`zeroshot.pipeline`として通常のPython packageにする。ユーザー向けCLIだけは`zeroshot/run_pipeline.py`に置く。`zero-shot`表記、`sys.path`への場当たり的な追加、ハイフン付きpackageのimport workaroundは新実装へ持ち込まない。
@@ -116,14 +117,15 @@ feedback_render3d_styles:
 
 ### 3.5 Modelとbackend
 
-初期対象は以下とする。
+Phase 4で接続する対象は以下とする。
 
-- SGLang serverでserveするQwen3.6
-- GPT API
+- laptop上の開発用probeとして、OllamaでserveするGemma 4
+- GPU server上のSGLangでserveするQwen 3.6
+- ChatGPT Codex OAuth backendのGPT-5.6-luna
 
-LangGraphはworkflowを実行し、実際のmodel API呼び出しはLangChainのchat model integrationが担当する。QwenはSGLangのOpenAI-compatible endpointへ接続し、GPTはOpenAI endpointへ接続する。
+LangGraphはworkflowを実行し、model呼び出しはLangChainのchat model integrationが担当する。GemmaとQwenはOpenAI-compatible endpointへ`ChatOpenAI`系clientで接続し、GPTは`_ChatOpenAICodex`で接続する。workflowが要求するboundaryはLangChainの`BaseChatModel`と`bind_tools()`だけであり、provider固有factoryや独自`AgentModel` protocolは、実際に異なるinterfaceが必要になるまで追加しない。Qwenについてのみ、SGLangの`reasoning_content` deltaをLangChainの共通content blockへ保持する薄い`SGLangChatOpenAI` subclassを置く。
 
-workflowはprovider名、base URL、credentialへ依存させない。API版では`model.bind_tools()`が生成したtool-call可能なmodelをagent nodeへ注入する。
+workflowはprovider名、base URL、credentialへ依存させない。Hydraのmodel configから生成したtool-call可能なchat modelをagent nodeへ注入する。
 
 将来、Gemini/Claudeを非APIのCLI経路で追加する。その際は、CLI outputをLangGraphが扱う`AIMessage`とtool callへ正規化するadapterを別実装する。CLI固有のcredential、filesystem jail、native tool、provider trace監査を、初期API版へ先回りして入れない。
 
@@ -174,7 +176,7 @@ sampleごと・agentごとに一つの`SandboxWorkdir`を作り、run終了ま�
 
 `SandboxWorkdir`作成後、trusted callerが`Path`と`shutil`を使い、active sampleのDXFとconfigで許可されたinput renderだけを`host_bind_dir`配下の固定pathへcopyする。この初期copyをstagingと呼ぶ。`SandboxWorkdir`と`SandboxRunner`はmanifest、file配置、staging policyを知らない。専用の`Workspace` class、`WorkspacePath`、host/sandbox pathの再帰変換API、`copy_in`/`copy_out` wrapperも作らない。host側の元fileをmountしないため、workdir内のcopyをmodelが変更しても元fileには影響しない。`verify_output`がfeedback DXFとperspective viewsを生成した後は、trusted callerがそのverificationの生成物を同じworkdirへ追加する。GT、repository、他sample、未許可render、credentialはstageしない。
 
-modelへは`host_bind_dir`を教えず、`/work`配下のsandbox pathのみを提示する。`run_shell`のcwdは常に`/work`である。manifestはtrusted host fileの存在検証とmessage用画像読取に使い、modelへ提示するpath文字列はstaging時に決めたpathを使う。`load_image`は`host_bind_dir`配下の画像だけを読み、path traversalとworkdir外を指すsymlinkを拒否する。入力DXFは正規の問題入力なので`model.py`や解析scriptから自由に読み取れる。一方、GT、repository、他sample、credential、networkはどのmodel生成commandからも到達不能にする。
+modelへは`host_bind_dir`を教えず、`/work`配下のsandbox pathのみを提示する。`run_shell`のcwdは常に`/work`である。manifestはtrusted host fileの存在検証とmessage用画像読取に使い、modelへ提示するpath文字列はstaging時に決めたpathを使う。`load_image`は`host_bind_dir`配下の画像だけを読み、path traversalとworkdir外を指すsymlinkを拒否する。入力DXFは正規の問題入力なので`run_shell`と解析scriptから読み取れる。最終`model.py`は自己完結させ、`CadQueryExecutor.validate_source()`がcomment以外の文字列定数に`.dxf`を含むsourceを実行前に拒否する。一方、GT、repository、他sample、credential、networkはどのmodel生成commandからも到達不能にする。
 
 workdir内fileはmodelが自由に変更できるscratchであり、それだけではtrusted artifactとしない。`verify_output`ごとに現在の`model.py`をhash付きimmutable artifactとして保存し、verified STEPと対応するDXF/renderを同じverification IDへ紐付ける。複数領域で共通の登録・hash・manifest処理が実際に重複した時点で`ArtifactStore`を抽出する。
 
@@ -184,21 +186,25 @@ workdir内fileはmodelが自由に変更できるscratchであり、それだけ
 
 ```text
 run_pipeline
-  -> workflow
-       -> models
-       -> tools
-            -> inputs
-            -> sandbox
-            -> verification
-                 -> src.data.render
-  -> audit
+  -> PipelineRunner
+       -> workflow
+            -> tools
+                 -> sandbox
+                 -> verification
+       -> event_logging
+  -> Hydra model config
+       -> LangChain BaseChatModel
+            -> zeroshot.models  # provider互換差分が必要な場合だけ
+
+serve_model  # pipelineとは別process / environment
+  -> SGLangServer
 
 offline evaluation
   -> src.evaluation
   -> src.metrics
 ```
 
-`workflow`から`zeroshot/run_zero_shot.py`または`zeroshot_dep`をimportしない。
+`workflow`から削除済みの旧runnerをimportしない。
 
 ## 5. 目標フォルダ構成
 
@@ -206,11 +212,14 @@ offline evaluation
 
 ```text
 zeroshot/
-├── __init__.py
-├── run_zero_shot.py                 # 既存CLI baseline。再実装中は変更しない
-├── run_pipeline.py                  # 後続: 新pipelineの薄いHydra composition root
+├── run_pipeline.py                  # 新pipelineの薄いHydra composition root
+├── models/
+│   └── sglang.py                    # SGLang reasoning streamの薄い正規化
+├── server/                          # pipelineと独立したSGLang launcher
+│   ├── serve_model.py
+│   ├── sglang.py
+│   └── configs/
 ├── pipeline/
-│   ├── __init__.py
 │   ├── event_logging/               # run eventの正規化、JSONL、console表示
 │   │   ├── __init__.py
 │   │   ├── normalizer.py
@@ -220,11 +229,6 @@ zeroshot/
 │   ├── messages.py                  # access/feedback message builder
 │   ├── runner.py                    # application wiringとsample単位のrun lifecycle
 │   ├── sandbox.py                   # SandboxWorkdirと全model生成command用の共通隔離実行基盤
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── base.py                  # normalized AgentModel protocol
-│   │   ├── api.py                   # GPT / SGLang OpenAI-compatible
-│   │   └── cli.py                   # 後続: Gemini / Claude CLI
 │   ├── tools/
 │   │   ├── __init__.py
 │   │   ├── run_shell.py
@@ -249,21 +253,20 @@ zeroshot/
 └── configs/
     ├── default.yaml
     └── model/                       # Phase 4で追加
-        ├── gpt.yaml
-        └── qwen_sglang.yaml
+        ├── gemma4_ollama.yaml
+        ├── gpt5_6_luna_codex.yaml
+        └── qwen3_6_sglang.yaml
 
 tests/
 └── zeroshot/
-    ├── fixtures/
-    ├── test_hydra_config.py
-    ├── test_manifest.py
-    ├── test_messages.py
-    ├── test_verification.py
-    ├── test_sandbox.py
-    ├── test_tools.py
-    ├── test_graph.py
-    ├── test_feedback.py
-    └── test_leakage.py
+    ├── event_logging/
+    ├── live/
+    ├── models/
+    ├── server/
+    ├── tools/
+    ├── verification/
+    ├── workflow/
+    └── test_*.py
 ```
 
 `run_pipeline.py`はHydraによるconfig composition、依存objectの生成、内部pipelineの呼び出しだけを担当し、sample loopやworkflow構築を置かない。Phase 1では`zeroshot/configs/default.yaml`と、`pipeline/`直下の`manifest.py`、`messages.py`だけを追加する。`run_pipeline.py`と`runner.py`を含む後続ファイルは必要になるphaseまで作らない。
@@ -308,7 +311,7 @@ Phase 3/4では`render_views=False`だけを使い、`True`なら明示的に`No
 
 `feedback_render3d: path | image`の選択と画像bytesの読込みは`verify_output`の責務にせず、`FeedbackManifest`を受け取る`MessageBuilder`が行う。`path` modeでagentへ提示するのはsandboxから参照できる`/work`配下のpathだけとし、manifestがartifact読取り用に保持するhost pathをそのままmessageへ出さない。host artifactをshared workdirへstageしてsandbox pathを組み立てる具体的なAPIは、visual feedbackを実装するPhase 5で決める。
 
-Phase 2の`SandboxRunner`が提供するresource guardはwall timeoutと返却するstdout/stderrの切り詰めまでである。`capture_output=True`によるprocess実行中のbuffer量、CPU、memory、PID数、workdirのdisk使用量のhard limitはまだ提供しない。固定fixtureとfake modelだけを扱うPhase 2/3ではこの範囲とし、実model生成commandを動かすPhase 4のlive smoke test前に、bounded log captureとcgroupまたは同等機構によるresource limitを追加する。
+Phase 4完了時点で`SandboxRunner`が提供するresource guardは、wall timeoutと返却するstdout/stderrの設定可能な切り詰めまでである。切り詰めは`subprocess.run(capture_output=True)`の完了後に行うため、model contextへ巨大なtool resultを返さない効果はあるが、process実行中のhost memory使用量は制限しない。CPU、memory、PID数、workdir disk使用量のhard limitもまだ提供しない。Qwenのlive runではDXF dumpによるcontext膨張を返却時の上限で抑えられた一方、in-flight captureや追加hard limitが必要な障害は観測していない。これらはPhase 4の必須条件にせず、実測で必要性と妥当な制限値が判明した時点で追加する。
 
 system promptはCadQuery scriptと`result`変数というtask contractに集中させる。利用可能toolは`bind_tools`でmodelへ提示し、shellで可能な操作、利用可能package、workdirのpath、tool result contractは各tool descriptionへ記述する。ezdxfやCadQueryの個別API tutorialをsystem promptへ埋め込まない。
 
@@ -401,9 +404,9 @@ credential、API key、authorization headerは保存しない。base URLにsecre
 - 既存testにある手書きDXF、画像、CadQuery code、STEP fixtureを再利用できることを確認する
 - `src.evaluation`、`src.metrics`、solid検査の既存testを実行し、評価基準線とする
 
-詳細contractは全体像が見えない段階で一括固定しない。各phaseの実装直前に、そのphaseが必要とする最小の入出力だけをtestと型で確定する。`zeroshot/run_zero_shot.py`と`zeroshot_dep`は、その時点で必要な振る舞いを調べる参照資料とし、先にcontractを転記しない。
+詳細contractは全体像が見えない段階で一括固定しない。各phaseの実装直前に、そのphaseが必要とする最小の入出力だけをtestと型で確定する。旧runnerはその時点で必要な振る舞いを調べる参照資料とし、contractを無条件に転記しない。
 
-API agent用dependencyのversion固定もこのphaseでは行わない。GPTとQwen/SGLangの最初のlive vertical sliceが動いたPhase 4で、実際に検証できた組合せを記録する。
+model backend用dependencyのversion固定もこのphaseでは行わない。Phase 4ではmodel名、接続方式、samplingとserver起動configをcodeとして残す。library versionの列挙はrunごとには保存せず、再現可能な比較実験を開始する段階でenvironmentまたはlockfileとして管理する。
 
 #### 評価器のsanity check
 
@@ -628,33 +631,38 @@ Phase 3ではvisual feedbackを実装しない。trusted側のverification関数
 - `run_pipeline.py`はHydra composition rootに限定し、dependencyとmanifestの構築、およびmoduleの`--help`をtestした
 - `tests/zeroshot`は147 test passed、`ruff check`、`ruff format --check`、`git diff --check`も通過した
 
-### Phase 4: GPT APIとQwen/SGLangを接続する
+### ✅ Phase 4: Gemma/Ollama、GPT/Codex、Qwen/SGLangを接続する
 
 #### 実装するもの
 
-- normalized `AgentModel` boundary
-- GPT model factory
-- SGLang OpenAI-compatible model factory
-- `configs/model/gpt.yaml`と`configs/model/qwen_sglang.yaml`
+- LangChain `BaseChatModel`を共通boundaryとするHydra model config
+- `configs/model/gemma4_ollama.yaml`
+- `configs/model/gpt5_6_luna_codex.yaml`
+- `configs/model/qwen3_6_sglang.yaml`
+- SGLang reasoning deltaだけを補う`SGLangChatOpenAI`
+- model profileを差し替えられる独立したSGLang server launcher
 - credential redaction
-- bounded log captureとCPU/memory/PID数のresource limit
-- backend capability smoke test
+- stdout/stderrの設定可能な返却時切り詰め
+- 通常testから分離したbackend capability smoke test
 - one-sample live CLI
 - Rich consoleへのnode、tool、verification、model text/reasoningのlive表示
+- 成否にかかわらず残るsample workspace
 
 SGLang serverはpipelineと別process、可能なら別environmentで起動する。pipeline側は`base_url`、`model`、認証情報だけを受け取り、`sglang[all]`へ直接依存しない。
 
+CPU、memory、PID数、workdir size、in-flight stdout/stderr bufferのhard limitは、必要な制限値をlive runから決められないためPhase 4から外す。現行のwall timeout、bwrap隔離、返却時切り詰めで観測を続け、具体的な障害が出た場合に追加する。
+
 #### capability test
 
-各backendで以下を実測する。
+`ZEROSHOT_LIVE_MODEL_CONFIG`で明示的に有効化する共通live testとone-sample pipelineで、backendごとに必要な範囲を実測する。
 
 - `bind_tools()`したschemaを認識する
 - structured tool argumentsを返す
-- `run_shell`へcommandを渡し結果を利用できる
-- 複数turnにわたるshell/image/verification tool callを扱える
 - multimodal initial user messageを扱える
 - imageを含むtool resultの共通形式を扱える
 - token usage、finish reason、tool call IDを取得できる
+- pipeline上で`run_shell`へcommandを渡し、結果を次turnで利用できる
+- 複数turnにわたるshell/image/verification tool callを扱える
 
 #### live smoke test
 
@@ -662,9 +670,23 @@ SGLang serverはpipelineと別process、可能なら別environmentで起動す�
 
 #### 完了条件
 
-GPTとQwenの双方で、少なくともDXF解析、workdir内file編集、画像参照、中間検証、toolなし完成表明、workflow主導の最終検証が同じgraph上で動く。
+GPTでは、DXF解析、workdir内file編集、画像参照、中間検証、toolなし完成表明、workflow主導の最終検証まで、一サンプルが同じgraph上で完走する。
 
-このlive smoke testで動作したagent側とSGLang server側のdependency versionをそれぞれ記録し、以後の再現可能な基準とする。
+Qwen/SGLangでは、同じgraphとtool schemaを変更せずにDXF解析、workdir内file編集、画像tool result、複数turn、中間検証まで進み、検証済みSTEPを生成できることを確認する。toolなし完成表明へ収束するかはmodelの推論挙動であり、backend統合の完了条件とは分ける。未収束runは成功runとせず、event logへ実際の停止理由を残す。
+
+Gemma/OllamaはGPU serverを必要としない開発用backendとして、共通capability testと一サンプルのpipelineが動くことを確認する。
+
+#### 完了記録
+
+2026-08-02にPhase 4を完了した。
+
+- Gemma 4をOllamaのOpenAI-compatible endpointから`ChatOpenAI`で呼び、共通live testとsample `000364`のpipeline動作を確認した
+- GPT-5.6-lunaを`_ChatOpenAICodex`で呼んだsample `000364`は、DXF解析、`model.py`作成、model主導の中間検証`000`、toolなし完成表明、workflow主導の最終検証`001`を通り、`VERIFIED`で完走した。監査記録は`outputs/zeroshot_gpt5_6_luna/000364/events.jsonl`にある
+- Qwen 3.6 35B-A3B FP8を別GPU環境のSGLang serverで起動し、SSH tunnel越しに同じpipelineへ接続した。DXF解析、`load_image`による画像参照、workdir編集、失敗した検証`000`から`003`を受けた修正、model主導の検証`004`と`005`の`VERIFIED`まで確認した。その後もmodelが解析を継続したため手動停止しており、toolなし完成表明とworkflow最終検証は未確認である。監査記録は`outputs/zeroshot_qwen3_6_nothinking_bounded/000364/events.jsonl`にある
+- Qwen runで判明したSGLang固有のreasoning stream欠落は`SGLangChatOpenAI`で正規化し、thinkingの有効/無効とmodel turnごとの総出力上限をHydra override可能にした
+- `event_logging/`はcanonical JSONLとRich console表示を分離し、model text、reasoning、tool callをstream中に表示する。未知のevent/contentも黙って捨てずfallback表示する
+- sample workspaceをartifact directory上で直接使うことで、正常終了時だけでなく例外・手動停止時のmodel生成fileも保持する
+- `python -m pytest tests/zeroshot`は157 passed、3 skipped。3件はbackendを明示しない通常実行ではskipされるlive testである。`ruff check zeroshot tests/zeroshot`も通過した
 
 ### Phase 5: Feedback modeとrenderer calibration
 
@@ -818,11 +840,11 @@ use_drawing_ir: false
 
 #### Gemini/Claude CLI backend
 
-- normalized `AgentModel` contractへ接続する
+- LangChain `BaseChatModel`としてworkflowへ渡せるadapterを作る。これが不可能または不自然な場合だけ共通model protocolを抽出する
 - CLIのnative toolを使わせるか、LangGraph toolだけに制限するかを実測して決める
-- native toolを使う場合はprovider traceをLangGraph auditへ正規化する
+- native toolを使う場合はprovider traceをcanonical event logへ正規化する
 - credential stagingとjailはbackend内部へ閉じ込める
-- `run_zero_shot.py`の実装を丸ごと再利用せず、必要なsecurity contractとtestだけを抽出する
+- 旧runnerの実装を丸ごと再利用せず、必要なsecurity contractとtestだけをgit履歴から抽出する
 
 #### 並列agent
 
@@ -865,7 +887,7 @@ model主導の中間検証とworkflow主導の最終検証は同じ`attempts/`�
 
 `workspace/`のうち`attempts/`以外はmodelが自由に変更できるscratchのrun終了時snapshotであり、検証済みartifactとして扱わない。`attempts/`はhost側がdirectoryと内容を作成し、sandboxからread-onlyにする。`events.jsonl`と`checkpoints.sqlite`はmodelから書き換えられないsample artifact rootへ保存する。
 
-`run_manifest.json`、`run_summary.json`、`resolved_config.yaml`、集約用artifact manifestなどのrun全体の出力は、Phase 4以降で複数sampleと実modelを接続するときに追加する。
+`run_manifest.json`、`run_summary.json`、`resolved_config.yaml`、集約用artifact manifestなどのrun全体の出力は、複数sampleを集約して評価するPhase 6で追加する。Phase 4の一sample live runではsample単位の出力contractを変えない。
 
 ## 10. Test方針
 
@@ -876,7 +898,7 @@ model主導の中間検証とworkflow主導の最終検証は同じ`attempts/`�
 - message builderの全mode
 - tool schemaと引数validation
 - routing
-- audit event serialization
+- canonical event serialization
 - sandbox result / CadQuery execution report / verification report
 
 ### Integration test
@@ -890,15 +912,16 @@ model主導の中間検証とworkflow主導の最終検証は同じ`attempts/`�
 
 - target path拒否
 - symlink escape拒否
-- `run_shell`と`model.py`はactive DXF、configで許可されたinput render、同じworkdirのfeedbackだけを読める
-- `run_shell`と`model.py`はrepository、GT、他sample、未許可renderを読めない
+- `run_shell`と解析scriptはactive DXF、configで許可されたinput render、同じworkdirのfeedbackだけを読める
+- 最終`model.py`のDXF参照をsource validationで拒否する
+- `run_shell`、解析script、`model.py`はrepository、GT、他sample、未許可renderを読めない
 - network accessを拒否する
 - modelが起動した子processも同じfilesystem/network境界に閉じる
 - credentialがlog/artifactへ残らない
 
 ### Live test
 
-GPT/Qwenのlive testは通常のunit testから分離し、明示的markerまたはCLIでだけ実行する。API quotaやservice outageをmodel精度失敗として数えない。
+Gemma/GPT/Qwenのlive testは通常のtestから分離し、`ZEROSHOT_LIVE_MODEL_CONFIG`でbackendを明示した場合だけ実行する。quota、認証、service outage、remote server停止をmodel精度失敗として数えない。
 
 基本commandは次とする。
 
@@ -910,7 +933,7 @@ python -m zeroshot.run_pipeline --help
 
 ## 11. 既知のriskと回帰確認
 
-`zeroshot_dep`から研究機能を参照する場合、少なくとも以下を先にfixture化する。
+旧実装のgit履歴から研究機能を参照する場合、少なくとも以下を先にfixture化する。
 
 - hidden lineが0本でも正常な図面
 - BYLAYER linetype解決
@@ -922,7 +945,7 @@ python -m zeroshot.run_pipeline --help
 - empty hidden maskをIoU失敗として扱わないこと
 - mean scoreが一つの悪いviewを隠さないこと
 
-また、DXF analysis codeのstdout/stderrがcontextを圧迫する可能性、provider間でimage tool result仕様が異なる可能性、OCCがnative hang/crashする可能性をrun manifestとfailure taxonomyへ反映する。
+また、DXF analysis codeの大きなstdout/stderrは実際にcontextを圧迫したため、返却時のbyte上限をrun configで調整できるようにした。in-flight buffer制限は未実装であり、host memory問題が観測された場合に再検討する。provider間のimage tool result差分は共通live testで検知し、OCCがnative hang/crashする可能性はwall timeoutとprocess隔離で扱う。
 
 ## 12. 実装順の要約
 
@@ -935,7 +958,7 @@ Phase 2  trusted CAD execution
    ↓
 Phase 3  fake model LangGraph vertical slice
    ↓
-Phase 4  GPT / Qwen API
+Phase 4  Gemma/Ollama・GPT/Codex・Qwen/SGLang backend
    ↓
 Phase 5  feedback mode・renderer calibration
    ↓

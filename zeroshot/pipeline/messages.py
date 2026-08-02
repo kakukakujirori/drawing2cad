@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from inspect import cleandoc
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Callable, Literal
+from typing import Literal
 
 from langchain_core.messages import (
     BaseMessage,
@@ -19,7 +19,7 @@ from langchain_core.messages.content import (
     create_text_block,
 )
 
-from zeroshot.pipeline.manifest import InputManifest, FeedbackManifest
+from zeroshot.pipeline.manifest import FeedbackManifest, InputManifest
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 
 
@@ -60,9 +60,10 @@ class MessageBuilder:
         - `verify_output` compiles {output_path} and generates a STEP file and its 2D renderings. It returns error messages when STEP generation fails.
 
         Tips:
-        - You can create temporary python scripts and run them using the `run_shell` tool with the command `python <filename>` for quick analysis and validation.
-        - Based on the `verify_output` results, you can debug and refine the {output_path} script.
-        - You can review the past `verify_output` results under {verification_dir}.
+        - Create temporary Python scripts and run them using the `run_shell` tool with the command `python <filename>` for quick analysis and validation.
+        - Use `ezdxf` Python library to analyze the input DXF file.
+        - Use the `verify_output` results to debug and refine the {output_path} script.
+        - Review the past `verify_output` results under {verification_dir} if necessary.
         """.strip()
             + "\n"
         )
@@ -296,7 +297,7 @@ class MessageBuilder:
                 create_text_block(f"{label}\nSee the attached images.\n")
             ]
             for style in available_styles:
-                blocks.append(create_text_block(f"- {style}"))
+                blocks.append(create_text_block(f"- {style}: {render3d_paths[style]}"))
                 blocks.append(
                     create_image_block(
                         base64=base64.b64encode(render3d_bytes[style]).decode("ascii"),

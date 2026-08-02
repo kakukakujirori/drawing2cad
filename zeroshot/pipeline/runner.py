@@ -18,8 +18,8 @@ from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.workflow import (
-    create_reconstruction_graph,
     ReconstructionState,
+    create_reconstruction_graph,
 )
 
 
@@ -66,13 +66,18 @@ class PipelineRunner:
                     )
                 )
 
-            # instantiate sandbox (available only in this block)
-            workdir = stack.enter_context(SandboxWorkdir())
+            # instantiate sandbox directly in the persistent sample workspace
+            workspace_path = sample_artifact_root / "workspace"
+            workspace_path.mkdir()
+            workdir = stack.enter_context(SandboxWorkdir(host_bind_dir=workspace_path))
 
             # copy input files to sandbox
+            input_dirname = PurePosixPath("inputs")
+            workdir.read_only_subdirs.append(input_dirname)
             staged_manifest = self._stage_inputs(
                 manifest=manifest,
                 workdir=workdir,
+                input_dirname=input_dirname,
             )
 
             # prepare initial messages
@@ -119,19 +124,15 @@ class PipelineRunner:
                     self.console_reporter.render_message(item)
             result = stream.output
 
-            shutil.copytree(
-                workdir.host_bind_dir,
-                sample_artifact_root / "workspace",
-            )
-
         return cast(ReconstructionState, result)
 
     def _stage_inputs(
         self,
         manifest: InputManifest,
         workdir: SandboxWorkdir,
+        input_dirname: str | PurePosixPath = "inputs",
     ) -> InputManifest:
-        staged_input_dir = workdir.host_bind_dir / "inputs"
+        staged_input_dir = workdir.host_bind_dir / input_dirname
         staged_input_dir.mkdir(parents=True, exist_ok=False)
 
         staged_dxf_path = staged_input_dir / "techdraw.dxf"

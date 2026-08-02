@@ -79,22 +79,8 @@ except Exception as e:
 
         # Static check (syntax and self-containedness)
         try:
-            ast_tree = ast.parse(source, filename=model_path.name, mode="exec")
-            for ast_node in ast.walk(ast_tree):
-                if (
-                    isinstance(ast_node, ast.Constant)
-                    and isinstance(ast_node.value, str)
-                    and ".dxf" in ast_node.value.lower()
-                ):
-                    return CadQueryExecutionReport(
-                        source=source,
-                        status=ExecutionStatus.REJECTED,
-                        executor_error=(
-                            f"DXF file reading is not allowed. "
-                            f"Modify '{model_path.name}' to be self-contained."
-                        ),
-                    )
-        except SyntaxError as e:
+            self.validate_source(source, filename=model_path.name)
+        except (SyntaxError, ValueError) as e:
             return CadQueryExecutionReport(
                 source=source,
                 status=ExecutionStatus.REJECTED,
@@ -177,6 +163,21 @@ except Exception as e:
             stdout=sandbox_result.stdout,
             stderr=sandbox_result.stderr,
         )
+
+    @staticmethod
+    def validate_source(source: str, filename: str = "model.py") -> None:
+        """Reject invalid Python and references to an input DXF file."""
+        ast_tree = ast.parse(source, filename=filename, mode="exec")
+        for ast_node in ast.walk(ast_tree):
+            if (
+                isinstance(ast_node, ast.Constant)
+                and isinstance(ast_node.value, str)
+                and ".dxf" in ast_node.value.lower()
+            ):
+                raise ValueError(
+                    "DXF file reading is not allowed. "
+                    f"Modify '{filename}' to be self-contained."
+                )
 
     @staticmethod
     def verify_step(step_path: Path) -> None:

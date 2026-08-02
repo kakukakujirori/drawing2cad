@@ -1,13 +1,12 @@
-import rootutils
 from pathlib import Path
 
 import hydra
+import rootutils
 from hydra.utils import instantiate, to_absolute_path
 from omegaconf import DictConfig
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-# ruff: noqa: E402
 from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner

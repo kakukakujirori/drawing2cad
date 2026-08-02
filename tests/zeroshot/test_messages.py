@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from zeroshot.pipeline.manifest import FeedbackManifest, InputManifest
-from zeroshot.pipeline.messages import DEFAULT_SYSTEM_PROMPT, MessageBuilder
+from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 
 STYLES = ("style-a", "style-b", "style-c")
@@ -85,17 +85,6 @@ def _blocks(message: HumanMessage) -> list[dict[str, Any]]:
 
 def _text(blocks: list[dict[str, Any]]) -> str:
     return "\n".join(block["text"] for block in blocks if block.get("type") == "text")
-
-
-def test_default_system_prompt_does_not_name_tools() -> None:
-    assert "perspective renders" in DEFAULT_SYSTEM_PROMPT
-    assert "isometric views" not in DEFAULT_SYSTEM_PROMPT
-    for tool_name in (
-        "run_python",
-        "execute_cad_candidate",
-        "submit_final_candidate",
-    ):
-        assert tool_name not in DEFAULT_SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize("field", ["access", "feedback"])
@@ -202,7 +191,8 @@ def test_initial_image_interleaves_style_labels_and_images(
         ("style-b", 2, 3),
         ("style-a", 4, 5),
     ):
-        assert style in blocks[label_index]["text"]
+        sandbox_path = workdir.host_to_sandbox_path(manifest.render3d_paths[style])
+        assert blocks[label_index]["text"] == f"- {style}: {sandbox_path}"
         assert base64.b64decode(blocks[image_index]["base64"]) == (
             manifest.render3d_paths[style].read_bytes()
         )

@@ -1,0 +1,29 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - model: qwen3_6_35b_a3b_fp8
+
+dry_run: false
+
+server:
+  _target_: zeroshot.server.sglang.SGLangServer
+
+  python_executable: ${oc.env:SGLANG_PYTHON,python}
+  model_path: ???
+  host: 127.0.0.1
+  port: 30000
+  tensor_parallel_size: 2
+
+  # Conservative smoke-test defaults. Tune these for the remote GPU after the
+  # first successful launch.
+  context_length: null
+  mem_fraction_static: 0.85
+
+  reasoning_parser: null
+  tool_call_parser: null
+  trust_remote_code: false
+  extra_args:
+    - "--max-running-requests"
+    - "32"
+    - "--disable-cuda-graph"

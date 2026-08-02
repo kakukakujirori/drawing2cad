@@ -185,6 +185,24 @@ def test_sandbox_preserves_files_between_runs(
     assert second_result.stdout == "first"
 
 
+def test_sandbox_replaces_non_utf8_output(
+    tmp_path: Path,
+    sandbox_runner: SandboxRunner,
+) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    with SandboxWorkdir(host_bind_dir=work_dir) as sandbox_workdir:
+        result = sandbox_runner.run(
+            command=_python_command("import os; os.write(1, b'before\\xffafter')"),
+            workdir=sandbox_workdir,
+        )
+
+    assert result.status is SandboxStatus.COMPLETED
+    assert result.returncode == 0
+    assert result.stdout == "before\ufffdafter"
+
+
 def test_sandbox_workdirs_are_isolated(
     tmp_path: Path,
     sandbox_runner: SandboxRunner,

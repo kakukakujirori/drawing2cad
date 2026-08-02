@@ -1,0 +1,9 @@
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["pathlib.PurePosixPath"]
+
+[tool.pyrefly]
+conda-environment = "drawing2cad"
+search-path = [".", "/home/sturk/miniforge3/envs/drawing2cad/lib/python3.12/site-packages"]

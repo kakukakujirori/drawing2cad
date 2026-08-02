@@ -199,7 +199,7 @@ def test_execute_writes_verified_step_to_requested_path(tmp_path: Path) -> None:
         stderr="construction warning",
     )
     assert output_step_path.is_file()
-    assert runner.calls[0][0] == "python model.py"
+    assert runner.calls[0][0] == "python /work/model.py"
     CadQueryExecutor.verify_step(output_step_path)
 
 
