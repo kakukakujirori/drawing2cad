@@ -7,3 +7,12 @@ betas:
 eps: 1.0e-8
 fused: auto
 
+# Per-group overrides, keyed by a substring of the parameter name; anything that
+# matches nothing stays on the settings above. The LoRA adapters perturb a
+# converged backbone, while the primitive encoder starts from random init and
+# barely moves at the adapter rate, so it gets its own. Decay is off there
+# because the group is almost entirely norm gains, biases, and embeddings.
+param_groups:
+  primitive_encoder:
+    learning_rate: 1.0e-3
+    weight_decay: 0.0

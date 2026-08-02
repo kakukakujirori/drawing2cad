@@ -243,6 +243,22 @@ def build_sft_dataloaders(
         include_labels=True,
         max_length=max_sequence_length,
     )
+    # Image dropout is an augmentation, so it belongs to the training stream
+    # only: validation loss and the primitive ablation must both be measured
+    # against the real views. Length filtering also uses the undropped instance.
+    image_dropout = float(data_config.get("image_dropout", 0.0))
+    train_preprocessor = (
+        preprocessor
+        if image_dropout <= 0.0
+        else Drawing2CADPreprocessor(
+            processor,
+            primitive_config.num_primitive_latents,
+            include_labels=True,
+            max_length=max_sequence_length,
+            image_dropout=image_dropout,
+            image_dropout_fill=int(data_config.get("image_dropout_fill", 0)),
+        )
+    )
 
     def build_root(root: DatasetRoot, max_key: str, split: str) -> Dataset:
         """Select this root's ids, then build its dataset once from them."""
@@ -276,7 +292,7 @@ def build_sft_dataloaders(
             data_config,
             sample_ids=ids,
             include_target=True,
-            transform=preprocessor,
+            transform=train_preprocessor if split == "train" else preprocessor,
         )
 
     train_roots = resolve_dataset_roots(data_config["train_root"], split="train")

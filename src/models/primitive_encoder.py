@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+import math
 from typing import Any
 
 import torch
@@ -27,6 +28,13 @@ class PrimitiveEncoderConfig:
     resampler_heads: int = 8
     dropout: float = 0.1
     use_group_context: bool = True
+    # Rescale the projected latents to a fixed RMS before the host model injects
+    # them into its embedding sequence. ``output_projection`` maps a
+    # unit-variance resampler output through a ``primitive_dim -> hidden_size``
+    # matrix, which lands roughly ``sqrt(primitive_dim)`` times above the scale
+    # of a real token embedding; see
+    # ``Drawing2CADQwen3VLForConditionalGeneration.calibrate_primitive_output_scale``.
+    normalize_output: bool = False
     view_directions: tuple[str, ...] = DEFAULT_VIEW_DIRECTIONS
     # Sample-feature channels that follow the curve traversal direction (for
     # example tangents); they are negated in the internally reversed copy used
@@ -173,6 +181,26 @@ class PrimitiveBatch:
             primitive_group_ids=repeat(self.primitive_group_ids),
         )
 
+    def roll(self, shifts: int = 1) -> "PrimitiveBatch":
+        """Rotate the batch dimension so every sample gets another's primitives.
+
+        Used by the validation ablation that measures how much the drawing
+        primitives actually contribute; the padded shapes are shared across the
+        batch, so rotating whole slots keeps every invariant intact.
+        """
+
+        def rotate(value: torch.Tensor | None) -> torch.Tensor | None:
+            return None if value is None else torch.roll(value, shifts, dims=0)
+
+        return PrimitiveBatch(
+            sample_features=rotate(self.sample_features),
+            sample_mask=rotate(self.sample_mask),
+            primitive_mask=rotate(self.primitive_mask),
+            primitive_type_ids=rotate(self.primitive_type_ids),
+            view_direction_ids=rotate(self.view_direction_ids),
+            primitive_group_ids=rotate(self.primitive_group_ids),
+        )
+
 
 class _MaskedResidualConvBlock(nn.Module):
     def __init__(self, dim: int) -> None:
@@ -184,9 +212,15 @@ class _MaskedResidualConvBlock(nn.Module):
     def forward(self, inputs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         mask_values = mask.unsqueeze(-1)
         normalized = self.norm(inputs).masked_fill(~mask_values, 0.0)
-        update = self.conv(normalized.transpose(1, 2)).transpose(1, 2)
-        output = inputs + self.activation(update)
-        return output.masked_fill(~mask_values, 0.0)
+        # Activation inside the branch, before the convolution projects back
+        # into the residual stream. Activating the convolution's output instead
+        # would let each block contribute only values bounded below by GELU's
+        # minimum of about -0.17, so every layer would add a positive mean shift
+        # and the residual stream would drift upward with depth.
+        # GELU(0) == 0, so the zeroed padding stays zero across the convolution.
+        activated = self.activation(normalized)
+        update = self.conv(activated.transpose(1, 2)).transpose(1, 2)
+        return (inputs + update).masked_fill(~mask_values, 0.0)
 
 
 class _CurveEncoder(nn.Module):
@@ -340,6 +374,9 @@ class PrimitiveEncoder(nn.Module):
         )
         self.primitive_modality_embedding = nn.Parameter(torch.empty(dim))
         self.output_projection = nn.Linear(dim, self.output_dim)
+        self.output_norm = (
+            nn.RMSNorm(self.output_dim) if config.normalize_output else None
+        )
         nn.init.normal_(self.primitive_modality_embedding, std=dim**-0.5)
 
     def reset_parameters(self) -> None:
@@ -349,7 +386,7 @@ class PrimitiveEncoder(nn.Module):
                 module._reset_parameters()
             elif isinstance(
                 module,
-                (nn.Conv1d, nn.Embedding, nn.LayerNorm, nn.Linear),
+                (nn.Conv1d, nn.Embedding, nn.LayerNorm, nn.Linear, nn.RMSNorm),
             ):
                 module.reset_parameters()
         nn.init.normal_(
@@ -360,6 +397,26 @@ class PrimitiveEncoder(nn.Module):
             self.primitive_modality_embedding,
             std=self.config.primitive_dim**-0.5,
         )
+
+    @property
+    def output_rms(self) -> float | None:
+        """Target RMS of the emitted latents, or ``None`` when unnormalized."""
+        if self.output_norm is None:
+            return None
+        return float(self.output_norm.weight.detach().float().mean().item())
+
+    @torch.no_grad()
+    def set_output_rms(self, rms: float) -> None:
+        """Pin the emitted latents to ``rms`` before any training step.
+
+        ``output_norm`` keeps a per-channel gain, so this only sets the starting
+        scale; the module is free to move away from it during training.
+        """
+        if self.output_norm is None:
+            raise ValueError("set_output_rms requires primitive normalize_output=true")
+        if not math.isfinite(rms) or rms <= 0.0:
+            raise ValueError(f"output RMS must be positive and finite, got {rms!r}")
+        self.output_norm.weight.fill_(rms)
 
     def _validate_batch(self, batch: PrimitiveBatch) -> tuple[int, int, int]:
         fields = {
@@ -531,6 +588,8 @@ class PrimitiveEncoder(nn.Module):
         global_latents, counts = self.resample_global(grouped_tokens, batch)
         global_latents = global_latents + self.primitive_modality_embedding
         projected = self.output_projection(global_latents)
+        if self.output_norm is not None:
+            projected = self.output_norm(projected)
         return projected.reshape(-1, self.output_dim), counts
 
 

@@ -3,6 +3,12 @@ attn_implementation: flash_attention_2
 torch_dtype: bfloat16
 gradient_checkpointing: false
 freeze_vision_encoder: true
+# Accelerate's bf16 mixed precision keeps no fp32 master weights, so a bf16
+# parameter is also what AdamW updates in place. At ~1/256 relative resolution a
+# step of `lr` on a weight of order one rounds back to the old value and the
+# module stops learning entirely. Keep the trainable parameters in fp32; the
+# frozen backbone stays bf16 and autocast still runs the matmuls in bf16.
+fp32_trainable_params: true
 
 primitive:
   sample_feature_dim: 7
@@ -14,6 +20,11 @@ primitive:
   resampler_heads: 8
   dropout: 0.1
   use_group_context: false
+  # Rescale the emitted latents to this checkpoint's token-embedding RMS before
+  # they are injected into `inputs_embeds`. Without it the default projection
+  # emits vectors ~sqrt(primitive_dim) too large, which pins the primitive
+  # positions on the residual stream and hands them the whole grad-norm budget.
+  normalize_output: true
   view_directions:
     - front
     - top

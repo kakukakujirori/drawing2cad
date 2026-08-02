@@ -95,10 +95,38 @@ class AdapterCheckpointIO:
         adapter_state = load_peft_weights(
             str(directory / "adapter"), device=str(self.accelerator.device)
         )
-        load_result = set_peft_model_state_dict(model, adapter_state)
+        try:
+            load_result = set_peft_model_state_dict(model, adapter_state)
+        except KeyError as error:
+            # PEFT indexes the checkpoint by the keys the live model expects, so
+            # a `modules_to_save` entry the checkpoint predates surfaces as a
+            # bare KeyError with no context. The primitive encoder is saved that
+            # way, so any change to its module list lands here.
+            raise RuntimeError(
+                f"adapter checkpoint {directory / 'adapter'} is missing parameter "
+                f"{error}, so it was written by a different model definition than "
+                "the one being resumed"
+            ) from error
         unexpected = tuple(getattr(load_result, "unexpected_keys", ()))
         if unexpected:
             raise RuntimeError(f"unexpected adapter checkpoint keys: {unexpected}")
+        # `missing_keys` always lists the whole frozen backbone, which an
+        # adapter checkpoint deliberately does not store. Only trainable
+        # parameters are supposed to be in there; a LoRA tensor absent from the
+        # file is reported here rather than raised, so without this filter it
+        # would resume silently against a freshly initialized adapter.
+        trainable = {
+            name
+            for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        }
+        missing = tuple(
+            key for key in getattr(load_result, "missing_keys", ()) if key in trainable
+        )
+        if missing:
+            raise RuntimeError(
+                f"adapter checkpoint is missing trainable keys: {missing}"
+            )
         self.optimizer.load_state_dict(
             torch.load(
                 directory / "optimizer.pt",

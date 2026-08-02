@@ -102,6 +102,63 @@ def apply_language_lora(
     return output
 
 
+def primitive_encoder_modules(model: torch.nn.Module) -> list[torch.nn.Module]:
+    """Every primitive-encoder copy, including PEFT's frozen original."""
+
+    return [
+        module
+        for name, module in model.named_modules()
+        if name.rsplit(".", 1)[-1] == "primitive_encoder"
+    ]
+
+
+def cast_trainable_parameters(
+    model: torch.nn.Module, dtype: torch.dtype = torch.float32
+) -> int:
+    """Hold every updated weight in fp32 while the forward pass stays bf16.
+
+    Accelerate's ``mixed_precision="bf16"`` is autocast-only: unlike fp16 AMP it
+    keeps no fp32 master copy, so whatever dtype the parameters were loaded in is
+    also the dtype AdamW updates and stores its moments in. bf16 carries 8
+    mantissa bits, i.e. a relative resolution of about 1/256, so an update of
+    ``lr`` applied to a weight of order one rounds straight back to the old value
+    and the module silently stops learning. That is fatal for the primitive
+    encoder, whose LayerNorm gains sit at exactly 1.0 and whose embeddings sit at
+    ``primitive_dim ** -0.5``, and it quietly degrades the LoRA adapters too.
+
+    Casting only the trainable parameters keeps the frozen ~2B Qwen backbone in
+    bf16, so the memory cost is limited to the adapters and the primitive path.
+    Autocast still runs the matmuls in bf16, so throughput is unchanged.
+
+    Returns the number of parameters that were cast.
+    """
+
+    count = sum(
+        1
+        for parameter in model.parameters()
+        if parameter.is_floating_point() and parameter.dtype != dtype
+    )
+    # The frozen ``original_module`` PEFT keeps beside the trainable copy is not
+    # updated, but ``encode_primitives`` reads its dtype to cast the incoming
+    # primitive batch; leaving it bf16 would feed bf16 inputs to fp32 weights
+    # outside autocast (evaluation and tests) and raise a dtype mismatch.
+    for module in primitive_encoder_modules(model):
+        module.to(dtype)
+    for parameter in model.parameters():
+        if (
+            parameter.requires_grad
+            and parameter.is_floating_point()
+            and parameter.dtype != dtype
+        ):
+            parameter.data = parameter.data.to(dtype)
+    remaining = sum(
+        1
+        for parameter in model.parameters()
+        if parameter.is_floating_point() and parameter.dtype != dtype
+    )
+    return count - remaining
+
+
 def set_sft_train_mode(model: torch.nn.Module) -> None:
     """Enable train mode while keeping the frozen vision tower deterministic."""
 
@@ -121,9 +178,14 @@ def build_sft_model(model_config: Mapping[str, Any]) -> SFTModelBundle:
     )
     if not bool(model_config.get("freeze_vision_encoder", True)):
         raise NotImplementedError("the baseline requires freeze_vision_encoder=true")
+    # Before PEFT, so the deep copy under ``modules_to_save`` starts calibrated.
+    if primitive_config.normalize_output:
+        model.calibrate_primitive_output_scale()
     freeze_vision_encoder(model)
     model = apply_language_lora(model, model_config["lora"])
     freeze_vision_encoder(model)
+    if bool(model_config.get("fp32_trainable_params", True)):
+        cast_trainable_parameters(model)
     if bool(model_config.get("gradient_checkpointing", True)):
         model.gradient_checkpointing_enable()
         model.config.use_cache = False
@@ -138,7 +200,9 @@ __all__ = [
     "SFTModelBundle",
     "apply_language_lora",
     "build_sft_model",
+    "cast_trainable_parameters",
     "freeze_vision_encoder",
+    "primitive_encoder_modules",
     "set_sft_train_mode",
     "vision_module",
 ]

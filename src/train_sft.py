@@ -65,9 +65,15 @@ def execute(config: Any) -> dict[str, float | int]:
     # contain no grouped primitives, so those parameters receive no gradient on
     # steps whose batch happens to be ungrouped. Under DDP this is a
     # data-dependent unused-parameter pattern (it varies per step, so a static
-    # graph would be unsafe), which requires find_unused_parameters. The flag
-    # only affects the multi-process DDP wrapper and is inert on a single GPU.
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    # graph would be unsafe), which requires find_unused_parameters. That branch
+    # is the only such pattern in the model -- everything else frozen by PEFT or
+    # by freeze_vision_encoder has requires_grad=False and is not DDP-managed --
+    # so with the branch disabled the flag only buys a full graph traversal on
+    # every backward. Set training.find_unused_parameters to override.
+    find_unused = training.get("find_unused_parameters")
+    if find_unused is None:
+        find_unused = bool(cfg["model"]["primitive"].get("use_group_context", True))
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=bool(find_unused))
     accelerator = Accelerator(
         mixed_precision=_mixed_precision(training),
         kwargs_handlers=[ddp_kwargs],
@@ -198,6 +204,7 @@ def execute(config: Any) -> dict[str, float | int]:
             generation_evaluators=generation_evaluators,
             dataloader_generator=dataloaders.generator,
             dataloader_seed=seed,
+            primitive_ablation=bool(evaluation.get("primitive_ablation", False)),
         )
     finally:
         progress_bar.stop()

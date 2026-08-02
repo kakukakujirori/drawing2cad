@@ -17,6 +17,27 @@ image_sources:
     directory: render_3d/hlg_perspective
 scale_augmentation: false
 image_max_edge: null
+# Modality dropout, training stream only: with this probability every image
+# listed in `image_sources` above is replaced by a constant `image_dropout_fill`
+# image of the same size, so the answer has to come from the drawing primitives.
+# As configured that is the one isometric render, which is a preview of the
+# finished solid; the technical drawing itself reaches the model only as DXF
+# primitives. The render alone is enough to keep the loss falling, which is why
+# `val/<root>/primitive_gain` sat below 1% of the loss without this.
+#
+# 0.5 leaves half the steps training the render->code path that the generation
+# benchmark actually measures at test time (it always sees the real render).
+# 0.75 forces the primitives harder at the cost of giving that path a quarter of
+# the data; try it once `primitive_gain` shows how far 0.5 moves the needle.
+#
+# Blanking rather than removing keeps the token sequence length, and therefore
+# `max_sequence_length` filtering, intact.
+image_dropout: 0.5
+# 0 = black, 255 = white. The renders are white-background line art, so 255 is
+# an empty sheet, which the frozen vision tower can encode in its normal
+# activation regime; 0 is unambiguous but out of distribution for a tower that
+# cannot adapt to it.
+image_dropout_fill: 0
 # Samples whose fully rendered token sequence exceeds this are dropped (never
 # truncated) before the DataLoader is built, bounding peak memory per step.
 # Set to null to disable filtering.

@@ -1,7 +1,14 @@
 # Validation metrics are namespaced by dataset root basename, so the monitor
-# must name the root whose generation benchmark selects checkpoints.
-monitor: val/z2c_val/mean_iou_including_failures
-mode: max
+# must name the root that selects checkpoints.
+#
+# Teacher-forced loss rather than generated-geometry IoU: the IoU is scored on a
+# subset that executes CadQuery, so it is both noisy and only defined where
+# generation happened to produce a valid solid. Selecting on it favours
+# checkpoints that got a lucky execution rate. Switch back to
+# `val/z2c_val/mean_iou_including_failures` with `mode: max` (and keep
+# VoxelIoUMetric in the evaluation metrics) when the benchmark is the target.
+monitor: val/z2c_val/loss
+mode: min
 top_k: 3
 root_dirname: checkpoints
 latest_dirname: latest

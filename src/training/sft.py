@@ -110,23 +110,89 @@ class SFTLoopConfig:
 def build_optimizer(
     model: torch.nn.Module, config: Mapping[str, Any]
 ) -> torch.optim.Optimizer:
-    """Build the baseline optimizer from the Hydra optimizer group."""
+    """Build the baseline optimizer from the Hydra optimizer group.
+
+    ``optimizer.param_groups`` maps a parameter-name substring to per-group
+    overrides (``learning_rate``, ``weight_decay``). It exists because the
+    trainable parameters are not one population: the LoRA adapters perturb a
+    converged 2B backbone and want a small rate, while the primitive encoder is
+    randomly initialized and needs roughly an order of magnitude more to move at
+    all. Each parameter joins the first group whose substring it matches;
+    everything left over stays in the default group, which is kept at index 0 so
+    ``train/learning_rate`` keeps meaning the base rate.
+    """
 
     if str(config.get("name", "adamw")).lower() != "adamw":
         raise ValueError("only AdamW is supported by the baseline SFT loop")
-    parameters = [
-        parameter for parameter in model.parameters() if parameter.requires_grad
+    default_lr = float(config.get("learning_rate", 2.0e-4))
+    default_weight_decay = float(config.get("weight_decay", 0.01))
+    overrides = config.get("param_groups") or {}
+    if not isinstance(overrides, Mapping):
+        raise TypeError(
+            "optimizer.param_groups must map a parameter-name substring to its "
+            f"overrides, got {type(overrides)}"
+        )
+
+    trainable = [
+        (name, parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
     ]
-    if not parameters:
+    if not trainable:
         raise ValueError("model has no trainable parameters")
+
+    claimed: set[int] = set()
+    groups: list[dict[str, Any]] = []
+    for group_name, settings in overrides.items():
+        if not isinstance(settings, Mapping):
+            raise TypeError(
+                f"optimizer.param_groups.{group_name} must be a mapping, got "
+                f"{type(settings)}"
+            )
+        members = [
+            parameter
+            for name, parameter in trainable
+            if str(group_name) in name and id(parameter) not in claimed
+        ]
+        if not members:
+            raise ValueError(
+                f"optimizer.param_groups.{group_name} matches no trainable "
+                "parameter name"
+            )
+        claimed.update(id(parameter) for parameter in members)
+        group: dict[str, Any] = {
+            "name": str(group_name),
+            "params": members,
+            "lr": float(settings.get("learning_rate", default_lr)),
+            "weight_decay": float(settings.get("weight_decay", default_weight_decay)),
+        }
+        # Optional per-group clip, read back by clip_gradients; absent means the
+        # loop's training.max_grad_norm applies to this group too.
+        if settings.get("max_grad_norm") is not None:
+            group["max_grad_norm"] = float(settings["max_grad_norm"])
+        groups.append(group)
+
+    remaining = [
+        parameter for _, parameter in trainable if id(parameter) not in claimed
+    ]
+    if not remaining:
+        raise ValueError(
+            "optimizer.param_groups claims every trainable parameter; the default "
+            "group must stay non-empty"
+        )
+    groups.insert(
+        0,
+        {"params": remaining, "lr": default_lr, "weight_decay": default_weight_decay},
+    )
+
     fused_value = config.get("fused", "auto")
     fused = torch.cuda.is_available() if fused_value == "auto" else bool(fused_value)
     return torch.optim.AdamW(
-        parameters,
-        lr=float(config.get("learning_rate", 2.0e-4)),
+        groups,
+        lr=default_lr,
         betas=tuple(float(value) for value in config.get("betas", (0.9, 0.95))),
         eps=float(config.get("eps", 1.0e-8)),
-        weight_decay=float(config.get("weight_decay", 0.01)),
+        weight_decay=default_weight_decay,
         fused=fused,
     )
 
@@ -217,6 +283,67 @@ def _accumulation_groups(loader: Any, group_size: int) -> Iterator[list[Any]]:
         yield group
 
 
+def clip_gradients(
+    accelerator: Any,
+    optimizer: torch.optim.Optimizer,
+    max_grad_norm: float,
+) -> dict[str, Any]:
+    """Clip every optimizer param group on its own gradient norm.
+
+    One global clip couples populations whose gradient scales have no reason to
+    match: a spike in the randomly initialized primitive encoder would scale the
+    LoRA gradients down in the same step, so the adapters would silently take a
+    shorter step because another module misbehaved. Now that the groups carry
+    their own learning rates they get their own clip budget too. A group may
+    override the shared limit through ``optimizer.param_groups.<name>``.
+
+    Returns the pre-clip norms keyed for logging, mirroring the learning-rate
+    keys: the unnamed default group is ``train/grad_norm`` and every override is
+    ``train/grad_norm/<name>``.
+    """
+
+    norms: dict[str, Any] = {}
+    if max_grad_norm <= 0:
+        return norms
+    for group in optimizer.param_groups:
+        limit = float(group.get("max_grad_norm", max_grad_norm))
+        if limit <= 0:
+            continue
+        norm = accelerator.clip_grad_norm_(group["params"], limit)
+        group_name = group.get("name")
+        key = (
+            "train/grad_norm" if group_name is None else f"train/grad_norm/{group_name}"
+        )
+        norms[key] = norm
+    return norms
+
+
+def _supervised_loss(model: torch.nn.Module, inputs: Mapping[str, Any]) -> torch.Tensor:
+    outputs = model(**inputs, use_cache=False)
+    if outputs.loss is None or not torch.isfinite(outputs.loss):
+        raise FloatingPointError("validation produced a non-finite loss")
+    return outputs.loss.detach().to(torch.float64)
+
+
+def _mismatched_primitives(current: Any, donor: Any) -> Any | None:
+    """Return primitives belonging to a different drawing, or ``None``.
+
+    Any batch of the same size works as a donor because the encoder always emits
+    exactly ``num_primitive_latents`` latents per sample, so the placeholder
+    positions the collator reserved still line up. The previous batch is
+    preferred over an in-batch rotation because the configured validation batch
+    size is 1, where rotating is a no-op.
+    """
+
+    if current is None:
+        return None
+    if donor is not None and donor.batch_size == current.batch_size:
+        return donor
+    if current.batch_size > 1:
+        return current.roll(1)
+    return None
+
+
 @torch.no_grad()
 def evaluate_loss(
     accelerator: Any,
@@ -226,38 +353,92 @@ def evaluate_loss(
     set_train_mode: TrainModeSetter,
     on_batch: Callable[[int], None] | None = None,
     prefix: str = "val",
+    primitive_ablation: bool = False,
 ) -> dict[str, float]:
     """Compute distributed token-weighted SFT validation cross entropy.
 
     ``prefix`` namespaces the returned key (``<prefix>/loss``) so several
     validation datasets can be evaluated in one pass without colliding.
+
+    ``primitive_ablation`` additionally scores every batch against another
+    drawing's primitives and reports ``<prefix>/loss_shuffled_primitives`` plus
+    ``<prefix>/primitive_gain``, the amount by which the real primitives beat the
+    mismatched ones. A gain near zero means the model is answering from the
+    raster views alone and the primitive path is contributing nothing, which is
+    otherwise invisible in a loss curve that keeps improving. It costs a second
+    forward pass over the validation set.
     """
 
     was_training = model.training
     model.eval()
-    total_loss = torch.zeros((), device=accelerator.device, dtype=torch.float64)
-    total_tokens = torch.zeros((), device=accelerator.device, dtype=torch.float64)
+
+    def zero() -> torch.Tensor:
+        return torch.zeros((), device=accelerator.device, dtype=torch.float64)
+
+    total_loss, total_tokens = zero(), zero()
+    ablated_loss, ablated_tokens = zero(), zero()
+    # The first batch has no donor yet, so it is held back and scored against the
+    # last batch's primitives; both passes then cover exactly the same tokens.
+    deferred: tuple[dict[str, Any], torch.Tensor] | None = None
+    previous_primitives: Any = None
+
     for batch in dataloader:
         inputs = _model_inputs(batch, accelerator.device)
         labels = inputs.get("labels")
         if labels is None:
             raise ValueError("validation batches must contain completion-only labels")
         token_count = (labels != -100).sum().to(torch.float64)
-        outputs = model(**inputs, use_cache=False)
-        if outputs.loss is None or not torch.isfinite(outputs.loss):
-            raise FloatingPointError("validation produced a non-finite loss")
-        total_loss += outputs.loss.detach().to(torch.float64) * token_count
+        total_loss += _supervised_loss(model, inputs) * token_count
         total_tokens += token_count
+        if primitive_ablation:
+            primitives = inputs.get("primitive_batch")
+            donor = _mismatched_primitives(primitives, previous_primitives)
+            if donor is None:
+                if deferred is None and primitives is not None:
+                    deferred = (inputs, token_count)
+            else:
+                ablated_loss += (
+                    _supervised_loss(model, {**inputs, "primitive_batch": donor})
+                    * token_count
+                )
+                ablated_tokens += token_count
+            if primitives is not None:
+                previous_primitives = primitives
         if on_batch is not None:
             on_batch(1)
+
+    if deferred is not None:
+        inputs, token_count = deferred
+        primitives = inputs.get("primitive_batch")
+        donor = _mismatched_primitives(primitives, previous_primitives)
+        # A pass holding a single batch of one has no other drawing to borrow
+        # from, and scoring it against its own primitives would report a gain of
+        # exactly zero as though the primitive path were useless.
+        if donor is not None and donor is not primitives:
+            ablated_loss += (
+                _supervised_loss(model, {**inputs, "primitive_batch": donor})
+                * token_count
+            )
+            ablated_tokens += token_count
+
     totals = accelerator.reduce(
-        torch.stack((total_loss, total_tokens)), reduction="sum"
+        torch.stack((total_loss, total_tokens, ablated_loss, ablated_tokens)),
+        reduction="sum",
     )
     if totals[1].item() <= 0:
         raise ValueError("validation loader contains no supervised tokens")
     if was_training:
         set_train_mode(model)
-    return {f"{prefix}/loss": float((totals[0] / totals[1]).item())}
+
+    loss = float((totals[0] / totals[1]).item())
+    values = {f"{prefix}/loss": loss}
+    # Only report the comparison when the ablated pass covered exactly the same
+    # supervised tokens, so the difference is a paired measurement.
+    if primitive_ablation and totals[3].item() == totals[1].item():
+        ablated = float((totals[2] / totals[3]).item())
+        values[f"{prefix}/loss_shuffled_primitives"] = ablated
+        values[f"{prefix}/primitive_gain"] = ablated - loss
+    return values
 
 
 def _log_train_step(
@@ -267,7 +448,7 @@ def _log_train_step(
     step: int,
     loss_sum: float,
     optimizer: torch.optim.Optimizer,
-    grad_norm: float | torch.Tensor | None,
+    grad_norms: Mapping[str, float | torch.Tensor] | None,
     tokens: int,
     elapsed: float,
     include_tokens_per_second: bool,
@@ -285,15 +466,22 @@ def _log_train_step(
             display_name="loss",
             format_spec=".3f",
         ),
-        "train/learning_rate": LoggedMetric(
-            float(optimizer.param_groups[0]["lr"]),
-            prog_bar=True,
-            display_name="lr",
-            format_spec=".2e",
-        ),
     }
-    if grad_norm is not None:
-        values["train/grad_norm"] = float(
+    # The unnamed default group is index 0 (see build_optimizer), so the base
+    # rate keeps its historical key and every override gets a suffixed one.
+    for group in optimizer.param_groups:
+        group_name = group.get("name")
+        if group_name is None:
+            values["train/learning_rate"] = LoggedMetric(
+                float(group["lr"]),
+                prog_bar=True,
+                display_name="lr",
+                format_spec=".2e",
+            )
+        else:
+            values[f"train/learning_rate/{group_name}"] = float(group["lr"])
+    for key, grad_norm in (grad_norms or {}).items():
+        values[key] = float(
             grad_norm.detach().float().item()
             if isinstance(grad_norm, torch.Tensor)
             else grad_norm
@@ -382,6 +570,7 @@ def _evaluate(
     generation_evaluators: Sequence[GenerationEvaluator],
     progress_bar: RichEpochProgressBar,
     step: int,
+    primitive_ablation: bool = False,
 ) -> dict[str, float | int]:
     """Score every validation dataset, namespacing metrics by dataset name.
 
@@ -404,6 +593,7 @@ def _evaluate(
                     set_train_mode=set_train_mode,
                     on_batch=advance,
                     prefix=f"val/{name}",
+                    primitive_ablation=primitive_ablation,
                 )
             )
     for generation_evaluator in generation_evaluators:
@@ -431,6 +621,7 @@ def run_sft(
     generation_evaluators: Sequence[GenerationEvaluator] = (),
     dataloader_generator: torch.Generator | None = None,
     dataloader_seed: int | None = None,
+    primitive_ablation: bool = False,
 ) -> dict[str, float | int]:
     """Run SFT using components constructed by the application entrypoint.
 
@@ -519,11 +710,9 @@ def run_sft(
                 interval_tokens += token_count
                 batches_consumed += 1
                 state.batches_seen_in_epoch = batches_consumed
-            grad_norm = None
-            if loop_config.max_grad_norm > 0:
-                grad_norm = accelerator.clip_grad_norm_(
-                    model.parameters(), loop_config.max_grad_norm
-                )
+            grad_norms = clip_gradients(
+                accelerator, optimizer, loop_config.max_grad_norm
+            )
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
@@ -537,7 +726,7 @@ def run_sft(
                     step=state.global_step,
                     loss_sum=interval_loss_sum,
                     optimizer=optimizer,
-                    grad_norm=grad_norm,
+                    grad_norms=grad_norms,
                     tokens=interval_tokens,
                     elapsed=time.monotonic() - interval_start,
                     include_tokens_per_second=loop_config.tokens_per_second,
@@ -557,6 +746,7 @@ def run_sft(
                     generation_evaluators=generation_evaluators,
                     progress_bar=progress_bar,
                     step=state.global_step,
+                    primitive_ablation=primitive_ablation,
                 )
                 _log_evaluation(metrics, last_metrics, step=state.global_step)
                 if accelerator.is_main_process:
@@ -600,6 +790,7 @@ def run_sft(
             generation_evaluators=generation_evaluators,
             progress_bar=progress_bar,
             step=state.global_step,
+            primitive_ablation=primitive_ablation,
         )
         _log_evaluation(metrics, last_metrics, step=state.global_step)
         if accelerator.is_main_process:
@@ -625,6 +816,7 @@ __all__ = [
     "SFTLoopConfig",
     "TrainingSchedule",
     "build_optimizer",
+    "clip_gradients",
     "build_scheduler",
     "evaluate_loss",
     "resolve_training_schedule",

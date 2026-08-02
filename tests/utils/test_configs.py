@@ -82,6 +82,9 @@ class TrainingConfigTest(unittest.TestCase):
             produced.update(
                 key.split("/")[-1] for key in metric.reduce([], prefix="val")
             )
+        # The teacher-forced loss pass in src/training/sft.py emits its keys
+        # alongside the generation metrics and is monitorable on the same terms.
+        produced.update(("loss", "loss_shuffled_primitives", "primitive_gain"))
         self.assertIn(monitor.split("/")[-1], produced)
 
     def test_hydra_composes_production_defaults(self) -> None:
@@ -91,7 +94,10 @@ class TrainingConfigTest(unittest.TestCase):
             config = compose(config_name="train_sft", return_hydra_config=True)
         self.assertIsNone(config.hydra.runtime.choices["debug"])
         self.assertEqual(config.hydra.runtime.choices["data"], "z2c")
-        self.assertEqual(config.training.max_steps, 1000)
+        # The production budget is expressed in epochs, so max_steps is resolved
+        # from the sharded loader length at runtime rather than pinned here.
+        self.assertIsNone(config.training.max_steps)
+        self.assertEqual(config.training.num_train_epochs, 3)
         self.assertEqual(config.training.gradient_accumulation_steps, 8)
         self.assertIsNone(config.data.train_max_samples)
         self.assertTrue(config.utils.progress_bar.enabled)

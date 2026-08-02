@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import random
 from typing import Any, Mapping, Sequence
 
+from PIL import Image
 import torch
 
 from .dataset import Drawing2CADSample
@@ -55,6 +57,8 @@ class Drawing2CADPreprocessor:
         instruction: str = DEFAULT_INSTRUCTION,
         include_labels: bool = True,
         max_length: int | None = None,
+        image_dropout: float = 0.0,
+        image_dropout_fill: int = 0,
     ) -> None:
         if not hasattr(processor, "tokenizer"):
             raise TypeError("processor must expose a tokenizer")
@@ -67,16 +71,59 @@ class Drawing2CADPreprocessor:
             raise ValueError("instruction must not be empty")
         if max_length is not None and max_length <= 0:
             raise ValueError("max_length must be positive when provided")
+        if not 0.0 <= image_dropout <= 1.0:
+            raise ValueError(f"image_dropout must be in [0, 1], got {image_dropout}")
+        if not 0 <= image_dropout_fill <= 255:
+            raise ValueError(
+                f"image_dropout_fill must be in [0, 255], got {image_dropout_fill}"
+            )
 
         self.processor = processor
         self.num_primitive_latents = num_primitive_latents
         self.instruction = instruction
         self.include_labels = include_labels
         self.max_length = max_length
+        self.image_dropout = float(image_dropout)
+        self.image_dropout_fill = int(image_dropout_fill)
         self.placeholder_token_id = tokenizer.pad_token_id
         self.placeholder_text = tokenizer.pad_token * num_primitive_latents
         self.assistant_prefix_ids = tokenizer.encode(
             "<|im_start|>assistant\n", add_special_tokens=False
+        )
+
+    def apply_image_dropout(self, sample: Drawing2CADSample) -> Drawing2CADSample:
+        """Blank every raster view of ``sample`` with probability ``image_dropout``.
+
+        Modality dropout that forces the answer through the drawing primitives.
+        Without it the raster views alone are enough to keep the loss falling,
+        and the primitive path stays a decoration (see the ``primitive_gain``
+        ablation in ``src/training/sft.py``).
+
+        The views are replaced by a constant-colour image of the same size
+        rather than removed from the conversation, which keeps the token
+        sequence length identical. Removing them instead would make the length
+        sample-dependent, invalidating the fixed overhead that
+        ``max_sequence_length`` filtering is computed against and breaking the
+        collator's rule that a batch cannot mix samples with and without vision
+        inputs.
+
+        A sample carries one image per configured ``image_sources`` entry, which
+        is a single isometric render as shipped. They are blanked as a unit so
+        that adding a second source later cannot silently weaken the
+        augmentation by leaving one view to answer from.
+
+        Randomness comes from the global ``random`` module, which
+        ``src.utils.seed_worker`` seeds per DataLoader worker from the loader
+        generator, so the choice is reproducible for a given seed and epoch.
+        """
+        if self.image_dropout <= 0.0 or not sample.images:
+            return sample
+        if random.random() >= self.image_dropout:
+            return sample
+        fill = (self.image_dropout_fill,) * 3
+        return replace(
+            sample,
+            images=tuple(Image.new("RGB", image.size, fill) for image in sample.images),
         )
 
     @staticmethod
@@ -173,6 +220,9 @@ class Drawing2CADPreprocessor:
         return output
 
     def __call__(self, sample: Drawing2CADSample) -> PreparedDrawing2CADSample:
+        # Only here, never in sequence_length(): the length measurement must
+        # stay deterministic. Blanking preserves it anyway.
+        sample = self.apply_image_dropout(sample)
         conversation = self.build_conversation(sample)
         encoded = self.processor.apply_chat_template(
             conversation,

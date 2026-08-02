@@ -20,28 +20,37 @@ paths:
 
 training:
   max_steps: null
-  num_train_epochs: 1
+  num_train_epochs: 3
   gradient_accumulation_steps: 8
   mixed_precision: bf16
-  eval_every_steps: 1000
-  save_every_steps: 1000
+  eval_every_steps: 2000
+  save_every_steps: 2000
   log_every_steps: 1
   max_grad_norm: 1.0
   tokens_per_second: true
+  # null derives it from model.primitive.use_group_context, the only
+  # data-dependent unused-parameter branch in the model. Set true/false to pin.
+  find_unused_parameters: null
   resume_from_latest: false
   final_evaluation: true
 
 evaluation:
   generation_enabled: true
-  generation_subset_size: 32
+  generation_subset_size: 0  # 0 = every eligible sample in the root
   generation_seed: 42
   generation_strategy: greedy
   max_new_tokens: 1024
-  cadquery_timeout_seconds: 30.0
+  # Score each validation loss pass a second time against another drawing's
+  # primitives, and report the gap as `val/<root>/primitive_gain`. This is the
+  # only signal that separates "the loss is falling" from "the primitive path is
+  # doing something"; a gain near zero means the model is reading the raster
+  # views alone. Costs one extra forward pass over the validation set.
+  primitive_ablation: true
+  cadquery_timeout_seconds: 60.0
   # Concurrency for the isolated CadQuery execution/scoring loop. Each worker
   # blocks on a spawned subprocess, so this overlaps their wall-clock waits;
   # per-rank, so the machine sees up to execution_workers * num_processes procs.
-  execution_workers: 8
+  execution_workers: 4
   tessellation_tolerance: 0.1
   volume_tolerance: 1.0e-6
   # Wall-clock budget for scoring one sample with every metric below, in its own
@@ -59,8 +68,8 @@ evaluation:
   # the two B-Rep benchmarks rescale the prediction onto the target's bounding
   # box, which `normalize_to_gt_bbox: false` turns off).
   #
-  # Keep VoxelIoUMetric while configs/checkpoint/topk.yaml monitors
-  # `val/<root>/mean_iou_including_failures`: that key is this family's.
+  # VoxelIoUMetric owns `val/<root>/mean_iou_including_failures`; keep it here if
+  # configs/checkpoint/topk.yaml is switched back to monitoring that key.
   metrics:
     - CadExecutionMetric
     - VoxelIoUMetric        # or {name: VoxelIoUMetric, resolution: 64}

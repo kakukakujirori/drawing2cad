@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import torch
@@ -173,6 +174,28 @@ class Drawing2CADQwen3VLForConditionalGeneration(Qwen3VLForConditionalGeneration
             _allow_missing_primitive=True,
             **kwargs,
         )
+
+    @torch.no_grad()
+    def calibrate_primitive_output_scale(self) -> float:
+        """Start the primitive latents at this checkpoint's token-embedding RMS.
+
+        ``PrimitiveEncoder.output_projection`` maps the resampler's unit-variance
+        latents through a ``primitive_dim -> hidden_size`` matrix, so its default
+        initialization emits vectors roughly ``sqrt(primitive_dim)`` larger than a
+        Qwen token embedding. Injecting those into ``inputs_embeds`` puts the
+        primitive positions on a residual stream one to two orders of magnitude
+        above every text position: each block's pre-norm then divides that away,
+        so the latents barely move through depth, while the outsized activations
+        push a gradient through this module that consumes the whole global
+        ``max_grad_norm`` budget and starves the LoRA adapters.
+
+        Returns the RMS that was applied.
+        """
+        weight = self.get_input_embeddings().weight.detach()
+        norm = torch.linalg.vector_norm(weight, dtype=torch.float32)
+        rms = float(norm.item() / math.sqrt(weight.numel()))
+        self.primitive_encoder.set_output_rms(rms)
+        return rms
 
     def encode_primitives(
         self,
