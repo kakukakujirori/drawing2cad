@@ -22,6 +22,10 @@ message_builder:
     - hlg_translucent_faces_perspective
     - transparent_shaded_edges_perspective
 
+renderer:
+  _target_: zeroshot.pipeline.verification.StepRenderer
+  timeout_s: 120.0
+
 sandbox_runner:
   python_executable: ${oc.env:CONDA_PREFIX}/bin/python
   default_timeout_s: 30.0

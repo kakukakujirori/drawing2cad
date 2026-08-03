@@ -33,10 +33,13 @@ class RenderStatus(Enum):
 
 @dataclass(frozen=True)
 class RenderReport:
+    """What each requested output became: a path on success, a reason on failure."""
+
     status: RenderStatus
     techdraw_paths: TechdrawPaths
     render3d_paths: Render3dPaths
-    errors: Mapping[str, str] = field(default_factory=dict)
+    techdraw_errors: Mapping[str, str] = field(default_factory=dict)
+    render3d_errors: Mapping[str, str] = field(default_factory=dict)
 
 
 def _render_techdraw(
@@ -159,7 +162,8 @@ def _render_once(
         status=status,
         techdraw_paths=output_techdraw_paths,
         render3d_paths=output_render3d_paths,
-        errors={**techdraw_errors, **render3d_errors},
+        techdraw_errors=techdraw_errors,
+        render3d_errors=render3d_errors,
     )
 
 
@@ -182,7 +186,7 @@ def _worker(
 
 
 class StepRenderer:
-    def __init__(self, timeout_s: float) -> None:
+    def __init__(self, timeout_s: float = 120.0) -> None:
         if timeout_s <= 0:
             raise ValueError("timeout_s must be positive")
         self.timeout_s = timeout_s
@@ -255,16 +259,6 @@ class StepRenderer:
             status=status,
             techdraw_paths=TechdrawPaths(),
             render3d_paths=Render3dPaths(),
-            errors={
-                **{
-                    path_field.name: message
-                    for path_field in fields(output_techdraw_paths)
-                    if getattr(output_techdraw_paths, path_field.name) is not None
-                },
-                **{
-                    path_field.name: message
-                    for path_field in fields(output_render3d_paths)
-                    if getattr(output_render3d_paths, path_field.name) is not None
-                },
-            },
+            techdraw_errors=dict.fromkeys(output_techdraw_paths.as_mapping(), message),
+            render3d_errors=dict.fromkeys(output_render3d_paths.as_mapping(), message),
         )

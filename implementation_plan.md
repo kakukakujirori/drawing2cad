@@ -111,7 +111,9 @@ feedback_render3d_styles:
 
 `feedback_dxf` configは設けない。DXF feedback機能が実装された後はpathを常に返す。ただしsyntax error、timeout、invalid STEP、projection failureなど、DXFが存在しない場合は架空のpathを返さず、生成不能理由をexecution feedbackへ含める。
 
-`FeedbackManifest.render3d_paths`には生成に成功したstyleのキーとpathだけを入れ、失敗したstyleのキーを入れない。valueへ`None`を入れない。MessageBuilderは存在するstyleだけを返し、0枚ならrender用content block自体を追加しない。欠損理由は必須のexecution feedbackへ含める。
+`FeedbackManifest.render3d_paths`には生成に成功したstyleのキーとpathだけを入れ、失敗したstyleのキーを入れない。valueへ`None`を入れない。失敗したstyleは`render3d_errors`へ理由付きで入れ、同じキーが両方へ現れることを禁じる。MessageBuilderは存在するstyleだけを返し、0枚ならrender用content block自体を追加しない。
+
+欠損理由は`execution_feedback`へ混ぜず構造のまま持つ。`execution_feedback`は候補program自身の実行結果であり、rendererの診断はその住人ではないためである。そして理由を出すかどうかはMessageBuilderが決める。**そのrunが提示する予定だったartifactについてだけ理由を出す** — `feedback_render3d: none`のrunや、選択されていないstyleの失敗は、modelが見ることも対処することもできないので渡さない。理由は欠損したartifactが現れるはずだった位置へ出す。
 
 `feedback_execution`を無効化するconfigは設けない。実行成否、syntax/AST error、timeout、STEP生成、solid数、kernel validityなど、信頼済み実行器が得た結果は必ずmessage historyと監査logへ残す。runが継続する場合は必ず次のmodel turnへ返す。
 
@@ -172,7 +174,7 @@ sampleごと・agentごとに一つの`SandboxWorkdir`を作り、run終了ま�
 
 ### 4.2 Pathと生成artifactの扱い
 
-`InputManifest`はhost側の通常の`Path`で必須のinput DXFとinput render mappingを保持する。`FeedbackManifest`はverification ID、必須のexecution feedback、optionalなfeedback DXFとfeedback render mappingを保持する。original inputとverification feedbackは寿命と生成元が異なるため、一つのcombined manifestへまとめない。style名の固定listをpipeline内へ重複定義せず、`InputManifest.render3d_paths`のkey集合をそのsampleで利用可能なstyleのsource of truthとする。`target/`と`target_step/`はいずれのmanifestにも含めない。
+`InputManifest`はhost側の通常の`Path`で必須のinput DXFとinput render mappingを保持する。`FeedbackManifest`はverification ID、必須のexecution feedback、optionalなfeedback DXFとfeedback render mapping、およびそれぞれの欠損理由を保持する。original inputとverification feedbackは寿命と生成元が異なるため、一つのcombined manifestへまとめない。style名の固定listをpipeline内へ重複定義せず、`InputManifest.render3d_paths`のkey集合をそのsampleで利用可能なstyleのsource of truthとする。`target/`と`target_step/`はいずれのmanifestにも含めない。
 
 `SandboxWorkdir`作成後、trusted callerが`Path`と`shutil`を使い、active sampleのDXFとconfigで許可されたinput renderだけを`host_bind_dir`配下の固定pathへcopyする。この初期copyをstagingと呼ぶ。`SandboxWorkdir`と`SandboxRunner`はmanifest、file配置、staging policyを知らない。専用の`Workspace` class、`WorkspacePath`、host/sandbox pathの再帰変換API、`copy_in`/`copy_out` wrapperも作らない。host側の元fileをmountしないため、workdir内のcopyをmodelが変更しても元fileには影響しない。`verify_output`がfeedback DXFとperspective viewsを生成した後は、trusted callerがそのverificationの生成物を同じworkdirへ追加する。GT、repository、他sample、未許可render、credentialはstageしない。
 
@@ -237,7 +239,16 @@ zeroshot/
 │   ├── verification/
 │   │   ├── __init__.py
 │   │   ├── run_cadquery.py         # CadQuery実行、STEP生成・検証
-│   │   └── render.py               # Phase 5: 三面図DXF・perspective views生成
+│   │   ├── run_render.py           # Phase 5: renderer呼び出し、child process隔離・timeout
+│   │   └── render/                 # Phase 5: GTを知らない純粋renderer
+│   │       ├── __init__.py
+│   │       ├── constants.py        # sheet寸法、TechdrawPaths / Render3dPaths
+│   │       ├── project.py          # ① STEP -> 三面の2Dプリミティブ
+│   │       ├── arrange.py          # ② 正準スケールでsheetへ配置
+│   │       ├── export_dxf.py       # ③ 配置結果 -> .dxf（中心マーク・layer割当を含む）
+│   │       ├── _hlr.py             # [BLACKBOX] src/data/render/hlr.pyの逐語fork
+│   │       ├── _render3d.py        # [BLACKBOX] src/data/render/render3d.pyのfork
+│   │       └── techdraw_template.dxf
 │   ├── workflow/
 │   │   ├── __init__.py
 │   │   ├── state.py
@@ -305,11 +316,17 @@ Phase 3ではgraph node間で実際に受け渡す`messages`と、workflow主導
 
 modelへ公開する`verify_output` toolは引数を取らず、共有`SandboxWorkdir` rootの`model.py`だけを対象とする。`tools/verify_output.py`がsourceを安全に読み、`CadQueryExecutor`へ渡し、model-visibleな構造化reportへ変換する。`CadQueryExecutor`はsourceをverification ID配下へimmutable artifactとして保存した後、内部でfreshな`SandboxWorkdir`を作り、trusted export epilogue付きwrapperをbwrap process内で実行して、STEP再読込、single solid、kernel validityを確認する。`verification/verify_output.py`という追加use case層と`tools/verify_output_tool.py`という別adapterは作らない。
 
-Phase 3/4では`render_views=False`だけを使い、`True`なら明示的に`NotImplementedError`を送出する。この例外はmodel reconstruction failureではなく、未実装機能を有効にしたconfiguration errorとしてrun開始前またはtrusted runtime境界で扱う。Phase 5で`True`を実装し、verifiedの場合だけ`render.py`で三面図DXFとperspective viewsを生成してverification ID配下のartifactとworkdir内feedbackへ保存する。
+Phase 3/4では`render_views=False`だけを使い、`True`なら明示的に`NotImplementedError`を送出した。Phase 5でこのbool flagを必須の`renderer: StepRenderer`へ置き換える。timeoutをHydraで注入でき、`executor: CadQueryExecutor`と対称になるため。verifiedの場合だけrendererを呼び、verification ID配下のartifactとworkdir内feedbackへ保存する。
 
-`verify_output`のmodel-visibleな戻り値は、Phase 5でもexecution status、verification ID、stdout/stderr、errorからなるJSON化可能な構造化reportに保ち、source本文は含めない。trusted側の最終reportはsourceを保持し、監査eventでは本文を保存せずhashとbyte数へ要約する。生成したDXF/renderの管理には`FeedbackManifest`を使い、構造化reportのJSON文字列を`execution_feedback`へ格納し、生成に成功したartifactのpathだけをoptional fieldへ登録する。`FeedbackManifest`自体や画像bytesをtool resultのJSONへ直接混ぜず、model-visibleな`ToolMessage.content`から分離したtrusted側handoffとしてworkflowへ保持する。具体的なtransportは`ToolMessage.artifact`またはgraph stateを候補とし、feedback node実装時に一方を選ぶ。
+rendererはoptionalにしない。artifactはmodelへの提示物である前に**runの記録**であり、常に生成する。modelへ何を見せるかは`feedback_render3d`と`MessageBuilder`の担当であって、renderer有無で表現しない。設定境界は型を持たないので、`renderer: null`はrun開始前に拒否する。
 
-`feedback_render3d: path | image`の選択と画像bytesの読込みは`verify_output`の責務にせず、`FeedbackManifest`を受け取る`MessageBuilder`が行う。`path` modeでagentへ提示するのはsandboxから参照できる`/work`配下のpathだけとし、manifestがartifact読取り用に保持するhost pathをそのままmessageへ出さない。host artifactをshared workdirへstageしてsandbox pathを組み立てる具体的なAPIは、visual feedbackを実装するPhase 5で決める。
+`verify_output`が返すmodel-visibleな情報は、Phase 5でもexecution status、verification ID、stdout/stderr、errorからなる構造化reportに保ち、source本文もDXF本文も含めない。trusted側の最終reportはsourceを保持し、監査eventでは本文を保存せずhashとbyte数へ要約する。生成したDXF/renderの管理には`FeedbackManifest`を使い、構造化reportのJSON文字列を`execution_feedback`へ格納する。artifactは各slotが「pathまたは欠損理由」のどちらか一方を持ち、両方を持つことを禁じる。
+
+戻り値の形はPhase 5で確定した。`verify_output`は`load_image`と同じく**content blockのlistを返し**、ToolNodeがそれをそのまま`ToolMessage`にする。三面図とperspective renderは`verify_output`自身の出力なので、tool messageがその居場所である。合成は`verify_output`の中で`MessageBuilder.build_feedback()`を呼んで行い、blockを組み立てる責務はMessageBuilder側に残す。`ToolMessage.artifact`とgraph stateは採らない。`FeedbackManifest`は`MappingProxyType`を含みmsgpack直列化できないため、checkpointerが毎step直列化するgraph stateへ入れられない。
+
+`feedback_render3d: path | image`の選択、画像bytesの読込み、欠損理由の取捨は`verify_output`の責務にせず、`FeedbackManifest`を受け取る`MessageBuilder`が行う。`path` modeでagentへ提示するのはsandboxから参照できる`/work`配下のpathだけとし、manifestがartifact読取り用に保持するhost pathをそのままmessageへ出さない。
+
+graph stateへ入れる`last_verification`だけは構造化report objectのまま返す。これは最終検証用の経路であり、modelへは届かない。
 
 Phase 4完了時点で`SandboxRunner`が提供するresource guardは、wall timeoutと返却するstdout/stderrの設定可能な切り詰めまでである。切り詰めは`subprocess.run(capture_output=True)`の完了後に行うため、model contextへ巨大なtool resultを返さない効果はあるが、process実行中のhost memory使用量は制限しない。CPU、memory、PID数、workdir disk使用量のhard limitもまだ提供しない。Qwenのlive runではDXF dumpによるcontext膨張を返却時の上限で抑えられた一方、in-flight captureや追加hard limitが必要な障害は観測していない。これらはPhase 4の必須条件にせず、実測で必要性と妥当な制限値が判明した時点で追加する。
 
@@ -356,7 +373,9 @@ tool callを生成するかはmodelが決める。tool callの引数検証、実
 
 providerごとに異なる会話意味論を使うのではなく、両者がサポートする共通形式を採用する。
 
-Phase 5で`feedback_render3d: image`を実装する際は、`verify_output`のToolMessageへ直接混ぜず、対応するToolMessageの後に`build_feedback` nodeが作るmultimodal user messageへ添付する。これによりtool protocolと「feedbackを次のuser instructionで返す」という実験条件を分離する。modelが自発的に生成したdump画像はPhase 3から`load_image`で個別に確認できる。
+Phase 5で`feedback_render3d: image`を実装した結果、統一形式は前者になった。`load_image`と同じく、`verify_output`が画像content blockを含むlistを返し、ToolNodeがそれを`ToolMessage`にする。`tests/zeroshot/live/test_openai_compatible.py::test_image_tool_result_round_trip`が、設定済み全backendでmodelがtool resultの画像を読めることを確認している。
+
+ToolMessageの後にuser messageを足す案は採らない。三面図とperspective renderは`verify_output`自身の出力なので、誰も発話していないuser turnを毎回の検証ごとに挿入するのは擬装であり、同じ目的に2つの機構を持つことになる。`build_feedback`は引き続き合成を担当し、`verify_output`がその出力blockをtool resultとして返す。modelが自発的に生成したdump画像はPhase 3から`load_image`で個別に確認できる。
 
 ## 7. 監査設計
 
@@ -585,7 +604,7 @@ Phase 2の`execution/run_code.py`は`verification/run_cadquery.py`へ移動す�
 2. `SandboxRunner`と共有`SandboxWorkdir`をclosureに保持し、modelへ`command`だけを公開する`run_shell` toolを実装する
 3. fake modelが`run_shell`で解析fileを作り、次の`run_shell`から同じfileを読めることを確認する
 4. fake modelがworkdir rootへ`result`を定義した`model.py`を保存する
-5. fake modelがtool callなしで完成を表明し、workflowが`verify_output(render_views=False)`で最終検証する
+5. fake modelがtool callなしで完成を表明し、workflowが`verify_output`（renderなし）で最終検証する
 6. verified STEP、対応する`model.py`、監査logを保存し、feedback loopなしの直線経路を完成させる
 7. fake modelが中間で`verify_output` toolを呼ぶ経路を追加する
 8. その`ToolMessage`に含まれるexecution/STEP verification結果を受けて`model.py`を修正し、再度最終検証するloopを追加する
@@ -593,7 +612,7 @@ Phase 2の`execution/run_code.py`は`verification/run_cadquery.py`へ移動す�
 
 `SandboxWorkdir`はtool callごとに作り直さない。processだけを毎回freshにし、同じ`host_bind_dir`を`/work`へbindする。stagingはworkdir作成直後の一度だけ行い、それ以降はmodelが作った中間fileをrun終了まで保持する。Phase 5でvisual feedbackを追加した後は、そのfileも同じworkdirへ蓄積する。host側の元fileやmanifestのsource pathをsandboxへ直接公開せず、`SandboxRunner`へstaging責務も追加しない。staging処理が一箇所にしかない間はapplication wiring内の短い`Path`/`shutil`操作として書き、専用classへ抽出しない。
 
-Phase 3ではvisual feedbackを実装しない。trusted側のverification関数は将来の拡張点として`render_views: bool = False`を持つが、`True`は`NotImplementedError`とする。LangGraph tool schemaにはこのflagを公開せず、Phase 3のtool wrapperとworkflowはいずれも必ず`False`で呼ぶ。最初に直線経路を通してから中間検証loopを足すことで、graph/routingの問題とrendererの問題を分離する。
+Phase 3ではvisual feedbackを実装しない。trusted側のverification関数は将来の拡張点として`render_views: bool = False`を持つが、`True`は`NotImplementedError`とする。LangGraph tool schemaにはこのflagを公開せず、Phase 3のtool wrapperとworkflowはいずれも必ず`False`で呼ぶ。最初に直線経路を通してから中間検証loopを足すことで、graph/routingの問題とrendererの問題を分離する。（Phase 5でこのflagは必須の`renderer: StepRenderer`へ置き換わり、`NotImplementedError`のguardも無くなった。以下のPhase 3記録はその時点のものである。）
 
 #### 必須test
 
@@ -608,8 +627,7 @@ Phase 3ではvisual feedbackを実装しない。trusted側のverification関数
 - `load_image`がworkdir内画像だけを返し、path traversalとsymlink escapeを拒否する
 - `run_shell`が生成したscratch fileをverified artifactへ自動昇格しない
 - `verify_output`が共有workdir rootの`model.py`だけを読み、source snapshotをverification ID配下へ保存する
-- `verify_output(render_views=False)`がverified STEPを生成する
-- `verify_output(render_views=True)`が`NotImplementedError`を送出する
+- `verify_output`がrenderなしでverified STEPを生成する
 - 最初のfake model scenarioがfeedback loopなしの直線経路で完了する
 - model主導の中間検証結果を`ToolMessage`としてagentへ返す
 - tool callなしresponseの後にworkflowが最終検証を再実行する
@@ -688,17 +706,17 @@ Gemma/OllamaはGPU serverを必要としない開発用backendとして、共通
 - sample workspaceをartifact directory上で直接使うことで、正常終了時だけでなく例外・手動停止時のmodel生成fileも保持する
 - `python -m pytest tests/zeroshot`は157 passed、3 skipped。3件はbackendを明示しない通常実行ではskipされるlive testである。`ruff check zeroshot tests/zeroshot`も通過した
 
-### Phase 5: Feedback modeとrenderer calibration
+### ✅ Phase 5: Feedback modeとrenderer calibration
 
-Phase 3/4で未実装としていた`verify_output(render_views=True)`をここで実装する。LangGraphの遷移は変えず、verified STEPに対するvisual feedback生成と提示方法を追加する。
+Phase 3/4で未実装としていたvisual feedbackをここで実装する。LangGraphの遷移は変えず、verified STEPに対するvisual feedback生成と提示方法を追加する。
 
 #### 実装順
 
-1. `verification/render.py`を追加し、verified STEPから三面図DXFとperspective viewsを生成する
-2. `verify_output(render_views=True)`から、STEP検証成功時だけrendererを呼ぶ
-3. 構造化reportと生成に成功したDXF/render pathから`FeedbackManifest`を作る
-4. `FeedbackManifest`をtool resultのJSONへ混ぜず、workflow内のtrusted artifactとしてfeedback message構築まで渡す
-5. 生成成功時、三面図DXF pathをfeedback user messageへ常に入れる
+1. 既存`src/data/render`で`data/test_vlm/target_step`全件をrenderし、golden基準線を取る
+2. `verification/render/`を追加し、verified STEPから三面図DXFとperspective viewsを生成する
+3. `verify_output`から、STEP検証成功時だけrendererを呼ぶ
+4. 構造化reportと生成に成功したDXF/render pathから`FeedbackManifest`を作る
+5. 生成成功時、三面図DXF pathをfeedback messageへ常に入れる
 6. workdirから元DXFと各verificationのfeedback DXFを参照できるようにする
 7. `feedback_render3d: none`
 8. `feedback_render3d: path`
@@ -706,13 +724,17 @@ Phase 3/4で未実装としていた`verify_output(render_views=True)`をここ�
 10. style選択、部分失敗、message形式の組合せtest
 11. identical STEP再renderと既知形状fixtureでrendererの再現性を測る
 
-renderer本体は再実装せず、trusted側から以下を呼ぶ。
+renderer本体は`src/data/render`を呼ばず、`verification/render/`へ移植する。理由は、`src`側の実装を把握できておらず今後の改修の土台にできないこと、および入力DXFへの位置合わせ（Phase 8）を後から載せる必要があることである。ただし全面再実装はしない。
 
-- `src.data.render.techdraw.generate_techdraw`
-- `src.data.render.render3d.generate_render3d`
-- `src.data.render.config`のpath/style contract
+- OCC HLR engine (`hlr.py`) とperspective engine (`render3d.py`) は**逐語fork**し、blackboxとして扱う。縮退・病理ケース対応が実測ベースで詰まっているため
+- 配置・DXF書出し・定数は書き直す。ここがlayer規約と今後の改修対象を持つ
+- SVG/PDF writerは落とす
 
-これらは同期処理なので、kill可能なchild processとtimeoutを設ける。CadQuery実行またはSTEP検証に失敗した場合はrenderしない。renderだけ失敗した場合は、実行・STEP検証の成功とrender failureを別statusで返す。
+`src/data/render`は`render_dataset.py`等がまだ使うので残す。2箇所に存在するのは意図的なforkであり、drift検出testは入れない（`src`側の正当な修正で壊れ、forkの意味が消えるため）。移植の等価性は手順1のgoldenとの比較で一度だけ確認する。
+
+rendererは同期処理でOCC/VTKがnative hangしうるので、`run_render.py`が`spawn` child processとtimeoutで隔離する。CadQuery実行またはSTEP検証に失敗した場合はrenderしない。renderだけ失敗した場合は、実行・STEP検証の成功とrender failureを別statusで返す。
+
+`render/`はGTの存在を知らない直線3段pipeline (`project` → `arrange` → `export_dxf`) とし、常に正準スケールで出力する。入力DXFへの位置合わせはこのpipelineの外の独立した後処理とする（Phase 8）。
 
 初期版では、再投影DXFの自動IoU閾値によるverification失敗判定を行わない。まずartifactをmodelへ返し、精度向上効果を測る。数値projection checkは後続の独立機能とする。
 
@@ -727,6 +749,9 @@ renderer本体は再実装せず、trusted側から以下を呼ぶ。
 - input画像とverification feedback画像を取り違えない
 - renderer timeoutをexecution failureと混同しない
 - feedback artifactがverification directory外へ出ない
+- 欠損理由は、そのrunが提示する予定だったartifactについてだけ出す。`feedback_render3d: none`や選択外styleの失敗理由をmodelへ渡さない
+- `front`/`top`/`right` layerが必ず存在し空でなく、geometryがその3 layer以外へ乗らない（中心マークのみlayer `10`）
+- layerごとにbboxを取得でき、それが三角法L配置の象限関係を満たす（Phase 8の位置合わせの前提条件）
 
 #### 完了条件
 
@@ -775,7 +800,8 @@ evaluatorは`src.evaluation.scoring`と`src.metrics`をimportして使い、metr
 2. access render style
 3. render feedback: `none/path/image`
 4. feedback render style
-5. DrawingIRなし/あり
+5. feedback DXFの入力DXFへの位置合わせなし/あり（Phase 8で実装した場合）
+6. DrawingIRなし/あり
 
 比較は可能な限り同一sampleのpaired resultで行う。小規模runでは平均値だけで結論を出さず、sample別の改善・悪化とfailure classを読む。
 
@@ -852,6 +878,21 @@ use_drawing_ir: false
 - agentごとに独立`SandboxWorkdir`とartifact namespaceを持つ
 - merge policyと最終選択基準を明示する
 - その段階でrun-level `BudgetPolicy`を設計する
+
+#### 再投影DXFを入力DXFへ位置合わせする
+
+rendererは常に正準スケールで出力するため、feedback DXFは入力DXFと縮尺も余白も一致しない。modelが両者を重ねて比較しにくく、Phase 8の数値projection feedbackでもIoUがスケール差に支配される。これを**完成DXF同士の独立した後処理**として`run_render.py`へ足す。`render/`配下は一行も変えない。
+
+自由度は5である。global scale 1、front↔topの余白1、front↔rightの余白1、cluster平行移動2。完成DXFへ単一の`Matrix44`を掛けると3 (s, dx, dy) にしかならず余白を調整できないため、**`front`/`top`/`right` layerごとに変換する**。layer分離がそのままalignerの取っ手になる（前提条件はPhase 5のtestで固定済み）。
+
+1. 両DXFの`front`/`top`/`right` layer bboxを読む
+2. `scale`を`gt_fw/fw`、`gt_fh/fh`、`gt_th/th`、`gt_rw/rw`のmedianとする。over-determinedなので自己較正が効く
+3. layerごとに、自身のbbox中心を原点にして`scale`倍し、GT側の対応viewのbbox中心へ平行移動する。三面を独立に動かすので余白が揃い、`scale`は共有なので形状比は保たれる
+4. layer `10`のINSERTを破棄し、変換後の円から中心マークを再生成する。`INSERT.transform`は`xscale`/`yscale`も掛けてしまい、固定2.5mmの十字まで拡大されるため
+
+比較対象がDXF同士なので、OCC抜き・DXF fixture 2つだけでtestできる。GT DXFは事前に`python src/data/render/reformat_techdraw.py --techdraw_dir data/[dataset]/techdraw`で`front`/`top`/`right`へstampしておく（in-place。stamp後の再実行は失敗する）。
+
+位置合わせでGTへ合わせると絶対スケール誤差は見えなくなるが、Phase 6の主要指標はnormalized Voxel IoU / ECCV F1なので評価には効かない。
 
 #### 数値projection feedback
 
@@ -966,7 +1007,7 @@ Phase 6  評価・アブレーション
    ↓
 Phase 7  DrawingIR
    ↓
-Phase 8  CLI backend・並列agent・数値projection
+Phase 8  CLI backend・並列agent・DXF位置合わせ・数値projection
 ```
 
 最初の実装着手点はPhase 0であり、フォルダを一括作成することではない。各phaseの完了時に、実装者がcode walkthroughを行い、次のphaseへ進む前に「何が動き、何がまだ動かないか」をREADMEへ追記する。

@@ -215,3 +215,25 @@ def test_feedback_reads_selected_render_bytes_in_requested_order(
         ("b", b"feedback-b"),
         ("a", b"feedback-a"),
     ]
+
+
+def test_feedback_manifest_rejects_an_artifact_that_is_both_present_and_failed(
+    tmp_path: Path,
+) -> None:
+    """A path and a reason are alternatives; holding both means a wiring bug."""
+    dxf = _write(tmp_path / "feedback.dxf", b"DXF")
+    png = _write(tmp_path / "feedback-a.png", b"PNG")
+
+    # Either alone is a legitimate outcome.
+    assert _feedback_manifest(tmp_path, dxf_path=dxf).dxf_error is None
+    assert _feedback_manifest(tmp_path, dxf_error="renderer failed").dxf_path is None
+
+    with pytest.raises(ValueError, match="dxf_path and dxf_error are both set"):
+        _feedback_manifest(tmp_path, dxf_path=dxf, dxf_error="renderer failed")
+
+    with pytest.raises(ValueError, match="both rendered and failed"):
+        _feedback_manifest(
+            tmp_path,
+            render3d_paths={"style-a": png},
+            render3d_errors={"style-a": "renderer failed"},
+        )

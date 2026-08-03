@@ -45,7 +45,9 @@ class FeedbackManifest:
     verification_id: str
     execution_feedback: str
     dxf_path: Path | None = None
+    dxf_error: str | None = None
     render3d_paths: Mapping[str, Path] = field(default_factory=dict)
+    render3d_errors: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         verification_id = self.verification_id.strip()
@@ -63,6 +65,7 @@ class FeedbackManifest:
         render3d_paths = MappingProxyType(
             {style: Path(path) for style, path in self.render3d_paths.items()}
         )
+        render3d_errors = MappingProxyType(dict(self.render3d_errors))
 
         # sanity check
         if dxf_path is not None:
@@ -75,10 +78,18 @@ class FeedbackManifest:
                 if not path.is_file():
                     raise FileNotFoundError(f"Not Found: {path}")
 
+        # an artifact is either present or explained, never both
+        if dxf_path is not None and self.dxf_error is not None:
+            raise ValueError(f"dxf_path and dxf_error are both set: {self.dxf_error!r}")
+        both = sorted(set(render3d_paths) & set(render3d_errors))
+        if both:
+            raise ValueError(f"styles are both rendered and failed: {both}")
+
         # re-register
         object.__setattr__(self, "verification_id", verification_id)
         object.__setattr__(self, "dxf_path", dxf_path)
         object.__setattr__(self, "render3d_paths", render3d_paths)
+        object.__setattr__(self, "render3d_errors", render3d_errors)
 
     def load_render3d(self, styles: list[str]) -> Mapping[str, bytes]:
         return {style: self.render3d_paths[style].read_bytes() for style in styles}

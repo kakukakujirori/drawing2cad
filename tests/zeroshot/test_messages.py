@@ -41,6 +41,8 @@ def _feedback_manifest(
     execution_feedback: str = "execution result",
     render_count: int = 0,
     include_dxf: bool = False,
+    dxf_error: str | None = None,
+    render3d_errors: dict[str, str] | None = None,
 ) -> FeedbackManifest:
     return FeedbackManifest(
         verification_id="verification-1",
@@ -48,6 +50,7 @@ def _feedback_manifest(
         dxf_path=(
             _write(tmp_path / "feedback.dxf", b"FEEDBACK_DXF") if include_dxf else None
         ),
+        dxf_error=dxf_error,
         render3d_paths={
             style: _write(
                 tmp_path / f"feedback-{index}.png",
@@ -55,6 +58,7 @@ def _feedback_manifest(
             )
             for index, style in enumerate(STYLES[:render_count])
         },
+        render3d_errors=render3d_errors or {},
     )
 
 
@@ -323,3 +327,49 @@ def test_access_and_feedback_style_selections_do_not_mix(
     assert "style-c" not in initial_text
     assert "style-c" in feedback_text
     assert "style-a" not in feedback_text
+
+
+def test_feedback_explains_a_missing_dxf_where_its_path_would_have_been(
+    tmp_path: Path, workdir: SandboxWorkdir
+) -> None:
+    manifest = _feedback_manifest(tmp_path, dxf_error="DegenerateDrawingError: flat")
+    message = _builder().build_feedback(manifest, workdir)
+
+    text = _text(_blocks(message))
+    assert "[Projected DXF unavailable: DegenerateDrawingError: flat]" in text
+    assert "[Projected DXF path" not in text
+
+
+def test_feedback_explains_only_the_renders_it_would_have_shown(
+    tmp_path: Path, workdir: SandboxWorkdir
+) -> None:
+    """A style the run never offers cannot be acted on, so its failure is noise."""
+    manifest = _feedback_manifest(
+        tmp_path,
+        render_count=1,
+        render3d_errors={"style-b": "shown style failed", "style-c": "never offered"},
+    )
+    builder = _builder(feedback_mode="path", feedback_styles=("style-a", "style-b"))
+
+    text = _text(_blocks(builder.build_feedback(manifest, workdir)))
+
+    assert "- style-a: " in text
+    assert "- style-b: unavailable (shown style failed)" in text
+    assert "style-c" not in text
+
+
+def test_feedback_withholding_renders_also_withholds_their_reasons(
+    tmp_path: Path, workdir: SandboxWorkdir
+) -> None:
+    """With feedback_render3d="none" no render is offered, so none is explained.
+
+    The styles are still listed, so this pins the mode and not an empty list.
+    """
+    manifest = _feedback_manifest(
+        tmp_path, render3d_errors={style: "boom" for style in STYLES}
+    )
+    builder = _builder(feedback_mode="none", feedback_styles=STYLES)
+    text = _text(_blocks(builder.build_feedback(manifest, workdir)))
+
+    assert "boom" not in text
+    assert "[Projected perspective renders]" not in text

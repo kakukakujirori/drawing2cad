@@ -13,10 +13,27 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from PIL import Image
 
+from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import VerifyOutputResult
+from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import graph as graph_module
 from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
+
+
+def _renderer() -> StepRenderer:
+    """A real renderer: these graph tests never reach a verified STEP, so it is
+    only here to satisfy the wiring, not to render anything."""
+    return StepRenderer(timeout_s=60.0)
+
+
+def _message_builder() -> MessageBuilder:
+    return MessageBuilder(
+        access_render3d="none",
+        access_render3d_styles=(),
+        feedback_render3d="none",
+        feedback_render3d_styles=(),
+    )
 
 
 def test_graph_runs_tools_until_agent_returns_without_tool_calls() -> None:
@@ -68,6 +85,8 @@ def test_graph_runs_tools_until_agent_returns_without_tool_calls() -> None:
             model=model,
             sandbox_runner=sandbox_runner,
             sandbox_workdir=workdir,
+            renderer=_renderer(),
+            message_builder=_message_builder(),
         )
 
         result = graph.invoke(
@@ -196,6 +215,8 @@ def test_graph_repeats_verification_after_model_calls_verify_output(
             model=model,
             sandbox_runner=sandbox_runner,
             sandbox_workdir=workdir,
+            renderer=_renderer(),
+            message_builder=_message_builder(),
         )
         result = graph.invoke(
             {"messages": [HumanMessage(content="Verify the candidate")]}
@@ -270,6 +291,8 @@ def test_graph_returns_image_results_to_agent(tmp_path: Path) -> None:
             model=model,
             sandbox_runner=sandbox_runner,
             sandbox_workdir=workdir,
+            renderer=_renderer(),
+            message_builder=_message_builder(),
         )
         result = graph.invoke(
             {"messages": [HumanMessage(content="Inspect /work/view.png")]}

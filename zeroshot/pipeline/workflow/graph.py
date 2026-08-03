@@ -9,13 +9,14 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
+from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import (
     create_load_image_tool,
     create_run_shell_tool,
     create_verify_output_tool,
 )
-from zeroshot.pipeline.verification import CadQueryExecutor
+from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
 from zeroshot.pipeline.workflow.state import ReconstructionState
 
 
@@ -23,6 +24,8 @@ def create_reconstruction_graph(
     model: BaseChatModel,
     sandbox_runner: SandboxRunner,
     sandbox_workdir: SandboxWorkdir,
+    renderer: StepRenderer,
+    message_builder: MessageBuilder,
     output_filename: str = "model.py",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     checkpointer: BaseCheckpointSaver[Any] | None = None,
@@ -50,7 +53,8 @@ def create_reconstruction_graph(
         create_verify_output_tool(
             executor=executor,
             workdir=sandbox_workdir,
-            render_views=False,
+            renderer=renderer,
+            message_builder=message_builder,
             source_filename=output_filename,
             output_dirname=verification_dirname,
             serialize_output=True,
@@ -60,10 +64,14 @@ def create_reconstruction_graph(
     tool_node = ToolNode(tools, handle_tool_errors=ValueError)
 
     # Postprocess node
+    # The final attempt is rendered like any other, so an evaluation pass does
+    # not have to special-case the last verification directory.  It returns the
+    # report itself, so it needs no MessageBuilder: nothing here reaches a model.
     verify_final_tool = create_verify_output_tool(
         executor=executor,
         workdir=sandbox_workdir,
-        render_views=False,
+        renderer=renderer,
+        message_builder=None,
         source_filename=output_filename,
         output_dirname=verification_dirname,
         serialize_output=False,
@@ -109,11 +117,20 @@ if __name__ == "__main__":
         default_timeout_s=10,
     )
 
+    message_builder = MessageBuilder(
+        access_render3d="path",
+        access_render3d_styles=("hlg_perspective",),
+        feedback_render3d="path",
+        feedback_render3d_styles=("hlg_perspective",),
+    )
+
     with SandboxWorkdir() as workdir:
         graph = create_reconstruction_graph(
             model=preview_model,
             sandbox_runner=sandbox_runner,
             sandbox_workdir=workdir,
+            renderer=StepRenderer(timeout_s=60),
+            message_builder=message_builder,
         )
 
         png_data = graph.get_graph().draw_mermaid_png()

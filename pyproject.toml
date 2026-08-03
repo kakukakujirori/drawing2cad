@@ -1,5 +1,6 @@
 [tool.ruff]
 target-version = "py312"
+extend-exclude = ["outputs"]
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["pathlib.PurePosixPath"]

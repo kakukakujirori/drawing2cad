@@ -10,6 +10,7 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
+from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import ReconstructionState
 
 
@@ -18,6 +19,7 @@ def run(config: DictConfig) -> ReconstructionState:
     message_builder = instantiate(config.message_builder)
     model = instantiate(config.model)
     console_reporter = instantiate(config.console)
+    renderer = instantiate(config.renderer) or StepRenderer()
 
     sandbox_runner = SandboxRunner(
         python_executable=Path(
@@ -33,6 +35,7 @@ def run(config: DictConfig) -> ReconstructionState:
         message_builder=message_builder,
         sandbox_runner=sandbox_runner,
         artifact_root=Path(to_absolute_path(config.artifact_root)),
+        renderer=renderer,
         console_reporter=console_reporter,
     )
 

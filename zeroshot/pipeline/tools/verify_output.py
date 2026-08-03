@@ -1,15 +1,24 @@
+import json
 from dataclasses import asdict, dataclass, replace
 from inspect import cleandoc
 from pathlib import Path, PurePosixPath
 from typing import Self, cast
 
+from langchain_core.messages.content import ContentBlock, create_text_block
 from langchain_core.tools import BaseTool, tool
 
+from zeroshot.pipeline.manifest import FeedbackManifest
+from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.verification.render.constants import (
+    Render3dPaths,
+    TechdrawPaths,
+)
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
 )
+from zeroshot.pipeline.verification.run_render import RenderReport, StepRenderer
 
 VerifyOutputValue: type = str | int | None
 
@@ -44,7 +53,8 @@ class VerifyOutputResult:
 def create_verify_output_tool(
     executor: CadQueryExecutor,
     workdir: SandboxWorkdir,
-    render_views: bool = False,
+    renderer: StepRenderer,
+    message_builder: MessageBuilder | None,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
     serialize_output: bool = True,
@@ -98,21 +108,28 @@ def create_verify_output_tool(
         host_verification_dir.mkdir(parents=True, exist_ok=False)
         return verification_id, host_verification_dir
 
-    def _verify(model_path: Path) -> VerifyOutputResult:
+    def _verify(model_path: Path) -> tuple[VerifyOutputResult, FeedbackManifest | None]:
+        """Verify the program and, when it yields a solid, render its views.
+
+        The manifest is returned alongside the report rather than embedded in
+        it: it carries *host* paths, which only MessageBuilder may turn into
+        something the model sees, and it is not msgpack-serialisable, so it
+        must not reach graph state.
+        """
         # file existence check
         if model_path.is_symlink():
             report = VerifyOutputResult(
                 status="REJECTED",
                 executor_error=f"{source_filename} must not be a symlink",
             )
-            return report
+            return report, None
 
         if not model_path.is_file():
             report = VerifyOutputResult(
                 status="REJECTED",
                 executor_error=f"{source_filename} was not found",
             )
-            return report
+            return report, None
 
         # prepare artifact save dir and report
         verification_id, host_verification_dir = _issue_verification_id_and_dir()
@@ -133,27 +150,54 @@ def create_verify_output_tool(
         # update report
         report = report.import_from(cq_report)
 
-        # if verification failed, return early
+        # if verification failed, return early. No STEP means nothing to draw.
         if not (report.status == "VERIFIED" and report.returncode == 0):
-            return report
+            return report, None
 
-        # render 2D techdraw
-        # TODO: IMPLEMENT
+        # render the three-view DXF and the perspective PNGs
+        render_report = _render(output_step_path, host_verification_dir)
 
-        # render perspective views
-        # TODO: IMPLEMENT
-        if render_views:
-            raise NotImplementedError("View rendering not implemented yet")
+        manifest = FeedbackManifest(
+            verification_id=verification_id,
+            execution_feedback=json.dumps(report.serialize(), indent=2),
+            dxf_path=render_report.techdraw_paths.dxf,
+            dxf_error=render_report.techdraw_errors.get("dxf"),
+            render3d_paths=render_report.render3d_paths.as_mapping(),
+            render3d_errors=render_report.render3d_errors,
+        )
+        return report, manifest
 
-        # wrap the results into FeedbackManifest
-        # TODO: IMPLEMENT
+    def _render(step_path: Path, verification_dir: Path) -> RenderReport:
+        """Render feedback artifacts into the verification directory."""
+        techdraw_paths = TechdrawPaths.from_path(
+            verification_dir / "techdraw", "output"
+        )
+        render3d_paths = Render3dPaths.from_path(
+            verification_dir / "render_3d", "output"
+        )
+        # The renderer leaves directory layout to its caller.
+        for path in (
+            *techdraw_paths.as_mapping().values(),
+            *render3d_paths.as_mapping().values(),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
 
-        return report
+        return renderer.render(step_path, techdraw_paths, render3d_paths)
+
+    def _message_blocks(
+        report: VerifyOutputResult, manifest: FeedbackManifest | None
+    ) -> list[ContentBlock]:
+        """Organize the tool result into HumanMessages."""
+        if manifest is None or message_builder is None:
+            return [create_text_block(json.dumps(report.serialize(), indent=2))]
+        return list(message_builder.build_feedback(manifest, workdir).content_blocks)
 
     @tool("verify_output", description=description)
-    def verify_output() -> VerifyOutputResult | dict[str, VerifyOutputValue]:
+    def verify_output() -> VerifyOutputResult | list[ContentBlock]:
         model_path = workdir.host_bind_dir / source_filename
-        ret = _verify(model_path)
-        return ret.serialize() if serialize_output else ret
+        report, manifest = _verify(model_path)
+        if not serialize_output:
+            return report
+        return _message_blocks(report, manifest)
 
     return verify_output

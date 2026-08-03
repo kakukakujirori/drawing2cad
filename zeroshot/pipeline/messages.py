@@ -28,10 +28,12 @@ class _SandboxManifest:
     """Files exposed to the agent in the sandbox namespace."""
 
     id: str
+    execution_feedback: str | None
     dxf_path: PurePosixPath | None
+    dxf_error: str | None
     render3d_paths: Mapping[str, PurePosixPath]
     render3d_bytes: Mapping[str, bytes]
-    execution_feedback: str | None
+    render3d_errors: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -61,7 +63,7 @@ class MessageBuilder:
 
         Tips:
         - Create temporary Python scripts and run them using the `run_shell` tool with the command `python <filename>` for quick analysis and validation.
-        - Use `ezdxf` Python library to analyze the input DXF file.
+        - Use `ezdxf` Python library to analyze the input DXF file. You can visualize it by calling the `run_shell` tool with the command `ezdxf draw <PATH_TO_DXF> -o <OUTPUT_PNG>` and `load_image` tool to view it.
         - Use the `verify_output` results to debug and refine the {output_path} script.
         - Review the past `verify_output` results under {verification_dir} if necessary.
         """.strip()
@@ -150,18 +152,17 @@ class MessageBuilder:
             if isinstance(manifest, InputManifest)
             else manifest.verification_id
         )
-        execution_feedback = (
-            manifest.execution_feedback
-            if isinstance(manifest, FeedbackManifest)
-            else None
-        )
-
+        # Only a verification has anything to explain; an input manifest is
+        # staged from the dataset, so its artifacts are always present.
+        is_feedback = isinstance(manifest, FeedbackManifest)
         return _SandboxManifest(
             id=manifest_id,
+            execution_feedback=manifest.execution_feedback if is_feedback else None,
             dxf_path=translated_dxf_path,
+            dxf_error=manifest.dxf_error if is_feedback else None,
             render3d_paths=translated_render3d_paths,
             render3d_bytes=translated_render3d_bytes,
-            execution_feedback=execution_feedback,
+            render3d_errors=manifest.render3d_errors if is_feedback else {},
         )
 
     def build_initial(
@@ -200,11 +201,11 @@ class MessageBuilder:
 
         blocks.extend(
             self._render_blocks(
+                label="[Input perspective renders]",
                 mode=self.access_render3d,
                 render3d_styles=self.access_render3d_styles,
                 render3d_paths=sandbox_manifest.render3d_paths,
                 render3d_bytes=sandbox_manifest.render3d_bytes,
-                label="[Input perspective renders]",
             )
         )
 
@@ -230,20 +231,29 @@ class MessageBuilder:
             )
         ]
 
+        # The drawing is offered regardless of feedback_render3d, so its
+        # failure is always worth explaining.
         if sandbox_manifest.dxf_path is not None:
             blocks.append(
                 create_text_block(
                     f"[Projected DXF path: {sandbox_manifest.dxf_path}]\n"
                 )
             )
+        elif sandbox_manifest.dxf_error is not None:
+            blocks.append(
+                create_text_block(
+                    f"[Projected DXF unavailable: {sandbox_manifest.dxf_error}]\n"
+                )
+            )
 
         blocks.extend(
             self._render_blocks(
+                label="[Projected perspective renders]",
                 mode=self.feedback_render3d,
                 render3d_styles=self.feedback_render3d_styles,
                 render3d_paths=sandbox_manifest.render3d_paths,
                 render3d_bytes=sandbox_manifest.render3d_bytes,
-                label="[Projected perspective renders]",
+                render3d_errors=sandbox_manifest.render3d_errors,
             )
         )
 
@@ -264,38 +274,42 @@ class MessageBuilder:
 
     @staticmethod
     def _render_blocks(
+        label: str,
         mode: Literal["none", "path", "image"],
         render3d_styles: tuple[str, ...],
         render3d_paths: Mapping[str, PurePosixPath],
         render3d_bytes: Mapping[str, bytes],
-        label: str,
+        render3d_errors: Mapping[str, str] = MappingProxyType({}),
     ) -> list[ContentBlock]:
 
         available_styles = [s for s in render3d_styles if s in render3d_paths]
+        failed_styles = [
+            s
+            for s in render3d_styles
+            if s not in render3d_paths and s in render3d_errors
+        ]
 
-        if mode == "none" or not available_styles:
+        if mode == "none" or not (available_styles or failed_styles):
             return []
 
-        elif mode == "path":
+        available = [
+            f"- {style}: {render3d_paths[style]}" for style in available_styles
+        ]
+        unavailable = [
+            f"- {style}: unavailable ({render3d_errors[style]})"
+            for style in failed_styles
+        ]
+
+        if mode == "path":
             return [
-                create_text_block(
-                    "\n".join(
-                        [
-                            f"{label}",
-                            "\n".join(
-                                f"- {style}: {render3d_paths[style]}"
-                                for style in available_styles
-                            ),
-                            "",
-                        ]
-                    )
-                )
+                create_text_block("\n".join([f"{label}", *available, *unavailable, ""]))
             ]
 
         elif mode == "image":
-            blocks: list[ContentBlock] = [
-                create_text_block(f"{label}\nSee the attached images.\n")
-            ]
+            heading = (
+                f"{label}\nSee the attached images.\n" if available_styles else label
+            )
+            blocks: list[ContentBlock] = [create_text_block(heading)]
             for style in available_styles:
                 blocks.append(create_text_block(f"- {style}: {render3d_paths[style]}"))
                 blocks.append(
@@ -304,6 +318,8 @@ class MessageBuilder:
                         mime_type="image/png",
                     )
                 )
+            if unavailable:
+                blocks.append(create_text_block("\n".join([*unavailable, ""])))
             return blocks
 
         else:

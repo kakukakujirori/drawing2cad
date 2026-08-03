@@ -17,6 +17,7 @@ from zeroshot.pipeline.event_logging import (
 from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import (
     ReconstructionState,
     create_reconstruction_graph,
@@ -30,6 +31,7 @@ class PipelineRunner:
         message_builder: MessageBuilder,
         sandbox_runner: SandboxRunner,
         artifact_root: str | Path,
+        renderer: StepRenderer,
         output_filename: str = "model.py",
         verification_dirname: PurePosixPath = PurePosixPath("attempts"),
         console_reporter: ConsoleReporter | None = None,
@@ -37,6 +39,7 @@ class PipelineRunner:
         self.model = model
         self.message_builder = message_builder
         self.sandbox_runner = sandbox_runner
+        self.renderer = renderer
         self.artifact_root = Path(artifact_root)
         self.output_filename = output_filename
         self.verification_dirname = verification_dirname
@@ -96,6 +99,8 @@ class PipelineRunner:
                 model=self.model,
                 sandbox_runner=self.sandbox_runner,
                 sandbox_workdir=workdir,
+                renderer=self.renderer,
+                message_builder=self.message_builder,
                 output_filename=self.output_filename,
                 verification_dirname=self.verification_dirname,
                 checkpointer=checkpointer,

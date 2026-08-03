@@ -12,7 +12,8 @@ inter-view gaps in arrange.py, the center-mark dimensions in export_dxf.py.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 # Sheet: A4 landscape.  DXF model space is laid out in sheet-mm.  Everything
@@ -35,8 +36,26 @@ SHEET_MARGIN_MM = 10.0
 RENDER3D_SIZE = (1400, 1000)
 
 
+class _OutputPaths:
+    """Shared view over a DTO whose fields are one optional output path each."""
+
+    def as_mapping(self) -> Mapping[str, Path]:
+        """Field name -> path, dropping the fields that hold no path.
+
+        Consumers key these artifacts by name rather than by field, because
+        which ones a run produces is decided at runtime.  A ``None`` field
+        means "not produced", so it is absent here rather than present with an
+        empty value -- callers can iterate the result without re-checking.
+        """
+        return {
+            path_field.name: path
+            for path_field in fields(self)  # type: ignore[arg-type]
+            if (path := getattr(self, path_field.name)) is not None
+        }
+
+
 @dataclass(frozen=True)
-class TechdrawPaths:
+class TechdrawPaths(_OutputPaths):
     """One output file per technical-drawing format.
 
     Mirrors the dataset contract (data/test_vlm/techdraw/{svg,dxf,pdf}).  This
@@ -59,7 +78,7 @@ class TechdrawPaths:
 
 
 @dataclass(frozen=True)
-class Render3dPaths:
+class Render3dPaths(_OutputPaths):
     """One output PNG per perspective style.
 
     Field name == style name == subdirectory name.  These are the style names

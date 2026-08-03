@@ -23,7 +23,7 @@ from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
-from zeroshot.pipeline.verification import CadQueryExecutor
+from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
 
 VALID_BOX_SOURCE = """\
 import cadquery as cq
@@ -133,6 +133,10 @@ def _sandbox_runner() -> SandboxRunner:
     )
 
 
+def _renderer() -> StepRenderer:
+    return StepRenderer(timeout_s=120.0)
+
+
 def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     tmp_path: Path,
 ) -> None:
@@ -211,6 +215,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
             default_timeout_s=10,
         ),
         artifact_root=tmp_path / "artifacts",
+        renderer=_renderer(),
     )
 
     result = runner.run_sample(manifest)
@@ -359,6 +364,7 @@ def test_run_sample_preserves_workdir_when_graph_fails(tmp_path: Path) -> None:
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
+        renderer=_renderer(),
     )
 
     with pytest.raises(AssertionError, match="ran out of responses"):
@@ -409,6 +415,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
+        renderer=_renderer(),
         console_reporter=ConsoleReporter(
             Console(
                 file=console_output,
@@ -502,6 +509,7 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
+        renderer=_renderer(),
     )
 
     result = runner.run_sample(manifest)
@@ -509,8 +517,11 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
     intermediate_result = result["messages"][5]
     assert isinstance(intermediate_result, ToolMessage)
     assert intermediate_result.tool_call_id == "call-verify-invalid-model"
-    assert isinstance(intermediate_result.content, str)
-    intermediate_report = json.loads(intermediate_result.content)
+    # verify_output answers in content blocks, so that a verified attempt can
+    # hand its rendered views back through the same tool message.
+    assert isinstance(intermediate_result.content, list)
+    (block,) = intermediate_result.content
+    intermediate_report = json.loads(block["text"])
     assert intermediate_report["status"] == "REJECTED"
     assert intermediate_report["verification_id"] == "000"
 
