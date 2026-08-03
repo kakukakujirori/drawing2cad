@@ -36,6 +36,7 @@ class PipelineRunner:
         renderer: StepRenderer,
         output_filename: str = "model.py",
         verification_dirname: PurePosixPath = PurePosixPath("attempts"),
+        max_agent_turns: int = 30,
         console_reporter: ConsoleReporter | None = None,
     ) -> None:
         self.model = model
@@ -45,6 +46,7 @@ class PipelineRunner:
         self.artifact_root = Path(artifact_root)
         self.output_filename = output_filename
         self.verification_dirname = verification_dirname
+        self.max_agent_turns = max_agent_turns
         self.console_reporter = console_reporter
 
     def run_sample(self, manifest: InputManifest) -> ReconstructionState:
@@ -105,6 +107,7 @@ class PipelineRunner:
                 message_builder=self.message_builder,
                 output_filename=self.output_filename,
                 verification_dirname=self.verification_dirname,
+                max_agent_turns=self.max_agent_turns,
                 checkpointer=checkpointer,
             )
 

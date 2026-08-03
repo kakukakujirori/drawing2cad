@@ -22,6 +22,7 @@ def _unreachable_runner(**kwargs: Any) -> Any:
 def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
     values: dict[str, Any] = {
         "artifact_root": str(tmp_path / "artifacts"),
+        "max_agent_turns": 30,
         "console": None,
         "renderer": {
             "_target_": "zeroshot.pipeline.verification.StepRenderer",
@@ -86,6 +87,7 @@ def test_run_composes_dependencies_and_manifest(
     config = OmegaConf.create(
         {
             "artifact_root": str(artifact_root),
+            "max_agent_turns": 30,
             "console": None,
             "message_builder": {
                 "_target_": "zeroshot.pipeline.messages.MessageBuilder",

@@ -6,6 +6,11 @@ defaults:
 
 artifact_root: outputs/zeroshot
 
+# Agent turns before the workflow stops asking and runs the final verification.
+# Successful runs so far take 2-4; this is a ceiling, not a target. Revise it
+# once a multi-sample run reports how often it is reached.
+max_agent_turns: 30
+
 console:
   _target_: zeroshot.pipeline.event_logging.ConsoleReporter
 

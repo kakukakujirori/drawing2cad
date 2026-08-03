@@ -17,7 +17,7 @@ from zeroshot.pipeline.tools import (
     create_verify_output_tool,
 )
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
-from zeroshot.pipeline.workflow.state import ReconstructionState
+from zeroshot.pipeline.workflow.state import ReconstructionState, StopReason
 
 
 def create_reconstruction_graph(
@@ -28,13 +28,17 @@ def create_reconstruction_graph(
     message_builder: MessageBuilder,
     output_filename: str = "model.py",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
+    max_agent_turns: int = 30,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ):
+    if max_agent_turns < 1:
+        raise ValueError("max_agent_turns must be at least 1")
+
     def should_continue(state: ReconstructionState):
         last_message = state["messages"][-1]
         if not isinstance(last_message, AIMessage):
             raise TypeError("agent node must append an AIMessage before routing")
-        if last_message.tool_calls:
+        if last_message.tool_calls and state["agent_turns"] < max_agent_turns:
             return "tools"
         return "verify_final"
 
@@ -43,7 +47,10 @@ def create_reconstruction_graph(
         agent: Runnable[LanguageModelInput, AIMessage],
     ):
         response = agent.invoke(state["messages"])
-        return {"messages": [response]}
+        return {
+            "messages": [response],
+            "agent_turns": state.get("agent_turns", 0) + 1,
+        }
 
     # Create and bind tools
     executor = CadQueryExecutor(sandbox_runner=sandbox_runner)
@@ -78,8 +85,14 @@ def create_reconstruction_graph(
     )
 
     def verify_final(state: ReconstructionState):
+        last_message = state["messages"][-1]
+        stop_reason = (
+            StopReason.BUDGET_EXHAUSTED
+            if isinstance(last_message, AIMessage) and last_message.tool_calls
+            else StopReason.COMPLETED
+        )
         report = verify_final_tool.invoke({})
-        return {"last_verification": report}
+        return {"last_verification": report, "stop_reason": stop_reason}
 
     # Construct a graph
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]

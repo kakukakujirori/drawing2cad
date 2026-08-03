@@ -759,30 +759,83 @@ rendererは同期処理でOCC/VTKがnative hangしうるので、`run_render.py`
 
 ### Phase 6: 評価と段階的アブレーション
 
+評価基盤の**6a**と、アブレーションの**6b**へ分ける。アブレーションは測定器であり、run間分散が効果量より大きければ何も言えない。6aで基準線の分散を測るまで6bへ進まない。
+
 #### 推論と評価の分離
 
-推論runを完了・closeした後、別CLIでGT評価する。
+推論runを完了・closeした後、GT評価する。
 
 ```bash
-python -m zeroshot.pipeline.evaluation.score_run \
-  --run-dir <run_dir> \
-  --target-dir <target_dir>
+python -m zeroshot.evaluation.run_scoring \
+  --run-dir outputs/<run>/<sample_id> \
+  --target-step data/test_vlm/target_step/<sample_id>.step
 ```
 
-evaluatorは`src.evaluation.scoring`と`src.metrics`をimportして使い、metric実装をコピーしない。
+計画当初の`zeroshot.pipeline.evaluation.score_run`と`--target-dir`は採らない。パイプラインが1 sampleしか通さない段階で集約前提のdirectory引数を持つ意味がないため、1 sample特化とし、集約は必要になった時点で足す。
 
-#### 最初に報告する指標
+`run_pipeline.py`も同じ`score_run()`を呼ぶ。呼ぶのは`run()`が返りsampleのartifactが閉じた後で、`main()`だけがこの継ぎ目を持つ。`sample.target_step_path: null`で採点を止める。GT pathは`sample`配下に置く。`evaluation`側へ分けるとsample切替時にtargetを更新し忘れ、別sampleのGTで静かに採点する事故が起きるため。
 
-- prediction coverage
-- code execution success
-- valid single-solid率
-- normalized Voxel IoU
-- normalized ECCV surface/edge/vertex/topology F1
-- BoundingBox error
-- unnormalized metricは参考値として別欄
-- model call数、token、CAD実行数、wall time
+評価器は`zeroshot/pipeline/`の外の`zeroshot/evaluation/`へ置く。`InputManifest`はtarget fieldを持たず、`PipelineRunner`はGT pathを知らないので、「推論プロセスはGTを開かない」がimport graphの性質として残る。
 
-自己feedbackで使う再投影DXFやrenderは、GT metricではない。自己整合性が高くても正しい3D形状とは限らないため、別欄に分ける。
+`src.evaluation.scoring`と`src.metrics`をimportする当初案は採らない。`src`側はSFT学習向けのregistry、`score`/`reduce`分割、mesh artifact cacheを持ち、その大半はオフライン単発採点に不要である。zeroshot treeを自己完結させる方針はPhase 5のrenderer forkと同じとする。
+
+ただしECCVの数値核は**逐語fork**し`metrics/eccv_components/`へ隔離する。マッチング規則、絶対距離しきい値、サンプリング密度、entity上限、seedがメトリクスの定義そのものであり、整理の過程で数値が静かに変わるのが最悪であるため。Phase 5の`_hlr.py`と同じ扱いとする。移植の等価性は`src.metrics.ECCVChallengeMetric`との一度きりのA/Bで確認した（全17列ビット一致）。恒久testは置かない。`data/`と`outputs/`はgit管理外であり、testsuiteを非追跡データへ依存させないため。
+
+#### 報告する指標
+
+`StepScorer.families()`が測定対象を持つ唯一の場所とし、family名が返す全列の接頭辞になる。列の接頭辞は「何を測ったか」ではなく「どのfamilyが出したか」を表す。
+
+- `eccv_*`: normalized surface/edge/vertex/topology F1、precision/recall、chamfer 3種、entity数
+- `voxel_*`: normalized Voxel IoU
+
+voxel IoUはECCVに含まれない独立familyである。ECCVはB-Rep entityを照合するため、体積的に正しくても面分割が異なる立体を0と読む。これはmodelがCadQueryを書く以上頻発する失敗であり、voxel IoUだけが「形が違う」と「形は合うがB-Rep分解が違う」を分離する。
+
+次は当初案から**落とす**。
+
+- **BoundingBox error**: `data/test_vlm/target_step`のGTはECCV正規化済で最長辺が1.774〜1.800である。GT側が寸法を持たないため、絶対スケール誤差は原理的に測定不能である
+- **unnormalized metricの別欄**: 絶対しきい値0.1に対しmmスケールの部品は恒常的に0を返し、情報を持たない
+- **予測寸法の診断列**: 比較対象が存在しない。スケールの健全性を見るなら「予測寸法 vs 入力DXFの正面図bbox」であり、view別bbox抽出が前提になるPhase 8の位置合わせと同じ場所に置く
+
+次は6aの残作業であり未実装である。
+
+- prediction coverage、code execution success、valid single-solid率（複数sampleの集約が前提）
+- model call数、token、CAD実行数、wall time（材料は`events.jsonl`に揃っている。`usage_metadata`、`caller`別のtool call、`run_completed.duration_ms`）
+- 自己feedbackの再投影DXFやrenderは、GT metricではないので別欄に分ける
+
+#### datasetについて判明した事実
+
+`data/test_vlm/target_step`のGTはECCV challengeの正規化形式で配布されており、20件すべて最長辺が1.774〜1.800である。したがって`reference_extent: 1.8`はこのdatasetでは本来no-opであり、絶対スケールはGT側にも存在しない。
+
+`normalize_to_gt_bbox`は公式既定（off）から**意図的に乖離**させ、onを既定とする。図面が寸法注記を持たない以上、offでは形状が正しい予測が0点になるため。
+
+#### `reference_frame`のbbox欠陥（修正済）
+
+`brepbndlib.Add`は三角形分割前の形状に対し、B-spline曲面を制御点の凸包で囲む保守的な上界を返す。`reference_frame`はメッシュ化前にこれを呼んでいたため、20件中3件で実寸を過大評価していた（006482で8.0775対1.774、4.55倍）。結果としてGT側のframeが縮み、絶対しきい値0.1が相対的に巨大化して、**無関係な2部品がsurface F1 0.8273を返していた**。甘い側の誤りである。
+
+`brepbndlib.AddOptimal`へ変更して修正した。修正後は0.0482となり、`reference_extent=None`で得られる妥当値と一致する。影響のない17件は数値不変である。`reference_extent=None`は回避策にならない（mmスケールの予測が400万サンプル上限に触れる）。
+
+同じ欠陥は`src/metrics/eccv/_step_brep.py`にも存在したため同一の修正を入れた。B-splineを含むdatasetで算出した既存のSFT validation値も同様に甘い方向へ振れていた可能性がある。
+
+#### 6aの残作業
+
+1. agent の停止条件。Phase 4でQwenが自発停止せず手動停止した。これが無いと複数sample runが終わらず、wall timeとtokenが非有界になりcost比較が成立しない
+2. 複数sample driver。`run_pipeline.py`は現在`config.sample.sample_id`の1件固定である
+3. `run_manifest.json`: sample ID list、model、sampling、resolved config、code version
+4. `events.jsonl`からのcost抽出
+5. 集約（coverage、execution success、valid率、metric平均、cost）
+6. sample別のpaired diff レポート
+
+#### 必須test
+
+- `StepScorer`の全status: `OK`、`PARTIAL`、`FAILED`、`TIMEOUT`、`NO_PREDICTION`
+- family単独失敗が他familyの列を巻き添えにしない
+- 全列がそのfamily名の接頭辞を持つ
+- `latest_verified_step`が最大IDを選び、`last_only`の既定がCLIとAPIで一致する
+- voxel IoUが自己同一で厳密に1.0、10倍スケールでも不変
+- ECCVが同一seedで再現する
+- `zeroshot/pipeline/`配下が`zeroshot.evaluation`と`target_step`を含まない
+- `InputManifest`が余分なfieldを拒む
+- 採点fixtureはcadqueryでその場に生成し、`data/`と`outputs/`へ依存させない
 
 #### データ運用
 
@@ -791,6 +844,12 @@ evaluatorは`src.evaluation.scoring`と`src.metrics`をimportして使い、metr
 - failed/missing predictionを集計から落とさない
 - infra errorとmodel reconstruction failureを分ける
 - sample ID list、model、sampling、config、code versionをrun manifestへ保存する
+
+全体で20 IDしかないため、debug 3件 / locked 17件を目安とする。n=17は大きい効果しか検出できず、これも6bを後ろへ置く理由になる。
+
+#### 6bへ進む条件
+
+同一configを複数回まわし、完走率が安定していること、および`eccv_summary`のrun間標準偏差が検出したい効果量より十分小さいこと。同程度なら結論が出ないので、先にデータを増やすか反復数を上げる。
 
 #### アブレーション順
 
@@ -928,7 +987,9 @@ model主導の中間検証とworkflow主導の最終検証は同じ`attempts/`�
 
 `workspace/`のうち`attempts/`以外はmodelが自由に変更できるscratchのrun終了時snapshotであり、検証済みartifactとして扱わない。`attempts/`はhost側がdirectoryと内容を作成し、sandboxからread-onlyにする。`events.jsonl`と`checkpoints.sqlite`はmodelから書き換えられないsample artifact rootへ保存する。
 
-`run_manifest.json`、`run_summary.json`、`resolved_config.yaml`、集約用artifact manifestなどのrun全体の出力は、複数sampleを集約して評価するPhase 6で追加する。Phase 4の一sample live runではsample単位の出力contractを変えない。
+Phase 6でsample artifact rootへ`score.json`が加わる。`sample.target_step_path`が設定されている場合に、runが閉じた後の採点結果を、それを生んだscorer設定（threshold、seed、`last_only`）とともに記録する。GTを読む唯一のsample単位出力であり、`workspace/`の外に置く。
+
+`run_manifest.json`、`run_summary.json`、`resolved_config.yaml`、集約用artifact manifestなどのrun全体の出力は、複数sampleを集約して評価する6aで追加する。Phase 4の一sample live runではsample単位の出力contractを変えない。
 
 ## 10. Test方針
 
@@ -948,6 +1009,7 @@ model主導の中間検証とworkflow主導の最終検証は同じ`attempts/`�
 - real CadQuery boxの隔離実行
 - STEPからDXF/render生成
 - scorerによるGT self-checkとinvalid prediction
+- 採点fixtureはcadqueryでその場に生成する。`data/`と`outputs/`はgit管理外なので、testsuiteを非追跡データへ依存させない
 
 ### Security / leakage test
 

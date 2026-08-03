@@ -17,6 +17,7 @@ from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.verification import StepRenderer
+from zeroshot.pipeline.workflow import StopReason
 from zeroshot.pipeline.workflow import graph as graph_module
 from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
 
@@ -315,3 +316,84 @@ def test_graph_returns_image_results_to_agent(tmp_path: Path) -> None:
     assert image_block["mime_type"] == "image/png"
     assert base64.b64decode(image_block["base64"]) == expected_image
     assert result["last_verification"].status == "REJECTED"
+
+
+def _relentless_agent() -> BaseChatModel:
+    """An agent that always asks for another tool call and never finishes."""
+
+    turns = {"n": 0}
+
+    def call(_: LanguageModelInput) -> AIMessage:
+        turns["n"] += 1
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "run_shell",
+                    "args": {"command": "true"},
+                    "id": f"call-{turns['n']}",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+    model_mock = Mock(spec=BaseChatModel)
+    model_mock.bind_tools.return_value = RunnableLambda(call)
+    return cast(BaseChatModel, model_mock)
+
+
+def _graph_with_budget(workdir: SandboxWorkdir, model: BaseChatModel, budget: int):
+    return create_reconstruction_graph(
+        model=model,
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable), default_timeout_s=10
+        ),
+        sandbox_workdir=workdir,
+        renderer=_renderer(),
+        message_builder=_message_builder(),
+        max_agent_turns=budget,
+    )
+
+
+def test_an_exhausted_budget_still_submits() -> None:
+    """LangGraph's own ceiling raises, which loses the run's final verification.
+
+    The budget has to route to `verify_final` instead, so a model that never
+    declares itself finished still produces a submission.
+    """
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph_with_budget(workdir, _relentless_agent(), budget=3)
+        result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["agent_turns"] == 3
+    assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+    assert result["last_verification"] is not None
+
+
+def test_a_finished_agent_is_not_recorded_as_cut_off() -> None:
+    responses: Iterator[AIMessage] = iter([AIMessage(content="done")])
+    model_mock = Mock(spec=BaseChatModel)
+    model_mock.bind_tools.return_value = RunnableLambda(lambda _: next(responses))
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph_with_budget(workdir, cast(BaseChatModel, model_mock), budget=3)
+        result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["agent_turns"] == 1
+    assert result["stop_reason"] is StopReason.COMPLETED
+
+
+def test_the_budget_is_spent_on_tool_calls_not_super_steps() -> None:
+    """The unit is agent turns, so adding a graph node cannot change it."""
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph_with_budget(workdir, _relentless_agent(), budget=7)
+        result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["agent_turns"] == 7
+
+
+def test_a_budget_below_one_is_refused() -> None:
+    with SandboxWorkdir() as workdir, pytest.raises(ValueError):
+        _graph_with_budget(workdir, _relentless_agent(), budget=0)

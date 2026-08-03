@@ -38,6 +38,7 @@ def run(config: DictConfig) -> ReconstructionState:
         sandbox_runner=sandbox_runner,
         artifact_root=Path(to_absolute_path(config.artifact_root)),
         renderer=renderer,
+        max_agent_turns=config.max_agent_turns,
         console_reporter=console_reporter,
     )
 
