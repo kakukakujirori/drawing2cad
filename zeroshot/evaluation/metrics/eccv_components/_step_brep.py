@@ -24,7 +24,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 # Meshing parameters for STEP triangulation (official values).
 STEP_LINEAR_DEFLECTION = 0.01
 STEP_ANGULAR_DEFLECTION = 0.1
@@ -143,7 +142,7 @@ def _sample_edge_points(edge, *, scale: float = 1.0) -> np.ndarray | None:
     try:
         curve = BRepAdaptor_Curve(edge)
         length = GCPnts_AbscissaPoint.Length(curve)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     if not np.isfinite(length) or length <= 0:
         return None

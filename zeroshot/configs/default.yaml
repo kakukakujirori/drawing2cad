@@ -32,9 +32,23 @@ sandbox_runner:
   max_stdout_bytes: 1048576
   max_stderr_bytes: 1048576
 
+# How to score, not what to score: the target lives with the sample it belongs
+# to, so switching samples cannot leave a stale target behind.
+evaluation:
+  last_only: true
+  scorer:
+    _target_: zeroshot.evaluation.run_scoring.StepScorer
+    timeout_s: 600.0
+    f1_threshold: 0.1
+    normalize_to_gt_bbox: true
+    reference_extent: 1.8
+    voxel_resolution: 64
+    seed: 0
+
 sample:
   sample_id: "000364"
   dxf_path: data/test_vlm/techdraw/dxf/000364.dxf
+  target_step_path: data/test_vlm/target_step/000364.step
   render3d_paths:
     hlg_perspective: data/test_vlm/render_3d/hlg_perspective/000364.png
     hlg_translucent_faces_perspective: data/test_vlm/render_3d/hlg_translucent_faces_perspective/000364.png

@@ -25,6 +25,8 @@ from zeroshot.pipeline.workflow import (
 
 
 class PipelineRunner:
+    WORKSPACE_DIRNAME = "workspace"
+
     def __init__(
         self,
         model: BaseChatModel,
@@ -70,7 +72,7 @@ class PipelineRunner:
                 )
 
             # instantiate sandbox directly in the persistent sample workspace
-            workspace_path = sample_artifact_root / "workspace"
+            workspace_path = sample_artifact_root / self.WORKSPACE_DIRNAME
             workspace_path.mkdir()
             workdir = stack.enter_context(SandboxWorkdir(host_bind_dir=workspace_path))
 

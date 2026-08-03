@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import hydra
@@ -7,6 +8,7 @@ from omegaconf import DictConfig
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
+from zeroshot.evaluation.run_scoring import score_run
 from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
@@ -51,9 +53,28 @@ def run(config: DictConfig) -> ReconstructionState:
     return runner.run_sample(manifest)
 
 
+def score(config: DictConfig) -> None:
+    """Score the finished run against the ground truth.
+
+    Runs only after `run` has returned and the sample's artifacts are closed,
+    and is the one place in the pipeline entrypoint that touches the target.
+    """
+    run_dir = Path(to_absolute_path(config.artifact_root)) / config.sample.sample_id
+    document = score_run(
+        run_dir=run_dir,
+        target_step=Path(to_absolute_path(config.sample.target_step_path)),
+        scorer=instantiate(config.evaluation.scorer),
+        last_only=config.evaluation.last_only,
+    )
+    (run_dir / "score.json").write_text(json.dumps(document, indent=2), "utf-8")
+
+
 @hydra.main(version_base="1.3", config_path="configs", config_name="default")
 def main(config: DictConfig) -> None:
     result = run(config)
+
+    if config.sample.target_step_path is not None:
+        score(config)
 
     report = result["last_verification"]
     if report.status != "VERIFIED":
