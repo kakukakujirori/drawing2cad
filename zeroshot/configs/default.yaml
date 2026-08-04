@@ -6,6 +6,21 @@ defaults:
 
 artifact_root: outputs/zeroshot
 
+# Hydra writes its resolved config, overrides and job log beside the sample's
+# artifacts instead of into a separate dated tree, so a sample directory says
+# what produced it. Single runs and `-m` sweeps land in the same layout.
+hydra:
+  run:
+    dir: ${artifact_root}/${sample.sample_id}
+  sweep:
+    dir: ${artifact_root}
+    subdir: ${sample.sample_id}
+
+# `skip` passes over samples whose events.jsonl reached `run_completed`, which
+# makes re-issuing a sweep resume it. An interrupted sample always fails
+# instead: skipping it would report a sweep as done with holes in it.
+on_existing: fail
+
 # Agent turns before the workflow stops asking and runs the final verification.
 # Successful runs so far take 2-4; this is a ceiling, not a target. Revise it
 # once a multi-sample run reports how often it is reached.

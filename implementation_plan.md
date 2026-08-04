@@ -816,14 +816,30 @@ voxel IoUはECCVに含まれない独立familyである。ECCVはB-Rep entityを
 
 同じ欠陥は`src/metrics/eccv/_step_brep.py`にも存在したため同一の修正を入れた。B-splineを含むdatasetで算出した既存のSFT validation値も同様に甘い方向へ振れていた可能性がある。
 
+#### run単位の実行と再開（実装済）
+
+停止条件は`max_agent_turns`（既定30）とする。wall clock上限は採らない。上限に達したかがtoken数と対応せず、cost比較の軸にならないためである。budget切れは`StopReason.BUDGET_EXHAUSTED`として`verify_final`が記録し、自発停止と区別できる。LangGraphの`recursion_limit`は既定10007であり、実質無制限なので停止条件にならない。
+
+複数sample driverは専用scriptを持たない。全入力pathを`${sample.sample_id}`から導出させ、sweepは`sample.sample_id`だけをoverrideする。
+
+```bash
+python -m zeroshot.run_pipeline -m artifact_root=outputs/baseline_luna \
+  sample.sample_id=000364,000405,000775
+```
+
+run単位の分離は`artifact_root`が担う。Hydraのjob出力もそこへ向ける（`hydra.run.dir`、`hydra.sweep.dir`/`subdir`）。単一runと`-m`が同一layoutへ収束し、sample directoryが自分を生んだresolved configとoverrideをdirectory内に持つ。Hydra既定の日付tree は`artifact_root`への逆リンクを持たず、artifactから設定を辿れないため採らない。
+
+`run_manifest.json`はrun直下に置き、Hydraが書けないものだけを持つ。すなわちcode version（git commitとdirty）と、それが生成したsample IDの一覧である。resolved configとsamplingはHydraがsampleごとに書くので複製しない。手で選んだ部分集合を複製すると、config変更時に静かに古い値を書き続けるためである。同一commitのsampleは1 entryへ併合し、別commitでの追加runは上書きせず2つ目のentryを残す。
+
+再実行は`on_existing`（既定`fail`）が制御する。`skip`は`events.jsonl`が`run_completed`へ到達したsampleだけを飛ばし、sweepの再投入をresumeにする。**中断されたsampleは`skip`でも必ず失敗させる。**飛ばすと20件走らせて「全件完了」と出るのに穴が空く。directoryの有無は判定に使えない。Hydraがjob本体より前にそれを作るためである。
+
 #### 6aの残作業
 
-1. agent の停止条件。Phase 4でQwenが自発停止せず手動停止した。これが無いと複数sample runが終わらず、wall timeとtokenが非有界になりcost比較が成立しない
-2. 複数sample driver。`run_pipeline.py`は現在`config.sample.sample_id`の1件固定である
-3. `run_manifest.json`: sample ID list、model、sampling、resolved config、code version
-4. `events.jsonl`からのcost抽出
-5. 集約（coverage、execution success、valid率、metric平均、cost）
-6. sample別のpaired diff レポート
+1. `events.jsonl`からのcost抽出。材料は揃っている（`run_completed.duration_ms`、`usage_metadata`、`caller`別のtool call、node別の`node_started`/`node_finished`差分）。ただし`usage_metadata`はbackend依存であり、gpt-5.6-lunaは全項目を返すがOllamaは全メッセージ`None`を返す。**未報告を0へ潰さない。**また`input_tokens`は`cache_read`を含むため単一の数値へ畳まない
+2. 集約（coverage、execution success、valid率、metric平均、cost）
+3. sample別のpaired diff レポート
+
+run間分散の測定は6bの直前に置く。あれは比較のための測定器であり、ベースライン確定には要らない。
 
 #### 必須test
 
@@ -973,6 +989,7 @@ Phase 3で実装するsample単位のcontractは次のとおりとする。
 └── <sample_id>/
     ├── events.jsonl
     ├── checkpoints.sqlite
+    ├── .hydra/                      # Phase 6で追加。resolved configとoverride
     └── workspace/
         ├── inputs/                  # run開始時にstageした入力
         ├── model.py                 # modelが最後に編集したactive source
@@ -989,7 +1006,7 @@ model主導の中間検証とworkflow主導の最終検証は同じ`attempts/`�
 
 Phase 6でsample artifact rootへ`score.json`が加わる。`sample.target_step_path`が設定されている場合に、runが閉じた後の採点結果を、それを生んだscorer設定（threshold、seed、`last_only`）とともに記録する。GTを読む唯一のsample単位出力であり、`workspace/`の外に置く。
 
-`run_manifest.json`、`run_summary.json`、`resolved_config.yaml`、集約用artifact manifestなどのrun全体の出力は、複数sampleを集約して評価する6aで追加する。Phase 4の一sample live runではsample単位の出力contractを変えない。
+Phase 6でrun直下へ`run_manifest.json`が加わる。code versionとそれが生成したsample IDの一覧だけを持つ。`resolved_config.yaml`と`run_summary.json`は作らない。前者はHydraが`<sample_id>/.hydra/config.yaml`へ書き、後者は集約が読めば導出できる。
 
 ## 10. Test方針
 

@@ -150,3 +150,37 @@ def test_the_sample_id_keeps_its_leading_zeros() -> None:
         )
 
     assert isinstance(config.sample.sample_id, str)
+
+
+def test_hydra_writes_its_job_output_beside_the_sample_artifacts() -> None:
+    """A sample directory has to say what produced it.
+
+    Hydra's default dated tree has no link back to `artifact_root`, so the
+    resolved config would be unfindable from the artifacts it explains.
+    """
+
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(
+            config_name="default",
+            overrides=["sample.sample_id=000405", "artifact_root=outputs/baseline"],
+            return_hydra_config=True,
+        )
+
+    assert config.hydra.run.dir == "outputs/baseline/000405"
+    assert config.hydra.sweep.dir == "outputs/baseline"
+    assert config.hydra.sweep.subdir == "000405"
+
+
+def test_reruns_fail_by_default() -> None:
+    """`skip` silently keeps prior results, so it must be asked for."""
+
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(config_name="default")
+
+    assert config.on_existing == "fail"

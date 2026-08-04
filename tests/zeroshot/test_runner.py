@@ -536,3 +536,95 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
         encoding="utf-8"
     ) == VALID_BOX_SOURCE
     CadQueryExecutor.verify_step(attempts / "001" / "output.step")
+
+
+def _runner_for_rerun(
+    artifact_root: Path,
+    on_existing: str = "fail",
+) -> PipelineRunner:
+    return PipelineRunner(
+        model=_ScriptedChatModel(responses=(AIMessage(content="no tool calls"),)),
+        message_builder=_message_builder_without_renders(),
+        sandbox_runner=_sandbox_runner(),
+        artifact_root=artifact_root,
+        renderer=_renderer(),
+        on_existing=on_existing,  # type: ignore[arg-type]
+    )
+
+
+def test_a_completed_sample_is_refused_and_left_untouched(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    manifest = _manifest_without_renders(tmp_path, "rerun-fail")
+    assert _runner_for_rerun(artifact_root).run_sample(manifest) is not None
+
+    events_path = artifact_root / manifest.sample_id / "events.jsonl"
+    before = events_path.read_text(encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="already ran"):
+        _runner_for_rerun(artifact_root).run_sample(manifest)
+
+    assert events_path.read_text(encoding="utf-8") == before
+
+
+def test_skip_passes_over_a_completed_sample(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    manifest = _manifest_without_renders(tmp_path, "rerun-skip")
+    _runner_for_rerun(artifact_root).run_sample(manifest)
+
+    events_path = artifact_root / manifest.sample_id / "events.jsonl"
+    before = events_path.read_text(encoding="utf-8")
+
+    assert _runner_for_rerun(artifact_root, "skip").run_sample(manifest) is None
+    assert events_path.read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize("on_existing", ["fail", "skip"])
+def test_an_interrupted_sample_is_never_skipped(
+    tmp_path: Path, on_existing: str
+) -> None:
+    """`skip` resumes a sweep, so it must not report a hole in it as done."""
+    artifact_root = tmp_path / "artifacts"
+    manifest = _manifest_without_renders(tmp_path, "interrupted")
+    sample_root = artifact_root / manifest.sample_id
+    sample_root.mkdir(parents=True)
+    (sample_root / "events.jsonl").write_text(
+        json.dumps({"event": "run_started", "data": {}}) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(FileExistsError, match="incomplete run"):
+        _runner_for_rerun(artifact_root, on_existing).run_sample(manifest)
+
+
+def test_a_failed_sample_is_not_treated_as_completed(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    manifest = _manifest_without_renders(tmp_path, "failed-then-skip")
+    runner = PipelineRunner(
+        model=_ScriptedChatModel(responses=()),
+        message_builder=_message_builder_without_renders(),
+        sandbox_runner=_sandbox_runner(),
+        artifact_root=artifact_root,
+        renderer=_renderer(),
+        on_existing="skip",
+    )
+    with pytest.raises(AssertionError, match="ran out of responses"):
+        runner.run_sample(manifest)
+
+    with pytest.raises(FileExistsError, match="incomplete run"):
+        _runner_for_rerun(artifact_root, "skip").run_sample(manifest)
+
+
+def test_a_directory_without_events_does_not_block_a_run(tmp_path: Path) -> None:
+    """Hydra writes its resolved config there before the job body runs."""
+    artifact_root = tmp_path / "artifacts"
+    manifest = _manifest_without_renders(tmp_path, "hydra-first")
+    hydra_dir = artifact_root / manifest.sample_id / ".hydra"
+    hydra_dir.mkdir(parents=True)
+    (hydra_dir / "config.yaml").write_text("artifact_root: x\n", encoding="utf-8")
+
+    assert _runner_for_rerun(artifact_root).run_sample(manifest) is not None
+    assert (hydra_dir / "config.yaml").is_file()
+
+
+def test_on_existing_rejects_an_unknown_policy(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="on_existing"):
+        _runner_for_rerun(tmp_path / "artifacts", "overwrite")

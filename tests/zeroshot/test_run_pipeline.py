@@ -23,6 +23,7 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
     values: dict[str, Any] = {
         "artifact_root": str(tmp_path / "artifacts"),
         "max_agent_turns": 30,
+        "on_existing": "fail",
         "console": None,
         "renderer": {
             "_target_": "zeroshot.pipeline.verification.StepRenderer",
@@ -88,6 +89,7 @@ def test_run_composes_dependencies_and_manifest(
         {
             "artifact_root": str(artifact_root),
             "max_agent_turns": 30,
+            "on_existing": "fail",
             "console": None,
             "message_builder": {
                 "_target_": "zeroshot.pipeline.messages.MessageBuilder",
@@ -141,6 +143,7 @@ def test_run_composes_dependencies_and_manifest(
         dxf_path=dxf_path,
         render3d_paths={},
     )
+    assert result is not None
     assert result["last_verification"].status == "VERIFIED"
 
 
@@ -202,3 +205,44 @@ def test_null_renderer_falls_back_to_the_default_renderer(
     renderer = captured["runner_options"]["renderer"]
     assert isinstance(renderer, StepRenderer)
     assert renderer.timeout_s == StepRenderer().timeout_s
+
+
+def test_a_skipped_sample_is_neither_recorded_nor_scored(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`run` returning None means the sample already ran; nothing follows it."""
+    called: list[str] = []
+    monkeypatch.setattr(run_pipeline, "run", lambda config: None)
+    monkeypatch.setattr(
+        run_pipeline, "record_run", lambda *args: called.append("record")
+    )
+    monkeypatch.setattr(run_pipeline, "score", lambda config: called.append("score"))
+
+    dxf_path = tmp_path / "input.dxf"
+    dxf_path.write_text("DXF_FIXTURE", encoding="utf-8")
+    config = _config(tmp_path, dxf_path)
+    config.sample.target_step_path = str(tmp_path / "target.step")
+
+    run_pipeline.main.__wrapped__(config)
+
+    assert called == []
+
+
+def test_a_run_is_recorded_before_it_is_scored(tmp_path: Path, monkeypatch) -> None:
+    called: list[str] = []
+    monkeypatch.setattr(
+        run_pipeline, "run", lambda config: ReconstructionState(messages=[])
+    )
+    monkeypatch.setattr(
+        run_pipeline, "record_run", lambda *args: called.append("record")
+    )
+    monkeypatch.setattr(run_pipeline, "score", lambda config: called.append("score"))
+
+    dxf_path = tmp_path / "input.dxf"
+    dxf_path.write_text("DXF_FIXTURE", encoding="utf-8")
+    config = _config(tmp_path, dxf_path)
+    config.sample.target_step_path = str(tmp_path / "target.step")
+
+    run_pipeline.main.__wrapped__(config)
+
+    assert called == ["record", "score"]

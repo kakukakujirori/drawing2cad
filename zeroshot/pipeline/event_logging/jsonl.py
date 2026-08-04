@@ -10,6 +10,18 @@ from typing import IO, Any, Self
 from zeroshot.pipeline.event_logging.normalizer import RunEvent, _safe_value
 
 
+def has_run_completed(path: Path) -> bool:
+    """Whether `path` holds a run that reached its `run_completed` event.
+
+    A run that raised writes `run_failed` instead, and one killed outright
+    writes neither, so both read as incomplete.
+    """
+    if not path.is_file():
+        return False
+    with path.open(encoding="utf-8") as handle:
+        return any(json.loads(line).get("event") == "run_completed" for line in handle)
+
+
 class JsonlEventWriter:
     """Incrementally write one JSON line per projected run event."""
 

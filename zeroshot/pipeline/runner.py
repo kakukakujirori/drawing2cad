@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 from langchain_core.language_models import BaseChatModel
@@ -13,6 +13,7 @@ from zeroshot.pipeline.event_logging import (
     ConsoleReporter,
     JsonlEventWriter,
     RunEventTransformer,
+    has_run_completed,
 )
 from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.messages import MessageBuilder
@@ -37,8 +38,11 @@ class PipelineRunner:
         output_filename: str = "model.py",
         verification_dirname: PurePosixPath = PurePosixPath("attempts"),
         max_agent_turns: int = 30,
+        on_existing: Literal["fail", "skip"] = "fail",
         console_reporter: ConsoleReporter | None = None,
     ) -> None:
+        if on_existing not in {"fail", "skip"}:
+            raise ValueError(f"on_existing must be 'fail' or 'skip': {on_existing!r}")
         self.model = model
         self.message_builder = message_builder
         self.sandbox_runner = sandbox_runner
@@ -47,11 +51,28 @@ class PipelineRunner:
         self.output_filename = output_filename
         self.verification_dirname = verification_dirname
         self.max_agent_turns = max_agent_turns
+        self.on_existing = on_existing
         self.console_reporter = console_reporter
 
-    def run_sample(self, manifest: InputManifest) -> ReconstructionState:
+    def run_sample(self, manifest: InputManifest) -> ReconstructionState | None:
+        """Run one sample, or return None when `on_existing="skip"` skips it.
+
+        The directory may already exist because Hydra writes its resolved config
+        there before the job body runs, so `events.jsonl` is what says whether a
+        run happened.  An incomplete one always raises: skipping it would let a
+        sweep report every sample as done while some produced nothing.
+        """
         sample_artifact_root = self.artifact_root / manifest.sample_id
-        sample_artifact_root.mkdir(parents=True, exist_ok=False)
+        events_path = sample_artifact_root / "events.jsonl"
+        if has_run_completed(events_path):
+            if self.on_existing == "skip":
+                return None
+            raise FileExistsError(f"sample already ran: {sample_artifact_root}")
+        if events_path.exists():
+            raise FileExistsError(
+                f"incomplete run left behind, delete it to redo: {sample_artifact_root}"
+            )
+        sample_artifact_root.mkdir(parents=True, exist_ok=True)
 
         run_id = f"{manifest.sample_id}:{uuid4()}"
         checkpoint_path = sample_artifact_root / "checkpoints.sqlite"

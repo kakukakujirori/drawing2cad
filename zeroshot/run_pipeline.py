@@ -14,9 +14,10 @@ from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import ReconstructionState
+from zeroshot.provenance import record_run
 
 
-def run(config: DictConfig) -> ReconstructionState:
+def run(config: DictConfig) -> ReconstructionState | None:
     """Run one sample with already constructed model dependency."""
     message_builder = instantiate(config.message_builder)
     model = instantiate(config.model)
@@ -39,6 +40,7 @@ def run(config: DictConfig) -> ReconstructionState:
         artifact_root=Path(to_absolute_path(config.artifact_root)),
         renderer=renderer,
         max_agent_turns=config.max_agent_turns,
+        on_existing=config.on_existing,
         console_reporter=console_reporter,
     )
 
@@ -79,7 +81,11 @@ def main(config: DictConfig) -> None:
     `events.jsonl` and `score.json`; exiting non-zero for it would abort a
     Hydra sweep at the first such sample and lose every one after it.
     """
-    run(config)
+    if run(config) is None:
+        return
+
+    artifact_root = Path(to_absolute_path(config.artifact_root))
+    record_run(artifact_root, config.sample.sample_id)
 
     if config.sample.target_step_path is not None:
         score(config)
