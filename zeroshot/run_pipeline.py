@@ -72,14 +72,17 @@ def score(config: DictConfig) -> None:
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="default")
 def main(config: DictConfig) -> None:
-    result = run(config)
+    """Run one sample and, when it has a target, score it.
+
+    The exit code reports whether the pipeline ran, not whether the model
+    succeeded. A run that reaches no valid solid is a result, recorded in
+    `events.jsonl` and `score.json`; exiting non-zero for it would abort a
+    Hydra sweep at the first such sample and lose every one after it.
+    """
+    run(config)
 
     if config.sample.target_step_path is not None:
         score(config)
-
-    report = result["last_verification"]
-    if report.status != "VERIFIED":
-        raise SystemExit(1)
 
 
 if __name__ == "__main__":

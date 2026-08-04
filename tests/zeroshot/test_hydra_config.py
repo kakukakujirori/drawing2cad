@@ -115,3 +115,38 @@ def test_gpt5_6_luna_codex_config_instantiates_oauth_model() -> None:
     assert model.request_timeout == 600.0
     assert model.max_retries == 0
     assert model.max_tokens is None
+
+
+def test_a_sweep_only_has_to_override_the_sample_id() -> None:
+    """Every input path derives from `sample_id`, so a sweep sets that alone."""
+
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(
+            config_name="default",
+            overrides=["sample.sample_id=000405"],
+        )
+
+    assert config.sample.sample_id == "000405"
+    assert config.sample.dxf_path.endswith("/000405.dxf")
+    assert config.sample.target_step_path.endswith("/000405.step")
+    assert all(
+        path.endswith("/000405.png") for path in config.sample.render3d_paths.values()
+    )
+
+
+def test_the_sample_id_keeps_its_leading_zeros() -> None:
+    """`000405` must stay a string: as an int it would interpolate as `405`."""
+
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(
+            config_name="default",
+            overrides=["sample.sample_id=000405"],
+        )
+
+    assert isinstance(config.sample.sample_id, str)

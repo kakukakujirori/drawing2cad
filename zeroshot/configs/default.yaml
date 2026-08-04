@@ -50,11 +50,13 @@ evaluation:
     voxel_resolution: 64
     seed: 0
 
+# Every path derives from `sample_id`, so a sweep overrides that alone:
+#   python -m zeroshot.run_pipeline -m sample.sample_id=000364,000405,000775
 sample:
   sample_id: "000364"
-  dxf_path: data/test_vlm/techdraw/dxf/000364.dxf
-  target_step_path: data/test_vlm/target_step/000364.step
+  dxf_path: data/test_vlm/techdraw/dxf/${sample.sample_id}.dxf
+  target_step_path: data/test_vlm/target_step/${sample.sample_id}.step
   render3d_paths:
-    hlg_perspective: data/test_vlm/render_3d/hlg_perspective/000364.png
-    hlg_translucent_faces_perspective: data/test_vlm/render_3d/hlg_translucent_faces_perspective/000364.png
-    transparent_shaded_edges_perspective: data/test_vlm/render_3d/transparent_shaded_edges_perspective/000364.png
+    hlg_perspective: data/test_vlm/render_3d/hlg_perspective/${sample.sample_id}.png
+    hlg_translucent_faces_perspective: data/test_vlm/render_3d/hlg_translucent_faces_perspective/${sample.sample_id}.png
+    transparent_shaded_edges_perspective: data/test_vlm/render_3d/transparent_shaded_edges_perspective/${sample.sample_id}.png
