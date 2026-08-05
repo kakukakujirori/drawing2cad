@@ -184,6 +184,17 @@ class RunEventTransformer(StreamTransformer):
                             "report": _safe_value(update["last_verification"]),
                         },
                     )
+                # Whether the agent finished or ran out of turns is only in
+                # graph state, so without this no offline reader can tell.
+                if "stop_reason" in update:
+                    self._push(
+                        event,
+                        "stop_reason",
+                        {
+                            "node": str(node),
+                            "reason": _safe_value(update["stop_reason"]),
+                        },
+                    )
 
         return True
 

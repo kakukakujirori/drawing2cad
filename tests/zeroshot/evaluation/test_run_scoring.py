@@ -26,6 +26,22 @@ def test_every_column_is_prefixed_by_its_family(solids: dict[str, Path]) -> None
         assert all(column.startswith(f"{name}_") for column in columns)
 
 
+def test_a_family_returns_its_most_telling_column_first(
+    solids: dict[str, Path],
+) -> None:
+    """Reports show one column per family and take the first one.
+
+    Reordering these dicts is therefore not cosmetic: it moves what the run
+    table leads with.
+    """
+    leading = {
+        name: next(iter(call(solids["box"], solids["box"])))
+        for name, call in StepScorer().families().items()
+    }
+
+    assert leading == {"eccv": "eccv_surface_f1", "voxel": "voxel_iou"}
+
+
 def test_a_missing_prediction_is_reported(
     tmp_path: Path, solids: dict[str, Path]
 ) -> None:

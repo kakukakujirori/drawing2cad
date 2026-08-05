@@ -877,13 +877,36 @@ run単位の分離は`artifact_root`が担う。Hydraのjob出力もそこへ向
 
 `retry`の削除はdirectory全体ではなく、`.hydra/`とjob logを除いた全entryを対象とする。前者はHydraがこれから走るrunのために既に書いたものであり、消すとその記録が失われるうえ、開いたままのlog handleがunlinkされたinodeへ書き続ける。除外指定にしてあるのは、将来artifactが増えたときに消し忘れで古いデータが生き残らないようにするためである。
 
+#### 集約
+
+`zeroshot/evaluation/aggregate_run.py`がrun全体を1行/sampleへ落とし、`<run_dir>/summary.json`と端末の表を出す。
+
+```bash
+python -m zeroshot.evaluation.aggregate_run --run-dir outputs/<run>
+```
+
+材料は2系統あり、可用性が異なる。`events.jsonl`は試行した全sampleを記述しGTを要さない。`score.json`はtargetを設定しrunが提出まで到達した場合にのみ存在する。片方だけでは「パイプラインが動いているか」に答えられないため、両者をsample IDでjoinする。
+
+`stop_reason`は当初graph stateにしか無く、`events.jsonl`へ射影されていなかった。`max_agent_turns`が妥当かは「複数sample runで何回上限に当たったか」でしか判断できないので、normalizerへ追加した。
+
+決めた規則は次のとおり。
+
+- **per-sampleの`cost.json`は書かない。**`events.jsonl`が唯一の真実であり、cost は安価な導出物である。ファイルにすると`run_pipeline`へ継ぎ目が増え、staleness を持つ
+- **token未報告は`None`とし`0`へ潰さない。**gpt-5.6-lunaは全項目を返すがOllamaは全メッセージ`None`を返す。0にするとbackend間のcost比較が静かに壊れる。`input_tokens`は`cache_read`を含むため単一の数値へ畳まない
+- **落ちたsampleも行として残す。**落とすと全ての率が自分の分母を縮めて自分を良く見せる
+- **coverageは2つ出す。**`execution_success`（最終verificationが`VERIFIED`、GT不要）と`scored`（`score.json`が`OK`）。ずれる条件は2つあり、採点側のtimeout/失敗と、`last_only=false`で最終が`REJECTED`のrunが遡って採点される場合である
+- **metric平均は2通り出す。**`mean_scored`は「作れた立体がどれくらい合っているか」、`mean_all`（欠損=0）は「システムとして何点か」。前者だけでは出力できなかったsampleが隠れ、後者だけでは形状品質が読めない
+- **表は7列に絞る。**sample / turns / verify / surface F1 / voxel IoU / input token / wall。`stop_reason`や採点失敗といった例外は列にせず表の下の注記へ出す。診断用の全列（node別時間、tool別内訳、reasoning・cache read token、topology F1、面数）は`summary.json`に残す。端末は眺めるため、JSONは掘るためとする
+
 #### 6aの残作業
 
-1. `events.jsonl`からのcost抽出。材料は揃っている（`run_completed.duration_ms`、`usage_metadata`、`caller`別のtool call、node別の`node_started`/`node_finished`差分）。ただし`usage_metadata`はbackend依存であり、gpt-5.6-lunaは全項目を返すがOllamaは全メッセージ`None`を返す。**未報告を0へ潰さない。**また`input_tokens`は`cache_read`を含むため単一の数値へ畳まない
-2. 集約（coverage、execution success、valid率、metric平均、cost）
-3. sample別のpaired diff レポート
+sample別のpaired diffレポート。これは2つのrunを比較する道具であり、ベースライン確定には要らない。
 
-run間分散の測定は6bの直前に置く。あれは比較のための測定器であり、ベースライン確定には要らない。
+#### 6bの位置づけ
+
+現状の実装がベースラインであるため、アブレーションはこのPhaseでは**実行しない**。run間分散の測定も同様とする。どちらもgraph構造を変えて「良くなった」と主張する際に初めて必要になる測定器であり、工程ではなく前提条件である。
+
+なお`data/test_vlm`はn=20と小さい。`execution_success`が12/20対15/20でも二項分布上有意ではないため、比較する際は平均ではなくsample別のpaired diffが必須であり、それでも足りなければtest setを増やす判断になる。
 
 #### 必須test
 
@@ -1050,7 +1073,9 @@ model主導の中間検証とworkflow主導の最終検証は同じ`attempts/`�
 
 Phase 6でsample artifact rootへ`score.json`が加わる。`sample.target_step_path`が設定されている場合に、runが閉じた後の採点結果を、それを生んだscorer設定（threshold、seed、`last_only`）とともに記録する。GTを読む唯一のsample単位出力であり、`workspace/`の外に置く。
 
-Phase 6でrun直下へ`run_manifest.json`が加わる。code versionとそれが生成したsample IDの一覧だけを持つ。`resolved_config.yaml`と`run_summary.json`は作らない。前者はHydraが`<sample_id>/.hydra/config.yaml`へ書き、後者は集約が読めば導出できる。
+Phase 6でrun直下へ`run_manifest.json`が加わる。code versionとそれが生成したsample IDの一覧だけを持つ。`resolved_config.yaml`は作らない。Hydraが`<sample_id>/.hydra/config.yaml`へ書くためである。
+
+同じくrun直下の`summary.json`は`aggregate_run.py`が生成する導出物であり、いつでも作り直せる。`events.jsonl`と`score.json`から導けない情報は持たない。
 
 ## 10. Test方針
 

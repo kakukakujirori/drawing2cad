@@ -750,3 +750,56 @@ def test_retry_keeps_the_job_output_hydra_already_wrote(tmp_path: Path) -> None:
     assert (sample_root / "run_pipeline.log").read_text(encoding="utf-8") == "earlier\n"
     assert not (sample_root / "score.json").exists()
     assert has_run_completed(sample_root / "events.jsonl")
+
+
+def _events(sample_artifact_root: Path) -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in (sample_artifact_root / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+
+
+def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
+    """It lives only in graph state, so an offline reader needs it projected.
+
+    Whether `max_agent_turns` is set sensibly is answered by counting how often
+    a multi-sample run ends this way.
+    """
+    tool_call = [
+        {
+            "name": "run_shell",
+            "args": {"command": "true"},
+            "id": "call-0",
+            "type": "tool_call",
+        }
+    ]
+    cases = {
+        "stopped-by-budget": (
+            tuple(
+                AIMessage(content="", tool_calls=[{**tool_call[0], "id": f"call-{n}"}])
+                for n in range(4)
+            ),
+            "BUDGET_EXHAUSTED",
+        ),
+        "stopped-by-agent": ((AIMessage(content="done"),), "COMPLETED"),
+    }
+
+    for sample_id, (responses, expected) in cases.items():
+        artifact_root = tmp_path / sample_id
+        PipelineRunner(
+            model=_ScriptedChatModel(responses=responses),
+            message_builder=_message_builder_without_renders(),
+            sandbox_runner=_sandbox_runner(),
+            artifact_root=artifact_root,
+            renderer=_renderer(),
+            graph_factory=partial(create_reconstruction_graph, max_agent_turns=2),
+        ).run_sample(_manifest_without_renders(tmp_path, sample_id))
+
+        reasons = [
+            event["data"]["reason"]
+            for event in _events(artifact_root / sample_id)
+            if event["event"] == "stop_reason"
+        ]
+        assert reasons == [expected], sample_id

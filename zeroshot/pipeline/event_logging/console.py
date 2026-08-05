@@ -112,6 +112,12 @@ class ConsoleReporter:
                 markup=False,
             )
             self._render_value(data.get("report"))
+        elif name == "stop_reason":
+            self.console.print(
+                f"\n[stop] {data.get('reason')}",
+                style="bold yellow",
+                markup=False,
+            )
         elif name == "message":
             # The corresponding ChatModelStream is rendered incrementally instead.
             return
