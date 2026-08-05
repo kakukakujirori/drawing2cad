@@ -7,4 +7,8 @@ reasoning:
 output_version: responses/v1
 
 timeout: 600.0
-max_retries: 0
+
+# A remote endpoint drops connections; without retries one TLS reset discards
+# the whole sample. The local backends keep 0 so a slow generation fails once
+# instead of being multiplied.
+max_retries: 5

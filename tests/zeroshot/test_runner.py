@@ -2,6 +2,7 @@ import json
 import shlex
 import sys
 from collections.abc import Callable, Sequence
+from functools import partial
 from inspect import cleandoc
 from io import StringIO
 from pathlib import Path
@@ -18,12 +19,14 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import PrivateAttr
 from rich.console import Console
 
-from zeroshot.pipeline.event_logging import ConsoleReporter
+from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
+from zeroshot.pipeline.workflow import create_reconstruction_graph
+from zeroshot.pipeline.workflow.state import StopReason
 
 VALID_BOX_SOURCE = """\
 import cadquery as cq
@@ -566,15 +569,17 @@ def test_a_completed_sample_is_refused_and_left_untouched(tmp_path: Path) -> Non
     assert events_path.read_text(encoding="utf-8") == before
 
 
-def test_skip_passes_over_a_completed_sample(tmp_path: Path) -> None:
+@pytest.mark.parametrize("on_existing", ["skip", "retry"])
+def test_a_completed_sample_is_passed_over(tmp_path: Path, on_existing: str) -> None:
+    """`retry` redoes interrupted samples only; a finished one is never redone."""
     artifact_root = tmp_path / "artifacts"
-    manifest = _manifest_without_renders(tmp_path, "rerun-skip")
+    manifest = _manifest_without_renders(tmp_path, f"rerun-{on_existing}")
     _runner_for_rerun(artifact_root).run_sample(manifest)
 
     events_path = artifact_root / manifest.sample_id / "events.jsonl"
     before = events_path.read_text(encoding="utf-8")
 
-    assert _runner_for_rerun(artifact_root, "skip").run_sample(manifest) is None
+    assert _runner_for_rerun(artifact_root, on_existing).run_sample(manifest) is None
     assert events_path.read_text(encoding="utf-8") == before
 
 
@@ -628,3 +633,120 @@ def test_a_directory_without_events_does_not_block_a_run(tmp_path: Path) -> None
 def test_on_existing_rejects_an_unknown_policy(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="on_existing"):
         _runner_for_rerun(tmp_path / "artifacts", "overwrite")
+
+
+def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> None:
+    """The kwargs below are the contract an alternate graph has to accept.
+
+    A graph's own settings are bound into the factory beforehand, so adding one
+    must never widen this call.
+    """
+    captured: dict[str, Any] = {}
+
+    def recording_factory(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return create_reconstruction_graph(**kwargs)
+
+    artifact_root = tmp_path / "artifacts"
+    manifest = _manifest_without_renders(tmp_path, "injected-graph")
+    PipelineRunner(
+        model=_ScriptedChatModel(responses=(AIMessage(content="no tool calls"),)),
+        message_builder=_message_builder_without_renders(),
+        sandbox_runner=_sandbox_runner(),
+        artifact_root=artifact_root,
+        renderer=_renderer(),
+        graph_factory=recording_factory,
+    ).run_sample(manifest)
+
+    assert set(captured) == {
+        "model",
+        "sandbox_runner",
+        "sandbox_workdir",
+        "renderer",
+        "message_builder",
+        "output_filename",
+        "verification_dirname",
+        "checkpointer",
+    }
+
+
+def test_a_graphs_own_settings_reach_it_through_the_factory(tmp_path: Path) -> None:
+    """Hydra binds them with `_partial_`, so the runner never sees them."""
+    manifest = _manifest_without_renders(tmp_path, "bound-budget")
+    responses = tuple(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "run_shell",
+                    "args": {"command": "true"},
+                    "id": f"call-{turn}",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        for turn in range(5)
+    )
+    runner = PipelineRunner(
+        model=_ScriptedChatModel(responses=responses),
+        message_builder=_message_builder_without_renders(),
+        sandbox_runner=_sandbox_runner(),
+        artifact_root=tmp_path / "artifacts",
+        renderer=_renderer(),
+        graph_factory=partial(create_reconstruction_graph, max_agent_turns=2),
+    )
+
+    result = runner.run_sample(manifest)
+
+    assert result is not None
+    assert result["agent_turns"] == 2
+    assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+
+
+def test_retry_redoes_an_interrupted_sample(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    manifest = _manifest_without_renders(tmp_path, "retry-redo")
+    with pytest.raises(AssertionError, match="ran out of responses"):
+        PipelineRunner(
+            model=_ScriptedChatModel(responses=()),
+            message_builder=_message_builder_without_renders(),
+            sandbox_runner=_sandbox_runner(),
+            artifact_root=artifact_root,
+            renderer=_renderer(),
+        ).run_sample(manifest)
+
+    sample_root = artifact_root / manifest.sample_id
+    (sample_root / "workspace" / "leftover.txt").write_text("stale", encoding="utf-8")
+
+    result = _runner_for_rerun(artifact_root, "retry").run_sample(manifest)
+
+    assert result is not None
+    assert has_run_completed(sample_root / "events.jsonl")
+    assert not (sample_root / "workspace" / "leftover.txt").exists()
+
+
+def test_retry_keeps_the_job_output_hydra_already_wrote(tmp_path: Path) -> None:
+    """Hydra writes those before the job body runs, so they describe this run.
+
+    Deleting the directory outright would take them with it, and the open log
+    handle would keep writing to an unlinked file.
+    """
+    artifact_root = tmp_path / "artifacts"
+    manifest = _manifest_without_renders(tmp_path, "retry-hydra")
+    sample_root = artifact_root / manifest.sample_id
+    (sample_root / ".hydra").mkdir(parents=True)
+    (sample_root / ".hydra" / "config.yaml").write_text("a: 1\n", encoding="utf-8")
+    (sample_root / "run_pipeline.log").write_text("earlier\n", encoding="utf-8")
+    (sample_root / "events.jsonl").write_text(
+        json.dumps({"event": "run_started", "data": {}}) + "\n", encoding="utf-8"
+    )
+    (sample_root / "score.json").write_text("{}", encoding="utf-8")
+
+    _runner_for_rerun(artifact_root, "retry").run_sample(manifest)
+
+    assert (sample_root / ".hydra" / "config.yaml").read_text(
+        encoding="utf-8"
+    ) == "a: 1\n"
+    assert (sample_root / "run_pipeline.log").read_text(encoding="utf-8") == "earlier\n"
+    assert not (sample_root / "score.json").exists()
+    assert has_run_completed(sample_root / "events.jsonl")

@@ -12,7 +12,10 @@ from zeroshot.pipeline.manifest import InputManifest
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.verification import StepRenderer
-from zeroshot.pipeline.workflow import ReconstructionState
+from zeroshot.pipeline.workflow import (
+    ReconstructionState,
+    create_reconstruction_graph,
+)
 
 
 def _unreachable_runner(**kwargs: Any) -> Any:
@@ -22,8 +25,12 @@ def _unreachable_runner(**kwargs: Any) -> Any:
 def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
     values: dict[str, Any] = {
         "artifact_root": str(tmp_path / "artifacts"),
-        "max_agent_turns": 30,
         "on_existing": "fail",
+        "workflow": {
+            "_target_": "zeroshot.pipeline.workflow.graph.create_reconstruction_graph",
+            "_partial_": True,
+            "max_agent_turns": 7,
+        },
         "console": None,
         "renderer": {
             "_target_": "zeroshot.pipeline.verification.StepRenderer",
@@ -88,8 +95,14 @@ def test_run_composes_dependencies_and_manifest(
     config = OmegaConf.create(
         {
             "artifact_root": str(artifact_root),
-            "max_agent_turns": 30,
             "on_existing": "fail",
+            "workflow": {
+                "_target_": (
+                    "zeroshot.pipeline.workflow.graph.create_reconstruction_graph"
+                ),
+                "_partial_": True,
+                "max_agent_turns": 7,
+            },
             "console": None,
             "message_builder": {
                 "_target_": "zeroshot.pipeline.messages.MessageBuilder",
@@ -132,6 +145,9 @@ def test_run_composes_dependencies_and_manifest(
     assert runner_options["console_reporter"] is None
     assert isinstance(runner_options["renderer"], StepRenderer)
     assert runner_options["renderer"].timeout_s == 42.0
+    graph_factory = runner_options["graph_factory"]
+    assert graph_factory.func is create_reconstruction_graph
+    assert graph_factory.keywords == {"max_agent_turns": 7}
     assert captured["sandbox_options"] == {
         "python_executable": Path(sys.executable),
         "default_timeout_s": 30.0,

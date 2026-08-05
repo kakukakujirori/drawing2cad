@@ -3,6 +3,7 @@
 defaults:
   - _self_
   - model: gemma4_ollama
+  - workflow: baseline
 
 artifact_root: outputs/zeroshot
 
@@ -16,15 +17,13 @@ hydra:
     dir: ${artifact_root}
     subdir: ${sample.sample_id}
 
-# `skip` passes over samples whose events.jsonl reached `run_completed`, which
-# makes re-issuing a sweep resume it. An interrupted sample always fails
-# instead: skipping it would report a sweep as done with holes in it.
+# How re-issuing a sweep treats samples that already have a directory.
+#   fail  - refuse either way
+#   skip  - pass over the ones that reached `run_completed`
+#   retry - the same, and redo the interrupted ones from scratch
+# No policy skips an interrupted sample; that would report a sweep as done
+# with holes in it.
 on_existing: fail
-
-# Agent turns before the workflow stops asking and runs the final verification.
-# Successful runs so far take 2-4; this is a ceiling, not a target. Revise it
-# once a multi-sample run reports how often it is reached.
-max_agent_turns: 30
 
 console:
   _target_: zeroshot.pipeline.event_logging.ConsoleReporter

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from langchain_core.language_models import BaseChatModel
@@ -24,6 +25,33 @@ from zeroshot.pipeline.workflow import (
     create_reconstruction_graph,
 )
 
+# What the runner hands a graph: the run environment and the artifact contract.
+# A graph's own settings are bound into the factory before it gets here, so
+# swapping graphs never widens this signature.
+GraphFactory = Callable[..., Any]
+
+OnExisting = Literal["fail", "skip", "retry"]
+_ON_EXISTING = ("fail", "skip", "retry")
+
+
+def _clear_incomplete_run(sample_artifact_root: Path) -> None:
+    """Remove what the runner writes, keeping what Hydra wrote for this job.
+
+    Deleting the directory outright would take `.hydra/` and the job log with
+    it, and those describe the run about to start.  Everything else is cleared
+    by exclusion so a new artifact cannot survive a redo by being forgotten
+    here.
+    """
+    if not sample_artifact_root.is_dir():
+        return
+    for entry in sample_artifact_root.iterdir():
+        if entry.name == ".hydra" or entry.suffix == ".log":
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+
 
 class PipelineRunner:
     WORKSPACE_DIRNAME = "workspace"
@@ -37,12 +65,14 @@ class PipelineRunner:
         renderer: StepRenderer,
         output_filename: str = "model.py",
         verification_dirname: PurePosixPath = PurePosixPath("attempts"),
-        max_agent_turns: int = 30,
-        on_existing: Literal["fail", "skip"] = "fail",
+        graph_factory: GraphFactory = create_reconstruction_graph,
+        on_existing: OnExisting = "fail",
         console_reporter: ConsoleReporter | None = None,
     ) -> None:
-        if on_existing not in {"fail", "skip"}:
-            raise ValueError(f"on_existing must be 'fail' or 'skip': {on_existing!r}")
+        if on_existing not in _ON_EXISTING:
+            raise ValueError(
+                f"on_existing must be one of {_ON_EXISTING}: {on_existing!r}"
+            )
         self.model = model
         self.message_builder = message_builder
         self.sandbox_runner = sandbox_runner
@@ -50,25 +80,27 @@ class PipelineRunner:
         self.artifact_root = Path(artifact_root)
         self.output_filename = output_filename
         self.verification_dirname = verification_dirname
-        self.max_agent_turns = max_agent_turns
+        self.graph_factory = graph_factory
         self.on_existing = on_existing
         self.console_reporter = console_reporter
 
     def run_sample(self, manifest: InputManifest) -> ReconstructionState | None:
-        """Run one sample, or return None when `on_existing="skip"` skips it.
+        """Run one sample, or return None when the policy skips it.
 
         The directory may already exist because Hydra writes its resolved config
         there before the job body runs, so `events.jsonl` is what says whether a
-        run happened.  An incomplete one always raises: skipping it would let a
-        sweep report every sample as done while some produced nothing.
+        run happened.  No policy ever *skips* an incomplete one: that would let
+        a sweep report every sample as done while some produced nothing.
         """
         sample_artifact_root = self.artifact_root / manifest.sample_id
         events_path = sample_artifact_root / "events.jsonl"
         if has_run_completed(events_path):
-            if self.on_existing == "skip":
+            if self.on_existing in {"skip", "retry"}:
                 return None
             raise FileExistsError(f"sample already ran: {sample_artifact_root}")
-        if events_path.exists():
+        if self.on_existing == "retry":
+            _clear_incomplete_run(sample_artifact_root)
+        elif events_path.exists():
             raise FileExistsError(
                 f"incomplete run left behind, delete it to redo: {sample_artifact_root}"
             )
@@ -120,7 +152,7 @@ class PipelineRunner:
             checkpointer = stack.enter_context(
                 SqliteSaver.from_conn_string(str(checkpoint_path))
             )
-            graph = create_reconstruction_graph(
+            graph = self.graph_factory(
                 model=self.model,
                 sandbox_runner=self.sandbox_runner,
                 sandbox_workdir=workdir,
@@ -128,7 +160,6 @@ class PipelineRunner:
                 message_builder=self.message_builder,
                 output_filename=self.output_filename,
                 verification_dirname=self.verification_dirname,
-                max_agent_turns=self.max_agent_turns,
                 checkpointer=checkpointer,
             )
 

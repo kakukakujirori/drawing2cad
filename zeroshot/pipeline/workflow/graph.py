@@ -12,6 +12,7 @@ from langgraph.prebuilt import ToolNode
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import (
+    ToolFeedbackError,
     create_load_image_tool,
     create_run_shell_tool,
     create_verify_output_tool,
@@ -68,7 +69,7 @@ def create_reconstruction_graph(
         ),
     ]
     agent = model.bind_tools(tools)
-    tool_node = ToolNode(tools, handle_tool_errors=ValueError)
+    tool_node = ToolNode(tools, handle_tool_errors=ToolFeedbackError)
 
     # Postprocess node
     # The final attempt is rendered like any other, so an evaluation pass does

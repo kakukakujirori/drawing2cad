@@ -820,6 +820,42 @@ voxel IoUはECCVに含まれない独立familyである。ECCVはB-Rep entityを
 
 停止条件は`max_agent_turns`（既定30）とする。wall clock上限は採らない。上限に達したかがtoken数と対応せず、cost比較の軸にならないためである。budget切れは`StopReason.BUDGET_EXHAUSTED`として`verify_final`が記録し、自発停止と区別できる。LangGraphの`recursion_limit`は既定10007であり、実質無制限なので停止条件にならない。
 
+#### ツールの失敗の扱い
+
+モデル起因の失敗とパイプラインの欠陥を、例外クラスで分ける。`ToolNode`は`handle_tool_errors=ToolFeedbackError`とし、これだけをモデルへのフィードバックへ変える。それ以外の例外はrunを終わらせる。`ValueError`でrouteすると、ライブラリ由来やこちらのバグによる`ValueError`まで黙ってフィードバックとして流れ、モデルが我々の欠陥を回避しながらrunは成功を報告する。
+
+`ToolFeedbackError`は`zeroshot/pipeline/tools/errors.py`へ置く。`tools/__init__.py`へ直接定義すると、`load_image.py`がそれをimportする際に循環になる。
+
+投げるのは**成功時の戻り値型が失敗を運べない場合だけ**とする。
+
+- `load_image`は`list[ImageContentBlock]`すなわちペイロードそのものを返すため、失敗を入れる場所がない。unionを返すとToolMessageが`status="success"`のままエラーを運び、モデルが区別できず`events.jsonl`にも印が残らない。よって投げる
+- `run_shell`と`verify_output`は`status`フィールドを持つ結果を返す。例外にするとreturncode / stdout / stderrが1本の文字列へ潰れて情報が減るため、投げない
+- `verify_output`のグラフ構築時の引数検証は`ValueError`のままとする。プログラマ向けであり、フィードバックにならず落ちるのが正しい
+
+Phase 6で実際に事故になった。モデルが`load_image`へDXFを渡し、PILの`UnidentifiedImageError`（`OSError`のサブクラス）が`handle_tool_errors=ValueError`をすり抜けてrunを落とした。パスは実在・読める・sandbox内の通常ファイルであり、`_resolve_image_path`では検出できない。中身の問題はデコードするまで分からない。
+
+残る非対称として、`SandboxStatus.INFRA_ERROR`はデータとして返るため、bwrap不在やfork失敗といった純粋なインフラ障害がモデルへ通常の成功結果として届く。モデルにリトライさせる意図なら妥当だが、壊れていれば後続も全て失敗しターン予算を溶かす。切り分けは保留とする。
+
+#### グラフのversioning
+
+今後の改善はgraph構造に集中する。graphをpythonの編集で置き換えると過去のrunと比較できなくなるため、**graphはconfig group**とし、`workflow=<name>`で選ぶ。`PipelineRunner`は`graph_factory`を受け取るだけで、既定は`create_reconstruction_graph`である。
+
+```yaml
+# configs/workflow/baseline.yaml
+workflow:
+  _target_: zeroshot.pipeline.workflow.graph.create_reconstruction_graph
+  _partial_: true
+  max_agent_turns: 30
+```
+
+runnerがfactoryへ渡すのは実行環境とartifact contractだけとする（`model`、`sandbox_runner`、`sandbox_workdir`、`renderer`、`message_builder`、`output_filename`、`verification_dirname`、`checkpointer`）。graph固有の設定は`_partial_`で事前に束縛されるため、graphがパラメータを増やしてもこの呼び出しは広がらない。`max_agent_turns`はこの規則によりrunnerから削除した。graphのhyperparameterであってrunnerの関心事ではない。
+
+新しいgraphは`workflow/graph_<name>.py`として足す。`workflow_ver2/`のような並行packageは採らない。`state.py`とtoolsを複製し、2つの木を突き合わせてdiffすることになるためである。state schemaごと分岐するまで乖離したら`workflow/<name>/`へ育てる。
+
+名前は序数ではなく内容を表すものとする（`graph_reflect.py`等）。`ver2`は半年後に何が違うのかを答えず、config group名がそのままablation表の行ラベルになるためである。
+
+`run_sample`は`ReconstructionState(messages=...)`で初期状態を作る。stateへfieldを足すだけ（`NotRequired`）のgraphは無変更で通るが、初期状態そのものが違うgraphはrunnerに手が入る。
+
 複数sample driverは専用scriptを持たない。全入力pathを`${sample.sample_id}`から導出させ、sweepは`sample.sample_id`だけをoverrideする。
 
 ```bash
@@ -831,7 +867,15 @@ run単位の分離は`artifact_root`が担う。Hydraのjob出力もそこへ向
 
 `run_manifest.json`はrun直下に置き、Hydraが書けないものだけを持つ。すなわちcode version（git commitとdirty）と、それが生成したsample IDの一覧である。resolved configとsamplingはHydraがsampleごとに書くので複製しない。手で選んだ部分集合を複製すると、config変更時に静かに古い値を書き続けるためである。同一commitのsampleは1 entryへ併合し、別commitでの追加runは上書きせず2つ目のentryを残す。
 
-再実行は`on_existing`（既定`fail`）が制御する。`skip`は`events.jsonl`が`run_completed`へ到達したsampleだけを飛ばし、sweepの再投入をresumeにする。**中断されたsampleは`skip`でも必ず失敗させる。**飛ばすと20件走らせて「全件完了」と出るのに穴が空く。directoryの有無は判定に使えない。Hydraがjob本体より前にそれを作るためである。
+再実行は`on_existing`（既定`fail`）が制御する。判定は`events.jsonl`が`run_completed`へ到達したかで行う。directoryの有無は使えない。Hydraがjob本体より前にそれを作るためである。
+
+- `fail`: どちらも拒否する
+- `skip`: 完走したsampleを飛ばし、sweepの再投入をresumeにする
+- `retry`: 加えて中断されたsampleを消して再実行する
+
+**どのpolicyも中断sampleを飛ばさない。**飛ばすと20件走らせて「全件完了」と出るのに穴が空く。
+
+`retry`の削除はdirectory全体ではなく、`.hydra/`とjob logを除いた全entryを対象とする。前者はHydraがこれから走るrunのために既に書いたものであり、消すとその記録が失われるうえ、開いたままのlog handleがunlinkされたinodeへ書き続ける。除外指定にしてあるのは、将来artifactが増えたときに消し忘れで古いデータが生き残らないようにするためである。
 
 #### 6aの残作業
 

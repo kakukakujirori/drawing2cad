@@ -1,0 +1,13 @@
+# @package _global_
+
+# The graph is a config group so a run records which one it used, in the
+# `.hydra/config.yaml` beside its own artifacts. Everything a graph decides
+# lives here; the runner only supplies the run environment.
+workflow:
+  _target_: zeroshot.pipeline.workflow.graph.create_reconstruction_graph
+  _partial_: true
+
+  # Agent turns before the workflow stops asking and runs the final
+  # verification. Successful runs so far take 2-4; this is a ceiling, not a
+  # target. Revise it once a multi-sample run reports how often it is reached.
+  max_agent_turns: 30

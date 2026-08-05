@@ -1,13 +1,18 @@
+import sys
 from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.codex import _ChatOpenAICodex
 
 from zeroshot.models import SGLangChatOpenAI
 from zeroshot.pipeline.event_logging import ConsoleReporter
 from zeroshot.pipeline.messages import MessageBuilder
+from zeroshot.pipeline.runner import PipelineRunner
+from zeroshot.pipeline.sandbox import SandboxRunner
+from zeroshot.pipeline.workflow import create_reconstruction_graph
 
 CONFIG_DIR = Path(__file__).parents[2] / "zeroshot" / "configs"
 
@@ -113,8 +118,9 @@ def test_gpt5_6_luna_codex_config_instantiates_oauth_model() -> None:
     assert model.store is False
     assert model.openai_api_base == "https://chatgpt.com/backend-api/codex"
     assert model.request_timeout == 600.0
-    assert model.max_retries == 0
     assert model.max_tokens is None
+    # A sweep over a remote endpoint loses whole samples to transient resets.
+    assert model.max_retries >= 1
 
 
 def test_a_sweep_only_has_to_override_the_sample_id() -> None:
@@ -184,3 +190,47 @@ def test_reruns_fail_by_default() -> None:
         config = compose(config_name="default")
 
     assert config.on_existing == "fail"
+
+
+def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
+    """Graph changes ship as a new config option, not as an edit to graph.py.
+
+    Each run then records which graph it used in its own `.hydra/config.yaml`,
+    which is what makes two runs comparable after the fact.
+    """
+
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(
+            config_name="default",
+            overrides=["workflow=baseline", "workflow.max_agent_turns=5"],
+        )
+
+    graph_factory = instantiate(config.workflow)
+    assert graph_factory.func is create_reconstruction_graph
+    assert graph_factory.keywords == {"max_agent_turns": 5}
+    assert "max_agent_turns" not in config
+
+
+def test_every_rerun_policy_the_config_documents_is_accepted() -> None:
+    """A policy named only in a comment is one a sweep discovers at runtime."""
+
+    for policy in ("fail", "skip", "retry"):
+        with initialize_config_dir(
+            config_dir=str(CONFIG_DIR.resolve()),
+            version_base="1.3",
+        ):
+            config = compose(config_name="default", overrides=[f"on_existing={policy}"])
+        assert config.on_existing == policy
+        PipelineRunner(
+            model=FakeListChatModel(responses=["done"]),
+            message_builder=instantiate(config.message_builder),
+            sandbox_runner=SandboxRunner(
+                python_executable=Path(sys.executable), default_timeout_s=30
+            ),
+            artifact_root="unused",
+            renderer=instantiate(config.renderer),
+            on_existing=config.on_existing,
+        )

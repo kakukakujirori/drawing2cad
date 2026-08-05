@@ -2,10 +2,13 @@ import base64
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import ToolMessage
-from PIL import Image, UnidentifiedImageError
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode
+from PIL import Image
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 
 
@@ -97,7 +100,7 @@ def test_tool_rejects_path_outside_sandbox_namespace(
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     load_image = create_load_image_tool(workdir)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ToolFeedbackError):
         load_image.invoke({"image_path": image_path})
 
 
@@ -110,7 +113,7 @@ def test_tool_rejects_symlink_escape(tmp_path: Path) -> None:
     workdir = SandboxWorkdir(host_bind_dir=workdir_path)
     load_image = create_load_image_tool(workdir)
 
-    with pytest.raises(ValueError, match="Cannot access image"):
+    with pytest.raises(ToolFeedbackError, match="Cannot access image"):
         load_image.invoke({"image_path": "/work/link.png"})
 
 
@@ -118,7 +121,7 @@ def test_tool_rejects_missing_file(tmp_path: Path) -> None:
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     load_image = create_load_image_tool(workdir)
 
-    with pytest.raises(ValueError, match="Cannot access image"):
+    with pytest.raises(ToolFeedbackError, match="Cannot access image"):
         load_image.invoke({"image_path": "/work/missing.png"})
 
 
@@ -128,14 +131,68 @@ def test_tool_rejects_directory(tmp_path: Path) -> None:
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     load_image = create_load_image_tool(workdir)
 
-    with pytest.raises(ValueError, match="Image is not a regular file"):
+    with pytest.raises(ToolFeedbackError, match="Image is not a regular file"):
         load_image.invoke({"image_path": "/work/image.png"})
 
 
 def test_tool_rejects_non_image_file(tmp_path: Path) -> None:
+    """A model pointing this at a DXF must get feedback, not end the run.
+
+    The tool node forwards ToolFeedbackError to the model and lets anything
+    else propagate, so PIL's own error has to be translated here.
+    """
     (tmp_path / "not-image.png").write_text("not an image", encoding="utf-8")
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     load_image = create_load_image_tool(workdir)
 
-    with pytest.raises(UnidentifiedImageError):
+    with pytest.raises(ToolFeedbackError, match="Not a readable image"):
         load_image.invoke({"image_path": "/work/not-image.png"})
+
+
+def test_a_truncated_image_is_reported_rather_than_raised(tmp_path: Path) -> None:
+    """`Image.open` is lazy, so a header-only file only fails on verify()."""
+    image_bytes = _write_image(tmp_path / "full.png", "PNG")
+    (tmp_path / "cut.png").write_bytes(image_bytes[: len(image_bytes) // 2])
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    load_image = create_load_image_tool(workdir)
+
+    with pytest.raises(ToolFeedbackError, match="Not a readable image"):
+        load_image.invoke({"image_path": "/work/cut.png"})
+
+
+def test_the_tool_node_turns_a_bad_path_into_feedback(tmp_path: Path) -> None:
+    """The property that actually matters: the graph survives the mistake."""
+    (tmp_path / "techdraw.dxf").write_text("0\nSECTION\n", encoding="utf-8")
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    builder = StateGraph(MessagesState)  # type: ignore[type-var]
+    builder.add_node(
+        "tools",
+        ToolNode(
+            [create_load_image_tool(workdir)], handle_tool_errors=ToolFeedbackError
+        ),
+    )
+    builder.add_edge(START, "tools")
+    builder.add_edge("tools", END)
+
+    result = builder.compile().invoke(
+        {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "load_image",
+                            "args": {"image_path": "/work/techdraw.dxf"},
+                            "id": "call-dxf",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ]
+        }
+    )
+
+    message = result["messages"][-1]
+    assert isinstance(message, ToolMessage)
+    assert message.status == "error"
+    assert "Not a readable image" in str(message.content)

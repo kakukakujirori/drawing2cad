@@ -15,7 +15,7 @@ from PIL import Image
 
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.tools import VerifyOutputResult
+from zeroshot.pipeline.tools import ToolFeedbackError, VerifyOutputResult
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import StopReason
 from zeroshot.pipeline.workflow import graph as graph_module
@@ -397,3 +397,76 @@ def test_the_budget_is_spent_on_tool_calls_not_super_steps() -> None:
 def test_a_budget_below_one_is_refused() -> None:
     with SandboxWorkdir() as workdir, pytest.raises(ValueError):
         _graph_with_budget(workdir, _relentless_agent(), budget=0)
+
+
+def _agent_calling(tool_name: str, args: dict[str, object]) -> BaseChatModel:
+    def call(_: LanguageModelInput) -> AIMessage:
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": tool_name,
+                    "args": args,
+                    "id": "call-once",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+    model_mock = Mock(spec=BaseChatModel)
+    model_mock.bind_tools.return_value = RunnableLambda(call)
+    return cast(BaseChatModel, model_mock)
+
+
+def _graph_with_a_broken_load_image(
+    workdir: SandboxWorkdir, error: Exception, monkeypatch, max_agent_turns: int = 30
+):
+    @tool("load_image")
+    def broken_load_image(image_path: str) -> str:
+        """Load an image from a file path."""
+        del image_path
+        raise error
+
+    monkeypatch.setattr(
+        graph_module, "create_load_image_tool", lambda _workdir: broken_load_image
+    )
+    return create_reconstruction_graph(
+        model=_agent_calling("load_image", {"image_path": "/work/view.png"}),
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable), default_timeout_s=10
+        ),
+        sandbox_workdir=workdir,
+        renderer=_renderer(),
+        message_builder=_message_builder(),
+        max_agent_turns=max_agent_turns,
+    )
+
+
+def test_a_defect_in_a_tool_ends_the_run(monkeypatch) -> None:
+    """A stray ValueError is a bug here, not advice for the model.
+
+    Routing on it would have the model politely work around our own defects
+    while the run reports success, so only ToolFeedbackError is forwarded.
+    """
+    with SandboxWorkdir() as workdir:
+        graph = _graph_with_a_broken_load_image(
+            workdir, ValueError("internal invariant broken"), monkeypatch
+        )
+        with pytest.raises(ValueError, match="internal invariant broken"):
+            graph.invoke({"messages": [HumanMessage(content="go")]})
+
+
+def test_an_error_raised_for_the_model_is_forwarded_as_feedback(monkeypatch) -> None:
+    with SandboxWorkdir() as workdir:
+        graph = _graph_with_a_broken_load_image(
+            workdir,
+            ToolFeedbackError("that is not an image"),
+            monkeypatch,
+            max_agent_turns=2,
+        )
+        result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert tool_messages
+    assert tool_messages[0].status == "error"
+    assert "that is not an image" in tool_messages[0].text
