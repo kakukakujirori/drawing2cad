@@ -15,3 +15,8 @@ workflow:
   # Show the agent its remaining turns before each call. Off keeps this graph
   # identical to the one that produced the recorded baselines.
   announce_turn_budget: true
+
+  # Re-invocations after a transport failure the client cannot retry itself,
+  # such as a connection dropped mid-body. A retry resends the whole history,
+  # but exhausting all of them still costs less than the sample they save.
+  model_retries: 5

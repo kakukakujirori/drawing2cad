@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import Mock
 
+import httpx
 import pytest
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -481,6 +482,92 @@ def test_the_budget_stays_hidden_unless_asked_for() -> None:
         graph.invoke({"messages": [HumanMessage(content="go")]})
 
     assert not [m for call in seen for m in call if m.text.startswith("[turn ")]
+
+
+def _graph_over_a_flaky_model(
+    workdir: SandboxWorkdir, errors: list[Exception], **options: Any
+):
+    """A graph whose model raises each of `errors` before it ever answers."""
+
+    pending = iter(errors)
+
+    def call(_: LanguageModelInput) -> AIMessage:
+        raised = next(pending, None)
+        if raised is not None:
+            raise raised
+        return AIMessage(content="done")
+
+    model_mock = Mock(spec=BaseChatModel)
+    model_mock.bind_tools.return_value = RunnableLambda(call)
+    return create_reconstruction_graph(
+        model=cast(BaseChatModel, model_mock),
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable), default_timeout_s=10
+        ),
+        sandbox_workdir=workdir,
+        renderer=_renderer(),
+        message_builder=_message_builder(),
+        max_agent_turns=3,
+        **options,
+    )
+
+
+def test_a_connection_dropped_mid_response_does_not_end_the_run() -> None:
+    """The client's `max_retries` decides from the response status, so a body
+    that stops arriving after a 200 reaches the graph. Losing a sample there
+    throws away every turn it had already paid for."""
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph_over_a_flaky_model(
+            workdir,
+            [httpx.RemoteProtocolError("peer closed connection")],
+            model_retries=2,
+        )
+        result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["messages"][-1].text == "done"
+    assert result["stop_reason"] is StopReason.COMPLETED
+
+
+def test_a_timeout_is_not_retried() -> None:
+    """Every other transport failure is over in a moment; this one has already
+    spent the request budget, and three of them spend it three times."""
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph_over_a_flaky_model(
+            workdir, [httpx.ReadTimeout("too slow")], model_retries=2
+        )
+        with pytest.raises(httpx.ReadTimeout):
+            graph.invoke({"messages": [HumanMessage(content="go")]})
+
+
+def test_a_failure_that_is_not_transport_is_not_retried() -> None:
+    """Resending a six-figure token history to be refused the same way is the
+    expensive half of a retry with none of the benefit."""
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph_over_a_flaky_model(
+            workdir, [ValueError("malformed request")], model_retries=2
+        )
+        with pytest.raises(ValueError, match="malformed request"):
+            graph.invoke({"messages": [HumanMessage(content="go")]})
+
+
+def test_retries_are_bounded() -> None:
+    """An endpoint that is simply down has to fail the sample rather than be
+    asked forever. The count is small here only to keep the backoff short."""
+
+    drops = [httpx.RemoteProtocolError("peer closed connection") for _ in range(4)]
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph_over_a_flaky_model(workdir, drops, model_retries=1)
+        with pytest.raises(httpx.RemoteProtocolError):
+            graph.invoke({"messages": [HumanMessage(content="go")]})
+
+
+def test_a_negative_retry_count_is_refused() -> None:
+    with SandboxWorkdir() as workdir, pytest.raises(ValueError):
+        _graph_over_a_flaky_model(workdir, [], model_retries=-1)
 
 
 def _agent_calling(tool_name: str, args: dict[str, object]) -> BaseChatModel:

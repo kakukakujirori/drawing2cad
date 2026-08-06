@@ -211,6 +211,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
                 # is an experiment, not a test failure.
                 "workflow.max_agent_turns=5",
                 "workflow.announce_turn_budget=true",
+                "workflow.model_retries=1",
             ],
         )
 
@@ -219,6 +220,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert graph_factory.keywords == {
         "max_agent_turns": 5,
         "announce_turn_budget": True,
+        "model_retries": 1,
     }
     assert "max_agent_turns" not in config
 

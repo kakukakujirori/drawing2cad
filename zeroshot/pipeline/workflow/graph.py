@@ -3,6 +3,7 @@ from functools import partial
 from pathlib import PurePosixPath
 from typing import Any
 
+import httpx
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import Runnable
@@ -54,10 +55,13 @@ def create_reconstruction_graph(
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     max_agent_turns: int = 30,
     announce_turn_budget: bool = False,
+    model_retries: int = 5,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ):
     if max_agent_turns < 1:
         raise ValueError("max_agent_turns must be at least 1")
+    if model_retries < 0:
+        raise ValueError("model_retries must not be negative")
 
     def should_continue(state: ReconstructionState):
         last_message = state["messages"][-1]
@@ -96,7 +100,14 @@ def create_reconstruction_graph(
             serialize_output=True,
         ),
     ]
-    agent = model.bind_tools(tools)
+    # The client's own `max_retries` decides from the response status, so a
+    # connection that dies mid-body after a 200 is already past it. Timeouts are
+    # excluded: they are the one transport failure where waiting again costs the
+    # whole request budget rather than a moment.
+    agent = model.bind_tools(tools).with_retry(
+        retry_if_exception_type=(httpx.NetworkError, httpx.ProtocolError),
+        stop_after_attempt=model_retries + 1,
+    )
     tool_node = ToolNode(tools, handle_tool_errors=ToolFeedbackError)
 
     # Postprocess node
