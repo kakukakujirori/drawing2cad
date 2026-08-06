@@ -128,19 +128,79 @@ scripted modelは `run_shell`（model.py書き込み）→ `load_image` → `ver
 
 ---
 
-## 4. 以降のStep
+## 4. Step 1 — `messages/` パッケージ化と `prompts/` の追加 ✅ 完了
 
-各Stepの完了時に、決定事項と `check` の結果をこのファイルへ追記する。
+挙動不変。2コミットに割った（import の付け替えと新機構の導入を分離し、壊れたときにどちらが原因か即座に分かるようにするため）。
 
-### Step 1 — `prompts/` パッケージ（挙動不変）
+### Step 1a — `zeroshot/pipeline/messages/` パッケージ化
 
-`PromptTemplate` と `prompts/coder.md` を追加する。この時点では誰も使わないので production の挙動は 100% 不変。
+```
+zeroshot/pipeline/messages/
+├── __init__.py     # MessageBuilder, InputManifest, FeedbackManifest, PromptTemplate を re-export
+├── manifest.py
+├── builder.py      # messages.py から改名
+└── prompts/
+```
+
+**決定: `manifest.py` と `messages.py` を1パッケージにまとめる。**
+
+当初は「`manifest` は prompt の住人ではない」として反対したが、それは親パッケージ名を `prompts/` とする案への反対であり、グルーピング自体への反対ではなかった。親を `messages/` にすると成立する。
+
+根拠は**凝集度**である。`manifest.py` は `builder.py` に食わせるために存在する。`InputManifest` / `FeedbackManifest` は「モデルへ提示される予定のartifact集合」という定義そのものであり、`FeedbackManifest` の「path または欠損理由のどちらか一方」という不変条件は、MessageBuilder が何を見せるか決められるようにするために存在する。2ファイルで1つの関心事である。
+
+（「manifest/messages は runner.py や sandbox.py より責務が軽いから」という理由付けは採らない。サイズでは `messages.py` 12.5KB > `runner.py` 8.5KB > `sandbox.py` 7.1KB であり、`messages.py` が最大である。）
+
+パッケージの charter: **「モデルが見るものを構築する層」**（manifest = artifact在庫、builder = content block化、prompts = テキスト）。
+
+- **`messages.py` → `builder.py` 改名** — `messages/messages.py` の重複を避ける。`verification/run_cadquery.py`、`event_logging/normalizer.py` と同じで、モジュール名はパッケージ名の繰り返しではなく何をするかを表す
+- **外部からの import はパッケージ経由に統一**（`from zeroshot.pipeline.messages import ...`）。外から見える契約を `__init__.py` の `__all__` 1箇所に集約するため。内部モジュールを直接指す import が散ると、中身を再配置するたびに全消費者を触ることになる。`builder.py` の中だけは `messages.manifest` を直接指す（`__init__` 経由にすると循環になるため）
+- `__init__.py` の docstring に manifest / builder が分かれている理由（manifest は *host* path を持ち、モデルが受け取るものへ変換してよいのは MessageBuilder だけ）を残した。v1 が load-bearing だと書いている境界なので、パッケージにまとめた以上その理由を入口に置く
+
+移行コストは小さかった。`from zeroshot.pipeline.messages import MessageBuilder` の10箇所と `default.yaml` の `_target_: zeroshot.pipeline.messages.MessageBuilder` は**無変更で通る**（`instantiate` で実測確認）。変わったのは `pipeline.manifest` の9箇所だけ。
+
+### Step 1b — `PromptTemplate` と `prompts/coder.md`
+
+この時点では誰も使わないので production の挙動は 100% 不変。
 
 決定事項:
 - **`string.Template`（`$var`）を使い `str.format`（`{var}`）を使わない** — prompt本文にCadQueryのコード（`{}` を含む）を書いても壊れないため
 - **`substitute()` を使い `safe_substitute()` を使わない** — 埋め忘れると `$output_path` という文字列がそのままモデルへ届く。落ちたほうがよい
 - **`name` はpackage内の名前解決**（絶対pathも受け付ける） — **Hydraはjob実行時にcwdを変える**ので、YAMLに相対pathを書くとrun時に解決できない。名前解決なら罠自体が消える
+- **存在しないpromptは構築時に `ValueError`** — run途中で落とさない
 - **テキストを `.md` へ出す理由** — (1) promptはこの研究の主な実験変数でありgit diffが読める価値が大きい、(2) f-string内では `{}` と `"""` のescapeが地獄になる、(3) 6本の長文をPythonに置くとそのファイルがテキストの塊になる。代償（pyreflyがplaceholderを見ない）はStep 0のスナップショットで補う
+
+#### `render()` が `.strip()` する理由（実装中に判明）
+
+現行の system prompt は**末尾に改行を持たない**。lambda の括弧が
+
+```python
+cleandoc(f"""...""".strip() + "\n")
+```
+
+となっており、`+ "\n"` が `cleandoc()` の内側にあるため cleandoc が再び落としている。
+
+一方 `.md` ファイルは末尾に改行を持つのが自然で、エディタやフォーマッタが勝手に付け外しする。ファイル末尾の改行有無が**モデルへ送るバイト列を変えてしまう**のは事故なので、`render()` の最後で `.strip()` する。これにより「ファイルが改行で終わるか」（ファイルの作法）と「prompt テキスト」（内容）が分離される。
+
+#### `coder.md` は手で書き写さず機械生成した
+
+転記ミスは Step 2 まで発覚しない可能性があるため、現行 lambda にサニタイズ用 sentinel を渡して出力を得て、sentinel を `$output_path` / `$verification_dir` に置換して生成した。本文に `$` が含まれないことも事前に確認済み（含まれていれば `$$` へのエスケープが必要だった）。
+
+### 検証結果
+
+- `PromptTemplate("coder").render(...)` が現行 lambda の出力と**完全一致**（2通りの置換値で確認: 1620字 / 1637字）
+- `_refactor/characterize_baseline.py check` → **baseline unchanged**
+- `pytest tests/zeroshot` → **370 passed**（`tests/zeroshot/test_prompts.py` の8件を追加）
+- `ruff check` / `ruff format --check` ともに clean
+
+> `ruff check` を repo 全体にかけると32件出るが、すべてレガシーの SFT 側テスト（`tests/data/`、`tests/metrics/` など）の既存分で、本作業とは無関係。
+
+### 残っている整理（任意、独立して実施可）
+
+production が `messages/` パッケージになったので、`tests/zeroshot/test_messages.py` と `test_manifest.py` を `tests/zeroshot/messages/` へ移すとテスト木がミラーになる（`tools/`、`workflow/`、`verification/`、`event_logging/` は既にミラー）。Step 1b の diff を濁らせないため今回は見送った。
+
+## 5. 以降のStep
+
+各Stepの完了時に、決定事項と `check` の結果をこのファイルへ追記する。
 
 ### Step 2 — system promptの所有者を `MessageBuilder` から graph へ
 
@@ -192,7 +252,7 @@ Step 4の後なら新規40行で測れる（前だとloopのコピペになる�
 
 ---
 
-## 5. 保留
+## 6. 保留
 
 - 仮説のfan-out（並列agent）とrun-level `BudgetPolicy` — `normalizer.py` の `_active_node` が最初に壊れる
 - stage出力の構造化（`submit_<stage>` toolによるschema強制） — free textで足りるか実測してから。`AgentSpec.tools` に1つ足すだけで移行できる形にしてある

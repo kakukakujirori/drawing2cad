@@ -8,9 +8,11 @@ model receives.
 
 from .builder import MessageBuilder
 from .manifest import FeedbackManifest, InputManifest
+from .prompts import PromptTemplate
 
 __all__ = [
     "FeedbackManifest",
     "InputManifest",
     "MessageBuilder",
+    "PromptTemplate",
 ]
