@@ -7,6 +7,41 @@ from rich.console import Console
 from zeroshot.pipeline.event_logging import ConsoleReporter
 
 
+def test_a_failed_tool_reports_why_and_which_call_it_was() -> None:
+    """Rendering one named key printed `None` for a whole run: the payload comes
+    from LangGraph verbatim and carries the reason under `message`, not `error`.
+
+    The id matters too — a turn can issue four `load_image` calls at once, and
+    without it the console says one of them failed but not which.
+    """
+    output = StringIO()
+    reporter = ConsoleReporter(
+        Console(file=output, color_system=None, force_terminal=False, highlight=False)
+    )
+
+    reporter.render_event(
+        {
+            "event": "tool_error",
+            "timestamp_ms": 1,
+            "namespace": [],
+            "data": {
+                "tool_call_id": "call-3",
+                "message": "Not a readable image: /work/attempts/000/out.dxf",
+                "tool_name": "load_image",
+                "caller": "model",
+                "future_field": "UNKNOWN_TOOL_ERROR_FIELD",
+            },
+        }
+    )
+
+    rendered = output.getvalue()
+    assert "load_image failed" in rendered
+    assert "/work/attempts/000/out.dxf" in rendered
+    assert "call-3" in rendered
+    # A key this module never heard of still reaches the operator.
+    assert "UNKNOWN_TOOL_ERROR_FIELD" in rendered
+
+
 def test_console_reporter_renders_full_prompt_model_stream_and_tool_output() -> None:
     output = StringIO()
     reporter = ConsoleReporter(

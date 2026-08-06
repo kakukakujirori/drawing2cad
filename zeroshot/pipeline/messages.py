@@ -66,6 +66,7 @@ class MessageBuilder:
         - Use `ezdxf` Python library to analyze the input DXF file. You can visualize it by calling the `run_shell` tool with the command `ezdxf draw <PATH_TO_DXF> -o <OUTPUT_PNG>` and `load_image` tool to view it.
         - Use the `verify_output` results to debug and refine the {output_path} script.
         - Review the past `verify_output` results under {verification_dir} if necessary.
+        - Instead of analyzing the entire part before generating the CadQuery code as a final one-time submission, write a simple draft output, call `verify_output`, and use its results to iteratively refine the output.
         """.strip()
             + "\n"
         )

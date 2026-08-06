@@ -2,8 +2,8 @@ _target_: langchain_openai.chat_models.codex._ChatOpenAICodex
 
 model: gpt-5.6-luna
 reasoning:
-  effort: low
-  summary: auto
+  effort: xhigh
+  summary: detailed
 output_version: responses/v1
 
 timeout: 600.0

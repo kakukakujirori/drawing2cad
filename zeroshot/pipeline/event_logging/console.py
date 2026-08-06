@@ -104,7 +104,9 @@ class ConsoleReporter:
                 style="bold red",
                 markup=False,
             )
-            self._render_value(data.get("error"))
+            self._render_value(
+                {key: value for key, value in data.items() if key != "tool_name"}
+            )
         elif name == "verification":
             self.console.print(
                 "\n[verification]",

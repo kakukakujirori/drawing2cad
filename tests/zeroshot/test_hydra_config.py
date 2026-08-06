@@ -205,12 +205,21 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     ):
         config = compose(
             config_name="default",
-            overrides=["workflow=baseline", "workflow.max_agent_turns=5"],
+            overrides=[
+                "workflow=baseline",
+                # Overridden rather than read, so flipping a checked-in default
+                # is an experiment, not a test failure.
+                "workflow.max_agent_turns=5",
+                "workflow.announce_turn_budget=true",
+            ],
         )
 
     graph_factory = instantiate(config.workflow)
     assert graph_factory.func is create_reconstruction_graph
-    assert graph_factory.keywords == {"max_agent_turns": 5}
+    assert graph_factory.keywords == {
+        "max_agent_turns": 5,
+        "announce_turn_budget": True,
+    }
     assert "max_agent_turns" not in config
 
 

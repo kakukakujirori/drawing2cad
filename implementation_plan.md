@@ -898,6 +898,33 @@ python -m zeroshot.evaluation.aggregate_run --run-dir outputs/<run>
 - **metric平均は2通り出す。**`mean_scored`は「作れた立体がどれくらい合っているか」、`mean_all`（欠損=0）は「システムとして何点か」。前者だけでは出力できなかったsampleが隠れ、後者だけでは形状品質が読めない
 - **表は7列に絞る。**sample / turns / verify / surface F1 / voxel IoU / input token / wall。`stop_reason`や採点失敗といった例外は列にせず表の下の注記へ出す。診断用の全列（node別時間、tool別内訳、reasoning・cache read token、topology F1、面数）は`summary.json`に残す。端末は眺めるため、JSONは掘るためとする
 
+#### ベースライン測定結果
+
+gpt-5.6-luna（reasoning effort low）で`data/test_vlm`の全20件。`outputs/baseline_luna_low`。
+
+```
+execution_success 18/20   scored 18/20   budget_exhausted 0/20
+eccv_surface_f1  mean 0.170 / median 0.040 / max 0.667   (scored n=18)
+voxel_iou        mean 0.233 / median 0.157 / max 0.856
+in_tok 1,346,599   out_tok 38,226   wall 1,454s
+```
+
+**律速はvalidityではなく形状精度である。**90%が有効な単一solidを出すため、metric平均は主指標として読める。meanがmedianの4倍という歪みが示すとおり分布は二極化しており、0.4を超える4件と、ほぼ0の長い裾に分かれる。
+
+**2つのfamilyが別の失敗を測っていることがデータで裏づけられた。**surface F1がちょうど0.000の6件のうち5件はvoxel IoUが正であり、006482は0.244に達する。体積は重なるがB-Rep分解が全く異なるためentityが1つも照合しない、という予測どおりの事例である。0/0は001100の1件のみで、これだけが純粋に形状を外している。voxelを独立familyとして残した判断は議論ではなく実測で正当化された。
+
+**予測は系統的に面数が少ない。**予測51面に対しGT 70.7面、precision 0.239 > recall 0.144。GTより単純な形状を作る傾向である。逆向きの外れ値は001546のみで、214面対24面と9倍に膨らみながらF1 0.034にとどまる。
+
+**失敗2件は同一原因である。**001014と006608はいずれも`Expected exactly one solid, found 2`であり、コードのクラッシュでもAPIエラーでもなく単一solid制約の違反である。両者はturn数が10と18で平均の4〜8より多く、追加のturnが救済にならなかった。
+
+**`max_agent_turns: 30`は一度も拘束していない。**観測されたturn数は4〜18、median 5。変更を支持する材料は無いため据え置く。
+
+**wall時間の内訳は当初の想定と異なる。**gemmaでの計測ではagent待ちがwallの99.99%であり「CAD実行コストは無視できる」と記録したが、これはbackend依存の観測だった。リモートの高速modelではagent 966s（66%）、tools 283s、verify_final 201sであり、CADとrenderが**33%**を占める。wall時間をmodel latencyの代理変数として扱えるのはローカルbackendに限る。
+
+cache readはinput tokenの26%であり、`total_tokens`をそのまま課金コストとして読めないことも実測で確認された。
+
+n=20は小さい。この数字を基準に改善を主張するには、平均の比較ではなくsample別のpaired diffが必要である。
+
 #### 6aの残作業
 
 sample別のpaired diffレポート。これは2つのrunを比較する道具であり、ベースライン確定には要らない。

@@ -761,6 +761,53 @@ def _events(sample_artifact_root: Path) -> list[dict[str, Any]]:
     ]
 
 
+def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
+    tmp_path: Path,
+) -> None:
+    """Without it a run cannot afterwards show whether it was announced at all,
+    which is the one thing an A/B over this flag rests on."""
+
+    artifact_root = tmp_path / "announced"
+    responses = tuple(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "run_shell",
+                    "args": {"command": "true"},
+                    "id": f"call-{n}",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        for n in range(2)
+    )
+    PipelineRunner(
+        model=_ScriptedChatModel(responses=responses),
+        message_builder=_message_builder_without_renders(),
+        sandbox_runner=_sandbox_runner(),
+        artifact_root=artifact_root,
+        renderer=_renderer(),
+        graph_factory=partial(
+            create_reconstruction_graph,
+            max_agent_turns=2,
+            announce_turn_budget=True,
+        ),
+    ).run_sample(_manifest_without_renders(tmp_path, "announced"))
+
+    notices = [
+        message["content"]
+        for event in _events(artifact_root / "announced")
+        if event["event"] == "message"
+        for message in event["data"]["messages"]
+        if message["type"] == "human"
+    ]
+    assert notices == [
+        "[turn 1/2; candidates submitted: 0]",
+        "[turn 2/2; candidates submitted: 0]",
+    ]
+
+
 def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
     """It lives only in graph state, so an offline reader needs it projected.
 

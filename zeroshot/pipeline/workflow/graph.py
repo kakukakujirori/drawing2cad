@@ -1,9 +1,10 @@
+from collections.abc import Sequence
 from functools import partial
 from pathlib import PurePosixPath
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import Runnable
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -21,6 +22,28 @@ from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
 from zeroshot.pipeline.workflow.state import ReconstructionState, StopReason
 
 
+def _budget_notice(
+    messages: Sequence[BaseMessage],
+    turn: int,
+    budget: int,
+) -> HumanMessage:
+    """Where the agent stands in a budget it cannot otherwise observe.
+
+    It stays in the transcript so the agent reads a rate rather than a
+    position: at turn 19 the earlier markers are what say how fast it got there.
+    """
+
+    submitted = sum(
+        call["name"] == "verify_output"
+        for message in messages
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+    )
+    return HumanMessage(
+        content=f"[turn {turn}/{budget}; candidates submitted: {submitted}]"
+    )
+
+
 def create_reconstruction_graph(
     model: BaseChatModel,
     sandbox_runner: SandboxRunner,
@@ -30,6 +53,7 @@ def create_reconstruction_graph(
     output_filename: str = "model.py",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     max_agent_turns: int = 30,
+    announce_turn_budget: bool = False,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ):
     if max_agent_turns < 1:
@@ -47,11 +71,15 @@ def create_reconstruction_graph(
         state: ReconstructionState,
         agent: Runnable[LanguageModelInput, AIMessage],
     ):
-        response = agent.invoke(state["messages"])
-        return {
-            "messages": [response],
-            "agent_turns": state.get("agent_turns", 0) + 1,
-        }
+        turn = state.get("agent_turns", 0) + 1
+        history = state["messages"]
+        notice: list[BaseMessage] = (
+            [_budget_notice(history, turn, max_agent_turns)]
+            if announce_turn_budget
+            else []
+        )
+        response = agent.invoke([*history, *notice])
+        return {"messages": [*notice, response], "agent_turns": turn}
 
     # Create and bind tools
     executor = CadQueryExecutor(sandbox_runner=sandbox_runner)

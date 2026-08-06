@@ -3,7 +3,7 @@ import json
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -397,6 +397,90 @@ def test_the_budget_is_spent_on_tool_calls_not_super_steps() -> None:
 def test_a_budget_below_one_is_refused() -> None:
     with SandboxWorkdir() as workdir, pytest.raises(ValueError):
         _graph_with_budget(workdir, _relentless_agent(), budget=0)
+
+
+def _recording_graph(workdir: SandboxWorkdir, budget: int = 3, **options: Any):
+    """A graph over a relentless agent, plus the message lists it was called
+    with. `options` is left unset so a test can pin a default."""
+
+    seen: list[list[BaseMessage]] = []
+    turns = {"n": 0}
+
+    def call(model_input: LanguageModelInput) -> AIMessage:
+        assert isinstance(model_input, list)
+        seen.append(cast(list[BaseMessage], model_input))
+        turns["n"] += 1
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "verify_output",
+                    "args": {},
+                    "id": f"call-{turns['n']}",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+    model_mock = Mock(spec=BaseChatModel)
+    model_mock.bind_tools.return_value = RunnableLambda(call)
+    graph = create_reconstruction_graph(
+        model=cast(BaseChatModel, model_mock),
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable), default_timeout_s=10
+        ),
+        sandbox_workdir=workdir,
+        renderer=_renderer(),
+        message_builder=_message_builder(),
+        max_agent_turns=budget,
+        **options,
+    )
+    return graph, seen
+
+
+def test_the_agent_is_told_where_it_is_in_its_budget() -> None:
+    """It cannot infer the turn count from the transcript on its own."""
+
+    with SandboxWorkdir() as workdir:
+        graph, seen = _recording_graph(workdir, announce_turn_budget=True)
+        graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert [call[-1].text for call in seen] == [
+        f"[turn {turn}/3; candidates submitted: {turn - 1}]" for turn in (1, 2, 3)
+    ]
+
+
+def test_every_budget_notice_stays_in_the_transcript() -> None:
+    """Dropping the earlier ones would leave the agent its position but not its
+    rate: at `turn 3/3` it is the `turn 1/3` above that says how fast it got
+    there."""
+
+    with SandboxWorkdir() as workdir:
+        graph, seen = _recording_graph(workdir, announce_turn_budget=True)
+        result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert [
+        sum(m.text.startswith("[turn ") for m in call if isinstance(m, HumanMessage))
+        for call in seen
+    ] == [1, 2, 3]
+    assert [
+        message.text
+        for message in result["messages"]
+        if isinstance(message, HumanMessage) and message.text.startswith("[turn ")
+    ] == [f"[turn {turn}/3; candidates submitted: {turn - 1}]" for turn in (1, 2, 3)]
+
+
+def test_the_budget_stays_hidden_unless_asked_for() -> None:
+    """The recorded baselines ran without it, so it cannot be on by default.
+
+    Nothing here passes `announce_turn_budget`, which is what pins the default.
+    """
+
+    with SandboxWorkdir() as workdir:
+        graph, seen = _recording_graph(workdir)
+        graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert not [m for call in seen for m in call if m.text.startswith("[turn ")]
 
 
 def _agent_calling(tool_name: str, args: dict[str, object]) -> BaseChatModel:
