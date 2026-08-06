@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from zeroshot.pipeline.manifest import FeedbackManifest, InputManifest
+from zeroshot.pipeline.messages import FeedbackManifest, InputManifest
 
 
 def _write(path: Path, content: bytes = b"data") -> Path:

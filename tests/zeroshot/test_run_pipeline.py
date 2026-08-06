@@ -8,8 +8,7 @@ from langchain_core.language_models import BaseChatModel
 from omegaconf import OmegaConf
 
 from zeroshot import run_pipeline
-from zeroshot.pipeline.manifest import InputManifest
-from zeroshot.pipeline.messages import MessageBuilder
+from zeroshot.pipeline.messages import InputManifest, MessageBuilder
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import (

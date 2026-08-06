@@ -5,8 +5,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from zeroshot.pipeline.manifest import FeedbackManifest, InputManifest
-from zeroshot.pipeline.messages import MessageBuilder
+from zeroshot.pipeline.messages import FeedbackManifest, InputManifest, MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 
 STYLES = ("style-a", "style-b", "style-c")

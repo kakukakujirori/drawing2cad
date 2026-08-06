@@ -9,7 +9,7 @@ from omegaconf import DictConfig
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from zeroshot.evaluation.run_scoring import score_run
-from zeroshot.pipeline.manifest import InputManifest
+from zeroshot.pipeline.messages import InputManifest
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import StepRenderer

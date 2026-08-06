@@ -20,8 +20,7 @@ from pydantic import PrivateAttr
 from rich.console import Console
 
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
-from zeroshot.pipeline.manifest import InputManifest
-from zeroshot.pipeline.messages import MessageBuilder
+from zeroshot.pipeline.messages import InputManifest, MessageBuilder
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer

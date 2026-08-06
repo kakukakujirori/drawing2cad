@@ -19,7 +19,7 @@ from langchain_core.messages.content import (
     create_text_block,
 )
 
-from zeroshot.pipeline.manifest import FeedbackManifest, InputManifest
+from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 
 
