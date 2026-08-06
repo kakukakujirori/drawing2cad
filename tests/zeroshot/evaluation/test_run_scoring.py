@@ -39,7 +39,21 @@ def test_a_family_returns_its_most_telling_column_first(
         for name, call in StepScorer().families().items()
     }
 
-    assert leading == {"eccv": "eccv_surface_f1", "voxel": "voxel_iou"}
+    assert leading == {"eccv": "eccv_mean_f1", "voxel": "voxel_iou"}
+
+
+def test_the_leading_column_is_the_mean_of_the_four_official_axes(
+    solids: dict[str, Path],
+) -> None:
+    """It is the challenge's own per-sample score, so it has to be those four
+    and not, say, the surface/edge/vertex three or the precision-weighted mix.
+    """
+    columns = StepScorer().families()["eccv"](solids["box"], solids["sphere"])
+    axes = ("surface", "edge", "vertex", "topology")
+
+    assert columns["eccv_mean_f1"] == pytest.approx(
+        sum(columns[f"eccv_{axis}_f1"] for axis in axes) / 4
+    )
 
 
 def test_a_missing_prediction_is_reported(

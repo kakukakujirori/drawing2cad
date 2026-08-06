@@ -32,7 +32,10 @@ def score_eccv(
     f1_threshold: float = 0.1,
     seed: int = 0,
 ) -> dict[str, Any]:
-    """Return the surface/edge/vertex/topology F1 columns for one prediction.
+    """Return the challenge's per-sample score and the columns behind it.
+
+    ``eccv_mean_f1`` is the surface/edge/vertex/topology mean the leaderboard
+    scales by a run's valid ratio; the rest say where that number came from.
 
     ``reference_extent`` is the length each side's longest side is scaled to
     before anything is measured, so that the absolute ``f1_threshold`` and the
@@ -89,7 +92,12 @@ def score_eccv(
     edge_vertex_f1 = match_incidence(
         predicted.ev_matrix, target.ev_matrix, edge.matches, vertex.matches
     )
+    topology_f1 = (face_edge_f1 + edge_vertex_f1) / 2
     return {
+        # The challenge's per-sample score. Its leaderboard number is this
+        # multiplied by a valid ratio, which only a whole run can supply.
+        # First because reports lead with a family's first column.
+        "eccv_mean_f1": (surface.f1 + edge.f1 + vertex.f1 + topology_f1) / 4,
         "eccv_surface_f1": surface.f1,
         "eccv_surface_precision": surface.precision,
         "eccv_surface_recall": surface.recall,
@@ -97,7 +105,7 @@ def score_eccv(
         "eccv_vertex_f1": vertex.f1,
         "eccv_face_edge_f1": face_edge_f1,
         "eccv_edge_vertex_f1": edge_vertex_f1,
-        "eccv_topology_f1": (face_edge_f1 + edge_vertex_f1) / 2,
+        "eccv_topology_f1": topology_f1,
         "eccv_chamfer_surface": chamfer(predicted.face_pc, target.face_pc),
         "eccv_chamfer_edge": chamfer(predicted.edge_pc, target.edge_pc),
         "eccv_chamfer_vertex": chamfer(predicted.vertex_pc, target.vertex_pc),
