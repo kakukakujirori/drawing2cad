@@ -7,10 +7,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from uuid import uuid4
 
-from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from zeroshot.pipeline.event_logging import (
+    AgentMessageTransformer,
     ConsoleReporter,
     JsonlEventWriter,
     RunEventTransformer,
@@ -19,10 +19,7 @@ from zeroshot.pipeline.event_logging import (
 from zeroshot.pipeline.messages import InputManifest, MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.verification import StepRenderer
-from zeroshot.pipeline.workflow import (
-    ReconstructionState,
-    create_reconstruction_graph,
-)
+from zeroshot.pipeline.workflow import ReconstructionState
 
 # What the runner hands a graph: the run environment and the artifact contract.
 # A graph's own settings are bound into the factory before it gets here, so
@@ -57,14 +54,13 @@ class PipelineRunner:
 
     def __init__(
         self,
-        model: BaseChatModel,
-        message_builder: MessageBuilder,
         sandbox_runner: SandboxRunner,
+        graph_factory: GraphFactory,
+        message_builder: MessageBuilder,
         artifact_root: str | Path,
         renderer: StepRenderer,
         output_filename: str = "model.py",
         verification_dirname: PurePosixPath = PurePosixPath("attempts"),
-        graph_factory: GraphFactory = create_reconstruction_graph,
         on_existing: OnExisting = "fail",
         console_reporter: ConsoleReporter | None = None,
     ) -> None:
@@ -72,7 +68,6 @@ class PipelineRunner:
             raise ValueError(
                 f"on_existing must be one of {_ON_EXISTING}: {on_existing!r}"
             )
-        self.model = model
         self.message_builder = message_builder
         self.sandbox_runner = sandbox_runner
         self.renderer = renderer
@@ -139,12 +134,10 @@ class PipelineRunner:
                 input_dirname=input_dirname,
             )
 
-            # prepare initial messages
-            initial_messages = self.message_builder.build_initial(
+            # what this run offers the model; the graph decides how to open with it
+            input_message = self.message_builder.build_input_message(
                 manifest=staged_manifest,
                 workdir=workdir,
-                output_filename=self.output_filename,
-                verification_dirname=self.verification_dirname,
             )
 
             # instantiate the graph
@@ -152,11 +145,11 @@ class PipelineRunner:
                 SqliteSaver.from_conn_string(str(checkpoint_path))
             )
             graph = self.graph_factory(
-                model=self.model,
                 sandbox_runner=self.sandbox_runner,
                 sandbox_workdir=workdir,
                 renderer=self.renderer,
                 message_builder=self.message_builder,
+                input_message=input_message,
                 output_filename=self.output_filename,
                 verification_dirname=self.verification_dirname,
                 checkpointer=checkpointer,
@@ -164,19 +157,19 @@ class PipelineRunner:
 
             # run the graph
             stream = graph.stream_events(
-                ReconstructionState(messages=initial_messages),
+                ReconstructionState(messages=[]),
                 config={"configurable": {"thread_id": run_id}},
                 version="v3",
                 durability="sync",
-                transformers=[RunEventTransformer],
+                transformers=[RunEventTransformer, AgentMessageTransformer],
             )
             channels = (
-                ("run_events", "messages")
+                (RunEventTransformer.CHANNEL, AgentMessageTransformer.CHANNEL)
                 if self.console_reporter is not None
-                else ("run_events",)
+                else (RunEventTransformer.CHANNEL,)
             )
             for channel, item in stream.interleave(*channels):
-                if channel == "run_events":
+                if channel == RunEventTransformer.CHANNEL:
                     event_writer.write(item)
                     if self.console_reporter is not None:
                         self.console_reporter.render_event(item)

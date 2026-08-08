@@ -7,7 +7,7 @@ from time import perf_counter
 from types import TracebackType
 from typing import IO, Any, Self
 
-from zeroshot.pipeline.event_logging.normalizer import RunEvent, _safe_value
+from zeroshot.pipeline.event_logging.projections import RunEvent, _safe_value
 
 
 def has_run_completed(path: Path) -> bool:

@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.pretty import Pretty
 from rich.text import Text
 
-from zeroshot.pipeline.event_logging.normalizer import RunEvent, _safe_value
+from zeroshot.pipeline.event_logging.projections import RunEvent, _safe_value
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_model_stream import ChatModelStream

@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 from hydra.utils import instantiate
-from langchain_core.language_models import BaseChatModel
 from omegaconf import OmegaConf
 
 from zeroshot import run_pipeline
@@ -28,7 +27,7 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
         "workflow": {
             "_target_": "zeroshot.pipeline.workflow.graph.create_reconstruction_graph",
             "_partial_": True,
-            "max_agent_turns": 7,
+            "model_retries": 7,
         },
         "console": None,
         "renderer": {
@@ -42,6 +41,7 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
             "feedback_render3d": "none",
             "feedback_render3d_styles": [],
         },
+        "models": {},
         "model": {
             "_target_": (
                 "langchain_core.language_models.fake_chat_models.FakeListChatModel"
@@ -100,7 +100,7 @@ def test_run_composes_dependencies_and_manifest(
                     "zeroshot.pipeline.workflow.graph.create_reconstruction_graph"
                 ),
                 "_partial_": True,
-                "max_agent_turns": 7,
+                "model_retries": 7,
             },
             "console": None,
             "message_builder": {
@@ -110,6 +110,7 @@ def test_run_composes_dependencies_and_manifest(
                 "feedback_render3d": "none",
                 "feedback_render3d_styles": [],
             },
+            "models": {},
             "model": {
                 "_target_": (
                     "langchain_core.language_models.fake_chat_models.FakeListChatModel"
@@ -137,7 +138,9 @@ def test_run_composes_dependencies_and_manifest(
     result = run_pipeline.run(config)
 
     runner_options = captured["runner_options"]
-    assert isinstance(runner_options["model"], BaseChatModel)
+    # No model reaches the runner: an agent carries its own, so the workflow
+    # config is where `instantiate` finds one.
+    assert "model" not in runner_options
     assert isinstance(runner_options["message_builder"], MessageBuilder)
     assert isinstance(runner_options["sandbox_runner"], StubSandboxRunner)
     assert runner_options["artifact_root"] == artifact_root
@@ -146,7 +149,7 @@ def test_run_composes_dependencies_and_manifest(
     assert runner_options["renderer"].timeout_s == 42.0
     graph_factory = runner_options["graph_factory"]
     assert graph_factory.func is create_reconstruction_graph
-    assert graph_factory.keywords == {"max_agent_turns": 7}
+    assert graph_factory.keywords == {"model_retries": 7}
     assert captured["sandbox_options"] == {
         "python_executable": Path(sys.executable),
         "default_timeout_s": 30.0,

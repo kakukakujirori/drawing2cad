@@ -5,7 +5,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from zeroshot.pipeline.event_logging.jsonl import JsonlEventWriter, has_run_completed
-from zeroshot.pipeline.event_logging.normalizer import _safe_value
+from zeroshot.pipeline.event_logging.projections import _safe_value
 
 
 def test_event_serialization_redacts_images_and_secrets() -> None:

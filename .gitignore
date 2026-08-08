@@ -11,3 +11,6 @@ __pycache__/
 /experiments_dep
 /logs
 /outputs
+
+# scaffolding for the multi-agent refactor; delete once it lands
+/_refactor

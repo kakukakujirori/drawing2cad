@@ -189,7 +189,7 @@ def create_verify_output_tool(
         """Organize the tool result into HumanMessages."""
         if manifest is None or message_builder is None:
             return [create_text_block(json.dumps(report.serialize(), indent=2))]
-        return list(message_builder.build_feedback(manifest, workdir).content_blocks)
+        return message_builder.build_feedback_blocks(manifest, workdir)
 
     @tool("verify_output", description=description)
     def verify_output() -> VerifyOutputResult | list[ContentBlock]:

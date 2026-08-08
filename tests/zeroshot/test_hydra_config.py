@@ -3,13 +3,13 @@ from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
-from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.codex import _ChatOpenAICodex
 
 from zeroshot.models import SGLangChatOpenAI
 from zeroshot.pipeline.event_logging import ConsoleReporter
-from zeroshot.pipeline.messages import MessageBuilder
+from zeroshot.pipeline.messages import MessageBuilder, PromptTemplate
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.workflow import create_reconstruction_graph
@@ -209,20 +209,30 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
                 "workflow=baseline",
                 # Overridden rather than read, so flipping a checked-in default
                 # is an experiment, not a test failure.
-                "workflow.max_agent_turns=5",
-                "workflow.announce_turn_budget=true",
+                "workflow.agent.role=coder",
+                "workflow.agent.max_turns=5",
+                "workflow.agent.announce_turn_budget=true",
                 "workflow.model_retries=1",
             ],
         )
 
     graph_factory = instantiate(config.workflow)
     assert graph_factory.func is create_reconstruction_graph
-    assert graph_factory.keywords == {
-        "max_agent_turns": 5,
-        "announce_turn_budget": True,
-        "model_retries": 1,
-    }
-    assert "max_agent_turns" not in config
+    # One agent is one block: a config names who it is, which model answers
+    # for it and how long it may run.  Compared field by field because the
+    # spec now holds a live client, which is not a value to compare by.
+    assert set(graph_factory.keywords) == {"agent", "model_retries"}
+    assert graph_factory.keywords["model_retries"] == 1
+    agent = graph_factory.keywords["agent"]
+    assert agent.role == "coder"
+    assert agent.prompt == PromptTemplate("coder")
+    assert agent.max_turns == 5
+    assert agent.announce_turn_budget is True
+    # `model: ${model}` follows the run, so one override still swaps every
+    # agent that did not ask for a backend of its own.
+    assert isinstance(agent.model, BaseChatModel)
+    assert agent.model.model_name == "gemma4:e2b"
+    assert "agent" not in config
 
 
 def test_every_rerun_policy_the_config_documents_is_accepted() -> None:
@@ -236,11 +246,11 @@ def test_every_rerun_policy_the_config_documents_is_accepted() -> None:
             config = compose(config_name="default", overrides=[f"on_existing={policy}"])
         assert config.on_existing == policy
         PipelineRunner(
-            model=FakeListChatModel(responses=["done"]),
-            message_builder=instantiate(config.message_builder),
             sandbox_runner=SandboxRunner(
                 python_executable=Path(sys.executable), default_timeout_s=30
             ),
+            graph_factory=instantiate(config.workflow),
+            message_builder=instantiate(config.message_builder),
             artifact_root="unused",
             renderer=instantiate(config.renderer),
             on_existing=config.on_existing,

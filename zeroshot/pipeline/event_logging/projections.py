@@ -1,3 +1,17 @@
+"""Projections of a run's protocol event stream into the channels we consume.
+
+LangGraph emits one raw stream of protocol events; a transformer turns it into
+a named channel a sink can read.  Two of them live here because they are the
+same kind of thing, and because what separates them is only legible side by
+side: one is the durable record of what happened, complete but only after the
+fact; the other is what the model is saying right now, and survives nowhere.
+
+    RunEventTransformer      -> "run_events"      -> events.jsonl, console progress
+    AgentMessageTransformer  -> "agent_messages"  -> console token stream
+
+Neither is scoped to a graph level: both see subgraphs.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -7,6 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from langchain_core.messages import BaseMessage
 from langgraph.stream import ProtocolEvent, StreamChannel, StreamTransformer
+from langgraph.stream.transformers import MessagesTransformer
 from pydantic_core import to_jsonable_python
 
 
@@ -83,17 +98,23 @@ def _safe_value(value: Any) -> Any:
 class RunEventTransformer(StreamTransformer):
     """Project graph activity into compact, stable research events."""
 
+    CHANNEL = "run_events"
+
     required_stream_modes = ("values", "tools", "updates", "tasks")
 
     def __init__(self, scope: tuple[str, ...] = ()) -> None:
         super().__init__(scope)
         self.events = StreamChannel[RunEvent]()
         self._input_written = False
+        # One node across every namespace, which holds only while the graph
+        # runs its nodes one at a time.  Fan out and two `tools` nodes are
+        # active at once, and whichever started last claims both their calls;
+        # attribution has to become per-namespace before that.
         self._active_node: str | None = None
         self._tool_context: dict[str, tuple[str | None, str]] = {}
 
     def init(self) -> dict[str, StreamChannel[RunEvent]]:
-        return {"run_events": self.events}
+        return {self.CHANNEL: self.events}
 
     def process(self, event: ProtocolEvent) -> bool:
         method = event["method"]
@@ -212,3 +233,37 @@ class RunEventTransformer(StreamTransformer):
                 data=data,
             )
         )
+
+
+class AgentMessageTransformer(MessagesTransformer):
+    """Live model output from every graph level, not just the outermost one.
+
+    LangGraph's own `messages` projection keeps to the run's own scope, so once
+    the agent loop became a subgraph its tokens stopped reaching the console --
+    the very output a long run is watched for.  Its docstring points here:
+    "consumers that need subgraph tokens should ... register a custom
+    transformer".
+
+    Only the scope test changes.  Assembling deltas into a stream is left to
+    the base class, and the projection is published under its own key so the
+    built-in one stays where the rest of LangGraph expects it.
+    """
+
+    CHANNEL = "agent_messages"
+
+    _native = False
+
+    def init(self) -> dict[str, StreamChannel[Any]]:
+        return {self.CHANNEL: self._log}
+
+    def process(self, event: ProtocolEvent) -> bool:
+        if event["method"] == "messages":
+            # Pass it off as local. Copied rather than edited in place: the mux
+            # hands the same event to every transformer after this one.
+            event = ProtocolEvent(
+                **{
+                    **event,
+                    "params": {**event["params"], "namespace": self._scope_list},
+                }
+            )
+        return super().process(event)

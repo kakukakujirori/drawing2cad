@@ -21,11 +21,22 @@ from rich.console import Console
 
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages import InputManifest, MessageBuilder
-from zeroshot.pipeline.runner import PipelineRunner
+from zeroshot.pipeline.runner import GraphFactory, PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
-from zeroshot.pipeline.workflow import create_reconstruction_graph
+from zeroshot.pipeline.workflow import AgentSpec, create_reconstruction_graph
 from zeroshot.pipeline.workflow.state import StopReason
+
+
+def _agent(model: BaseChatModel, **overrides: Any) -> AgentSpec:
+    return AgentSpec(role="coder", model=model, **overrides)
+
+
+def _graph_factory(model: BaseChatModel, **overrides: Any) -> GraphFactory:
+    """The baseline graph with a cast bound. A cast is a graph's own setting,
+    so a run's config -- or a test -- binds it before the runner ever sees it."""
+    return partial(create_reconstruction_graph, agent=_agent(model, **overrides))
+
 
 VALID_BOX_SOURCE = """\
 import cadquery as cq
@@ -210,7 +221,9 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         feedback_render3d_styles=(),
     )
     runner = PipelineRunner(
-        model=model,
+        # This test is about input staging and transcript contents, not budget
+        # announcements, so keep those extra HumanMessages out of its fixture.
+        graph_factory=_graph_factory(model, announce_turn_budget=False),
         message_builder=message_builder,
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable),
@@ -241,14 +254,15 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert str(selected_render_path) not in initial_text
     assert str(hidden_render_path) not in initial_text
 
-    messages = result["messages"]
+    # The transcript belongs to the agent, so what the model was last handed is
+    # where the run's conversation is read back from.
+    messages = model.received_messages[-1]
     assert [type(message) for message in messages] == [
         *[type(message) for message in initial_messages],
         AIMessage,
         ToolMessage,
         AIMessage,
         ToolMessage,
-        AIMessage,
     ]
 
     inspect_result = messages[3]
@@ -273,9 +287,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         "stderr": "",
     }
 
-    assert isinstance(messages[-1], AIMessage)
-    assert messages[-1].content == "done"
-    assert messages[-1].tool_calls == []
+    assert result["stop_reason"] is StopReason.COMPLETED
 
     assert dxf_path.read_text(encoding="utf-8") == "ORIGINAL_DXF"
     assert selected_render_path.read_bytes() == b"ALLOWED_RENDER"
@@ -362,7 +374,7 @@ def test_run_sample_preserves_workdir_when_graph_fails(tmp_path: Path) -> None:
     )
     artifact_root = tmp_path / "artifacts"
     runner = PipelineRunner(
-        model=model,
+        graph_factory=_graph_factory(model),
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
@@ -413,7 +425,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     artifact_root = tmp_path / "artifacts"
     console_output = StringIO()
     runner = PipelineRunner(
-        model=model,
+        graph_factory=_graph_factory(model),
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
@@ -507,7 +519,7 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
     )
     artifact_root = tmp_path / "artifacts"
     runner = PipelineRunner(
-        model=model,
+        graph_factory=_graph_factory(model),
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
@@ -516,9 +528,12 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
 
     result = runner.run_sample(manifest)
 
-    intermediate_result = result["messages"][5]
-    assert isinstance(intermediate_result, ToolMessage)
-    assert intermediate_result.tool_call_id == "call-verify-invalid-model"
+    (intermediate_result,) = [
+        message
+        for message in model.received_messages[-1]
+        if isinstance(message, ToolMessage)
+        and message.tool_call_id == "call-verify-invalid-model"
+    ]
     # verify_output answers in content blocks, so that a verified attempt can
     # hand its rendered views back through the same tool message.
     assert isinstance(intermediate_result.content, list)
@@ -545,7 +560,9 @@ def _runner_for_rerun(
     on_existing: str = "fail",
 ) -> PipelineRunner:
     return PipelineRunner(
-        model=_ScriptedChatModel(responses=(AIMessage(content="no tool calls"),)),
+        graph_factory=_graph_factory(
+            _ScriptedChatModel(responses=(AIMessage(content="done"),))
+        ),
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
@@ -603,7 +620,7 @@ def test_a_failed_sample_is_not_treated_as_completed(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"
     manifest = _manifest_without_renders(tmp_path, "failed-then-skip")
     runner = PipelineRunner(
-        model=_ScriptedChatModel(responses=()),
+        graph_factory=_graph_factory(_ScriptedChatModel(responses=())),
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
@@ -644,12 +661,16 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
 
     def recording_factory(**kwargs: Any) -> Any:
         captured.update(kwargs)
-        return create_reconstruction_graph(**kwargs)
+        # A cast is a graph's own setting, so a real factory arrives with one
+        # already bound; only what the runner adds is under test here.
+        return create_reconstruction_graph(
+            agent=_agent(_ScriptedChatModel(responses=(AIMessage(content="x"),))),
+            **kwargs,
+        )
 
     artifact_root = tmp_path / "artifacts"
     manifest = _manifest_without_renders(tmp_path, "injected-graph")
     PipelineRunner(
-        model=_ScriptedChatModel(responses=(AIMessage(content="no tool calls"),)),
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
@@ -658,11 +679,11 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
     ).run_sample(manifest)
 
     assert set(captured) == {
-        "model",
         "sandbox_runner",
         "sandbox_workdir",
         "renderer",
         "message_builder",
+        "input_message",
         "output_filename",
         "verification_dirname",
         "checkpointer",
@@ -687,12 +708,13 @@ def test_a_graphs_own_settings_reach_it_through_the_factory(tmp_path: Path) -> N
         for turn in range(5)
     )
     runner = PipelineRunner(
-        model=_ScriptedChatModel(responses=responses),
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=tmp_path / "artifacts",
         renderer=_renderer(),
-        graph_factory=partial(create_reconstruction_graph, max_agent_turns=2),
+        graph_factory=_graph_factory(
+            _ScriptedChatModel(responses=responses), max_turns=2
+        ),
     )
 
     result = runner.run_sample(manifest)
@@ -707,7 +729,7 @@ def test_retry_redoes_an_interrupted_sample(tmp_path: Path) -> None:
     manifest = _manifest_without_renders(tmp_path, "retry-redo")
     with pytest.raises(AssertionError, match="ran out of responses"):
         PipelineRunner(
-            model=_ScriptedChatModel(responses=()),
+            graph_factory=_graph_factory(_ScriptedChatModel(responses=())),
             message_builder=_message_builder_without_renders(),
             sandbox_runner=_sandbox_runner(),
             artifact_root=artifact_root,
@@ -782,14 +804,13 @@ def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
         for n in range(2)
     )
     PipelineRunner(
-        model=_ScriptedChatModel(responses=responses),
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         renderer=_renderer(),
-        graph_factory=partial(
-            create_reconstruction_graph,
-            max_agent_turns=2,
+        graph_factory=_graph_factory(
+            _ScriptedChatModel(responses=responses),
+            max_turns=2,
             announce_turn_budget=True,
         ),
     ).run_sample(_manifest_without_renders(tmp_path, "announced"))
@@ -799,7 +820,7 @@ def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
         for event in _events(artifact_root / "announced")
         if event["event"] == "message"
         for message in event["data"]["messages"]
-        if message["type"] == "human"
+        if message["type"] == "human" and str(message["content"]).startswith("[turn ")
     ]
     assert notices == [
         "[turn 1/2; candidates submitted: 0]",
@@ -835,17 +856,25 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
     for sample_id, (responses, expected) in cases.items():
         artifact_root = tmp_path / sample_id
         PipelineRunner(
-            model=_ScriptedChatModel(responses=responses),
             message_builder=_message_builder_without_renders(),
             sandbox_runner=_sandbox_runner(),
             artifact_root=artifact_root,
             renderer=_renderer(),
-            graph_factory=partial(create_reconstruction_graph, max_agent_turns=2),
+            graph_factory=_graph_factory(
+                _ScriptedChatModel(responses=responses), max_turns=2
+            ),
         ).run_sample(_manifest_without_renders(tmp_path, sample_id))
 
+        # Twice, and they are not the same statement: the agent reports why it
+        # stopped under its own namespace, and the run reports why it ended.
+        # With one agent they agree; with six the namespaced ones are what say
+        # which of them ran out.
         reasons = [
-            event["data"]["reason"]
+            (tuple(event["namespace"]), event["data"]["reason"])
             for event in _events(artifact_root / sample_id)
             if event["event"] == "stop_reason"
         ]
-        assert reasons == [expected], sample_id
+        assert [reason for _, reason in reasons] == [expected, expected], sample_id
+        agent_namespace, run_namespace = (namespace for namespace, _ in reasons)
+        assert agent_namespace and agent_namespace[0].startswith("coder:"), sample_id
+        assert run_namespace == (), sample_id

@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 
 from zeroshot.pipeline.messages import FeedbackManifest, InputManifest, MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxWorkdir
@@ -122,12 +122,10 @@ def test_initial_message_always_contains_dxf_path_but_not_raw_dxf(
     workdir: SandboxWorkdir,
 ) -> None:
     manifest = _input_manifest(tmp_path)
-    messages = _builder().build_initial(manifest, workdir)
+    message = _builder().build_input_message(manifest, workdir)
 
-    assert len(messages) == 2
-    assert isinstance(messages[0], SystemMessage)
-    assert isinstance(messages[1], HumanMessage)
-    text = _text(_blocks(messages[1]))
+    assert isinstance(message, HumanMessage)
+    text = _text(_blocks(message))
     assert str(workdir.host_to_sandbox_path(manifest.dxf_path)) in text
     assert str(manifest.dxf_path) not in text
     assert "RAW_DXF_MUST_NOT_BE_IN_PROMPT" not in text
@@ -138,7 +136,7 @@ def test_initial_none_has_no_sample_specific_render_information(
     workdir: SandboxWorkdir,
 ) -> None:
     manifest = _input_manifest(tmp_path)
-    human = _builder().build_initial(manifest, workdir)[1]
+    human = _builder().build_input_message(manifest, workdir)
     blocks = _blocks(human)
     text = _text(blocks)
 
@@ -158,7 +156,7 @@ def test_initial_path_includes_only_selected_styles_in_order(
     human = _builder(
         access_mode="path",
         access_styles=selected,
-    ).build_initial(manifest, workdir)[1]
+    ).build_input_message(manifest, workdir)
     text = _text(_blocks(human))
 
     assert text.index("style-c") < text.index("style-a")
@@ -179,7 +177,7 @@ def test_initial_image_interleaves_style_labels_and_images(
     human = _builder(
         access_mode="image",
         access_styles=selected,
-    ).build_initial(manifest, workdir)[1]
+    ).build_input_message(manifest, workdir)
     blocks = _blocks(human)
 
     assert [block["type"] for block in blocks] == [
@@ -212,7 +210,7 @@ def test_initial_rejects_access_style_missing_from_input_manifest(
         _builder(
             access_mode="image",
             access_styles=("missing-style",),
-        ).build_initial(manifest, workdir)
+        ).build_input_message(manifest, workdir)
 
 
 def test_initial_rejects_feedback_style_missing_from_input_manifest(
@@ -225,7 +223,7 @@ def test_initial_rejects_feedback_style_missing_from_input_manifest(
         _builder(
             feedback_mode="image",
             feedback_styles=("missing-style",),
-        ).build_initial(manifest, workdir)
+        ).build_input_message(manifest, workdir)
 
 
 def test_feedback_always_contains_execution_feedback(
@@ -236,21 +234,23 @@ def test_feedback_always_contains_execution_feedback(
         tmp_path,
         execution_feedback="syntax error on line 3",
     )
-    message = _builder().build_feedback(manifest, workdir)
+    blocks = _builder().build_feedback_blocks(manifest, workdir)
 
-    assert "syntax error on line 3" in _text(_blocks(message))
+    assert "syntax error on line 3" in _text(blocks)
 
 
 def test_feedback_includes_projected_dxf_only_when_available(
     tmp_path: Path,
     workdir: SandboxWorkdir,
 ) -> None:
-    without_dxf = _builder().build_feedback(_feedback_manifest(tmp_path), workdir)
-    assert "Projected DXF path" not in _text(_blocks(without_dxf))
+    without_dxf = _builder().build_feedback_blocks(
+        _feedback_manifest(tmp_path), workdir
+    )
+    assert "Projected DXF path" not in _text(without_dxf)
 
     with_dxf_manifest = _feedback_manifest(tmp_path, include_dxf=True)
-    with_dxf = _builder().build_feedback(with_dxf_manifest, workdir)
-    text = _text(_blocks(with_dxf))
+    with_dxf = _builder().build_feedback_blocks(with_dxf_manifest, workdir)
+    text = _text(with_dxf)
     assert "Projected DXF path" in text
     assert with_dxf_manifest.dxf_path is not None
     assert str(workdir.host_to_sandbox_path(with_dxf_manifest.dxf_path)) in text
@@ -274,10 +274,9 @@ def test_feedback_includes_only_available_renders(
         feedback_mode=mode,
         feedback_styles=STYLES,
     )
-    builder.build_initial(input_manifest, workdir)
+    builder.build_input_message(input_manifest, workdir)
 
-    message = builder.build_feedback(feedback_manifest, workdir)
-    blocks = _blocks(message)
+    blocks = builder.build_feedback_blocks(feedback_manifest, workdir)
     text = _text(blocks)
 
     if render_count == 0:
@@ -319,8 +318,8 @@ def test_access_and_feedback_style_selections_do_not_mix(
         feedback_styles=("style-c",),
     )
 
-    initial_text = _text(_blocks(builder.build_initial(input_manifest, workdir)[1]))
-    feedback_text = _text(_blocks(builder.build_feedback(feedback_manifest, workdir)))
+    initial_text = _text(_blocks(builder.build_input_message(input_manifest, workdir)))
+    feedback_text = _text(builder.build_feedback_blocks(feedback_manifest, workdir))
 
     assert "style-a" in initial_text
     assert "style-c" not in initial_text
@@ -332,9 +331,9 @@ def test_feedback_explains_a_missing_dxf_where_its_path_would_have_been(
     tmp_path: Path, workdir: SandboxWorkdir
 ) -> None:
     manifest = _feedback_manifest(tmp_path, dxf_error="DegenerateDrawingError: flat")
-    message = _builder().build_feedback(manifest, workdir)
+    blocks = _builder().build_feedback_blocks(manifest, workdir)
 
-    text = _text(_blocks(message))
+    text = _text(blocks)
     assert "[Projected DXF unavailable: DegenerateDrawingError: flat]" in text
     assert "[Projected DXF path" not in text
 
@@ -350,7 +349,7 @@ def test_feedback_explains_only_the_renders_it_would_have_shown(
     )
     builder = _builder(feedback_mode="path", feedback_styles=("style-a", "style-b"))
 
-    text = _text(_blocks(builder.build_feedback(manifest, workdir)))
+    text = _text(builder.build_feedback_blocks(manifest, workdir))
 
     assert "- style-a: " in text
     assert "- style-b: unavailable (shown style failed)" in text
@@ -368,7 +367,7 @@ def test_feedback_withholding_renders_also_withholds_their_reasons(
         tmp_path, render3d_errors={style: "boom" for style in STYLES}
     )
     builder = _builder(feedback_mode="none", feedback_styles=STYLES)
-    text = _text(_blocks(builder.build_feedback(manifest, workdir)))
+    text = _text(builder.build_feedback_blocks(manifest, workdir))
 
     assert "boom" not in text
     assert "[Projected perspective renders]" not in text

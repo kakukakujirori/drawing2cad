@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
-from inspect import cleandoc
 from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Literal
 
-from langchain_core.messages import (
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-)
+from langchain_core.messages import HumanMessage
 from langchain_core.messages.content import (
     ContentBlock,
     create_image_block,
@@ -42,35 +37,6 @@ class MessageBuilder:
     access_render3d_styles: tuple[str, ...]
     feedback_render3d: Literal["none", "path", "image"]
     feedback_render3d_styles: tuple[str, ...]
-    system_prompt: Callable[[str, str], str] = lambda output_path, verification_dir: (
-        cleandoc(
-            f"""
-        You are an expert CAD engineer specializing in reconstructing accurate parametric 3D models from engineering drawings.
-        Convert the provided three-view DXF drawing into a valid 3D CAD model and write a complete, executable CadQuery Python script to:
-
-        {output_path}
-
-        Requirements:
-        - The output CADQuery script must be self-contained and not load the input DXF or any external files.
-        - Store the completed CADQuery solid in the `result` variable in the output file.
-        - Use all available perspective renders together if provided.
-        - The generated geometry must be valid and exportable to STEP.
-
-        Tools:
-        - `run_shell` can call any bash functions. Use it to read, write and inspect any files.
-        - `load_image` loads the image data from the specified path.
-        - `verify_output` compiles {output_path} and generates a STEP file and its 2D renderings. It returns error messages when STEP generation fails.
-
-        Tips:
-        - Create temporary Python scripts and run them using the `run_shell` tool with the command `python <filename>` for quick analysis and validation.
-        - Use `ezdxf` Python library to analyze the input DXF file. You can visualize it by calling the `run_shell` tool with the command `ezdxf draw <PATH_TO_DXF> -o <OUTPUT_PNG>` and `load_image` tool to view it.
-        - Use the `verify_output` results to debug and refine the {output_path} script.
-        - Review the past `verify_output` results under {verification_dir} if necessary.
-        - Instead of analyzing the entire part before generating the CadQuery code as a final one-time submission, write a simple draft output, call `verify_output`, and use its results to iteratively refine the output.
-        """.strip()
-            + "\n"
-        )
-    )
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -166,16 +132,18 @@ class MessageBuilder:
             render3d_errors=manifest.render3d_errors if is_feedback else {},
         )
 
-    def build_initial(
+    def build_input_message(
         self,
         manifest: InputManifest,
         workdir: SandboxWorkdir,
-        output_filename: str = "model.py",
-        verification_dirname: PurePosixPath = PurePosixPath("attempts"),
-    ) -> list[BaseMessage]:
+    ) -> HumanMessage:
         """
-        Build messages from files staged in workdir.host_bind_dir.
+        Build the opening turn from files staged in workdir.host_bind_dir.
         Paths included in text are translated to workdir.sandbox_bind_dir paths.
+
+        What the run offers the model, not what it asks of it: the system
+        prompt belongs to whichever agent is being addressed, and one
+        MessageBuilder is shared by all of them.
         """
         self._validate_requested_styles(self.access_render3d_styles, manifest)
         self._validate_requested_styles(self.feedback_render3d_styles, manifest)
@@ -210,18 +178,19 @@ class MessageBuilder:
             )
         )
 
-        output_path = str(workdir.sandbox_bind_dir / output_filename)
-        verification_dir = str(workdir.sandbox_bind_dir / verification_dirname)
-        return [
-            SystemMessage(content=self.system_prompt(output_path, verification_dir)),
-            HumanMessage(content_blocks=blocks),
-        ]
+        return HumanMessage(content_blocks=blocks)
 
-    def build_feedback(
+    def build_feedback_blocks(
         self,
         manifest: FeedbackManifest,
         workdir: SandboxWorkdir,
-    ) -> HumanMessage:
+    ) -> list[ContentBlock]:
+        """Build what a verification reports back, as the payload of a tool result.
+
+        Blocks rather than a message: this is what `verify_output` returns, and
+        the ToolNode is what turns it into a ToolMessage.  A verification never
+        becomes a turn anyone spoke.
+        """
         sandbox_manifest = self._translate_paths(
             manifest, workdir, self.feedback_render3d
         )
@@ -263,7 +232,7 @@ class MessageBuilder:
                 "Use this feedback to revise the candidate, or submit a corrected final candidate."
             )
         )
-        return HumanMessage(content_blocks=blocks)
+        return blocks
 
     @staticmethod
     def _validate_requested_styles(

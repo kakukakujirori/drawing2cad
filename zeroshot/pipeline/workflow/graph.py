@@ -1,90 +1,36 @@
-from collections.abc import Sequence
-from functools import partial
 from pathlib import PurePosixPath
 from typing import Any
 
-import httpx
-from langchain_core.language_models import BaseChatModel, LanguageModelInput
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_core.runnables import Runnable
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode
 
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import (
-    ToolFeedbackError,
     create_load_image_tool,
     create_run_shell_tool,
     create_verify_output_tool,
 )
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
-from zeroshot.pipeline.workflow.state import ReconstructionState, StopReason
-
-
-def _budget_notice(
-    messages: Sequence[BaseMessage],
-    turn: int,
-    budget: int,
-) -> HumanMessage:
-    """Where the agent stands in a budget it cannot otherwise observe.
-
-    It stays in the transcript so the agent reads a rate rather than a
-    position: at turn 19 the earlier markers are what say how fast it got there.
-    """
-
-    submitted = sum(
-        call["name"] == "verify_output"
-        for message in messages
-        if isinstance(message, AIMessage)
-        for call in message.tool_calls
-    )
-    return HumanMessage(
-        content=f"[turn {turn}/{budget}; candidates submitted: {submitted}]"
-    )
+from zeroshot.pipeline.workflow.agent import AgentSpec, create_agent_subgraph
+from zeroshot.pipeline.workflow.state import ReconstructionState
 
 
 def create_reconstruction_graph(
-    model: BaseChatModel,
+    agent: AgentSpec,
     sandbox_runner: SandboxRunner,
     sandbox_workdir: SandboxWorkdir,
     renderer: StepRenderer,
     message_builder: MessageBuilder,
+    input_message: HumanMessage,
     output_filename: str = "model.py",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
-    max_agent_turns: int = 30,
-    announce_turn_budget: bool = False,
     model_retries: int = 5,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ):
-    if max_agent_turns < 1:
-        raise ValueError("max_agent_turns must be at least 1")
-    if model_retries < 0:
-        raise ValueError("model_retries must not be negative")
-
-    def should_continue(state: ReconstructionState):
-        last_message = state["messages"][-1]
-        if not isinstance(last_message, AIMessage):
-            raise TypeError("agent node must append an AIMessage before routing")
-        if last_message.tool_calls and state["agent_turns"] < max_agent_turns:
-            return "tools"
-        return "verify_final"
-
-    def call_agent(
-        state: ReconstructionState,
-        agent: Runnable[LanguageModelInput, AIMessage],
-    ):
-        turn = state.get("agent_turns", 0) + 1
-        history = state["messages"]
-        notice: list[BaseMessage] = (
-            [_budget_notice(history, turn, max_agent_turns)]
-            if announce_turn_budget
-            else []
-        )
-        response = agent.invoke([*history, *notice])
-        return {"messages": [*notice, response], "agent_turns": turn}
-
+    """One agent writes a CadQuery program, then the workflow verifies it."""
     # Create and bind tools
     executor = CadQueryExecutor(sandbox_runner=sandbox_runner)
     tools = [
@@ -100,15 +46,34 @@ def create_reconstruction_graph(
             serialize_output=True,
         ),
     ]
-    # The client's own `max_retries` decides from the response status, so a
-    # connection that dies mid-body after a 200 is already past it. Timeouts are
-    # excluded: they are the one transport failure where waiting again costs the
-    # whole request budget rather than a moment.
-    agent = model.bind_tools(tools).with_retry(
-        retry_if_exception_type=(httpx.NetworkError, httpx.ProtocolError),
-        stop_after_attempt=model_retries + 1,
+
+    coder = create_agent_subgraph(
+        spec=agent,
+        tools=tools,
+        prompt_context={
+            "output_path": str(sandbox_workdir.sandbox_bind_dir / output_filename),
+            "verification_dir": str(
+                sandbox_workdir.sandbox_bind_dir / verification_dirname
+            ),
+        },
+        model_retries=model_retries,
     )
-    tool_node = ToolNode(tools, handle_tool_errors=ToolFeedbackError)
+
+    def agent_loop(state: ReconstructionState):
+        """Give the coder its task and adopt what it reports.
+
+        Only the mapping between two state schemas lives here.  The transcript
+        deliberately stays in the subgraph: copying it up would record every
+        turn twice -- once as the agent produced it, once as this node's update
+        -- and an offline reader replaying the log would see the conversation
+        doubled.
+        """
+        del state
+        result = coder.invoke({"task": [input_message]})
+        return {
+            "agent_turns": result["turns"],
+            "stop_reason": result["stop_reason"],
+        }
 
     # Postprocess node
     # The final attempt is rendered like any other, so an evaluation pass does
@@ -125,24 +90,16 @@ def create_reconstruction_graph(
     )
 
     def verify_final(state: ReconstructionState):
-        last_message = state["messages"][-1]
-        stop_reason = (
-            StopReason.BUDGET_EXHAUSTED
-            if isinstance(last_message, AIMessage) and last_message.tool_calls
-            else StopReason.COMPLETED
-        )
-        report = verify_final_tool.invoke({})
-        return {"last_verification": report, "stop_reason": stop_reason}
+        del state
+        return {"last_verification": verify_final_tool.invoke({})}
 
     # Construct a graph
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
-    workflow.add_node("agent", partial(call_agent, agent=agent))
-    workflow.add_node("tools", tool_node)
+    workflow.add_node(agent.role, agent_loop)
     workflow.add_node("verify_final", verify_final)
 
-    workflow.add_edge(START, "agent")
-    workflow.add_conditional_edges("agent", should_continue, ["tools", "verify_final"])
-    workflow.add_edge("tools", "agent")
+    workflow.add_edge(START, agent.role)
+    workflow.add_edge(agent.role, "verify_final")
     workflow.add_edge("verify_final", END)
 
     graph = workflow.compile(checkpointer=checkpointer)
@@ -179,11 +136,12 @@ if __name__ == "__main__":
 
     with SandboxWorkdir() as workdir:
         graph = create_reconstruction_graph(
-            model=preview_model,
+            agent=AgentSpec(role="coder", model=preview_model),
             sandbox_runner=sandbox_runner,
             sandbox_workdir=workdir,
             renderer=StepRenderer(timeout_s=60),
             message_builder=message_builder,
+            input_message=HumanMessage(content="preview"),
         )
 
         png_data = graph.get_graph().draw_mermaid_png()

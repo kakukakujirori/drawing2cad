@@ -17,27 +17,16 @@ _PROMPT_DIR = Path(__file__).parent
 
 @dataclass(frozen=True)
 class PromptTemplate:
-    """A named prompt file, and the values it still needs to be rendered.
-
-    `name` resolves against this package rather than the working directory:
-    Hydra moves the process into the job's output directory before a run
-    starts, so a relative path written in a config would not survive it. An
-    absolute path is taken as given, which is enough to try a prompt kept
-    outside the repository without adding a search-path setting.
-    """
-
-    name: str
+    role: str
 
     def __post_init__(self) -> None:
-        # A missing prompt is a configuration error, so it fails while the
-        # graph is being built rather than partway through a run.
         if not self.path.is_file():
             raise ValueError(f"prompt not found: {self.path}")
 
     @property
     def path(self) -> Path:
-        candidate = Path(self.name)
-        return candidate if candidate.is_absolute() else _PROMPT_DIR / f"{self.name}.md"
+        candidate = Path(self.role)
+        return candidate if candidate.is_absolute() else _PROMPT_DIR / f"{self.role}.md"
 
     @property
     def sha256(self) -> str:

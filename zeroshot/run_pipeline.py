@@ -18,7 +18,7 @@ from zeroshot.provenance import record_run
 
 
 def run(config: DictConfig) -> ReconstructionState | None:
-    """Run one sample with already constructed model dependency."""
+
     sandbox_runner = SandboxRunner(
         python_executable=Path(
             to_absolute_path(config.sandbox_runner.python_executable)
@@ -29,12 +29,11 @@ def run(config: DictConfig) -> ReconstructionState | None:
     )
 
     runner = PipelineRunner(
-        model=instantiate(config.model),
-        message_builder=instantiate(config.message_builder),
         sandbox_runner=sandbox_runner,
+        graph_factory=instantiate(config.workflow),
+        message_builder=instantiate(config.message_builder),
         artifact_root=Path(to_absolute_path(config.artifact_root)),
         renderer=instantiate(config.renderer) or StepRenderer(),
-        graph_factory=instantiate(config.workflow),
         on_existing=config.on_existing,
         console_reporter=instantiate(config.console),
     )
