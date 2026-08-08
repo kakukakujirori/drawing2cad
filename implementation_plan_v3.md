@@ -23,7 +23,7 @@ characterization step は設けない。
 
 ```text
 input
-  -> semantic hypothesis + primitive correspondence
+  -> semantic hypothesis（cross-view correspondenceの推論はtranscriptに保持）
   -> verify hypothesis
   -> operation plan
   -> verify operations
@@ -88,47 +88,24 @@ contractであり、別moduleに分けるより「stateに何が載るか」を1
 
 単なる行数増加だけを理由には分割しない。
 
-### 2.3 View Registration は Semantic Hypothesis に統合する
+### 2.3 View Registration は独立した型付きartifactにしない
 
 ここでいう View Registration は front / top / right のview名を割り当てる処理では
 ない。view名は入力DXFのlayerから既知である。
 
 必要なのは、**異なるview layer上のどの2D primitive群が同じ3D partに由来するか**
 という primitive-wise correspondence である。これはpartのsemantic解釈と分離して
-確定しにくいため、独立stageおよび独立 `ViewRegistration` 型は作らない。
+確定しにくく、対応関係の `evidence` を機械的に検証できる形で要求することも難しい。
+したがって初版では `ViewRegistration`、`PrimitiveRef`、`PartHypothesis` を定義しない。
 
-最初のschema案は次の責務を持つ。
+semantic agentはcross-view correspondenceを推論過程として扱うが、stageの型付き出力は
+`SemanticHypothesis` の `semantics: list[str]` だけとする。primitive対応、根拠、曖昧性
+などmodelが返した補足情報はraw AIMessageおよびtool interactionとしてtranscriptへ残す。
+後段はこの型付きartifactとtranscriptの両方を受け取る。
 
-```text
-PrimitiveRef
-  - layer
-  - entity identifier
-
-PartHypothesis
-  - stable part id
-  - semantic label / description
-  - 同じ3D partに由来すると考える PrimitiveRef 群
-  - semantic interpretation を支える evidence
-  - unresolved ambiguity
-
-SemanticHypothesis
-  - PartHypothesis 群
-  - part間の幾何・接続関係
-  - 全体として未解決の曖昧性
-```
-
-correspondenceそのものへ独立した `evidence` の提出は要求しない。
-`evidence` はpartのsemantic解釈を説明するためのものとする。また、part種別を
-初版からenumに固定しない。未知の形状を扱うR&D pipelineなので、open-endedな
-文字列の方が適切である。
-
-`PrimitiveRef` のentity identifierは、まず実DXFで `layer + entity handle` が
-安定して使えるかを確認する。全入力でhandleを利用できないことが分かった場合に
-限り、inspection scriptが発行する決定的index等へ切り替える。確認前に座標を
-組み合わせた独自ID schemeは作らない。
-
-primitiveとpartの対応に排他制約を課すかも実例で決める。接合境界や曖昧な投影を
-考慮し、初版から「1 primitiveは必ず1 partだけに属する」とは仮定しない。
+この契約はprimitive対応を不要と判断したという意味ではない。現時点で安定して型付け
+できない情報を、根拠の弱いID schemeやfieldで固定しないという判断である。実験により
+programmaticなprimitive参照が必要だと分かった時点で、実データに基づいて拡張する。
 
 ### 2.4 型付き出力とmessage transcriptを両方引き継ぐ
 
@@ -155,9 +132,10 @@ providerが返さないhidden CoTは保存できない。本計画でいうthink
 stage専用の `submit_*` terminal toolは作らない。agentは現在と同じく、modelの
 最終AIMessageにtool callが無ければ終了する。
 
-推論stageのpromptでは最終応答をraw JSONにするよう指示し、終了後に親graphが
-対応するPydantic modelで検証する。JSONと型が不正ならstageを成功扱いせず、明確な
-validation errorでrunを止める。
+推論stageのpromptでは最終応答をraw JSONにするよう指示し、終了後にそのstageを
+所有するworkflow nodeが対応するPydantic modelで検証する。review loopをlocal graphへ
+閉じ込める場合は、そのlocal graphのnodeが検証を所有する。JSONと型が不正ならstageを
+成功扱いせず、明確なvalidation errorでrunを止める。
 
 初版では自動reformat turnを追加しない。live実験でformat errorが無視できない割合に
 達した場合だけ、元の推論をやり直さず整形だけを要求するrepair pathを検討する。
@@ -196,25 +174,26 @@ ablationが必要になった時に初めてconfig化する。
 
 これは純粋な配置変更として実施し、stage機能追加と同じdiffには混ぜない。
 
-### Step 2 — 最初のstage output contractとstateを定義する
+### ✅ Step 2 — 最初のstage output contractとstateを定義する
 
 作業:
 
-1. 実DXF数件を読み、各layerのentity handleがprimitive参照に使えることを確認する。
-2. `state.py` に `SemanticHypothesis`、
-   `SemanticHypothesisReview` とreview decisionを定義する。
-3. model output用Pydantic modelは原則 `extra="forbid"` とし、schema driftを検出する。
-4. `SemanticHypothesisReview` は少なくとも `accept` / `revise` を表し、`revise` の場合は
-   revision instructionが空でないことをvalidationする。
-5. `ReconstructionState` にcanonical `messages`、semantic artifact、review、
-   revision counterを追加する。後段invalid化のためartifact fieldは明示的な
-   `None` を許容する。
+1. `state.py` に `SemanticHypothesis(semantics: list[str])` を定義する。
+2. semantic review loopだけが使う内部契約として、`decision: accept | revise` と
+   `feedback` を持つ `SemanticHypothesisReview` を定義する。
+3. 両Pydantic modelを `extra="forbid"` とし、schema driftを検出する。
+4. `revise` の場合は空または空白だけの `feedback` をvalidation errorにする。
+5. `ReconstructionState` にはcanonical `messages` とaccepted
+   `semantic_hypothesis` だけを追加する。reviewとrevision counterは追加しない。
+6. 親graphのpublic artifactである `SemanticHypothesis` を `workflow/__init__.py` から
+   re-exportする。内部review型はre-exportしない。
 
 完了条件:
 
-- validな最終JSONから `SemanticHypothesis` / `HypothesisReview` を構築できる。
-- unknown field、欠落field、不正decision、不完全なrevise判定を拒否できる。
-- primitive correspondenceがpart仮説の内部にあり、独立 `ViewRegistration` がない。
+- validな最終JSONから `SemanticHypothesis` / `SemanticHypothesisReview` を構築できる。
+- unknown field、欠落field、不正decision、feedbackの無いrevise判定を拒否できる。
+- `ReconstructionState` に `SemanticHypothesis` はあるが、reviewとrevision counterはない。
+- `PrimitiveRef`、`PartHypothesis`、独立 `ViewRegistration` が存在しない。
 - schemaを含む `ReconstructionState` がLangGraph checkpointerをround-tripできる。
 - schema testはmodel、agent、toolを起動せず実行できる。
 
@@ -251,29 +230,32 @@ ablationが必要になった時に初めてconfig化する。
 
 作業:
 
-1. `semantic_hypothesis.md` と `verify_hypothesis.md` を追加する。
-2. `graph.py` を次の経路へ直接更新する。
+1. `semantic_hypothesis.md` と `semantic_hypothesis_review.md` を追加する。
+2. `graph.py` 内でsemantic stage用のnested `StateGraph` を構築する。directoryとしての
+   `subgraphs/` packageは復活させず、独立moduleへの抽出も必要になるまで行わない。
 
    ```text
-   START -> initialize_input -> semantic_hypothesis -> verify_hypothesis
-                                    ^                       |
-                                    +------ revise ---------+
-                                                            |
-                                                          accept
-                                                            v
-                                                          coder
-                                                            v
-                                                       verify_final -> END
+   parent:
+   START -> initialize_input -> semantic_stage -> coder -> verify_final -> END
+
+   semantic_stage local graph:
+   semantic_hypothesis -> semantic_hypothesis_review
+           ^                    |
+           +------ revise ------+
+                                |
+                              accept -> return
    ```
 
 3. graph factoryは `semantic_agent`、`hypothesis_reviewer`、`coder_agent` を明示的に
    受け取る。
 4. semantic/reviewerにはDXF・画像を調査するための必要最小toolを、coderには現在の
    code生成・verification toolを渡す。
-5. reviewのrevision回数にworkflow-level上限を設ける。agent turn budgetとは別物として
-   configに記録する。
-6. accepted hypothesisをtyped JSONとtranscriptの両方でcoderへ渡す。
-7. 現workflow configは単一agent baselineではなくなるため、config groupを
+5. semantic stageのlocal stateだけにcandidate、review、revision countを置く。
+   revision上限はagent turn budgetとは別物としてconfigに記録する。
+6. stage完了時、親 `ReconstructionState` へ返すのはaccepted `SemanticHypothesis` と
+   current-stage message deltaだけとする。reviewとrevision countは親へ返さない。
+7. accepted hypothesisをtyped JSONとtranscriptの両方でcoderへ渡す。
+8. 現workflow configは単一agent baselineではなくなるため、config groupを
    `baseline.yaml` から `staged.yaml` へ改名し、`default.yaml` の選択も更新する。
    過去baselineの再現は以前のcommitを使う。
 
@@ -281,9 +263,11 @@ ablationが必要になった時に初めてconfig化する。
 
 - accept経路が従来同様にcode生成と最終verificationまで到達する。
 - revise経路がfeedbackを含めてsemantic stageへ戻り、上限で必ず停止する。
-- revision後のstateには最新 `SemanticHypothesis` と全revision transcriptが残る。
+- 親stateには最新 `SemanticHypothesis` と全revision transcriptが残るが、typed reviewと
+  revision counterは残らない。
 - 不正なtyped outputからはcoderへ進まない。
-- graph testでaccept/revise/budget exhaustion/checkpoint resumeを再現できる。
+- local semantic graphのtestでaccept/revise/revision上限/checkpoint resumeを再現できる。
+- parent graphのtestでaccepted hypothesisとmessage deltaだけが引き取られる。
 - `tests/zeroshot` 全体がgreenである。
 
 ここを「stage間の型付き出力」導入の最初の完了milestoneとする。
@@ -296,9 +280,12 @@ ablationが必要になった時に初めてconfig化する。
 1. 実装直前に `Operation`、`OperationPlan`、`OperationReview` を `state.py` へ追加する。
 2. `operation_planner.md` と `verify_operations.md` を追加する。
 3. accepted semantic hypothesisと全contextをoperation plannerへ渡す。
-4. `verify_operations` のaccept/revise loopを追加し、workflow-level上限を設ける。
-5. coderはaccepted `OperationPlan` を必須入力とする。
-6. semantic stageへ差し戻された場合、以前のoperation plan、operation review、
+4. semantic stageと同様にoperation plan/reviewをlocal graphへまとめ、reviewとrevision
+   counterはlocal stateだけに置く。
+5. `verify_operations` のaccept/revise loopを追加し、workflow-level上限を設ける。
+6. 親stateへ返すのはaccepted `OperationPlan` とmessage deltaだけとする。
+7. coderはaccepted `OperationPlan` を必須入力とする。
+8. semantic stageへ差し戻された場合、以前のoperation plan、
    code/final verificationを明示的に `None` へ戻す。operation stageのrevisionでは
    code以降だけをinvalid化する。
 
@@ -401,14 +388,15 @@ ablationが必要になった時に初めてconfig化する。
 v3全体の完了は、単なる `ReconstructionState` の再定義ではなく、次をすべて満たした
 状態とする。
 
-- semantic correspondence、semantic review、operation plan、operation review、
-  output critiqueが型付きartifactとしてstateに残る。
+- accepted semantic hypothesis、accepted operation plan、output critiqueが親stateの
+  型付きartifactとして残る。各reviewはそれを所有するlocal stage stateにだけ置く。
 - 各stageが上流のtyped artifactと公開済みmessage historyの両方を受け取る。
 - agentはtool callなしで自然終了でき、terminal submission toolを必要としない。
 - verifier/criticの判定だけがstage間routingを決定する。
 - upstream revisionでstaleなdownstream artifactが確実にinvalid化される。
 - coderの自主的なcode verification loopが維持される。
 - 全loopに有限のrevision/turn上限がある。
-- checkpoint resume後もartifact、transcript、revision counterが一貫する。
+- checkpoint resume後もartifactとtranscriptが一貫し、実行中のlocal loopでは
+  revision counterも一貫する。
 - stage別の失敗箇所、turn、token、revision回数を観測できる。
 - `tests/zeroshot` がall greenである。
