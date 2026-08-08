@@ -3,6 +3,7 @@ from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
+from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.codex import _ChatOpenAICodex
@@ -12,7 +13,11 @@ from zeroshot.pipeline.event_logging import ConsoleReporter
 from zeroshot.pipeline.messages import MessageBuilder, PromptTemplate
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
-from zeroshot.pipeline.workflow import create_reconstruction_graph
+from zeroshot.pipeline.workflow import (
+    SemanticHypothesis,
+    create_agent,
+    create_reconstruction_graph,
+)
 
 CONFIG_DIR = Path(__file__).parents[2] / "zeroshot" / "configs"
 
@@ -209,29 +214,41 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
                 "workflow=baseline",
                 # Overridden rather than read, so flipping a checked-in default
                 # is an experiment, not a test failure.
-                "workflow.agent.role=coder",
-                "workflow.agent.max_turns=5",
-                "workflow.agent.announce_turn_budget=true",
+                "workflow.coder.max_turns=5",
+                "workflow.coder.announce_turn_budget=true",
                 "workflow.model_retries=1",
             ],
         )
 
     graph_factory = instantiate(config.workflow)
     assert graph_factory.func is create_reconstruction_graph
-    # One agent is one block: a config names who it is, which model answers
-    # for it and how long it may run.  Compared field by field because the
-    # spec now holds a live client, which is not a value to compare by.
-    assert set(graph_factory.keywords) == {"agent", "model_retries"}
+    # One agent is one block: a config names who it is, which model answers for
+    # it and how long it may run, and leaves the tools to the graph.
+    assert set(graph_factory.keywords) == {
+        "semantic_hypothesizer",
+        "semantic_reviewer",
+        "coder",
+        "model_retries",
+    }
     assert graph_factory.keywords["model_retries"] == 1
-    agent = graph_factory.keywords["agent"]
-    assert agent.role == "coder"
-    assert agent.prompt == PromptTemplate("coder")
-    assert agent.max_turns == 5
-    assert agent.announce_turn_budget is True
+
+    coder = graph_factory.keywords["coder"]
+    assert coder.func is create_agent
+    assert coder.keywords["role"] == "coder"
+    assert PromptTemplate(coder.keywords["role"]).path.is_file()
+    assert coder.keywords["max_turns"] == 5
+    assert coder.keywords["announce_turn_budget"] is True
     # `model: ${model}` follows the run, so one override still swaps every
     # agent that did not ask for a backend of its own.
-    assert isinstance(agent.model, BaseChatModel)
-    assert agent.model.model_name == "gemma4:e2b"
+    assert isinstance(coder.keywords["model"], BaseChatModel)
+    assert coder.keywords["model"].model_name == "gemma4:e2b"
+
+    # A reasoning stage owes a typed answer, and which strategy produces it is
+    # the config's call rather than something read off the model's profile.
+    hypothesizer = graph_factory.keywords["semantic_hypothesizer"]
+    assert isinstance(hypothesizer.keywords["response_format"], ProviderStrategy)
+    assert hypothesizer.keywords["response_format"].schema is SemanticHypothesis
+    assert "response_format" not in coder.keywords
     assert "agent" not in config
 
 

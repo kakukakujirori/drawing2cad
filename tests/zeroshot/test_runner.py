@@ -1,7 +1,6 @@
 import json
 import shlex
 import sys
-from collections.abc import Callable, Sequence
 from functools import partial
 from inspect import cleandoc
 from io import StringIO
@@ -9,33 +8,39 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.language_models import BaseChatModel, LanguageModelInput
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_core.runnables import Runnable
-from langchain_core.tools import BaseTool
 from langgraph.checkpoint.sqlite import SqliteSaver
-from pydantic import PrivateAttr
 from rich.console import Console
 
+from tests.zeroshot.chat_models import ScriptedChatModel
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages import InputManifest, MessageBuilder
 from zeroshot.pipeline.runner import GraphFactory, PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
-from zeroshot.pipeline.workflow import AgentSpec, create_reconstruction_graph
+from zeroshot.pipeline.workflow import (
+    create_agent,
+    create_reconstruction_graph,
+)
 from zeroshot.pipeline.workflow.state import StopReason
 
 
-def _agent(model: BaseChatModel, **overrides: Any) -> AgentSpec:
-    return AgentSpec(role="coder", model=model, **overrides)
+def _agent(role: str, model: BaseChatModel, **overrides: Any):
+    return partial(create_agent, role=role, model=model, **overrides)
 
 
 def _graph_factory(model: BaseChatModel, **overrides: Any) -> GraphFactory:
     """The baseline graph with a cast bound. A cast is a graph's own setting,
     so a run's config -- or a test -- binds it before the runner ever sees it."""
-    return partial(create_reconstruction_graph, agent=_agent(model, **overrides))
+    return partial(
+        create_reconstruction_graph,
+        semantic_hypothesizer=_agent(
+            "semantic_hypothesizer", ScriptedChatModel(responses=())
+        ),
+        semantic_reviewer=_agent("semantic_reviewer", ScriptedChatModel(responses=())),
+        coder=_agent("coder", model, **overrides),
+    )
 
 
 VALID_BOX_SOURCE = """\
@@ -43,63 +48,6 @@ import cadquery as cq
 
 result = cq.Workplane("XY").box(10, 20, 30)
 """
-
-
-class _ScriptedChatModel(BaseChatModel):
-    responses: tuple[AIMessage, ...]
-
-    _response_index: int = PrivateAttr(default=0)
-    _received_messages: list[list[BaseMessage]] = PrivateAttr(default_factory=list)
-    _bound_tool_names: tuple[str, ...] = PrivateAttr(default=())
-
-    @property
-    def _llm_type(self) -> str:
-        return "scripted-test-model"
-
-    @property
-    def received_messages(self) -> list[list[BaseMessage]]:
-        return self._received_messages
-
-    @property
-    def bound_tool_names(self) -> tuple[str, ...]:
-        return self._bound_tool_names
-
-    def bind_tools(
-        self,
-        tools: Sequence[dict[str, Any] | type | Callable[..., Any] | BaseTool],
-        *,
-        tool_choice: str | None = None,
-        **kwargs: Any,
-    ) -> Runnable[LanguageModelInput, AIMessage]:
-        del tool_choice, kwargs
-
-        if not all(isinstance(tool, BaseTool) for tool in tools):
-            raise TypeError("This scripted model only accepts BaseTool instances")
-
-        self._bound_tool_names = tuple(
-            tool.name for tool in tools if isinstance(tool, BaseTool)
-        )
-        return self
-
-    def _generate(
-        self,
-        messages: list[BaseMessage],
-        stop: list[str] | None = None,
-        run_manager: CallbackManagerForLLMRun | None = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        del stop, run_manager, kwargs
-
-        self._received_messages.append(list(messages))
-        try:
-            response = self.responses[self._response_index]
-        except IndexError as error:
-            raise AssertionError("Scripted model ran out of responses") from error
-
-        self._response_index += 1
-        return ChatResult(
-            generations=[ChatGeneration(message=response)],
-        )
 
 
 def _message_text(message: BaseMessage) -> str:
@@ -187,7 +135,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         print('staged-ok')
         """
     )
-    model = _ScriptedChatModel(
+    model = ScriptedChatModel(
         responses=(
             AIMessage(
                 content="",
@@ -355,7 +303,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
 
 def test_run_sample_preserves_workdir_when_graph_fails(tmp_path: Path) -> None:
     manifest = _manifest_without_renders(tmp_path, "failed-run")
-    model = _ScriptedChatModel(
+    model = ScriptedChatModel(
         responses=(
             AIMessage(
                 content="",
@@ -401,7 +349,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     tmp_path: Path,
 ) -> None:
     manifest = _manifest_without_renders(tmp_path, "valid-box")
-    model = _ScriptedChatModel(
+    model = ScriptedChatModel(
         responses=(
             AIMessage(
                 content="",
@@ -446,7 +394,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     assert report.status == "VERIFIED"
     assert report.verification_id == "000"
     rendered_console = console_output.getvalue()
-    assert "[node] agent started — waiting for model" in rendered_console
+    assert "[node] model started — waiting" in rendered_console
     assert "tool call: run_shell" in rendered_console
     assert "done" in rendered_console
     assert "[verification]" in rendered_console
@@ -472,7 +420,7 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
     tmp_path: Path,
 ) -> None:
     manifest = _manifest_without_renders(tmp_path, "repair-box")
-    model = _ScriptedChatModel(
+    model = ScriptedChatModel(
         responses=(
             AIMessage(
                 content="",
@@ -561,7 +509,7 @@ def _runner_for_rerun(
 ) -> PipelineRunner:
     return PipelineRunner(
         graph_factory=_graph_factory(
-            _ScriptedChatModel(responses=(AIMessage(content="done"),))
+            ScriptedChatModel(responses=(AIMessage(content="done"),))
         ),
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
@@ -620,7 +568,7 @@ def test_a_failed_sample_is_not_treated_as_completed(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"
     manifest = _manifest_without_renders(tmp_path, "failed-then-skip")
     runner = PipelineRunner(
-        graph_factory=_graph_factory(_ScriptedChatModel(responses=())),
+        graph_factory=_graph_factory(ScriptedChatModel(responses=())),
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
@@ -664,7 +612,15 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
         # A cast is a graph's own setting, so a real factory arrives with one
         # already bound; only what the runner adds is under test here.
         return create_reconstruction_graph(
-            agent=_agent(_ScriptedChatModel(responses=(AIMessage(content="x"),))),
+            semantic_hypothesizer=_agent(
+                "semantic_hypothesizer", ScriptedChatModel(responses=())
+            ),
+            semantic_reviewer=_agent(
+                "semantic_reviewer", ScriptedChatModel(responses=())
+            ),
+            coder=_agent(
+                "coder", ScriptedChatModel(responses=(AIMessage(content="x"),))
+            ),
             **kwargs,
         )
 
@@ -713,7 +669,7 @@ def test_a_graphs_own_settings_reach_it_through_the_factory(tmp_path: Path) -> N
         artifact_root=tmp_path / "artifacts",
         renderer=_renderer(),
         graph_factory=_graph_factory(
-            _ScriptedChatModel(responses=responses), max_turns=2
+            ScriptedChatModel(responses=responses), max_turns=2
         ),
     )
 
@@ -729,7 +685,7 @@ def test_retry_redoes_an_interrupted_sample(tmp_path: Path) -> None:
     manifest = _manifest_without_renders(tmp_path, "retry-redo")
     with pytest.raises(AssertionError, match="ran out of responses"):
         PipelineRunner(
-            graph_factory=_graph_factory(_ScriptedChatModel(responses=())),
+            graph_factory=_graph_factory(ScriptedChatModel(responses=())),
             message_builder=_message_builder_without_renders(),
             sandbox_runner=_sandbox_runner(),
             artifact_root=artifact_root,
@@ -809,7 +765,7 @@ def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
         artifact_root=artifact_root,
         renderer=_renderer(),
         graph_factory=_graph_factory(
-            _ScriptedChatModel(responses=responses),
+            ScriptedChatModel(responses=responses),
             max_turns=2,
             announce_turn_budget=True,
         ),
@@ -861,7 +817,7 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             artifact_root=artifact_root,
             renderer=_renderer(),
             graph_factory=_graph_factory(
-                _ScriptedChatModel(responses=responses), max_turns=2
+                ScriptedChatModel(responses=responses), max_turns=2
             ),
         ).run_sample(_manifest_without_renders(tmp_path, sample_id))
 

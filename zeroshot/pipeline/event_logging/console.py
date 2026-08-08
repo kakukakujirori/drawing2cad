@@ -64,7 +64,7 @@ class ConsoleReporter:
                 self._render_value(message.get("content"))
         elif name == "node_started":
             node = data.get("node", "unknown")
-            suffix = " — waiting for model" if node == "agent" else ""
+            suffix = " — waiting" if node == "model" else ""
             self.console.print(
                 f"\n[node] {node} started{suffix}",
                 style="bold blue",

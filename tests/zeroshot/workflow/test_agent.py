@@ -1,10 +1,9 @@
-from collections.abc import Callable, Iterator, Sequence
-from typing import Any, cast
-from unittest.mock import Mock
+from typing import Any
 
 import httpx
 import pytest
-from langchain_core.language_models import BaseChatModel, LanguageModelInput
+from langchain.agents.structured_output import ProviderStrategy
+from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -12,12 +11,15 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.runnables import RunnableLambda
+from langchain_core.outputs import ChatResult
 from langchain_core.tools import BaseTool, tool
+from pydantic import PrivateAttr
 
+from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from zeroshot.pipeline.messages import PromptTemplate
 from zeroshot.pipeline.tools import ToolFeedbackError
-from zeroshot.pipeline.workflow import AgentSpec, StopReason, create_agent_subgraph
+from zeroshot.pipeline.workflow import SemanticHypothesis, StopReason
+from zeroshot.pipeline.workflow.agent import create_agent
 
 PROMPT_CONTEXT = {
     "output_path": "/work/model.py",
@@ -37,212 +39,182 @@ def verify_output() -> str:
     return "checked"
 
 
-def _model(
-    call: Callable[[LanguageModelInput], AIMessage],
-) -> tuple[BaseChatModel, Mock]:
-    model_mock = Mock(spec=BaseChatModel)
-    model_mock.bind_tools.return_value = RunnableLambda(call)
-    return cast(BaseChatModel, model_mock), model_mock
+class _FlakyChatModel(ScriptedChatModel):
+    """Fails a scripted number of times before answering."""
 
+    errors: tuple[Any, ...] = ()
 
-def _scripted_model(
-    responses: Sequence[AIMessage],
-) -> tuple[BaseChatModel, Mock, list[list[BaseMessage]]]:
-    pending: Iterator[AIMessage] = iter(responses)
-    seen: list[list[BaseMessage]] = []
+    _attempts: int = PrivateAttr(default=0)
 
-    def call(model_input: LanguageModelInput) -> AIMessage:
-        assert isinstance(model_input, list)
-        assert all(isinstance(message, BaseMessage) for message in model_input)
-        seen.append(cast(list[BaseMessage], model_input))
-        return next(pending)
+    @property
+    def attempts(self) -> int:
+        return self._attempts
 
-    model, model_mock = _model(call)
-    return model, model_mock, seen
-
-
-def _agent(model: BaseChatModel, **overrides: Any) -> AgentSpec:
-    return AgentSpec(role="coder", model=model, **overrides)
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self._attempts += 1
+        if self._attempts <= len(self.errors):
+            raise self.errors[self._attempts - 1]
+        return super()._generate(messages, stop, run_manager, **kwargs)
 
 
 def _subgraph(
-    model: BaseChatModel,
-    tools: Sequence[BaseTool] = (echo,),
+    model: ScriptedChatModel,
+    tools: tuple[BaseTool, ...] = (echo,),
     **agent_options: Any,
 ):
-    return create_agent_subgraph(
-        spec=_agent(model, **agent_options),
+    return create_agent(
+        role="coder",
+        model=model,
         tools=tools,
         prompt_context=PROMPT_CONTEXT,
+        **agent_options,
     )
 
 
-def test_agent_spec_uses_its_role_as_the_prompt() -> None:
-    model, _ = _model(lambda _: AIMessage(content="done"))
-
-    spec = AgentSpec(role="coder", model=model)
-
-    assert spec.prompt == PromptTemplate("coder")
-    assert spec.max_turns == 30
-    assert spec.announce_turn_budget is True
-
-
-@pytest.mark.parametrize("role", ["", "roles/coder"])
-def test_agent_spec_rejects_an_invalid_role(role: str) -> None:
-    model, _ = _model(lambda _: AIMessage(content="done"))
-
-    with pytest.raises(ValueError, match="invalid agent role"):
-        AgentSpec(role=role, model=model)
-
-
-def test_agent_spec_rejects_a_budget_below_one() -> None:
-    model, _ = _model(lambda _: AIMessage(content="done"))
-
-    with pytest.raises(ValueError, match="max_turns must be at least 1"):
-        AgentSpec(role="coder", model=model, max_turns=0)
+def _notices(messages: list[BaseMessage]) -> list[str]:
+    return [
+        message.text
+        for message in messages
+        if isinstance(message, HumanMessage) and message.text.startswith("[turn ")
+    ]
 
 
 def test_agent_returns_its_complete_tool_transcript() -> None:
-    model, model_mock, seen = _scripted_model(
-        [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "echo",
-                        "args": {"value": "hello"},
-                        "id": "call-echo",
-                        "type": "tool_call",
-                    }
-                ],
-            ),
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("echo", {"value": "hello"}, "call-echo"),
             AIMessage(content="done"),
-        ]
+        )
     )
     task = HumanMessage(content="Use the echo tool")
 
-    result = _subgraph(model, announce_turn_budget=False).invoke({"task": [task]})
+    result = _subgraph(model, announce_turn_budget=False).invoke({"messages": [task]})
 
     messages = result["messages"]
     assert [type(message) for message in messages] == [
-        SystemMessage,
         HumanMessage,
         AIMessage,
         ToolMessage,
         AIMessage,
     ]
-    assert messages[0].text == PromptTemplate("coder").render(**PROMPT_CONTEXT)
-    assert messages[1] is task
-    tool_result = messages[3]
+    assert messages[0] is task
+    tool_result = messages[2]
     assert isinstance(tool_result, ToolMessage)
     assert tool_result.tool_call_id == "call-echo"
     assert tool_result.text == "hello"
     assert messages[-1].text == "done"
-    assert result["turns"] == 2
-    assert result["stop_reason"] is StopReason.COMPLETED
+    assert (result["turns"], result["stop_reason"]) == (2, StopReason.COMPLETED)
 
+    # The role's prompt opens every call the model sees, without ever becoming a
+    # turn of the transcript the workflow hands on.
+    seen = model.received_messages
     assert [len(model_input) for model_input in seen] == [2, 4]
-    assert seen[1][-1] is tool_result
-    model_mock.bind_tools.assert_called_once()
-    assert [bound.name for bound in model_mock.bind_tools.call_args.args[0]] == ["echo"]
+    assert all(isinstance(model_input[0], SystemMessage) for model_input in seen)
+    assert seen[0][0].text == PromptTemplate("coder").render(**PROMPT_CONTEXT)
+    assert seen[1][-1].text == tool_result.text
+    assert model.bound_tool_names == ("echo",)
 
 
 def test_agent_stops_at_its_turn_budget_and_retains_every_notice() -> None:
-    seen: list[list[BaseMessage]] = []
-    turns = {"count": 0}
-
-    def call(model_input: LanguageModelInput) -> AIMessage:
-        assert isinstance(model_input, list)
-        seen.append(cast(list[BaseMessage], model_input))
-        turns["count"] += 1
-        return AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "verify_output",
-                    "args": {},
-                    "id": f"call-{turns['count']}",
-                    "type": "tool_call",
-                }
-            ],
+    model = ScriptedChatModel(
+        responses=tuple(
+            tool_call("verify_output", {}, f"call-{turn}") for turn in range(1, 5)
         )
-
-    model, _ = _model(call)
-    result = _subgraph(model, tools=(verify_output,), max_turns=3).invoke(
-        {"task": [HumanMessage(content="go")]}
     )
 
-    assert result["turns"] == 3
-    assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
-    assert [model_input[-1].text for model_input in seen] == [
+    result = _subgraph(model, tools=(verify_output,), max_turns=3).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    messages = result["messages"]
+    assert (result["turns"], result["stop_reason"]) == (3, StopReason.BUDGET_EXHAUSTED)
+    expected = [
         f"[turn {turn}/3; candidates submitted: {turn - 1}]" for turn in (1, 2, 3)
     ]
-    notices = [
-        message.text
-        for message in result["messages"]
-        if isinstance(message, HumanMessage) and message.text.startswith("[turn ")
-    ]
-    assert notices == [
-        f"[turn {turn}/3; candidates submitted: {turn - 1}]" for turn in (1, 2, 3)
-    ]
-    assert sum(isinstance(message, ToolMessage) for message in result["messages"]) == 2
+    assert [model_input[-1].text for model_input in model.received_messages] == expected
+    assert _notices(messages) == expected
+    # The turn the budget cut short leaves its tool calls unanswered: two rounds
+    # ran, the third was never handed to the tools.
+    assert sum(isinstance(message, ToolMessage) for message in messages) == 2
 
 
 def test_agent_can_hide_its_turn_budget() -> None:
-    model, _, seen = _scripted_model([AIMessage(content="done")])
+    model = ScriptedChatModel(responses=(AIMessage(content="done"),))
 
     result = _subgraph(model, announce_turn_budget=False).invoke(
-        {"task": [HumanMessage(content="go")]}
+        {"messages": [HumanMessage(content="go")]}
     )
 
-    assert not [
-        message
-        for message in seen[0]
-        if isinstance(message, HumanMessage) and message.text.startswith("[turn ")
-    ]
-    assert not [
-        message
-        for message in result["messages"]
-        if isinstance(message, HumanMessage) and message.text.startswith("[turn ")
-    ]
+    assert not _notices(model.received_messages[0])
+    assert not _notices(result["messages"])
 
 
-def _flaky_model(
-    errors: Sequence[Exception],
-) -> tuple[BaseChatModel, list[AIMessage], list[int]]:
-    pending = iter(errors)
-    answers: list[AIMessage] = []
-    calls: list[int] = []
+def test_agent_rejects_a_budget_below_one() -> None:
+    model = ScriptedChatModel(responses=(AIMessage(content="done"),))
 
-    def call(_: LanguageModelInput) -> AIMessage:
-        calls.append(len(calls) + 1)
-        error = next(pending, None)
-        if error is not None:
-            raise error
-        answers.append(AIMessage(content="done"))
-        return answers[-1]
+    with pytest.raises(ValueError, match="max_turns must be at least 1"):
+        _subgraph(model, max_turns=0)
 
-    model, _ = _model(call)
-    return model, answers, calls
+
+def test_agent_rejects_a_role_without_a_prompt() -> None:
+    model = ScriptedChatModel(responses=(AIMessage(content="done"),))
+
+    with pytest.raises(ValueError, match="prompt not found"):
+        create_agent(
+            role="nobody",
+            model=model,
+            tools=(echo,),
+            prompt_context=PROMPT_CONTEXT,
+        )
+
+
+def test_agent_reports_the_typed_answer_its_role_owes() -> None:
+    model = ScriptedChatModel(
+        responses=(AIMessage(content='{"semantics": ["a boss", "a through hole"]}'),)
+    )
+
+    result = _subgraph(
+        model,
+        announce_turn_budget=False,
+        response_format=ProviderStrategy(schema=SemanticHypothesis),
+    ).invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["structured_response"] == SemanticHypothesis(
+        semantics=["a boss", "a through hole"]
+    )
+    # The message the answer came from stays in the transcript for the next role.
+    assert result["messages"][-1].text == '{"semantics": ["a boss", "a through hole"]}'
+
+
+def test_agent_refuses_an_answer_that_breaks_its_output_contract() -> None:
+    model = ScriptedChatModel(responses=(AIMessage(content='{"semantics": "a boss"}'),))
+
+    with pytest.raises(Exception, match="SemanticHypothesis"):
+        _subgraph(
+            model,
+            announce_turn_budget=False,
+            response_format=ProviderStrategy(schema=SemanticHypothesis),
+        ).invoke({"messages": [HumanMessage(content="go")]})
 
 
 def test_agent_retries_a_dropped_connection() -> None:
-    model, answers, calls = _flaky_model(
-        [httpx.RemoteProtocolError("peer closed connection")]
-    )
-    graph = create_agent_subgraph(
-        spec=_agent(model),
-        tools=(echo,),
-        prompt_context=PROMPT_CONTEXT,
-        model_retries=2,
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="done"),),
+        errors=(httpx.RemoteProtocolError("peer closed connection"),),
     )
 
-    result = graph.invoke({"task": [HumanMessage(content="go")]})
+    result = _subgraph(model, announce_turn_budget=False, model_retries=2).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
 
-    assert calls == [1, 2]
-    assert [answer.text for answer in answers] == ["done"]
-    assert result["turns"] == 1
-    assert result["stop_reason"] is StopReason.COMPLETED
+    assert model.attempts == 2
+    assert (result["turns"], result["stop_reason"]) == (1, StopReason.COMPLETED)
 
 
 @pytest.mark.parametrize(
@@ -250,67 +222,37 @@ def test_agent_retries_a_dropped_connection() -> None:
     [httpx.ReadTimeout("too slow"), ValueError("malformed request")],
 )
 def test_agent_does_not_retry_an_ineligible_failure(error: Exception) -> None:
-    model, _, calls = _flaky_model([error])
-    graph = create_agent_subgraph(
-        spec=_agent(model),
-        tools=(echo,),
-        prompt_context=PROMPT_CONTEXT,
-        model_retries=2,
-    )
+    model = _FlakyChatModel(responses=(AIMessage(content="done"),), errors=(error,))
 
     with pytest.raises(type(error), match=str(error)):
-        graph.invoke({"task": [HumanMessage(content="go")]})
+        _subgraph(model, announce_turn_budget=False, model_retries=2).invoke(
+            {"messages": [HumanMessage(content="go")]}
+        )
 
-    assert calls == [1]
+    assert model.attempts == 1
 
 
 def test_agent_retries_are_bounded() -> None:
-    drops = [httpx.RemoteProtocolError("peer closed connection") for _ in range(3)]
-    model, _, calls = _flaky_model(drops)
-    graph = create_agent_subgraph(
-        spec=_agent(model),
-        tools=(echo,),
-        prompt_context=PROMPT_CONTEXT,
-        model_retries=1,
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="done"),),
+        errors=tuple(
+            httpx.RemoteProtocolError("peer closed connection") for _ in range(3)
+        ),
     )
 
     with pytest.raises(httpx.RemoteProtocolError):
-        graph.invoke({"task": [HumanMessage(content="go")]})
+        _subgraph(model, announce_turn_budget=False, model_retries=1).invoke(
+            {"messages": [HumanMessage(content="go")]}
+        )
 
-    assert calls == [1, 2]
+    assert model.attempts == 2
 
 
 def test_agent_rejects_a_negative_retry_count() -> None:
-    model, _, _ = _scripted_model([AIMessage(content="done")])
+    model = ScriptedChatModel(responses=(AIMessage(content="done"),))
 
-    with pytest.raises(ValueError, match="model_retries must not be negative"):
-        create_agent_subgraph(
-            spec=_agent(model),
-            tools=(echo,),
-            prompt_context=PROMPT_CONTEXT,
-            model_retries=-1,
-        )
-
-
-def _agent_calling(tool_name: str) -> BaseChatModel:
-    responses: Iterator[AIMessage] = iter(
-        [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": tool_name,
-                        "args": {},
-                        "id": "call-once",
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            AIMessage(content="done"),
-        ]
-    )
-    model, _ = _model(lambda _: next(responses))
-    return model
+    with pytest.raises(ValueError, match="max_retries must be >= 0"):
+        _subgraph(model, model_retries=-1)
 
 
 def _broken_tool(error: Exception) -> BaseTool:
@@ -322,29 +264,38 @@ def _broken_tool(error: Exception) -> BaseTool:
     return broken
 
 
+def _calling_broken() -> ScriptedChatModel:
+    return ScriptedChatModel(
+        responses=(
+            tool_call("broken", {}, "call-once"),
+            AIMessage(content="done"),
+        )
+    )
+
+
 def test_agent_does_not_turn_a_tool_defect_into_model_feedback() -> None:
     graph = _subgraph(
-        _agent_calling("broken"),
+        _calling_broken(),
         tools=(_broken_tool(ValueError("internal invariant broken")),),
         announce_turn_budget=False,
     )
 
     with pytest.raises(ValueError, match="internal invariant broken"):
-        graph.invoke({"task": [HumanMessage(content="go")]})
+        graph.invoke({"messages": [HumanMessage(content="go")]})
 
 
 def test_agent_forwards_a_correctable_tool_error_as_feedback() -> None:
     graph = _subgraph(
-        _agent_calling("broken"),
+        _calling_broken(),
         tools=(_broken_tool(ToolFeedbackError("that is not an image")),),
         announce_turn_budget=False,
     )
 
-    result = graph.invoke({"task": [HumanMessage(content="go")]})
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
 
     tool_messages = [
         message for message in result["messages"] if isinstance(message, ToolMessage)
     ]
     assert len(tool_messages) == 1
     assert tool_messages[0].status == "error"
-    assert "that is not an image" in tool_messages[0].text
+    assert tool_messages[0].text == "that is not an image"

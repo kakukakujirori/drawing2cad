@@ -25,7 +25,7 @@ def _event(name: str, timestamp_ms: int = 0, **data: Any) -> dict[str, Any]:
 
 def _ai(usage: dict[str, Any] | None = None) -> dict[str, Any]:
     return _event(
-        "message", node="agent", messages=[{"type": "ai", "usage_metadata": usage}]
+        "message", node="model", messages=[{"type": "ai", "usage_metadata": usage}]
     )
 
 
@@ -49,9 +49,9 @@ def _write_sample(
 def _completed_events(usage: dict[str, Any] | None) -> list[dict[str, Any]]:
     return [
         _event("run_started"),
-        _event("node_started", timestamp_ms=1000, node="agent"),
+        _event("node_started", timestamp_ms=1000, node="model"),
         _ai(usage),
-        _event("node_finished", timestamp_ms=3000, node="agent"),
+        _event("node_finished", timestamp_ms=3000, node="model"),
         _event("tool_started", tool_name="run_shell", caller="model"),
         _event("node_started", timestamp_ms=3000, node="verify_final"),
         _event("verification", node="verify_final", report={"status": "VERIFIED"}),
@@ -89,7 +89,7 @@ def test_read_events_reports_what_the_run_did(tmp_path: Path) -> None:
     assert row.tokens.cache_read == 64
     assert row.tokens.reasoning == 8
     assert row.wall_ms == 4000
-    assert row.node_ms == {"agent": 2000, "verify_final": 500}
+    assert row.node_ms == {"model": 2000, "verify_final": 500}
 
 
 def test_a_backend_that_reports_no_usage_is_not_recorded_as_free(

@@ -114,7 +114,7 @@ def read_events(events_path: Path, sample_id: str) -> SampleRow:
         for line in handle:
             event = json.loads(line)
             name, data, at = event["event"], event["data"], event["timestamp_ms"]
-            if name == "message" and data.get("node") == "agent":
+            if name == "message" and data.get("node") == "model":
                 calls = [m for m in data["messages"] if m.get("type") == "ai"]
                 usages += [
                     m["usage_metadata"] for m in calls if m.get("usage_metadata")

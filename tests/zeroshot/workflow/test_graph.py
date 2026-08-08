@@ -1,22 +1,21 @@
 import sys
-from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
-from typing import Any, cast
-from unittest.mock import Mock
+from typing import Any
 
 import pytest
-from langchain_core.language_models import BaseChatModel, LanguageModelInput
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableLambda
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool, tool
 
+from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from zeroshot.pipeline.messages import MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.verification import StepRenderer
-from zeroshot.pipeline.workflow import AgentSpec, StopReason
+from zeroshot.pipeline.workflow import StopReason, create_agent
 from zeroshot.pipeline.workflow import graph as graph_module
-from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
+from zeroshot.pipeline.workflow.graph import AgentFactory, create_reconstruction_graph
 
 
 def _renderer() -> StepRenderer:
@@ -32,33 +31,25 @@ def _message_builder() -> MessageBuilder:
     )
 
 
-def _agent(model: BaseChatModel, **overrides: Any) -> AgentSpec:
-    return AgentSpec(role="coder", model=model, **overrides)
+def _unused_model() -> ScriptedChatModel:
+    """A stage this graph does not run yet still has to be built."""
+    return ScriptedChatModel(responses=())
 
 
-def _model(
-    responses: Iterator[AIMessage],
-    seen: list[list[BaseMessage]] | None = None,
-) -> tuple[BaseChatModel, Mock]:
-    def call(model_input: LanguageModelInput) -> AIMessage:
-        if seen is not None:
-            assert isinstance(model_input, list)
-            seen.append(cast(list[BaseMessage], model_input))
-        return next(responses)
-
-    model_mock = Mock(spec=BaseChatModel)
-    model_mock.bind_tools.return_value = RunnableLambda(call)
-    return cast(BaseChatModel, model_mock), model_mock
+def _agent(role: str, model: BaseChatModel, **overrides: Any) -> AgentFactory:
+    return partial(create_agent, role=role, model=model, **overrides)
 
 
 def _graph(
     workdir: SandboxWorkdir,
-    agent: AgentSpec,
+    coder: AgentFactory,
     input_message: HumanMessage,
     **overrides: Any,
 ):
     return create_reconstruction_graph(
-        agent=agent,
+        semantic_hypothesizer=_agent("semantic_hypothesizer", _unused_model()),
+        semantic_reviewer=_agent("semantic_reviewer", _unused_model()),
+        coder=coder,
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable), default_timeout_s=10
         ),
@@ -71,27 +62,22 @@ def _graph(
 
 
 def test_graph_wires_the_coder_and_adopts_its_result() -> None:
-    seen: list[list[BaseMessage]] = []
-    model, model_mock = _model(iter([AIMessage(content="done")]), seen)
+    model = ScriptedChatModel(responses=(AIMessage(content="done"),))
     input_message = HumanMessage(content="Create the model")
 
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
-            _agent(model, announce_turn_budget=False),
+            _agent("coder", model, announce_turn_budget=False),
             input_message,
         )
         result = graph.invoke({"messages": []})
 
+    seen = model.received_messages
     assert len(seen) == 1
     assert [type(message) for message in seen[0]] == [SystemMessage, HumanMessage]
-    assert seen[0][1] is input_message
-    model_mock.bind_tools.assert_called_once()
-    assert [tool.name for tool in model_mock.bind_tools.call_args.args[0]] == [
-        "run_shell",
-        "load_image",
-        "verify_output",
-    ]
+    assert seen[0][1].text == input_message.text
+    assert model.bound_tool_names == ("run_shell", "load_image", "verify_output")
     assert result["agent_turns"] == 1
     assert result["stop_reason"] is StopReason.COMPLETED
     assert result["last_verification"] == VerifyOutputResult(
@@ -103,22 +89,10 @@ def test_graph_wires_the_coder_and_adopts_its_result() -> None:
 def test_graph_repeats_verification_after_the_coder_finishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    model, _ = _model(
-        iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "verify_output",
-                            "args": {},
-                            "id": "call-intermediate-verification",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("verify_output", {}, "call-intermediate-verification"),
+            AIMessage(content="done"),
         )
     )
     invocations: list[str] = []
@@ -158,7 +132,7 @@ def test_graph_repeats_verification_after_the_coder_finishes(
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
-            _agent(model, announce_turn_budget=False),
+            _agent("coder", model, announce_turn_budget=False),
             HumanMessage(content="Verify the candidate"),
         )
         result = graph.invoke({"messages": []})
@@ -168,30 +142,17 @@ def test_graph_repeats_verification_after_the_coder_finishes(
 
 
 def test_graph_runs_final_verification_after_agent_budget_exhaustion() -> None:
-    turns = {"count": 0}
-
-    def call(_: LanguageModelInput) -> AIMessage:
-        turns["count"] += 1
-        return AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "run_shell",
-                    "args": {"command": "true"},
-                    "id": f"call-{turns['count']}",
-                    "type": "tool_call",
-                }
-            ],
+    model = ScriptedChatModel(
+        responses=tuple(
+            tool_call("run_shell", {"command": "true"}, f"call-{turn}")
+            for turn in range(1, 5)
         )
-
-    model_mock = Mock(spec=BaseChatModel)
-    model_mock.bind_tools.return_value = RunnableLambda(call)
-    model = cast(BaseChatModel, model_mock)
+    )
 
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
-            _agent(model, max_turns=3, announce_turn_budget=False),
+            _agent("coder", model, max_turns=3, announce_turn_budget=False),
             HumanMessage(content="go"),
         )
         result = graph.invoke({"messages": []})
