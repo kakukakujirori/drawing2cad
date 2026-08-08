@@ -1,8 +1,9 @@
-"""System prompts, kept as files because they are what experiments vary.
+"""Prompts, kept as files because they are what experiments vary.
 
 A prompt in Python would have to escape every brace a CadQuery snippet contains,
 and a diff of one would be a diff of source. These are `.md` beside this module,
-addressed by name.
+addressed by name: `roles/` holds who an agent is, `instructions/` what it is
+asked for on a given turn.
 """
 
 from __future__ import annotations
@@ -17,7 +18,13 @@ _PROMPT_DIR = Path(__file__).parent
 
 @dataclass(frozen=True)
 class PromptTemplate:
-    role: str
+    """One prompt file, addressed by its path under this directory, minus `.md`.
+
+    An absolute path is taken as given, so a run can point at a prompt outside
+    the package without it having to be installed first.
+    """
+
+    name: str
 
     def __post_init__(self) -> None:
         if not self.path.is_file():
@@ -25,8 +32,8 @@ class PromptTemplate:
 
     @property
     def path(self) -> Path:
-        candidate = Path(self.role)
-        return candidate if candidate.is_absolute() else _PROMPT_DIR / f"{self.role}.md"
+        candidate = Path(self.name)
+        return candidate if candidate.is_absolute() else _PROMPT_DIR / f"{self.name}.md"
 
     @property
     def sha256(self) -> str:

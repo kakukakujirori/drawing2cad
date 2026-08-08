@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from uuid import uuid4
 
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from zeroshot.pipeline.event_logging import (
@@ -19,7 +20,7 @@ from zeroshot.pipeline.event_logging import (
 from zeroshot.pipeline.messages import InputManifest, MessageBuilder
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.verification import StepRenderer
-from zeroshot.pipeline.workflow import ReconstructionState
+from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, ReconstructionState
 
 # What the runner hands a graph: the run environment and the artifact contract.
 # A graph's own settings are bound into the factory before it gets here, so
@@ -143,6 +144,9 @@ class PipelineRunner:
             # instantiate the graph
             checkpointer = stack.enter_context(
                 SqliteSaver.from_conn_string(str(checkpoint_path))
+            )
+            checkpointer.serde = JsonPlusSerializer(
+                allowed_msgpack_modules=list(CUSTOM_STATE_TYPES)
             )
             graph = self.graph_factory(
                 sandbox_runner=self.sandbox_runner,

@@ -21,6 +21,7 @@ from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
 from zeroshot.pipeline.workflow import (
     create_agent,
+    create_proposer_critic_loop,
     create_reconstruction_graph,
 )
 from zeroshot.pipeline.workflow.state import StopReason
@@ -30,15 +31,51 @@ def _agent(role: str, model: BaseChatModel, **overrides: Any):
     return partial(create_agent, role=role, model=model, **overrides)
 
 
+_ACCEPTED = AIMessage(content='{"decision": "accept", "feedback": "matches"}')
+
+
+def _reasoning_stage(proposer_role: str, critic_role: str, proposal: str):
+    """A reasoning stage scripted to agree at once.
+
+    The runner is what these tests are about, so each stage is reduced to the
+    shortest run that still hands the coder a settled artifact.
+    """
+    return partial(
+        create_proposer_critic_loop,
+        proposer=_agent(
+            proposer_role,
+            ScriptedChatModel(responses=(AIMessage(content=proposal),)),
+            announce_turn_budget=False,
+        ),
+        critic=_agent(
+            critic_role,
+            ScriptedChatModel(responses=(_ACCEPTED,)),
+            announce_turn_budget=False,
+        ),
+        max_revisions=1,
+        structured_output="provider",
+    )
+
+
+def _semantic_stage():
+    return _reasoning_stage(
+        "semantic_hypothesizer", "semantic_reviewer", '{"semantics": ["a box"]}'
+    )
+
+
+def _operations_stage():
+    return _reasoning_stage(
+        "operation_planner", "operation_reviewer", '{"operations": ["extrude it"]}'
+    )
+
+
 def _graph_factory(model: BaseChatModel, **overrides: Any) -> GraphFactory:
-    """The baseline graph with a cast bound. A cast is a graph's own setting,
+    """The staged graph with a cast bound. A cast is a graph's own setting,
     so a run's config -- or a test -- binds it before the runner ever sees it."""
     return partial(
         create_reconstruction_graph,
-        semantic_hypothesizer=_agent(
-            "semantic_hypothesizer", ScriptedChatModel(responses=())
-        ),
-        semantic_reviewer=_agent("semantic_reviewer", ScriptedChatModel(responses=())),
+        semantic_stage=_semantic_stage(),
+        operations_stage=_operations_stage(),
         coder=_agent("coder", model, **overrides),
     )
 
@@ -190,8 +227,9 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     )
     assert len(model.received_messages) == 3
 
+    # The coder opens on the workflow transcript: its own prompt, the run's
+    # input, then what the semantic stage made of it.
     initial_messages = model.received_messages[0]
-    assert len(initial_messages) == 2
     initial_human_message = initial_messages[1]
     assert isinstance(initial_human_message, HumanMessage)
     initial_text = _message_text(initial_human_message)
@@ -213,7 +251,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         ToolMessage,
     ]
 
-    inspect_result = messages[3]
+    inspect_result = messages[-3]
     assert isinstance(inspect_result, ToolMessage)
     assert inspect_result.tool_call_id == "call-inspect-inputs"
     assert isinstance(inspect_result.content, str)
@@ -224,7 +262,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         "stderr": "",
     }
 
-    persistence_result = messages[5]
+    persistence_result = messages[-1]
     assert isinstance(persistence_result, ToolMessage)
     assert persistence_result.tool_call_id == "call-read-scratch"
     assert isinstance(persistence_result.content, str)
@@ -612,12 +650,8 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
         # A cast is a graph's own setting, so a real factory arrives with one
         # already bound; only what the runner adds is under test here.
         return create_reconstruction_graph(
-            semantic_hypothesizer=_agent(
-                "semantic_hypothesizer", ScriptedChatModel(responses=())
-            ),
-            semantic_reviewer=_agent(
-                "semantic_reviewer", ScriptedChatModel(responses=())
-            ),
+            semantic_stage=_semantic_stage(),
+            operations_stage=_operations_stage(),
             coder=_agent(
                 "coder", ScriptedChatModel(responses=(AIMessage(content="x"),))
             ),
@@ -745,43 +779,45 @@ def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
     which is the one thing an A/B over this flag rests on."""
 
     artifact_root = tmp_path / "announced"
-    responses = tuple(
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "run_shell",
-                    "args": {"command": "true"},
-                    "id": f"call-{n}",
-                    "type": "tool_call",
-                }
-            ],
+    model = ScriptedChatModel(
+        responses=tuple(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "run_shell",
+                        "args": {"command": "true"},
+                        "id": f"call-{n}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            for n in range(2)
         )
-        for n in range(2)
     )
     PipelineRunner(
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         renderer=_renderer(),
-        graph_factory=_graph_factory(
-            ScriptedChatModel(responses=responses),
-            max_turns=2,
-            announce_turn_budget=True,
-        ),
+        graph_factory=_graph_factory(model, max_turns=2, announce_turn_budget=True),
     ).run_sample(_manifest_without_renders(tmp_path, "announced"))
 
-    notices = [
-        message["content"]
+    assert [messages[-1].text for messages in model.received_messages] == [
+        "[turn 1/2]",
+        "[turn 2/2]",
+    ]
+    # Keyed by id: a notice is recorded where the agent produced it and again
+    # in the workflow transcript that adopts the stage, and this is about what
+    # was announced, not how many times the log mentions it.
+    notices = {
+        message["id"]: message["content"]
         for event in _events(artifact_root / "announced")
         if event["event"] == "message"
         for message in event["data"]["messages"]
         if message["type"] == "human" and str(message["content"]).startswith("[turn ")
-    ]
-    assert notices == [
-        "[turn 1/2; candidates submitted: 0]",
-        "[turn 2/2; candidates submitted: 0]",
-    ]
+    }
+    assert list(notices.values()) == ["[turn 1/2]", "[turn 2/2]"]
 
 
 def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
@@ -821,16 +857,26 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             ),
         ).run_sample(_manifest_without_renders(tmp_path, sample_id))
 
-        # Twice, and they are not the same statement: the agent reports why it
-        # stopped under its own namespace, and the run reports why it ended.
-        # With one agent they agree; with six the namespaced ones are what say
-        # which of them ran out.
+        # Two kinds of statement, and they are not the same one: every agent
+        # reports why it stopped under the namespace it ran in, and the run
+        # reports why it ended, once. With three agents the namespaced ones
+        # are what say which of them ran out.
         reasons = [
             (tuple(event["namespace"]), event["data"]["reason"])
             for event in _events(artifact_root / sample_id)
             if event["event"] == "stop_reason"
         ]
-        assert [reason for _, reason in reasons] == [expected, expected], sample_id
-        agent_namespace, run_namespace = (namespace for namespace, _ in reasons)
-        assert agent_namespace and agent_namespace[0].startswith("coder:"), sample_id
-        assert run_namespace == (), sample_id
+        stage_reasons = [
+            reason
+            for namespace, reason in reasons
+            if namespace and namespace[0].startswith("semantic_stage:")
+        ]
+        coder_reasons = [
+            reason
+            for namespace, reason in reasons
+            if namespace and namespace[0].startswith("coder:")
+        ]
+        run_reasons = [reason for namespace, reason in reasons if not namespace]
+        assert stage_reasons == ["COMPLETED", "COMPLETED"], sample_id
+        assert coder_reasons == [expected], sample_id
+        assert run_reasons == [expected], sample_id

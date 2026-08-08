@@ -7,9 +7,10 @@ decides which failures the model gets to see.  The graph owns topology; this
 owns a single agent's conduct.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from types import MappingProxyType
-from typing import NotRequired
+from typing import Any, NotRequired
 
 import httpx
 from langchain.agents import create_agent as _create_agent
@@ -25,10 +26,15 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.tools import BaseTool
+from pydantic import BaseModel
 
 from zeroshot.pipeline.messages import PromptTemplate
 from zeroshot.pipeline.tools import ToolFeedbackError
 from zeroshot.pipeline.workflow.state import StopReason
+
+# A config binds who an agent is -- role, model, budget -- and leaves the
+# environment open.  Whoever builds the graph supplies the rest.
+AgentFactory = Callable[..., Any]
 
 
 class AgentProgress(AgentState):
@@ -43,16 +49,10 @@ class AgentProgress(AgentState):
 
 
 class TurnBudget(AgentMiddleware):
-    """A ceiling on model calls, and the agent's only view of it.
-
-    Announcing and enforcing the budget are one object because they must agree
-    on one number: an agent told it has 30 turns and stopped at 20 has been
-    lied to.  The notice stays in the transcript so the agent reads a rate
-    rather than a position: at turn 19 the earlier markers are what say how fast
-    it got there.
-    """
-
     state_schema = AgentProgress
+
+    _NOTICE_KEY = "turn_notice"
+    """Marks a notice this wrote. Not sent to the provider; `strip_notices` reads it."""
 
     def __init__(self, max_turns: int, *, announce: bool = True) -> None:
         super().__init__()
@@ -61,58 +61,114 @@ class TurnBudget(AgentMiddleware):
         self.max_turns = max_turns
         self.announce = announce
 
-    @staticmethod
-    def _turns_taken(messages: Sequence[BaseMessage]) -> int:
-        """Model calls so far, which the transcript records one AIMessage each."""
-        return sum(isinstance(message, AIMessage) for message in messages)
+    @classmethod
+    def strip_notices(cls, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+        """The transcript without the notices addressed to whoever ran it.
+
+        A workflow that hands one agent's messages to the next uses this: the
+        notices are a true record of what that agent was shown, but a later
+        agent reading `turn 27/30` would be told it is nearly out of a budget
+        it never spent.
+        """
+        return [
+            message
+            for message in messages
+            if not message.additional_kwargs.get(cls._NOTICE_KEY)
+        ]
 
     def before_model(self, state, runtime) -> dict | None:
-        """The output is used for State update."""
+        """Open the turn with what this agent has spent so far.
+
+        Turns are all this counts.  What an agent has produced with them is
+        already in front of it -- a verification result carries its attempt
+        number, a tool result carries what it found -- and a budget that also
+        tallied those would be reporting on tools it has no business knowing.
+        """
         del runtime
         if not self.announce:
             return None
-        messages = state["messages"]
-        submitted = sum(
-            call["name"] == "verify_output"
-            for message in messages
-            if isinstance(message, AIMessage)
-            for call in message.tool_calls
-        )
         return {
             "messages": [
                 HumanMessage(
-                    content=(
-                        f"[turn {self._turns_taken(messages) + 1}/{self.max_turns}; "
-                        f"candidates submitted: {submitted}]"
-                    )
+                    content=f"[turn {state.get('turns', 0) + 1}/{self.max_turns}]",
+                    additional_kwargs={self._NOTICE_KEY: True},
                 )
             ]
         }
 
     @hook_config(can_jump_to=["end"])
-    def after_model(self, state, runtime) -> dict | None:
-        """The output is generally used for State update.
-        However, since the current output key doesn't contain 'messages',
-        the main purpose here is not state update but
-            1. Jump to END when budget is exhausted;
-            2. Inform turns and stop_reason after the whole graph invoke.
+    def after_model(self, state, runtime) -> dict:
+        """Count the turn just spent, and end the run if it was the last.
+
+        Counted rather than read back off the transcript: an agent that starts
+        on an earlier stage's messages would otherwise be charged for the turns
+        that produced them.
+
+        Ending here rather than after the tool round leaves the unanswered tool
+        calls as the final message, which is the only difference between an
+        agent that ran out and one that decided it was done.
         """
         del runtime
-        messages = state["messages"]
-        last_message = messages[-1]
-        turns = self._turns_taken(messages)
-        wants_more = isinstance(last_message, AIMessage) and bool(
-            last_message.tool_calls
-        )
-        if not wants_more:
-            return {"turns": turns, "stop_reason": StopReason.COMPLETED}
-        if turns >= self.max_turns:
-            return {
-                "turns": turns,
+        answer = state["messages"][-1]
+        tool_calls = answer.tool_calls if isinstance(answer, AIMessage) else []
+        progress: dict = {"turns": state.get("turns", 0) + 1}
+        if not tool_calls:
+            return progress | {"stop_reason": StopReason.COMPLETED}
+        if progress["turns"] >= self.max_turns:
+            return progress | {
                 "stop_reason": StopReason.BUDGET_EXHAUSTED,
                 "jump_to": "end",
             }
-        return {"turns": turns}
+        return progress
+
+
+@dataclass(frozen=True)
+class AgentRun[T: BaseModel]:
+    """What one agent did when the workflow handed it the run so far.
+
+    `messages` is only what this agent added, so a workflow that appends it to
+    a shared transcript records each message once however many agents read it.
+    """
+
+    messages: list[BaseMessage]
+    answer: T | None
+    turns: int
+    stop_reason: StopReason
+
+
+def run_agent[T: BaseModel](
+    agent,
+    history: Sequence[BaseMessage],
+    instruction: HumanMessage,
+    expects: type[T] | None = None,
+) -> AgentRun[T]:
+    """Give one agent the run so far plus what it is being asked for now.
+
+    `expects` is the typed answer the role owes.  An agent that spent its
+    budget mid-investigation has none to give, which the caller routes around;
+    one that finished and produced nothing of that shape has broken its
+    contract, and the run stops here rather than at whoever reads the artifact.
+    """
+    context = TurnBudget.strip_notices(history)
+    result = agent.invoke({"messages": [*context, instruction]})
+
+    inherited = {message.id for message in context}
+    answer = result.get("structured_response")
+    stop_reason = result["stop_reason"]
+    if expects is not None and not isinstance(answer, expects):
+        if stop_reason is not StopReason.BUDGET_EXHAUSTED:
+            raise ValueError(
+                f"{agent.name} finished without a valid {expects.__name__} "
+                f"(stop reason: {stop_reason})"
+            )
+        answer = None
+
+    return AgentRun(
+        messages=[m for m in result["messages"] if m.id not in inherited],
+        answer=answer,
+        turns=result["turns"],
+        stop_reason=stop_reason,
+    )
 
 
 def _handle_tool_error(exception: Exception, request: ToolCallRequest) -> str:
@@ -146,7 +202,7 @@ def create_agent(
     """
     # Rendered once, here, so a placeholder we forgot to supply fails while the
     # graph is being built rather than partway into a run.
-    rendered_prompt = PromptTemplate(role).render(**prompt_context)
+    rendered_prompt = PromptTemplate(f"roles/{role}").render(**prompt_context)
 
     return _create_agent(
         model=model,

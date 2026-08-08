@@ -13,14 +13,14 @@ def _write(path: Path, body: str) -> Path:
 def test_a_packaged_prompt_is_addressed_by_name() -> None:
     """Names, not paths: Hydra moves the process into the job's output
     directory before a run, so a relative path in a config would not resolve."""
-    prompt = PromptTemplate("coder")
+    prompt = PromptTemplate("roles/coder")
 
     assert prompt.path.name == "coder.md"
     assert prompt.path.is_file()
 
 
 def test_placeholders_are_filled_from_the_context() -> None:
-    rendered = PromptTemplate("coder").render(
+    rendered = PromptTemplate("roles/coder").render(
         output_path="/work/model.py",
         verification_dir="/work/attempts",
     )

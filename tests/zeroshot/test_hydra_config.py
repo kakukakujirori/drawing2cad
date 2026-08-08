@@ -3,7 +3,6 @@ from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
-from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.codex import _ChatOpenAICodex
@@ -14,8 +13,8 @@ from zeroshot.pipeline.messages import MessageBuilder, PromptTemplate
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.workflow import (
-    SemanticHypothesis,
     create_agent,
+    create_proposer_critic_loop,
     create_reconstruction_graph,
 )
 
@@ -211,7 +210,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         config = compose(
             config_name="default",
             overrides=[
-                "workflow=baseline",
+                "workflow=staged",
                 # Overridden rather than read, so flipping a checked-in default
                 # is an experiment, not a test failure.
                 "workflow.coder.max_turns=5",
@@ -222,11 +221,12 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
 
     graph_factory = instantiate(config.workflow)
     assert graph_factory.func is create_reconstruction_graph
-    # One agent is one block: a config names who it is, which model answers for
-    # it and how long it may run, and leaves the tools to the graph.
+    # A stage is one block, an agent is one block inside it: a config names who
+    # answers, on which model, for how long, and leaves the tools and the
+    # contracts to the code.
     assert set(graph_factory.keywords) == {
-        "semantic_hypothesizer",
-        "semantic_reviewer",
+        "semantic_stage",
+        "operations_stage",
         "coder",
         "model_retries",
     }
@@ -235,7 +235,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     coder = graph_factory.keywords["coder"]
     assert coder.func is create_agent
     assert coder.keywords["role"] == "coder"
-    assert PromptTemplate(coder.keywords["role"]).path.is_file()
+    assert PromptTemplate(f"roles/{coder.keywords['role']}").path.is_file()
     assert coder.keywords["max_turns"] == 5
     assert coder.keywords["announce_turn_budget"] is True
     # `model: ${model}` follows the run, so one override still swaps every
@@ -243,12 +243,35 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert isinstance(coder.keywords["model"], BaseChatModel)
     assert coder.keywords["model"].model_name == "gemma4:e2b"
 
-    # A reasoning stage owes a typed answer, and which strategy produces it is
-    # the config's call rather than something read off the model's profile.
-    hypothesizer = graph_factory.keywords["semantic_hypothesizer"]
-    assert isinstance(hypothesizer.keywords["response_format"], ProviderStrategy)
-    assert hypothesizer.keywords["response_format"].schema is SemanticHypothesis
-    assert "response_format" not in coder.keywords
+    # Every stage is declared the same way, so a new one is a block, not a
+    # change to the graph's signature beyond one parameter.
+    for name, roles in (
+        ("semantic_stage", ("semantic_hypothesizer", "semantic_reviewer")),
+        ("operations_stage", ("operation_planner", "operation_reviewer")),
+    ):
+        block = graph_factory.keywords[name]
+        assert block.func is create_proposer_critic_loop
+        assert block.keywords["proposer"].keywords["role"] == roles[0]
+        assert block.keywords["critic"].keywords["role"] == roles[1]
+        for role in roles:
+            assert PromptTemplate(f"roles/{role}").path.is_file()
+
+    stage = graph_factory.keywords["semantic_stage"]
+    assert stage.func is create_proposer_critic_loop
+    assert set(stage.keywords) == {
+        "proposer",
+        "critic",
+        "max_revisions",
+        "structured_output",
+    }
+    # A whole propose-and-review round, which is not an agent turn budget.
+    assert stage.keywords["max_revisions"] == 10
+    # How the typed answer is asked for is the config's call; which answer is
+    # owed is not, so no schema appears here.
+    assert stage.keywords["structured_output"] == "provider"
+    assert stage.keywords["proposer"].keywords["role"] == "semantic_hypothesizer"
+    assert stage.keywords["critic"].keywords["role"] == "semantic_reviewer"
+    assert "response_format" not in stage.keywords["proposer"].keywords
     assert "agent" not in config
 
 

@@ -3,10 +3,11 @@
 `manifest` inventories the files a turn may show; `builder` turns an inventory
 into content blocks. The split exists because a manifest holds *host* paths and
 `MessageBuilder` is the only thing allowed to translate them into something the
-model receives.
+model receives. `build_instruction` needs neither, which is why it is a
+function rather than one of its methods.
 """
 
-from .builder import MessageBuilder
+from .builder import MessageBuilder, build_instruction, instruction_text
 from .manifest import FeedbackManifest, InputManifest
 from .prompts import PromptTemplate
 
@@ -15,4 +16,6 @@ __all__ = [
     "InputManifest",
     "MessageBuilder",
     "PromptTemplate",
+    "build_instruction",
+    "instruction_text",
 ]

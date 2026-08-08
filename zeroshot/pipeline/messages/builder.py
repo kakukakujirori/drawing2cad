@@ -15,7 +15,26 @@ from langchain_core.messages.content import (
 )
 
 from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
+from zeroshot.pipeline.messages.prompts import PromptTemplate
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+
+
+def instruction_text(name: str, **context: str) -> str:
+    """Render one instruction prompt from `prompts/instructions/`."""
+    return PromptTemplate(f"instructions/{name}").render(**context)
+
+
+def build_instruction(name: str, **context: str) -> HumanMessage:
+    """What the workflow asks of an agent on this turn.
+
+    A free function, not a `MessageBuilder` method: the words are text, and
+    nothing about how this run shows renders changes them.  `MessageBuilder`
+    builds on top of this -- a verification report ends with an instruction --
+    so the dependency runs one way, downward.
+    """
+    return HumanMessage(
+        content_blocks=[create_text_block(instruction_text(name, **context))]
+    )
 
 
 @dataclass(frozen=True)
@@ -227,11 +246,7 @@ class MessageBuilder:
             )
         )
 
-        blocks.append(
-            create_text_block(
-                "Use this feedback to revise the candidate, or submit a corrected final candidate."
-            )
-        )
+        blocks.append(create_text_block(instruction_text("verification_feedback")))
         return blocks
 
     @staticmethod

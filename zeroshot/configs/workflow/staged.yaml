@@ -1,0 +1,95 @@
+# @package _global_
+
+defaults:
+  - /model: gemma4_ollama
+  - _self_
+
+# The graph is a config group so a run records which one it used, in the
+# `.hydra/config.yaml` beside its own artifacts. Everything a graph decides
+# lives here; the runner only supplies the run environment.
+workflow:
+  _target_: zeroshot.pipeline.workflow.graph.create_reconstruction_graph
+  _partial_: true
+
+  # A stage is one block: who proposes, who judges, and how long the workflow
+  # is willing to let them disagree. Which contract each role owes is not here
+  # -- that a reviewer of hypotheses returns a review is not an experiment.
+  semantic_stage:
+    _target_: zeroshot.pipeline.workflow.create_proposer_critic_loop
+    _partial_: true
+
+    # How often the critic may send the proposal back. One revision is a whole
+    # propose-and-review round, and no turn budget below bounds it: each round
+    # invokes the agents afresh. Without this a critic that never accepts would
+    # loop forever. On reaching it the workflow uses the latest proposal.
+    max_revisions: 10
+
+    # How the typed answer is asked for. `provider` is native json_schema;
+    # switch to `tool` for a backend that cannot take a response format, which
+    # forces a tool call instead. Named rather than inferred from the model,
+    # so swapping backends cannot silently change when an agent may stop.
+    structured_output: provider
+
+    proposer:
+      _target_: zeroshot.pipeline.workflow.create_agent
+      _partial_: true
+      role: semantic_hypothesizer
+      model: ${model}
+
+      # Agent turns before the workflow stops asking. Successful runs so far
+      # take 2-4; this is a ceiling, not a target.
+      max_turns: 30
+
+      # Show the agent its remaining turns before each call. Without it the
+      # model has been seen spending every turn on tool calls and answering
+      # nothing.
+      announce_turn_budget: true
+
+    critic:
+      _target_: zeroshot.pipeline.workflow.create_agent
+      _partial_: true
+      role: semantic_reviewer
+      model: ${model}
+
+      # A reviewer reads one hypothesis and answers; it has no debug loop.
+      max_turns: 5
+      announce_turn_budget: true
+
+  # The same shape, one artifact later: the plan the coder follows.
+  operations_stage:
+    _target_: zeroshot.pipeline.workflow.create_proposer_critic_loop
+    _partial_: true
+    max_revisions: 10
+    structured_output: provider
+
+    proposer:
+      _target_: zeroshot.pipeline.workflow.create_agent
+      _partial_: true
+      role: operation_planner
+      model: ${model}
+      max_turns: 30
+      announce_turn_budget: true
+
+    critic:
+      _target_: zeroshot.pipeline.workflow.create_agent
+      _partial_: true
+      role: operation_reviewer
+      model: ${model}
+      max_turns: 5
+      announce_turn_budget: true
+
+  coder:
+    _target_: zeroshot.pipeline.workflow.create_agent
+    _partial_: true
+    role: coder
+    model: ${model}
+
+    # No response format: the coder's product is the file it wrote and the
+    # verification it passed, not a JSON document.
+    max_turns: 30
+    announce_turn_budget: true
+
+  # Re-invocations after a transport failure the client cannot retry itself,
+  # such as a connection dropped mid-body. A retry resends the whole history,
+  # but exhausting all of them still costs less than the sample they save.
+  model_retries: 5

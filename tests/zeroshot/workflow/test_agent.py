@@ -33,12 +33,6 @@ def echo(value: str) -> str:
     return value
 
 
-@tool("verify_output")
-def verify_output() -> str:
-    """Record one submitted candidate."""
-    return "checked"
-
-
 class _FlakyChatModel(ScriptedChatModel):
     """Fails a scripted number of times before answering."""
 
@@ -116,29 +110,31 @@ def test_agent_returns_its_complete_tool_transcript() -> None:
     seen = model.received_messages
     assert [len(model_input) for model_input in seen] == [2, 4]
     assert all(isinstance(model_input[0], SystemMessage) for model_input in seen)
-    assert seen[0][0].text == PromptTemplate("coder").render(**PROMPT_CONTEXT)
+    assert seen[0][0].text == PromptTemplate("roles/coder").render(**PROMPT_CONTEXT)
     assert seen[1][-1].text == tool_result.text
     assert model.bound_tool_names == ("echo",)
 
 
-def test_agent_stops_at_its_turn_budget_and_retains_every_notice() -> None:
+def test_agent_stops_at_its_turn_budget_and_keeps_every_notice() -> None:
     model = ScriptedChatModel(
         responses=tuple(
-            tool_call("verify_output", {}, f"call-{turn}") for turn in range(1, 5)
+            tool_call("echo", {"value": "looking"}, f"call-{turn}")
+            for turn in range(1, 5)
         )
     )
 
-    result = _subgraph(model, tools=(verify_output,), max_turns=3).invoke(
+    result = _subgraph(model, max_turns=3).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
     messages = result["messages"]
     assert (result["turns"], result["stop_reason"]) == (3, StopReason.BUDGET_EXHAUSTED)
-    expected = [
-        f"[turn {turn}/3; candidates submitted: {turn - 1}]" for turn in (1, 2, 3)
-    ]
+    expected = [f"[turn {turn}/3]" for turn in (1, 2, 3)]
     assert [model_input[-1].text for model_input in model.received_messages] == expected
+    # Every notice stays: the agent has to see the ladder it climbed, not only
+    # the rung it is on, or it spends the whole budget investigating.
     assert _notices(messages) == expected
+    assert _notices(model.received_messages[-1]) == expected
     # The turn the budget cut short leaves its tool calls unanswered: two rounds
     # ran, the third was never handed to the tools.
     assert sum(isinstance(message, ToolMessage) for message in messages) == 2

@@ -199,7 +199,41 @@ ablationが必要になった時に初めてconfig化する。
 
 この時点ではoperations以降の型を定義しない。
 
-### Step 3 — message継承とtyped result抽出を `graph.py` に実装する
+### ✅ Step 2.5 — agent loopを `langchain.agents.create_agent` へ載せ替える
+
+Step 3 の前に実施した。自前の `StateGraph`（seed / should_continue / finish）を捨て、
+LangChain 公式の agent loop に載せ替える。§2.1 の module 配置は維持する。
+
+確定した判断:
+
+- `AgentSpec` は削除し、`create_agent_subgraph(role, model, tools, ...)` を
+  Hydra の `_target_` にした。各agent blockは `_partial_: true` で、tool集合と
+  prompt contextはgraphが後から渡す（§2.6のtool配分の所有権はそのまま）。
+- `agent.py` は残す。`create_agent` に載せてなお config で表現できないものが
+  2つあるため: turn budget（通知と打ち切りが同じ数字を共有する必要がある）と、
+  `ToolFeedbackError` だけを model へ返す tool error 方針。
+- turn budgetは `TurnBudget` middleware に集約した。`before_model` が通知を積み、
+  `after_model` が予算超過で `jump_to: end` する。tool roundの手前で止めるので、
+  未応答のtool callが残る＝BUDGET_EXHAUSTED という判定は従来と同じ。
+  `ModelCallLimitMiddleware` は使わない（合成AIMessageを末尾に足すため）。
+- `turns` と `stop_reason` は middleware の `state_schema` に持たせ、agent自身の
+  namespaceでevent logに残す。run全体の1個の値と混同しない（§Step 7の前倒し）。
+- model retryは `ModelRetryMiddleware(retry_on=(NetworkError, ProtocolError))`。
+  compiled graphへの `.with_retry()` はrun全体を再実行し、tool副作用を重複させる
+  ため使わない（実測: run_shell が2回実行される）。
+- typed outputは `response_format` に **明示的な `ProviderStrategy`** を渡す。
+  bare schemaを渡すと `model.profile` から strategy が自動選択され、profileを持たない
+  backendでは `tool_choice: "any"` の強制 + terminal submission tool（§2.5が却下した形）
+  へ黙って切り替わる。strategyはconfigの選択肢として持つ。
+- node名は `agent` → `model` に変わった。`console.py` と `aggregate_run.py` の
+  参照を更新済み。過去runのevent logとは非互換。
+- `AgentState` TypedDictは削除（create_agentのstateを使う）。`StopReason` は残す。
+
+Codexエンドポイントは client 側で `text.format: json_schema` を正しく送ることを
+payload生成まで確認済み。backendが実際に honour するかは live 1回で確認する。
+弾かれた場合は §2.5 どおり最終AIMessageのJSONを自前parseへ落とす。
+
+### ✅ Step 3 — message継承とtyped result抽出を `graph.py` に実装する
 
 作業:
 
@@ -226,7 +260,7 @@ ablationが必要になった時に初めてconfig化する。
 - typed artifactと、その元になった最終AIMessageの両方がstateに残る。
 - JSON不正時にartifactを設定したまま次stageへ進まない。
 
-### Step 4 — semantic hypothesis / review のvertical sliceを作る
+### ✅ Step 4 — semantic hypothesis / review のvertical sliceを作る
 
 作業:
 
@@ -273,7 +307,94 @@ ablationが必要になった時に初めてconfig化する。
 ここを「stage間の型付き出力」導入の最初の完了milestoneとする。
 `ReconstructionState` を定義しただけでは完了とはみなさない。
 
-### Step 5 — operation plan / reviewを追加する
+#### Step 3/4 の実装で確定したこと
+
+- **nested `StateGraph` は作らなかった。** revision loopは `semantic_stage` node内の
+  `for` 文で、candidate / review / revision countはローカル変数である。stage専用の
+  state型（`SemanticStageState` 等）は定義しない。graph engineに載せると型と node と
+  conditional edgeが要るが、買えるのは stage 内 interrupt と図示だけで、いま対価に
+  見合わない。fan-out（Step 8）で並列が要るときに作り直す。
+- Step 3 の当初項目のうち2つは create_agent 移行で不要になった。過去 `SystemMessage`
+  の除外は `system_prompt` が state に入らないので自動達成、最終AIMessageのPydantic
+  parseは `structured_response` が肩代わりする。残った helper は `_handoff`（budget
+  notice を落とす）と `_added`（id差分でstage deltaを取る）の2つだけ。
+- **turn budget notice は transcript に蓄積させる（必須要件）。** `before_model` が
+  state へ書き、過去の notice が履歴に残る。これは表示の好みではなく挙動要件で、
+  `turn 1/30 → turn 19/30` という登ってきた梯子が見えていないと、model は 30 turn を
+  すべて tool call に使い切って何も出力しないことが実測されている。現在位置だけを
+  毎リクエスト見せる方式（`wrap_model_call` で request にだけ足す）は一度実装して
+  却下した。**この蓄積を「transcript が汚れる」という理由で消してはならない。**
+- 蓄積する以上、後段へ渡すときには落とす必要がある（§2.4）。識別方法は
+  `TurnBudget` に閉じ、印は `_NOTICE_KEY`（private class 変数、provider には送られない）、
+  読み手は `TurnBudget.strip_notices(messages)` とする。graph.py は印の存在を知らない。
+  本文の正規表現で判定する案は却下した。落としたいのは「budget middleware が書いた」
+  という出自であって書式ではなく、書式を変えたときに静かにズレる。
+- **turn は transcript を数えず counter で持つ。** `after_model` が
+  `state["turns"] + 1` を書く。transcript継承を入れた時点で AIMessage を数える実装は
+  壊れており、reviewer が `turn 3/5` から始まって後段ほど早く budget切れになる
+  （実装中に実際に踏んだ）。`candidates submitted` も同様に counter にした。
+  これで開始位置の記録（`inherited`）とメッセージ走査は不要になった。
+- revision 上限（`max_semantic_revisions: 10`）到達時は最後の candidate で coder へ進む。
+  hypothesis が1つも得られなかった場合（agentが budget を使い切って型付き回答に
+  到達しなかった場合）は coder を飛ばして `verify_final` へ抜ける。END直行ではなく
+  verify_final を通すのは、完走した run が必ず1つ verification report を持つように
+  するため。
+- 型付き出力が無いときの扱いは2つに分ける。BUDGET_EXHAUSTED は「答える前に尽きた」
+  として routing で吸収し、COMPLETED なのに型付き出力が無い／壊れている場合だけ
+  run を止める。
+- 親 state の `agent_turns` / `stop_reason` は「run がなぜ終わったか」を保つ。
+  通常経路では coder のもの、coder を飛ばした場合だけ semantic stage のものになる。
+  agent 個別の stop reason は event log の namespace 側に出る。
+- checkpoint resume は node 粒度で機能することを実測した。coder が例外で落ちた後に
+  同じ thread_id で再invokeすると semantic stage は再実行されず、accepted hypothesis と
+  transcript が復元される。node 内部（agent の途中）からの再開はできない。
+- checkpoint に自前の Pydantic artifact が載るようになったため、`runner.py` で
+  `JsonPlusSerializer(allowed_msgpack_modules=[...])` を明示した。LangGraph が
+  未登録クラスの deserialize を将来ブロックしても resume が壊れないようにする。
+
+未解決として残すもの:
+
+- **`TurnBudget` はツールを一切知らない。** 通知は `[turn k/N]` のみ。以前は
+  `verify_output` の呼び出し回数を `candidates submitted: N` として出していたが、
+  提出回数は `verify_output` の結果が返す `verification_id`（`001`, `002`, ...）に
+  既に載っており、agent は自分の transcript から読める。middleware が特定ツールの
+  名前を知る理由はない。
+
+- **proposer / critic の対応関係（Step 5/6 の前提）。** `verify_output` は
+  semantic_reviewer の相方ではない。正しい対応は次の通り。
+
+  | | proposer | 自己点検の道具 | 判定者（権限） |
+  |---|---|---|---|
+  | semantic | hypothesizer | run_shell / load_image | semantic_reviewer |
+  | operations | operation_planner | （持たない予定） | operation_reviewer |
+  | code | coder | verify_output | output critic（Step 6） |
+
+  `verify_output` は「compile が通り STEP が出て絵が描けた」ことしか言わず、
+  図面と一致するかは判定していない。したがって proposer 側の証拠収集であり、
+  判定ではない。**権限は全 stage で判定者が持つ**べきで、proposer が持つのは
+  「提案を書き終える権利」だけである。code stage で今 coder が stage 終了権を
+  持って見えるのは Step 6 が未実装だからで、critic が入れば自動的に semantic と
+  同型になる。計画 §6 の「coder の自主的な verification loop を維持する」と
+  この権限移譲は両立する（維持されるのは証拠収集であって権限ではない）。
+
+  なお semantic と operations は**決定論的な検証手段を持たない**（そもそも
+  検証方法が無い）。証拠収集の段が入るのは code stage だけである。
+
+- **proposer / critic の切り出し。** `max_semantic_revisions` が `model_retries` と
+  同列に置かれているのは、semantic stage を1つの config block として表す入れ物が
+  まだ無いため。Step 5 で operation planner / reviewer を書く**前に**
+  `proposer_critic.py` へ `create_proposer_critic(proposer, critic, max_revisions, ...)`
+  を切り出し、semantic 段を先に移してから2例目を載せる。今切り出さないのは、
+  operations 段の critic が「確定した hypothesis」を追加入力として読む必要があり、
+  1例目だけからパラメータを決めると2例目を型に合わせる羽目になるため。
+- **後段が継承するトークン量。** semantic段が `load_image` で読んだ画像 content block も
+  そのまま coder の入力に乗る。仕様（§2.4）どおりだが、実走のトークン数を見て
+  `_handoff` にフィルタを足すか判断する。
+- stage内のagent別 event 属性。namespace は node 名（`semantic_stage:<uuid>`）までしか
+  分からず、2体目は `('semantic_stage:<uuid>', '1')` になる。AIMessage の `name` に
+  role が入っているので区別はできる。集計はStep 7で行う。
+
+### ✅ Step 5 — operation plan / reviewを追加する
 
 作業:
 
@@ -295,6 +416,39 @@ ablationが必要になった時に初めてconfig化する。
 - operation reviseがsemantic artifactを不必要に再生成しない。
 - upstream revision後に古いdownstream artifactをroutingや最終結果へ使用できない。
 - accept/revise/invalidationをgraph testで確認できる。
+
+#### Step 5 の実装で確定したこと（レビュー前の記録）
+
+- **`proposer_critic.py` を先に切り出してから2例目を載せた。** `graph.py` に
+  ループのコピーは無く、stage は宣言 2 行になった。
+
+  ```python
+  SEMANTIC = ProposerCriticSpec(proposal=SemanticHypothesis, instructions="semantic")
+  OPERATIONS = ProposerCriticSpec(proposal=OperationPlan, instructions="operations")
+  ```
+
+- **critic の判定型は共有の `Review` 1つ。** `SemanticHypothesisReview` は
+  `Review` へ改名した。2例書いた結果 `decision`/`feedback` が完全に同一で、
+  分ける理由が無かった。**accept / revise という語彙自体がこのループの契約**であり、
+  第3の答えが要る stage はループではなく routing が要る（Step 6）。したがって
+  spec から `review` フィールドを削除し、ループが `Review` を固定で使う。
+- **`Operation` 型は作らない。** `OperationPlan(operations: list[str])` のみ。
+  §2.3 で `PrimitiveRef` を却下したのと同じ理由で、検証手段の無い中間 IR を
+  CadQuery の手前にもう1つ作ることになる。型化の判断条件は、実測で「手順の
+  取りこぼし・順序入れ替え」が型で防げる形で観測されたとき。
+- **指示文は stage ごとのディレクトリ**に置く（`prompts/instructions/semantic/`,
+  `operations/`）。ファイル名は `propose.md` / `revise.md` / `review.md` 固定で、
+  spec が持つのはディレクトリ名 1つだけ。role prompt が `{role}.md` を引くのと
+  同じ規約。
+- **上流の確定artifactは指示文に埋める。** `run(history, **upstream)` が
+  propose / revise / review の全テンプレートへ転送する。critic は proposer の
+  transcript を読まないので、hypothesis も指示文経由でしか届かない。
+- `state.py` に `operation_plan` を追加。stage が artifact を出せなかった場合は
+  下流を飛ばして `verify_final` へ抜ける（semantic 失敗 → operations も coder も
+  走らない）。
+- **coder はまだ単独ノード**のまま。Step 6 で output critic と組にして
+  proposer/critic に載せる。§Step 5 項目8（上流差し戻し時の下流 artifact 無効化）は
+  差し戻し経路が存在しないため Step 6 と同時に実装する。
 
 ### Step 6 — final output criticとstage間差し戻しを完成させる
 
