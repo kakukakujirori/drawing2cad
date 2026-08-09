@@ -24,12 +24,6 @@ workflow:
     # loop forever. On reaching it the workflow uses the latest proposal.
     max_revisions: 10
 
-    # How the typed answer is asked for. `provider` is native json_schema;
-    # switch to `tool` for a backend that cannot take a response format, which
-    # forces a tool call instead. Named rather than inferred from the model,
-    # so swapping backends cannot silently change when an agent may stop.
-    structured_output: provider
-
     proposer:
       _target_: zeroshot.pipeline.workflow.create_agent
       _partial_: true
@@ -60,7 +54,6 @@ workflow:
     _target_: zeroshot.pipeline.workflow.create_proposer_critic_loop
     _partial_: true
     max_revisions: 10
-    structured_output: provider
 
     proposer:
       _target_: zeroshot.pipeline.workflow.create_agent
@@ -84,10 +77,35 @@ workflow:
     role: coder
     model: ${model}
 
-    # No response format: the coder's product is the file it wrote and the
+    # No output schema: the coder's product is the file it wrote and the
     # verification it passed, not a JSON document.
     max_turns: 30
     announce_turn_budget: true
+
+  # The last word on the run: it compares the built solid against the drawing
+  # and, when they differ, names the stage that has to change.
+  auditor:
+    _target_: zeroshot.pipeline.workflow.create_agent
+    _partial_: true
+    role: output_auditor
+    model: ${model}
+
+    # It reads a report and looks at renders; it has no debug loop.
+    max_turns: 10
+    announce_turn_budget: true
+
+  # How many times the audit may send the run back to an earlier stage. Every
+  # send-back re-runs everything downstream of its target, so this bounds the
+  # whole graph's cycle. `max_revisions` above cannot: that counts rounds
+  # inside one stage.
+  max_audit_reject_count: 3
+
+  # How a typed answer is asked for, for every agent that owes one. `provider`
+  # is native json_schema; switch to `tool` for a backend that cannot take a
+  # response format, which forces a tool call instead. Named rather than
+  # inferred from the model, so swapping backends cannot silently change when
+  # an agent may stop.
+  structured_output: provider
 
   # Re-invocations after a transport failure the client cannot retry itself,
   # such as a connection dropped mid-body. A retry resends the whole history,

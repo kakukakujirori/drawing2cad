@@ -116,7 +116,7 @@ class ConsoleReporter:
             self._render_value(data.get("report"))
         elif name == "stop_reason":
             self.console.print(
-                f"\n[stop] {data.get('reason')}",
+                f"\n[stop] {' '.join(filter(None, (data.get('role'), data['reason'])))}",
                 style="bold yellow",
                 markup=False,
             )

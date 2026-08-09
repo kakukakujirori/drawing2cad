@@ -55,7 +55,7 @@ def _completed_events(usage: dict[str, Any] | None) -> list[dict[str, Any]]:
         _event("tool_started", tool_name="run_shell", caller="model"),
         _event("node_started", timestamp_ms=3000, node="verify_final"),
         _event("verification", node="verify_final", report={"status": "VERIFIED"}),
-        _event("stop_reason", node="verify_final", reason="COMPLETED"),
+        _event("stop_reason", node="coder", role="coder", reason="COMPLETED"),
         _event("node_finished", timestamp_ms=3500, node="verify_final"),
         _event("run_completed", duration_ms=4000),
     ]
@@ -81,7 +81,7 @@ def test_read_events_reports_what_the_run_did(tmp_path: Path) -> None:
     assert row.sample_id == "000364"
     assert row.terminal is Terminal.COMPLETED
     assert row.verify == "VERIFIED"
-    assert row.stop_reason == "COMPLETED"
+    assert row.stop_reasons == {"coder": "COMPLETED"}
     assert row.agent_turns == 1
     assert row.model_calls == 1
     assert row.tool_calls == {"run_shell:model": 1}
@@ -169,7 +169,9 @@ def test_a_directory_without_events_is_not_a_sample(tmp_path: Path) -> None:
 
 def test_notes_carry_the_exceptions_the_table_leaves_out(tmp_path: Path) -> None:
     budget = _completed_events(_USAGE)
-    budget[7] = _event("stop_reason", node="verify_final", reason="BUDGET_EXHAUSTED")
+    budget[7] = _event(
+        "stop_reason", node="coder", role="coder", reason="BUDGET_EXHAUSTED"
+    )
     _write_sample(tmp_path, "budget", budget, {"status": "OK"})
     _write_sample(tmp_path, "slow", _completed_events(_USAGE), {"status": "TIMEOUT"})
     _write_sample(tmp_path, "quiet", _completed_events(None), {"status": "OK"})
@@ -177,7 +179,7 @@ def test_notes_carry_the_exceptions_the_table_leaves_out(tmp_path: Path) -> None
     rows = collect(tmp_path)
     lines = notes(rows)
 
-    assert any("BUDGET_EXHAUSTED" in line for line in lines)
+    assert any("budget exhausted: coder" in line for line in lines)
     assert any("score TIMEOUT" in line for line in lines)
     assert any("no token usage" in line for line in lines)
     assert summarize(rows).budget_exhausted == 1

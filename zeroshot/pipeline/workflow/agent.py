@@ -7,10 +7,11 @@ decides which failures the model gets to see.  The graph owns topology; this
 owns a single agent's conduct.
 """
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, NotRequired
+from typing import Any, Literal, NotRequired
 
 import httpx
 from langchain.agents import create_agent as _create_agent
@@ -22,7 +23,7 @@ from langchain.agents.middleware import (
     ToolErrorMiddleware,
     hook_config,
 )
-from langchain.agents.structured_output import ResponseFormat
+from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.tools import BaseTool
@@ -35,6 +36,10 @@ from zeroshot.pipeline.workflow.state import StopReason
 # A config binds who an agent is -- role, model, budget -- and leaves the
 # environment open.  Whoever builds the graph supplies the rest.
 AgentFactory = Callable[..., Any]
+
+StructuredOutput = Literal["provider", "tool"]
+
+_STRATEGIES = {"provider": ProviderStrategy, "tool": ToolStrategy}
 
 
 class AgentProgress(AgentState):
@@ -134,6 +139,21 @@ class AgentRun[T: BaseModel]:
     answer: T | None
     turns: int
     stop_reason: StopReason
+    role: str
+
+    @property
+    def stop_reasons(self) -> dict[str, StopReason]:
+        """How this agent finished, under the name of the role that finished."""
+        return {self.role: self.stop_reason}
+
+    @property
+    def turns_by_role(self) -> dict[str, int]:
+        """What this agent spent, under the name of the role that spent it.
+
+        What a workflow records: with several agents in a run, a bare number is
+        one of them and does not say which.
+        """
+        return {self.role: self.turns}
 
 
 def run_agent[T: BaseModel](
@@ -168,6 +188,7 @@ def run_agent[T: BaseModel](
         answer=answer,
         turns=result["turns"],
         stop_reason=stop_reason,
+        role=agent.name,
     )
 
 
@@ -184,7 +205,8 @@ def create_agent(
     model: BaseChatModel,
     tools: Sequence[BaseTool],
     prompt_context: Mapping[str, str] = MappingProxyType({}),
-    response_format: ResponseFormat | None = None,
+    output_schema: type[BaseModel] | None = None,
+    structured_output: StructuredOutput = "provider",
     max_turns: int = 30,
     announce_turn_budget: bool = True,
     model_retries: int = 5,
@@ -196,13 +218,26 @@ def create_agent(
     verify it, to feed it to a next role, to stop -- belongs to the graph that
     embeds this.
 
-    `response_format` is passed through as an explicit strategy rather than a
-    bare schema: auto-detection reads the model's profile, which would let a
-    change of backend silently change when the agent is allowed to stop.
+    `output_schema` is the typed answer the role owes, and reaches the model
+    twice from this one definition: as the provider's output contract, and as
+    the `$output_schema` its prompt explains.  A role prompt that spelled the
+    schema out by hand would be a second definition to keep in step.
+
+    `structured_output` names the strategy rather than letting it be inferred:
+    auto-detection reads the model's profile, which would let a change of
+    backend silently change when the agent is allowed to stop.
     """
+    context = dict(prompt_context)
+    response_format = None
+    if output_schema is not None:
+        context["output_schema"] = json.dumps(
+            output_schema.model_json_schema(), indent=2
+        )
+        response_format = _STRATEGIES[structured_output](schema=output_schema)
+
     # Rendered once, here, so a placeholder we forgot to supply fails while the
     # graph is being built rather than partway into a run.
-    rendered_prompt = PromptTemplate(f"roles/{role}").render(**prompt_context)
+    rendered_prompt = PromptTemplate(f"roles/{role}").render(**context)
 
     return _create_agent(
         model=model,

@@ -1,3 +1,5 @@
+import operator
+from collections.abc import Mapping
 from enum import Enum
 from typing import (
     Annotated,
@@ -50,6 +52,26 @@ class Review(BaseModel):
         return self
 
 
+class Audit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["accept", "redo_code", "redo_operations", "redo_semantics"] = (
+        Field(
+            ...,
+            description="'accept' if the built model matches the drawing. Otherwise the stage to go back to: 'redo_code' when the plan is right but the program does not build it, 'redo_operations' when the features are right but the plan cannot produce them, 'redo_semantics' when the part was misread.",
+        )
+    )
+    feedback: str = Field(
+        ...,
+        description="Why that decision. For any 'redo_', state the mismatch against the drawing and what the named stage has to change, specific enough to act on without guessing; it must not be empty. For 'accept', summarize what makes the model correct.",
+    )
+
+    @model_validator(mode="after")
+    def require_feedback_for_redo(self) -> Self:
+        if self.decision != "accept" and not self.feedback.strip():
+            raise ValueError("feedback is required when a stage is sent back")
+        return self
+
+
 ################################
 
 
@@ -58,13 +80,30 @@ class StopReason(Enum):
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
 
 
+def add_turns(
+    current: Mapping[str, int], incoming: Mapping[str, int]
+) -> dict[str, int]:
+    """Turns spent per role, accumulated.
+
+    Added rather than replaced, unlike `stop_reasons`: a role the workflow sent
+    back has spent both its rounds, while how it finished is only ever how it
+    finished last.
+    """
+    return {
+        role: current.get(role, 0) + incoming.get(role, 0)
+        for role in {*current, *incoming}
+    }
+
+
 class ReconstructionState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     semantic_hypothesis: NotRequired[SemanticHypothesis]
     operation_plan: NotRequired[OperationPlan]
-    agent_turns: NotRequired[int]
-    stop_reason: NotRequired[StopReason]
+    agent_turns: NotRequired[Annotated[dict[str, int], add_turns]]
+    stop_reasons: NotRequired[Annotated[dict[str, StopReason], operator.or_]]
     last_verification: NotRequired[VerifyOutputResult]
+    audit: NotRequired[Audit]
+    audit_reject_count: NotRequired[Annotated[int, operator.add]]
 
 
 def _custom_state_types() -> tuple[type, ...]:

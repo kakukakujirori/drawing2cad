@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from zeroshot.evaluation.run_scoring import ScoreStatus, StepScorer
+from zeroshot.pipeline.workflow.state import StopReason
 
 
 class Terminal(str, Enum):
@@ -61,7 +62,7 @@ class SampleRow:
     terminal: Terminal
     error: str | None = None
     verify: str | None = None
-    stop_reason: str | None = None
+    stop_reasons: Mapping[str, str] = field(default_factory=dict)
     agent_turns: int = 0
     model_calls: int = 0
     calls_with_usage: int = 0
@@ -128,8 +129,13 @@ def read_events(events_path: Path, sample_id: str) -> SampleRow:
                 tool_calls[f"{data.get('tool_name')}:{data.get('caller')}"] += 1
             elif name == "verification":
                 row = replace(row, verify=data["report"].get("status"))
-            elif name == "stop_reason":
-                row = replace(row, stop_reason=data.get("reason"))
+            elif name == "stop_reason" and (role := data.get("role")):
+                # The unnamed ones are an agent reporting inside its own
+                # namespace, once per turn it ended; the run's record is the
+                # workflow's, which says whose reason it is.
+                row = replace(
+                    row, stop_reasons={**row.stop_reasons, role: data["reason"]}
+                )
             elif name == "node_started":
                 started[data["node"]] = at
             elif name == "node_finished":
@@ -177,6 +183,15 @@ def collect(run_dir: Path) -> list[SampleRow]:
     return rows
 
 
+def _exhausted(row: SampleRow) -> list[str]:
+    """The roles in this sample that ran out of turns, in the order they ran."""
+    return [
+        role
+        for role, reason in row.stop_reasons.items()
+        if reason == StopReason.BUDGET_EXHAUSTED.value
+    ]
+
+
 def _mean(values: Iterable[float]) -> float | None:
     collected = list(values)
     return sum(collected) / len(collected) if collected else None
@@ -192,7 +207,7 @@ def summarize(rows: Sequence[SampleRow]) -> RunSummary:
         execution_success=sum(row.verified for row in rows),
         scored=len(scored),
         reported_tokens=len(counted),
-        budget_exhausted=sum(row.stop_reason == "BUDGET_EXHAUSTED" for row in rows),
+        budget_exhausted=sum(bool(_exhausted(row)) for row in rows),
         # Reflected, so a token kind added to `Tokens` is totalled here too.
         tokens=Tokens(
             **{
@@ -236,8 +251,8 @@ def notes(rows: Sequence[SampleRow]) -> list[str]:
             lines.append(f"{row.sample_id}  {row.terminal.value}: {row.error}")
         elif not row.verified:
             lines.append(f"{row.sample_id}  final verification {row.verify}")
-        if row.stop_reason == "BUDGET_EXHAUSTED":
-            lines.append(f"{row.sample_id}  stop_reason=BUDGET_EXHAUSTED")
+        if exhausted := _exhausted(row):
+            lines.append(f"{row.sample_id}  budget exhausted: {', '.join(exhausted)}")
         if row.score_status not in {None, ScoreStatus.OK.value}:
             lines.append(f"{row.sample_id}  score {row.score_status}")
         if row.model_calls and not row.calls_with_usage:

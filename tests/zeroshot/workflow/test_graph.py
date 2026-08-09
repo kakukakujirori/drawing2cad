@@ -56,6 +56,10 @@ def _review(decision: str, feedback: str = "") -> AIMessage:
     return AIMessage(content=json.dumps({"decision": decision, "feedback": feedback}))
 
 
+def _audit(decision: str, feedback: str = "") -> AIMessage:
+    return AIMessage(content=json.dumps({"decision": decision, "feedback": feedback}))
+
+
 def _stage(
     proposer_role: str,
     proposer: ScriptedChatModel,
@@ -69,7 +73,6 @@ def _stage(
         proposer=_agent(proposer_role, proposer, **options),
         critic=_agent(critic_role, critic, **options),
         max_revisions=max_revisions,
-        structured_output="provider",
     )
 
 
@@ -83,6 +86,7 @@ def _graph(
     *,
     planner: ScriptedChatModel | None = None,
     plan_reviewer: ScriptedChatModel | None = None,
+    auditor: ScriptedChatModel | None = None,
     **overrides: Any,
 ):
     """The staged workflow with one scripted model behind each role.
@@ -112,6 +116,11 @@ def _graph(
             **options,
         ),
         coder=_agent("coder", coder, **options),
+        auditor=_agent(
+            "output_auditor",
+            auditor or ScriptedChatModel(responses=(_audit("accept", "matches"),)),
+            **options,
+        ),
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable), default_timeout_s=10
         ),
@@ -140,7 +149,18 @@ def test_an_accepted_hypothesis_reaches_the_coder_and_the_final_verification() -
     assert result["semantic_hypothesis"] == SemanticHypothesis(
         semantics=["a flanged boss"]
     )
-    assert result["stop_reason"] is StopReason.COMPLETED
+    # Every role that spoke reported for itself, under its own name.
+    assert result["stop_reasons"] == {
+        role: StopReason.COMPLETED
+        for role in (
+            "semantic_hypothesizer",
+            "semantic_reviewer",
+            "operation_planner",
+            "operation_reviewer",
+            "coder",
+            "output_auditor",
+        )
+    }
     assert result["last_verification"] == VerifyOutputResult(
         status="REJECTED",
         executor_error="model.py was not found",
@@ -166,11 +186,11 @@ def test_the_workflow_transcript_records_each_message_once() -> None:
     messages = result["messages"]
     ids = [message.id for message in messages]
     assert len(ids) == len(set(ids))
-    # The run input, then an instruction and an answer for each of the five
+    # The run input, then an instruction and an answer for each of the six
     # roles the workflow asked something of.
     assert [type(message) for message in messages] == [
         HumanMessage,
-        *[HumanMessage, AIMessage] * 5,
+        *[HumanMessage, AIMessage] * 6,
     ]
     assert not [message for message in messages if isinstance(message, SystemMessage)]
 
@@ -247,7 +267,9 @@ def test_a_plan_that_was_never_settled_leaves_the_coder_nothing_to_follow() -> N
 
     assert result["semantic_hypothesis"] == SemanticHypothesis(semantics=["a plate"])
     assert "operation_plan" not in result
-    assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+    # The planner is the one that ran out; the semantic stage before it did not.
+    assert result["stop_reasons"]["operation_planner"] is StopReason.BUDGET_EXHAUSTED
+    assert result["stop_reasons"]["semantic_hypothesizer"] is StopReason.COMPLETED
     assert coder.received_messages == []
 
 
@@ -273,7 +295,9 @@ def test_a_stage_that_never_answered_leaves_the_coder_nothing_to_write() -> None
         result = graph.invoke({"messages": []})
 
     assert "semantic_hypothesis" not in result
-    assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+    assert result["stop_reasons"] == {
+        "semantic_hypothesizer": StopReason.BUDGET_EXHAUSTED
+    }
     assert reviewer.received_messages == []
     assert coder.received_messages == []
     # The run still reports what the workspace holds, so every sample has a row.
@@ -335,7 +359,7 @@ def test_a_later_agent_does_not_inherit_an_earlier_agents_turn_notices() -> None
     assert notices(coder.received_messages[0]) == ["[turn 1/30]"]
     # They are a true record of what each agent was shown, so the workflow
     # transcript keeps every one; only the handoff to the next agent drops them.
-    assert len(notices(result["messages"])) == 6
+    assert len(notices(result["messages"])) == 7
 
 
 def test_the_coder_still_verifies_its_own_work_before_the_workflow_does(
@@ -389,7 +413,9 @@ def test_the_coder_still_verifies_its_own_work_before_the_workflow_does(
 
     assert invocations == ["model", "workflow"]
     assert result["last_verification"] == final_report
-    assert isinstance(result["messages"][-2], ToolMessage)
+    # The coder's own verification is a tool result inside its own turns, two
+    # messages before the audit the workflow asked for afterwards.
+    assert isinstance(result["messages"][-4], ToolMessage)
 
 
 def test_the_workflow_runs_the_final_verification_after_a_coder_runs_out() -> None:
@@ -412,9 +438,330 @@ def test_the_workflow_runs_the_final_verification_after_a_coder_runs_out() -> No
         )
         result = graph.invoke({"messages": []})
 
-    assert result["agent_turns"] == 3
-    assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+    assert result["agent_turns"] == {
+        "semantic_hypothesizer": 1,
+        "semantic_reviewer": 1,
+        "operation_planner": 1,
+        "operation_reviewer": 1,
+        "coder": 3,
+        "output_auditor": 1,
+    }
     assert result["last_verification"] == VerifyOutputResult(
         status="REJECTED",
         executor_error="model.py was not found",
     )
+
+
+@pytest.mark.parametrize(
+    ("decision", "rerun"),
+    [
+        ("redo_code", "coder"),
+        ("redo_operations", "operation_planner"),
+        ("redo_semantics", "semantic_hypothesizer"),
+    ],
+)
+def test_the_audit_sends_the_run_back_to_the_stage_it_names(
+    decision: str, rerun: str
+) -> None:
+    """Each verdict re-enters a different stage, and everything after it."""
+    models = {
+        "semantic_hypothesizer": ScriptedChatModel(
+            responses=tuple(_hypothesis("a plate") for _ in range(4))
+        ),
+        "semantic_reviewer": ScriptedChatModel(
+            responses=tuple(_review("accept", "fine") for _ in range(4))
+        ),
+        "operation_planner": ScriptedChatModel(
+            responses=tuple(_plan("extrude it") for _ in range(4))
+        ),
+        "operation_reviewer": ScriptedChatModel(
+            responses=tuple(_review("accept", "builds it") for _ in range(4))
+        ),
+        "coder": ScriptedChatModel(
+            responses=tuple(AIMessage(content=f"written {n}") for n in range(4))
+        ),
+    }
+    auditor = ScriptedChatModel(
+        responses=(
+            _audit(decision, "the boss is missing"),
+            _audit("accept", "now it matches"),
+        )
+    )
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            models["semantic_hypothesizer"],
+            models["semantic_reviewer"],
+            models["coder"],
+            planner=models["operation_planner"],
+            plan_reviewer=models["operation_reviewer"],
+            auditor=auditor,
+        )
+        result = graph.invoke({"messages": []})
+
+    assert result["audit"].decision == "accept"
+    assert result["audit_reject_count"] == 1
+    # The named stage ran twice, and so did everything downstream of it.
+    assert len(models[rerun].received_messages) == 2
+    assert len(models["coder"].received_messages) == 2
+    # Nothing upstream of it was asked again.
+    if rerun == "coder":
+        assert len(models["operation_planner"].received_messages) == 1
+    if rerun != "semantic_hypothesizer":
+        assert len(models["semantic_hypothesizer"].received_messages) == 1
+
+
+def test_a_stage_the_audit_sends_back_opens_on_its_revise_instruction() -> None:
+    planner = ScriptedChatModel(responses=tuple(_plan("extrude it") for _ in range(2)))
+    auditor = ScriptedChatModel(
+        responses=(
+            _audit("redo_operations", "the 10mm hole is never cut"),
+            _audit("accept", "now it matches"),
+        )
+    )
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(responses=(_hypothesis("a plate"),)),
+            ScriptedChatModel(responses=(_review("accept", "fine"),)),
+            ScriptedChatModel(
+                responses=tuple(AIMessage(content="written") for _ in range(2))
+            ),
+            planner=planner,
+            plan_reviewer=ScriptedChatModel(
+                responses=tuple(_review("accept", "builds it") for _ in range(2))
+            ),
+            auditor=auditor,
+        )
+        graph.invoke({"messages": []})
+
+    first, second = (messages[-1].text for messages in planner.received_messages)
+    assert "the 10mm hole is never cut" in second
+    assert "the 10mm hole is never cut" not in first
+
+
+def test_a_stage_whose_premise_was_redone_is_not_asked_the_first_time_question() -> (
+    None
+):
+    """The planner was not at fault, but it planned from a hypothesis that has
+    since been replaced, and its own accepted plan is still in the transcript."""
+    planner = ScriptedChatModel(responses=tuple(_plan("extrude it") for _ in range(2)))
+    auditor = ScriptedChatModel(
+        responses=(
+            _audit("redo_semantics", "it was read as a plate but it is a bracket"),
+            _audit("accept", "now it matches"),
+        )
+    )
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(responses=tuple(_hypothesis(f"h{n}") for n in range(2))),
+            ScriptedChatModel(
+                responses=tuple(_review("accept", "fine") for _ in range(2))
+            ),
+            ScriptedChatModel(
+                responses=tuple(AIMessage(content="written") for _ in range(2))
+            ),
+            planner=planner,
+            plan_reviewer=ScriptedChatModel(
+                responses=tuple(_review("accept", "builds it") for _ in range(2))
+            ),
+            auditor=auditor,
+        )
+        graph.invoke({"messages": []})
+
+    first, second = (messages[-1].text for messages in planner.received_messages)
+    assert "has been revised" in second
+    assert "has been revised" not in first
+    # It is being asked to restate, not to answer for a rejection that was not
+    # its own.
+    assert "rejected" not in second
+    # And the hypothesis it restates from is the new one.
+    assert '"h1"' in second
+
+
+def test_a_coder_the_audit_sends_back_is_asked_for_a_correction() -> None:
+    """It already has the hypothesis and the plan; what it lacks is the fault."""
+    coder = ScriptedChatModel(
+        responses=tuple(AIMessage(content=f"written {n}") for n in range(2))
+    )
+    auditor = ScriptedChatModel(
+        responses=(
+            _audit("redo_code", "the pocket is cut on the wrong face"),
+            _audit("accept", "now it matches"),
+        )
+    )
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(responses=(_hypothesis("a plate"),)),
+            ScriptedChatModel(responses=(_review("accept", "fine"),)),
+            coder,
+            auditor=auditor,
+        )
+        graph.invoke({"messages": []})
+
+    first, second = (messages[-1].text for messages in coder.received_messages)
+    assert "reviewed and accepted" in first
+    assert "the pocket is cut on the wrong face" in second
+    assert "reviewed and accepted" not in second
+
+
+def test_a_coder_whose_plan_was_redone_is_told_the_plan_changed() -> None:
+    """The coder was not at fault, but the program it wrote builds a plan that
+    no longer exists."""
+    coder = ScriptedChatModel(
+        responses=tuple(AIMessage(content=f"written {n}") for n in range(2))
+    )
+    auditor = ScriptedChatModel(
+        responses=(
+            _audit("redo_operations", "the plan never cuts the 10mm hole"),
+            _audit("accept", "now it matches"),
+        )
+    )
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(
+                responses=tuple(_hypothesis("a plate") for _ in range(2))
+            ),
+            ScriptedChatModel(
+                responses=tuple(_review("accept", "fine") for _ in range(2))
+            ),
+            coder,
+            planner=ScriptedChatModel(
+                responses=tuple(_plan(f"plan-v{n}") for n in range(2))
+            ),
+            plan_reviewer=ScriptedChatModel(
+                responses=tuple(_review("accept", "builds it") for _ in range(2))
+            ),
+            auditor=auditor,
+        )
+        graph.invoke({"messages": []})
+
+    first, second = (messages[-1].text for messages in coder.received_messages)
+    assert "has been revised" in second
+    assert "has been revised" not in first
+    # It is rebuilding against the new plan, not answering for a fault of its own.
+    assert "rejected" not in second
+    assert "plan-v1" in second
+
+
+def test_a_stage_sent_back_does_not_read_the_work_it_invalidated() -> None:
+    """The plan and the program that followed were built on a hypothesis the
+    audit rejected, so they are an abandoned branch, not the run so far."""
+    planner = ScriptedChatModel(responses=tuple(_plan(f"plan-v{n}") for n in range(2)))
+    coder = ScriptedChatModel(
+        responses=tuple(AIMessage(content=f"written {n}") for n in range(2))
+    )
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(responses=tuple(_hypothesis(f"h{n}") for n in range(2))),
+            ScriptedChatModel(
+                responses=tuple(_review("accept", "fine") for _ in range(2))
+            ),
+            coder,
+            planner=planner,
+            plan_reviewer=ScriptedChatModel(
+                responses=tuple(_review("accept", "builds it") for _ in range(2))
+            ),
+            auditor=ScriptedChatModel(
+                responses=(
+                    _audit("redo_semantics", "it is a bracket, not a plate"),
+                    _audit("accept", "now it matches"),
+                )
+            ),
+        )
+        graph.invoke({"messages": []})
+
+    speakers = [message.name for message in planner.received_messages[1]]
+    assert "coder" not in speakers
+    assert "output_auditor" not in speakers
+    # Its own earlier plan stays: the stage is upstream of nothing it wrote.
+    assert speakers.count("operation_planner") == 1
+
+
+def test_the_coder_is_not_shown_the_audits_own_turns() -> None:
+    """It is told the verdict in its instruction; the audit's reasoning about a
+    program it is now replacing is not the run so far."""
+    coder = ScriptedChatModel(
+        responses=tuple(AIMessage(content=f"written {n}") for n in range(2))
+    )
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(responses=(_hypothesis("a plate"),)),
+            ScriptedChatModel(responses=(_review("accept", "fine"),)),
+            coder,
+            auditor=ScriptedChatModel(
+                responses=(
+                    _audit("redo_code", "the pocket is cut on the wrong face"),
+                    _audit("accept", "now it matches"),
+                )
+            ),
+        )
+        graph.invoke({"messages": []})
+
+    speakers = [message.name for message in coder.received_messages[1]]
+    assert "output_auditor" not in speakers
+    assert "the pocket is cut on the wrong face" in coder.received_messages[1][-1].text
+
+
+def test_the_run_ends_when_the_audit_has_sent_it_back_too_often() -> None:
+    auditor = ScriptedChatModel(
+        responses=tuple(_audit("redo_code", "still wrong") for _ in range(5))
+    )
+    coder = ScriptedChatModel(
+        responses=tuple(AIMessage(content=f"written {n}") for n in range(5))
+    )
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(responses=(_hypothesis("a plate"),)),
+            ScriptedChatModel(responses=(_review("accept", "fine"),)),
+            coder,
+            auditor=auditor,
+            max_audit_reject_count=2,
+        )
+        result = graph.invoke({"messages": []})
+
+    assert result["audit_reject_count"] == 3
+    # The first run of the coder plus one for each send-back it was granted.
+    assert len(coder.received_messages) == 3
+    assert result["audit"].decision == "redo_code"
+
+
+def test_a_run_that_never_reached_the_coder_is_not_audited() -> None:
+    """There is no built model to judge, so the audit would have no evidence."""
+    auditor = ScriptedChatModel(responses=(_audit("accept", "unused"),))
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(
+                responses=(
+                    tool_call("run_shell", {"command": "true"}, "call-loop"),
+                    tool_call("run_shell", {"command": "true"}, "call-loop-2"),
+                )
+            ),
+            ScriptedChatModel(responses=(_review("accept", "fine"),)),
+            ScriptedChatModel(responses=()),
+            agent_options={"max_turns": 2, "announce_turn_budget": False},
+            auditor=auditor,
+        )
+        result = graph.invoke({"messages": []})
+
+    assert "semantic_hypothesis" not in result
+    assert auditor.received_messages == []
+    assert result["stop_reasons"] == {
+        "semantic_hypothesizer": StopReason.BUDGET_EXHAUSTED
+    }

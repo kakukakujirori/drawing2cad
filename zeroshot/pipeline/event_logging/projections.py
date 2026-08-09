@@ -205,8 +205,11 @@ class RunEventTransformer(StreamTransformer):
                             "report": _safe_value(update["last_verification"]),
                         },
                     )
-                # Whether the agent finished or ran out of turns is only in
-                # graph state, so without this no offline reader can tell.
+                # Whether an agent finished or ran out of turns is only in
+                # graph state, so without this no offline reader can tell.  An
+                # agent reports one reason inside its own namespace, per turn it
+                # ended; the workflow reports them keyed by role, which is what
+                # says which agent a namespace belonged to.
                 if "stop_reason" in update:
                     self._push(
                         event,
@@ -214,6 +217,16 @@ class RunEventTransformer(StreamTransformer):
                         {
                             "node": str(node),
                             "reason": _safe_value(update["stop_reason"]),
+                        },
+                    )
+                for role, reason in update.get("stop_reasons", {}).items():
+                    self._push(
+                        event,
+                        "stop_reason",
+                        {
+                            "node": str(node),
+                            "role": role,
+                            "reason": _safe_value(reason),
                         },
                     )
 

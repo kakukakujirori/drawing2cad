@@ -228,6 +228,9 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "semantic_stage",
         "operations_stage",
         "coder",
+        "auditor",
+        "max_audit_reject_count",
+        "structured_output",
         "model_retries",
     }
     assert graph_factory.keywords["model_retries"] == 1
@@ -262,16 +265,15 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "proposer",
         "critic",
         "max_revisions",
-        "structured_output",
     }
     # A whole propose-and-review round, which is not an agent turn budget.
     assert stage.keywords["max_revisions"] == 10
-    # How the typed answer is asked for is the config's call; which answer is
-    # owed is not, so no schema appears here.
-    assert stage.keywords["structured_output"] == "provider"
+    # How the typed answer is asked for is one setting for the whole run, not
+    # a per-stage one; which answer is owed is not the config's call at all.
+    assert graph_factory.keywords["structured_output"] == "provider"
     assert stage.keywords["proposer"].keywords["role"] == "semantic_hypothesizer"
     assert stage.keywords["critic"].keywords["role"] == "semantic_reviewer"
-    assert "response_format" not in stage.keywords["proposer"].keywords
+    assert "output_schema" not in stage.keywords["proposer"].keywords
     assert "agent" not in config
 
 

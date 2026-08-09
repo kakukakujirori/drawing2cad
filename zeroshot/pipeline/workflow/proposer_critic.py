@@ -8,23 +8,26 @@ the proposer owes and the words used to ask for it -- which is all
 second copy of this loop.
 """
 
-import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
 from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
 from zeroshot.pipeline.messages import build_instruction
-from zeroshot.pipeline.workflow.agent import AgentFactory, run_agent
-from zeroshot.pipeline.workflow.state import Review, StopReason
+from zeroshot.pipeline.workflow.agent import (
+    AgentFactory,
+    StructuredOutput,
+    run_agent,
+)
+from zeroshot.pipeline.workflow.state import Review, StopReason, add_turns
 
-StructuredOutput = Literal["provider", "tool"]
-
-_STRATEGIES = {"provider": ProviderStrategy, "tool": ToolStrategy}
+# Why a node is running, which is also the name of the instruction it opens on.
+# A stage is asked for the first time, asked again for a fault the audit found
+# in its own answer, or asked again because what it worked from has changed.
+Opening = Literal["propose", "revise", "restate"]
 
 
 @dataclass(frozen=True)
@@ -35,9 +38,10 @@ class ProposerCriticSpec:
     a hypothesis is not an experiment anyone runs.  Which model answers for a
     role, and how long it may take, is config.
 
-    `instructions` names a directory under `prompts/instructions/` holding
-    `propose.md`, `revise.md` and `review.md`, so one stage's wording sits
-    together and can be edited without touching Python.
+    `instructions` names a directory under `prompts/instructions/` holding one
+    file per way the stage can be asked -- `review.md` for the critic, and one
+    per `opening` the workflow passes -- so a stage's wording sits together and
+    can be edited without touching Python.
     """
 
     proposal: type[BaseModel]
@@ -48,14 +52,15 @@ class ProposerCriticSpec:
 class StageResult:
     """What a stage hands back to the workflow.
 
-    `turns` is what the stage cost, over every agent and every round; the stop
-    reason is the one that ended it.
+    Both tallies are keyed by role: a proposer that ran out of turns and a
+    critic that answered are two facts, and one of them is why the stage has no
+    artifact.  `turns` covers every round the stage took.
     """
 
     artifact: BaseModel | None
     messages: list[BaseMessage]
-    turns: int
-    stop_reason: StopReason | None
+    turns: dict[str, int]
+    stop_reasons: dict[str, StopReason]
 
 
 StageRunner = Callable[..., StageResult]
@@ -76,20 +81,13 @@ def create_proposer_critic_loop(
     """Build the stage: two agents, and the loop that makes them agree."""
     if max_revisions < 0:
         raise ValueError("max_revisions must not be negative")
-    strategy = _STRATEGIES[structured_output]
 
     def build_agent(agent_factory: AgentFactory, schema: type[BaseModel]):
-        # The schema reaches the model twice from one definition: as the
-        # provider's own output contract, and as the `$output_schema` its
-        # prompt explains.  A role prompt that spelled it out by hand would be
-        # a second definition to keep in step.
         return agent_factory(
             tools=list(tools),
-            prompt_context={
-                **prompt_context,
-                "output_schema": json.dumps(schema.model_json_schema(), indent=2),
-            },
-            response_format=strategy(schema=schema),
+            prompt_context=prompt_context,
+            output_schema=schema,
+            structured_output=structured_output,
             model_retries=model_retries,
         )
 
@@ -99,7 +97,13 @@ def create_proposer_critic_loop(
     def instruct(name: str, **context: str):
         return build_instruction(f"{spec.instructions}/{name}", **context)
 
-    def run(history: Sequence[BaseMessage], **upstream: str) -> StageResult:
+    def run(
+        history: Sequence[BaseMessage],
+        *,
+        opening: Opening = "propose",
+        feedback: str | None = None,
+        **upstream: str,
+    ) -> StageResult:
         """Propose and review until accepted, or until patience runs out.
 
         Each role reads the run so far plus its own turns in this stage, and
@@ -107,28 +111,31 @@ def create_proposer_critic_loop(
         would be judging the reasoning it just agreed with; whatever it does
         need -- the drawing, the artifact, what an earlier stage settled -- it
         is told in its instruction.
+
+        `opening` names the instruction the stage starts on, which is how the
+        workflow says why it is running at all.  After the first round it is
+        always a revision, because from there it is the critic asking.
         """
         proposer_view: list[BaseMessage] = []
         critic_view: list[BaseMessage] = []
         delta: list[BaseMessage] = []
         artifact: BaseModel | None = None
-        feedback: str | None = None
-        turns = 0
-        stop_reason: StopReason | None = None
+        turns: dict[str, int] = {}
+        stop_reasons: dict[str, StopReason] = {}
+        asked: Opening = opening
+        context = {} if feedback is None else {"feedback": feedback}
 
         for _ in range(max_revisions + 1):
             proposed = run_agent(
                 agent_proposer,
                 [*history, *proposer_view],
-                instruct("propose", **upstream)
-                if feedback is None
-                else instruct("revise", feedback=feedback, **upstream),
+                instruct(asked, **context, **upstream),
                 spec.proposal,
             )
             proposer_view += proposed.messages
             delta += proposed.messages
-            turns += proposed.turns
-            stop_reason = proposed.stop_reason
+            turns = add_turns(turns, proposed.turns_by_role)
+            stop_reasons |= proposed.stop_reasons
             if proposed.answer is None:
                 break
             artifact = proposed.answer
@@ -143,12 +150,12 @@ def create_proposer_critic_loop(
             )
             critic_view += reviewed.messages
             delta += reviewed.messages
-            turns += reviewed.turns
-            stop_reason = reviewed.stop_reason
+            turns = add_turns(turns, reviewed.turns_by_role)
+            stop_reasons |= reviewed.stop_reasons
             if reviewed.answer is None or reviewed.answer.decision == "accept":
                 break
-            feedback = reviewed.answer.feedback
+            asked, context = "revise", {"feedback": reviewed.answer.feedback}
 
-        return StageResult(artifact, delta, turns, stop_reason)
+        return StageResult(artifact, delta, turns, stop_reasons)
 
     return run

@@ -2,7 +2,6 @@ from typing import Any
 
 import httpx
 import pytest
-from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import (
     AIMessage,
@@ -178,7 +177,7 @@ def test_agent_reports_the_typed_answer_its_role_owes() -> None:
     result = _subgraph(
         model,
         announce_turn_budget=False,
-        response_format=ProviderStrategy(schema=SemanticHypothesis),
+        output_schema=SemanticHypothesis,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
     assert result["structured_response"] == SemanticHypothesis(
@@ -195,7 +194,7 @@ def test_agent_refuses_an_answer_that_breaks_its_output_contract() -> None:
         _subgraph(
             model,
             announce_turn_budget=False,
-            response_format=ProviderStrategy(schema=SemanticHypothesis),
+            output_schema=SemanticHypothesis,
         ).invoke({"messages": [HumanMessage(content="go")]})
 
 

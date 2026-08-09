@@ -66,9 +66,12 @@ def test_an_accepted_proposal_is_the_stages_artifact() -> None:
     stage = _loop(proposer, critic)(_drawing())
 
     assert stage.artifact == SemanticHypothesis(semantics=["a flanged boss"])
-    assert stage.stop_reason is StopReason.COMPLETED
+    assert stage.stop_reasons == {
+        "semantic_hypothesizer": StopReason.COMPLETED,
+        "semantic_reviewer": StopReason.COMPLETED,
+    }
     # One model call each, and the stage reports what it cost altogether.
-    assert stage.turns == 2
+    assert stage.turns == {"semantic_hypothesizer": 1, "semantic_reviewer": 1}
     # Both roles' turns come back, and the run's own input does not: the
     # workflow already holds that.
     assert [type(message) for message in stage.messages] == [
@@ -158,7 +161,8 @@ def test_the_loop_stops_at_its_revision_limit_and_keeps_the_latest_proposal() ->
     assert len(critic.received_messages) == 3
     assert stage.artifact == SemanticHypothesis(semantics=["a plate"])
     # Three rounds of two agents, counted over the whole stage.
-    assert stage.turns == 6
+    # Three rounds each, accumulated rather than replaced.
+    assert stage.turns == {"semantic_hypothesizer": 3, "semantic_reviewer": 3}
 
 
 def test_a_proposer_that_ran_out_of_turns_leaves_no_artifact() -> None:
@@ -173,7 +177,8 @@ def test_a_proposer_that_ran_out_of_turns_leaves_no_artifact() -> None:
     stage = _loop(proposer, critic, max_turns=2)(_drawing())
 
     assert stage.artifact is None
-    assert stage.stop_reason is StopReason.BUDGET_EXHAUSTED
+    # The critic never ran, so the proposer's is the only reason there is.
+    assert stage.stop_reasons == {"semantic_hypothesizer": StopReason.BUDGET_EXHAUSTED}
     assert critic.received_messages == []
 
 

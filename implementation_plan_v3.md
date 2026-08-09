@@ -446,32 +446,44 @@ payload生成まで確認済み。backendが実際に honour するかは live 1
 - `state.py` に `operation_plan` を追加。stage が artifact を出せなかった場合は
   下流を飛ばして `verify_final` へ抜ける（semantic 失敗 → operations も coder も
   走らない）。
-- **coder はまだ単独ノード**のまま。Step 6 で output critic と組にして
-  proposer/critic に載せる。§Step 5 項目8（上流差し戻し時の下流 artifact 無効化）は
-  差し戻し経路が存在しないため Step 6 と同時に実装する。
+- **coder はまだ単独ノード**のまま。Step 6 で audit ノードを足すが、proposer/critic
+  ループには載らない（理由は §Step 6 の設計判断）。§Step 5 項目8（上流差し戻し時の
+  下流 artifact 無効化）は差し戻し経路が存在しないため未実装。
 
 ### Step 6 — final output criticとstage間差し戻しを完成させる
 
+トポロジー:
+
+```text
+coder → verify_final → audit ─┬→ END
+                              ├→ coder
+                              ├→ operations_stage
+                              └→ semantic_stage
+```
+
+`verify_final` は終端ノードをやめ、**監査の証拠を作るノード**になる。
+
 作業:
 
-1. `OutputCritique` と `RevisionTarget`（semantic / operations / code）を
-   `state.py` へ追加する。
-2. `output_critic.md` を追加する。
-3. coder内部の `verify_output` によるsyntax、STEP export、solid、renderの自己debug loopは
-   維持する。
-4. coder終了後のdeterministic final verification結果をstateへ保存し、そのattemptの
-   renderとDXFをcriticへ提示する。
-5. criticのtyped decisionで次へroutingする。
+1. `Audit` を `state.py` へ追加する。
 
-   ```text
-   accept      -> END
-   revise code -> coder
-   revise ops  -> operation_planner
-   revise sem  -> semantic_hypothesis
+   ```python
+   class Audit(BaseModel):
+       """The final judgement on the built model: accept it, or name the stage to go back to."""
+       decision: Literal["accept", "redo_code", "redo_operations", "redo_semantics"]
+       feedback: str
    ```
 
-6. 差し戻しtargetより後段のartifactを明示的にinvalid化する。
-7. target別またはrun全体のrevision上限を設け、循環が必ず有限になるようにする。
+2. `roles/output_auditor.md` を追加する。`$output_schema` は他のroleと同じ規約で埋める。
+3. coder内部の `verify_output` によるsyntax、STEP export、solid、renderの自己debug loopは
+   維持する。
+4. `verify_final` の結果（`last_verification`）を監査への指示文にパスとして埋め、
+   criticは `load_image` で見る。**criticに `verify_output` は持たせない。**
+5. `audit` ノードの `Audit` で routing する。行き先は上のトポロジーの4つ。
+6. 監査差し戻しカウンタを `state.py` へ追加し、graph.py が上限到達時に `verify_final` を
+   経て `END` へ抜ける。stage内の `max_revisions` とは別物。
+7. 再入した stage は1周目から revise 指示で始める。`run(history, feedback=..., **upstream)`
+   と引数を1つ足すだけで、ループ内部の propose/revise 分岐をそのまま使う。
 8. `VerifyOutputResult` と既存attempt directoryで必要情報を表せる間は、重複する
    `CodeArtifact` / `RenderArtifact` classを新設しない。不足が実証された場合だけ追加する。
 
@@ -479,10 +491,46 @@ payload生成まで確認済み。backendが実際に honour するかは live 1
 
 - criticがfinal renderを実際に参照できる。
 - 4つのrouting経路をscripted modelで再現できる。
-- 各差し戻し先で適切なartifactだけが維持され、それ以降はinvalid化される。
+- 上流へ差し戻した後、下流のartifactが再生成されるまで参照されない。
 - code revision後にfinal verificationとcriticが必ず再実行される。
-- revision上限到達時の終了理由がstate/event logから判別できる。
+- 監査差し戻し上限到達時の終了理由がstate/event logから判別できる。
 - end-to-endでtyped artifacts、全transcript、最終verified outputが同時に残る。
+
+#### Step 6 の設計判断（実装前に確定）
+
+- **code stage は proposer-critic ループでは実装しない。** criticがfinal verificationを
+  見る以上、proposerとcriticの間にグラフノード（`verify_final`）が挟まる。
+  `create_proposer_critic_loop` は2体を素のPythonで連続呼び出しする作りなので、
+  間にノードを置けない。したがって親グラフの3ノード＋条件付きエッジになり、
+  **`proposer_critic.py` は Step 6 で無変更**。
+  却下案: ループに `verify` コールバックを持たせる。3 stage中1つしか使わない分岐が増え、
+  `last_verification` を親stateへ書く責務もループへ漏れる。
+- **`ProposerCriticSpec` に `review` は戻さない。** `Audit` を読むのは graph.py だけで、
+  ループは `Review` を固定で持つままでよい（Step 5 の判断が有効なまま）。
+  同じ理由で `Review` と `Audit` に共通の基底クラスも作らない。共有したいのは
+  `feedback` と validator の数行だけで、継承階層に見合わない。
+- **routing は graph.py が持つ。** 「どのstageへ戻れるか」はstageの性質ではなく
+  グラフの性質で、同じcode stageでも上流構成が変われば戻り先が変わる。
+  サブグラフから `Command(goto=..., graph=PARENT)` で親へ飛ばす案は、
+  トポロジーの決定権が2ファイルに分裂するため却下。
+- **クラス名と値が差し戻し先を名指しする。** `CodeReview` では「code stageのreview」
+  としか読めず、最終監査の一番重要な観点（どの段が悪いか）が名前に出ない。
+  `Audit` + `redo_operations` / `redo_semantics` とし、値そのものを行き先にする。
+  `decision` と「誰が直すか」を別フィールドに分けると `accept` + `redo_semantics`
+  のような無意味な組が表現できてしまうので、単一 enum に畳む。
+- **`redo_semantics` は最初から入れる。** `redo_operations` と実装上の非対称はゼロで、
+  enum値1つと条件付きエッジの行き先1つが増えるだけ。「最上流へ戻して仕事を捨てる
+  モデルが出るのでは」というのは実験上の懸念であって、実装を削る理由にならない。
+- **§Step 5 項目8（上流差し戻し時の下流artifact無効化）は不要になる。** 最も上流の
+  誤ったstageへ戻せば、前向きエッジが下流を順に再実行してartifactを上書きする。
+  再入したstageが何も産まなければ `_settled` が `verify_final` へ逃がすので、
+  古い値が読まれる経路が存在しない。明示的な `None` 代入は書かない。
+- **監査差し戻し上限は `redo_code` だけでも必要。** `audit → coder → verify_final → audit`
+  が閉路になるため、上流へ戻さなくても無限に回りうる。`max_revisions` は
+  stage内のラウンド数なのでこの閉路を縛れない。
+- **criticに `verify_output` を持たせない理由**は3つ。criticのビルドがattempt
+  ディレクトリを汚さない。監査対象が実際に採点される成果物そのものになる。
+  criticのターンが検証待ちで潰れない。
 
 ### Step 7 — stage単位のobservabilityを整える
 

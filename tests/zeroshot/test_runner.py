@@ -1,6 +1,7 @@
 import json
 import shlex
 import sys
+from collections.abc import Mapping
 from functools import partial
 from inspect import cleandoc
 from io import StringIO
@@ -14,6 +15,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from rich.console import Console
 
 from tests.zeroshot.chat_models import ScriptedChatModel
+from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages import InputManifest, MessageBuilder
 from zeroshot.pipeline.runner import GraphFactory, PipelineRunner
@@ -32,6 +34,10 @@ def _agent(role: str, model: BaseChatModel, **overrides: Any):
 
 
 _ACCEPTED = AIMessage(content='{"decision": "accept", "feedback": "matches"}')
+# Its own message, not a second reference to the one above: LangChain stamps an
+# id onto the object it is handed, so two roles sharing one would answer with
+# one id, and `add_messages` would keep a single message for both.
+_ACCEPTED_AUDIT = AIMessage(content='{"decision": "accept", "feedback": "built"}')
 
 
 def _reasoning_stage(proposer_role: str, critic_role: str, proposal: str):
@@ -53,7 +59,6 @@ def _reasoning_stage(proposer_role: str, critic_role: str, proposal: str):
             announce_turn_budget=False,
         ),
         max_revisions=1,
-        structured_output="provider",
     )
 
 
@@ -77,6 +82,11 @@ def _graph_factory(model: BaseChatModel, **overrides: Any) -> GraphFactory:
         semantic_stage=_semantic_stage(),
         operations_stage=_operations_stage(),
         coder=_agent("coder", model, **overrides),
+        auditor=_agent(
+            "output_auditor",
+            ScriptedChatModel(responses=(_ACCEPTED_AUDIT,)),
+            announce_turn_budget=False,
+        ),
     )
 
 
@@ -273,7 +283,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         "stderr": "",
     }
 
-    assert result["stop_reason"] is StopReason.COMPLETED
+    assert result["stop_reasons"]["coder"] is StopReason.COMPLETED
 
     assert dxf_path.read_text(encoding="utf-8") == "ORIGINAL_DXF"
     assert selected_render_path.read_bytes() == b"ALLOWED_RENDER"
@@ -655,6 +665,9 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
             coder=_agent(
                 "coder", ScriptedChatModel(responses=(AIMessage(content="x"),))
             ),
+            auditor=_agent(
+                "output_auditor", ScriptedChatModel(responses=(_ACCEPTED_AUDIT,))
+            ),
             **kwargs,
         )
 
@@ -697,21 +710,23 @@ def test_a_graphs_own_settings_reach_it_through_the_factory(tmp_path: Path) -> N
         )
         for turn in range(5)
     )
+    coder = ScriptedChatModel(responses=responses)
     runner = PipelineRunner(
         message_builder=_message_builder_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=tmp_path / "artifacts",
         renderer=_renderer(),
-        graph_factory=_graph_factory(
-            ScriptedChatModel(responses=responses), max_turns=2
-        ),
+        graph_factory=_graph_factory(coder, max_turns=2),
     )
 
     result = runner.run_sample(manifest)
 
     assert result is not None
-    assert result["agent_turns"] == 2
-    assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+    # The bound budget is what stopped this agent, whatever the rest of the
+    # run went on to spend.
+    assert len(coder.received_messages) == 2
+    assert result["agent_turns"]["coder"] == 2
+    assert result["stop_reasons"]["coder"] is StopReason.BUDGET_EXHAUSTED
 
 
 def test_retry_redoes_an_interrupted_sample(tmp_path: Path) -> None:
@@ -770,6 +785,13 @@ def _events(sample_artifact_root: Path) -> list[dict[str, Any]]:
         .read_text(encoding="utf-8")
         .splitlines()
     ]
+
+
+def _logged_stop_reasons(sample_artifact_root: Path) -> Mapping[str, str]:
+    """What an offline reader recovers from the log, as `aggregate_run` does."""
+    return read_events(
+        sample_artifact_root / "events.jsonl", sample_artifact_root.name
+    ).stop_reasons
 
 
 def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
@@ -857,26 +879,31 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             ),
         ).run_sample(_manifest_without_renders(tmp_path, sample_id))
 
-        # Two kinds of statement, and they are not the same one: every agent
-        # reports why it stopped under the namespace it ran in, and the run
-        # reports why it ended, once. With three agents the namespaced ones
-        # are what say which of them ran out.
-        reasons = [
-            (tuple(event["namespace"]), event["data"]["reason"])
+        # Two kinds of statement, and they are not the same one: an agent
+        # reports inside the namespace it ran in, once per turn it ended, and
+        # the workflow reports them by role.
+        events = [
+            event
             for event in _events(artifact_root / sample_id)
             if event["event"] == "stop_reason"
         ]
-        stage_reasons = [
-            reason
-            for namespace, reason in reasons
-            if namespace and namespace[0].startswith("semantic_stage:")
+        by_namespace = [
+            (tuple(event["namespace"]), event["data"]["reason"])
+            for event in events
+            if "role" not in event["data"]
         ]
-        coder_reasons = [
+        assert [
             reason
-            for namespace, reason in reasons
+            for namespace, reason in by_namespace
             if namespace and namespace[0].startswith("coder:")
-        ]
-        run_reasons = [reason for namespace, reason in reasons if not namespace]
-        assert stage_reasons == ["COMPLETED", "COMPLETED"], sample_id
-        assert coder_reasons == [expected], sample_id
-        assert run_reasons == [expected], sample_id
+        ] == [expected], sample_id
+        # Which agent a reason belonged to is what the namespaces cannot say,
+        # so the run's record names them, and no role's answer masks another.
+        assert _logged_stop_reasons(artifact_root / sample_id) == {
+            "semantic_hypothesizer": "COMPLETED",
+            "semantic_reviewer": "COMPLETED",
+            "operation_planner": "COMPLETED",
+            "operation_reviewer": "COMPLETED",
+            "coder": expected,
+            "output_auditor": "COMPLETED",
+        }, sample_id

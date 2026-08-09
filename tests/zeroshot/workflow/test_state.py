@@ -7,6 +7,7 @@ from pydantic import BaseModel, ValidationError
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, SemanticHypothesis
 from zeroshot.pipeline.workflow.state import (
+    Audit,
     OperationPlan,
     ReconstructionState,
     Review,
@@ -14,7 +15,7 @@ from zeroshot.pipeline.workflow.state import (
 )
 
 
-@pytest.mark.parametrize("contract", [SemanticHypothesis, OperationPlan, Review])
+@pytest.mark.parametrize("contract", [SemanticHypothesis, OperationPlan, Review, Audit])
 def test_a_contract_carries_no_prose_beyond_its_field_descriptions(
     contract: type[BaseModel],
 ) -> None:
@@ -82,7 +83,8 @@ def test_semantic_hypothesis_review_allows_an_accept_without_feedback() -> None:
 _ARTIFACTS: dict[str, object] = {
     "semantic_hypothesis": SemanticHypothesis(semantics=["flange", "blind hole"]),
     "operation_plan": OperationPlan(operations=["Extrude the outline 25 mm along +z"]),
-    "stop_reason": StopReason.BUDGET_EXHAUSTED,
+    "stop_reasons": {"coder": StopReason.BUDGET_EXHAUSTED},
+    "audit": Audit(decision="redo_operations", feedback="the boss is missing"),
     "last_verification": VerifyOutputResult(
         verification_id="v1",
         status="SUCCEEDED",
@@ -95,7 +97,17 @@ _ARTIFACTS: dict[str, object] = {
 def test_every_state_artifact_survives_a_checkpoint() -> None:
     """A class the checkpointer was not told about loads back as a plain dict,
     which still passes the `is not None` checks the graph routes on."""
-    assert {type(value) for value in _ARTIFACTS.values()} == set(CUSTOM_STATE_TYPES)
+
+    def types(value: object):
+        if isinstance(value, dict):
+            for held in value.values():
+                yield from types(held)
+        else:
+            yield type(value)
+
+    assert {found for value in _ARTIFACTS.values() for found in types(value)} >= set(
+        CUSTOM_STATE_TYPES
+    )
 
     def store(_: ReconstructionState) -> dict[str, object]:
         return dict(_ARTIFACTS)
