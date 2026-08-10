@@ -1,5 +1,3 @@
-Review the operation plan below against the drawing and the accepted semantic hypothesis, and accept it or ask for a revision.
+Review each operation plan presented next against the input drawing and the current semantic hypothesis below. Check that the operations are complete, geometrically consistent, executable in the stated order, and specific about dimensions, references, and directions. Accept a plan only when it can construct the hypothesised part without relying on unstated modelling decisions; otherwise explain the specific correction required.
 
-$hypothesis
-
-$proposal
+$semantic_hypothesis

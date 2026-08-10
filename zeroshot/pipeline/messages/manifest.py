@@ -43,7 +43,6 @@ class InputManifest:
 @dataclass(frozen=True)
 class FeedbackManifest:
     verification_id: str
-    execution_feedback: str
     dxf_path: Path | None = None
     dxf_error: str | None = None
     render3d_paths: Mapping[str, Path] = field(default_factory=dict)

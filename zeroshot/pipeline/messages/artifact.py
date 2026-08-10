@@ -7,7 +7,6 @@ from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Literal
 
-from langchain_core.messages import HumanMessage
 from langchain_core.messages.content import (
     ContentBlock,
     create_image_block,
@@ -15,26 +14,7 @@ from langchain_core.messages.content import (
 )
 
 from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
-from zeroshot.pipeline.messages.prompts import PromptTemplate
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-
-
-def instruction_text(name: str, **context: str) -> str:
-    """Render one instruction prompt from `prompts/instructions/`."""
-    return PromptTemplate(f"instructions/{name}").render(**context)
-
-
-def build_instruction(name: str, **context: str) -> HumanMessage:
-    """What the workflow asks of an agent on this turn.
-
-    A free function, not a `MessageBuilder` method: the words are text, and
-    nothing about how this run shows renders changes them.  `MessageBuilder`
-    builds on top of this -- a verification report ends with an instruction --
-    so the dependency runs one way, downward.
-    """
-    return HumanMessage(
-        content_blocks=[create_text_block(instruction_text(name, **context))]
-    )
 
 
 @dataclass(frozen=True)
@@ -42,7 +22,6 @@ class _SandboxManifest:
     """Files exposed to the agent in the sandbox namespace."""
 
     id: str
-    execution_feedback: str | None
     dxf_path: PurePosixPath | None
     dxf_error: str | None
     render3d_paths: Mapping[str, PurePosixPath]
@@ -51,17 +30,17 @@ class _SandboxManifest:
 
 
 @dataclass(frozen=True)
-class MessageBuilder:
-    access_render3d: Literal["none", "path", "image"]
-    access_render3d_styles: tuple[str, ...]
-    feedback_render3d: Literal["none", "path", "image"]
+class ArtifactPresenter:
+    input_render3d_mode: Literal["none", "path", "image"]
+    input_render3d_styles: tuple[str, ...]
+    feedback_render3d_mode: Literal["none", "path", "image"]
     feedback_render3d_styles: tuple[str, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
-            "access_render3d_styles",
-            tuple(self.access_render3d_styles),
+            "input_render3d_styles",
+            tuple(self.input_render3d_styles),
         )
         object.__setattr__(
             self,
@@ -69,13 +48,13 @@ class MessageBuilder:
             tuple(self.feedback_render3d_styles),
         )
         self._validate_selection(
-            "access_render3d",
-            self.access_render3d,
-            self.access_render3d_styles,
+            "input_render3d",
+            self.input_render3d_mode,
+            self.input_render3d_styles,
         )
         self._validate_selection(
             "feedback_render3d",
-            self.feedback_render3d,
+            self.feedback_render3d_mode,
             self.feedback_render3d_styles,
         )
 
@@ -143,7 +122,6 @@ class MessageBuilder:
         is_feedback = isinstance(manifest, FeedbackManifest)
         return _SandboxManifest(
             id=manifest_id,
-            execution_feedback=manifest.execution_feedback if is_feedback else None,
             dxf_path=translated_dxf_path,
             dxf_error=manifest.dxf_error if is_feedback else None,
             render3d_paths=translated_render3d_paths,
@@ -151,24 +129,24 @@ class MessageBuilder:
             render3d_errors=manifest.render3d_errors if is_feedback else {},
         )
 
-    def build_input_message(
+    def build_input_message_blocks(
         self,
         manifest: InputManifest,
         workdir: SandboxWorkdir,
-    ) -> HumanMessage:
+    ) -> list[ContentBlock]:
         """
-        Build the opening turn from files staged in workdir.host_bind_dir.
+        Build ContentBlocks from files staged in workdir.host_bind_dir.
         Paths included in text are translated to workdir.sandbox_bind_dir paths.
 
         What the run offers the model, not what it asks of it: the system
         prompt belongs to whichever agent is being addressed, and one
-        MessageBuilder is shared by all of them.
+        ArtifactPresenter is shared by all of them.
         """
-        self._validate_requested_styles(self.access_render3d_styles, manifest)
+        self._validate_requested_styles(self.input_render3d_styles, manifest)
         self._validate_requested_styles(self.feedback_render3d_styles, manifest)
 
         sandbox_manifest = self._translate_paths(
-            manifest, workdir, self.access_render3d
+            manifest, workdir, self.input_render3d_mode
         )
 
         blocks: list[ContentBlock] = [
@@ -190,16 +168,16 @@ class MessageBuilder:
         blocks.extend(
             self._render_blocks(
                 label="[Input perspective renders]",
-                mode=self.access_render3d,
-                render3d_styles=self.access_render3d_styles,
+                mode=self.input_render3d_mode,
+                render3d_styles=self.input_render3d_styles,
                 render3d_paths=sandbox_manifest.render3d_paths,
                 render3d_bytes=sandbox_manifest.render3d_bytes,
             )
         )
 
-        return HumanMessage(content_blocks=blocks)
+        return blocks
 
-    def build_feedback_blocks(
+    def build_feedback_message_blocks(
         self,
         manifest: FeedbackManifest,
         workdir: SandboxWorkdir,
@@ -211,14 +189,10 @@ class MessageBuilder:
         becomes a turn anyone spoke.
         """
         sandbox_manifest = self._translate_paths(
-            manifest, workdir, self.feedback_render3d
+            manifest, workdir, self.feedback_render3d_mode
         )
 
-        blocks: list[ContentBlock] = [
-            create_text_block(
-                f"[Candidate execution feedback]\n{sandbox_manifest.execution_feedback}\n"
-            )
-        ]
+        blocks: list[ContentBlock] = []
 
         # The drawing is offered regardless of feedback_render3d, so its
         # failure is always worth explaining.
@@ -238,7 +212,7 @@ class MessageBuilder:
         blocks.extend(
             self._render_blocks(
                 label="[Projected perspective renders]",
-                mode=self.feedback_render3d,
+                mode=self.feedback_render3d_mode,
                 render3d_styles=self.feedback_render3d_styles,
                 render3d_paths=sandbox_manifest.render3d_paths,
                 render3d_bytes=sandbox_manifest.render3d_bytes,
@@ -246,7 +220,6 @@ class MessageBuilder:
             )
         )
 
-        blocks.append(create_text_block(instruction_text("verification_feedback")))
         return blocks
 
     @staticmethod

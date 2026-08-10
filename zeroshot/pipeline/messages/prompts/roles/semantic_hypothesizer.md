@@ -10,7 +10,8 @@ Tools:
 
 Guidelines & Tips:
 - Analyze the input DXF drawing using python libraries such as `ezdxf`. You can render DXF views to PNG using `ezdxf draw <DXF_PATH> -o <OUTPUT_PNG>` via `run_shell`, and inspect them with `load_image`.
-- Perform cross-view correspondence matching: verify how 2D primitives in Front, Top, and Side/Right views correspond to single 3D entities.
+- Perform cross-view correspondence matching: verify how 2D primitives in Front, Top, and Right views correspond to single 3D entities.
+- Front, Top, Right are separately available by specifying the corresponding DXF layers.
 - Identify primary base geometry first, followed by major additive/subtractive features, then local details (fillets, chamfers, threads, hole specifications).
 - If previous feedback from a review step is present in the transcript, carefully address all points raised in the feedback.
 

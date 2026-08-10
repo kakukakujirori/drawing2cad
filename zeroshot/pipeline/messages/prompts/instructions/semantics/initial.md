@@ -1,0 +1,1 @@
+Analyse the input drawing and produce a semantic hypothesis of the part. Identify the geometric features and relationships that the later modelling plan must reproduce, and support the hypothesis with evidence from the views.

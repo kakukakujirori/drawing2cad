@@ -17,7 +17,7 @@ from zeroshot.pipeline.event_logging import (
     RunEventTransformer,
     has_run_completed,
 )
-from zeroshot.pipeline.messages import InputManifest, MessageBuilder
+from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, ReconstructionState
@@ -57,7 +57,7 @@ class PipelineRunner:
         self,
         sandbox_runner: SandboxRunner,
         graph_factory: GraphFactory,
-        message_builder: MessageBuilder,
+        artifact_presenter: ArtifactPresenter,
         artifact_root: str | Path,
         renderer: StepRenderer,
         output_filename: str = "model.py",
@@ -69,7 +69,7 @@ class PipelineRunner:
             raise ValueError(
                 f"on_existing must be one of {_ON_EXISTING}: {on_existing!r}"
             )
-        self.message_builder = message_builder
+        self.artifact_presenter = artifact_presenter
         self.sandbox_runner = sandbox_runner
         self.renderer = renderer
         self.artifact_root = Path(artifact_root)
@@ -135,12 +135,6 @@ class PipelineRunner:
                 input_dirname=input_dirname,
             )
 
-            # what this run offers the model; the graph decides how to open with it
-            input_message = self.message_builder.build_input_message(
-                manifest=staged_manifest,
-                workdir=workdir,
-            )
-
             # instantiate the graph
             checkpointer = stack.enter_context(
                 SqliteSaver.from_conn_string(str(checkpoint_path))
@@ -152,8 +146,8 @@ class PipelineRunner:
                 sandbox_runner=self.sandbox_runner,
                 sandbox_workdir=workdir,
                 renderer=self.renderer,
-                message_builder=self.message_builder,
-                input_message=input_message,
+                artifact_presenter=self.artifact_presenter,
+                input_manifest=staged_manifest,
                 output_filename=self.output_filename,
                 verification_dirname=self.verification_dirname,
                 checkpointer=checkpointer,
@@ -161,7 +155,7 @@ class PipelineRunner:
 
             # run the graph
             stream = graph.stream_events(
-                ReconstructionState(messages=[]),
+                ReconstructionState(),
                 config={"configurable": {"thread_id": run_id}},
                 version="v3",
                 durability="sync",
@@ -198,8 +192,8 @@ class PipelineRunner:
 
         staged_render_paths: dict[str, Path] = {}
 
-        if self.message_builder.access_render3d != "none":
-            for style in self.message_builder.access_render3d_styles:
+        if self.artifact_presenter.input_render3d_mode != "none":
+            for style in self.artifact_presenter.input_render3d_styles:
                 source_path = manifest.render3d_paths[style]
                 suffix = source_path.suffix or ".png"
                 staged_path = staged_input_dir / f"{style}{suffix}"

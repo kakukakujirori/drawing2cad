@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from zeroshot.evaluation.run_scoring import ScoreStatus, StepScorer
-from zeroshot.pipeline.workflow.state import StopReason
+from zeroshot.pipeline.workflow import StopReason
 
 
 class Terminal(str, Enum):
@@ -130,9 +130,6 @@ def read_events(events_path: Path, sample_id: str) -> SampleRow:
             elif name == "verification":
                 row = replace(row, verify=data["report"].get("status"))
             elif name == "stop_reason" and (role := data.get("role")):
-                # The unnamed ones are an agent reporting inside its own
-                # namespace, once per turn it ended; the run's record is the
-                # workflow's, which says whose reason it is.
                 row = replace(
                     row, stop_reasons={**row.stop_reasons, role: data["reason"]}
                 )

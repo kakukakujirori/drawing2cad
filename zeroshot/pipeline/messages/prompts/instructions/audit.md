@@ -1,4 +1,16 @@
-The program above has been executed and its output verified. Audit the result against the input drawing, and either accept it or name the stage to go back to.
+The source program identified below has been executed and its output verified. Audit the result against the input drawing, and either accept it or name the stage to go back to.
+
+Current semantic hypothesis:
+
+$semantic_hypothesis
+
+Current operation plan:
+
+$operation_plan
+
+Current source program location:
+
+$output_path
 
 Verification report:
 

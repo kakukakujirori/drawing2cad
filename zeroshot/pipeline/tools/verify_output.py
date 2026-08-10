@@ -7,7 +7,7 @@ from typing import Self, cast
 from langchain_core.messages.content import ContentBlock, create_text_block
 from langchain_core.tools import BaseTool, tool
 
-from zeroshot.pipeline.messages import FeedbackManifest, MessageBuilder
+from zeroshot.pipeline.messages import ArtifactPresenter, FeedbackManifest
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification.render.constants import (
     Render3dPaths,
@@ -53,7 +53,7 @@ def create_verify_output_tool(
     executor: CadQueryExecutor,
     workdir: SandboxWorkdir,
     renderer: StepRenderer,
-    message_builder: MessageBuilder | None,
+    artifact_presenter: ArtifactPresenter | None,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
     serialize_output: bool = True,
@@ -111,7 +111,7 @@ def create_verify_output_tool(
         """Verify the program and, when it yields a solid, render its views.
 
         The manifest is returned alongside the report rather than embedded in
-        it: it carries *host* paths, which only MessageBuilder may turn into
+        it: it carries *host* paths, which only ArtifactPresenter may turn into
         something the model sees, and it is not msgpack-serialisable, so it
         must not reach graph state.
         """
@@ -158,7 +158,6 @@ def create_verify_output_tool(
 
         manifest = FeedbackManifest(
             verification_id=verification_id,
-            execution_feedback=json.dumps(report.serialize(), indent=2),
             dxf_path=render_report.techdraw_paths.dxf,
             dxf_error=render_report.techdraw_errors.get("dxf"),
             render3d_paths=render_report.render3d_paths.as_mapping(),
@@ -186,17 +185,22 @@ def create_verify_output_tool(
     def _message_blocks(
         report: VerifyOutputResult, manifest: FeedbackManifest | None
     ) -> list[ContentBlock]:
-        """Organize the tool result into HumanMessages."""
-        if manifest is None or message_builder is None:
-            return [create_text_block(json.dumps(report.serialize(), indent=2))]
-        return message_builder.build_feedback_blocks(manifest, workdir)
+        """Organize the tool result into ContentBlocks."""
+        blocks: list[ContentBlock] = [
+            create_text_block(json.dumps(report.serialize(), indent=2))
+        ]
+        if manifest and artifact_presenter:
+            blocks.extend(
+                artifact_presenter.build_feedback_message_blocks(manifest, workdir)
+            )
+        return blocks
 
     @tool("verify_output", description=description)
     def verify_output() -> VerifyOutputResult | list[ContentBlock]:
         model_path = workdir.host_bind_dir / source_filename
         report, manifest = _verify(model_path)
-        if not serialize_output:
-            return report
-        return _message_blocks(report, manifest)
+        if serialize_output:
+            return _message_blocks(report, manifest)
+        return report
 
     return verify_output

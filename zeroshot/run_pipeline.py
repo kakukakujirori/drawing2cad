@@ -31,7 +31,7 @@ def run(config: DictConfig) -> ReconstructionState | None:
     runner = PipelineRunner(
         sandbox_runner=sandbox_runner,
         graph_factory=instantiate(config.workflow),
-        message_builder=instantiate(config.message_builder),
+        artifact_presenter=instantiate(config.artifact_presenter),
         artifact_root=Path(to_absolute_path(config.artifact_root)),
         renderer=instantiate(config.renderer) or StepRenderer(),
         on_existing=config.on_existing,

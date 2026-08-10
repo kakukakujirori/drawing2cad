@@ -11,103 +11,75 @@ workflow:
   _target_: zeroshot.pipeline.workflow.graph.create_reconstruction_graph
   _partial_: true
 
-  # A stage is one block: who proposes, who judges, and how long the workflow
-  # is willing to let them disagree. Which contract each role owes is not here
-  # -- that a reviewer of hypotheses returns a review is not an experiment.
-  semantic_stage:
-    _target_: zeroshot.pipeline.workflow.create_proposer_critic_loop
+  semantics_agent_builder:
+    _target_: zeroshot.pipeline.workflow.create_proposer_reviewer_loop
     _partial_: true
 
-    # How often the critic may send the proposal back. One revision is a whole
-    # propose-and-review round, and no turn budget below bounds it: each round
-    # invokes the agents afresh. Without this a critic that never accepts would
-    # loop forever. On reaching it the workflow uses the latest proposal.
+    proposer_role: semantic_hypothesizer
+    proposer_model: ${model}
+    reviewer_role: semantic_reviewer
+    reviewer_model: ${model}
+    response_format_strategy: provider
+    max_proposer_turns_per_revision: 30
+    max_reviewer_turns_per_revision: 30
+    announce_turns: true
+    reset_proposer_turns_per_revision: false
+    reset_reviewer_turns_per_revision: true
     max_revisions: 10
+    announce_revisions: false
+    reset_revision_count_when_reentrant: true
+    # Sole retry owner; model SDK configs keep max_retries at 0.
+    model_retries: 5
+    checkpointer: false
 
-    proposer:
-      _target_: zeroshot.pipeline.workflow.create_agent
-      _partial_: true
-      role: semantic_hypothesizer
-      model: ${model}
-
-      # Agent turns before the workflow stops asking. Successful runs so far
-      # take 2-4; this is a ceiling, not a target.
-      max_turns: 30
-
-      # Show the agent its remaining turns before each call. Without it the
-      # model has been seen spending every turn on tool calls and answering
-      # nothing.
-      announce_turn_budget: true
-
-    critic:
-      _target_: zeroshot.pipeline.workflow.create_agent
-      _partial_: true
-      role: semantic_reviewer
-      model: ${model}
-
-      # A reviewer reads one hypothesis and answers; it has no debug loop.
-      max_turns: 5
-      announce_turn_budget: true
-
-  # The same shape, one artifact later: the plan the coder follows.
-  operations_stage:
-    _target_: zeroshot.pipeline.workflow.create_proposer_critic_loop
+  operations_agent_builder:
+    _target_: zeroshot.pipeline.workflow.create_proposer_reviewer_loop
     _partial_: true
+
+    proposer_role: operation_planner
+    proposer_model: ${model}
+    reviewer_role: operation_reviewer
+    reviewer_model: ${model}
+    response_format_strategy: provider
+    max_proposer_turns_per_revision: 30
+    max_reviewer_turns_per_revision: 30
+    announce_turns: true
+    reset_proposer_turns_per_revision: false
+    reset_reviewer_turns_per_revision: true
     max_revisions: 10
+    announce_revisions: false
+    reset_revision_count_when_reentrant: true
+    model_retries: 5
+    checkpointer: false
 
-    proposer:
-      _target_: zeroshot.pipeline.workflow.create_agent
-      _partial_: true
-      role: operation_planner
-      model: ${model}
-      max_turns: 30
-      announce_turn_budget: true
-
-    critic:
-      _target_: zeroshot.pipeline.workflow.create_agent
-      _partial_: true
-      role: operation_reviewer
-      model: ${model}
-      max_turns: 5
-      announce_turn_budget: true
-
-  coder:
+  coding_agent_builder:
     _target_: zeroshot.pipeline.workflow.create_agent
     _partial_: true
     role: coder
     model: ${model}
 
-    # No output schema: the coder's product is the file it wrote and the
-    # verification it passed, not a JSON document.
+    response_format_strategy: provider
     max_turns: 30
-    announce_turn_budget: true
+    announce_turns: true
+    reset_turns_when_reentrant: true
+    model_retries: 5
+    checkpointer: false
 
-  # The last word on the run: it compares the built solid against the drawing
-  # and, when they differ, names the stage that has to change.
-  auditor:
+  audit_agent_builder:
     _target_: zeroshot.pipeline.workflow.create_agent
     _partial_: true
     role: output_auditor
     model: ${model}
 
-    # It reads a report and looks at renders; it has no debug loop.
+    response_format_strategy: provider
     max_turns: 10
-    announce_turn_budget: true
+    announce_turns: true
+    reset_turns_when_reentrant: true
+    model_retries: 5
+    checkpointer: false
 
   # How many times the audit may send the run back to an earlier stage. Every
   # send-back re-runs everything downstream of its target, so this bounds the
   # whole graph's cycle. `max_revisions` above cannot: that counts rounds
   # inside one stage.
   max_audit_reject_count: 3
-
-  # How a typed answer is asked for, for every agent that owes one. `provider`
-  # is native json_schema; switch to `tool` for a backend that cannot take a
-  # response format, which forces a tool call instead. Named rather than
-  # inferred from the model, so swapping backends cannot silently change when
-  # an agent may stop.
-  structured_output: provider
-
-  # Re-invocations after a transport failure the client cannot retry itself,
-  # such as a connection dropped mid-body. A retry resends the whole history,
-  # but exhausting all of them still costs less than the sample they save.
-  model_retries: 5

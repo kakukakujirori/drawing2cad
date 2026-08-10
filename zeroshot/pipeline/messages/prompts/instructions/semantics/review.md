@@ -1,0 +1,1 @@
+Review each semantic hypothesis presented next against the input drawing. Check that it accounts for all views, identifies the part's important geometric features and relationships, and does not assert details unsupported by the drawing. Accept it only when it is a sound premise for planning the modelling operations; otherwise explain the specific correction required.

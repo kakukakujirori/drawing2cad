@@ -27,14 +27,14 @@ on_existing: fail
 console:
   _target_: zeroshot.pipeline.event_logging.ConsoleReporter
 
-message_builder:
-  _target_: zeroshot.pipeline.messages.MessageBuilder
-  access_render3d: "path"
-  access_render3d_styles:
+artifact_presenter:
+  _target_: zeroshot.pipeline.messages.ArtifactPresenter
+  input_render3d_mode: "path"
+  input_render3d_styles:
     - hlg_perspective
     - hlg_translucent_faces_perspective
     - transparent_shaded_edges_perspective
-  feedback_render3d: "path"
+  feedback_render3d_mode: "path"
   feedback_render3d_styles:
     - hlg_perspective
     - hlg_translucent_faces_perspective

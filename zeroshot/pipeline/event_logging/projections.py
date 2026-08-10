@@ -106,12 +106,10 @@ class RunEventTransformer(StreamTransformer):
         super().__init__(scope)
         self.events = StreamChannel[RunEvent]()
         self._input_written = False
-        # One node across every namespace, which holds only while the graph
-        # runs its nodes one at a time.  Fan out and two `tools` nodes are
-        # active at once, and whichever started last claims both their calls;
-        # attribution has to become per-namespace before that.
-        self._active_node: str | None = None
-        self._tool_context: dict[str, tuple[str | None, str]] = {}
+        self._agent_roles: dict[tuple[tuple[str, ...], str], str] = {}
+        self._tool_context: dict[
+            tuple[tuple[str, ...], str], tuple[str | None, str]
+        ] = {}
 
     def init(self) -> dict[str, StreamChannel[RunEvent]]:
         return {self.CHANNEL: self.events}
@@ -137,10 +135,24 @@ class RunEventTransformer(StreamTransformer):
                 self._input_written = True
 
         elif method == "tasks" and isinstance(data, Mapping):
+            namespace = tuple(event["params"]["namespace"])
             node = str(data.get("name", ""))
             started = "input" in data
             if started:
-                self._active_node = node
+                metadata = data.get("metadata")
+                if isinstance(metadata, Mapping) and isinstance(
+                    role := metadata.get("lc_agent_name"), str
+                ):
+                    self._agent_roles[(namespace, node)] = role
+                if node == "tools" and isinstance(tool_calls := data["input"], list):
+                    for call in tool_calls:
+                        if not isinstance(call, Mapping):
+                            continue
+                        call_id = str(call.get("id", ""))
+                        self._tool_context[(namespace, call_id)] = (
+                            str(call.get("name", "")),
+                            "model",
+                        )
                 details = {
                     "node": node,
                     "triggers": _safe_value(data.get("triggers", [])),
@@ -151,50 +163,59 @@ class RunEventTransformer(StreamTransformer):
                     "node": node,
                     "error": None if error is None else str(error),
                 }
+            if role := self._agent_roles.get((namespace, node)):
+                details["role"] = role
             self._push(
                 event,
                 "node_started" if started else "node_finished",
                 details,
             )
-            if not started and self._active_node == node:
-                self._active_node = None
+            if not started:
+                self._agent_roles.pop((namespace, node), None)
 
         elif method == "tools" and isinstance(data, Mapping):
+            namespace = tuple(event["params"]["namespace"])
             event_name = str(data.get("event", "tool-event")).replace("-", "_")
             call_id = str(data.get("tool_call_id", ""))
+            context_key = (namespace, call_id)
             payload = {
                 str(key): _safe_value(value)
                 for key, value in data.items()
                 if key != "event"
             }
             if event_name == "tool_started":
-                context = (
-                    str(data.get("tool_name", "")),
-                    "model" if self._active_node == "tools" else "workflow",
+                context = self._tool_context.get(
+                    context_key,
+                    (str(data.get("tool_name", "")), "workflow"),
                 )
-                self._tool_context[call_id] = context
+                self._tool_context[context_key] = context
             else:
-                context = self._tool_context.get(call_id, (None, "unknown"))
+                context = self._tool_context.get(context_key, (None, "unknown"))
             payload.setdefault("tool_name", context[0])
             payload["caller"] = context[1]
             self._push(event, event_name, payload)
             if event_name in {"tool_finished", "tool_error"}:
-                self._tool_context.pop(call_id, None)
+                self._tool_context.pop(context_key, None)
 
         elif method == "updates" and isinstance(data, Mapping):
+            namespace = tuple(event["params"]["namespace"])
             for node, update in data.items():
                 if node == "tools" or not isinstance(update, Mapping):
                     continue
+                role = self._agent_roles.get((namespace, str(node)))
                 if "messages" in update:
+                    details = {
+                        "node": str(node),
+                        "messages": [
+                            _safe_value(message) for message in update["messages"]
+                        ],
+                    }
+                    if role is not None:
+                        details["role"] = role
                     self._push(
                         event,
                         "message",
-                        {
-                            "node": str(node),
-                            "messages": [
-                                _safe_value(message) for message in update["messages"]
-                            ],
-                        },
+                        details,
                     )
                 if "last_verification" in update:
                     self._push(
@@ -205,29 +226,21 @@ class RunEventTransformer(StreamTransformer):
                             "report": _safe_value(update["last_verification"]),
                         },
                     )
-                # Whether an agent finished or ran out of turns is only in
-                # graph state, so without this no offline reader can tell.  An
-                # agent reports one reason inside its own namespace, per turn it
-                # ended; the workflow reports them keyed by role, which is what
-                # says which agent a namespace belonged to.
-                if "stop_reason" in update:
+                # `lc_agent_name` arrives on the task-start event, while the
+                # reason arrives in the following state update.  Joining them
+                # here preserves role attribution without copying agent
+                # progress into the outer workflow state.
+                if update.get("stop_reason") is not None:
+                    details = {
+                        "node": str(node),
+                        "reason": _safe_value(update["stop_reason"]),
+                    }
+                    if role is not None:
+                        details["role"] = role
                     self._push(
                         event,
                         "stop_reason",
-                        {
-                            "node": str(node),
-                            "reason": _safe_value(update["stop_reason"]),
-                        },
-                    )
-                for role, reason in update.get("stop_reasons", {}).items():
-                    self._push(
-                        event,
-                        "stop_reason",
-                        {
-                            "node": str(node),
-                            "role": role,
-                            "reason": _safe_value(reason),
-                        },
+                        details,
                     )
 
         return True
