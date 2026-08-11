@@ -62,12 +62,8 @@ def _loop(
 
 def _entry(text: str = "Here is the drawing") -> dict[str, HumanMessage]:
     return {
-        "proposer_entry_instruction": HumanMessage(
-            content=text, id=f"proposer-{text}"
-        ),
-        "reviewer_entry_instruction": HumanMessage(
-            content=text, id=f"reviewer-{text}"
-        ),
+        "proposer_entry_instruction": HumanMessage(content=text, id=f"proposer-{text}"),
+        "reviewer_entry_instruction": HumanMessage(content=text, id=f"reviewer-{text}"),
     }
 
 
@@ -191,8 +187,7 @@ def test_revision_limit_counts_reviews_and_keeps_the_latest_proposal() -> None:
 def test_a_proposer_that_runs_out_of_turns_is_not_reviewed() -> None:
     proposer = ScriptedChatModel(
         responses=tuple(
-            tool_call("echo", {"value": "looking"}, f"call-{turn}")
-            for turn in range(4)
+            tool_call("echo", {"value": "looking"}, f"call-{turn}") for turn in range(4)
         )
     )
     reviewer = ScriptedChatModel(responses=())

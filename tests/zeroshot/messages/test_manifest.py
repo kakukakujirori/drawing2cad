@@ -30,7 +30,6 @@ def _sample_manifest(tmp_path: Path, **overrides: object) -> InputManifest:
 def _feedback_manifest(tmp_path: Path, **overrides: object) -> FeedbackManifest:
     values: dict[str, object] = {
         "verification_id": "verification-1",
-        "execution_feedback": "execution completed",
     }
     values.update(overrides)
     return FeedbackManifest(**values)
@@ -114,13 +113,12 @@ def test_sample_reads_selected_render_bytes_in_requested_order(
     ]
 
 
-def test_feedback_accepts_execution_feedback_without_artifacts(
+def test_feedback_accepts_a_verification_without_artifacts(
     tmp_path: Path,
 ) -> None:
     manifest = _feedback_manifest(tmp_path)
 
     assert manifest.verification_id == "verification-1"
-    assert manifest.execution_feedback == "execution completed"
     assert manifest.dxf_path is None
     assert manifest.render3d_paths == {}
 
@@ -131,13 +129,11 @@ def test_feedback_normalizes_id_and_string_paths(tmp_path: Path) -> None:
 
     manifest = FeedbackManifest(
         verification_id="  verification-1  ",
-        execution_feedback="verified",
         dxf_path=str(dxf),
         render3d_paths={"style-a": str(render)},
     )
 
     assert manifest.verification_id == "verification-1"
-    assert manifest.execution_feedback == "verified"
     assert manifest.dxf_path == dxf
     assert manifest.render3d_paths == {"style-a": render}
 

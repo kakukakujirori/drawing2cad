@@ -1,21 +1,18 @@
 import pytest
+from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
 from zeroshot.pipeline.tools import VerifyOutputResult
-from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, SemanticHypothesis
-from zeroshot.pipeline.workflow.state import (
-    Audit,
-    OperationPlan,
-    ReconstructionState,
-    Review,
-    StopReason,
-)
+from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, Proposal
+from zeroshot.pipeline.workflow.agent import StopReason
+from zeroshot.pipeline.workflow.proposer_reviewer import Review
+from zeroshot.pipeline.workflow.state import Audit, ReconstructionState
 
 
-@pytest.mark.parametrize("contract", [SemanticHypothesis, OperationPlan, Review, Audit])
+@pytest.mark.parametrize("contract", [Proposal, Review, Audit])
 def test_a_contract_carries_no_prose_beyond_its_field_descriptions(
     contract: type[BaseModel],
 ) -> None:
@@ -29,62 +26,96 @@ def test_a_contract_carries_no_prose_beyond_its_field_descriptions(
     assert set(schema["properties"]) == set(contract.model_fields)
 
 
-def test_semantic_hypothesis_validates_json() -> None:
-    hypothesis = SemanticHypothesis.model_validate_json(
-        '{"semantics":["cylindrical boss","through hole"]}'
+def test_a_proposal_validates_json() -> None:
+    proposal = Proposal.model_validate_json(
+        '{"proposal":["cylindrical boss","through hole"],"rationale":"both are turned"}'
     )
 
-    assert hypothesis.semantics == ["cylindrical boss", "through hole"]
+    assert proposal.proposal == ["cylindrical boss", "through hole"]
+    assert proposal.rationale == "both are turned"
 
 
 @pytest.mark.parametrize(
     "payload",
     [
         {},
-        {"semantics": ["hole"], "evidence": "visible in the front view"},
+        {"proposal": ["hole"]},
+        {"rationale": "visible in the front view"},
+        {
+            "proposal": ["hole"],
+            "rationale": "visible in the front view",
+            "evidence": "front view",
+        },
     ],
 )
-def test_semantic_hypothesis_rejects_schema_violations(
-    payload: dict[str, object],
-) -> None:
+def test_a_proposal_rejects_schema_violations(payload: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        SemanticHypothesis.model_validate(payload)
+        Proposal.model_validate(payload)
 
 
 @pytest.mark.parametrize(
     "payload",
     [
-        {"decision": "reject", "feedback": "wrong feature"},
-        {"decision": "accept"},
-        {"decision": "accept", "feedback": "", "confidence": 0.9},
+        {"accept": False},
+        {"rationale": "wrong feature"},
+        {"accept": True, "rationale": "correct", "confidence": 0.9},
     ],
 )
-def test_semantic_hypothesis_review_rejects_schema_violations(
-    payload: dict[str, object],
-) -> None:
+def test_a_review_rejects_schema_violations(payload: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         Review.model_validate(payload)
 
 
-@pytest.mark.parametrize("feedback", ["", "   "])
-def test_semantic_hypothesis_review_requires_feedback_for_revision(
-    feedback: str,
-) -> None:
-    with pytest.raises(ValidationError, match="feedback"):
-        Review(decision="revise", feedback=feedback)
+@pytest.mark.parametrize("rationale", ["", "   "])
+def test_a_review_requires_rationale_for_revision(rationale: str) -> None:
+    with pytest.raises(ValidationError, match="rationale"):
+        Review(accept=False, rationale=rationale)
 
 
-def test_semantic_hypothesis_review_allows_an_accept_without_feedback() -> None:
-    review = Review(decision="accept", feedback="")
+def test_a_review_allows_an_accept_without_rationale() -> None:
+    review = Review(accept=True, rationale="")
 
-    assert review.decision == "accept"
+    assert review.accept is True
 
 
 _ARTIFACTS: dict[str, object] = {
-    "semantic_hypothesis": SemanticHypothesis(semantics=["flange", "blind hole"]),
-    "operation_plan": OperationPlan(operations=["Extrude the outline 25 mm along +z"]),
-    "stop_reasons": {"coder": StopReason.BUDGET_EXHAUSTED},
-    "audit": Audit(decision="redo_operations", feedback="the boss is missing"),
+    "semantics_state": {
+        "revision_count": 1,
+        "proposer_entry_instruction": HumanMessage(content="propose semantics"),
+        "proposal": Proposal(
+            proposal=["flange", "blind hole"],
+            rationale="the flange carries the bolt circle",
+        ),
+        "proposer_state": {
+            "messages": [HumanMessage(content="propose semantics")],
+            "current_turn": 1,
+            "total_turns": 1,
+            "stop_reason": StopReason.COMPLETED,
+        },
+        "reviewer_entry_instruction": HumanMessage(content="review semantics"),
+        "review": Review(accept=True, rationale="the views agree"),
+        "reviewer_state": {
+            "messages": [HumanMessage(content="review semantics")],
+            "current_turn": 1,
+            "total_turns": 1,
+            "stop_reason": StopReason.COMPLETED,
+        },
+    },
+    "coding_state": {
+        "messages": [HumanMessage(content="write code")],
+        "current_turn": 3,
+        "total_turns": 3,
+        "stop_reason": StopReason.BUDGET_EXHAUSTED,
+    },
+    "semantic_hypothesis": Proposal(
+        proposal=["flange", "blind hole"],
+        rationale="the flange carries the bolt circle",
+    ),
+    "operation_plan": Proposal(
+        proposal=["Extrude the outline 25 mm along +z"],
+        rationale="one extrude reaches the stated height",
+    ),
+    "audit": Audit(revise="operations", rationale="the boss is missing"),
     "last_verification": VerifyOutputResult(
         verification_id="v1",
         status="SUCCEEDED",
@@ -92,6 +123,16 @@ _ARTIFACTS: dict[str, object] = {
         returncode=0,
     ),
 }
+
+
+def test_custom_state_types_include_nested_runtime_values() -> None:
+    assert set(CUSTOM_STATE_TYPES) == {
+        Proposal,
+        Review,
+        Audit,
+        StopReason,
+        VerifyOutputResult,
+    }
 
 
 def test_every_state_artifact_survives_a_checkpoint() -> None:
@@ -121,9 +162,14 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
     graph = workflow.compile(checkpointer=InMemorySaver(serde=serde))
     config = {"configurable": {"thread_id": "artifact-round-trip"}}
 
-    graph.invoke(ReconstructionState(messages=[]), config)
+    graph.invoke(ReconstructionState(), config)
     restored = graph.get_state(config).values
 
     for field, value in _ARTIFACTS.items():
         assert type(restored[field]) is type(value), field
         assert restored[field] == value
+
+    semantics_state = restored["semantics_state"]
+    assert type(semantics_state["proposal"]) is Proposal
+    assert type(semantics_state["review"]) is Review
+    assert type(semantics_state["proposer_state"]["stop_reason"]) is StopReason

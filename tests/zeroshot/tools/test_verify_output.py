@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 from langchain_core.tools import BaseTool
 
-from zeroshot.pipeline.messages import MessageBuilder
+from zeroshot.pipeline.messages import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.tools.verify_output import (
     VerifyOutputResult,
@@ -78,7 +78,7 @@ def _create_tool(
     workdir: SandboxWorkdir,
     *,
     renderer: object | None = None,  # defaults to a StubRenderer
-    message_builder: MessageBuilder | None = None,
+    artifact_presenter: ArtifactPresenter | None = None,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
     serialize_output: bool = True,
@@ -87,7 +87,7 @@ def _create_tool(
         executor,  # type: ignore[arg-type]
         workdir,
         renderer=renderer or StubRenderer(),  # type: ignore[arg-type]
-        message_builder=message_builder,
+        artifact_presenter=artifact_presenter,
         source_filename=source_filename,
         output_dirname=output_dirname,
         serialize_output=serialize_output,
@@ -133,11 +133,11 @@ class StubRenderer:
         )
 
 
-def _message_builder(feedback_render3d: str = "path") -> MessageBuilder:
-    return MessageBuilder(
-        access_render3d="none",
-        access_render3d_styles=(),
-        feedback_render3d=feedback_render3d,  # type: ignore[arg-type]
+def _artifact_presenter(feedback_render3d: str = "path") -> ArtifactPresenter:
+    return ArtifactPresenter(
+        input_render3d_mode="none",
+        input_render3d_styles=(),
+        feedback_render3d_mode=feedback_render3d,  # type: ignore[arg-type]
         feedback_render3d_styles=RENDER3D_STYLES,
     )
 
@@ -404,7 +404,10 @@ def test_verified_output_is_rendered_and_offered_to_the_model(tmp_path: Path) ->
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     renderer = StubRenderer()
     verify_output = _create_tool(
-        executor, workdir, renderer=renderer, message_builder=_message_builder()
+        executor,
+        workdir,
+        renderer=renderer,
+        artifact_presenter=_artifact_presenter(),
     )
 
     text = _text(verify_output.invoke({}))
@@ -426,7 +429,10 @@ def test_rendered_artifacts_stay_inside_the_verification_directory(
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verify_output = _create_tool(
-        executor, workdir, renderer=StubRenderer(), message_builder=_message_builder()
+        executor,
+        workdir,
+        renderer=StubRenderer(),
+        artifact_presenter=_artifact_presenter(),
     )
 
     verify_output.invoke({})
@@ -456,7 +462,10 @@ def test_failed_verification_renders_nothing_and_reports_only_the_error(
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     renderer = StubRenderer()
     verify_output = _create_tool(
-        executor, workdir, renderer=renderer, message_builder=_message_builder()
+        executor,
+        workdir,
+        renderer=renderer,
+        artifact_presenter=_artifact_presenter(),
     )
 
     result = verify_output.invoke({})
@@ -474,7 +483,10 @@ def test_partial_render_offers_only_existing_styles_and_explains_the_rest(
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     renderer = StubRenderer(skip_styles=("transparent_shaded_edges_perspective",))
     verify_output = _create_tool(
-        executor, workdir, renderer=renderer, message_builder=_message_builder()
+        executor,
+        workdir,
+        renderer=renderer,
+        artifact_presenter=_artifact_presenter(),
     )
 
     result = verify_output.invoke({})
@@ -498,7 +510,10 @@ def test_tool_result_carries_paths_but_never_the_drawing_itself(
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verify_output = _create_tool(
-        executor, workdir, renderer=StubRenderer(), message_builder=_message_builder()
+        executor,
+        workdir,
+        renderer=StubRenderer(),
+        artifact_presenter=_artifact_presenter(),
     )
 
     text = _text(verify_output.invoke({}))
@@ -510,10 +525,10 @@ def test_tool_result_carries_paths_but_never_the_drawing_itself(
     assert dxf_body not in text
 
 
-def test_images_are_embedded_only_when_the_builder_asks_for_them(
+def test_images_are_embedded_only_when_the_presenter_asks_for_them(
     tmp_path: Path,
 ) -> None:
-    """``feedback_render3d`` is MessageBuilder's decision, and the tool obeys it."""
+    """The feedback presentation mode decides whether the tool embeds images."""
     executor = StubCadQueryExecutor(_execution_report())
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
 
@@ -523,7 +538,7 @@ def test_images_are_embedded_only_when_the_builder_asks_for_them(
             executor,
             workdir,
             renderer=StubRenderer(),
-            message_builder=_message_builder(mode),
+            artifact_presenter=_artifact_presenter(mode),
         ).invoke({})
         assert isinstance(result, list)
         return [block["type"] for block in result]
@@ -533,7 +548,7 @@ def test_images_are_embedded_only_when_the_builder_asks_for_them(
     assert "image" not in block_types("none")
 
 
-def test_without_a_message_builder_the_model_sees_only_the_report(
+def test_without_an_artifact_presenter_the_model_sees_only_the_report(
     tmp_path: Path,
 ) -> None:
     """Rendering for later evaluation must not leak artifacts into the context."""
@@ -559,7 +574,7 @@ def test_unserialized_result_is_the_report_object_for_graph_state(
         executor,
         workdir,
         renderer=StubRenderer(),
-        message_builder=_message_builder(),
+        artifact_presenter=_artifact_presenter(),
         serialize_output=False,
     )
 

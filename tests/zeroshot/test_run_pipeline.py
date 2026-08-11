@@ -7,7 +7,7 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from zeroshot import run_pipeline
-from zeroshot.pipeline.messages import InputManifest, MessageBuilder
+from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import (
@@ -27,18 +27,18 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
         "workflow": {
             "_target_": "zeroshot.pipeline.workflow.graph.create_reconstruction_graph",
             "_partial_": True,
-            "model_retries": 7,
+            "max_audit_reject_count": 7,
         },
         "console": None,
         "renderer": {
             "_target_": "zeroshot.pipeline.verification.StepRenderer",
             "timeout_s": 42.0,
         },
-        "message_builder": {
-            "_target_": "zeroshot.pipeline.messages.MessageBuilder",
-            "access_render3d": "none",
-            "access_render3d_styles": [],
-            "feedback_render3d": "none",
+        "artifact_presenter": {
+            "_target_": "zeroshot.pipeline.messages.ArtifactPresenter",
+            "input_render3d_mode": "none",
+            "input_render3d_styles": [],
+            "feedback_render3d_mode": "none",
             "feedback_render3d_styles": [],
         },
         "models": {},
@@ -84,8 +84,7 @@ def test_run_composes_dependencies_and_manifest(
         def run_sample(self, manifest: InputManifest) -> ReconstructionState:
             captured["manifest"] = manifest
             return ReconstructionState(
-                messages=[],
-                last_verification=VerifyOutputResult(status="VERIFIED"),
+                last_verification=VerifyOutputResult(status="VERIFIED")
             )
 
     monkeypatch.setattr(run_pipeline, "SandboxRunner", StubSandboxRunner)
@@ -100,14 +99,14 @@ def test_run_composes_dependencies_and_manifest(
                     "zeroshot.pipeline.workflow.graph.create_reconstruction_graph"
                 ),
                 "_partial_": True,
-                "model_retries": 7,
+                "max_audit_reject_count": 7,
             },
             "console": None,
-            "message_builder": {
-                "_target_": "zeroshot.pipeline.messages.MessageBuilder",
-                "access_render3d": "none",
-                "access_render3d_styles": [],
-                "feedback_render3d": "none",
+            "artifact_presenter": {
+                "_target_": "zeroshot.pipeline.messages.ArtifactPresenter",
+                "input_render3d_mode": "none",
+                "input_render3d_styles": [],
+                "feedback_render3d_mode": "none",
                 "feedback_render3d_styles": [],
             },
             "models": {},
@@ -141,7 +140,7 @@ def test_run_composes_dependencies_and_manifest(
     # No model reaches the runner: an agent carries its own, so the workflow
     # config is where `instantiate` finds one.
     assert "model" not in runner_options
-    assert isinstance(runner_options["message_builder"], MessageBuilder)
+    assert isinstance(runner_options["artifact_presenter"], ArtifactPresenter)
     assert isinstance(runner_options["sandbox_runner"], StubSandboxRunner)
     assert runner_options["artifact_root"] == artifact_root
     assert runner_options["console_reporter"] is None
@@ -149,7 +148,7 @@ def test_run_composes_dependencies_and_manifest(
     assert runner_options["renderer"].timeout_s == 42.0
     graph_factory = runner_options["graph_factory"]
     assert graph_factory.func is create_reconstruction_graph
-    assert graph_factory.keywords == {"model_retries": 7}
+    assert graph_factory.keywords == {"max_audit_reject_count": 7}
     assert captured["sandbox_options"] == {
         "python_executable": Path(sys.executable),
         "default_timeout_s": 30.0,
@@ -210,8 +209,7 @@ def test_null_renderer_falls_back_to_the_default_renderer(
 
         def run_sample(self, manifest: InputManifest) -> ReconstructionState:
             return ReconstructionState(
-                messages=[],
-                last_verification=VerifyOutputResult(status="VERIFIED"),
+                last_verification=VerifyOutputResult(status="VERIFIED")
             )
 
     monkeypatch.setattr(run_pipeline, "PipelineRunner", StubPipelineRunner)
@@ -248,9 +246,7 @@ def test_a_skipped_sample_is_neither_recorded_nor_scored(
 
 def test_a_run_is_recorded_before_it_is_scored(tmp_path: Path, monkeypatch) -> None:
     called: list[str] = []
-    monkeypatch.setattr(
-        run_pipeline, "run", lambda config: ReconstructionState(messages=[])
-    )
+    monkeypatch.setattr(run_pipeline, "run", lambda config: ReconstructionState())
     monkeypatch.setattr(
         run_pipeline, "record_run", lambda *args: called.append("record")
     )

@@ -17,60 +17,59 @@ from rich.console import Console
 from tests.zeroshot.chat_models import ScriptedChatModel
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
-from zeroshot.pipeline.messages import InputManifest, MessageBuilder
+from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.runner import GraphFactory, PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
 from zeroshot.pipeline.workflow import (
+    StopReason,
     create_agent,
-    create_proposer_critic_loop,
+    create_proposer_reviewer_loop,
     create_reconstruction_graph,
 )
-from zeroshot.pipeline.workflow.state import StopReason
 
 
 def _agent(role: str, model: BaseChatModel, **overrides: Any):
     return partial(create_agent, role=role, model=model, **overrides)
 
 
-_ACCEPTED = AIMessage(content='{"decision": "accept", "feedback": "matches"}')
+_ACCEPTED = AIMessage(content='{"accept": true, "rationale": "matches"}')
 # Its own message, not a second reference to the one above: LangChain stamps an
 # id onto the object it is handed, so two roles sharing one would answer with
 # one id, and `add_messages` would keep a single message for both.
-_ACCEPTED_AUDIT = AIMessage(content='{"decision": "accept", "feedback": "built"}')
+_ACCEPTED_AUDIT = AIMessage(content='{"revise": null, "rationale": "built"}')
 
 
-def _reasoning_stage(proposer_role: str, critic_role: str, proposal: str):
+def _reasoning_stage(proposer_role: str, reviewer_role: str, proposal: str):
     """A reasoning stage scripted to agree at once.
 
     The runner is what these tests are about, so each stage is reduced to the
     shortest run that still hands the coder a settled artifact.
     """
     return partial(
-        create_proposer_critic_loop,
-        proposer=_agent(
-            proposer_role,
-            ScriptedChatModel(responses=(AIMessage(content=proposal),)),
-            announce_turn_budget=False,
-        ),
-        critic=_agent(
-            critic_role,
-            ScriptedChatModel(responses=(_ACCEPTED,)),
-            announce_turn_budget=False,
-        ),
+        create_proposer_reviewer_loop,
+        proposer_role=proposer_role,
+        proposer_model=ScriptedChatModel(responses=(AIMessage(content=proposal),)),
+        reviewer_role=reviewer_role,
+        reviewer_model=ScriptedChatModel(responses=(_ACCEPTED,)),
+        announce_turns=False,
         max_revisions=1,
     )
 
 
 def _semantic_stage():
     return _reasoning_stage(
-        "semantic_hypothesizer", "semantic_reviewer", '{"semantics": ["a box"]}'
+        "semantic_hypothesizer",
+        "semantic_reviewer",
+        '{"proposal": ["a box"], "rationale": "one prism"}',
     )
 
 
 def _operations_stage():
     return _reasoning_stage(
-        "operation_planner", "operation_reviewer", '{"operations": ["extrude it"]}'
+        "operation_planner",
+        "operation_reviewer",
+        '{"proposal": ["extrude it"], "rationale": "one extrude"}',
     )
 
 
@@ -79,13 +78,13 @@ def _graph_factory(model: BaseChatModel, **overrides: Any) -> GraphFactory:
     so a run's config -- or a test -- binds it before the runner ever sees it."""
     return partial(
         create_reconstruction_graph,
-        semantic_stage=_semantic_stage(),
-        operations_stage=_operations_stage(),
-        coder=_agent("coder", model, **overrides),
-        auditor=_agent(
+        semantics_agent_builder=_semantic_stage(),
+        operations_agent_builder=_operations_stage(),
+        coding_agent_builder=_agent("coder", model, **overrides),
+        audit_agent_builder=_agent(
             "output_auditor",
             ScriptedChatModel(responses=(_ACCEPTED_AUDIT,)),
-            announce_turn_budget=False,
+            announce_turns=False,
         ),
     )
 
@@ -125,11 +124,11 @@ def _manifest_without_renders(tmp_path: Path, sample_id: str) -> InputManifest:
     )
 
 
-def _message_builder_without_renders() -> MessageBuilder:
-    return MessageBuilder(
-        access_render3d="none",
-        access_render3d_styles=(),
-        feedback_render3d="none",
+def _artifact_presenter_without_renders() -> ArtifactPresenter:
+    return ArtifactPresenter(
+        input_render3d_mode="none",
+        input_render3d_styles=(),
+        feedback_render3d_mode="none",
         feedback_render3d_styles=(),
     )
 
@@ -209,17 +208,17 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
             AIMessage(content="done"),
         )
     )
-    message_builder = MessageBuilder(
-        access_render3d="path",
-        access_render3d_styles=("style-a",),
-        feedback_render3d="none",
+    artifact_presenter = ArtifactPresenter(
+        input_render3d_mode="path",
+        input_render3d_styles=("style-a",),
+        feedback_render3d_mode="none",
         feedback_render3d_styles=(),
     )
     runner = PipelineRunner(
         # This test is about input staging and transcript contents, not budget
         # announcements, so keep those extra HumanMessages out of its fixture.
-        graph_factory=_graph_factory(model, announce_turn_budget=False),
-        message_builder=message_builder,
+        graph_factory=_graph_factory(model, announce_turns=False),
+        artifact_presenter=artifact_presenter,
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable),
             default_timeout_s=10,
@@ -283,7 +282,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         "stderr": "",
     }
 
-    assert result["stop_reasons"]["coder"] is StopReason.COMPLETED
+    assert result["coding_state"]["stop_reason"] is StopReason.COMPLETED
 
     assert dxf_path.read_text(encoding="utf-8") == "ORIGINAL_DXF"
     assert selected_render_path.read_bytes() == b"ALLOWED_RENDER"
@@ -371,7 +370,7 @@ def test_run_sample_preserves_workdir_when_graph_fails(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"
     runner = PipelineRunner(
         graph_factory=_graph_factory(model),
-        message_builder=_message_builder_without_renders(),
+        artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         renderer=_renderer(),
@@ -422,7 +421,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     console_output = StringIO()
     runner = PipelineRunner(
         graph_factory=_graph_factory(model),
-        message_builder=_message_builder_without_renders(),
+        artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         renderer=_renderer(),
@@ -516,7 +515,7 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
     artifact_root = tmp_path / "artifacts"
     runner = PipelineRunner(
         graph_factory=_graph_factory(model),
-        message_builder=_message_builder_without_renders(),
+        artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         renderer=_renderer(),
@@ -559,7 +558,7 @@ def _runner_for_rerun(
         graph_factory=_graph_factory(
             ScriptedChatModel(responses=(AIMessage(content="done"),))
         ),
-        message_builder=_message_builder_without_renders(),
+        artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         renderer=_renderer(),
@@ -617,7 +616,7 @@ def test_a_failed_sample_is_not_treated_as_completed(tmp_path: Path) -> None:
     manifest = _manifest_without_renders(tmp_path, "failed-then-skip")
     runner = PipelineRunner(
         graph_factory=_graph_factory(ScriptedChatModel(responses=())),
-        message_builder=_message_builder_without_renders(),
+        artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         renderer=_renderer(),
@@ -660,12 +659,12 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
         # A cast is a graph's own setting, so a real factory arrives with one
         # already bound; only what the runner adds is under test here.
         return create_reconstruction_graph(
-            semantic_stage=_semantic_stage(),
-            operations_stage=_operations_stage(),
-            coder=_agent(
+            semantics_agent_builder=_semantic_stage(),
+            operations_agent_builder=_operations_stage(),
+            coding_agent_builder=_agent(
                 "coder", ScriptedChatModel(responses=(AIMessage(content="x"),))
             ),
-            auditor=_agent(
+            audit_agent_builder=_agent(
                 "output_auditor", ScriptedChatModel(responses=(_ACCEPTED_AUDIT,))
             ),
             **kwargs,
@@ -674,7 +673,7 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
     artifact_root = tmp_path / "artifacts"
     manifest = _manifest_without_renders(tmp_path, "injected-graph")
     PipelineRunner(
-        message_builder=_message_builder_without_renders(),
+        artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         renderer=_renderer(),
@@ -685,8 +684,8 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
         "sandbox_runner",
         "sandbox_workdir",
         "renderer",
-        "message_builder",
-        "input_message",
+        "artifact_presenter",
+        "input_manifest",
         "output_filename",
         "verification_dirname",
         "checkpointer",
@@ -712,7 +711,7 @@ def test_a_graphs_own_settings_reach_it_through_the_factory(tmp_path: Path) -> N
     )
     coder = ScriptedChatModel(responses=responses)
     runner = PipelineRunner(
-        message_builder=_message_builder_without_renders(),
+        artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=tmp_path / "artifacts",
         renderer=_renderer(),
@@ -725,8 +724,8 @@ def test_a_graphs_own_settings_reach_it_through_the_factory(tmp_path: Path) -> N
     # The bound budget is what stopped this agent, whatever the rest of the
     # run went on to spend.
     assert len(coder.received_messages) == 2
-    assert result["agent_turns"]["coder"] == 2
-    assert result["stop_reasons"]["coder"] is StopReason.BUDGET_EXHAUSTED
+    assert result["coding_state"]["total_turns"] == 2
+    assert result["coding_state"]["stop_reason"] is StopReason.BUDGET_EXHAUSTED
 
 
 def test_retry_redoes_an_interrupted_sample(tmp_path: Path) -> None:
@@ -735,7 +734,7 @@ def test_retry_redoes_an_interrupted_sample(tmp_path: Path) -> None:
     with pytest.raises(AssertionError, match="ran out of responses"):
         PipelineRunner(
             graph_factory=_graph_factory(ScriptedChatModel(responses=())),
-            message_builder=_message_builder_without_renders(),
+            artifact_presenter=_artifact_presenter_without_renders(),
             sandbox_runner=_sandbox_runner(),
             artifact_root=artifact_root,
             renderer=_renderer(),
@@ -818,11 +817,11 @@ def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
         )
     )
     PipelineRunner(
-        message_builder=_message_builder_without_renders(),
+        artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         renderer=_renderer(),
-        graph_factory=_graph_factory(model, max_turns=2, announce_turn_budget=True),
+        graph_factory=_graph_factory(model, max_turns=2, announce_turns=True),
     ).run_sample(_manifest_without_renders(tmp_path, "announced"))
 
     assert [messages[-1].text for messages in model.received_messages] == [
@@ -845,7 +844,7 @@ def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
 def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
     """It lives only in graph state, so an offline reader needs it projected.
 
-    Whether `max_agent_turns` is set sensibly is answered by counting how often
+    Whether `max_turns` is set sensibly is answered by counting how often
     a multi-sample run ends this way.
     """
     tool_call = [
@@ -870,7 +869,7 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
     for sample_id, (responses, expected) in cases.items():
         artifact_root = tmp_path / sample_id
         PipelineRunner(
-            message_builder=_message_builder_without_renders(),
+            artifact_presenter=_artifact_presenter_without_renders(),
             sandbox_runner=_sandbox_runner(),
             artifact_root=artifact_root,
             renderer=_renderer(),
@@ -879,31 +878,22 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             ),
         ).run_sample(_manifest_without_renders(tmp_path, sample_id))
 
-        # Two kinds of statement, and they are not the same one: an agent
-        # reports inside the namespace it ran in, once per turn it ended, and
-        # the workflow reports them by role.
         events = [
             event
             for event in _events(artifact_root / sample_id)
             if event["event"] == "stop_reason"
         ]
-        by_namespace = [
-            (tuple(event["namespace"]), event["data"]["reason"])
-            for event in events
-            if "role" not in event["data"]
-        ]
-        assert [
-            reason
-            for namespace, reason in by_namespace
-            if namespace and namespace[0].startswith("coder:")
-        ] == [expected], sample_id
-        # Which agent a reason belonged to is what the namespaces cannot say,
-        # so the run's record names them, and no role's answer masks another.
-        assert _logged_stop_reasons(artifact_root / sample_id) == {
+        expected_reasons = {
             "semantic_hypothesizer": "COMPLETED",
             "semantic_reviewer": "COMPLETED",
             "operation_planner": "COMPLETED",
             "operation_reviewer": "COMPLETED",
             "coder": expected,
             "output_auditor": "COMPLETED",
-        }, sample_id
+        }
+        assert {
+            event["data"]["role"]: event["data"]["reason"] for event in events
+        } == expected_reasons, sample_id
+        assert _logged_stop_reasons(artifact_root / sample_id) == expected_reasons, (
+            sample_id
+        )

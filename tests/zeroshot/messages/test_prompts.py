@@ -19,6 +19,76 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
     assert prompt.path.is_file()
 
 
+@pytest.mark.parametrize(
+    ("name", "context"),
+    [
+        ("instructions/semantics/initial", {}),
+        ("instructions/semantics/targeted_redo", {"rationale": "wrong feature"}),
+        ("instructions/semantics/review", {}),
+        (
+            "instructions/operations/initial",
+            {"semantic_hypothesis": "a bracket"},
+        ),
+        (
+            "instructions/operations/targeted_redo",
+            {"rationale": "missing hole", "semantic_hypothesis": "a bracket"},
+        ),
+        (
+            "instructions/operations/upstream_changed",
+            {
+                "rationale": "wrong base feature",
+                "semantic_hypothesis": "a revised bracket",
+            },
+        ),
+        (
+            "instructions/operations/review",
+            {"semantic_hypothesis": "a bracket"},
+        ),
+        (
+            "instructions/coding/initial",
+            {
+                "semantic_hypothesis": "a bracket",
+                "operation_plan": "extrude the base",
+            },
+        ),
+        (
+            "instructions/coding/targeted_redo",
+            {
+                "rationale": "the hole is misplaced",
+                "semantic_hypothesis": "a bracket",
+                "operation_plan": "extrude the base",
+            },
+        ),
+        (
+            "instructions/coding/upstream_changed",
+            {
+                "rationale": "wrong base feature",
+                "semantic_hypothesis": "a revised bracket",
+                "operation_plan": "rebuild the base",
+            },
+        ),
+        (
+            "instructions/audit",
+            {
+                "semantic_hypothesis": "a bracket",
+                "operation_plan": "extrude the base",
+                "output_path": "/work/model.py",
+                "report": "VERIFIED",
+                "attempt_dir": "/work/attempts/000",
+            },
+        ),
+    ],
+)
+def test_stage_instruction_prompts_match_the_invocation_reasons(
+    name: str,
+    context: dict[str, str],
+) -> None:
+    rendered = PromptTemplate(name).render(**context)
+
+    assert rendered
+    assert "$" not in rendered
+
+
 def test_placeholders_are_filled_from_the_context() -> None:
     rendered = PromptTemplate("roles/coder").render(
         output_path="/work/model.py",
@@ -29,6 +99,23 @@ def test_placeholders_are_filled_from_the_context() -> None:
     assert "/work/attempts" in rendered
     assert "$output_path" not in rendered
     assert "$verification_dir" not in rendered
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        "roles/semantic_hypothesizer",
+        "roles/semantic_reviewer",
+        "roles/operation_planner",
+        "roles/operation_reviewer",
+        "roles/output_auditor",
+    ],
+)
+def test_structured_output_roles_render_their_contract(role: str) -> None:
+    rendered = PromptTemplate(role).render(output_schema="SENTINEL_SCHEMA")
+
+    assert "SENTINEL_SCHEMA" in rendered
+    assert "$output_schema" not in rendered
 
 
 def test_a_missing_value_is_refused(tmp_path: Path) -> None:

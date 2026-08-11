@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import pytest
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from langchain_core.language_models import BaseChatModel
@@ -9,19 +10,19 @@ from langchain_openai.chat_models.codex import _ChatOpenAICodex
 
 from zeroshot.models import SGLangChatOpenAI
 from zeroshot.pipeline.event_logging import ConsoleReporter
-from zeroshot.pipeline.messages import MessageBuilder, PromptTemplate
+from zeroshot.pipeline.messages import ArtifactPresenter, PromptTemplate
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.workflow import (
     create_agent,
-    create_proposer_critic_loop,
+    create_proposer_reviewer_loop,
     create_reconstruction_graph,
 )
 
 CONFIG_DIR = Path(__file__).parents[2] / "zeroshot" / "configs"
 
 
-def test_default_config_instantiates_message_builder() -> None:
+def test_default_config_instantiates_artifact_presenter() -> None:
     config_path = CONFIG_DIR / "default.yaml"
     assert config_path.is_file(), config_path
 
@@ -31,9 +32,9 @@ def test_default_config_instantiates_message_builder() -> None:
     ):
         config = compose(config_name="default")
 
-    builder = instantiate(config.message_builder)
+    presenter = instantiate(config.artifact_presenter)
     console_reporter = instantiate(config.console)
-    assert isinstance(builder, MessageBuilder)
+    assert isinstance(presenter, ArtifactPresenter)
     assert isinstance(console_reporter, ConsoleReporter)
 
 
@@ -102,20 +103,29 @@ def test_qwen3_6_sglang_thinking_and_output_limit_are_overridable() -> None:
     assert model.max_tokens == 1024
 
 
-def test_gpt5_6_luna_codex_config_instantiates_oauth_model() -> None:
+@pytest.mark.parametrize(
+    ("model_config", "model_name"),
+    [
+        ("gpt5_6_luna_codex", "gpt-5.6-luna"),
+        ("gpt5_6_terra_codex", "gpt-5.6-terra"),
+    ],
+)
+def test_gpt5_6_codex_config_instantiates_oauth_model(
+    model_config: str, model_name: str
+) -> None:
     with initialize_config_dir(
         config_dir=str(CONFIG_DIR.resolve()),
         version_base="1.3",
     ):
         config = compose(
             config_name="default",
-            overrides=["model=gpt5_6_luna_codex"],
+            overrides=[f"model={model_config}"],
         )
 
     model = instantiate(config.model)
 
     assert isinstance(model, _ChatOpenAICodex)
-    assert model.model_name == "gpt-5.6-luna"
+    assert model.model_name == model_name
     assert model.output_version == "responses/v1"
     assert model.streaming is True
     assert model.use_responses_api is True
@@ -123,8 +133,8 @@ def test_gpt5_6_luna_codex_config_instantiates_oauth_model() -> None:
     assert model.openai_api_base == "https://chatgpt.com/backend-api/codex"
     assert model.request_timeout == 600.0
     assert model.max_tokens is None
-    # A sweep over a remote endpoint loses whole samples to transient resets.
-    assert model.max_retries >= 1
+    # Agent middleware is the sole retry owner; SDK-level retries stay off.
+    assert model.max_retries == 0
 
 
 def test_a_sweep_only_has_to_override_the_sample_id() -> None:
@@ -213,9 +223,9 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
                 "workflow=staged",
                 # Overridden rather than read, so flipping a checked-in default
                 # is an experiment, not a test failure.
-                "workflow.coder.max_turns=5",
-                "workflow.coder.announce_turn_budget=true",
-                "workflow.model_retries=1",
+                "workflow.coding_agent_builder.max_turns=5",
+                "workflow.coding_agent_builder.announce_turns=true",
+                "workflow.coding_agent_builder.model_retries=1",
             ],
         )
 
@@ -225,22 +235,20 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     # answers, on which model, for how long, and leaves the tools and the
     # contracts to the code.
     assert set(graph_factory.keywords) == {
-        "semantic_stage",
-        "operations_stage",
-        "coder",
-        "auditor",
+        "semantics_agent_builder",
+        "operations_agent_builder",
+        "coding_agent_builder",
+        "audit_agent_builder",
         "max_audit_reject_count",
-        "structured_output",
-        "model_retries",
     }
-    assert graph_factory.keywords["model_retries"] == 1
 
-    coder = graph_factory.keywords["coder"]
+    coder = graph_factory.keywords["coding_agent_builder"]
     assert coder.func is create_agent
     assert coder.keywords["role"] == "coder"
     assert PromptTemplate(f"roles/{coder.keywords['role']}").path.is_file()
     assert coder.keywords["max_turns"] == 5
-    assert coder.keywords["announce_turn_budget"] is True
+    assert coder.keywords["announce_turns"] is True
+    assert coder.keywords["model_retries"] == 1
     # `model: ${model}` follows the run, so one override still swaps every
     # agent that did not ask for a backend of its own.
     assert isinstance(coder.keywords["model"], BaseChatModel)
@@ -249,31 +257,46 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     # Every stage is declared the same way, so a new one is a block, not a
     # change to the graph's signature beyond one parameter.
     for name, roles in (
-        ("semantic_stage", ("semantic_hypothesizer", "semantic_reviewer")),
-        ("operations_stage", ("operation_planner", "operation_reviewer")),
+        (
+            "semantics_agent_builder",
+            ("semantic_hypothesizer", "semantic_reviewer"),
+        ),
+        ("operations_agent_builder", ("operation_planner", "operation_reviewer")),
     ):
         block = graph_factory.keywords[name]
-        assert block.func is create_proposer_critic_loop
-        assert block.keywords["proposer"].keywords["role"] == roles[0]
-        assert block.keywords["critic"].keywords["role"] == roles[1]
+        assert block.func is create_proposer_reviewer_loop
+        assert block.keywords["proposer_role"] == roles[0]
+        assert block.keywords["reviewer_role"] == roles[1]
         for role in roles:
             assert PromptTemplate(f"roles/{role}").path.is_file()
 
-    stage = graph_factory.keywords["semantic_stage"]
-    assert stage.func is create_proposer_critic_loop
+    stage = graph_factory.keywords["semantics_agent_builder"]
+    assert stage.func is create_proposer_reviewer_loop
     assert set(stage.keywords) == {
-        "proposer",
-        "critic",
+        "proposer_role",
+        "proposer_model",
+        "reviewer_role",
+        "reviewer_model",
+        "response_format_strategy",
+        "max_proposer_turns_per_revision",
+        "max_reviewer_turns_per_revision",
+        "announce_turns",
+        "reset_proposer_turns_per_revision",
+        "reset_reviewer_turns_per_revision",
         "max_revisions",
+        "announce_revisions",
+        "reset_revision_count_when_reentrant",
+        "model_retries",
+        "checkpointer",
     }
     # A whole propose-and-review round, which is not an agent turn budget.
     assert stage.keywords["max_revisions"] == 10
-    # How the typed answer is asked for is one setting for the whole run, not
-    # a per-stage one; which answer is owed is not the config's call at all.
-    assert graph_factory.keywords["structured_output"] == "provider"
-    assert stage.keywords["proposer"].keywords["role"] == "semantic_hypothesizer"
-    assert stage.keywords["critic"].keywords["role"] == "semantic_reviewer"
-    assert "output_schema" not in stage.keywords["proposer"].keywords
+    # The stage chooses how its two structured contracts are requested; which
+    # schemas are owed is still fixed by the implementation.
+    assert stage.keywords["response_format_strategy"] == "provider"
+    assert stage.keywords["proposer_role"] == "semantic_hypothesizer"
+    assert stage.keywords["reviewer_role"] == "semantic_reviewer"
+    assert "output_schema" not in stage.keywords
     assert "agent" not in config
 
 
@@ -292,7 +315,7 @@ def test_every_rerun_policy_the_config_documents_is_accepted() -> None:
                 python_executable=Path(sys.executable), default_timeout_s=30
             ),
             graph_factory=instantiate(config.workflow),
-            message_builder=instantiate(config.message_builder),
+            artifact_presenter=instantiate(config.artifact_presenter),
             artifact_root="unused",
             renderer=instantiate(config.renderer),
             on_existing=config.on_existing,

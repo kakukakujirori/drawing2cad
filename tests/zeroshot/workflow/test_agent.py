@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 import httpx
@@ -12,12 +13,19 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatResult
 from langchain_core.tools import BaseTool, tool
+from openai import (
+    APIConnectionError,
+    APIError,
+    APIStatusError,
+    LengthFinishReasonError,
+)
+from openai.types.chat import ChatCompletion
 from pydantic import PrivateAttr
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from zeroshot.pipeline.messages import PromptTemplate
 from zeroshot.pipeline.tools import ToolFeedbackError
-from zeroshot.pipeline.workflow import SemanticHypothesis, StopReason
+from zeroshot.pipeline.workflow import Proposal, StopReason
 from zeroshot.pipeline.workflow.agent import create_agent
 
 PROMPT_CONTEXT = {
@@ -66,6 +74,10 @@ def _subgraph(
         model=model,
         tools=tools,
         prompt_context=PROMPT_CONTEXT,
+        # These agents are invoked on their own rather than from inside a graph,
+        # and `checkpointer=True` -- what a stage builds them with -- means
+        # "inherit the parent's", which a root graph has none of.
+        checkpointer=False,
         **agent_options,
     )
 
@@ -87,7 +99,7 @@ def test_agent_returns_its_complete_tool_transcript() -> None:
     )
     task = HumanMessage(content="Use the echo tool")
 
-    result = _subgraph(model, announce_turn_budget=False).invoke({"messages": [task]})
+    result = _subgraph(model, announce_turns=False).invoke({"messages": [task]})
 
     messages = result["messages"]
     assert [type(message) for message in messages] == [
@@ -102,7 +114,11 @@ def test_agent_returns_its_complete_tool_transcript() -> None:
     assert tool_result.tool_call_id == "call-echo"
     assert tool_result.text == "hello"
     assert messages[-1].text == "done"
-    assert (result["turns"], result["stop_reason"]) == (2, StopReason.COMPLETED)
+    assert (
+        result["current_turn"],
+        result["total_turns"],
+        result["stop_reason"],
+    ) == (2, 2, StopReason.COMPLETED)
 
     # The role's prompt opens every call the model sees, without ever becoming a
     # turn of the transcript the workflow hands on.
@@ -127,7 +143,11 @@ def test_agent_stops_at_its_turn_budget_and_keeps_every_notice() -> None:
     )
 
     messages = result["messages"]
-    assert (result["turns"], result["stop_reason"]) == (3, StopReason.BUDGET_EXHAUSTED)
+    assert (
+        result["current_turn"],
+        result["total_turns"],
+        result["stop_reason"],
+    ) == (3, 3, StopReason.BUDGET_EXHAUSTED)
     expected = [f"[turn {turn}/3]" for turn in (1, 2, 3)]
     assert [model_input[-1].text for model_input in model.received_messages] == expected
     # Every notice stays: the agent has to see the ladder it climbed, not only
@@ -139,15 +159,82 @@ def test_agent_stops_at_its_turn_budget_and_keeps_every_notice() -> None:
     assert sum(isinstance(message, ToolMessage) for message in messages) == 2
 
 
+def test_agent_turn_budget_outlives_langgraphs_default_recursion_limit() -> None:
+    model = ScriptedChatModel(
+        responses=tuple(
+            tool_call("echo", {"value": "looking"}, f"call-{turn}")
+            for turn in range(1, 8)
+        )
+    )
+
+    result = _subgraph(model, max_turns=7, announce_turns=False).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    # Seven tool-bearing turns traverse 28 agent supersteps plus setup, beyond
+    # LangGraph's default limit of 25.  TurnBudget must still own termination.
+    assert result["current_turn"] == 7
+    assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+    assert len(model.received_messages) == 7
+
+
 def test_agent_can_hide_its_turn_budget() -> None:
     model = ScriptedChatModel(responses=(AIMessage(content="done"),))
 
-    result = _subgraph(model, announce_turn_budget=False).invoke(
+    result = _subgraph(model, announce_turns=False).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
     assert not _notices(model.received_messages[0])
     assert not _notices(result["messages"])
+
+
+def _asked_twice(model: ScriptedChatModel, **agent_options: Any):
+    """Two asks of one agent that keeps its transcript, as a stage re-entry does."""
+    agent = _subgraph(model, max_turns=3, **agent_options)
+    first = agent.invoke({"messages": [HumanMessage(content="propose")]})
+    second = agent.invoke(
+        {
+            "messages": [*first["messages"], HumanMessage(content="revise")],
+            "current_turn": first["current_turn"],
+            "total_turns": first["total_turns"],
+        }
+    )
+    return first, second
+
+
+def test_a_second_ask_starts_a_fresh_budget() -> None:
+    """An agent keeps its own transcript between asks now, so the counts it spent
+    on the ask before this one are still above it. The budget is what one ask may
+    cost, so it starts over; the marker is what keeps the restart from reading as
+    the counter silently rewinding mid-conversation."""
+    model = ScriptedChatModel(
+        responses=(AIMessage(content="first"), AIMessage(content="second"))
+    )
+
+    first, second = _asked_twice(model)
+
+    assert (first["current_turn"], second["current_turn"]) == (1, 1)
+    assert (first["total_turns"], second["total_turns"]) == (1, 2)
+    assert _notices(second["messages"]) == [
+        "[turn 1/3]",
+        "[turn reset to 0/3]",
+        "[turn 1/3]",
+    ]
+
+
+def test_a_second_ask_can_keep_spending_the_first_ones_budget() -> None:
+    """A role the workflow asks repeatedly within one stage spends one budget
+    across those asks, so nothing is reset and no boundary is drawn."""
+    model = ScriptedChatModel(
+        responses=(AIMessage(content="first"), AIMessage(content="second"))
+    )
+
+    first, second = _asked_twice(model, reset_turns_when_reentrant=False)
+
+    assert (first["current_turn"], second["current_turn"]) == (1, 2)
+    assert (first["total_turns"], second["total_turns"]) == (1, 2)
+    assert _notices(second["messages"]) == ["[turn 1/3]", "[turn 2/3]"]
 
 
 def test_agent_rejects_a_budget_below_one() -> None:
@@ -169,32 +256,33 @@ def test_agent_rejects_a_role_without_a_prompt() -> None:
         )
 
 
+_ANSWER = '{"proposal": ["a boss", "a through hole"], "rationale": "both are turned"}'
+
+
 def test_agent_reports_the_typed_answer_its_role_owes() -> None:
-    model = ScriptedChatModel(
-        responses=(AIMessage(content='{"semantics": ["a boss", "a through hole"]}'),)
-    )
+    model = ScriptedChatModel(responses=(AIMessage(content=_ANSWER),))
 
     result = _subgraph(
         model,
-        announce_turn_budget=False,
-        output_schema=SemanticHypothesis,
+        announce_turns=False,
+        output_schema=Proposal,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
-    assert result["structured_response"] == SemanticHypothesis(
-        semantics=["a boss", "a through hole"]
+    assert result["structured_response"] == Proposal(
+        proposal=["a boss", "a through hole"], rationale="both are turned"
     )
     # The message the answer came from stays in the transcript for the next role.
-    assert result["messages"][-1].text == '{"semantics": ["a boss", "a through hole"]}'
+    assert result["messages"][-1].text == _ANSWER
 
 
 def test_agent_refuses_an_answer_that_breaks_its_output_contract() -> None:
-    model = ScriptedChatModel(responses=(AIMessage(content='{"semantics": "a boss"}'),))
+    model = ScriptedChatModel(responses=(AIMessage(content='{"proposal": "a boss"}'),))
 
-    with pytest.raises(Exception, match="SemanticHypothesis"):
+    with pytest.raises(Exception, match="Proposal"):
         _subgraph(
             model,
-            announce_turn_budget=False,
-            output_schema=SemanticHypothesis,
+            announce_turns=False,
+            output_schema=Proposal,
         ).invoke({"messages": [HumanMessage(content="go")]})
 
 
@@ -204,12 +292,165 @@ def test_agent_retries_a_dropped_connection() -> None:
         errors=(httpx.RemoteProtocolError("peer closed connection"),),
     )
 
-    result = _subgraph(model, announce_turn_budget=False, model_retries=2).invoke(
+    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
     assert model.attempts == 2
-    assert (result["turns"], result["stop_reason"]) == (1, StopReason.COMPLETED)
+    assert (
+        result["current_turn"],
+        result["total_turns"],
+        result["stop_reason"],
+    ) == (1, 1, StopReason.COMPLETED)
+
+
+def test_agent_retries_a_generic_stream_api_error() -> None:
+    request = httpx.Request("POST", "https://example.invalid/responses")
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="done"),),
+        errors=(APIError("backend overloaded", request, body=None),),
+    )
+
+    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    assert model.attempts == 2
+    assert result["stop_reason"] is StopReason.COMPLETED
+
+
+def test_agent_retries_an_openai_connection_error() -> None:
+    request = httpx.Request("POST", "https://example.invalid/responses")
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="done"),),
+        errors=(APIConnectionError(request=request),),
+    )
+
+    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    assert model.attempts == 2
+    assert result["stop_reason"] is StopReason.COMPLETED
+
+
+@pytest.mark.parametrize("status_code", [429, 500, 503])
+def test_agent_retries_a_transient_api_status_error(status_code: int) -> None:
+    request = httpx.Request("POST", "https://example.invalid/responses")
+    response = httpx.Response(status_code, request=request)
+    error = APIStatusError("temporarily unavailable", response=response, body=None)
+    model = _FlakyChatModel(responses=(AIMessage(content="done"),), errors=(error,))
+
+    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    assert model.attempts == 2
+    assert result["stop_reason"] is StopReason.COMPLETED
+
+
+def test_agent_does_not_retry_an_api_status_error() -> None:
+    request = httpx.Request("POST", "https://example.invalid/responses")
+    response = httpx.Response(400, request=request)
+    error = APIStatusError("bad request", response=response, body=None)
+    model = _FlakyChatModel(responses=(AIMessage(content="unused"),), errors=(error,))
+
+    with pytest.raises(APIStatusError, match="bad request"):
+        _subgraph(model, announce_turns=False, model_retries=2).invoke(
+            {"messages": [HumanMessage(content="go")]}
+        )
+
+    assert model.attempts == 1
+
+
+def _length_failure() -> LengthFinishReasonError:
+    completion = ChatCompletion.model_validate(
+        {
+            "id": "length-limited",
+            "created": 0,
+            "model": "local-model",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "length",
+                    "message": {"role": "assistant", "content": "incomplete"},
+                }
+            ],
+        }
+    )
+    return LengthFinishReasonError(completion=completion)
+
+
+def test_agent_retries_a_length_limited_output_with_concise_feedback() -> None:
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="done"),),
+        errors=(_length_failure(),),
+    )
+
+    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    assert model.attempts == 2
+    retry_instruction = model.received_messages[0][-1].text
+    assert "output-token limit" in retry_instruction
+    assert "Do not call tools" in retry_instruction
+    assert "raw JSON" in retry_instruction
+    assert "no explanation" in retry_instruction
+    # A failed generation is retried inside the same model node, not charged as
+    # a completed agent turn.
+    assert (result["current_turn"], result["total_turns"]) == (1, 1)
+
+
+def test_agent_bounds_length_limited_output_retries() -> None:
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="unused"),),
+        errors=(_length_failure(), _length_failure()),
+    )
+
+    with pytest.raises(LengthFinishReasonError):
+        _subgraph(model, announce_turns=False, model_retries=1).invoke(
+            {"messages": [HumanMessage(content="go")]}
+        )
+
+    assert model.attempts == 2
+
+
+def _generic_api_error() -> APIError:
+    request = httpx.Request("POST", "https://example.invalid/responses")
+    return APIError("backend overloaded", request, body=None)
+
+
+def test_agent_shares_one_budget_across_output_and_transport_retries() -> None:
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="unused"),),
+        errors=(_length_failure(), _generic_api_error()),
+    )
+
+    with pytest.raises(APIError, match="backend overloaded"):
+        _subgraph(model, announce_turns=False, model_retries=1).invoke(
+            {"messages": [HumanMessage(content="go")]}
+        )
+
+    assert model.attempts == 2
+
+
+def test_async_agent_shares_one_budget_across_mixed_retries() -> None:
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="unused"),),
+        errors=(_length_failure(), _generic_api_error()),
+    )
+
+    async def invoke() -> None:
+        await _subgraph(model, announce_turns=False, model_retries=1).ainvoke(
+            {"messages": [HumanMessage(content="go")]}
+        )
+
+    with pytest.raises(APIError, match="backend overloaded"):
+        asyncio.run(invoke())
+
+    assert model.attempts == 2
 
 
 @pytest.mark.parametrize(
@@ -220,7 +461,7 @@ def test_agent_does_not_retry_an_ineligible_failure(error: Exception) -> None:
     model = _FlakyChatModel(responses=(AIMessage(content="done"),), errors=(error,))
 
     with pytest.raises(type(error), match=str(error)):
-        _subgraph(model, announce_turn_budget=False, model_retries=2).invoke(
+        _subgraph(model, announce_turns=False, model_retries=2).invoke(
             {"messages": [HumanMessage(content="go")]}
         )
 
@@ -236,7 +477,7 @@ def test_agent_retries_are_bounded() -> None:
     )
 
     with pytest.raises(httpx.RemoteProtocolError):
-        _subgraph(model, announce_turn_budget=False, model_retries=1).invoke(
+        _subgraph(model, announce_turns=False, model_retries=1).invoke(
             {"messages": [HumanMessage(content="go")]}
         )
 
@@ -272,7 +513,7 @@ def test_agent_does_not_turn_a_tool_defect_into_model_feedback() -> None:
     graph = _subgraph(
         _calling_broken(),
         tools=(_broken_tool(ValueError("internal invariant broken")),),
-        announce_turn_budget=False,
+        announce_turns=False,
     )
 
     with pytest.raises(ValueError, match="internal invariant broken"):
@@ -283,7 +524,7 @@ def test_agent_forwards_a_correctable_tool_error_as_feedback() -> None:
     graph = _subgraph(
         _calling_broken(),
         tools=(_broken_tool(ToolFeedbackError("that is not an image")),),
-        announce_turn_budget=False,
+        announce_turns=False,
     )
 
     result = graph.invoke({"messages": [HumanMessage(content="go")]})
