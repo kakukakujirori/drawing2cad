@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from collections.abc import Callable
 from contextlib import ExitStack
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -14,6 +15,7 @@ from zeroshot.pipeline.event_logging import (
     AgentMessageTransformer,
     ConsoleReporter,
     JsonlEventWriter,
+    RunEvent,
     RunEventTransformer,
     has_run_completed,
 )
@@ -153,27 +155,36 @@ class PipelineRunner:
                 checkpointer=checkpointer,
             )
 
+            # The record is written where events are produced rather than where
+            # a consumer gets to them, so no way of watching a run can cost it
+            # its log.
+            def record_event(event: RunEvent) -> None:
+                event_writer.write(event)
+
             # run the graph
             stream = graph.stream_events(
                 ReconstructionState(),
                 config={"configurable": {"thread_id": run_id}},
                 version="v3",
                 durability="sync",
-                transformers=[RunEventTransformer, AgentMessageTransformer],
+                transformers=[
+                    partial(RunEventTransformer, sink=record_event),
+                    AgentMessageTransformer,
+                ],
             )
-            channels = (
-                (RunEventTransformer.CHANNEL, AgentMessageTransformer.CHANNEL)
-                if self.console_reporter is not None
-                else (RunEventTransformer.CHANNEL,)
-            )
-            for channel, item in stream.interleave(*channels):
-                if channel == RunEventTransformer.CHANNEL:
-                    event_writer.write(item)
-                    if self.console_reporter is not None:
+            # One loop, in arrival order: every item either projection publishes
+            # is renderable on its own, so neither can hold up the other.
+            if self.console_reporter is not None:
+                for channel, item in stream.interleave(
+                    RunEventTransformer.CHANNEL,
+                    AgentMessageTransformer.CHANNEL,
+                ):
+                    if channel == RunEventTransformer.CHANNEL:
                         self.console_reporter.render_event(item)
-                else:
-                    assert self.console_reporter is not None
-                    self.console_reporter.render_message(item)
+                    else:
+                        self.console_reporter.render_model_item(item)
+            # Drives whatever the console did not, and is the only driver when
+            # there is no console at all.
             result = stream.output
 
         return cast(ReconstructionState, result)

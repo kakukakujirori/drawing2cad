@@ -2,6 +2,7 @@ import json
 from typing import Any
 
 import pytest
+from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
@@ -211,8 +212,8 @@ def test_a_proposal_that_breaks_its_contract_stops_the_run() -> None:
     )
     reviewer = ScriptedChatModel(responses=())
 
-    with pytest.raises(Exception, match="Proposal"):
-        _loop(proposer, reviewer).invoke(_entry())
+    with pytest.raises(StructuredOutputValidationError, match="Proposal"):
+        _loop(proposer, reviewer, model_retries=0).invoke(_entry())
 
 
 def test_stage_reentry_resets_per_invocation_counts_but_keeps_agent_memory() -> None:
@@ -240,10 +241,64 @@ def test_stage_reentry_resets_per_invocation_counts_but_keeps_agent_memory() -> 
     assert "audit redo" in _texts(second["proposer_state"]["messages"])
 
 
-@pytest.mark.parametrize("max_revisions", [0, -1])
-def test_the_loop_requires_a_positive_revision_limit(max_revisions: int) -> None:
+def test_the_loop_requires_a_non_negative_revision_limit() -> None:
     proposer = ScriptedChatModel(responses=())
     reviewer = ScriptedChatModel(responses=())
 
-    with pytest.raises(ValueError, match="must be positive"):
-        _loop(proposer, reviewer, max_revisions=max_revisions)
+    with pytest.raises(ValueError, match="must be non-negative"):
+        _loop(proposer, reviewer, max_revisions=-1)
+
+
+def test_no_revision_budget_makes_the_first_proposal_the_answer() -> None:
+    """Zero is the setting that turns the stage into a single ask.
+
+    Two models arguing over the same evidence is the loop's whole cost, so
+    switching it off has to leave a proposal behind rather than nothing.
+    """
+    proposer = ScriptedChatModel(responses=(_hypothesis("only"),))
+    reviewer = ScriptedChatModel(responses=())
+
+    state = _loop(proposer, reviewer, max_revisions=0).invoke(_entry())
+
+    assert state["proposal"] == _proposed("only")
+    assert reviewer.received_messages == []
+    assert state.get("revision_count", 0) == 0
+
+
+def test_a_stage_with_no_review_budget_may_keep_its_revision_count() -> None:
+    """Entry rejects a count that is already spent, and zero is never spent.
+
+    A loop configured for no reviews starts every entry at the limit, so the
+    guard would refuse the one proposal the stage exists to produce.
+    """
+    proposer = ScriptedChatModel(responses=(_hypothesis("first"), _hypothesis("again")))
+    reviewer = ScriptedChatModel(responses=())
+    loop = _loop(
+        proposer,
+        reviewer,
+        max_revisions=0,
+        reset_revision_count_when_reentrant=False,
+    )
+
+    first = loop.invoke(_entry("initial"))
+    second = loop.invoke({**first, **_entry("audit redo")})
+
+    assert second["proposal"] == _proposed("again")
+
+
+def test_reentering_a_stage_that_spent_its_revisions_is_refused() -> None:
+    """Without a reset the loop would re-enter with nothing left to do."""
+    proposer = ScriptedChatModel(responses=(_hypothesis("first"),))
+    reviewer = ScriptedChatModel(responses=(_review(False, "incomplete"),))
+    loop = _loop(
+        proposer,
+        reviewer,
+        max_revisions=1,
+        reset_revision_count_when_reentrant=False,
+    )
+
+    first = loop.invoke(_entry("initial"))
+    assert first["revision_count"] == 1
+
+    with pytest.raises(ValueError, match="Revision count reached max revisions"):
+        loop.invoke({**first, **_entry("audit redo")})

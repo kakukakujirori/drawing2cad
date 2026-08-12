@@ -75,14 +75,26 @@ def main(config: DictConfig) -> None:
     `events.jsonl` and `score.json`; exiting non-zero for it would abort a
     Hydra sweep at the first such sample and lose every one after it.
     """
-    if run(config) is None:
-        return
+    failure: Exception | None = None
+    try:
+        if run(config) is None:
+            return
+    except Exception as error:  # noqa: BLE001 - re-raised once the run is described
+        # A run that raised still produced everything up to the point it did,
+        # and that is what the artifacts are for.  Scoring it is how a failure
+        # becomes a comparable result rather than a hole.
+        failure = error
 
     artifact_root = Path(to_absolute_path(config.artifact_root))
-    record_run(artifact_root, config.sample.sample_id)
+    # A run that raised may have failed before it had anywhere to write, and
+    # there is nothing to describe until it did.
+    if failure is None or (artifact_root / config.sample.sample_id).is_dir():
+        record_run(artifact_root, config.sample.sample_id)
+        if config.sample.target_step_path is not None:
+            score(config)
 
-    if config.sample.target_step_path is not None:
-        score(config)
+    if failure is not None:
+        raise failure
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from typing import Any
 
 import httpx
 import pytest
+from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import (
     AIMessage,
@@ -90,6 +91,11 @@ def _notices(messages: list[BaseMessage]) -> list[str]:
     ]
 
 
+def _countdowns(messages: list[BaseMessage]) -> list[str]:
+    """Each notice's `[turn n/m]` alone, without the landing guidance after it."""
+    return [notice.split("]", 1)[0] + "]" for notice in _notices(messages)]
+
+
 def test_agent_returns_its_complete_tool_transcript() -> None:
     model = ScriptedChatModel(
         responses=(
@@ -125,7 +131,11 @@ def test_agent_returns_its_complete_tool_transcript() -> None:
     seen = model.received_messages
     assert [len(model_input) for model_input in seen] == [2, 4]
     assert all(isinstance(model_input[0], SystemMessage) for model_input in seen)
-    assert seen[0][0].text == PromptTemplate("roles/coder").render(**PROMPT_CONTEXT)
+    # `max_turns` is the agent's own setting rather than the caller's, so the
+    # role renders with it added to what the workflow supplied.
+    assert seen[0][0].text == PromptTemplate("roles/coder").render(
+        max_turns="30", **PROMPT_CONTEXT
+    )
     assert seen[1][-1].text == tool_result.text
     assert model.bound_tool_names == ("echo",)
 
@@ -149,11 +159,13 @@ def test_agent_stops_at_its_turn_budget_and_keeps_every_notice() -> None:
         result["stop_reason"],
     ) == (3, 3, StopReason.BUDGET_EXHAUSTED)
     expected = [f"[turn {turn}/3]" for turn in (1, 2, 3)]
-    assert [model_input[-1].text for model_input in model.received_messages] == expected
+    assert [
+        _countdowns([model_input[-1]])[0] for model_input in model.received_messages
+    ] == expected
     # Every notice stays: the agent has to see the ladder it climbed, not only
     # the rung it is on, or it spends the whole budget investigating.
-    assert _notices(messages) == expected
-    assert _notices(model.received_messages[-1]) == expected
+    assert _countdowns(messages) == expected
+    assert _countdowns(model.received_messages[-1]) == expected
     # The turn the budget cut short leaves its tool calls unanswered: two rounds
     # ran, the third was never handed to the tools.
     assert sum(isinstance(message, ToolMessage) for message in messages) == 2
@@ -176,6 +188,82 @@ def test_agent_turn_budget_outlives_langgraphs_default_recursion_limit() -> None
     assert result["current_turn"] == 7
     assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
     assert len(model.received_messages) == 7
+
+
+def test_a_prompt_report_covers_one_ask_rather_than_the_whole_transcript() -> None:
+    """A re-entered agent keeps what it built, and the second ask's report has
+    to be the instruction that caused it, not that transcript read back."""
+    reports: list[dict[str, Any]] = []
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("echo", {"value": "hello"}, "call-echo"),
+            AIMessage(content="first"),
+            AIMessage(content="second"),
+        )
+    )
+    agent = _subgraph(model, max_turns=3, announce_turns=False)
+
+    first = agent.invoke({"messages": [HumanMessage(content="propose")]})
+    for chunk in agent.stream(
+        {
+            "messages": [*first["messages"], HumanMessage(content="revise this")],
+            "current_turn": first["current_turn"],
+            "total_turns": first["total_turns"],
+        },
+        stream_mode="custom",
+    ):
+        reports.append(chunk["prompt"])
+
+    (second_ask,) = reports
+    assert second_ask["role"] == "coder"
+    # The system prompt does not change between asks, so it is stated once.
+    assert second_ask["system"] == ""
+    # The instruction and the budget marker the re-entry itself added, and
+    # nothing the first ask left behind.
+    assert [message.text for message in second_ask["messages"]] == [
+        "revise this",
+        "[turn reset to 0/3]",
+    ]
+
+
+def test_agent_is_asked_to_land_before_its_budget_runs_out() -> None:
+    """The last two turns say what running out costs, one turn apart.
+
+    The warning has to reach the agent while a turn it can still spend on a
+    tool remains, because the final turn's tool call is dropped along with
+    whatever it was going to settle.
+    """
+    model = ScriptedChatModel(
+        responses=tuple(
+            tool_call("echo", {"value": "looking"}, f"call-{turn}")
+            for turn in range(1, 5)
+        )
+    )
+
+    result = _subgraph(model, max_turns=4).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    plain, penultimate, final = (
+        _notices(result["messages"])[1],
+        _notices(result["messages"])[2],
+        _notices(result["messages"])[3],
+    )
+    assert plain == "[turn 2/4]"
+    assert penultimate.startswith("[turn 3/4] One turn remains after this one")
+    assert final.startswith("[turn 4/4] Final turn")
+    assert "dropped" in penultimate and "dropped" in final
+    assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+
+
+def test_a_single_turn_budget_only_asks_for_the_landing() -> None:
+    """With one turn there is no earlier turn to warn, so only the last applies."""
+    model = ScriptedChatModel(responses=(AIMessage(content="done"),))
+
+    _subgraph(model, max_turns=1).invoke({"messages": [HumanMessage(content="go")]})
+
+    (notice,) = _notices(model.received_messages[0])
+    assert notice.startswith("[turn 1/1] Final turn")
 
 
 def test_agent_can_hide_its_turn_budget() -> None:
@@ -234,7 +322,7 @@ def test_a_second_ask_can_keep_spending_the_first_ones_budget() -> None:
 
     assert (first["current_turn"], second["current_turn"]) == (1, 2)
     assert (first["total_turns"], second["total_turns"]) == (1, 2)
-    assert _notices(second["messages"]) == ["[turn 1/3]", "[turn 2/3]"]
+    assert _countdowns(second["messages"]) == ["[turn 1/3]", "[turn 2/3]"]
 
 
 def test_agent_rejects_a_budget_below_one() -> None:
@@ -278,12 +366,95 @@ def test_agent_reports_the_typed_answer_its_role_owes() -> None:
 def test_agent_refuses_an_answer_that_breaks_its_output_contract() -> None:
     model = ScriptedChatModel(responses=(AIMessage(content='{"proposal": "a boss"}'),))
 
-    with pytest.raises(Exception, match="Proposal"):
+    with pytest.raises(StructuredOutputValidationError, match="Proposal"):
         _subgraph(
             model,
             announce_turns=False,
             output_schema=Proposal,
+            model_retries=0,
         ).invoke({"messages": [HumanMessage(content="go")]})
+
+
+def test_agent_retries_an_empty_structured_output() -> None:
+    model = ScriptedChatModel(
+        responses=(AIMessage(content=""), AIMessage(content=_ANSWER))
+    )
+
+    result = _subgraph(
+        model,
+        announce_turns=False,
+        output_schema=Proposal,
+        model_retries=1,
+    ).invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["structured_response"] == Proposal(
+        proposal=["a boss", "a through hole"], rationale="both are turned"
+    )
+    assert len(model.received_messages) == 2
+    retry_instruction = model.received_messages[1][-1].text
+    assert "Proposal structured output" in retry_instruction
+    assert "Validation error" in retry_instruction
+    assert "raw JSON" in retry_instruction
+    assert (result["current_turn"], result["total_turns"]) == (1, 1)
+
+
+def test_agent_returns_invalid_structured_output_to_the_model_for_correction() -> None:
+    invalid_answer = '{"proposal": "not a list", "rationale": "wrong type"}'
+    model = ScriptedChatModel(
+        responses=(AIMessage(content=invalid_answer), AIMessage(content=_ANSWER))
+    )
+
+    result = _subgraph(
+        model,
+        announce_turns=False,
+        output_schema=Proposal,
+        model_retries=1,
+    ).invoke({"messages": [HumanMessage(content="go")]})
+
+    retry_messages = model.received_messages[1]
+    assert retry_messages[-2].text == invalid_answer
+    assert "validation error" in retry_messages[-1].text.lower()
+    assert result["structured_response"] == Proposal(
+        proposal=["a boss", "a through hole"], rationale="both are turned"
+    )
+
+
+def test_agent_bounds_invalid_structured_output_retries() -> None:
+    model = ScriptedChatModel(
+        responses=(AIMessage(content=""), AIMessage(content="still not JSON"))
+    )
+
+    with pytest.raises(StructuredOutputValidationError, match="Proposal"):
+        _subgraph(
+            model,
+            announce_turns=False,
+            output_schema=Proposal,
+            model_retries=1,
+        ).invoke({"messages": [HumanMessage(content="go")]})
+
+    assert len(model.received_messages) == 2
+
+
+def test_async_agent_retries_invalid_structured_output() -> None:
+    model = ScriptedChatModel(
+        responses=(AIMessage(content=""), AIMessage(content=_ANSWER))
+    )
+
+    async def invoke() -> dict[str, Any]:
+        return await _subgraph(
+            model,
+            announce_turns=False,
+            output_schema=Proposal,
+            model_retries=1,
+        ).ainvoke({"messages": [HumanMessage(content="go")]})
+
+    result = asyncio.run(invoke())
+
+    assert len(model.received_messages) == 2
+    assert result["structured_response"] == Proposal(
+        proposal=["a boss", "a through hole"], rationale="both are turned"
+    )
+    assert (result["current_turn"], result["total_turns"]) == (1, 1)
 
 
 def test_agent_retries_a_dropped_connection() -> None:
@@ -453,9 +624,76 @@ def test_async_agent_shares_one_budget_across_mixed_retries() -> None:
     assert model.attempts == 2
 
 
+def test_every_abandoned_attempt_reports_itself() -> None:
+    """A retry leaves no turn, no message and no event of its own, so without
+    this the only trace is an extra HTTP request -- and what it leaves behind,
+    a model stream nobody will finish, is worth being able to point at."""
+    reports: list[dict[str, Any]] = []
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="done"),),
+        errors=(httpx.RemoteProtocolError("peer closed connection"),),
+    )
+
+    for chunk in _subgraph(model, announce_turns=False, model_retries=2).stream(
+        {"messages": [HumanMessage(content="go")]}, stream_mode="custom"
+    ):
+        if "model_retry" in chunk:
+            reports.append(chunk["model_retry"])
+
+    (report,) = reports
+    assert report["role"] == "coder"
+    assert (report["attempt"], report["max_attempts"]) == (1, 3)
+    assert report["error_type"] == "RemoteProtocolError"
+    assert report["retrying"] is True
+    assert report["request_adjusted"] is False
+
+
+def test_a_budget_that_runs_out_says_it_gave_up() -> None:
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="done"),),
+        errors=(ValueError("malformed request"),),
+    )
+
+    reports: list[dict[str, Any]] = []
+    with pytest.raises(ValueError, match="malformed request"):
+        for chunk in _subgraph(model, announce_turns=False, model_retries=2).stream(
+            {"messages": [HumanMessage(content="go")]}, stream_mode="custom"
+        ):
+            if "model_retry" in chunk:
+                reports.append(chunk["model_retry"])
+
+    (report,) = reports
+    assert report["retrying"] is False
+    assert report["error_type"] == "ValueError"
+
+
+def test_agent_retries_a_stalled_stream() -> None:
+    """A backend that accepts the request and then stops sending is retryable.
+
+    The exception arrives bare rather than as `APITimeoutError` because the
+    read that times out belongs to the response stream, not to the request the
+    SDK still owns.
+    """
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="done"),),
+        errors=(httpx.ReadTimeout("too slow"),),
+    )
+
+    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    assert model.attempts == 2
+    assert (
+        result["current_turn"],
+        result["total_turns"],
+        result["stop_reason"],
+    ) == (1, 1, StopReason.COMPLETED)
+
+
 @pytest.mark.parametrize(
     "error",
-    [httpx.ReadTimeout("too slow"), ValueError("malformed request")],
+    [ValueError("malformed request")],
 )
 def test_agent_does_not_retry_an_ineligible_failure(error: Exception) -> None:
     model = _FlakyChatModel(responses=(AIMessage(content="done"),), errors=(error,))

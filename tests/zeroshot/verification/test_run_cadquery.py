@@ -126,6 +126,45 @@ def test_source_validation_rejects_syntax_error() -> None:
         CadQueryExecutor.validate_source("result = (")
 
 
+def test_source_validation_rejects_a_swallowed_failure() -> None:
+    """A chamfer the kernel refused leaves a script that still exports, still
+    verifies, and still reports success, with the feature missing from the
+    solid.  Every later stage sees a plausible part, so this is the only place
+    the difference is observable."""
+    with pytest.raises(ValueError, match="Try-except is not allowed"):
+        CadQueryExecutor.validate_source(
+            "import cadquery as cq\n"
+            'part = cq.Workplane("XY").box(10, 20, 30)\n'
+            "try:\n"
+            "    part = part.edges().chamfer(0.4)\n"
+            "except Exception:\n"
+            "    pass\n"
+            "result = part\n"
+        )
+
+
+def test_source_validation_accepts_the_word_except_in_a_comment() -> None:
+    """Generated models do write it: one baseline sample carries `# ... floor,
+    except` above its cut.  Scanning for the word alone rejects the whole
+    sample and asks the coder to remove a `try` it never wrote."""
+    CadQueryExecutor.validate_source(
+        "import cadquery as cq\n"
+        "# hollowed all the way down to a 3.775 floor, except the rib\n"
+        'result = cq.Workplane("XY").box(10, 20, 30)\n'
+    )
+
+
+def test_source_validation_accepts_a_finally_that_reraises() -> None:
+    """`finally` without handlers cleans up and lets the exception through."""
+    CadQueryExecutor.validate_source(
+        "import cadquery as cq\n"
+        "try:\n"
+        '    result = cq.Workplane("XY").box(10, 20, 30)\n'
+        "finally:\n"
+        "    pass\n"
+    )
+
+
 def test_verify_step_accepts_one_valid_solid(tmp_path: Path) -> None:
     step_path = tmp_path / "box.step"
     _write_valid_box_step(step_path)

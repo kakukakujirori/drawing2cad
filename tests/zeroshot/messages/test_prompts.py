@@ -93,6 +93,7 @@ def test_placeholders_are_filled_from_the_context() -> None:
     rendered = PromptTemplate("roles/coder").render(
         output_path="/work/model.py",
         verification_dir="/work/attempts",
+        max_turns="10",
     )
 
     assert "/work/model.py" in rendered
@@ -112,7 +113,9 @@ def test_placeholders_are_filled_from_the_context() -> None:
     ],
 )
 def test_structured_output_roles_render_their_contract(role: str) -> None:
-    rendered = PromptTemplate(role).render(output_schema="SENTINEL_SCHEMA")
+    rendered = PromptTemplate(role).render(
+        output_schema="SENTINEL_SCHEMA", max_turns="10"
+    )
 
     assert "SENTINEL_SCHEMA" in rendered
     assert "$output_schema" not in rendered

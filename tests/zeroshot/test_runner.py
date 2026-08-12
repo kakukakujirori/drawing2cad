@@ -824,21 +824,71 @@ def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
         graph_factory=_graph_factory(model, max_turns=2, announce_turns=True),
     ).run_sample(_manifest_without_renders(tmp_path, "announced"))
 
-    assert [messages[-1].text for messages in model.received_messages] == [
-        "[turn 1/2]",
-        "[turn 2/2]",
-    ]
+    assert [
+        messages[-1].text.split("]", 1)[0] for messages in model.received_messages
+    ] == ["[turn 1/2", "[turn 2/2"]
     # Keyed by id: a notice is recorded where the agent produced it and again
     # in the workflow transcript that adopts the stage, and this is about what
     # was announced, not how many times the log mentions it.
     notices = {
-        message["id"]: message["content"]
+        message["id"]: str(message["content"])
         for event in _events(artifact_root / "announced")
         if event["event"] == "message"
         for message in event["data"]["messages"]
         if message["type"] == "human" and str(message["content"]).startswith("[turn ")
     }
-    assert list(notices.values()) == ["[turn 1/2]", "[turn 2/2]"]
+    assert [notice.split("]", 1)[0] for notice in notices.values()] == [
+        "[turn 1/2",
+        "[turn 2/2",
+    ]
+
+
+def test_the_prompt_each_role_was_given_reaches_the_event_log(
+    tmp_path: Path,
+) -> None:
+    """A system prompt never enters agent state and an entry instruction is
+    handed to `invoke` rather than produced by a node, so without this the log
+    holds every answer and none of the questions. The stage agents are
+    subgraphs, so this is also what says their reports reach the run's log."""
+
+    artifact_root = tmp_path / "prompted"
+    PipelineRunner(
+        artifact_presenter=_artifact_presenter_without_renders(),
+        sandbox_runner=_sandbox_runner(),
+        artifact_root=artifact_root,
+        renderer=_renderer(),
+        graph_factory=_graph_factory(
+            ScriptedChatModel(responses=(AIMessage(content="done"),)),
+            announce_turns=False,
+        ),
+    ).run_sample(_manifest_without_renders(tmp_path, "prompted"))
+
+    events = _events(artifact_root / "prompted")
+    prompts = [event["data"] for event in events if event["event"] == "prompt"]
+
+    # One per role, not one per model call: the report is what an agent was
+    # asked when it was asked, and a retry re-asks nothing new.
+    assert [prompt["role"] for prompt in prompts] == [
+        "semantic_hypothesizer",
+        "semantic_reviewer",
+        "operation_planner",
+        "operation_reviewer",
+        "coder",
+        "output_auditor",
+    ]
+
+    coder = next(prompt for prompt in prompts if prompt["role"] == "coder")
+    assert "/work/model.py" in coder["system"]
+    assert "expert CAD engineer" in coder["system"]
+    instruction = "\n".join(
+        str(block.get("text", ""))
+        for message in coder["messages"]
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if isinstance(block, Mapping) and block.get("type") == "text"
+    )
+    assert "Implement the current semantic hypothesis" in instruction
+    assert "/work/inputs/techdraw.dxf" in instruction
 
 
 def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:

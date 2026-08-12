@@ -7,21 +7,21 @@ side: one is the durable record of what happened, complete but only after the
 fact; the other is what the model is saying right now, and survives nowhere.
 
     RunEventTransformer      -> "run_events"      -> events.jsonl, console progress
-    AgentMessageTransformer  -> "agent_messages"  -> console token stream
+    AgentMessageTransformer  -> "agent_messages"  -> console model output
 
-Neither is scoped to a graph level: both see subgraphs.
+Neither is scoped to a graph level: both see subgraphs, and neither publishes
+an item whose consumption waits on an item that may never arrive.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from hashlib import sha256
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from langchain_core.messages import BaseMessage
 from langgraph.stream import ProtocolEvent, StreamChannel, StreamTransformer
-from langgraph.stream.transformers import MessagesTransformer
 from pydantic_core import to_jsonable_python
 
 
@@ -96,15 +96,32 @@ def _safe_value(value: Any) -> Any:
 
 
 class RunEventTransformer(StreamTransformer):
-    """Project graph activity into compact, stable research events."""
+    """Project graph activity into compact, stable research events.
+
+    A `sink` receives each event where it is produced, rather than where the
+    channel is drained.  The two are not the same moment: iterating a
+    `ChatModelStream` drives the shared graph pump, so a consumer that is part
+    way through one model's output can hold its turn for the rest of the run
+    while the graph keeps going.  The durable record cannot depend on that
+    consumer coming back.  The channel is still published, for consumers that
+    want the events in arrival order alongside other projections.
+    """
 
     CHANNEL = "run_events"
 
-    required_stream_modes = ("values", "tools", "updates", "tasks")
+    required_stream_modes = ("values", "tools", "updates", "tasks", "custom")
 
-    def __init__(self, scope: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        scope: tuple[str, ...] = (),
+        sink: Callable[[RunEvent], None] | None = None,
+    ) -> None:
         super().__init__(scope)
         self.events = StreamChannel[RunEvent]()
+        # The mux clones this transformer once per subgraph scope, and a root
+        # instance already sees every level, so only the root one feeds the
+        # sink. A clone would restate the whole run one nesting level at a time.
+        self._sink = sink if not scope else None
         self._input_written = False
         self._agent_roles: dict[tuple[tuple[str, ...], str], str] = {}
         self._tool_context: dict[
@@ -133,6 +150,21 @@ class RunEventTransformer(StreamTransformer):
                     },
                 )
                 self._input_written = True
+
+        elif method == "custom" and isinstance(data, Mapping) and "model_retry" in data:
+            self._push(
+                event,
+                "model_retry",
+                cast(dict[str, Any], _safe_value(data["model_retry"])),
+            )
+
+        elif method == "custom" and isinstance(data, Mapping) and "prompt" in data:
+            # Custom events reach every level's transformer and the built-in one
+            # drops what is not its own scope; this projection keeps the whole
+            # run, so an agent nested in a stage subgraph reports here too.
+            self._push(
+                event, "prompt", cast(dict[str, Any], _safe_value(data["prompt"]))
+            )
 
         elif method == "tasks" and isinstance(data, Mapping):
             namespace = tuple(event["params"]["namespace"])
@@ -251,18 +283,39 @@ class RunEventTransformer(StreamTransformer):
         event: str,
         data: dict[str, Any],
     ) -> None:
-        self.events.push(
-            RunEvent(
-                event=event,
-                timestamp_ms=source["params"]["timestamp"],
-                namespace=list(source["params"]["namespace"]),
-                data=data,
-            )
+        run_event = RunEvent(
+            event=event,
+            timestamp_ms=source["params"]["timestamp"],
+            namespace=list(source["params"]["namespace"]),
+            data=data,
         )
+        if self._sink is not None:
+            self._sink(run_event)
+        self.events.push(run_event)
 
 
-class AgentMessageTransformer(MessagesTransformer):
-    """Live model output from every graph level, not just the outermost one.
+class ModelStreamItem(TypedDict):
+    """One piece of live model output, in whichever shape it arrived.
+
+    A model that streams reports itself in parts, as protocol events; one that
+    does not reports a whole message at the end.  Exactly one of the two shapes
+    arrives per call, so `streamed` says which `payload` is, and no consumer
+    has to reconcile the two against each other.
+
+    `role` is the agent the call belongs to and `node` the node inside it, so a
+    run with six agents can say which one is speaking rather than reporting
+    every one of them as `model`.
+    """
+
+    role: str | None
+    node: str | None
+    run_id: str
+    streamed: bool
+    payload: dict[str, Any]
+
+
+class AgentMessageTransformer(StreamTransformer):
+    """Live model output from every graph level, as the pieces it arrives in.
 
     LangGraph's own `messages` projection keeps to the run's own scope, so once
     the agent loop became a subgraph its tokens stopped reaching the console --
@@ -270,26 +323,38 @@ class AgentMessageTransformer(MessagesTransformer):
     "consumers that need subgraph tokens should ... register a custom
     transformer".
 
-    Only the scope test changes.  Assembling deltas into a stream is left to
-    the base class, and the projection is published under its own key so the
-    built-in one stays where the rest of LangGraph expects it.
+    That projection also hands out one `ChatModelStream` per call, and reading
+    one means blocking until that call completes.  An attempt abandoned in
+    flight -- which is what a retry does -- leaves a stream that never
+    completes, and a consumer waiting on it reads nothing else for the rest of
+    the run.  Publishing the pieces instead keeps every item consumable the
+    moment it arrives, so an attempt nobody will ever finish costs its own
+    output and nothing after it.
     """
 
     CHANNEL = "agent_messages"
 
-    _native = False
+    required_stream_modes = ("messages",)
 
-    def init(self) -> dict[str, StreamChannel[Any]]:
-        return {self.CHANNEL: self._log}
+    def __init__(self, scope: tuple[str, ...] = ()) -> None:
+        super().__init__(scope)
+        self.events = StreamChannel[ModelStreamItem]()
+
+    def init(self) -> dict[str, StreamChannel[ModelStreamItem]]:
+        return {self.CHANNEL: self.events}
 
     def process(self, event: ProtocolEvent) -> bool:
-        if event["method"] == "messages":
-            # Pass it off as local. Copied rather than edited in place: the mux
-            # hands the same event to every transformer after this one.
-            event = ProtocolEvent(
-                **{
-                    **event,
-                    "params": {**event["params"], "namespace": self._scope_list},
-                }
+        if event["method"] != "messages":
+            return True
+        payload, metadata = event["params"]["data"]
+        streamed = isinstance(payload, Mapping) and "event" in payload
+        self.events.push(
+            ModelStreamItem(
+                role=metadata.get("lc_agent_name"),
+                node=metadata.get("langgraph_node"),
+                run_id=str(metadata.get("run_id", "")),
+                streamed=streamed,
+                payload=cast(dict[str, Any], _safe_value(payload)),
             )
-        return super().process(event)
+        )
+        return True

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -108,11 +109,13 @@ def _graph(
         "max_proposer_turns_per_revision": max_turns,
         "max_reviewer_turns_per_revision": max_turns,
         "announce_turns": options.get("announce_turns", False),
+        "model_retries": options.get("model_retries", 5),
         "checkpointer": False,
     }
     agent_options = {
         "max_turns": max_turns,
         "announce_turns": options.get("announce_turns", False),
+        "model_retries": options.get("model_retries", 5),
         "checkpointer": False,
     }
     max_revisions = overrides.pop("max_revisions", 2)
@@ -364,8 +367,14 @@ def test_an_agent_that_finished_without_its_typed_answer_stops_the_run() -> None
     coder = ScriptedChatModel(responses=())
 
     with SandboxWorkdir() as workdir:
-        graph = _graph(workdir, hypothesizer, reviewer, coder)
-        with pytest.raises(Exception, match="Proposal"):
+        graph = _graph(
+            workdir,
+            hypothesizer,
+            reviewer,
+            coder,
+            agent_options={"model_retries": 0},
+        )
+        with pytest.raises(StructuredOutputValidationError, match="Proposal"):
             graph.invoke({})
 
     assert coder.received_messages == []

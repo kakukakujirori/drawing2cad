@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
@@ -242,6 +243,38 @@ def test_a_skipped_sample_is_neither_recorded_nor_scored(
     run_pipeline.main.__wrapped__(config)
 
     assert called == []
+
+
+def test_a_run_that_raised_is_still_described_and_scored(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """What it produced before it raised is a result, not a hole.
+
+    A sweep that leaves no `score.json` behind for a crashed sample cannot say
+    afterwards whether the sample was hard or the pipeline broke.
+    """
+    called: list[str] = []
+
+    def _raise(config) -> None:
+        del config
+        raise RuntimeError("stream finished without producing a message")
+
+    monkeypatch.setattr(run_pipeline, "run", _raise)
+    monkeypatch.setattr(
+        run_pipeline, "record_run", lambda *args: called.append("record")
+    )
+    monkeypatch.setattr(run_pipeline, "score", lambda config: called.append("score"))
+
+    dxf_path = tmp_path / "input.dxf"
+    dxf_path.write_text("DXF_FIXTURE", encoding="utf-8")
+    config = _config(tmp_path, dxf_path)
+    config.sample.target_step_path = str(tmp_path / "target.step")
+    (Path(config.artifact_root) / config.sample.sample_id).mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="stream finished"):
+        run_pipeline.main.__wrapped__(config)
+
+    assert called == ["record", "score"]
 
 
 def test_a_run_is_recorded_before_it_is_scored(tmp_path: Path, monkeypatch) -> None:

@@ -3,17 +3,44 @@ from __future__ import annotations
 import json
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from rich.console import Console
 from rich.pretty import Pretty
 from rich.text import Text
 
-from zeroshot.pipeline.event_logging.projections import RunEvent, _safe_value
+from zeroshot.pipeline.event_logging.projections import (
+    ModelStreamItem,
+    RunEvent,
+    _safe_value,
+)
 
-if TYPE_CHECKING:
-    from langchain_core.language_models.chat_model_stream import ChatModelStream
+
+def _speaker(role: str | None, node: str | None) -> str:
+    """Who this output belongs to.
+
+    The role first: a run drives six agents through the same `model` node, and
+    which of them is speaking is the thing worth reading. The node is added
+    when it is not that call itself, so a message some middleware injected is
+    attributed to what injected it rather than to the agent it landed in.
+    """
+    speaker = role or node or "unknown"
+    if node and node != "model":
+        return f"{speaker} · {node}"
+    return speaker
+
+
+@dataclass
+class _ModelSection:
+    """What rendering one model's output carries between its pieces."""
+
+    speaker: str
+    opened: bool = False
+    active_block: str | None = None
+    emitted_delta_indexes: set[int] = field(default_factory=set)
+    tool_args_by_index: dict[int, str] = field(default_factory=dict)
 
 
 class ConsoleReporter:
@@ -21,6 +48,10 @@ class ConsoleReporter:
 
     def __init__(self, console: Console | None = None) -> None:
         self.console = console or Console(stderr=True, highlight=False)
+        # One per model call in flight, keyed by the run the pieces belong to.
+        # An abandoned attempt leaves its entry behind unopened, which costs a
+        # dict slot and nothing else.
+        self._model_sections: dict[str, _ModelSection] = {}
 
     @contextmanager
     def run_context(
@@ -55,13 +86,7 @@ class ConsoleReporter:
 
         if name == "input":
             self.console.print("\n[input]", style="bold cyan", markup=False)
-            for message in data.get("messages", []):
-                if not isinstance(message, Mapping):
-                    self._render_value(message)
-                    continue
-                role = message.get("type", "message")
-                self.console.print(f"{role}:", style="cyan", markup=False)
-                self._render_value(message.get("content"))
+            self._render_messages(data.get("messages", []))
         elif name == "node_started":
             node = data.get("node", "unknown")
             suffix = " — waiting" if node == "model" else ""
@@ -107,6 +132,28 @@ class ConsoleReporter:
             self._render_value(
                 {key: value for key, value in data.items() if key != "tool_name"}
             )
+        elif name == "prompt":
+            self.console.print(
+                f"\n[prompt] {data.get('role', 'unknown')}",
+                style="bold cyan",
+                markup=False,
+            )
+            # Empty on a re-entry: the role's prompt was stated on the first ask
+            # and has not changed since.
+            if system := data.get("system"):
+                self.console.print("system:", style="cyan", markup=False)
+                self._render_value(system)
+            self._render_messages(data.get("messages", []))
+        elif name == "model_retry":
+            outcome = "retrying" if data.get("retrying") else "giving up"
+            self.console.print(
+                f"\n[retry] {data.get('role', 'unknown')} "
+                f"attempt {data.get('attempt')}/{data.get('max_attempts')} "
+                f"failed with {data.get('error_type')} — {outcome}",
+                style="bold red",
+                markup=False,
+            )
+            self._render_value(data.get("error"))
         elif name == "verification":
             self.console.print(
                 "\n[verification]",
@@ -126,126 +173,163 @@ class ConsoleReporter:
         else:
             self._render_unhandled("event", name, data)
 
-    def render_message(self, message: ChatModelStream) -> None:
+    def render_model_item(self, item: ModelStreamItem) -> None:
+        """Render one piece of model output as it arrives.
+
+        Each piece is rendered on its own and the section it belongs to keeps
+        what carries between them, so nothing here waits on a piece that may
+        never come.  A call whose attempt was abandoned mid-flight simply stops
+        contributing, and the next call renders normally.
+        """
+        if not item["streamed"]:
+            self._render_whole_message(item)
+            return
+
+        run_id = item["run_id"]
+        event = item["payload"]
+        event_type = event.get("event")
+        speaker = _speaker(item["role"], item["node"])
+        if event_type == "message-start":
+            self._model_sections[run_id] = _ModelSection(speaker=speaker)
+            return
+
+        section = self._model_sections.setdefault(
+            run_id, _ModelSection(speaker=speaker)
+        )
+        index = event.get("index")
+
+        if event_type == "content-block-delta":
+            delta = event.get("delta")
+            if not isinstance(delta, Mapping):
+                self._render_unhandled("model delta", "invalid payload", delta)
+                return
+            delta_type = delta.get("type")
+            if delta_type == "text-delta":
+                self._open(section)
+                section.active_block = self._render_delta(
+                    "text", str(delta.get("text", "")), section.active_block
+                )
+                if isinstance(index, int):
+                    section.emitted_delta_indexes.add(index)
+            elif delta_type == "reasoning-delta":
+                self._open(section)
+                section.active_block = self._render_delta(
+                    "reasoning", str(delta.get("reasoning", "")), section.active_block
+                )
+                if isinstance(index, int):
+                    section.emitted_delta_indexes.add(index)
+            elif delta_type == "block-delta" and isinstance(index, int):
+                fields = delta.get("fields")
+                if (
+                    isinstance(fields, Mapping)
+                    and fields.get("type") == "tool_call_chunk"
+                ):
+                    self._open(section)
+                    section.active_block = self._render_tool_call_delta(
+                        fields, index, section.tool_args_by_index, section.active_block
+                    )
+                else:
+                    self._render_unhandled(
+                        "model delta", str(delta_type or "unknown"), delta
+                    )
+            else:
+                self._render_unhandled(
+                    "model delta", str(delta_type or "unknown"), delta
+                )
+
+        elif event_type == "content-block-finish":
+            content = event.get("content")
+            if not isinstance(content, Mapping):
+                self._render_unhandled("model content", "invalid payload", content)
+                return
+            content_type = content.get("type")
+            if content_type == "tool_call":
+                self._open(section)
+                if isinstance(index, int) and index in section.tool_args_by_index:
+                    self.console.print()
+                    section.active_block = None
+                else:
+                    if section.active_block is not None:
+                        self.console.print()
+                    section.active_block = None
+                    self.console.print(
+                        f"tool call: {content.get('name', 'unknown')}",
+                        style="bold magenta",
+                        markup=False,
+                    )
+                    self._render_value(content.get("args"))
+            elif content_type in {"text", "reasoning"}:
+                if (
+                    not isinstance(index, int)
+                    or index not in section.emitted_delta_indexes
+                ):
+                    self._open(section)
+                    if content_type == "text":
+                        section.active_block = self._render_delta(
+                            "text", str(content.get("text", "")), section.active_block
+                        )
+                    else:
+                        section.active_block = self._render_delta(
+                            "reasoning",
+                            str(content.get("reasoning", "")),
+                            section.active_block,
+                        )
+            else:
+                self._render_unhandled(
+                    "model content", str(content_type or "unknown"), content
+                )
+
+        elif event_type == "message-finish":
+            section = self._model_sections.pop(run_id, section)
+            if section.active_block is not None:
+                self.console.print()
+            usage = event.get("usage")
+            if usage and section.opened:
+                self.console.print("usage:", style="dim", markup=False)
+                self._render_value(usage)
+
+        elif event_type != "content-block-start":
+            self._render_unhandled("model event", str(event_type or "unknown"), event)
+
+    def _render_whole_message(self, item: ModelStreamItem) -> None:
+        """Render a message that arrived complete rather than in parts."""
+        message = item["payload"]
         self.console.print(
-            f"\n[model] {message.node or 'unknown'}",
+            f"\n[model] {_speaker(item['role'], item['node'])}",
             style="bold green",
             markup=False,
         )
-        active_block: str | None = None
-        emitted_delta_indexes: set[int] = set()
-        tool_args_by_index: dict[int, str] = {}
-
-        for event in message:
-            event_type = event.get("event")
-            index = event.get("index")
-            if event_type == "content-block-delta":
-                delta = event.get("delta")
-                if not isinstance(delta, Mapping):
-                    self._render_unhandled("model delta", "invalid payload", delta)
-                    continue
-                delta_type = delta.get("type")
-                if delta_type == "text-delta":
-                    active_block = self._render_delta(
-                        "text",
-                        str(delta.get("text", "")),
-                        active_block,
-                    )
-                    if isinstance(index, int):
-                        emitted_delta_indexes.add(index)
-                elif delta_type == "reasoning-delta":
-                    active_block = self._render_delta(
-                        "reasoning",
-                        str(delta.get("reasoning", "")),
-                        active_block,
-                    )
-                    if isinstance(index, int):
-                        emitted_delta_indexes.add(index)
-                elif delta_type == "block-delta" and isinstance(index, int):
-                    fields = delta.get("fields")
-                    if (
-                        isinstance(fields, Mapping)
-                        and fields.get("type") == "tool_call_chunk"
-                    ):
-                        active_block = self._render_tool_call_delta(
-                            fields,
-                            index,
-                            tool_args_by_index,
-                            active_block,
-                        )
-                    else:
-                        self._render_unhandled(
-                            "model delta",
-                            str(delta_type or "unknown"),
-                            delta,
-                        )
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, Mapping) and block.get("type") == "text":
+                    self._render_delta("text", str(block.get("text", "")), None)
+                    self.console.print()
                 else:
-                    self._render_unhandled(
-                        "model delta",
-                        str(delta_type or "unknown"),
-                        delta,
-                    )
-            elif event_type == "content-block-finish":
-                content = event.get("content")
-                if not isinstance(content, Mapping):
-                    self._render_unhandled(
-                        "model content",
-                        "invalid payload",
-                        content,
-                    )
-                    continue
-                content_type = content.get("type")
-                if content_type == "tool_call":
-                    if isinstance(index, int) and index in tool_args_by_index:
-                        self.console.print()
-                        active_block = None
-                    else:
-                        if active_block is not None:
-                            self.console.print()
-                        active_block = None
-                        self.console.print(
-                            f"tool call: {content.get('name', 'unknown')}",
-                            style="bold magenta",
-                            markup=False,
-                        )
-                        self._render_value(content.get("args"))
-                elif content_type in {"text", "reasoning"}:
-                    if not isinstance(index, int) or index not in emitted_delta_indexes:
-                        if content_type == "text":
-                            active_block = self._render_delta(
-                                "text",
-                                str(content.get("text", "")),
-                                active_block,
-                            )
-                        else:
-                            active_block = self._render_delta(
-                                "reasoning",
-                                str(content.get("reasoning", "")),
-                                active_block,
-                            )
-                else:
-                    self._render_unhandled(
-                        "model content",
-                        str(content_type or "unknown"),
-                        content,
-                    )
-            elif event_type not in {
-                "message-start",
-                "content-block-start",
-                "message-finish",
-            }:
-                self._render_unhandled(
-                    "model event",
-                    str(event_type or "unknown"),
-                    event,
-                )
+                    self._render_value(block)
+        else:
+            self._render_value(content)
+        for call in message.get("tool_calls") or []:
+            if not isinstance(call, Mapping):
+                continue
+            self.console.print(
+                f"tool call: {call.get('name', 'unknown')}",
+                style="bold magenta",
+                markup=False,
+            )
+            self._render_value(call.get("args"))
 
-        if active_block is not None:
-            self.console.print()
-        usage = message.output.usage_metadata
-        if usage:
-            self.console.print("usage:", style="dim", markup=False)
-            self._render_value(usage)
+    def _open(self, section: _ModelSection) -> None:
+        """Announce the section on its first piece of content.
+
+        Deferred so an attempt that never produces any leaves no trace at all.
+        """
+        if section.opened:
+            return
+        section.opened = True
+        self.console.print(
+            f"\n[model] {section.speaker}", style="bold green", markup=False
+        )
 
     def _render_delta(
         self,
@@ -326,6 +410,33 @@ class ConsoleReporter:
                 "render_error": f"{type(error).__name__}: {error}",
             }
         self._render_value(safe_value)
+
+    def _render_messages(self, messages: Any) -> None:
+        """Render a transcript the way an input and a prompt both want it.
+
+        A block that is not text is named rather than printed: reasoning is
+        already on the console from the live stream, and encrypted or encoded
+        content says nothing at all when spelled out.
+        """
+        for message in messages if isinstance(messages, list) else []:
+            if not isinstance(message, Mapping):
+                self._render_value(message)
+                continue
+            role = message.get("type", "message")
+            self.console.print(f"{role}:", style="cyan", markup=False)
+            content = message.get("content")
+            if not isinstance(content, list):
+                self._render_value(content)
+                continue
+            for block in content:
+                if not isinstance(block, Mapping):
+                    self._render_value(block)
+                elif block.get("type") == "text":
+                    self._render_value(block.get("text", ""))
+                else:
+                    self.console.print(
+                        f"[{block.get('type', 'block')}]", style="dim", markup=False
+                    )
 
     def _render_value(self, value: Any) -> None:
         if isinstance(value, str):

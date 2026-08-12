@@ -21,6 +21,7 @@ from zeroshot.pipeline.messages import system_prompt_text
 from zeroshot.pipeline.tools import ToolFeedbackError
 from zeroshot.pipeline.workflow.middleware import (
     ModelCallRetryMiddleware,
+    PromptLogMiddleware,
     StopReason,
     TurnBudgetMiddleware,
 )
@@ -87,7 +88,11 @@ def create_agent(
         Sequence[AgentMiddleware[AgentState, None, Any]],
         [
             ToolErrorMiddleware(on_error=_handle_tool_error),
-            ModelCallRetryMiddleware(max_retries=model_retries),
+            # Ahead of the retry so a prompt is reported once per model node
+            # rather than once per attempt: the first handler in this list is
+            # the outermost layer around the model call.
+            PromptLogMiddleware(role),
+            ModelCallRetryMiddleware(max_retries=model_retries, role=role),
             TurnBudgetMiddleware(
                 max_turns,
                 announce_turns=announce_turns,
@@ -95,6 +100,9 @@ def create_agent(
             ),
         ],
     )
+
+    # Inform max_turns
+    prompt_context = {"max_turns": str(max_turns), **prompt_context}
 
     agent = _create_agent(
         model=model,

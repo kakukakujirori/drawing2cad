@@ -1,7 +1,6 @@
 import json
 from io import StringIO
 
-from langchain_core.language_models.chat_model_stream import ChatModelStream
 from rich.console import Console
 
 from zeroshot.pipeline.event_logging import ConsoleReporter
@@ -42,6 +41,83 @@ def test_a_failed_tool_reports_why_and_which_call_it_was() -> None:
     assert "UNKNOWN_TOOL_ERROR_FIELD" in rendered
 
 
+def test_an_abandoned_attempt_costs_only_its_own_output() -> None:
+    """A retried call leaves the attempt it gave up on unfinished forever.
+
+    Nothing may wait on it: the console used to hold a cursor open on such a
+    stream and print nothing further for the rest of the run, then fail asking
+    it for a message it never produced.
+    """
+    output = StringIO()
+    reporter = ConsoleReporter(
+        Console(file=output, color_system=None, force_terminal=False, highlight=False)
+    )
+
+    # The attempt that was dropped: it announced itself and said nothing more.
+    reporter.render_model_item(
+        {
+            "role": "semantic_hypothesizer",
+            "node": "model",
+            "run_id": "abandoned",
+            "streamed": True,
+            "payload": {"event": "message-start", "role": "assistant"},
+        }
+    )
+    for payload in (
+        {"event": "message-start", "role": "assistant"},
+        {
+            "event": "content-block-delta",
+            "index": 0,
+            "delta": {"type": "text-delta", "text": "SURVIVED"},
+        },
+        {"event": "message-finish", "usage": None},
+    ):
+        reporter.render_model_item(
+            {
+                "role": "semantic_hypothesizer",
+                "node": "model",
+                "run_id": "retried",
+                "streamed": True,
+                "payload": payload,
+            }
+        )
+
+    rendered = output.getvalue()
+    assert "SURVIVED" in rendered
+    # The attempt that produced nothing announced nothing either.
+    assert rendered.count("[model]") == 1
+
+
+def test_a_model_that_does_not_stream_is_rendered_whole() -> None:
+    """Only a streaming model reports itself in parts; the other kind arrives
+    as one finished message, and both are this projection's to show."""
+    output = StringIO()
+    reporter = ConsoleReporter(
+        Console(file=output, color_system=None, force_terminal=False, highlight=False)
+    )
+
+    reporter.render_model_item(
+        {
+            "role": "coder",
+            "node": "model",
+            "run_id": "whole",
+            "streamed": False,
+            "payload": {
+                "type": "ai",
+                "content": [{"type": "text", "text": "WHOLE_ANSWER"}],
+                "tool_calls": [
+                    {"name": "run_shell", "args": {"command": "WHOLE_COMMAND"}}
+                ],
+            },
+        }
+    )
+
+    rendered = output.getvalue()
+    assert "WHOLE_ANSWER" in rendered
+    assert "tool call: run_shell" in rendered
+    assert "WHOLE_COMMAND" in rendered
+
+
 def test_console_reporter_renders_full_prompt_model_stream_and_tool_output() -> None:
     output = StringIO()
     reporter = ConsoleReporter(
@@ -60,8 +136,7 @@ def test_console_reporter_renders_full_prompt_model_stream_and_tool_output() -> 
     stdout = "STDOUT_BEGIN\n" + "o" * 500 + "\nSTDOUT_END"
     secret = "DO_NOT_PRINT"
 
-    message = ChatModelStream(node="agent", message_id="message-1")
-    for event in (
+    model_events = (
         {"event": "message-start", "id": "message-1", "role": "assistant"},
         {
             "event": "content-block-delta",
@@ -135,8 +210,7 @@ def test_console_reporter_renders_full_prompt_model_stream_and_tool_output() -> 
             "payload": "UNKNOWN_MODEL_EVENT",
         },
         {"event": "message-finish", "usage": None, "metadata": {}},
-    ):
-        message.dispatch(event)
+    )
 
     with reporter.run_context(run_id="sample-1:run-1", sample_id="sample-1"):
         reporter.render_event(
@@ -151,7 +225,16 @@ def test_console_reporter_renders_full_prompt_model_stream_and_tool_output() -> 
                 },
             }
         )
-        reporter.render_message(message)
+        for model_event in model_events:
+            reporter.render_model_item(
+                {
+                    "role": "agent",
+                    "node": "model",
+                    "run_id": "run-1",
+                    "streamed": True,
+                    "payload": model_event,
+                }
+            )
         reporter.render_event(
             {
                 "event": "message",
