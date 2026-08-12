@@ -14,6 +14,7 @@ Guidelines & Tips:
 - Front, Top, Right are separately available by specifying the corresponding DXF layers.
 - Identify primary base geometry first, followed by major additive/subtractive features, then local details (fillets, chamfers, threads, hole specifications).
 - If previous feedback from a review step is present in the transcript, carefully address all points raised in the feedback.
+- Give your answer within $max_turns turns. Turns increment by using tools.
 
 Final Response Format:
 When your analysis is complete and you are ready to submit your hypothesis, stop calling tools and answer with a JSON object matching this schema:

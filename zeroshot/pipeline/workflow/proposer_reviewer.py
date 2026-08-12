@@ -88,8 +88,8 @@ def create_proposer_reviewer_loop(
     checkpointer: Checkpointer = False,
 ):
     """Build a proposer-reviewer loop that stops on acceptance or its limits."""
-    if max_revisions <= 0:
-        raise ValueError(f"{max_revisions=} must be positive")
+    if max_revisions < 0:
+        raise ValueError(f"{max_revisions=} must be non-negative")
 
     # TODO: IMPLEMENT
     if announce_revisions:
@@ -133,7 +133,7 @@ def create_proposer_reviewer_loop(
         # sanity check
         if (
             not reset_revision_count_when_reentrant
-            and state.get("revision_count", 0) >= max_revisions
+            and state.get("revision_count", 0) >= max_revisions > 0
         ):
             raise ValueError(f"Revision count reached max revisions: {max_revisions}")
 
@@ -193,7 +193,7 @@ def create_proposer_reviewer_loop(
         )
 
         update = {
-            "proposal": result.get("structured_response"),
+            "proposal": result.get("structured_response") or state.get("proposal"),
             "proposer_state": result,
             "review": None,  # since it was used above
         }
@@ -215,6 +215,9 @@ def create_proposer_reviewer_loop(
     ) -> Literal["review", "propose", "__end__"]:
         """Decide whether to review or regenerate."""
         if state.get("proposal"):
+            # A stage given no review budget answers with its first proposal.
+            if state.get("revision_count", 0) >= max_revisions:
+                return "__end__"
             return "review"
         elif proposer_state := state.get("proposer_state"):
             if proposer_state.get("stop_reason") == StopReason.BUDGET_EXHAUSTED:

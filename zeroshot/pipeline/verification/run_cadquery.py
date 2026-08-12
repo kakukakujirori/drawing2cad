@@ -165,8 +165,12 @@ except Exception as e:
         )
 
     @staticmethod
-    def validate_source(source: str, filename: str = "model.py") -> None:
-        """Reject invalid Python and references to an input DXF file."""
+    def validate_source(
+        source: str,
+        filename: str = "model.py",
+        forbid_try_except: bool = True,
+    ) -> None:
+        """Reject invalid Python, references to an input DXF file, and caught exceptions."""
         ast_tree = ast.parse(source, filename=filename, mode="exec")
         for ast_node in ast.walk(ast_tree):
             if (
@@ -177,6 +181,15 @@ except Exception as e:
                 raise ValueError(
                     "DXF file reading is not allowed. "
                     f"Modify '{filename}' to be self-contained."
+                )
+
+            if (
+                forbid_try_except
+                and isinstance(ast_node, ast.Try | ast.TryStar)
+                and ast_node.handlers
+            ):
+                raise ValueError(
+                    f"Try-except is not allowed ('{filename}' line {ast_node.lineno})"
                 )
 
     @staticmethod

@@ -20,12 +20,12 @@ workflow:
     reviewer_role: semantic_reviewer
     reviewer_model: ${model}
     response_format_strategy: provider
-    max_proposer_turns_per_revision: 30
-    max_reviewer_turns_per_revision: 30
+    max_proposer_turns_per_revision: 10
+    max_reviewer_turns_per_revision: 10
     announce_turns: true
-    reset_proposer_turns_per_revision: false
+    reset_proposer_turns_per_revision: true
     reset_reviewer_turns_per_revision: true
-    max_revisions: 10
+    max_revisions: 0  # Audit after coding is more informative
     announce_revisions: false
     reset_revision_count_when_reentrant: true
     # Sole retry owner; model SDK configs keep max_retries at 0.
@@ -41,12 +41,12 @@ workflow:
     reviewer_role: operation_reviewer
     reviewer_model: ${model}
     response_format_strategy: provider
-    max_proposer_turns_per_revision: 30
-    max_reviewer_turns_per_revision: 30
+    max_proposer_turns_per_revision: 10
+    max_reviewer_turns_per_revision: 10
     announce_turns: true
-    reset_proposer_turns_per_revision: false
+    reset_proposer_turns_per_revision: true
     reset_reviewer_turns_per_revision: true
-    max_revisions: 10
+    max_revisions: 0  # Audit after coding is more informative
     announce_revisions: false
     reset_revision_count_when_reentrant: true
     model_retries: 5
@@ -59,7 +59,7 @@ workflow:
     model: ${model}
 
     response_format_strategy: provider
-    max_turns: 30
+    max_turns: 10
     announce_turns: true
     reset_turns_when_reentrant: true
     model_retries: 5
@@ -82,4 +82,4 @@ workflow:
   # send-back re-runs everything downstream of its target, so this bounds the
   # whole graph's cycle. `max_revisions` above cannot: that counts rounds
   # inside one stage.
-  max_audit_reject_count: 3
+  max_audit_reject_count: 6

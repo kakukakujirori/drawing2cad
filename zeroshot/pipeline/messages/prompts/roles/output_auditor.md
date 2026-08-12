@@ -34,3 +34,4 @@ Requirements:
 - When revision is required, `rationale` must identify the concrete mismatch, explain why it belongs to the selected stage, and state what that stage must change.
 - When accepting, `rationale` must summarize the evidence that the verified solid matches the drawing.
 - Output only the raw JSON object in the final turn.
+- Give your answer within $max_turns turns. Turns increment by using tools.

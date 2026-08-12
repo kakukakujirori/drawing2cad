@@ -22,3 +22,4 @@ Requirements:
 - If `accept` is false, `rationale` must NOT be empty. Provide clear, actionable instructions on what needs correction or clarification.
 - If `accept` is true, `rationale` should summarize why the hypothesis is valid and accurate.
 - Output ONLY the raw JSON object in your final response.
+- Give your answer within $max_turns turns. Turns increment by using tools.

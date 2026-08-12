@@ -13,6 +13,7 @@ from langchain.agents.middleware import (
     ModelResponse,
     hook_config,
 )
+from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 from openai import APIConnectionError, APIError, APIStatusError, LengthFinishReasonError
@@ -136,7 +137,9 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         self.max_retries = max_retries
 
     @staticmethod
-    def _retry_request(request: ModelRequest[None]) -> ModelRequest[None]:
+    def _retry_length_limited_request(
+        request: ModelRequest[None],
+    ) -> ModelRequest[None]:
         return request.override(
             messages=[
                 *request.messages,
@@ -147,6 +150,28 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                         "that matches the required schema, with no explanation, "
                         "analysis, or Markdown outside it. Keep every string value "
                         "short enough to complete the entire JSON object."
+                    )
+                ),
+            ]
+        )
+
+    @staticmethod
+    def _retry_invalid_structured_output_request(
+        request: ModelRequest[None],
+        error: StructuredOutputValidationError,
+    ) -> ModelRequest[None]:
+        failed_response = [error.ai_message] if error.ai_message.text.strip() else []
+        return request.override(
+            messages=[
+                *request.messages,
+                *failed_response,
+                HumanMessage(
+                    content=(
+                        f"Your previous response could not be parsed as the required "
+                        f"{error.tool_name} structured output. Validation error: "
+                        f"{error.source} Do not call tools. Return only corrected "
+                        "raw JSON that matches the required schema, with no "
+                        "explanation or Markdown outside it."
                     )
                 ),
             ]
@@ -172,7 +197,14 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             except LengthFinishReasonError:
                 if attempt >= self.max_retries:
                     raise
-                current_request = self._retry_request(current_request)
+                current_request = self._retry_length_limited_request(current_request)
+            except StructuredOutputValidationError as error:
+                if attempt >= self.max_retries:
+                    raise
+                current_request = self._retry_invalid_structured_output_request(
+                    current_request,
+                    error,
+                )
             except Exception as error:
                 if not _is_retryable_model_error(error) or attempt >= self.max_retries:
                     raise
@@ -192,7 +224,14 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             except LengthFinishReasonError:
                 if attempt >= self.max_retries:
                     raise
-                current_request = self._retry_request(current_request)
+                current_request = self._retry_length_limited_request(current_request)
+            except StructuredOutputValidationError as error:
+                if attempt >= self.max_retries:
+                    raise
+                current_request = self._retry_invalid_structured_output_request(
+                    current_request,
+                    error,
+                )
             except Exception as error:
                 if not _is_retryable_model_error(error) or attempt >= self.max_retries:
                     raise

@@ -4,10 +4,10 @@ The audit that initiated the upstream revision reported:
 
 $rationale
 
-Current semantic hypothesis:
+Revised semantic hypothesis:
 
 $semantic_hypothesis
 
-Current operation plan:
+Revised operation plan:
 
 $operation_plan
