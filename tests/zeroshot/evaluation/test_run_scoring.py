@@ -1,9 +1,11 @@
 import pickle
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from zeroshot.evaluation import run_scoring
+from zeroshot.evaluation import align_orientation, run_scoring
+from zeroshot.evaluation.metrics import score_eccv
 from zeroshot.evaluation.run_scoring import (
     ScoreStatus,
     StepScorer,
@@ -74,7 +76,8 @@ def test_a_missing_target_raises(tmp_path: Path, solids: dict[str, Path]) -> Non
 def test_a_malformed_prediction_fails(solids: dict[str, Path], junk_step: Path) -> None:
     report = StepScorer().score(junk_step, solids["box"])
     assert report.status is ScoreStatus.FAILED
-    assert set(report.errors) == {"eccv", "voxel"}
+    # Alignment reads the same unreadable file, and says so under its own key.
+    assert set(report.errors) == {"align", "eccv", "voxel"}
     assert report.metrics == {}
 
 
@@ -94,7 +97,55 @@ def test_one_failing_family_keeps_the_others(
     columns, errors = StepScorer()._run_families(solids["box"], solids["box"])
 
     assert set(errors) == {"eccv"}
-    assert columns and all(column.startswith("voxel_") for column in columns)
+    metric_columns = {c for c in columns if not c.startswith("align_")}
+    assert metric_columns and all(c.startswith("voxel_") for c in metric_columns)
+
+
+def test_alignment_that_fails_still_leaves_a_score(
+    monkeypatch: pytest.MonkeyPatch, solids: dict[str, Path]
+) -> None:
+    """The pose is a correction, not a precondition.
+
+    A solid that cannot be re-posed is still a solid, and reporting nothing for
+    it would lose a measurement the families were able to take.
+    """
+
+    def boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(align_orientation, "align_step", boom)
+    columns, errors = StepScorer()._run_families(solids["box"], solids["box"])
+
+    assert set(errors) == {"align"}
+    assert columns["voxel_iou"] == 1.0
+    assert "align_rotation_index" not in columns
+
+
+def test_a_prediction_in_a_different_pose_is_scored_where_it_belongs(
+    tmp_path: Path, solids: dict[str, Path]
+) -> None:
+    """Every family is orientation-sensitive, so alignment precedes all of them.
+
+    A reconstruction that is right about the wrong axis used to score near
+    zero, which is a statement about the modeller's axis convention rather
+    than about the part.
+    """
+
+    quarter_turn_about_x = np.array(
+        [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]]
+    )
+    rotated = tmp_path / "rotated.step"
+    align_orientation.write_rotated_step(
+        solids["fillet"], rotated, quarter_turn_about_x
+    )
+
+    scored = StepScorer().score(rotated, solids["fillet"])
+    # The families do not align; that the scorer does is what this asserts.
+    unaligned = score_eccv(rotated, solids["fillet"])
+
+    assert scored.metrics["eccv_mean_f1"] > 0.99
+    assert scored.metrics["voxel_iou"] > 0.99
+    assert unaligned["eccv_mean_f1"] < scored.metrics["eccv_mean_f1"]
 
 
 def test_the_scorer_survives_the_spawn_boundary() -> None:

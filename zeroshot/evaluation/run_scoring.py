@@ -23,6 +23,7 @@ from enum import Enum
 from functools import partial
 from multiprocessing.connection import Connection
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from zeroshot.evaluation.metrics import score_eccv, score_voxel
 
@@ -120,12 +121,48 @@ class StepScorer:
 
         columns: dict[str, float | int] = {}
         errors: dict[str, str] = {}
-        for name, call in self.families().items():
+        with TemporaryDirectory() as scratch:
+            # Every family measures the aligned solid, because every one of
+            # them is orientation-sensitive: the voxel IoU of a correct part in
+            # the wrong pose is as wrong as its F1.  There is no setting for
+            # skipping this, because a number measured against a solid in the
+            # wrong pose describes neither the part nor the leaderboard.
             try:
-                columns.update(call(pred_step, gt_step))
-            except Exception as error:  # noqa: BLE001
-                errors[name] = _error_text(error)
+                pred_step = self._aligned(pred_step, gt_step, Path(scratch), columns)
+            except Exception as error:  # noqa: BLE001 - an unaligned score beats none
+                errors["align"] = _error_text(error)
+            for name, call in self.families().items():
+                try:
+                    columns.update(call(pred_step, gt_step))
+                except Exception as error:  # noqa: BLE001
+                    errors[name] = _error_text(error)
         return columns, errors
+
+    def _aligned(
+        self,
+        pred_step: Path,
+        gt_step: Path,
+        scratch: Path,
+        columns: dict[str, float | int],
+    ) -> Path:
+        """Rotate the prediction into the target's pose, recording which pose.
+
+        Imported here rather than at module scope for the same reason as
+        `latest_verified_step`: every `spawn` scoring child re-imports this
+        module, and only the one that scores needs CadQuery.
+        """
+
+        from zeroshot.evaluation.align_orientation import align_step
+
+        output = scratch / "aligned.step"
+        alignment = align_step(pred_step, gt_step, output, seed=self.seed)
+        columns["align_rotation_index"] = alignment.rotation_index
+        columns["align_chamfer"] = alignment.chamfer
+        # Above one, this sample's pose was a draw between orientations the
+        # surfaces cannot tell apart, and the columns that depend on pose are
+        # worth no more than the draw.
+        columns["align_tied"] = alignment.tied
+        return output
 
     def score(self, pred_step: Path, gt_step: Path) -> ScoreReport:
         """Score one prediction while supervising native-code hangs.
@@ -291,7 +328,7 @@ def main() -> None:
     parser.add_argument(
         "--last-only",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
             "score only the run's final attempt, which is what it submitted. "
             "--no-last-only falls back to the last attempt that produced a "
