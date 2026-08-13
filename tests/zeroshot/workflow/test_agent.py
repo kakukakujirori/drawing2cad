@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -12,6 +13,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_core.messages.content import ContentBlock, create_text_block
 from langchain_core.outputs import ChatResult
 from langchain_core.tools import BaseTool, tool
 from openai import (
@@ -28,6 +30,7 @@ from zeroshot.pipeline.messages import PromptTemplate
 from zeroshot.pipeline.tools import ToolFeedbackError
 from zeroshot.pipeline.workflow import Proposal, StopReason
 from zeroshot.pipeline.workflow.agent import create_agent
+from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
 PROMPT_CONTEXT = {
     "output_path": "/work/model.py",
@@ -773,3 +776,154 @@ def test_agent_forwards_a_correctable_tool_error_as_feedback() -> None:
     assert len(tool_messages) == 1
     assert tool_messages[0].status == "error"
     assert tool_messages[0].text == "that is not an image"
+
+
+class _CountingVerifier:
+    """A verifier that records when it was asked, and for what."""
+
+    def __init__(self, source_path: Path) -> None:
+        self.source_path = source_path
+        self.seen: list[str] = []
+
+    def feedback(self) -> list[ContentBlock]:
+        self.seen.append(self.source_path.read_text(encoding="utf-8"))
+        return [create_text_block(f"[verified] build {len(self.seen)}")]
+
+
+def _writing_tool(path: Path) -> BaseTool:
+    @tool("write")
+    def write(text: str) -> str:
+        """Write `text` to the watched file."""
+        path.write_text(text, encoding="utf-8")
+        return "written"
+
+    return write
+
+
+def _verifying_agent(
+    model: ScriptedChatModel, path: Path, **agent_options: Any
+) -> tuple[Any, _CountingVerifier]:
+    verifier = _CountingVerifier(path)
+    graph = _subgraph(
+        model,
+        tools=(_writing_tool(path), echo),
+        extra_middleware=[VerifyOnWriteMiddleware(verifier)],
+        **agent_options,
+    )
+    return graph, verifier
+
+
+def test_a_turn_that_rewrote_the_program_is_told_what_it_built(
+    tmp_path: Path,
+) -> None:
+    """The agent never asks: writing the file is the whole request."""
+    path = tmp_path / "model.py"
+    graph, verifier = _verifying_agent(
+        ScriptedChatModel(
+            responses=(
+                tool_call("write", {"text": "result = 1"}, "call-1"),
+                AIMessage(content="done"),
+            )
+        ),
+        path,
+        announce_turns=False,
+    )
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert verifier.seen == ["result = 1"]
+    assert any("[verified] build 1" in message.text for message in result["messages"])
+
+
+def test_a_turn_that_only_read_the_program_builds_nothing(tmp_path: Path) -> None:
+    """The agent reads the file far more often than it writes it, and a build
+    per read would cost more than the verification is worth."""
+    path = tmp_path / "model.py"
+    path.write_text("result = 1", encoding="utf-8")
+    graph, verifier = _verifying_agent(
+        ScriptedChatModel(
+            responses=(
+                tool_call("echo", {"text": "cat model.py"}, "call-1"),
+                AIMessage(content="done"),
+            )
+        ),
+        path,
+        announce_turns=False,
+    )
+
+    graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert verifier.seen == []
+
+
+def test_one_turn_of_edits_costs_one_build(tmp_path: Path) -> None:
+    """A turn rewrites the program several times over; only where it ends is an
+    answer, and the states in between are nobody's."""
+    path = tmp_path / "model.py"
+    graph, verifier = _verifying_agent(
+        ScriptedChatModel(
+            responses=(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "write", "args": {"text": "first"}, "id": "call-1"},
+                        {"name": "write", "args": {"text": "second"}, "id": "call-2"},
+                        {"name": "write", "args": {"text": "third"}, "id": "call-3"},
+                    ],
+                ),
+                AIMessage(content="done"),
+            )
+        ),
+        path,
+        announce_turns=False,
+    )
+
+    graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    # One build, of the state the turn ended in. Which of the three parallel
+    # calls landed last is the tool node's business, not this middleware's.
+    assert verifier.seen == [path.read_text(encoding="utf-8")]
+
+
+def test_a_build_is_not_a_turn(tmp_path: Path) -> None:
+    """The whole point: the agent spends nothing to learn what it built."""
+    path = tmp_path / "model.py"
+    responses = tuple(
+        tool_call("write", {"text": f"result = {turn}"}, f"call-{turn}")
+        for turn in range(3)
+    ) + (AIMessage(content="done"),)
+    graph, verifier = _verifying_agent(
+        ScriptedChatModel(responses=responses), path, announce_turns=False
+    )
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert len(verifier.seen) == 3
+    assert result["current_turn"] == 4
+
+
+def test_a_budget_already_spent_builds_nothing(tmp_path: Path) -> None:
+    """A build nobody will read is ten seconds spent on nothing.
+
+    The last turn's write goes unverified here, which is the workflow's own
+    final verification to catch; what this fixes is the eight turns before it.
+    """
+    path = tmp_path / "model.py"
+    graph, verifier = _verifying_agent(
+        ScriptedChatModel(
+            responses=tuple(
+                tool_call("write", {"text": f"result = {turn}"}, f"call-{turn}")
+                for turn in range(4)
+            )
+        ),
+        path,
+        max_turns=2,
+        announce_turns=False,
+    )
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["stop_reason"] == StopReason.BUDGET_EXHAUSTED
+    # Two turns wrote, but the budget ends the agent after the second rather
+    # than returning to the model, so only the first turn's write is built.
+    assert verifier.seen == ["result = 0"]

@@ -24,13 +24,13 @@ def _cli(*args: object) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_cli_defaults_to_the_submitted_attempt(
+def test_cli_defaults_to_the_last_attempt_that_built(
     make_run_dir, solids: dict[str, Path], tmp_path: Path
 ) -> None:
-    """``action="store_true"`` defaults to False, inverting ``last_only``.
+    """A run whose final attempt failed still reached a solid on the way.
 
-    That scored a solid the run had already replaced, which can only flatter
-    the model.
+    Scoring only the final attempt reports nothing for such a run, which reads
+    afterwards as a sample the pipeline could not do at all.
     """
 
     run_dir = make_run_dir({"000": solids["box"], "001": None})
@@ -40,10 +40,12 @@ def test_cli_defaults_to_the_submitted_attempt(
     )
 
     assert result.returncode == 0, result.stderr
-    assert json.loads(output.read_text())["status"] == "NO_PREDICTION"
+    document = json.loads(output.read_text())
+    assert document["status"] == "OK"
+    assert document["last_only"] is False
 
 
-def test_cli_can_fall_back_to_an_earlier_attempt(
+def test_cli_can_score_the_submitted_attempt_alone(
     make_run_dir, solids: dict[str, Path], tmp_path: Path
 ) -> None:
     run_dir = make_run_dir({"000": solids["box"], "001": None})
@@ -53,15 +55,13 @@ def test_cli_can_fall_back_to_an_earlier_attempt(
         run_dir,
         "--target-step",
         solids["box"],
-        "--no-last-only",
+        "--last-only",
         "--output",
         output,
     )
 
     assert result.returncode == 0, result.stderr
-    document = json.loads(output.read_text())
-    assert document["status"] == "OK"
-    assert document["last_only"] is False
+    assert json.loads(output.read_text())["status"] == "NO_PREDICTION"
 
 
 def test_cli_rejects_a_missing_target(make_run_dir, tmp_path: Path) -> None:

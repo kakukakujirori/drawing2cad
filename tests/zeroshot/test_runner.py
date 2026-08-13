@@ -232,7 +232,6 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert model.bound_tool_names == (
         "run_shell",
         "load_image",
-        "verify_output",
     )
     assert len(model.received_messages) == 3
 
@@ -326,13 +325,13 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         "tool_finished",
     ]
 
-    final_verify_started = next(
-        event
-        for event in events
-        if event["event"] == "tool_started"
-        and event["data"]["tool_name"] == "verify_output"
+    # The workflow's own final verification is a node, not a tool the coder
+    # called; what it produced is reported under its own event.
+    final_verification = next(
+        event for event in events if event["event"] == "verification"
     )
-    assert final_verify_started["data"]["caller"] == "workflow"
+    assert final_verification["data"]["node"] == "verify_final"
+    assert "verify_output" not in {event["data"].get("tool_name") for event in events}
     assert "output" not in {event["event"] for event in events}
 
     checkpoint_path = sample_artifact_root / "checkpoints.sqlite"
@@ -439,7 +438,9 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
 
     report = result["last_verification"]
     assert report.status == "VERIFIED"
-    assert report.verification_id == "000"
+    # 000 is the build the coder's write triggered without asking for it; 001
+    # is the workflow's own final verification of the same source.
+    assert report.verification_id == "001"
     rendered_console = console_output.getvalue()
     assert "[node] model started — waiting" in rendered_console
     assert "tool call: run_shell" in rendered_console
@@ -447,7 +448,11 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     assert "[verification]" in rendered_console
     assert "run completed" in rendered_console
 
-    final_attempt = artifact_root / "valid-box" / "workspace" / "attempts" / "000"
+    attempts = artifact_root / "valid-box" / "workspace" / "attempts"
+    assert (attempts / "000" / "model.py").read_text(
+        encoding="utf-8"
+    ) == VALID_BOX_SOURCE
+    final_attempt = attempts / "001"
     assert (final_attempt / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE
     CadQueryExecutor.verify_step(final_attempt / "output.step")
 
@@ -459,7 +464,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     ]
     verification = next(event for event in events if event["event"] == "verification")
     assert verification["data"]["report"]["status"] == "VERIFIED"
-    assert verification["data"]["report"]["verification_id"] == "000"
+    assert verification["data"]["report"]["verification_id"] == "001"
     assert verification["data"]["report"]["source"]["omitted"] == "source"
 
 
@@ -478,17 +483,6 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
                             "command": _write_text_command("model.py", "result = (")
                         },
                         "id": "call-write-invalid-model",
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "verify_output",
-                        "args": {},
-                        "id": "call-verify-invalid-model",
                         "type": "tool_call",
                     }
                 ],
@@ -523,23 +517,22 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
 
     result = runner.run_sample(manifest)
 
-    (intermediate_result,) = [
-        message
-        for message in model.received_messages[-1]
-        if isinstance(message, ToolMessage)
-        and message.tool_call_id == "call-verify-invalid-model"
+    # The coder never asked to be told: the broken write is reported to it at
+    # the start of the turn that repairs it, which is a turn it still has.
+    reports = [
+        json.loads(block["text"])
+        for messages in model.received_messages
+        for message in messages
+        if isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, dict) and str(block.get("text", "")).startswith("{")
     ]
-    # verify_output answers in content blocks, so that a verified attempt can
-    # hand its rendered views back through the same tool message.
-    assert isinstance(intermediate_result.content, list)
-    (block,) = intermediate_result.content
-    intermediate_report = json.loads(block["text"])
-    assert intermediate_report["status"] == "REJECTED"
-    assert intermediate_report["verification_id"] == "000"
+    assert reports[0]["status"] == "REJECTED"
+    assert reports[0]["verification_id"] == "000"
 
     final_report = result["last_verification"]
     assert final_report.status == "VERIFIED"
-    assert final_report.verification_id == "001"
+    assert final_report.verification_id == "002"
 
     attempts = artifact_root / "repair-box" / "workspace" / "attempts"
     assert (attempts / "000" / "model.py").read_text(encoding="utf-8") == "result = ("
@@ -547,7 +540,7 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
     assert (attempts / "001" / "model.py").read_text(
         encoding="utf-8"
     ) == VALID_BOX_SOURCE
-    CadQueryExecutor.verify_step(attempts / "001" / "output.step")
+    CadQueryExecutor.verify_step(attempts / "002" / "output.step")
 
 
 def _runner_for_rerun(

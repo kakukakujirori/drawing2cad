@@ -82,6 +82,7 @@ def create_agent(
     reset_turns_when_reentrant: bool = True,
     model_retries: int = 5,
     checkpointer: Checkpointer = False,
+    extra_middleware: Sequence[AgentMiddleware[Any, None, Any]] = (),
 ):
 
     middleware = cast(
@@ -98,6 +99,7 @@ def create_agent(
                 announce_turns=announce_turns,
                 reset_turns_when_reentrant=reset_turns_when_reentrant,
             ),
+            *extra_middleware,
         ],
     )
 
@@ -115,6 +117,8 @@ def create_agent(
         checkpointer=checkpointer,
     )
     # One tool-bearing turn traverses before_model -> model -> after_model ->
-    # tools.  Include the one-off before_agent node and some headroom so the
-    # TurnBudget, rather than LangGraph's recursion guard, owns termination.
-    return agent.with_config(recursion_limit=4 * max_turns + 4)
+    # tools, and every extra middleware adds a node of its own to that path.
+    # Include the one-off before_agent node and some headroom so the TurnBudget,
+    # rather than LangGraph's recursion guard, owns termination.
+    steps_per_turn = 4 + len(extra_middleware)
+    return agent.with_config(recursion_limit=steps_per_turn * max_turns + 4)

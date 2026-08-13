@@ -82,4 +82,4 @@ workflow:
   # send-back re-runs everything downstream of its target, so this bounds the
   # whole graph's cycle. `max_revisions` above cannot: that counts rounds
   # inside one stage.
-  max_audit_reject_count: 6
+  max_audit_reject_count: 3

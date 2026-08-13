@@ -49,6 +49,158 @@ class VerifyOutputResult:
         return ret
 
 
+class OutputVerifier:
+    """Build the current program and report what it produced.
+
+    Shared by the middleware that checks a coder turn and by the workflow's own
+    final verification, so both number their attempts from the same directory.
+    """
+
+    def __init__(
+        self,
+        executor: CadQueryExecutor,
+        workdir: SandboxWorkdir,
+        renderer: StepRenderer,
+        artifact_presenter: ArtifactPresenter | None,
+        source_filename: str = "model.py",
+        output_dirname: PurePosixPath = PurePosixPath("attempts"),
+    ) -> None:
+        source_name = PurePosixPath(source_filename)
+        if source_name.name != source_filename or source_name.name in {"", ".", ".."}:
+            raise ValueError("source_filename must be a filename in the workdir root")
+        if (
+            output_dirname.is_absolute()
+            or len(output_dirname.parts) != 1
+            or output_dirname.name in {"", ".", ".."}
+        ):
+            raise ValueError("output_dirname must be a directory basename")
+
+        self.executor = executor
+        self.workdir = workdir
+        self.renderer = renderer
+        self.artifact_presenter = artifact_presenter
+        self.source_filename = source_filename
+        self.output_dirname = output_dirname
+
+        host_outdir = workdir.host_bind_dir / output_dirname
+        if host_outdir.is_symlink():
+            raise ValueError("output directory must not be a symlink")
+        host_outdir.mkdir(parents=True, exist_ok=True)
+
+        # set output_dirname read-only
+        if output_dirname not in workdir.read_only_subdirs:
+            workdir.read_only_subdirs.append(output_dirname)
+
+    @property
+    def source_path(self) -> Path:
+        """The program this verifier builds, on the host side of the sandbox."""
+        return self.workdir.host_bind_dir / self.source_filename
+
+    def _issue_verification_id_and_dir(self) -> tuple[str, Path]:
+        host_outdir = self.workdir.host_bind_dir / self.output_dirname
+        # issue an id
+        existing = [int(p.name) for p in host_outdir.iterdir() if p.name.isdigit()]
+        verification_id = f"{(max(existing, default=-1) + 1):03d}"
+        # create dir
+        host_verification_dir = host_outdir / verification_id
+        host_verification_dir.mkdir(parents=True, exist_ok=False)
+        return verification_id, host_verification_dir
+
+    def verify(self) -> tuple[VerifyOutputResult, FeedbackManifest | None]:
+        """Verify the program and, when it yields a solid, render its views.
+
+        The manifest stays out of the report because it carries host paths, and
+        only the report is msgpack-serialisable enough to reach graph state.
+        """
+        model_path = self.source_path
+
+        # file existence check
+        if model_path.is_symlink():
+            report = VerifyOutputResult(
+                status="REJECTED",
+                executor_error=f"{self.source_filename} must not be a symlink",
+            )
+            return report, None
+
+        if not model_path.is_file():
+            report = VerifyOutputResult(
+                status="REJECTED",
+                executor_error=f"{self.source_filename} was not found",
+            )
+            return report, None
+
+        # prepare artifact save dir and report
+        verification_id, host_verification_dir = self._issue_verification_id_and_dir()
+        report = VerifyOutputResult(verification_id=verification_id)
+        output_model_path = host_verification_dir / self.source_filename
+        output_step_path = host_verification_dir / "output.step"
+
+        # execute
+        cq_report = self.executor.execute(model_path, output_step_path)
+
+        # copy source code to output dir
+        if cq_report.source is not None:
+            output_model_path.write_text(
+                cq_report.source,
+                encoding="utf-8",
+            )
+
+        # update report
+        report = report.import_from(cq_report)
+
+        # if verification failed, return early. No STEP means nothing to draw.
+        if not (report.status == "VERIFIED" and report.returncode == 0):
+            return report, None
+
+        # render the three-view DXF and the perspective PNGs
+        render_report = self._render(output_step_path, host_verification_dir)
+
+        manifest = FeedbackManifest(
+            verification_id=verification_id,
+            dxf_path=render_report.techdraw_paths.dxf,
+            dxf_error=render_report.techdraw_errors.get("dxf"),
+            render3d_paths=render_report.render3d_paths.as_mapping(),
+            render3d_errors=render_report.render3d_errors,
+        )
+        return report, manifest
+
+    def _render(self, step_path: Path, verification_dir: Path) -> RenderReport:
+        """Render feedback artifacts into the verification directory."""
+        techdraw_paths = TechdrawPaths.from_path(
+            verification_dir / "techdraw", "output"
+        )
+        render3d_paths = Render3dPaths.from_path(
+            verification_dir / "render_3d", "output"
+        )
+        # The renderer leaves directory layout to its caller.
+        for path in (
+            *techdraw_paths.as_mapping().values(),
+            *render3d_paths.as_mapping().values(),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+        return self.renderer.render(step_path, techdraw_paths, render3d_paths)
+
+    def feedback(self) -> list[ContentBlock]:
+        """Verify, and say what happened in blocks a message can carry."""
+        report, manifest = self.verify()
+        sandbox_source = self.workdir.sandbox_bind_dir / self.source_filename
+        blocks: list[ContentBlock] = [
+            create_text_block(
+                f"{sandbox_source} has been executed, and upon successful STEP "
+                "file generation, its rendering images are exported:"
+            ),
+            create_text_block(json.dumps(report.serialize(), indent=2)),
+        ]
+        if manifest and self.artifact_presenter:
+            blocks.extend(
+                self.artifact_presenter.build_feedback_message_blocks(
+                    manifest, self.workdir
+                )
+            )
+        return blocks
+
+
 def create_verify_output_tool(
     executor: CadQueryExecutor,
     workdir: SandboxWorkdir,
@@ -56,8 +208,21 @@ def create_verify_output_tool(
     artifact_presenter: ArtifactPresenter | None,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
-    serialize_output: bool = True,
 ) -> BaseTool:
+    """Offer verification to an agent that must ask for it.
+
+    The staged workflow verifies the coder's writes without being asked, so it
+    builds an `OutputVerifier` directly; this is for an agent whose turn is the
+    right place to decide.
+    """
+    verifier = OutputVerifier(
+        executor,
+        workdir,
+        renderer=renderer,
+        artifact_presenter=artifact_presenter,
+        source_filename=source_filename,
+        output_dirname=output_dirname,
+    )
     description = cleandoc(
         f"""
         Execute and validate the current CadQuery program at
@@ -75,132 +240,8 @@ def create_verify_output_tool(
         """
     )
 
-    # source_filename sanity check
-    source_name = PurePosixPath(source_filename)
-    if source_name.name != source_filename or source_name.name in {"", ".", ".."}:
-        raise ValueError("source_filename must be a filename in the workdir root")
-
-    # create output dir
-    if (
-        output_dirname.is_absolute()
-        or len(output_dirname.parts) != 1
-        or output_dirname.name in {"", ".", ".."}
-    ):
-        raise ValueError("output_dirname must be a directory basename")
-
-    host_outdir = workdir.host_bind_dir / output_dirname
-    if host_outdir.is_symlink():
-        raise ValueError("output directory must not be a symlink")
-    host_outdir.mkdir(parents=True, exist_ok=True)
-
-    # set output_dirname read-only
-    if output_dirname not in workdir.read_only_subdirs:
-        workdir.read_only_subdirs.append(output_dirname)
-
-    def _issue_verification_id_and_dir() -> tuple[str, Path]:
-        host_outdir = workdir.host_bind_dir / output_dirname
-        # issue an id
-        existing = [int(p.name) for p in host_outdir.iterdir() if p.name.isdigit()]
-        verification_id = f"{(max(existing, default=-1) + 1):03d}"
-        # create dir
-        host_verification_dir = host_outdir / verification_id
-        host_verification_dir.mkdir(parents=True, exist_ok=False)
-        return verification_id, host_verification_dir
-
-    def _verify(model_path: Path) -> tuple[VerifyOutputResult, FeedbackManifest | None]:
-        """Verify the program and, when it yields a solid, render its views.
-
-        The manifest is returned alongside the report rather than embedded in
-        it: it carries *host* paths, which only ArtifactPresenter may turn into
-        something the model sees, and it is not msgpack-serialisable, so it
-        must not reach graph state.
-        """
-        # file existence check
-        if model_path.is_symlink():
-            report = VerifyOutputResult(
-                status="REJECTED",
-                executor_error=f"{source_filename} must not be a symlink",
-            )
-            return report, None
-
-        if not model_path.is_file():
-            report = VerifyOutputResult(
-                status="REJECTED",
-                executor_error=f"{source_filename} was not found",
-            )
-            return report, None
-
-        # prepare artifact save dir and report
-        verification_id, host_verification_dir = _issue_verification_id_and_dir()
-        report = VerifyOutputResult(verification_id=verification_id)
-        output_model_path = host_verification_dir / source_filename
-        output_step_path = host_verification_dir / "output.step"
-
-        # execute
-        cq_report = executor.execute(model_path, output_step_path)
-
-        # copy source code to output dir
-        if cq_report.source is not None:
-            output_model_path.write_text(
-                cq_report.source,
-                encoding="utf-8",
-            )
-
-        # update report
-        report = report.import_from(cq_report)
-
-        # if verification failed, return early. No STEP means nothing to draw.
-        if not (report.status == "VERIFIED" and report.returncode == 0):
-            return report, None
-
-        # render the three-view DXF and the perspective PNGs
-        render_report = _render(output_step_path, host_verification_dir)
-
-        manifest = FeedbackManifest(
-            verification_id=verification_id,
-            dxf_path=render_report.techdraw_paths.dxf,
-            dxf_error=render_report.techdraw_errors.get("dxf"),
-            render3d_paths=render_report.render3d_paths.as_mapping(),
-            render3d_errors=render_report.render3d_errors,
-        )
-        return report, manifest
-
-    def _render(step_path: Path, verification_dir: Path) -> RenderReport:
-        """Render feedback artifacts into the verification directory."""
-        techdraw_paths = TechdrawPaths.from_path(
-            verification_dir / "techdraw", "output"
-        )
-        render3d_paths = Render3dPaths.from_path(
-            verification_dir / "render_3d", "output"
-        )
-        # The renderer leaves directory layout to its caller.
-        for path in (
-            *techdraw_paths.as_mapping().values(),
-            *render3d_paths.as_mapping().values(),
-        ):
-            path.parent.mkdir(parents=True, exist_ok=True)
-
-        return renderer.render(step_path, techdraw_paths, render3d_paths)
-
-    def _message_blocks(
-        report: VerifyOutputResult, manifest: FeedbackManifest | None
-    ) -> list[ContentBlock]:
-        """Organize the tool result into ContentBlocks."""
-        blocks: list[ContentBlock] = [
-            create_text_block(json.dumps(report.serialize(), indent=2))
-        ]
-        if manifest and artifact_presenter:
-            blocks.extend(
-                artifact_presenter.build_feedback_message_blocks(manifest, workdir)
-            )
-        return blocks
-
     @tool("verify_output", description=description)
-    def verify_output() -> VerifyOutputResult | list[ContentBlock]:
-        model_path = workdir.host_bind_dir / source_filename
-        report, manifest = _verify(model_path)
-        if serialize_output:
-            return _message_blocks(report, manifest)
-        return report
+    def verify_output() -> list[ContentBlock]:
+        return verifier.feedback()
 
     return verify_output

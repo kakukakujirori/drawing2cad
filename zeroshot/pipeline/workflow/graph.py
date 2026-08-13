@@ -3,6 +3,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any, Literal, Protocol, cast
 
+from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage, merge_message_runs
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
@@ -18,12 +19,13 @@ from zeroshot.pipeline.messages import (
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import (
+    OutputVerifier,
     create_load_image_tool,
     create_run_shell_tool,
-    create_verify_output_tool,
 )
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
 from zeroshot.pipeline.workflow._config import _child_graph_config
+from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 from zeroshot.pipeline.workflow.state import Audit, ReconstructionState
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
@@ -36,6 +38,7 @@ class AgentBuilder(Protocol):
         tools: Sequence[BaseTool],
         prompt_context: Mapping[str, str],
         output_schema: type[BaseModel] | None = None,
+        extra_middleware: Sequence[AgentMiddleware[Any, None, Any]] = (),
     ) -> CompiledGraph: ...
 
 
@@ -102,27 +105,15 @@ def create_reconstruction_graph(
         create_run_shell_tool(sandbox_runner, sandbox_workdir),
         create_load_image_tool(sandbox_workdir),
     ]
-    # For intermediate check
-    submission_tools = [
-        create_verify_output_tool(
-            executor=executor,
-            workdir=sandbox_workdir,
-            renderer=renderer,
-            artifact_presenter=artifact_presenter,
-            source_filename=output_filename,
-            output_dirname=verification_dirname,
-            serialize_output=True,
-        ),
-    ]
-    # For final check
-    verify_final_tool = create_verify_output_tool(
+    # One verifier for the whole graph: the coder's turns and the workflow's
+    # own final check number their attempts from the same directory.
+    verifier = OutputVerifier(
         executor=executor,
         workdir=sandbox_workdir,
         renderer=renderer,
-        artifact_presenter=None,
+        artifact_presenter=artifact_presenter,
         source_filename=output_filename,
         output_dirname=verification_dirname,
-        serialize_output=False,
     )
 
     # instantiate agents
@@ -142,8 +133,9 @@ def create_reconstruction_graph(
         prompt_context=prompt_context,
     )
     coding_agent = coding_agent_builder(
-        tools=basic_tools + submission_tools,
+        tools=basic_tools,
         prompt_context=prompt_context,
+        extra_middleware=[VerifyOnWriteMiddleware(verifier)],
     )
     audit_agent = audit_agent_builder(
         tools=basic_tools,
@@ -287,7 +279,10 @@ def create_reconstruction_graph(
 
     def verify_final(state: ReconstructionState):
         del state
-        return {"last_verification": verify_final_tool.invoke({})}
+        # The report alone: the rendered views are feedback for whoever is
+        # still editing, and this runs after the coder has stopped.
+        report, _ = verifier.verify()
+        return {"last_verification": report}
 
     def audit_output(state: ReconstructionState, config: RunnableConfig):
         """Judge the verified model, and say which stage owns any mismatch."""

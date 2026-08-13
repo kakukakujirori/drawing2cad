@@ -12,9 +12,7 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     SystemMessage,
-    ToolMessage,
 )
-from langchain_core.tools import BaseTool, tool
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
@@ -419,62 +417,68 @@ def test_a_later_agent_does_not_inherit_an_earlier_agents_turn_notices() -> None
     assert len(notices(result["coding_state"]["messages"])) == 1
 
 
-def test_the_coder_still_verifies_its_own_work_before_the_workflow_does(
+def test_the_coder_is_told_what_its_edit_built_without_asking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The coder has no verification tool: writing the program is the request.
+
+    Asking cost a turn, and the turns went on edits, so the answer arrived on
+    the last turn with nothing left to fix it with. Reported here instead, from
+    the path back to the model, where it costs no turn at all.
+    """
     hypothesizer = ScriptedChatModel(responses=(_hypothesis("a plate"),))
     reviewer = ScriptedChatModel(responses=(_review(True, "fine"),))
-    coder = ScriptedChatModel(
-        responses=(
-            tool_call("verify_output", {}, "call-intermediate-verification"),
-            AIMessage(content="done"),
-        )
-    )
-    invocations: list[str] = []
     final_report = VerifyOutputResult(
         verification_id="001",
         status="VERIFIED",
         source="result = object()",
         returncode=0,
     )
+    invocations: list[str] = []
 
-    @tool("verify_output")
-    def model_verify_output() -> dict[str, str]:
-        """Stub the model-facing intermediate verification."""
-        invocations.append("model")
-        return {"status": "REJECTED"}
+    class StubVerifier:
+        """One verifier serves both callers, as the graph builds only one."""
 
-    @tool("verify_output")
-    def final_verify_output() -> VerifyOutputResult:
-        """Stub the workflow-owned final verification."""
-        invocations.append("workflow")
-        return final_report
+        def __init__(self, source_path: Path) -> None:
+            self.source_path = source_path
 
-    def create_stub_verify_output_tool(
-        *args: object,
-        serialize_output: bool = True,
-        **kwargs: object,
-    ) -> BaseTool:
-        del args, kwargs
-        return model_verify_output if serialize_output else final_verify_output
+        def verify(self) -> tuple[VerifyOutputResult, None]:
+            invocations.append("workflow")
+            return final_report, None
 
-    monkeypatch.setattr(
-        graph_module,
-        "create_verify_output_tool",
-        create_stub_verify_output_tool,
-    )
+        def feedback(self) -> list[object]:
+            invocations.append("model")
+            return [{"type": "text", "text": "VERIFICATION_REPORT"}]
 
     with SandboxWorkdir() as workdir:
+        source_path = workdir.host_bind_dir / "model.py"
+        monkeypatch.setattr(
+            graph_module, "OutputVerifier", lambda **kwargs: StubVerifier(source_path)
+        )
+        coder = ScriptedChatModel(
+            responses=(
+                tool_call(
+                    "run_shell",
+                    {"command": f"echo result=1 > {workdir.sandbox_bind_dir}/model.py"},
+                    "call-write",
+                ),
+                AIMessage(content="done"),
+            )
+        )
         graph = _graph(workdir, hypothesizer, reviewer, coder)
         result = graph.invoke({})
 
     assert invocations == ["model", "workflow"]
     assert result["last_verification"] == final_report
-    # The coder's own verification is a tool result inside its own turns, two
-    # messages before the audit the workflow asked for afterwards.
     assert any(
-        isinstance(message, ToolMessage)
+        "VERIFICATION_REPORT" in text
+        for text in _texts(result["coding_state"]["messages"])
+    )
+    assert not any(
+        call["name"] == "verify_output"
         for message in result["coding_state"]["messages"]
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
     )
 
 

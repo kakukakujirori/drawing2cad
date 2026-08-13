@@ -182,11 +182,10 @@ class ArtifactPresenter:
         manifest: FeedbackManifest,
         workdir: SandboxWorkdir,
     ) -> list[ContentBlock]:
-        """Build what a verification reports back, as the payload of a tool result.
+        """Build what a verification reports back.
 
-        Blocks rather than a message: this is what `verify_output` returns, and
-        the ToolNode is what turns it into a ToolMessage.  A verification never
-        becomes a turn anyone spoke.
+        Blocks rather than a message, so the caller decides what carries them.
+        A verification never becomes a turn anyone spoke.
         """
         sandbox_manifest = self._translate_paths(
             manifest, workdir, self.feedback_render3d_mode
