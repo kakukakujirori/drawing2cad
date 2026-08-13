@@ -12,9 +12,14 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
 )
 
-from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
+from tests.zeroshot.chat_models import (
+    ScriptedChatModel,
+    tool_call,
+    unanswered_tool_calls,
+)
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import VerifyOutputResult
@@ -684,6 +689,43 @@ def test_a_coder_the_audit_sends_back_is_asked_for_a_correction() -> None:
     assert "current semantic hypothesis" in first
     assert "the pocket is cut on the wrong face" in second
     assert "audit of the program" in second
+
+
+def test_a_coder_sent_back_after_running_out_carries_a_usable_transcript() -> None:
+    """The coder spent its last turn on a tool call and the audit sent it back,
+    so the second ask hands the provider the first ask's transcript."""
+    coder = ScriptedChatModel(
+        responses=(
+            tool_call("run_shell", {"command": "true"}, "call-0"),
+            tool_call("run_shell", {"command": "true"}, "call-1"),
+            AIMessage(content="corrected"),
+        )
+    )
+    auditor = ScriptedChatModel(
+        responses=(
+            _audit("coding", "the planned fillets are missing"),
+            _audit(None, "now it matches"),
+        )
+    )
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(responses=(_hypothesis("a plate"),)),
+            ScriptedChatModel(responses=(_review(True, "fine"),)),
+            coder,
+            agent_options={"max_turns": 2, "announce_turns": False},
+            auditor=auditor,
+        )
+        result = graph.invoke({})
+
+    assert result["audit"].revise is None
+    coding_messages = result["coding_state"]["messages"]
+    # Both of the budget's turns reached the tools, the one it ended on included.
+    assert sum(isinstance(m, ToolMessage) for m in coding_messages) == 2
+    for ask in coder.received_messages:
+        assert unanswered_tool_calls(ask) == []
+    assert unanswered_tool_calls(coding_messages) == []
 
 
 def test_a_coder_whose_plan_was_redone_is_told_the_plan_changed() -> None:

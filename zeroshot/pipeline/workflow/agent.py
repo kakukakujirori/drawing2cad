@@ -117,8 +117,7 @@ def create_agent(
         checkpointer=checkpointer,
     )
     # One tool-bearing turn traverses before_model -> model -> after_model ->
-    # tools, and every extra middleware adds a node of its own to that path.
-    # Include the one-off before_agent node and some headroom so the TurnBudget,
-    # rather than LangGraph's recursion guard, owns termination.
+    # tools, plus a node per extra middleware; the headroom covers the agent
+    # hooks and the before_model that declares the budget spent.
     steps_per_turn = 4 + len(extra_middleware)
-    return agent.with_config(recursion_limit=steps_per_turn * max_turns + 4)
+    return agent.with_config(recursion_limit=steps_per_turn * max_turns + 6)

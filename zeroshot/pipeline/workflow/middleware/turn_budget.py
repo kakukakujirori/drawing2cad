@@ -68,7 +68,12 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
     def before_model(
         self, state: TurnBudgetState, runtime: Runtime[None]
     ) -> dict[str, Any] | None:
-        """Check turns, and add turn count to messages."""
+        """Check turns, and add turn count to messages.
+
+        The budget-exceeded model must stop here.
+        If we stop it after the model call,
+        the message history cannot collect ToolMessage.
+        """
         del runtime
 
         turns = state.get("current_turn", 0)
@@ -85,53 +90,39 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         return {"messages": [HumanMessage(content=self._announcement(turns + 1))]}
 
     def _announcement(self, turn: int) -> str:
-        """Announce the turn, and near the end say what running out costs.
-
-        A budget that only ever reports a number leaves the agent to find the
-        edge by going over it: the tool call it spends its last turn on is
-        dropped along with the work that call was meant to settle, and a stage
-        that never reaches an answer ends the run holding nothing. The warning
-        arrives one turn early because the turn that hears it is the last one
-        that can still act on it.
-        """
+        """Announce the turn."""
         countdown = f"[turn {turn}/{self.max_turns}]"
         if turn >= self.max_turns:
             return (
-                f"{countdown} Final turn: a tool call made now is dropped, so "
-                "nothing you have not already run or written can still take "
-                "effect. Answer from what you have, and say in the answer what "
-                "remains uncertain."
+                f"{countdown} Final turn: a tool call made now still runs, but "
+                "nothing comes back to you and no answer follows it. Answer "
+                "from what you have, and say in the answer what remains "
+                "uncertain."
             )
         if turn == self.max_turns - 1:
             return (
-                f"{countdown} One turn remains after this one, and a tool call "
-                "made on it is dropped. Run or write now whatever your answer "
-                "still depends on."
+                f"{countdown} One turn remains after this one, and you will not "
+                "see what its tool calls return. Run or write now whatever your "
+                "answer still depends on."
             )
         return countdown
 
-    @hook_config(can_jump_to=["end"])
     @override
     def after_model(
         self, state: TurnBudgetState, runtime: Runtime[None]
     ) -> dict[str, Any]:
-        """Increment turns."""
+        """Count the turn."""
         del runtime
 
         last_message = state["messages"][-1]
-        tool_calls = (
-            last_message.tool_calls if isinstance(last_message, AIMessage) else []
+        is_tool_call = isinstance(last_message, AIMessage) and bool(
+            last_message.tool_calls
         )
 
-        progress = {
+        progress: dict[str, Any] = {
             "current_turn": state.get("current_turn", 0) + 1,
             "total_turns": state.get("total_turns", 0) + 1,
         }
-        if not tool_calls:
-            return progress | {"stop_reason": StopReason.COMPLETED}
-        if progress["current_turn"] >= self.max_turns:
-            return progress | {
-                "jump_to": "end",
-                "stop_reason": StopReason.BUDGET_EXHAUSTED,
-            }
-        return progress
+        if is_tool_call:
+            return progress
+        return progress | {"stop_reason": StopReason.COMPLETED}

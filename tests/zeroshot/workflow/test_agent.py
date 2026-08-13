@@ -25,7 +25,11 @@ from openai import (
 from openai.types.chat import ChatCompletion
 from pydantic import PrivateAttr
 
-from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
+from tests.zeroshot.chat_models import (
+    ScriptedChatModel,
+    tool_call,
+    unanswered_tool_calls,
+)
 from zeroshot.pipeline.messages import PromptTemplate
 from zeroshot.pipeline.tools import ToolFeedbackError
 from zeroshot.pipeline.workflow import Proposal, StopReason
@@ -169,9 +173,38 @@ def test_agent_stops_at_its_turn_budget_and_keeps_every_notice() -> None:
     # the rung it is on, or it spends the whole budget investigating.
     assert _countdowns(messages) == expected
     assert _countdowns(model.received_messages[-1]) == expected
-    # The turn the budget cut short leaves its tool calls unanswered: two rounds
-    # ran, the third was never handed to the tools.
-    assert sum(isinstance(message, ToolMessage) for message in messages) == 2
+    # Every turn's calls reach the tools, the last one included; what the budget
+    # ends is the reading of that answer, not the call.
+    assert sum(isinstance(message, ToolMessage) for message in messages) == 3
+    assert isinstance(messages[-1], ToolMessage)
+
+
+def test_a_transcript_the_budget_cut_short_can_be_handed_back_to_a_model() -> None:
+    """A stage sent back re-invokes on what the last ask left behind, and a
+    provider rejects an input whose tool call nothing answered."""
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("echo", {"value": "looking"}, "call-1"),
+            tool_call("echo", {"value": "still looking"}, "call-2"),
+            AIMessage(content="corrected"),
+        )
+    )
+    agent = _subgraph(model, max_turns=2, announce_turns=False)
+
+    first = agent.invoke({"messages": [HumanMessage(content="write it")]})
+    assert first["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+    assert unanswered_tool_calls(first["messages"]) == []
+
+    second = agent.invoke(
+        {
+            "messages": [*first["messages"], HumanMessage(content="the audit says no")],
+            "current_turn": first["current_turn"],
+            "total_turns": first["total_turns"],
+        }
+    )
+
+    assert second["stop_reason"] is StopReason.COMPLETED
+    assert unanswered_tool_calls(model.received_messages[-1]) == []
 
 
 def test_agent_turn_budget_outlives_langgraphs_default_recursion_limit() -> None:
@@ -232,9 +265,8 @@ def test_a_prompt_report_covers_one_ask_rather_than_the_whole_transcript() -> No
 def test_agent_is_asked_to_land_before_its_budget_runs_out() -> None:
     """The last two turns say what running out costs, one turn apart.
 
-    The warning has to reach the agent while a turn it can still spend on a
-    tool remains, because the final turn's tool call is dropped along with
-    whatever it was going to settle.
+    The warning has to reach the agent while a turn whose results it can still
+    read remains, because the final turn's tool call returns to nobody.
     """
     model = ScriptedChatModel(
         responses=tuple(
@@ -255,7 +287,7 @@ def test_agent_is_asked_to_land_before_its_budget_runs_out() -> None:
     assert plain == "[turn 2/4]"
     assert penultimate.startswith("[turn 3/4] One turn remains after this one")
     assert final.startswith("[turn 4/4] Final turn")
-    assert "dropped" in penultimate and "dropped" in final
+    assert "will not see" in penultimate and "nothing comes back" in final
     assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
 
 
@@ -924,6 +956,6 @@ def test_a_budget_already_spent_builds_nothing(tmp_path: Path) -> None:
     result = graph.invoke({"messages": [HumanMessage(content="go")]})
 
     assert result["stop_reason"] == StopReason.BUDGET_EXHAUSTED
-    # Two turns wrote, but the budget ends the agent after the second rather
-    # than returning to the model, so only the first turn's write is built.
+    # Two turns wrote, but TurnBudget ends the agent ahead of this middleware,
+    # so the second write is never built.
     assert verifier.seen == ["result = 0"]
