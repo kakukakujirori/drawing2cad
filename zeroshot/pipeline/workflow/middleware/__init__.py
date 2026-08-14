@@ -2,6 +2,7 @@
 
 from .model_retry import ModelCallRetryMiddleware
 from .prompt_log import PromptLogMiddleware
+from .stateless_reasoning import StatelessReasoningMiddleware
 from .turn_budget import StopReason, TurnBudgetMiddleware, TurnBudgetState
 from .verify_on_write import ProgramVerifier, VerifyOnWriteMiddleware
 
@@ -9,6 +10,7 @@ __all__ = [
     "ModelCallRetryMiddleware",
     "ProgramVerifier",
     "PromptLogMiddleware",
+    "StatelessReasoningMiddleware",
     "StopReason",
     "TurnBudgetMiddleware",
     "TurnBudgetState",

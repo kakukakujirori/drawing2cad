@@ -22,6 +22,7 @@ from zeroshot.pipeline.tools import ToolFeedbackError
 from zeroshot.pipeline.workflow.middleware import (
     ModelCallRetryMiddleware,
     PromptLogMiddleware,
+    StatelessReasoningMiddleware,
     StopReason,
     TurnBudgetMiddleware,
 )
@@ -99,6 +100,9 @@ def create_agent(
                 announce_turns=announce_turns,
                 reset_turns_when_reentrant=reset_turns_when_reentrant,
             ),
+            # Innermost, so it sees every message the layers above appended and
+            # sanitises each retry attempt rather than only the first.
+            StatelessReasoningMiddleware(),
             *extra_middleware,
         ],
     )
