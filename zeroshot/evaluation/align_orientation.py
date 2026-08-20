@@ -15,7 +15,7 @@ import numpy as np
 
 from zeroshot.evaluation.load_canonical_mesh import centre_and_extent, load_step_mesh
 
-_SAMPLE_POINTS = 4096
+SAMPLE_POINTS = 32768  # 4096
 
 
 def cube_orientations() -> list[np.ndarray]:
@@ -128,7 +128,7 @@ def align_step(
     pred_step: Path,
     gt_step: Path,
     output_step: Path,
-    sample_points: int = _SAMPLE_POINTS,
+    sample_points: int = SAMPLE_POINTS,
     seed: int = 0,
 ) -> Alignment:
     """Write `pred_step` rotated into the target's pose, and say which pose."""
@@ -183,6 +183,7 @@ def write_rotated_step(
 
 __all__ = [
     "ORIENTATIONS",
+    "SAMPLE_POINTS",
     "Alignment",
     "align_step",
     "best_orientation",

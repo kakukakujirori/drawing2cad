@@ -53,7 +53,7 @@ sandbox_runner:
 # How to score, not what to score: the target lives with the sample it belongs
 # to, so switching samples cannot leave a stale target behind.
 evaluation:
-  last_only: true
+  last_only: false
   scorer:
     _target_: zeroshot.evaluation.run_scoring.StepScorer
     timeout_s: 600.0
@@ -62,6 +62,8 @@ evaluation:
     reference_extent: 1.8
     voxel_resolution: 64
     seed: 0
+    align_sample_points: 32768
+    split_closed_faces: false  # Split faces so that they match the SolidWorks writer
 
 # Every path derives from `sample_id`, so a sweep overrides that alone:
 #   python -m zeroshot.run_pipeline -m sample.sample_id=000364,000405,000775

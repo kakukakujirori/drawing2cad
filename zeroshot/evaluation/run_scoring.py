@@ -25,6 +25,9 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from zeroshot.evaluation.align_orientation import (
+    SAMPLE_POINTS as _ALIGN_SAMPLE_POINTS,
+)
 from zeroshot.evaluation.metrics import score_eccv, score_voxel
 
 # A CAD kernel error can run to thousands of characters; this one is read by
@@ -82,10 +85,14 @@ class StepScorer:
     reference_extent: float | None = 1.8
     voxel_resolution: int = 64
     seed: int = 0
+    align_sample_points: int = _ALIGN_SAMPLE_POINTS
+    split_closed_faces: bool = False
 
     def __post_init__(self) -> None:
         if self.timeout_s <= 0:
             raise ValueError("timeout_s must be positive")
+        if self.align_sample_points < 1:
+            raise ValueError("align_sample_points must be positive")
 
     def families(
         self,
@@ -131,6 +138,11 @@ class StepScorer:
                 pred_step = self._aligned(pred_step, gt_step, Path(scratch), columns)
             except Exception as error:  # noqa: BLE001 - an unaligned score beats none
                 errors["align"] = _error_text(error)
+            if self.split_closed_faces:
+                try:
+                    pred_step = self._split_closed(pred_step, Path(scratch))
+                except Exception as error:  # noqa: BLE001 - as above
+                    errors["normalize"] = _error_text(error)
             for name, call in self.families().items():
                 try:
                     columns.update(call(pred_step, gt_step))
@@ -155,7 +167,13 @@ class StepScorer:
         from zeroshot.evaluation.align_orientation import align_step
 
         output = scratch / "aligned.step"
-        alignment = align_step(pred_step, gt_step, output, seed=self.seed)
+        alignment = align_step(
+            pred_step,
+            gt_step,
+            output,
+            sample_points=self.align_sample_points,
+            seed=self.seed,
+        )
         columns["align_rotation_index"] = alignment.rotation_index
         columns["align_chamfer"] = alignment.chamfer
         # Above one, this sample's pose was a draw between orientations the
@@ -163,6 +181,17 @@ class StepScorer:
         # worth no more than the draw.
         columns["align_tied"] = alignment.tied
         return output
+
+    def _split_closed(self, pred_step: Path, scratch: Path) -> Path:
+        """Re-partition the prediction's faces the way the target's writer does.
+
+        After the pose search, so both families measure the same file; the
+        voxel IoU cannot tell the two partitions apart either way.
+        """
+
+        from zeroshot.evaluation.normalize_brep import split_closed_faces
+
+        return split_closed_faces(pred_step, scratch / "normalized.step")
 
     def score(self, pred_step: Path, gt_step: Path) -> ScoreReport:
         """Score one prediction while supervising native-code hangs.
@@ -336,6 +365,22 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--align-sample-points",
+        type=int,
+        default=StepScorer.align_sample_points,
+        help="surface samples per side for the 24-orientation pose search",
+    )
+    parser.add_argument(
+        "--split-closed-faces",
+        action=argparse.BooleanOptionalAction,
+        default=StepScorer.split_closed_faces,
+        help=(
+            "split the prediction's closed periodic faces at their seams, so "
+            "its face partition matches the SolidWorks writer the targets came "
+            "from. A dataset-specific normalization, not a metric change"
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -352,7 +397,11 @@ def main() -> None:
     document = score_run(
         args.run_dir,
         args.target_step,
-        StepScorer(timeout_s=args.timeout_s),
+        StepScorer(
+            timeout_s=args.timeout_s,
+            align_sample_points=args.align_sample_points,
+            split_closed_faces=args.split_closed_faces,
+        ),
         args.last_only,
     )
 

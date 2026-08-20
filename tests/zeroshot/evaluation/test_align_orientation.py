@@ -115,6 +115,27 @@ def test_an_unambiguous_pose_reports_no_draw(
     assert alignment.tied == 1
 
 
+def test_the_chosen_pose_does_not_move_with_the_seed(
+    lopsided_step: Path, tmp_path: Path
+) -> None:
+    """The sample count has to leave the winner clear of the sampling noise.
+
+    At 4096 it did not: half this dataset's samples changed pose between seeds,
+    and on one of them the two poses were worth 0.18 and 0.67 mean F1.
+    """
+    rotated = tmp_path / "rotated.step"
+    write_rotated_step(lopsided_step, rotated, _QUARTER_TURNS["y"])
+
+    chosen = {
+        align_step(
+            rotated, lopsided_step, tmp_path / f"aligned{seed}.step", seed=seed
+        ).rotation_index
+        for seed in range(3)
+    }
+
+    assert len(chosen) == 1
+
+
 def test_rotating_keeps_every_surface_its_own_kind(
     lopsided_step: Path, tmp_path: Path
 ) -> None:

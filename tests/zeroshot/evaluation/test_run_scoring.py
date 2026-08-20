@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from zeroshot.evaluation import align_orientation, run_scoring
+from zeroshot.evaluation import align_orientation, normalize_brep, run_scoring
 from zeroshot.evaluation.metrics import score_eccv
 from zeroshot.evaluation.run_scoring import (
     ScoreStatus,
@@ -146,6 +146,61 @@ def test_a_prediction_in_a_different_pose_is_scored_where_it_belongs(
     assert scored.metrics["eccv_mean_f1"] > 0.99
     assert scored.metrics["voxel_iou"] > 0.99
     assert unaligned["eccv_mean_f1"] < scored.metrics["eccv_mean_f1"]
+
+
+def _face_count(step_path: Path) -> int:
+    import cadquery as cq
+
+    return len(cq.importers.importStep(str(step_path)).val().Faces())
+
+
+def test_splitting_closed_faces_is_off_unless_asked(
+    tmp_path: Path, solids: dict[str, Path]
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    kept = StepScorer()._split_closed(solids["sphere"], scratch)
+
+    assert StepScorer().split_closed_faces is False
+    assert _face_count(kept) > _face_count(solids["sphere"])
+
+
+def test_splitting_gives_a_seamed_face_the_two_the_target_would_have(
+    tmp_path: Path,
+) -> None:
+    """CadQuery leaves a full cylinder whole; SolidWorks halves it at the seam.
+
+    The metric assigns faces one to one, so a prediction with half the target's
+    faces cannot recall more than half of them however right its geometry is.
+    """
+    import cadquery as cq
+
+    cylinder = tmp_path / "cylinder.step"
+    cq.exporters.export(
+        cq.Workplane("XY").circle(5).extrude(20), str(cylinder), exportType="STEP"
+    )
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    split = StepScorer()._split_closed(cylinder, scratch)
+
+    assert _face_count(cylinder) == 3
+    assert _face_count(split) == 4
+
+
+def test_normalization_that_fails_still_leaves_a_score(
+    monkeypatch: pytest.MonkeyPatch, solids: dict[str, Path]
+) -> None:
+    def boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(normalize_brep, "split_closed_faces", boom)
+    columns, errors = StepScorer(split_closed_faces=True)._run_families(
+        solids["box"], solids["box"]
+    )
+
+    assert set(errors) == {"normalize"}
+    assert columns["voxel_iou"] == 1.0
 
 
 def test_the_scorer_survives_the_spawn_boundary() -> None:

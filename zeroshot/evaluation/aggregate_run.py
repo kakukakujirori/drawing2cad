@@ -252,6 +252,10 @@ def notes(rows: Sequence[SampleRow]) -> list[str]:
             lines.append(f"{row.sample_id}  budget exhausted: {', '.join(exhausted)}")
         if row.score_status not in {None, ScoreStatus.OK.value}:
             lines.append(f"{row.sample_id}  score {row.score_status}")
+        # A pose the surfaces cannot settle makes every pose-dependent column a
+        # draw the sampling won, so these samples do not carry a comparison.
+        if (tied := row.metrics.get("align_tied", 1)) and tied > 1:
+            lines.append(f"{row.sample_id}  pose tied between {tied} orientations")
         if row.model_calls and not row.calls_with_usage:
             lines.append(f"{row.sample_id}  backend reported no token usage")
     return lines
