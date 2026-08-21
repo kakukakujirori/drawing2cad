@@ -7,3 +7,6 @@ $semantic_hypothesis
 Current operation plan:
 
 $operation_plan
+
+
+$guidelines

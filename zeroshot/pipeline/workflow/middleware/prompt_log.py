@@ -1,14 +1,20 @@
 """Publish what an agent was asked, which no other node reports."""
 
 from collections.abc import Awaitable, Callable
-from typing import Any, override
+from typing import Any, NotRequired, override
 
 from langchain.agents import AgentState as _AgentState
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
 from langgraph.runtime import Runtime
 
 
-class PromptLogMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
+class PromptLogState(_AgentState[Any]):
+    """State fields owned and required by PromptLogMiddleware."""
+
+    reported_message_count: NotRequired[int]
+
+
+class PromptLogMiddleware(AgentMiddleware[PromptLogState, None, Any]):
     """Publish the prompt an agent is called with, once per invocation.
 
     Neither half of that prompt reaches the event log on its own. A system
@@ -18,15 +24,16 @@ class PromptLogMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     worth a record beside the answers it produced.
     """
 
+    state_schema = PromptLogState
+
     def __init__(self, role: str) -> None:
         super().__init__()
         self.role = role
-        self._reported = 0
         self._pending = False
 
     @override
     def before_agent(
-        self, state: _AgentState[Any], runtime: Runtime[None]
+        self, state: PromptLogState, runtime: Runtime[None]
     ) -> dict[str, Any] | None:
         """Arm the report for this ask.
 
@@ -40,12 +47,18 @@ class PromptLogMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
 
     @override
     def after_agent(
-        self, state: _AgentState[Any], runtime: Runtime[None]
+        self, state: PromptLogState, runtime: Runtime[None]
     ) -> dict[str, Any] | None:
-        """Mark where this ask ended, so the next one reports only its own."""
+        """Mark where this ask ended, so the next one reports only its own.
+
+        The mark rides in agent state rather than on this instance, so that an
+        agent handed a transcript someone else built -- the fan-out reducer
+        continuing its head proposer, or a stage continuing the thread of the
+        stage before it -- reports its own ask instead of replaying an inherited
+        one.  The caller states the inheritance by seeding the count.
+        """
         del runtime
-        self._reported = len(state["messages"])
-        return None
+        return {"reported_message_count": len(state["messages"])}
 
     def _publish(self, request: ModelRequest[None]) -> None:
         """Report what this ask added, once, on its first model call.
@@ -59,12 +72,13 @@ class PromptLogMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         if not self._pending:
             return
         self._pending = False
+        reported = request.state.get("reported_message_count", 0)
         request.runtime.stream_writer(
             {
                 "prompt": {
                     "role": self.role,
-                    "system": "" if self._reported else (request.system_prompt or ""),
-                    "messages": list(request.messages[self._reported :]),
+                    "system": "" if reported else (request.system_prompt or ""),
+                    "messages": list(request.messages[reported:]),
                 }
             }
         )

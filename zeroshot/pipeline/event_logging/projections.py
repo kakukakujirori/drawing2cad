@@ -304,11 +304,15 @@ class ModelStreamItem(TypedDict):
 
     `role` is the agent the call belongs to and `node` the node inside it, so a
     run with six agents can say which one is speaking rather than reporting
-    every one of them as `model`.
+    every one of them as `model`.  `namespace` is where in the graph the call
+    happened, which is what separates two calls a role cannot: the fan-out's
+    branches share a role and run at the same time, and a run whose stages
+    share one agent gives every stage the same role as well.
     """
 
     role: str | None
     node: str | None
+    namespace: list[str]
     run_id: str
     streamed: bool
     payload: dict[str, Any]
@@ -352,6 +356,7 @@ class AgentMessageTransformer(StreamTransformer):
             ModelStreamItem(
                 role=metadata.get("lc_agent_name"),
                 node=metadata.get("langgraph_node"),
+                namespace=list(event["params"].get("namespace") or ()),
                 run_id=str(metadata.get("run_id", "")),
                 streamed=streamed,
                 payload=cast(dict[str, Any], _safe_value(payload)),

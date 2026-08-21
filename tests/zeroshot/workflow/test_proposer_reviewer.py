@@ -9,7 +9,7 @@ from langchain_core.tools import tool
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from zeroshot.pipeline.workflow import StopReason
-from zeroshot.pipeline.workflow.proposer_reviewer import (
+from zeroshot.pipeline.workflow.components.proposer_reviewer import (
     Proposal,
     Review,
     create_proposer_reviewer_loop,
@@ -151,7 +151,9 @@ def test_the_reviewer_sees_the_proposal_but_not_the_proposers_transcript() -> No
     assert state["proposal"] == _proposed("a plate", "a hole")
 
 
-def test_each_role_is_told_the_schema_it_owes() -> None:
+def test_a_role_is_told_no_schema_but_its_own() -> None:
+    """The reviewer owes a verdict, not a proposal, and a schema it does not
+    owe would only invite it to answer in the wrong shape."""
     proposer = ScriptedChatModel(responses=(_hypothesis("a plate"),))
     reviewer = ScriptedChatModel(responses=(_review(True, "fine"),))
 
@@ -159,9 +161,12 @@ def test_each_role_is_told_the_schema_it_owes() -> None:
 
     proposer_prompt = proposer.received_messages[0][0].text
     reviewer_prompt = reviewer.received_messages[0][0].text
-    assert json.dumps(Proposal.model_json_schema(), indent=2) in proposer_prompt
     assert json.dumps(Review.model_json_schema(), indent=2) in reviewer_prompt
     assert json.dumps(Proposal.model_json_schema(), indent=2) not in reviewer_prompt
+    # The proposer is held to its shape by the response format it is called
+    # with, which `ProviderStrategy` sends with the request, so its role does
+    # not carry a copy of the schema for the stages sharing that role to read.
+    assert json.dumps(Proposal.model_json_schema(), indent=2) not in proposer_prompt
 
 
 def test_revision_limit_counts_reviews_and_keeps_the_latest_proposal() -> None:

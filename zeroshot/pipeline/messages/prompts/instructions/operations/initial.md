@@ -3,3 +3,6 @@ Using the current semantic hypothesis below and the input drawing, produce an or
 Semantic hypothesis:
 
 $semantic_hypothesis
+
+
+$guidelines

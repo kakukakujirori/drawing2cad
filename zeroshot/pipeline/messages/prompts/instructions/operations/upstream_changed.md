@@ -7,3 +7,6 @@ $rationale
 Updated semantic hypothesis:
 
 $semantic_hypothesis
+
+
+$guidelines

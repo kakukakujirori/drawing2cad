@@ -33,7 +33,7 @@ from tests.zeroshot.chat_models import (
 from zeroshot.pipeline.messages import PromptTemplate
 from zeroshot.pipeline.tools import ToolFeedbackError
 from zeroshot.pipeline.workflow import Proposal, StopReason
-from zeroshot.pipeline.workflow.agent import create_agent
+from zeroshot.pipeline.workflow.components.agent import create_agent
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
 PROMPT_CONTEXT = {
@@ -245,6 +245,7 @@ def test_a_prompt_report_covers_one_ask_rather_than_the_whole_transcript() -> No
             "messages": [*first["messages"], HumanMessage(content="revise this")],
             "current_turn": first["current_turn"],
             "total_turns": first["total_turns"],
+            "reported_message_count": first["reported_message_count"],
         },
         stream_mode="custom",
     ):
@@ -260,6 +261,34 @@ def test_a_prompt_report_covers_one_ask_rather_than_the_whole_transcript() -> No
         "revise this",
         "[turn reset to 0/3]",
     ]
+
+
+def test_a_prompt_report_skips_a_transcript_the_agent_was_handed() -> None:
+    """The count travels in state, so an agent continuing someone else's
+    transcript -- the fan-out reducer, or a stage continuing the one before it
+    -- reports its own ask instead of replaying what it inherited."""
+    reports: list[dict[str, Any]] = []
+    inherited = [
+        HumanMessage(content="analyse the drawing"),
+        AIMessage(content="a flanged boss"),
+    ]
+    model = ScriptedChatModel(responses=(AIMessage(content="written"),))
+    agent = _subgraph(model, max_turns=3, announce_turns=False)
+
+    for chunk in agent.stream(
+        {
+            "messages": [*inherited, HumanMessage(content="now write the code")],
+            "reported_message_count": len(inherited),
+        },
+        stream_mode="custom",
+    ):
+        reports.append(chunk["prompt"])
+
+    (ask,) = reports
+    # The system prompt is stated only to an agent that has been told nothing,
+    # and this one was handed a transcript.
+    assert ask["system"] == ""
+    assert [message.text for message in ask["messages"]] == ["now write the code"]
 
 
 def test_agent_is_asked_to_land_before_its_budget_runs_out() -> None:

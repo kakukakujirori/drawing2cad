@@ -1,0 +1,31 @@
+# @package _global_
+
+# The staged graph, run as one agent rather than four. The three reasoning
+# stages share one model, one system prompt and one transcript, so the drawing
+# is read once for the whole run and the reasoning behind an interpretation
+# survives into the stages that depend on it. The fan-out's other proposers and
+# the audit still read the drawing themselves: an independent reading is what
+# they are for.
+defaults:
+  - staged
+  - _self_
+
+workflow:
+  share_thread: true
+
+  # The model that writes the notes a stage's working turns are traded for at
+  # each handover, or null to hand the turns on whole. The same model the
+  # stages themselves use: the notes are written by whoever holds the context,
+  # not by a reader of it.
+  compact_between_stages: null
+
+  # One role for all three stages, so the transcript is never re-read under a
+  # persona that did not produce it. `roles/cad_reconstructor.md` takes neither
+  # `$output_schema` nor `$max_turns`, so every stage renders it identically
+  # while keeping its own turn budget and its own answer contract.
+  semantics_agent_builder:
+    proposer_role: cad_reconstructor
+  operations_agent_builder:
+    proposer_role: cad_reconstructor
+  coding_agent_builder:
+    role: cad_reconstructor

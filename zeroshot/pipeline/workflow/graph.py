@@ -1,9 +1,11 @@
 import json
 from collections.abc import Mapping, Sequence
+from functools import partial
 from pathlib import PurePosixPath
 from typing import Any, Literal, Protocol, cast
 
 from langchain.agents.middleware import AgentMiddleware
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, merge_message_runs
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
@@ -25,8 +27,15 @@ from zeroshot.pipeline.tools import (
 )
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
 from zeroshot.pipeline.workflow._config import _child_graph_config
+from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
-from zeroshot.pipeline.workflow.state import Audit, ReconstructionState
+from zeroshot.pipeline.workflow.state import (
+    Audit,
+    ReasoningStage,
+    ReconstructionState,
+    carry_thread,
+    lead_transcript,
+)
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
 
@@ -67,7 +76,7 @@ _STAGE_ORDER = ["semantics", "operations", "coding", "audit"]
 # audit rerouting
 def _invocation_reason(
     state: ReconstructionState,
-    current_stage: Literal["semantics", "operations", "coding"],
+    current_stage: ReasoningStage,
 ) -> tuple[Literal["initial", "targeted_redo", "upstream_changed"], str]:
     audit = state.get("audit")
     if audit is None:
@@ -103,11 +112,18 @@ def create_reconstruction_graph(
     output_filename: str = "model.py",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     max_audit_reject_count: int = 3,
+    share_thread: bool = False,
+    compact_between_stages: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ):
     """Interpret and plan the part, implement it, then verify and audit it."""
     if max_audit_reject_count <= 0:
         raise ValueError(f"{max_audit_reject_count=} must be positive")
+    if compact_between_stages is not None and not share_thread:
+        raise ValueError(
+            "compact_between_stages needs share_thread: with a transcript per "
+            "stage there is no handover at which to compact anything."
+        )
 
     # Create tools
     executor = CadQueryExecutor(sandbox_runner=sandbox_runner)
@@ -172,9 +188,10 @@ def create_reconstruction_graph(
 
         proposer_instruction = build_instruction(
             f"semantics/{entry_reason}",
+            **prompt_context,
             rationale=audit_rationale,
         )
-        if entry_reason == "initial":
+        if entry_reason == "initial" or compact_between_stages is not None:
             # `merge_message_runs` merges multiple HumanMessages into one
             (proposer_instruction,) = merge_message_runs(
                 [proposer_instruction, _prepare_input_message()]
@@ -213,6 +230,7 @@ def create_reconstruction_graph(
 
         proposer_instruction = build_instruction(
             f"operations/{entry_reason}",
+            **prompt_context,
             semantic_hypothesis=semantic_hypothesis_json,
             rationale=audit_rationale,
         )
@@ -221,7 +239,7 @@ def create_reconstruction_graph(
             semantic_hypothesis=semantic_hypothesis_json,
         )
 
-        if entry_reason == "initial":
+        if entry_reason == "initial" or compact_between_stages is not None:
             # `merge_message_runs` merges multiple HumanMessages into one
             (proposer_instruction,) = merge_message_runs(
                 [proposer_instruction, _prepare_input_message()]
@@ -265,12 +283,13 @@ def create_reconstruction_graph(
         entry_reason, audit_rationale = _invocation_reason(state, "coding")
         instruction = build_instruction(
             f"coding/{entry_reason}",
+            **prompt_context,
             semantic_hypothesis=semantic_hypothesis.model_dump_json(indent=2),
             operation_plan=operation_plan.model_dump_json(indent=2),
             rationale=audit_rationale,
         )
 
-        if entry_reason == "initial":
+        if entry_reason == "initial" or compact_between_stages is not None:
             (instruction,) = cast(
                 list[HumanMessage],
                 merge_message_runs([instruction, _prepare_input_message()]),
@@ -291,6 +310,16 @@ def create_reconstruction_graph(
         # still editing, and this runs after the coder has stopped.
         report, _ = verifier.verify()
         return {"last_verification": report}
+
+    def after_verification(state: ReconstructionState) -> Literal["audit", "__end__"]:
+        """Whether an audit could still send the run back.
+
+        Note that the inequality below includes "=", which means the final audit round
+        doesn't run because there is nobody consumes the audit result.
+        """
+        if state.get("audit_reject_count", 0) >= max_audit_reject_count:
+            return "__end__"
+        return "audit"
 
     def audit_output(state: ReconstructionState, config: RunnableConfig):
         """Judge the verified model, and say which stage owns any mismatch."""
@@ -353,9 +382,27 @@ def create_reconstruction_graph(
         audit = state.get("audit")
         if audit is None or audit.revise is None:
             return "__end__"
-        if state.get("audit_reject_count", 0) > max_audit_reject_count:
-            return "__end__"
+        # The budget is spent before the audit runs, not after it: `audit` is
+        # only reached while a send-back is still left.
         return audit.revise
+
+    # compaction after stage & carry thread through stages
+    def handover(
+        state: ReconstructionState, config: RunnableConfig, *, stage: ReasoningStage
+    ) -> dict[str, Any]:
+        thread = lead_transcript(state, stage)
+        if compact_between_stages is not None:
+            thread = compact_transcript(
+                thread, model=compact_between_stages, config=config
+            )
+        return carry_thread(state, thread)
+
+    def _handover_node(stage: str) -> str:
+        return stage + "_handover"
+
+    def _exit(stage: str) -> str:
+        """Where a reasoning stage hands over to the rest of the graph."""
+        return _handover_node(stage) if share_thread else stage
 
     # Construct a graph
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
@@ -365,11 +412,17 @@ def create_reconstruction_graph(
     workflow.add_node("verify_final", verify_final)
     workflow.add_node("audit", audit_output)
 
+    if share_thread:
+        # broadcast states across all stages
+        for stage in ["semantics", "operations", "coding"]:
+            workflow.add_node(_handover_node(stage), partial(handover, stage=stage))
+            workflow.add_edge(stage, _handover_node(stage))
+
     workflow.add_edge(START, "semantics")
-    workflow.add_conditional_edges("semantics", after_semantics)
-    workflow.add_conditional_edges("operations", after_operations)
-    workflow.add_edge("coding", "verify_final")
-    workflow.add_edge("verify_final", "audit")
+    workflow.add_conditional_edges(_exit("semantics"), after_semantics)
+    workflow.add_conditional_edges(_exit("operations"), after_operations)
+    workflow.add_edge(_exit("coding"), "verify_final")
+    workflow.add_conditional_edges("verify_final", after_verification)
     workflow.add_conditional_edges("audit", after_audit)
 
     graph = workflow.compile(checkpointer=checkpointer)

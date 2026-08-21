@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -18,15 +18,30 @@ from zeroshot.pipeline.event_logging.projections import (
 )
 
 
-def _speaker(role: str | None, node: str | None) -> str:
-    """Who this output belongs to.
+def _graph_path(namespace: Sequence[str]) -> str:
+    """Where in the graph a call happened, without the per-run ids.
 
-    The role first: a run drives six agents through the same `model` node, and
-    which of them is speaking is the thing worth reading. The node is added
-    when it is not that call itself, so a message some middleware injected is
-    attributed to what injected it rather than to the agent it landed in.
+    A namespace entry is `node:uuid`; the uuid changes every run and says
+    nothing to a reader watching one.
+    """
+    return "/".join(entry.split(":", 1)[0] for entry in namespace if entry)
+
+
+def _speaker(role: str | None, node: str | None, namespace: Sequence[str] = ()) -> str:
+    """Who this output belongs to, and where in the run they are speaking.
+
+    The role first: a run drives several agents through the same `model` node,
+    and which of them is speaking is the thing worth reading. The graph path
+    follows, because a role is not always enough to tell two callers apart: the
+    fan-out's proposers share a role and stream at the same time, and a run
+    whose stages share one agent gives every stage that role too, so without
+    the path the whole run reads as one speaker. The node is added last when it
+    is not the call itself, so a message some middleware injected is attributed
+    to what injected it rather than to the agent it landed in.
     """
     speaker = role or node or "unknown"
+    if path := _graph_path(namespace):
+        speaker = f"{speaker} · {path}"
     if node and node != "model":
         return f"{speaker} · {node}"
     return speaker
@@ -188,7 +203,7 @@ class ConsoleReporter:
         run_id = item["run_id"]
         event = item["payload"]
         event_type = event.get("event")
-        speaker = _speaker(item["role"], item["node"])
+        speaker = _speaker(item["role"], item["node"], item["namespace"])
         if event_type == "message-start":
             self._model_sections[run_id] = _ModelSection(speaker=speaker)
             return
@@ -295,7 +310,7 @@ class ConsoleReporter:
         """Render a message that arrived complete rather than in parts."""
         message = item["payload"]
         self.console.print(
-            f"\n[model] {_speaker(item['role'], item['node'])}",
+            f"\n[model] {_speaker(item['role'], item['node'], item['namespace'])}",
             style="bold green",
             markup=False,
         )

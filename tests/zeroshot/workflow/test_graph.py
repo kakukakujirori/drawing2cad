@@ -33,8 +33,10 @@ from zeroshot.pipeline.workflow import (
     create_fanout_reduce_graph,
 )
 from zeroshot.pipeline.workflow import graph as graph_module
+from zeroshot.pipeline.workflow.components.proposer_reviewer import (
+    create_proposer_reviewer_loop,
+)
 from zeroshot.pipeline.workflow.graph import AgentBuilder, create_reconstruction_graph
-from zeroshot.pipeline.workflow.proposer_reviewer import create_proposer_reviewer_loop
 
 
 def _renderer() -> StepRenderer:
@@ -64,6 +66,33 @@ def _semantic_proposed(*items: str) -> FanoutReduceProposal:
 
 def _hypothesis(*semantics: str) -> AIMessage:
     return AIMessage(content=_semantic_proposed(*semantics).model_dump_json())
+
+
+def _hypothesizer(*semantics: str) -> ScriptedChatModel:
+    """A head proposer that answers, then merges the fan-out to that answer.
+
+    The stage needs at least two proposers, so the head is asked twice: once on
+    its own branch, and once more as the reducer.  A test that is not about the
+    fan-out says what the stage settles on and leaves the merge alone.
+    """
+    return ScriptedChatModel(
+        responses=(_hypothesis(*semantics), _hypothesis(*semantics))
+    )
+
+
+def _peer_hypothesizer() -> ScriptedChatModel:
+    """The branch the head has to reconcile, for tests not about its content."""
+    return ScriptedChatModel(responses=(_hypothesis("a peer reading"),))
+
+
+def _silent_hypothesizer(turns: int) -> ScriptedChatModel:
+    """A proposer that spends its budget investigating and never answers."""
+    return ScriptedChatModel(
+        responses=tuple(
+            tool_call("run_shell", {"command": "true"}, f"call-{turn}")
+            for turn in range(turns)
+        )
+    )
 
 
 def _plan(*operations: str) -> AIMessage:
@@ -147,7 +176,9 @@ def _graph(
         semantics_agent_builder=partial(
             create_fanout_reduce_graph,
             proposer_role="semantic_hypothesizer",
-            proposer_models=list(semantic_models or [hypothesizer]),
+            proposer_models=list(
+                semantic_models or [hypothesizer, _peer_hypothesizer()]
+            ),
             **fanout_options,
         ),
         operations_agent_builder=_stage(
@@ -209,7 +240,7 @@ def _last_instruction(messages: list[BaseMessage]) -> str:
 
 
 def test_an_accepted_hypothesis_reaches_the_coder_and_the_final_verification() -> None:
-    hypothesizer = ScriptedChatModel(responses=(_hypothesis("a flanged boss"),))
+    hypothesizer = _hypothesizer("a flanged boss")
     reviewer = ScriptedChatModel(responses=(_review(True, "matches all views"),))
     coder = ScriptedChatModel(responses=(AIMessage(content="written"),))
 
@@ -275,7 +306,7 @@ def test_semantics_fans_out_and_reduces_before_operations() -> None:
 
 
 def test_each_agent_keeps_a_private_transcript() -> None:
-    hypothesizer = ScriptedChatModel(responses=(_hypothesis("a plate"),))
+    hypothesizer = _hypothesizer("a plate")
     reviewer = ScriptedChatModel(responses=(_review(True, "fine"),))
     coder = ScriptedChatModel(responses=(AIMessage(content="written"),))
 
@@ -322,7 +353,7 @@ def test_semantics_no_longer_invokes_the_legacy_reviewer() -> None:
 
 
 def test_the_coder_is_given_both_settled_artifacts() -> None:
-    hypothesizer = ScriptedChatModel(responses=(_hypothesis("a flanged boss"),))
+    hypothesizer = _hypothesizer("a flanged boss")
     reviewer = ScriptedChatModel(responses=(_review(True, "fine"),))
     planner = ScriptedChatModel(responses=(_plan("extrude the outline 25mm"),))
     plan_reviewer = ScriptedChatModel(responses=(_review(True, "builds it"),))
@@ -349,7 +380,7 @@ def test_the_coder_is_given_both_settled_artifacts() -> None:
 
 
 def test_a_plan_that_was_never_settled_leaves_the_coder_nothing_to_follow() -> None:
-    hypothesizer = ScriptedChatModel(responses=(_hypothesis("a plate"),))
+    hypothesizer = _hypothesizer("a plate")
     reviewer = ScriptedChatModel(responses=(_review(True, "fine"),))
     planner = ScriptedChatModel(
         responses=tuple(
@@ -381,12 +412,7 @@ def test_a_plan_that_was_never_settled_leaves_the_coder_nothing_to_follow() -> N
 
 def test_a_stage_that_never_answered_leaves_the_coder_nothing_to_write() -> None:
     """Its budget went on investigating, so there is no hypothesis to code."""
-    hypothesizer = ScriptedChatModel(
-        responses=tuple(
-            tool_call("run_shell", {"command": "true"}, f"call-{turn}")
-            for turn in range(4)
-        )
-    )
+    hypothesizer = _silent_hypothesizer(4)
     reviewer = ScriptedChatModel(responses=())
     coder = ScriptedChatModel(responses=())
 
@@ -396,6 +422,9 @@ def test_a_stage_that_never_answered_leaves_the_coder_nothing_to_write() -> None
             hypothesizer,
             reviewer,
             coder,
+            # Every branch runs out, so the reduction has nothing to fall back
+            # on and the stage settles on no hypothesis at all.
+            semantic_models=[hypothesizer, _silent_hypothesizer(4)],
             agent_options={"max_turns": 2},
         )
         result = graph.invoke({})
@@ -435,6 +464,7 @@ def test_a_later_agent_does_not_inherit_an_earlier_agents_turn_notices() -> None
         responses=(
             tool_call("run_shell", {"command": "true"}, "call-look"),
             _hypothesis("a plate"),
+            _hypothesis("a plate"),
         )
     )
     reviewer = ScriptedChatModel(responses=(_review(True, "fine"),))
@@ -459,13 +489,16 @@ def test_a_later_agent_does_not_inherit_an_earlier_agents_turn_notices() -> None
 
     # An agent keeps its own ladder, counting only its own turns, so a stage
     # that inherits four AI turns still opens at turn 1 of its budget.
+    # Two on its own branch, and one more when the reduction reopens it: the
+    # ladder is per ask, so the merge starts over at turn 1 of the same budget.
     assert notices(hypothesizer.received_messages[-1]) == [
         "[turn 1/30]",
         "[turn 2/30]",
+        "[turn 1/30]",
     ]
     assert reviewer.received_messages == []
     assert notices(coder.received_messages[0]) == ["[turn 1/30]"]
-    assert len(notices(result["semantics_state"]["reducer_state"]["messages"])) == 2
+    assert len(notices(result["semantics_state"]["reducer_state"]["messages"])) == 3
     assert len(notices(result["coding_state"]["messages"])) == 1
 
 
@@ -478,7 +511,7 @@ def test_the_coder_is_told_what_its_edit_built_without_asking(
     the last turn with nothing left to fix it with. Reported here instead, from
     the path back to the model, where it costs no turn at all.
     """
-    hypothesizer = ScriptedChatModel(responses=(_hypothesis("a plate"),))
+    hypothesizer = _hypothesizer("a plate")
     reviewer = ScriptedChatModel(responses=(_review(True, "fine"),))
     final_report = VerifyOutputResult(
         verification_id="001",
@@ -535,7 +568,7 @@ def test_the_coder_is_told_what_its_edit_built_without_asking(
 
 
 def test_the_workflow_runs_the_final_verification_after_a_coder_runs_out() -> None:
-    hypothesizer = ScriptedChatModel(responses=(_hypothesis("a plate"),))
+    hypothesizer = _hypothesizer("a plate")
     reviewer = ScriptedChatModel(responses=(_review(True, "fine"),))
     coder = ScriptedChatModel(
         responses=tuple(
@@ -567,7 +600,8 @@ def test_the_workflow_runs_the_final_verification_after_a_coder_runs_out() -> No
         "coder": result["coding_state"]["total_turns"],
         "output_auditor": result["audit_state"]["total_turns"],
     } == {
-        "semantic_hypothesizer": 1,
+        # One turn on its own branch, one more to reduce the fan-out.
+        "semantic_hypothesizer": 2,
         "operation_planner": 1,
         "operation_reviewer": 1,
         "coder": 3,
@@ -629,14 +663,19 @@ def test_the_audit_sends_the_run_back_to_the_stage_it_names(
 
     assert result["audit"].revise is None
     assert result["audit_reject_count"] == 1
-    # The named stage ran twice, and so did everything downstream of it.
-    assert len(models[rerun].received_messages) == 2
+    # The named stage ran twice, and so did everything downstream of it.  The
+    # hypothesizer answers one extra ask throughout, because its stage fans out
+    # and its head both proposes and reduces; a send-back re-enters at the
+    # reduction without fanning out again.
+    assert len(models[rerun].received_messages) == (
+        3 if rerun == "semantic_hypothesizer" else 2
+    )
     assert len(models["coder"].received_messages) == 2
     # Nothing upstream of it was asked again.
     if rerun == "coder":
         assert len(models["operation_planner"].received_messages) == 1
     if rerun != "semantic_hypothesizer":
-        assert len(models["semantic_hypothesizer"].received_messages) == 1
+        assert len(models["semantic_hypothesizer"].received_messages) == 2
 
 
 def test_a_stage_the_audit_sends_back_opens_on_its_revise_instruction() -> None:
@@ -651,7 +690,7 @@ def test_a_stage_the_audit_sends_back_opens_on_its_revise_instruction() -> None:
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
-            ScriptedChatModel(responses=(_hypothesis("a plate"),)),
+            _hypothesizer("a plate"),
             ScriptedChatModel(responses=(_review(True, "fine"),)),
             ScriptedChatModel(
                 responses=tuple(AIMessage(content="written") for _ in range(2))
@@ -685,7 +724,11 @@ def test_a_stage_whose_premise_was_redone_is_not_asked_the_first_time_question()
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
-            ScriptedChatModel(responses=tuple(_hypothesis(f"h{n}") for n in range(2))),
+            ScriptedChatModel(
+                # Its branch, the reduction that settles on it, and the
+                # revision the audit sends it back for.
+                responses=(_hypothesis("h0"), _hypothesis("h0"), _hypothesis("h1"))
+            ),
             ScriptedChatModel(responses=tuple(_review(True, "fine") for _ in range(2))),
             ScriptedChatModel(
                 responses=tuple(AIMessage(content="written") for _ in range(2))
@@ -723,7 +766,7 @@ def test_a_coder_the_audit_sends_back_is_asked_for_a_correction() -> None:
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
-            ScriptedChatModel(responses=(_hypothesis("a plate"),)),
+            _hypothesizer("a plate"),
             ScriptedChatModel(responses=(_review(True, "fine"),)),
             coder,
             auditor=auditor,
@@ -756,7 +799,7 @@ def test_a_coder_sent_back_after_running_out_carries_a_usable_transcript() -> No
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
-            ScriptedChatModel(responses=(_hypothesis("a plate"),)),
+            _hypothesizer("a plate"),
             ScriptedChatModel(responses=(_review(True, "fine"),)),
             coder,
             agent_options={"max_turns": 2, "announce_turns": False},
@@ -823,7 +866,11 @@ def test_a_stage_sent_back_does_not_read_the_work_it_invalidated() -> None:
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
-            ScriptedChatModel(responses=tuple(_hypothesis(f"h{n}") for n in range(2))),
+            ScriptedChatModel(
+                # Its branch, the reduction that settles on it, and the
+                # revision the audit sends it back for.
+                responses=(_hypothesis("h0"), _hypothesis("h0"), _hypothesis("h1"))
+            ),
             ScriptedChatModel(responses=tuple(_review(True, "fine") for _ in range(2))),
             coder,
             planner=planner,
@@ -856,7 +903,7 @@ def test_the_coder_is_not_shown_the_audits_own_turns() -> None:
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
-            ScriptedChatModel(responses=(_hypothesis("a plate"),)),
+            _hypothesizer("a plate"),
             ScriptedChatModel(responses=(_review(True, "fine"),)),
             coder,
             auditor=ScriptedChatModel(
@@ -886,7 +933,7 @@ def test_the_run_ends_when_the_audit_has_sent_it_back_too_often() -> None:
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
-            ScriptedChatModel(responses=(_hypothesis("a plate"),)),
+            _hypothesizer("a plate"),
             ScriptedChatModel(responses=(_review(True, "fine"),)),
             coder,
             auditor=auditor,
@@ -894,27 +941,27 @@ def test_the_run_ends_when_the_audit_has_sent_it_back_too_often() -> None:
         )
         result = graph.invoke({})
 
-    assert result["audit_reject_count"] == 3
+    assert result["audit_reject_count"] == 2
     # The first run of the coder plus one for each send-back it was granted.
     assert len(coder.received_messages) == 3
     assert result["audit"].revise == "coding"
+    # The budget is spent before the audit runs: the run does not pay for a
+    # verdict that no send-back is left to act on.
+    assert len(auditor.received_messages) == 2
 
 
 def test_a_run_that_never_reached_the_coder_is_not_audited() -> None:
     """There is no built model to judge, so the audit would have no evidence."""
     auditor = ScriptedChatModel(responses=(_audit(None, "unused"),))
+    hypothesizer = _silent_hypothesizer(2)
 
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
-            ScriptedChatModel(
-                responses=(
-                    tool_call("run_shell", {"command": "true"}, "call-loop"),
-                    tool_call("run_shell", {"command": "true"}, "call-loop-2"),
-                )
-            ),
+            hypothesizer,
             ScriptedChatModel(responses=(_review(True, "fine"),)),
             ScriptedChatModel(responses=()),
+            semantic_models=[hypothesizer, _silent_hypothesizer(2)],
             agent_options={"max_turns": 2, "announce_turns": False},
             auditor=auditor,
         )

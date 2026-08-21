@@ -58,20 +58,21 @@ def _reasoning_stage(proposer_role: str, reviewer_role: str, proposal: str):
     )
 
 
+_A_BOX = AIMessage(content='{"proposal": ["a box"], "rationale": "one prism"}')
+
+
 def _semantic_stage():
+    """Two proposers, because that is the smallest fan-out the stage allows.
+
+    The head answers twice: once on its own branch, and once more as the
+    reducer merging the peer's answer into it.
+    """
     return partial(
         create_fanout_reduce_graph,
         proposer_role="semantic_hypothesizer",
         proposer_models=[
-            ScriptedChatModel(
-                responses=(
-                    AIMessage(
-                        content=(
-                            '{"proposal": ["a box"], "rationale": "one prism"}'
-                        )
-                    ),
-                )
-            )
+            ScriptedChatModel(responses=(_A_BOX, _A_BOX)),
+            ScriptedChatModel(responses=(_A_BOX,)),
         ],
         announce_turns=False,
     )
@@ -871,9 +872,13 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
     events = _events(artifact_root / "prompted")
     prompts = [event["data"] for event in events if event["event"] == "prompt"]
 
-    # One per role, not one per model call: the report is what an agent was
-    # asked when it was asked, and a retry re-asks nothing new.
+    # One per ask, not one per model call: the report is what an agent was
+    # asked when it was asked, and a retry re-asks nothing new.  The
+    # hypothesizer role is asked three times because the stage fans out --
+    # once per proposer branch, and once more to reduce them.
     assert [prompt["role"] for prompt in prompts] == [
+        "semantic_hypothesizer",
+        "semantic_hypothesizer",
         "semantic_hypothesizer",
         "operation_planner",
         "operation_reviewer",
@@ -881,8 +886,13 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
         "output_auditor",
     ]
 
+    # The reducer continues its head proposer's transcript, and reports the
+    # request that reopened it rather than replaying what it was handed.
+    reduction = prompts[2]
+    assert reduction["system"] == ""
+    assert len(reduction["messages"]) == 1
+
     coder = next(prompt for prompt in prompts if prompt["role"] == "coder")
-    assert "/work/model.py" in coder["system"]
     assert "expert CAD engineer" in coder["system"]
     instruction = "\n".join(
         str(block.get("text", ""))
@@ -892,6 +902,10 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
         if isinstance(block, Mapping) and block.get("type") == "text"
     )
     assert "Implement the current semantic hypothesis" in instruction
+    # The run's paths reach the stage that needs them through its instruction,
+    # not through a role that every stage of a shared thread would read.
+    assert "/work/model.py" in instruction
+    assert "/work/model.py" not in coder["system"]
     assert "/work/inputs/techdraw.dxf" in instruction
 
 

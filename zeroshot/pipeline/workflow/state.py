@@ -1,28 +1,40 @@
 import operator
+from collections.abc import Mapping, Sequence
 from typing import (
     Annotated,
+    Any,
     Literal,
     NotRequired,
     Self,
     TypedDict,
+    cast,
     get_args,
     get_type_hints,
 )
 
+from langchain_core.messages import AnyMessage
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import is_typeddict
 
 from zeroshot.pipeline.tools import VerifyOutputResult
-from zeroshot.pipeline.workflow.agent import AgentState
-from zeroshot.pipeline.workflow.fanout_reduce import FanoutReduceState
-from zeroshot.pipeline.workflow.fanout_reduce import Proposal as SemanticProposal
-from zeroshot.pipeline.workflow.proposer_reviewer import Proposal as OperationProposal
-from zeroshot.pipeline.workflow.proposer_reviewer import ProposerReviewerState
+from zeroshot.pipeline.workflow.components.agent import AgentState
+from zeroshot.pipeline.workflow.components.fanout_reduce import FanoutReduceState
+from zeroshot.pipeline.workflow.components.fanout_reduce import (
+    Proposal as SemanticProposal,
+)
+from zeroshot.pipeline.workflow.components.proposer_reviewer import (
+    Proposal as OperationProposal,
+)
+from zeroshot.pipeline.workflow.components.proposer_reviewer import (
+    ProposerReviewerState,
+)
+
+type ReasoningStage = Literal["semantics", "operations", "coding"]
 
 
 class Audit(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    revise: Literal["semantics", "operations", "coding"] | None = Field(
+    revise: ReasoningStage | None = Field(
         ...,
         description=(
             "The earliest stage that must be redone. "
@@ -56,6 +68,45 @@ class ReconstructionState(TypedDict):
     last_verification: NotRequired[VerifyOutputResult]
     audit: NotRequired[Audit | None]
     audit_reject_count: NotRequired[Annotated[int, operator.add]]
+
+
+# Which agent carries the thread through each reasoning stage, and where its
+# transcript is kept: the fan-out continues its head proposer as the reducer,
+# the proposer-reviewer loop continues its proposer, and a plain agent is its
+# own.  The one place that knows the three shapes.
+_LEAD_TRANSCRIPT: Mapping[ReasoningStage, tuple[str, str | None]] = {
+    "semantics": ("semantics_state", "reducer_state"),
+    "operations": ("operations_state", "proposer_state"),
+    "coding": ("coding_state", None),
+}
+
+
+def lead_transcript(
+    state: ReconstructionState, stage: ReasoningStage
+) -> list[AnyMessage]:
+    """The transcript of the agent that carried the thread through `stage`."""
+    channel, nested = _LEAD_TRANSCRIPT[stage]
+    stage_state = cast(Mapping[str, Any], state).get(channel) or {}
+    lead = (stage_state.get(nested) or {}) if nested is not None else stage_state
+    return list(lead.get("messages") or [])
+
+
+def carry_thread(
+    state: ReconstructionState, thread: Sequence[AnyMessage]
+) -> dict[str, Any]:
+    """Broadcast `thread` to other stages."""
+    seeded = {"messages": list(thread), "reported_message_count": len(thread)}
+
+    stage_states = cast(Mapping[str, Any], state)
+    update: dict[str, Any] = {}
+    for channel, nested in _LEAD_TRANSCRIPT.values():
+        existing = dict(stage_states.get(channel) or {})
+        update[channel] = (
+            {**existing, **seeded}
+            if nested is None
+            else {**existing, nested: {**(existing.get(nested) or {}), **seeded}}
+        )
+    return update
 
 
 def _custom_state_types(*root_schemas: type) -> tuple[type, ...]:

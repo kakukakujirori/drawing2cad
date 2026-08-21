@@ -6,14 +6,14 @@ from langchain_core.tools import tool
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from zeroshot.pipeline.workflow import FanoutReduceProposal, StopReason
-from zeroshot.pipeline.workflow.fanout_reduce import create_fanout_reduce_graph
+from zeroshot.pipeline.workflow.components.fanout_reduce import (
+    create_fanout_reduce_graph,
+)
 
 
 def _answer(*items: str) -> AIMessage:
     return AIMessage(
-        content=json.dumps(
-            {"proposal": list(items), "rationale": "the views agree"}
-        )
+        content=json.dumps({"proposal": list(items), "rationale": "the views agree"})
     )
 
 

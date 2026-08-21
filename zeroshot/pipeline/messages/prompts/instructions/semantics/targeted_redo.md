@@ -3,3 +3,6 @@ The audit found that the semantic interpretation is the earliest source of error
 Audit rationale:
 
 $rationale
+
+
+$guidelines

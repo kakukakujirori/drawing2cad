@@ -11,8 +11,27 @@ from zeroshot.pipeline.messages.prompts import PromptTemplate
 
 
 def instruction_text(name: str, **context: str) -> str:
-    """Render one instruction prompt from `prompts/instructions/`."""
-    return PromptTemplate(f"instructions/{name}").render(**context)
+    """Render one instruction prompt from `prompts/instructions/`.
+
+    A stage whose directory holds a `guidelines.md` has it rendered first and
+    offered to that stage's instructions as `$guidelines`: the contracts and
+    standing advice that hold however the stage was entered.
+
+    They ride in the instruction rather than the role so that an agent working
+    one stage is told only what that stage needs -- when several stages share
+    one system prompt, a role holding all of them would put the coding contract
+    in front of the model while it is still reading the drawing.  And they ride
+    in every instruction rather than the opening one so that a redo, which
+    enters on its own, still carries them.
+    """
+    instruction = PromptTemplate(f"instructions/{name}")
+    guidelines = instruction.path.parent / "guidelines.md"
+    if guidelines.is_file():
+        context = {
+            **context,
+            "guidelines": PromptTemplate(str(guidelines)).render(**context),
+        }
+    return instruction.render(**context)
 
 
 def build_instruction(name: str, **context: str) -> HumanMessage:

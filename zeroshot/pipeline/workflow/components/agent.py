@@ -38,6 +38,7 @@ class AgentState(_AgentState[Any]):
         - current_turn: int
         - total_turns: int
         - stop_reason: StopReason
+        - reported_message_count: int
 
     The first three are included in _AgentState.
     """
@@ -45,6 +46,7 @@ class AgentState(_AgentState[Any]):
     current_turn: NotRequired[int]
     total_turns: NotRequired[int]
     stop_reason: NotRequired[StopReason | None]
+    reported_message_count: NotRequired[int]
 
 
 def _build_response_format(

@@ -11,3 +11,6 @@ $semantic_hypothesis
 Revised operation plan:
 
 $operation_plan
+
+
+$guidelines

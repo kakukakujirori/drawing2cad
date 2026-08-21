@@ -1,3 +1,5 @@
+from typing import cast
+
 import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -11,9 +13,14 @@ from zeroshot.pipeline.workflow import (
     FanoutReduceProposal,
     Proposal,
 )
-from zeroshot.pipeline.workflow.agent import StopReason
-from zeroshot.pipeline.workflow.proposer_reviewer import Review
-from zeroshot.pipeline.workflow.state import Audit, ReconstructionState
+from zeroshot.pipeline.workflow.components.agent import StopReason
+from zeroshot.pipeline.workflow.components.proposer_reviewer import Review
+from zeroshot.pipeline.workflow.state import (
+    Audit,
+    ReconstructionState,
+    carry_thread,
+    lead_transcript,
+)
 
 
 @pytest.mark.parametrize("contract", [Proposal, FanoutReduceProposal, Review, Audit])
@@ -203,3 +210,97 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
     operations_state = restored["operations_state"]
     assert type(operations_state["proposal"]) is Proposal
     assert type(operations_state["review"]) is Review
+
+
+def _threaded_state(**stages: object) -> ReconstructionState:
+    """A run part-way through, each stage holding what is its own."""
+    read = [HumanMessage(content="read the views")]
+    state: dict[str, object] = {
+        "semantics_state": {
+            "branch_proposals": {"propose_0": None},
+            "reducer_state": {"messages": read},
+        },
+        "operations_state": {
+            "revision_count": 2,
+            "proposer_state": {"messages": read},
+        },
+        "coding_state": {"current_turn": 4},
+        "audit_state": {"messages": [HumanMessage(content="judge it")]},
+    }
+    return cast(ReconstructionState, state | stages)
+
+
+@pytest.mark.parametrize(
+    ("stage", "stage_state"),
+    [
+        ("semantics", {"semantics_state": {"reducer_state": {"messages": ["it"]}}}),
+        ("operations", {"operations_state": {"proposer_state": {"messages": ["it"]}}}),
+        ("coding", {"coding_state": {"messages": ["it"]}}),
+    ],
+)
+def test_the_thread_is_taken_from_whichever_agent_carried_it(
+    stage: str, stage_state: dict[str, object]
+) -> None:
+    """Each template continues a different one of its agents, so where the
+    finished thread sits differs by stage."""
+    state = _threaded_state(**stage_state)
+
+    update = carry_thread(state, lead_transcript(state, stage))  # type: ignore[arg-type]
+
+    assert update["coding_state"]["messages"] == ["it"]
+
+
+def test_the_thread_reaches_every_reasoning_stage_but_not_the_audit() -> None:
+    """The audit judges from the outside; a thread it took part in would leave
+    it marking its own work."""
+    state = _threaded_state(coding_state={"messages": ["wrote the model"]})
+
+    update = carry_thread(state, lead_transcript(state, "coding"))
+
+    assert set(update) == {"semantics_state", "operations_state", "coding_state"}
+    assert update["semantics_state"]["reducer_state"]["messages"] == ["wrote the model"]
+    assert update["operations_state"]["proposer_state"]["messages"] == [
+        "wrote the model"
+    ]
+
+
+def test_the_stage_that_wrote_the_thread_is_given_back_what_it_wrote() -> None:
+    """Handing it its own transcript changes nothing, and costs one special
+    case less than leaving it out."""
+    state = _threaded_state(coding_state={"messages": ["wrote the model"]})
+
+    update = carry_thread(state, lead_transcript(state, "coding"))
+
+    assert update["coding_state"]["messages"] == ["wrote the model"]
+
+
+def test_what_a_stage_holds_besides_its_messages_survives_the_thread() -> None:
+    """Branch proposals and revision counts belong to their stage, not to the
+    thread that happens to be passing through it."""
+    update = carry_thread(
+        _threaded_state(), lead_transcript(_threaded_state(), "coding")
+    )
+
+    assert update["semantics_state"]["branch_proposals"] == {"propose_0": None}
+    assert update["operations_state"]["revision_count"] == 2
+
+
+def test_the_prompt_log_is_told_where_the_inherited_thread_ends() -> None:
+    """Without the watermark a stage reports the transcript it was handed as
+    the prompt it was given."""
+    state = _threaded_state(
+        semantics_state={"reducer_state": {"messages": ["one", "two"]}}
+    )
+
+    update = carry_thread(state, lead_transcript(state, "semantics"))
+
+    assert update["coding_state"]["reported_message_count"] == 2
+    assert update["coding_state"]["current_turn"] == 4
+
+
+def test_a_stage_that_has_not_run_is_seeded_all_the_same() -> None:
+    update = carry_thread(ReconstructionState(), [])
+
+    assert update["semantics_state"] == {
+        "reducer_state": {"messages": [], "reported_message_count": 0}
+    }

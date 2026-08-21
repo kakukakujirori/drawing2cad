@@ -14,7 +14,7 @@ from langgraph.types import Checkpointer
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from zeroshot.pipeline.workflow._config import _child_graph_config
-from zeroshot.pipeline.workflow.agent import AgentState, create_agent
+from zeroshot.pipeline.workflow.components.agent import AgentState, create_agent
 from zeroshot.pipeline.workflow.middleware import StopReason
 
 

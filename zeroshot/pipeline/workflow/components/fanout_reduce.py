@@ -15,7 +15,7 @@ from langgraph.types import Checkpointer
 from pydantic import BaseModel, ConfigDict, Field
 
 from zeroshot.pipeline.workflow._config import _child_graph_config
-from zeroshot.pipeline.workflow.agent import AgentState, create_agent
+from zeroshot.pipeline.workflow.components.agent import AgentState, create_agent
 
 
 class Proposal(BaseModel):
@@ -191,19 +191,10 @@ def create_fanout_reduce_graph(
         """Prepare workdirs and open an initial round with no proposer history."""
         del state
         mkdir_result = run_shell.invoke(
-            {
-                "command": shlex.join(
-                    ["mkdir", "-p", "--", *branch_workdirs.values()]
-                )
-            }
+            {"command": shlex.join(["mkdir", "-p", "--", *branch_workdirs.values()])}
         )
-        if (
-            not isinstance(mkdir_result, Mapping)
-            or mkdir_result.get("returncode") != 0
-        ):
-            raise RuntimeError(
-                f"Failed to create fan-out workdirs: {mkdir_result!r}"
-            )
+        if not isinstance(mkdir_result, Mapping) or mkdir_result.get("returncode") != 0:
+            raise RuntimeError(f"Failed to create fan-out workdirs: {mkdir_result!r}")
         return {
             "branch_proposals": dict.fromkeys(branch_names),
             "proposal": None,
@@ -235,10 +226,7 @@ def create_fanout_reduce_graph(
 
     def route_entry(state: FanoutReduceState) -> Literal["initialize", "reduce"]:
         """Fan out only when there is no complete reducer answer to revise."""
-        if (
-            state.get("proposal") is not None
-            and state.get("reducer_state") is not None
-        ):
+        if state.get("proposal") is not None and state.get("reducer_state") is not None:
             return "reduce"
         return "initialize"
 

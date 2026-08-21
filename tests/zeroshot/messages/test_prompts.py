@@ -2,12 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from zeroshot.pipeline.messages import PromptTemplate
+from zeroshot.pipeline.messages import PromptTemplate, instruction_text
 
 
 def _write(path: Path, body: str) -> Path:
     path.write_text(body, encoding="utf-8")
     return path
+
+
+# What the graph supplies to every instruction, whichever stage asked for it.
+_RUN_PATHS = {"output_path": "/work/model.py", "verification_dir": "/work/attempts"}
 
 
 def test_a_packaged_prompt_is_addressed_by_name() -> None:
@@ -22,37 +26,37 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
 @pytest.mark.parametrize(
     ("name", "context"),
     [
-        ("instructions/semantics/initial", {}),
-        ("instructions/semantics/targeted_redo", {"rationale": "wrong feature"}),
-        ("instructions/semantics/review", {}),
+        ("semantics/initial", {}),
+        ("semantics/targeted_redo", {"rationale": "wrong feature"}),
+        ("semantics/review", {}),
         (
-            "instructions/operations/initial",
+            "operations/initial",
             {"semantic_hypothesis": "a bracket"},
         ),
         (
-            "instructions/operations/targeted_redo",
+            "operations/targeted_redo",
             {"rationale": "missing hole", "semantic_hypothesis": "a bracket"},
         ),
         (
-            "instructions/operations/upstream_changed",
+            "operations/upstream_changed",
             {
                 "rationale": "wrong base feature",
                 "semantic_hypothesis": "a revised bracket",
             },
         ),
         (
-            "instructions/operations/review",
+            "operations/review",
             {"semantic_hypothesis": "a bracket"},
         ),
         (
-            "instructions/coding/initial",
+            "coding/initial",
             {
                 "semantic_hypothesis": "a bracket",
                 "operation_plan": "extrude the base",
             },
         ),
         (
-            "instructions/coding/targeted_redo",
+            "coding/targeted_redo",
             {
                 "rationale": "the hole is misplaced",
                 "semantic_hypothesis": "a bracket",
@@ -60,7 +64,7 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
             },
         ),
         (
-            "instructions/coding/upstream_changed",
+            "coding/upstream_changed",
             {
                 "rationale": "wrong base feature",
                 "semantic_hypothesis": "a revised bracket",
@@ -68,7 +72,7 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
             },
         ),
         (
-            "instructions/audit",
+            "audit",
             {
                 "semantic_hypothesis": "a bracket",
                 "operation_plan": "extrude the base",
@@ -83,17 +87,19 @@ def test_stage_instruction_prompts_match_the_invocation_reasons(
     name: str,
     context: dict[str, str],
 ) -> None:
-    rendered = PromptTemplate(name).render(**context)
+    rendered = instruction_text(name, **{**_RUN_PATHS, **context})
 
     assert rendered
     assert "$" not in rendered
 
 
 def test_placeholders_are_filled_from_the_context() -> None:
-    rendered = PromptTemplate("roles/coder").render(
-        output_path="/work/model.py",
-        verification_dir="/work/attempts",
-        max_turns="10",
+    """The run's paths reach the guidelines the coding instruction carries."""
+    rendered = instruction_text(
+        "coding/initial",
+        **_RUN_PATHS,
+        semantic_hypothesis="a bracket",
+        operation_plan="extrude the base",
     )
 
     assert "/work/model.py" in rendered
@@ -105,9 +111,7 @@ def test_placeholders_are_filled_from_the_context() -> None:
 @pytest.mark.parametrize(
     "role",
     [
-        "roles/semantic_hypothesizer",
         "roles/semantic_reviewer",
-        "roles/operation_planner",
         "roles/operation_reviewer",
         "roles/output_auditor",
     ],
@@ -119,6 +123,96 @@ def test_structured_output_roles_render_their_contract(role: str) -> None:
 
     assert "SENTINEL_SCHEMA" in rendered
     assert "$output_schema" not in rendered
+
+
+# The ways a stage can be entered, and what each of them needs filled in.
+_STAGE_ENTRIES = {
+    "semantics": ("initial", "targeted_redo"),
+    "operations": ("initial", "targeted_redo", "upstream_changed"),
+    "coding": ("initial", "targeted_redo", "upstream_changed"),
+}
+_ENTRY_CONTEXT = {
+    "rationale": "the hole is misplaced",
+    "semantic_hypothesis": "a bracket",
+    "operation_plan": "extrude the base",
+}
+
+
+@pytest.mark.parametrize("stage", list(_STAGE_ENTRIES))
+def test_every_way_into_a_stage_carries_that_stage_s_guidelines(stage: str) -> None:
+    """A redo enters on its own instruction, and a compacted thread keeps none
+    of the opening one, so the contracts cannot ride on first entry alone."""
+    guidelines = PromptTemplate(f"instructions/{stage}/guidelines").render(**_RUN_PATHS)
+
+    for entry in _STAGE_ENTRIES[stage]:
+        rendered = instruction_text(f"{stage}/{entry}", **_RUN_PATHS, **_ENTRY_CONTEXT)
+        assert guidelines in rendered, entry
+
+
+def test_a_review_is_not_given_the_guidelines_of_what_it_reviews() -> None:
+    """The reviewer is a different agent with a different job; the proposer's
+    standing advice is not addressed to it."""
+    guidelines = PromptTemplate("instructions/operations/guidelines").render(
+        **_RUN_PATHS
+    )
+
+    rendered = instruction_text(
+        "operations/review", **_RUN_PATHS, semantic_hypothesis="a bracket"
+    )
+
+    assert guidelines not in rendered
+
+
+@pytest.mark.parametrize(
+    "role",
+    ["semantic_hypothesizer", "operation_planner", "coder", "cad_reconstructor"],
+)
+def test_a_proposer_role_says_who_it_is_and_leaves_the_rest_to_the_instruction(
+    role: str,
+) -> None:
+    """What a stage must do belongs to the stage's instruction: a role holding
+    all three would put the coding contract in front of a model that is still
+    reading the drawing."""
+    body = PromptTemplate(f"roles/{role}").path.read_text(encoding="utf-8")
+
+    assert "$" not in body
+    assert "run_shell" in body
+    assert "result` variable" not in body
+    assert "try-except" not in body
+
+
+def test_the_merged_role_renders_the_same_text_for_every_stage_that_shares_it() -> None:
+    """One thread of thought needs one system prompt: the stages differ in
+    turn budget and answer contract, so a prompt that took either as a
+    placeholder would come out different for each of them."""
+    body = PromptTemplate("roles/cad_reconstructor").path.read_text(encoding="utf-8")
+
+    assert "$output_schema" not in body
+    assert "$max_turns" not in body
+
+    stage_contexts = [
+        {"output_path": "/work/model.py", "verification_dir": "/work/attempts"},
+        # What `create_agent` adds for a stage that answers structurally, and
+        # what it adds for the coder, which does not.
+        {
+            "output_path": "/work/model.py",
+            "verification_dir": "/work/attempts",
+            "output_schema": "SENTINEL_SCHEMA",
+            "max_turns": "20",
+        },
+        {
+            "output_path": "/work/model.py",
+            "verification_dir": "/work/attempts",
+            "max_turns": "10",
+        },
+    ]
+    rendered = {
+        PromptTemplate("roles/cad_reconstructor").render(**context)
+        for context in stage_contexts
+    }
+
+    assert len(rendered) == 1
+    assert "$" not in rendered.pop()
 
 
 def test_a_missing_value_is_refused(tmp_path: Path) -> None:

@@ -58,6 +58,7 @@ def test_an_abandoned_attempt_costs_only_its_own_output() -> None:
         {
             "role": "semantic_hypothesizer",
             "node": "model",
+            "namespace": ["semantics:11111111", "propose_0:22222222"],
             "run_id": "abandoned",
             "streamed": True,
             "payload": {"event": "message-start", "role": "assistant"},
@@ -76,6 +77,7 @@ def test_an_abandoned_attempt_costs_only_its_own_output() -> None:
             {
                 "role": "semantic_hypothesizer",
                 "node": "model",
+                "namespace": ["semantics:11111111", "propose_0:22222222"],
                 "run_id": "retried",
                 "streamed": True,
                 "payload": payload,
@@ -86,6 +88,60 @@ def test_an_abandoned_attempt_costs_only_its_own_output() -> None:
     assert "SURVIVED" in rendered
     # The attempt that produced nothing announced nothing either.
     assert rendered.count("[model]") == 1
+
+
+def test_two_callers_a_role_cannot_tell_apart_are_named_by_where_they_run() -> None:
+    """The fan-out's proposers share a role and stream at the same time, and a
+    run whose stages share one agent gives every stage that role as well.  With
+    the role alone the whole run reads as one speaker interrupting itself."""
+    output = StringIO()
+    reporter = ConsoleReporter(
+        Console(file=output, color_system=None, force_terminal=False, highlight=False)
+    )
+
+    for branch, run_id, text in (
+        ("propose_0", "branch-0", "FROM_BRANCH_0"),
+        ("propose_1", "branch-1", "FROM_BRANCH_1"),
+    ):
+        reporter.render_model_item(
+            {
+                "role": "cad_reconstructor",
+                "node": "model",
+                "namespace": ["semantics:1111", f"{branch}:2222"],
+                "run_id": run_id,
+                "streamed": False,
+                "payload": {"type": "ai", "content": [{"type": "text", "text": text}]},
+            }
+        )
+
+    rendered = output.getvalue()
+    assert "cad_reconstructor · semantics/propose_0" in rendered
+    assert "cad_reconstructor · semantics/propose_1" in rendered
+    # The per-run ids in a namespace say nothing to someone watching one run.
+    assert "1111" not in rendered
+    assert "2222" not in rendered
+
+
+def test_a_call_outside_any_subgraph_is_named_by_its_role_alone() -> None:
+    output = StringIO()
+    reporter = ConsoleReporter(
+        Console(file=output, color_system=None, force_terminal=False, highlight=False)
+    )
+
+    reporter.render_model_item(
+        {
+            "role": "output_auditor",
+            "node": "model",
+            "namespace": [],
+            "run_id": "top",
+            "streamed": False,
+            "payload": {"type": "ai", "content": [{"type": "text", "text": "VERDICT"}]},
+        }
+    )
+
+    rendered = output.getvalue()
+    assert "output_auditor" in rendered
+    assert "·" not in rendered
 
 
 def test_a_model_that_does_not_stream_is_rendered_whole() -> None:
@@ -100,6 +156,7 @@ def test_a_model_that_does_not_stream_is_rendered_whole() -> None:
         {
             "role": "coder",
             "node": "model",
+            "namespace": ["semantics:11111111", "propose_0:22222222"],
             "run_id": "whole",
             "streamed": False,
             "payload": {
@@ -230,6 +287,7 @@ def test_console_reporter_renders_full_prompt_model_stream_and_tool_output() -> 
                 {
                     "role": "agent",
                     "node": "model",
+                    "namespace": ["semantics:11111111", "propose_0:22222222"],
                     "run_id": "run-1",
                     "streamed": True,
                     "payload": model_event,

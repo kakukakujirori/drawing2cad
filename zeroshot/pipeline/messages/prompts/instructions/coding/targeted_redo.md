@@ -3,3 +3,6 @@ An audit of the program you wrote rejected it with the feedback below. The hypot
 Feedback:
 
 $rationale
+
+
+$guidelines

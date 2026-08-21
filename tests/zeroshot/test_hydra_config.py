@@ -271,8 +271,12 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert stage.keywords["proposer_role"] == "semantic_hypothesizer"
     assert PromptTemplate("roles/semantic_hypothesizer").path.is_file()
     proposer_models = stage.keywords["proposer_models"]
-    assert len(proposer_models) == 3
-    assert len({id(model) for model in proposer_models}) == 3
+    # How wide the fan-out is set is a checked-in default an experiment flips;
+    # what the config must not get wrong is the contract the stage enforces --
+    # at least two proposers, each its own instance so the branches are
+    # independent, all following the run's model.
+    assert len(proposer_models) >= 2
+    assert len({id(model) for model in proposer_models}) == len(proposer_models)
     assert all(model.model_name == "gemma4:e2b" for model in proposer_models)
 
     operations = graph_factory.keywords["operations_agent_builder"]
@@ -283,6 +287,38 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         assert PromptTemplate(f"roles/{role}").path.is_file()
     assert "output_schema" not in stage.keywords
     assert "agent" not in config
+
+
+def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None:
+    """The variant is the staged graph with the thread shared, so it has to
+    inherit staged's settings rather than restate them, and it has to give the
+    three stages that share the thread one role."""
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(config_name="default", overrides=["workflow=continued"])
+
+    graph_factory = instantiate(config.workflow)
+
+    assert graph_factory.func is create_reconstruction_graph
+    assert graph_factory.keywords["share_thread"] is True
+
+    roles = {
+        graph_factory.keywords["semantics_agent_builder"].keywords["proposer_role"],
+        graph_factory.keywords["operations_agent_builder"].keywords["proposer_role"],
+        graph_factory.keywords["coding_agent_builder"].keywords["role"],
+    }
+    assert roles == {"cad_reconstructor"}
+    assert PromptTemplate("roles/cad_reconstructor").path.is_file()
+
+    # The audit reads the result on its own, so it keeps its own role.
+    assert (
+        graph_factory.keywords["audit_agent_builder"].keywords["role"]
+        == "output_auditor"
+    )
+    # Inherited from staged rather than restated here.
+    assert "max_audit_reject_count" in graph_factory.keywords
 
 
 def test_every_rerun_policy_the_config_documents_is_accepted() -> None:
