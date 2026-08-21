@@ -1,20 +1,21 @@
-"""Keep a reasoning chain alive across turns on a backend that stores nothing.
+"""Withhold reasoning a stateless backend could not resolve.
 
 The Codex backend pins `store=false`, so a reasoning item is replayable only
-through its own `encrypted_content`.  That payload is streamed -- but on
-`response.output_item.done`, and `langchain_openai` reads reasoning items only
-from `response.output_item.added`, where the field is still an empty string.
-The finished item matches none of the converter's branches and is dropped, so
-the `AIMessage` keeps an `rs_` id pointing at content nobody kept.  The next
-turn replays that bare id and the request fails with 404 `Item with id
-'rs_...' not found`.
+through its own `encrypted_content`.  `langchain_openai` once read reasoning
+items from `response.output_item.added` alone, where that field is still an
+empty string, and dropped the finished item that carried the payload -- leaving
+an `rs_` id pointing at content nobody kept, which the next turn replays and
+the backend rejects with 404 `Item with id 'rs_...' not found`.  This module
+used to fill the payload in itself, from the stream, as the message was built.
 
-The fix is to build the message correctly in the first place: emit the missing
-block while the stream is still being converted, so the payload lands in the
-`AIMessage` itself and travels with it into the state, the event log and the
-checkpoint.  `StatelessReasoningMiddleware` is then only a guard for reasoning
-that arrived before this module did -- from an older checkpoint, say -- because
-a bare id is exactly what the backend rejects.
+`langchain_openai` supplies the payload now, so that repair is gone.  It had
+outlived its premise in a way it could not detect: rather than filling a blank
+it appended to a payload already there, and the doubled string reached the
+backend as 400 `invalid_encrypted_content`.
+
+What remains is the guard.  A message can still arrive holding a reasoning id
+with no payload behind it -- from a checkpoint written before any of this, say
+-- and a bare id is exactly what the backend rejects.
 
 Upstream equivalent: `langchain-ai/langchainjs#10844`.
 """
@@ -22,93 +23,9 @@ Upstream equivalent: `langchain-ai/langchainjs#10844`.
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, TypeGuard, override
 
-import langchain_openai.chat_models.base as _openai_base
 from langchain.agents import AgentState as _AgentState
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage, AIMessageChunk, AnyMessage
-from langchain_core.outputs import ChatGenerationChunk
-
-_installed = False
-
-
-def install_reasoning_repair() -> None:
-    """Emit the reasoning payload the streaming converter drops.
-
-    Wraps the converter rather than reimplementing it: every chunk is handed to
-    the original first, and only a finished reasoning item it declined to
-    convert produces anything extra.  The extra block carries the same content
-    index, so `AIMessageChunk` merging folds it into the block the `added`
-    event opened -- filling in `encrypted_content` and touching nothing else.
-
-    Idempotent, so constructing many agents installs one wrapper.  It also
-    stands down on its own: should a future `langchain_openai` convert the
-    finished item itself, the original returns a chunk and this adds nothing.
-    """
-    global _installed
-    if _installed:
-        return
-    original = _openai_base._convert_responses_chunk_to_generation_chunk
-
-    def convert(
-        chunk: Any,
-        current_index: int,
-        current_output_index: int,
-        current_sub_index: int,
-        **kwargs: Any,
-    ) -> tuple[int, int, int, ChatGenerationChunk | None]:
-        result = original(
-            chunk, current_index, current_output_index, current_sub_index, **kwargs
-        )
-        # `v0` projects reasoning into `additional_kwargs` by a different route.
-        # Only the Responses-shaped content blocks are ours to complete.
-        if kwargs.get("output_version") == "v0" or result[3] is not None:
-            return result
-        item = getattr(chunk, "item", None)
-        if (
-            getattr(chunk, "type", None) != "response.output_item.done"
-            or getattr(item, "type", None) != "reasoning"
-        ):
-            return result
-        payload = getattr(item, "encrypted_content", None)
-        item_id = getattr(item, "id", None)
-        if not payload or not item_id:
-            return result
-
-        # Mirror the converter's own `_advance`: a new output item takes the
-        # next content index, the item already open keeps its own.
-        index = current_index
-        if current_output_index != chunk.output_index:
-            index += 1
-        block = {
-            "type": "reasoning",
-            "id": item_id,
-            "encrypted_content": payload,
-            # Carrying `summary` is what routes the block through the v1
-            # translator's reasoning explosion, which re-indexes it to the
-            # `lc_rs_*` index the `added` block was given. Without the key the
-            # translator passes it through on its raw integer index and it
-            # lands as a second, separate reasoning block -- which is how the
-            # streaming path differs from plain aggregation, where the raw
-            # indexes match and it merges either way.
-            "summary": [],
-            "index": index,
-        }
-        # `model_provider` is what selects the provider's block translator.
-        # Without it the chunk is never translated, so it keeps the raw integer
-        # index while its siblings are re-indexed, and merges with nothing.
-        message = AIMessageChunk(
-            content=[block],  # type: ignore[arg-type]
-            response_metadata={"model_provider": "openai"},
-        )
-        return (
-            index,
-            chunk.output_index,
-            current_sub_index,
-            ChatGenerationChunk(message=message),
-        )
-
-    _openai_base._convert_responses_chunk_to_generation_chunk = convert
-    _installed = True
+from langchain_core.messages import AIMessage, AnyMessage
 
 
 def _is_reasoning(block: Any) -> TypeGuard[dict[str, Any]]:
@@ -156,19 +73,13 @@ def _drop_bare_reasoning(messages: Iterable[AnyMessage]) -> list[AnyMessage]:
 class StatelessReasoningMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     """Withhold reasoning ids a stateless backend could not resolve.
 
-    Installs the converter repair, which is what actually keeps the reasoning
-    chain intact; anything still missing a payload by the time it is sent
-    predates that repair, and would go out as a bare id.  Sending nothing is
-    the only alternative the backend accepts.
+    A reasoning block whose payload is missing would go out as a bare id, and
+    sending nothing is the only alternative the backend accepts.
 
     Applies only when the model is pinned to `store=False`. Anywhere else the
     id is a valid server-side reference and dropping the block would cost the
     model its chain of thought for nothing.
     """
-
-    def __init__(self) -> None:
-        super().__init__()
-        install_reasoning_repair()
 
     @staticmethod
     def _sanitised(request: ModelRequest[None]) -> ModelRequest[None]:
