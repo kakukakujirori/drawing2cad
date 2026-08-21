@@ -6,13 +6,17 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
 from zeroshot.pipeline.tools import VerifyOutputResult
-from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, Proposal
+from zeroshot.pipeline.workflow import (
+    CUSTOM_STATE_TYPES,
+    FanoutReduceProposal,
+    Proposal,
+)
 from zeroshot.pipeline.workflow.agent import StopReason
 from zeroshot.pipeline.workflow.proposer_reviewer import Review
 from zeroshot.pipeline.workflow.state import Audit, ReconstructionState
 
 
-@pytest.mark.parametrize("contract", [Proposal, Review, Audit])
+@pytest.mark.parametrize("contract", [Proposal, FanoutReduceProposal, Review, Audit])
 def test_a_contract_carries_no_prose_beyond_its_field_descriptions(
     contract: type[BaseModel],
 ) -> None:
@@ -80,14 +84,33 @@ def test_a_review_allows_an_accept_without_rationale() -> None:
 
 _ARTIFACTS: dict[str, object] = {
     "semantics_state": {
-        "revision_count": 1,
-        "proposer_entry_instruction": HumanMessage(content="propose semantics"),
-        "proposal": Proposal(
+        "invocation_instruction": None,
+        "branch_proposals": {
+            "propose_0": FanoutReduceProposal(
+                proposal=["flange", "blind hole"],
+                rationale="the flange carries the bolt circle",
+            )
+        },
+        "proposal": FanoutReduceProposal(
             proposal=["flange", "blind hole"],
             rationale="the flange carries the bolt circle",
         ),
-        "proposer_state": {
+        "reducer_state": {
             "messages": [HumanMessage(content="propose semantics")],
+            "current_turn": 1,
+            "total_turns": 1,
+            "stop_reason": StopReason.COMPLETED,
+        },
+    },
+    "operations_state": {
+        "revision_count": 1,
+        "proposer_entry_instruction": HumanMessage(content="propose operations"),
+        "proposal": Proposal(
+            proposal=["Extrude the outline 25 mm along +z"],
+            rationale="one extrude reaches the stated height",
+        ),
+        "proposer_state": {
+            "messages": [HumanMessage(content="propose operations")],
             "current_turn": 1,
             "total_turns": 1,
             "stop_reason": StopReason.COMPLETED,
@@ -107,7 +130,7 @@ _ARTIFACTS: dict[str, object] = {
         "total_turns": 3,
         "stop_reason": StopReason.BUDGET_EXHAUSTED,
     },
-    "semantic_hypothesis": Proposal(
+    "semantic_hypothesis": FanoutReduceProposal(
         proposal=["flange", "blind hole"],
         rationale="the flange carries the bolt circle",
     ),
@@ -128,6 +151,7 @@ _ARTIFACTS: dict[str, object] = {
 def test_custom_state_types_include_nested_runtime_values() -> None:
     assert set(CUSTOM_STATE_TYPES) == {
         Proposal,
+        FanoutReduceProposal,
         Review,
         Audit,
         StopReason,
@@ -170,6 +194,12 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
         assert restored[field] == value
 
     semantics_state = restored["semantics_state"]
-    assert type(semantics_state["proposal"]) is Proposal
-    assert type(semantics_state["review"]) is Review
-    assert type(semantics_state["proposer_state"]["stop_reason"]) is StopReason
+    assert type(semantics_state["proposal"]) is FanoutReduceProposal
+    assert type(semantics_state["branch_proposals"]["propose_0"]) is (
+        FanoutReduceProposal
+    )
+    assert type(semantics_state["reducer_state"]["stop_reason"]) is StopReason
+
+    operations_state = restored["operations_state"]
+    assert type(operations_state["proposal"]) is Proposal
+    assert type(operations_state["review"]) is Review

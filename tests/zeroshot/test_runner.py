@@ -24,6 +24,7 @@ from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
 from zeroshot.pipeline.workflow import (
     StopReason,
     create_agent,
+    create_fanout_reduce_graph,
     create_proposer_reviewer_loop,
     create_reconstruction_graph,
 )
@@ -58,10 +59,21 @@ def _reasoning_stage(proposer_role: str, reviewer_role: str, proposal: str):
 
 
 def _semantic_stage():
-    return _reasoning_stage(
-        "semantic_hypothesizer",
-        "semantic_reviewer",
-        '{"proposal": ["a box"], "rationale": "one prism"}',
+    return partial(
+        create_fanout_reduce_graph,
+        proposer_role="semantic_hypothesizer",
+        proposer_models=[
+            ScriptedChatModel(
+                responses=(
+                    AIMessage(
+                        content=(
+                            '{"proposal": ["a box"], "rationale": "one prism"}'
+                        )
+                    ),
+                )
+            )
+        ],
+        announce_turns=False,
     )
 
 
@@ -863,7 +875,6 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
     # asked when it was asked, and a retry re-asks nothing new.
     assert [prompt["role"] for prompt in prompts] == [
         "semantic_hypothesizer",
-        "semantic_reviewer",
         "operation_planner",
         "operation_reviewer",
         "coder",
@@ -928,7 +939,6 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
         ]
         expected_reasons = {
             "semantic_hypothesizer": "COMPLETED",
-            "semantic_reviewer": "COMPLETED",
             "operation_planner": "COMPLETED",
             "operation_reviewer": "COMPLETED",
             "coder": expected,

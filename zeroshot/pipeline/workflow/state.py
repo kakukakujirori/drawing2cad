@@ -14,10 +14,10 @@ from typing_extensions import is_typeddict
 
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.workflow.agent import AgentState
-from zeroshot.pipeline.workflow.proposer_reviewer import (
-    Proposal,
-    ProposerReviewerState,
-)
+from zeroshot.pipeline.workflow.fanout_reduce import FanoutReduceState
+from zeroshot.pipeline.workflow.fanout_reduce import Proposal as SemanticProposal
+from zeroshot.pipeline.workflow.proposer_reviewer import Proposal as OperationProposal
+from zeroshot.pipeline.workflow.proposer_reviewer import ProposerReviewerState
 
 
 class Audit(BaseModel):
@@ -46,13 +46,13 @@ class Audit(BaseModel):
 
 
 class ReconstructionState(TypedDict):
-    semantics_state: NotRequired[ProposerReviewerState]
+    semantics_state: NotRequired[FanoutReduceState]
     operations_state: NotRequired[ProposerReviewerState]
     coding_state: NotRequired[AgentState]
     audit_state: NotRequired[AgentState]
 
-    semantic_hypothesis: NotRequired[Proposal | None]
-    operation_plan: NotRequired[Proposal | None]
+    semantic_hypothesis: NotRequired[SemanticProposal | None]
+    operation_plan: NotRequired[OperationProposal | None]
     last_verification: NotRequired[VerifyOutputResult]
     audit: NotRequired[Audit | None]
     audit_reject_count: NotRequired[Annotated[int, operator.add]]

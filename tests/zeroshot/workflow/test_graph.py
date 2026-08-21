@@ -1,5 +1,6 @@
 import json
 import sys
+from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,13 @@ from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.verification import StepRenderer
-from zeroshot.pipeline.workflow import Proposal, StopReason, create_agent
+from zeroshot.pipeline.workflow import (
+    FanoutReduceProposal,
+    Proposal,
+    StopReason,
+    create_agent,
+    create_fanout_reduce_graph,
+)
 from zeroshot.pipeline.workflow import graph as graph_module
 from zeroshot.pipeline.workflow.graph import AgentBuilder, create_reconstruction_graph
 from zeroshot.pipeline.workflow.proposer_reviewer import create_proposer_reviewer_loop
@@ -51,8 +58,12 @@ def _proposed(*items: str) -> Proposal:
     return Proposal(proposal=list(items), rationale="the views agree")
 
 
+def _semantic_proposed(*items: str) -> FanoutReduceProposal:
+    return FanoutReduceProposal(proposal=list(items), rationale="the views agree")
+
+
 def _hypothesis(*semantics: str) -> AIMessage:
-    return AIMessage(content=_proposed(*semantics).model_dump_json())
+    return AIMessage(content=_semantic_proposed(*semantics).model_dump_json())
 
 
 def _plan(*operations: str) -> AIMessage:
@@ -93,6 +104,7 @@ def _graph(
     coder: ScriptedChatModel,
     agent_options: dict[str, Any] | None = None,
     *,
+    semantic_models: Sequence[ScriptedChatModel] | None = None,
     planner: ScriptedChatModel | None = None,
     plan_reviewer: ScriptedChatModel | None = None,
     auditor: ScriptedChatModel | None = None,
@@ -121,17 +133,22 @@ def _graph(
         "model_retries": options.get("model_retries", 5),
         "checkpointer": False,
     }
+    fanout_options = {
+        "max_proposer_turns": max_turns,
+        "max_reducer_turns": max_turns,
+        "announce_turns": options.get("announce_turns", False),
+        "model_retries": options.get("model_retries", 5),
+        "checkpointer": False,
+    }
     max_revisions = overrides.pop("max_revisions", 2)
     dxf_path = workdir.host_bind_dir / "drawing.dxf"
     dxf_path.write_text("0\nSECTION\n0\nEOF\n", encoding="utf-8")
     return create_reconstruction_graph(
-        semantics_agent_builder=_stage(
-            "semantic_hypothesizer",
-            hypothesizer,
-            "semantic_reviewer",
-            reviewer,
-            max_revisions,
-            **stage_options,
+        semantics_agent_builder=partial(
+            create_fanout_reduce_graph,
+            proposer_role="semantic_hypothesizer",
+            proposer_models=list(semantic_models or [hypothesizer]),
+            **fanout_options,
         ),
         operations_agent_builder=_stage(
             "operation_planner",
@@ -170,8 +187,7 @@ def _stop_reasons(result: dict[str, Any]) -> dict[str, StopReason]:
     semantics = result.get("semantics_state") or {}
     operations = result.get("operations_state") or {}
     states = {
-        "semantic_hypothesizer": semantics.get("proposer_state"),
-        "semantic_reviewer": semantics.get("reviewer_state"),
+        "semantic_hypothesizer": semantics.get("reducer_state"),
         "operation_planner": operations.get("proposer_state"),
         "operation_reviewer": operations.get("reviewer_state"),
         "coder": result.get("coding_state"),
@@ -201,13 +217,12 @@ def test_an_accepted_hypothesis_reaches_the_coder_and_the_final_verification() -
         graph = _graph(workdir, hypothesizer, reviewer, coder)
         result = graph.invoke({})
 
-    assert result["semantic_hypothesis"] == _proposed("a flanged boss")
+    assert result["semantic_hypothesis"] == _semantic_proposed("a flanged boss")
     # Every role that spoke reported for itself, under its own name.
     assert _stop_reasons(result) == {
         role: StopReason.COMPLETED
         for role in (
             "semantic_hypothesizer",
-            "semantic_reviewer",
             "operation_planner",
             "operation_reviewer",
             "coder",
@@ -219,11 +234,44 @@ def test_an_accepted_hypothesis_reaches_the_coder_and_the_final_verification() -
         executor_error="model.py was not found",
     )
 
-    # Each role read what came before it, and the drawing opened all three.
-    for model in (hypothesizer, reviewer, coder):
+    # Each active stage read what came before it, including the drawing.
+    for model in (hypothesizer, coder):
         assert "[Input DXF path:" in model.received_messages[0][1].text
-    assert "a flanged boss" in reviewer.received_messages[0][-1].text
+    assert reviewer.received_messages == []
     assert "a flanged boss" in coder.received_messages[0][-1].text
+
+
+def test_semantics_fans_out_and_reduces_before_operations() -> None:
+    head = ScriptedChatModel(
+        responses=(
+            _hypothesis("a plate"),
+            _hypothesis("a plate", "a through hole"),
+        )
+    )
+    peer = ScriptedChatModel(responses=(_hypothesis("a through hole"),))
+    coder = ScriptedChatModel(responses=(AIMessage(content="written"),))
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            head,
+            ScriptedChatModel(responses=()),
+            coder,
+            semantic_models=[head, peer],
+        )
+        result = graph.invoke({})
+
+        assert (workdir.host_bind_dir / "semantic_hypothesis_0").is_dir()
+        assert (workdir.host_bind_dir / "semantic_hypothesis_1").is_dir()
+
+    assert result["semantic_hypothesis"] == _semantic_proposed(
+        "a plate", "a through hole"
+    )
+    assert len(head.received_messages) == 2
+    assert len(peer.received_messages) == 1
+    assert "a through hole" in head.received_messages[1][-1].text
+    assert "semantic_hypothesis_0" in head.received_messages[0][-1].text
+    assert "semantic_hypothesis_1" in peer.received_messages[0][-1].text
 
 
 def test_each_agent_keeps_a_private_transcript() -> None:
@@ -236,8 +284,7 @@ def test_each_agent_keeps_a_private_transcript() -> None:
         result = graph.invoke({})
 
     states = [
-        result["semantics_state"]["proposer_state"],
-        result["semantics_state"]["reviewer_state"],
+        result["semantics_state"]["reducer_state"],
         result["operations_state"]["proposer_state"],
         result["operations_state"]["reviewer_state"],
         result["coding_state"],
@@ -256,7 +303,7 @@ def test_each_agent_keeps_a_private_transcript() -> None:
     ]
 
 
-def test_the_revision_loop_stops_at_its_limit_and_codes_what_it_has() -> None:
+def test_semantics_no_longer_invokes_the_legacy_reviewer() -> None:
     hypothesizer = ScriptedChatModel(
         responses=tuple(_hypothesis("a plate") for _ in range(6))
     )
@@ -269,8 +316,8 @@ def test_the_revision_loop_stops_at_its_limit_and_codes_what_it_has() -> None:
         graph = _graph(workdir, hypothesizer, reviewer, coder, max_revisions=2)
         result = graph.invoke({})
 
-    # The workflow codes the latest hypothesis rather than abandoning the run.
-    assert result["semantic_hypothesis"] == _proposed("a plate")
+    assert result["semantic_hypothesis"] == _semantic_proposed("a plate")
+    assert reviewer.received_messages == []
     assert len(coder.received_messages) == 1
 
 
@@ -324,7 +371,7 @@ def test_a_plan_that_was_never_settled_leaves_the_coder_nothing_to_follow() -> N
         )
         result = graph.invoke({})
 
-    assert result["semantic_hypothesis"] == _proposed("a plate")
+    assert result["semantic_hypothesis"] == _semantic_proposed("a plate")
     assert result["operation_plan"] is None
     # The planner is the one that ran out; the semantic stage before it did not.
     assert _stop_reasons(result)["operation_planner"] is StopReason.BUDGET_EXHAUSTED
@@ -416,9 +463,9 @@ def test_a_later_agent_does_not_inherit_an_earlier_agents_turn_notices() -> None
         "[turn 1/30]",
         "[turn 2/30]",
     ]
-    assert notices(reviewer.received_messages[0]) == ["[turn 1/30]"]
+    assert reviewer.received_messages == []
     assert notices(coder.received_messages[0]) == ["[turn 1/30]"]
-    assert len(notices(result["semantics_state"]["proposer_state"]["messages"])) == 2
+    assert len(notices(result["semantics_state"]["reducer_state"]["messages"])) == 2
     assert len(notices(result["coding_state"]["messages"])) == 1
 
 
@@ -508,10 +555,9 @@ def test_the_workflow_runs_the_final_verification_after_a_coder_runs_out() -> No
         result = graph.invoke({})
 
     assert {
-        "semantic_hypothesizer": result["semantics_state"]["proposer_state"][
+        "semantic_hypothesizer": result["semantics_state"]["reducer_state"][
             "total_turns"
         ],
-        "semantic_reviewer": result["semantics_state"]["reviewer_state"]["total_turns"],
         "operation_planner": result["operations_state"]["proposer_state"][
             "total_turns"
         ],
@@ -522,7 +568,6 @@ def test_the_workflow_runs_the_final_verification_after_a_coder_runs_out() -> No
         "output_auditor": result["audit_state"]["total_turns"],
     } == {
         "semantic_hypothesizer": 1,
-        "semantic_reviewer": 1,
         "operation_planner": 1,
         "operation_reviewer": 1,
         "coder": 3,

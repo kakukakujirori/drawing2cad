@@ -15,6 +15,7 @@ from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.workflow import (
     create_agent,
+    create_fanout_reduce_graph,
     create_proposer_reviewer_loop,
     create_reconstruction_graph,
 )
@@ -254,49 +255,32 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert isinstance(coder.keywords["model"], BaseChatModel)
     assert coder.keywords["model"].model_name == "gemma4:e2b"
 
-    # Every stage is declared the same way, so a new one is a block, not a
-    # change to the graph's signature beyond one parameter.
-    for name, roles in (
-        (
-            "semantics_agent_builder",
-            ("semantic_hypothesizer", "semantic_reviewer"),
-        ),
-        ("operations_agent_builder", ("operation_planner", "operation_reviewer")),
-    ):
-        block = graph_factory.keywords[name]
-        assert block.func is create_proposer_reviewer_loop
-        assert block.keywords["proposer_role"] == roles[0]
-        assert block.keywords["reviewer_role"] == roles[1]
-        for role in roles:
-            assert PromptTemplate(f"roles/{role}").path.is_file()
-
     stage = graph_factory.keywords["semantics_agent_builder"]
-    assert stage.func is create_proposer_reviewer_loop
+    assert stage.func is create_fanout_reduce_graph
     assert set(stage.keywords) == {
         "proposer_role",
-        "proposer_model",
-        "reviewer_role",
-        "reviewer_model",
+        "proposer_models",
         "response_format_strategy",
-        "max_proposer_turns_per_revision",
-        "max_reviewer_turns_per_revision",
+        "max_proposer_turns",
+        "max_reducer_turns",
         "announce_turns",
-        "reset_proposer_turns_per_revision",
-        "reset_reviewer_turns_per_revision",
-        "max_revisions",
-        "announce_revisions",
-        "reset_revision_count_when_reentrant",
         "model_retries",
         "checkpointer",
     }
-    # A whole propose-and-review round, which is not an agent turn budget.
-    # The count itself is a tuning knob; that it reaches the stage is not.
-    assert isinstance(stage.keywords["max_revisions"], int)
-    # The stage chooses how its two structured contracts are requested; which
-    # schemas are owed is still fixed by the implementation.
     assert stage.keywords["response_format_strategy"] == "provider"
     assert stage.keywords["proposer_role"] == "semantic_hypothesizer"
-    assert stage.keywords["reviewer_role"] == "semantic_reviewer"
+    assert PromptTemplate("roles/semantic_hypothesizer").path.is_file()
+    proposer_models = stage.keywords["proposer_models"]
+    assert len(proposer_models) == 3
+    assert len({id(model) for model in proposer_models}) == 3
+    assert all(model.model_name == "gemma4:e2b" for model in proposer_models)
+
+    operations = graph_factory.keywords["operations_agent_builder"]
+    assert operations.func is create_proposer_reviewer_loop
+    assert operations.keywords["proposer_role"] == "operation_planner"
+    assert operations.keywords["reviewer_role"] == "operation_reviewer"
+    for role in ("operation_planner", "operation_reviewer"):
+        assert PromptTemplate(f"roles/{role}").path.is_file()
     assert "output_schema" not in stage.keywords
     assert "agent" not in config
 

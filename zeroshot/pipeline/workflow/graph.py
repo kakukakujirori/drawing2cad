@@ -42,12 +42,22 @@ class AgentBuilder(Protocol):
     ) -> CompiledGraph: ...
 
 
-class ProposerReviewerBuilder(Protocol):
+class ReasoningStageBuilder(Protocol):
     def __call__(
         self,
         *,
         tools: Sequence[BaseTool],
         prompt_context: Mapping[str, str],
+    ) -> CompiledGraph: ...
+
+
+class FanoutReduceBuilder(Protocol):
+    def __call__(
+        self,
+        *,
+        tools: Sequence[BaseTool],
+        prompt_context: Mapping[str, str],
+        fanout_workdir_prefix: str,
     ) -> CompiledGraph: ...
 
 
@@ -81,8 +91,8 @@ def _invocation_reason(
 
 
 def create_reconstruction_graph(
-    semantics_agent_builder: ProposerReviewerBuilder,
-    operations_agent_builder: ProposerReviewerBuilder,
+    semantics_agent_builder: FanoutReduceBuilder,
+    operations_agent_builder: ReasoningStageBuilder,
     coding_agent_builder: AgentBuilder,
     audit_agent_builder: AgentBuilder,
     sandbox_runner: SandboxRunner,
@@ -127,6 +137,9 @@ def create_reconstruction_graph(
     semantics_agent = semantics_agent_builder(
         tools=basic_tools,
         prompt_context=prompt_context,
+        fanout_workdir_prefix=str(
+            sandbox_workdir.sandbox_bind_dir / "semantic_hypothesis"
+        ),
     )
     operations_agent = operations_agent_builder(
         tools=basic_tools,
@@ -161,23 +174,18 @@ def create_reconstruction_graph(
             f"semantics/{entry_reason}",
             rationale=audit_rationale,
         )
-        reviewer_instruction = build_instruction("semantics/review")
-
         if entry_reason == "initial":
             # `merge_message_runs` merges multiple HumanMessages into one
             (proposer_instruction,) = merge_message_runs(
                 [proposer_instruction, _prepare_input_message()]
             )
-            (reviewer_instruction,) = merge_message_runs(
-                [reviewer_instruction, _prepare_input_message()]
-            )
 
-        # invoke (proposer_reviewer subgraph provides `xxx_entry_instruction`)
+        # The first call fans out; later audit-driven calls revise through the
+        # reducer without re-running the independent proposers.
         result = semantics_agent.invoke(
             {
                 **previous,
-                "proposer_entry_instruction": proposer_instruction,
-                "reviewer_entry_instruction": reviewer_instruction,
+                "invocation_instruction": proposer_instruction,
             },
             config=_child_graph_config(config),
         )
