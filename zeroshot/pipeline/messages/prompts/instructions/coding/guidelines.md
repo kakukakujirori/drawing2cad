@@ -13,6 +13,7 @@ Verification:
 Every turn you edit $output_path, it is automatically executed and the final solid is exported to a STEP file along with: the execution status, the return code, stdout, stderr, any executor error, and the paths of its DXF and perspective renders under $verification_dir. This costs you no turn, so write early and often rather than saving the check for the end.
 
 Guidelines:
+- Take positions from the plan and shapes and sizes from the hypothesis. A number read off the hypothesis's `evidence` is in the sheet coordinates of the view the reading names: $view_frame.
 - Write an initial script implementing the operations in plan order, then read the verification that comes back before writing again.
 - Inspect the generated DXF / perspective renders under $verification_dir using `run_shell` / `load_image` to verify visual alignment with the source drawing.
 - Iteratively refine and add missing features (cutouts, hole patterns, fillets, chamfers), writing after each major addition so the next verification covers it.

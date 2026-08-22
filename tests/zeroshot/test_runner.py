@@ -15,9 +15,11 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from rich.console import Console
 
 from tests.zeroshot.chat_models import ScriptedChatModel
+from tests.zeroshot.contracts import hypothesis
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
+from zeroshot.pipeline.messages.contracts import SemanticHypothesis
 from zeroshot.pipeline.runner import GraphFactory, PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
@@ -58,7 +60,7 @@ def _reasoning_stage(proposer_role: str, reviewer_role: str, proposal: str):
     )
 
 
-_A_BOX = AIMessage(content='{"proposal": ["a box"], "rationale": "one prism"}')
+_A_BOX = AIMessage(content=hypothesis("a box").model_dump_json())
 
 
 def _semantic_stage():
@@ -74,6 +76,7 @@ def _semantic_stage():
             ScriptedChatModel(responses=(_A_BOX, _A_BOX)),
             ScriptedChatModel(responses=(_A_BOX,)),
         ],
+        proposal_schema=SemanticHypothesis,
         announce_turns=False,
     )
 

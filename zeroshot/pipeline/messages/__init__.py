@@ -8,6 +8,12 @@ function rather than one of its methods.
 """
 
 from .artifact import ArtifactPresenter
+from .contracts import (
+    FeatureGeometry,
+    SemanticFeature,
+    SemanticHypothesis,
+    ViewEvidence,
+)
 from .manifest import FeedbackManifest, InputManifest
 from .prompt import (
     build_instruction,
@@ -19,9 +25,13 @@ from .prompts import PromptTemplate
 
 __all__ = [
     "ArtifactPresenter",
+    "FeatureGeometry",
     "FeedbackManifest",
     "InputManifest",
     "PromptTemplate",
+    "SemanticFeature",
+    "SemanticHypothesis",
+    "ViewEvidence",
     "build_instruction",
     "build_system_prompt",
     "instruction_text",

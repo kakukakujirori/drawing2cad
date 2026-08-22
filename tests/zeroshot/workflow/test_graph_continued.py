@@ -11,11 +11,12 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 
 from tests.zeroshot.chat_models import ScriptedChatModel
+from tests.zeroshot.contracts import hypothesis as _semantic_hypothesis
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
+from zeroshot.pipeline.messages.contracts import SemanticHypothesis
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import (
-    FanoutReduceProposal,
     Proposal,
     create_agent,
     create_fanout_reduce_graph,
@@ -33,11 +34,7 @@ _REASONING_STAGES = ("semantics", "operations", "coding")
 
 
 def _hypothesis(*items: str) -> AIMessage:
-    return AIMessage(
-        content=FanoutReduceProposal(
-            proposal=list(items), rationale="the views agree"
-        ).model_dump_json()
-    )
+    return AIMessage(content=_semantic_hypothesis(*items).model_dump_json())
 
 
 def _plan(*items: str) -> AIMessage:
@@ -77,6 +74,7 @@ def _continued_graph(
             create_fanout_reduce_graph,
             proposer_role=ROLE,
             proposer_models=[lead, other_proposer],
+            proposal_schema=SemanticHypothesis,
             max_proposer_turns=5,
             max_reducer_turns=5,
             **common,

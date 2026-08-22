@@ -12,22 +12,10 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Checkpointer
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel
 
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.components.agent import AgentState, create_agent
-
-
-class Proposal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    proposal: list[str] = Field(
-        ...,
-        description="List of proposals.",
-    )
-    rationale: str = Field(
-        ...,
-        description="Rationale for the proposal.",
-    )
 
 
 class FanoutReduceState(TypedDict):
@@ -42,21 +30,22 @@ class FanoutReduceState(TypedDict):
     invocation_instruction: NotRequired[HumanMessage | None]
 
     # proposers
-    branch_proposals: NotRequired[Annotated[dict[str, Proposal | None], operator.or_]]
+    branch_proposals: NotRequired[Annotated[dict[str, BaseModel | None], operator.or_]]
 
     # reducer
-    proposal: NotRequired[Proposal | None]
+    proposal: NotRequired[BaseModel | None]
     reducer_state: NotRequired[AgentState | None]
 
 
-def _proposal_lines(header: str, proposal: Proposal) -> list[str]:
-    return [
-        f"[{header} Proposal]",
-        *(f"- {item}" for item in proposal.proposal),
-        "",
-        f"[{header} Rationale]",
-        proposal.rationale,
-    ]
+def _proposal_lines(header: str, proposal: BaseModel) -> list[str]:
+    """Show whatever schema this graph was built for, without knowing it.
+
+    Rendering the model back as its own JSON is what keeps the template free of
+    the stage's contract: no field name is assumed, so a stage may carry
+    structured geometry or a list of sentences and the merge prompt reads the
+    same either way.
+    """
+    return [f"[{header} Proposal]", proposal.model_dump_json(indent=2)]
 
 
 def _workspace_message(workdir: str) -> HumanMessage:
@@ -72,7 +61,7 @@ def _workspace_message(workdir: str) -> HumanMessage:
     return HumanMessage(content="\n".join(lines))
 
 
-def _other_proposals_message(proposals: Sequence[Proposal]) -> HumanMessage:
+def _other_proposals_message(proposals: Sequence[BaseModel]) -> HumanMessage:
     """Ask the head proposer to reconcile only the other models' answers."""
     lines = [
         "[Reduction Request]",
@@ -86,6 +75,9 @@ def _other_proposals_message(proposals: Sequence[Proposal]) -> HumanMessage:
         "  to be correct.",
         "- Return the complete final proposal list, not a review or a list of",
         "  changes, and update the rationale to explain the resolved answer.",
+        "- Fill every field the schema requires for the merged answer. Where it",
+        "  requires values to be unique or to refer to one another, repair them",
+        "  across the merge rather than carrying two numberings.",
         "",
     ]
     for number, proposal in enumerate(proposals, start=1):
@@ -94,7 +86,7 @@ def _other_proposals_message(proposals: Sequence[Proposal]) -> HumanMessage:
     return HumanMessage(content="\n".join(lines).strip())
 
 
-def _current_proposal_message(proposal: Proposal) -> HumanMessage:
+def _current_proposal_message(proposal: BaseModel) -> HumanMessage:
     """Make the workflow's adopted answer explicit before a revision."""
     lines = [
         "[Revision Context]",
@@ -112,6 +104,7 @@ def create_fanout_reduce_graph(
     proposer_models: Sequence[BaseChatModel],
     tools: Sequence[BaseTool],
     fanout_workdir_prefix: str,
+    proposal_schema: type[BaseModel],
     prompt_context: Mapping[str, str] = MappingProxyType({}),
     response_format_strategy: Literal["provider", "tool"] = "provider",
     max_proposer_turns: int = 30,
@@ -137,9 +130,18 @@ def create_fanout_reduce_graph(
     Every invocation must supply a fresh `invocation_instruction`.  The graph
     clears it after a successful pass so a later reentry cannot accidentally
     reuse a stale instruction.
+
+    `proposal_schema` is the contract every proposer and the reducer answer in.
+    The template never reads it: it binds it as the output schema and renders
+    proposals back as their own JSON, so a stage may carry structured geometry
+    or a list of sentences without this file learning the difference.
     """
     if not proposer_models or len(proposer_models) <= 1:
         raise ValueError("proposer_models must be >= 2")
+    if not (
+        isinstance(proposal_schema, type) and issubclass(proposal_schema, BaseModel)
+    ):
+        raise TypeError("proposal_schema must be a pydantic model")
     if not fanout_workdir_prefix.strip():
         raise ValueError("fanout_workdir_prefix must not be empty")
     if fanout_workdir_prefix.endswith("/"):
@@ -163,7 +165,7 @@ def create_fanout_reduce_graph(
             model=model,
             tools=list(tools),
             prompt_context=prompt_context,
-            output_schema=Proposal,
+            output_schema=proposal_schema,
             response_format_strategy=response_format_strategy,
             max_turns=max_turns,
             announce_turns=announce_turns,

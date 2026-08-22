@@ -1,8 +1,15 @@
+import re
 from pathlib import Path
 
 import pytest
 
 from zeroshot.pipeline.messages import PromptTemplate, instruction_text
+from zeroshot.pipeline.messages.contracts import (
+    VIEW_FRAME,
+    DrawnEntity,
+    GeometryKind,
+    view_frame_sentence,
+)
 
 
 def _write(path: Path, body: str) -> Path:
@@ -12,6 +19,18 @@ def _write(path: Path, body: str) -> Path:
 
 # What the graph supplies to every instruction, whichever stage asked for it.
 _RUN_PATHS = {"output_path": "/work/model.py", "verification_dir": "/work/attempts"}
+
+
+def _guidelines(stage: str) -> str:
+    """A stage's guidelines rendered the way `instruction_text` renders them.
+
+    It injects `$view_frame` on top of the run's paths, so a test that renders
+    the file directly has to supply it too or it is not looking at the text the
+    stage was actually given.
+    """
+    return PromptTemplate(f"instructions/{stage}/guidelines").render(
+        **_RUN_PATHS, view_frame=view_frame_sentence()
+    )
 
 
 def test_a_packaged_prompt_is_addressed_by_name() -> None:
@@ -142,7 +161,7 @@ _ENTRY_CONTEXT = {
 def test_every_way_into_a_stage_carries_that_stage_s_guidelines(stage: str) -> None:
     """A redo enters on its own instruction, and a compacted thread keeps none
     of the opening one, so the contracts cannot ride on first entry alone."""
-    guidelines = PromptTemplate(f"instructions/{stage}/guidelines").render(**_RUN_PATHS)
+    guidelines = _guidelines(stage)
 
     for entry in _STAGE_ENTRIES[stage]:
         rendered = instruction_text(f"{stage}/{entry}", **_RUN_PATHS, **_ENTRY_CONTEXT)
@@ -152,9 +171,7 @@ def test_every_way_into_a_stage_carries_that_stage_s_guidelines(stage: str) -> N
 def test_a_review_is_not_given_the_guidelines_of_what_it_reviews() -> None:
     """The reviewer is a different agent with a different job; the proposer's
     standing advice is not addressed to it."""
-    guidelines = PromptTemplate("instructions/operations/guidelines").render(
-        **_RUN_PATHS
-    )
+    guidelines = _guidelines("operations")
 
     rendered = instruction_text(
         "operations/review", **_RUN_PATHS, semantic_hypothesis="a bracket"
@@ -263,3 +280,75 @@ def test_the_digest_follows_the_file(tmp_path: Path) -> None:
     _write(path, "second")
 
     assert prompt.sha256 != before
+
+
+def test_the_semantics_guidelines_describe_how_the_views_are_actually_separated() -> (
+    None
+):
+    """The guidelines used to claim the three views sit on their own DXF
+    layers. They do not: across all twenty sample drawings every entity is on
+    layer `0`, and what does distinguish an edge is its linetype. The stage
+    spent turns rediscovering that on every run."""
+    guidelines = _guidelines("semantics")
+
+    assert "HIDDEN" in guidelines
+    assert "linetype" in guidelines.lower()
+    assert "layer `0`" in guidelines
+    assert "not separated by layer" in guidelines
+
+
+@pytest.mark.parametrize(
+    "name", ["semantics/initial", "operations/initial", "coding/initial", "audit"]
+)
+def test_every_stage_that_handles_a_coordinate_is_given_the_frame(name: str) -> None:
+    """Semantics reports sheet coordinates tagged with a view; every stage after
+    it reads them back. A stage left without the frame does not fail -- it
+    guesses, and `top` sheet-up is model `-z`, so it guesses wrong in silence.
+
+    The sentence is rendered from `VIEW_FRAME`, so this asserts that it reaches
+    the stage rather than that a copy of it is still correct."""
+    rendered = instruction_text(
+        name, **_RUN_PATHS, **_ENTRY_CONTEXT, report="VERIFIED", attempt_dir="/work/a"
+    )
+
+    for view, (right, up, _) in VIEW_FRAME.items():
+        assert f"{view.value.capitalize()} is right={right}, up={up}" in rendered
+
+
+def test_the_frame_reaches_a_redo_as_well_as_a_first_entry() -> None:
+    """A redo enters on its own instruction, and the coordinates it is handed
+    are the same ones."""
+    rendered = instruction_text(
+        "operations/targeted_redo", **_RUN_PATHS, **_ENTRY_CONTEXT
+    )
+
+    assert "Top is right=+x, up=-z" in rendered
+
+
+def test_the_plan_format_is_the_one_the_measured_baseline_used() -> None:
+    """Phase 1 is being measured on its own, so the only prompt changes it may
+    carry are the ones the new semantics contract forces: the view frame, that
+    `geometry` holds no position, and `open_question`.
+
+    The DAG format -- entries numbered `op<i>` and annotated with `depends on`
+    and `semantics` -- belongs to Phase 2. It was written here early once, and
+    landing it before the measurement would put it inside the measurement."""
+    guidelines = _guidelines("operations")
+
+    for phase_two in ("op<i>", "depends on:", "semantics: ["):
+        assert phase_two not in guidelines, phase_two
+
+
+def test_a_stage_that_builds_in_3d_is_not_told_to_look_for_a_2d_entity() -> None:
+    """`spline` is a `DrawnEntity`, seen in a view; the kind a `geometry` entry
+    can hold is `bspline_curve` or `bspline_surface`. The coding guidelines
+    named `spline`, so the coder was told to watch for a kind that cannot
+    appear -- the drift the contract's two vocabularies invite."""
+    flat_only = {member.value for member in DrawnEntity} - {
+        member.value for member in GeometryKind
+    }
+    assert flat_only == {"spline", "polyline"}
+
+    for stage in ("operations", "coding"):
+        quoted = set(re.findall(r"`([a-z_]+)`", _guidelines(stage)))
+        assert not quoted & flat_only, stage

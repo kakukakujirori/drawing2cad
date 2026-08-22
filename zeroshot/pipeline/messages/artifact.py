@@ -13,6 +13,7 @@ from langchain_core.messages.content import (
     create_text_block,
 )
 
+from zeroshot.pipeline.messages.contracts import view_frame_sentence
 from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 
@@ -155,10 +156,7 @@ class ArtifactPresenter:
                     [
                         f"[Input DXF path: {sandbox_manifest.dxf_path}]",
                         "The DXF contains the three-view 2D technical drawing.",
-                        "The coordinate system of the 2D drawing is as follows:",
-                        "- Front view: right=+x, up=+y",
-                        "- Top view: right=+x, up=-z",
-                        "- Right view: right=-z, up=+y",
+                        f"The coordinate system of the 2D drawing is as follows: {view_frame_sentence()}.",
                         "",
                     ]
                 )

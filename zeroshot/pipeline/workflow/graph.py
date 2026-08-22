@@ -19,6 +19,10 @@ from zeroshot.pipeline.messages import (
     InputManifest,
     build_instruction,
 )
+from zeroshot.pipeline.messages.contracts import (
+    SemanticHypothesis,
+    render_hypothesis,
+)
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import (
     OutputVerifier,
@@ -67,6 +71,7 @@ class FanoutReduceBuilder(Protocol):
         tools: Sequence[BaseTool],
         prompt_context: Mapping[str, str],
         fanout_workdir_prefix: str,
+        proposal_schema: type[BaseModel],
     ) -> CompiledGraph: ...
 
 
@@ -153,6 +158,7 @@ def create_reconstruction_graph(
     semantics_agent = semantics_agent_builder(
         tools=basic_tools,
         prompt_context=prompt_context,
+        proposal_schema=SemanticHypothesis,
         fanout_workdir_prefix=str(
             sandbox_workdir.sandbox_bind_dir / "semantic_hypothesis"
         ),
@@ -223,7 +229,7 @@ def create_reconstruction_graph(
         semantic_hypothesis = state.get("semantic_hypothesis")
         if semantic_hypothesis is None:
             raise RuntimeError("operations requires semantic_hypothesis")
-        semantic_hypothesis_json = semantic_hypothesis.model_dump_json(indent=2)
+        semantic_hypothesis_json = render_hypothesis(semantic_hypothesis)
 
         previous = state.get("operations_state") or {}
         entry_reason, audit_rationale = _invocation_reason(state, "operations")
@@ -284,7 +290,7 @@ def create_reconstruction_graph(
         instruction = build_instruction(
             f"coding/{entry_reason}",
             **prompt_context,
-            semantic_hypothesis=semantic_hypothesis.model_dump_json(indent=2),
+            semantic_hypothesis=render_hypothesis(semantic_hypothesis),
             operation_plan=operation_plan.model_dump_json(indent=2),
             rationale=audit_rationale,
         )
@@ -347,7 +353,7 @@ def create_reconstruction_graph(
             report=json.dumps(verification.serialize(), indent=2),
             attempt_dir=last_attempt_dir,
             output_path=str(sandbox_workdir.sandbox_bind_dir / output_filename),
-            semantic_hypothesis=semantic_hypothesis.model_dump_json(indent=2),
+            semantic_hypothesis=render_hypothesis(semantic_hypothesis),
             operation_plan=operation_plan.model_dump_json(indent=2),
         )
 

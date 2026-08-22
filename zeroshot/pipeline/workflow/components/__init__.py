@@ -9,7 +9,6 @@ answer between a proposer and a reviewer until it settles.
 from .agent import AgentState, create_agent
 from .compact import compact_transcript
 from .fanout_reduce import FanoutReduceState, create_fanout_reduce_graph
-from .fanout_reduce import Proposal as FanoutReduceProposal
 from .proposer_reviewer import (
     Proposal,
     ProposerReviewerState,
@@ -19,7 +18,6 @@ from .proposer_reviewer import (
 
 __all__ = [
     "AgentState",
-    "FanoutReduceProposal",
     "FanoutReduceState",
     "Proposal",
     "ProposerReviewerState",

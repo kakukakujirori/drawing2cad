@@ -4,6 +4,8 @@ Current semantic hypothesis:
 
 $semantic_hypothesis
 
+Numbers in the hypothesis's `evidence` are in the sheet coordinates of the view each reading names: $view_frame.
+
 Current operation plan:
 
 $operation_plan

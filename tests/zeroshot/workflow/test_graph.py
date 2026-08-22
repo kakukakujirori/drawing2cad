@@ -21,12 +21,14 @@ from tests.zeroshot.chat_models import (
     tool_call,
     unanswered_tool_calls,
 )
+from tests.zeroshot.contracts import feature, geometry, hypothesis
+from tests.zeroshot.contracts import hypothesis as _semantic_proposed
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
+from zeroshot.pipeline.messages.contracts import SemanticHypothesis
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import (
-    FanoutReduceProposal,
     Proposal,
     StopReason,
     create_agent,
@@ -58,10 +60,6 @@ def _agent(role: str, model: BaseChatModel, **overrides: Any) -> AgentBuilder:
 
 def _proposed(*items: str) -> Proposal:
     return Proposal(proposal=list(items), rationale="the views agree")
-
-
-def _semantic_proposed(*items: str) -> FanoutReduceProposal:
-    return FanoutReduceProposal(proposal=list(items), rationale="the views agree")
 
 
 def _hypothesis(*semantics: str) -> AIMessage:
@@ -179,6 +177,7 @@ def _graph(
             proposer_models=list(
                 semantic_models or [hypothesizer, _peer_hypothesizer()]
             ),
+            proposal_schema=SemanticHypothesis,
             **fanout_options,
         ),
         operations_agent_builder=_stage(
@@ -453,7 +452,7 @@ def test_an_agent_that_finished_without_its_typed_answer_stops_the_run() -> None
             coder,
             agent_options={"model_retries": 0},
         )
-        with pytest.raises(StructuredOutputValidationError, match="Proposal"):
+        with pytest.raises(StructuredOutputValidationError, match="SemanticHypothesis"):
             graph.invoke({})
 
     assert coder.received_messages == []
@@ -748,7 +747,7 @@ def test_a_stage_whose_premise_was_redone_is_not_asked_the_first_time_question()
     # its own.
     assert "rejected" not in second
     # And the hypothesis it restates from is the new one.
-    assert '"h1"' in second
+    assert "h1" in second
 
 
 def test_a_coder_the_audit_sends_back_is_asked_for_a_correction() -> None:
@@ -972,3 +971,46 @@ def test_a_run_that_never_reached_the_coder_is_not_audited() -> None:
     assert _stop_reasons(result) == {
         "semantic_hypothesizer": StopReason.BUDGET_EXHAUSTED
     }
+
+
+def test_the_hypothesis_curve_parameters_reach_the_planner_and_the_coder() -> None:
+    """The thesis of the structured contract, as a test.
+
+    The stage that reads the drawing is the only one that sees the arc's
+    definition. When that crossed the boundary as prose -- "R11.312 transition"
+    -- the coder had no radius to build with and approximated the curve with
+    line segments. The number itself now has to arrive downstream.
+    """
+    bore = feature(
+        1,
+        "shoulder blend",
+        geometry=[geometry("torus", major_radius=11.312, tube_radius=3.394)],
+    )
+    settled = hypothesis(proposal=[bore])
+    answer = AIMessage(content=settled.model_dump_json())
+    hypothesizer = ScriptedChatModel(responses=(answer, answer))
+    reviewer = ScriptedChatModel(responses=(_review(True, "fine"),))
+    planner = ScriptedChatModel(responses=(_plan("revolve the blend"),))
+    plan_reviewer = ScriptedChatModel(responses=(_review(True, "builds it"),))
+    coder = ScriptedChatModel(responses=(AIMessage(content="written"),))
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            hypothesizer,
+            reviewer,
+            coder,
+            planner=planner,
+            plan_reviewer=plan_reviewer,
+        )
+        graph.invoke({})
+
+    for stage in (planner, coder):
+        instruction = stage.received_messages[0][-1].text
+        assert "11.312" in instruction
+        assert "3.394" in instruction
+        assert "torus" in instruction
+        # A kind is stated with the sizes it is measured by and nothing else,
+        # so the rendering carries no placeholder for the ones it does not use.
+        assert "null" not in instruction
+        assert "None" not in instruction

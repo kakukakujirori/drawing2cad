@@ -1,14 +1,25 @@
 import json
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
+from pydantic import BaseModel, ConfigDict, Field
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
-from zeroshot.pipeline.workflow import FanoutReduceProposal, StopReason
+from zeroshot.pipeline.workflow import StopReason
 from zeroshot.pipeline.workflow.components.fanout_reduce import (
     create_fanout_reduce_graph,
 )
+
+
+class _Proposal(BaseModel):
+    """A contract of the test's own, so these tests exercise the template
+    rather than whichever schema the semantics stage happens to use."""
+
+    model_config = ConfigDict(extra="forbid")
+    proposal: list[str] = Field(..., description="List of proposals.")
+    rationale: str = Field(..., description="Rationale for the proposal.")
 
 
 def _answer(*items: str) -> AIMessage:
@@ -17,8 +28,8 @@ def _answer(*items: str) -> AIMessage:
     )
 
 
-def _proposal(*items: str) -> FanoutReduceProposal:
-    return FanoutReduceProposal(
+def _proposal(*items: str) -> _Proposal:
+    return _Proposal(
         proposal=list(items),
         rationale="the views agree",
     )
@@ -41,6 +52,7 @@ def _graph(
         proposer_models=models,
         tools=[run_shell],
         fanout_workdir_prefix="/work/semantics",
+        proposal_schema=_Proposal,
         response_format_strategy="provider",
         max_proposer_turns=max_turns,
         max_reducer_turns=max_turns,
@@ -143,3 +155,59 @@ def test_peer_fallback_is_explicit_when_the_reducer_later_reenters() -> None:
     )
     assert "peer one" in revision_context
     assert "peer two" not in revision_context
+
+
+def test_the_template_renders_whatever_schema_it_was_built_for() -> None:
+    """The merge prompt has to show a peer's answer without knowing its shape.
+    A schema with none of `_Proposal`'s field names still has to reach the
+    reducer intact, or the template has quietly re-acquired a contract."""
+
+    class _Other(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        finding: str = Field(..., description="What was found.")
+
+    def _found(text: str) -> AIMessage:
+        return AIMessage(content=json.dumps({"finding": text}))
+
+    commands: list[str] = []
+    head = ScriptedChatModel(
+        responses=(_found("a plate"), _found("a plate and a bore"))
+    )
+    peer = ScriptedChatModel(responses=(_found("a bore"),))
+
+    @tool("run_shell")
+    def run_shell(command: str) -> dict[str, Any]:
+        """Record a test shell command as successful."""
+        commands.append(command)
+        return {"returncode": 0, "stdout": "", "stderr": ""}
+
+    graph = create_fanout_reduce_graph(
+        proposer_role="semantic_hypothesizer",
+        proposer_models=[head, peer],
+        tools=[run_shell],
+        fanout_workdir_prefix="/work/semantics",
+        proposal_schema=_Other,
+        announce_turns=False,
+    )
+    result = graph.invoke(
+        {"invocation_instruction": HumanMessage(content="propose semantics")}
+    )
+
+    assert result["proposal"] == _Other(finding="a plate and a bore")
+    assert "a bore" in head.received_messages[-1][-1].text
+
+
+def test_the_template_refuses_a_proposal_schema_that_is_not_a_model() -> None:
+    @tool("run_shell")
+    def run_shell(command: str) -> dict[str, Any]:
+        """Record a test shell command as successful."""
+        return {"returncode": 0, "stdout": "", "stderr": ""}
+
+    with pytest.raises(TypeError, match="pydantic model"):
+        create_fanout_reduce_graph(
+            proposer_role="semantic_hypothesizer",
+            proposer_models=[ScriptedChatModel(responses=()) for _ in range(2)],
+            tools=[run_shell],
+            fanout_workdir_prefix="/work/semantics",
+            proposal_schema=dict,  # type: ignore[arg-type]
+        )

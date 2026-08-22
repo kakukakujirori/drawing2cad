@@ -16,12 +16,10 @@ from langchain_core.messages import AnyMessage
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import is_typeddict
 
+from zeroshot.pipeline.messages.contracts import SemanticHypothesis
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.workflow.components.agent import AgentState
 from zeroshot.pipeline.workflow.components.fanout_reduce import FanoutReduceState
-from zeroshot.pipeline.workflow.components.fanout_reduce import (
-    Proposal as SemanticProposal,
-)
 from zeroshot.pipeline.workflow.components.proposer_reviewer import (
     Proposal as OperationProposal,
 )
@@ -63,7 +61,7 @@ class ReconstructionState(TypedDict):
     coding_state: NotRequired[AgentState]
     audit_state: NotRequired[AgentState]
 
-    semantic_hypothesis: NotRequired[SemanticProposal | None]
+    semantic_hypothesis: NotRequired[SemanticHypothesis | None]
     operation_plan: NotRequired[OperationProposal | None]
     last_verification: NotRequired[VerifyOutputResult]
     audit: NotRequired[Audit | None]

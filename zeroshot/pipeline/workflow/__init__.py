@@ -1,5 +1,4 @@
 from .components import (
-    FanoutReduceProposal,
     FanoutReduceState,
     Proposal,
     Review,
@@ -13,7 +12,6 @@ from .state import CUSTOM_STATE_TYPES, ReconstructionState
 
 __all__ = [
     "CUSTOM_STATE_TYPES",
-    "FanoutReduceProposal",
     "FanoutReduceState",
     "Proposal",
     "ReconstructionState",

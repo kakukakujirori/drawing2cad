@@ -7,10 +7,24 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
+from tests.zeroshot.contracts import feature, geometry, hypothesis
+from zeroshot.pipeline.messages.contracts import (
+    Axis,
+    ClaimSource,
+    DrawnEntity,
+    EdgeStyle,
+    FeatureGeometry,
+    GeometryKind,
+    Parameter,
+    ParameterName,
+    SemanticFeature,
+    SemanticHypothesis,
+    View,
+    ViewEvidence,
+)
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.workflow import (
     CUSTOM_STATE_TYPES,
-    FanoutReduceProposal,
     Proposal,
 )
 from zeroshot.pipeline.workflow.components.agent import StopReason
@@ -23,7 +37,19 @@ from zeroshot.pipeline.workflow.state import (
 )
 
 
-@pytest.mark.parametrize("contract", [Proposal, FanoutReduceProposal, Review, Audit])
+@pytest.mark.parametrize(
+    "contract",
+    [
+        Proposal,
+        SemanticHypothesis,
+        SemanticFeature,
+        FeatureGeometry,
+        Parameter,
+        ViewEvidence,
+        Review,
+        Audit,
+    ],
+)
 def test_a_contract_carries_no_prose_beyond_its_field_descriptions(
     contract: type[BaseModel],
 ) -> None:
@@ -89,19 +115,20 @@ def test_a_review_allows_an_accept_without_rationale() -> None:
     assert review.accept is True
 
 
+# A plane is measured by nothing, so a hypothesis of bare planes never builds a
+# `Dimension` and the checkpoint check below would pass without covering it.
+_A_HYPOTHESIS = hypothesis(
+    proposal=[
+        feature(1, "flange"),
+        feature(2, "blind hole", geometry=[geometry("torus")]),
+    ]
+)
+
 _ARTIFACTS: dict[str, object] = {
     "semantics_state": {
         "invocation_instruction": None,
-        "branch_proposals": {
-            "propose_0": FanoutReduceProposal(
-                proposal=["flange", "blind hole"],
-                rationale="the flange carries the bolt circle",
-            )
-        },
-        "proposal": FanoutReduceProposal(
-            proposal=["flange", "blind hole"],
-            rationale="the flange carries the bolt circle",
-        ),
+        "branch_proposals": {"propose_0": _A_HYPOTHESIS},
+        "proposal": _A_HYPOTHESIS,
         "reducer_state": {
             "messages": [HumanMessage(content="propose semantics")],
             "current_turn": 1,
@@ -137,10 +164,7 @@ _ARTIFACTS: dict[str, object] = {
         "total_turns": 3,
         "stop_reason": StopReason.BUDGET_EXHAUSTED,
     },
-    "semantic_hypothesis": FanoutReduceProposal(
-        proposal=["flange", "blind hole"],
-        rationale="the flange carries the bolt circle",
-    ),
+    "semantic_hypothesis": _A_HYPOTHESIS,
     "operation_plan": Proposal(
         proposal=["Extrude the outline 25 mm along +z"],
         rationale="one extrude reaches the stated height",
@@ -158,7 +182,21 @@ _ARTIFACTS: dict[str, object] = {
 def test_custom_state_types_include_nested_runtime_values() -> None:
     assert set(CUSTOM_STATE_TYPES) == {
         Proposal,
-        FanoutReduceProposal,
+        SemanticHypothesis,
+        SemanticFeature,
+        FeatureGeometry,
+        Parameter,
+        ParameterName,
+        Axis,
+        ViewEvidence,
+        # The contract's enums ride in state too. An enum missing from the
+        # allowlist restores as a bare string, which still compares equal and
+        # so fails nowhere until something asks it for `.value`.
+        View,
+        DrawnEntity,
+        EdgeStyle,
+        GeometryKind,
+        ClaimSource,
         Review,
         Audit,
         StopReason,
@@ -173,6 +211,13 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
     def types(value: object):
         if isinstance(value, dict):
             for held in value.values():
+                yield from types(held)
+        elif isinstance(value, list | tuple):
+            for held in value:
+                yield from types(held)
+        elif isinstance(value, BaseModel):
+            yield type(value)
+            for held in dict(value).values():
                 yield from types(held)
         else:
             yield type(value)
@@ -201,10 +246,8 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
         assert restored[field] == value
 
     semantics_state = restored["semantics_state"]
-    assert type(semantics_state["proposal"]) is FanoutReduceProposal
-    assert type(semantics_state["branch_proposals"]["propose_0"]) is (
-        FanoutReduceProposal
-    )
+    assert type(semantics_state["proposal"]) is SemanticHypothesis
+    assert type(semantics_state["branch_proposals"]["propose_0"]) is SemanticHypothesis
     assert type(semantics_state["reducer_state"]["stop_reason"]) is StopReason
 
     operations_state = restored["operations_state"]
