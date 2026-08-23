@@ -24,12 +24,15 @@ from tests.zeroshot.chat_models import (
 from tests.zeroshot.contracts import feature, geometry, hypothesis
 from tests.zeroshot.contracts import hypothesis as _semantic_proposed
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
-from zeroshot.pipeline.messages.contracts import SemanticHypothesis
+from zeroshot.pipeline.messages.contracts import (
+    Operation,
+    OperationPlan,
+    SemanticHypothesis,
+)
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import (
-    Proposal,
     StopReason,
     create_agent,
     create_fanout_reduce_graph,
@@ -58,8 +61,25 @@ def _agent(role: str, model: BaseChatModel, **overrides: Any) -> AgentBuilder:
     return partial(create_agent, role=role, model=model, **overrides)
 
 
-def _proposed(*items: str) -> Proposal:
-    return Proposal(proposal=list(items), rationale="the views agree")
+def _proposed(*items: str, builds: Sequence[int] = (1,)) -> OperationPlan:
+    """A plan of `items`, each waiting on the one before it.
+
+    A straight chain rather than a graph: these tests are about the wiring the
+    plan travels through, and `test_operations.py` is where the graph itself is
+    exercised.
+    """
+    return OperationPlan(
+        proposal=[
+            Operation(
+                id=number,
+                operation=item,
+                depends_on=[number - 1] if number > 1 else [],
+                semantics=list(builds),
+            )
+            for number, item in enumerate(items, start=1)
+        ],
+        rationale="the views agree",
+    )
 
 
 def _hypothesis(*semantics: str) -> AIMessage:
@@ -93,8 +113,8 @@ def _silent_hypothesizer(turns: int) -> ScriptedChatModel:
     )
 
 
-def _plan(*operations: str) -> AIMessage:
-    return AIMessage(content=_proposed(*operations).model_dump_json())
+def _plan(*operations: str, builds: Sequence[int] = (1,)) -> AIMessage:
+    return AIMessage(content=_proposed(*operations, builds=builds).model_dump_json())
 
 
 def _review(accept: bool, rationale: str = "") -> AIMessage:
@@ -288,6 +308,10 @@ def test_semantics_fans_out_and_reduces_before_operations() -> None:
             ScriptedChatModel(responses=()),
             coder,
             semantic_models=[head, peer],
+            # The reduction settles on two features, so a plan that built one
+            # of them would be sent back before the coder -- which is another
+            # test's subject, not this one's.
+            planner=ScriptedChatModel(responses=(_plan("extrude it", builds=[1, 2]),)),
         )
         result = graph.invoke({})
 
@@ -1014,3 +1038,215 @@ def test_the_hypothesis_curve_parameters_reach_the_planner_and_the_coder() -> No
         # so the rendering carries no placeholder for the ones it does not use.
         assert "null" not in instruction
         assert "None" not in instruction
+
+
+def test_a_plan_that_leaves_a_feature_unbuilt_is_sent_back_naming_it() -> None:
+    """The check the plan's own validator cannot make. A feature id points into
+    an answer the planner produced separately, so only the graph, holding both,
+    can tell that sem2 was established and then dropped -- and nothing after
+    this would notice, because a model built from a shorter plan comes out
+    whole, just without the feature."""
+    planner = ScriptedChatModel(
+        responses=(
+            _plan("extrude it", builds=[1]),
+            _plan("extrude it", "boss it", builds=[1, 2]),
+        )
+    )
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(
+                responses=tuple(_hypothesis("a plate", "a boss") for _ in range(3))
+            ),
+            ScriptedChatModel(responses=tuple(_review(True, "fine") for _ in range(3))),
+            ScriptedChatModel(responses=(AIMessage(content="written"),)),
+            planner=planner,
+            plan_reviewer=ScriptedChatModel(
+                responses=tuple(_review(True, "ok") for _ in range(2))
+            ),
+            auditor=ScriptedChatModel(responses=(_audit(None, "matches"),)),
+        )
+        result = graph.invoke({})
+
+    assert len(planner.received_messages) == 2
+    assert result["plan_coverage"].complete
+
+    redo = _last_instruction(planner.received_messages[1])
+    # The hypothesis names every feature, so what marks this out is the
+    # complaint: it says sem2 and does not blame an audit that never ran.
+    complaint = redo.split("Current semantic hypothesis")[0]
+    assert "sem2" in complaint
+    assert "sem1" not in complaint
+    assert "audit" not in complaint.lower() or "No audit has run" in complaint
+
+
+def test_a_plan_citing_a_feature_the_hypothesis_never_had_is_sent_back() -> None:
+    planner = ScriptedChatModel(
+        responses=(_plan("extrude it", builds=[9]), _plan("extrude it", builds=[1]))
+    )
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(
+                responses=tuple(_hypothesis("a plate") for _ in range(3))
+            ),
+            ScriptedChatModel(responses=tuple(_review(True, "fine") for _ in range(3))),
+            ScriptedChatModel(responses=(AIMessage(content="written"),)),
+            planner=planner,
+            plan_reviewer=ScriptedChatModel(
+                responses=tuple(_review(True, "ok") for _ in range(2))
+            ),
+            auditor=ScriptedChatModel(responses=(_audit(None, "matches"),)),
+        )
+        graph.invoke({})
+
+    assert "sem9" in _last_instruction(planner.received_messages[1])
+
+
+def test_a_planner_that_keeps_missing_the_feature_still_reaches_the_coder() -> None:
+    """A plan missing a feature still builds most of the part, so the budget
+    running out hands what there is to the coder rather than ending the run.
+    Judging what came out is the audit's job."""
+    planner = ScriptedChatModel(
+        responses=tuple(_plan("extrude it", builds=[1]) for _ in range(4))
+    )
+    coder = ScriptedChatModel(responses=(AIMessage(content="written"),))
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(
+                responses=tuple(_hypothesis("a plate", "a boss") for _ in range(4))
+            ),
+            ScriptedChatModel(responses=tuple(_review(True, "fine") for _ in range(4))),
+            coder,
+            planner=planner,
+            plan_reviewer=ScriptedChatModel(
+                responses=tuple(_review(True, "ok") for _ in range(4))
+            ),
+            auditor=ScriptedChatModel(responses=(_audit(None, "as good as it gets"),)),
+            max_plan_revisions=1,
+        )
+        result = graph.invoke({})
+
+    assert len(planner.received_messages) == 2
+    assert len(coder.received_messages) == 1
+    assert result["plan_coverage"].uncovered == [2]
+
+
+def test_a_plan_that_accounts_for_every_feature_is_not_sent_back() -> None:
+    planner = ScriptedChatModel(responses=(_plan("extrude it", builds=[1]),))
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(
+                responses=tuple(_hypothesis("a plate") for _ in range(2))
+            ),
+            ScriptedChatModel(responses=tuple(_review(True, "fine") for _ in range(2))),
+            ScriptedChatModel(responses=(AIMessage(content="written"),)),
+            planner=planner,
+            plan_reviewer=ScriptedChatModel(responses=(_review(True, "ok"),)),
+            auditor=ScriptedChatModel(responses=(_audit(None, "matches"),)),
+        )
+        result = graph.invoke({})
+
+    assert len(planner.received_messages) == 1
+    assert result["plan_coverage"].complete
+    assert result.get("plan_revision_count", 0) == 0
+
+
+def test_a_coverage_gap_after_an_audit_send_back_names_the_feature_not_the_verdict() -> (
+    None
+):
+    """`state["audit"]` is never cleared once set, so reading it first made the
+    coverage branch unreachable for the rest of the run: a planner sent back
+    for dropping sem2 was handed the audit's complaint about something else,
+    with nothing to say which feature it had dropped. It would then spend the
+    whole revision budget making the same plan.
+    """
+    planner = ScriptedChatModel(
+        responses=(
+            _plan("extrude it", builds=[1, 2]),  # complete, so coding runs
+            _plan("extrude it", builds=[1]),  # the audit's redo drops sem2
+            _plan("extrude it", "boss it", builds=[1, 2]),  # the coverage redo
+        )
+    )
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(
+                responses=tuple(_hypothesis("a plate", "a boss") for _ in range(4))
+            ),
+            ScriptedChatModel(responses=tuple(_review(True, "fine") for _ in range(4))),
+            ScriptedChatModel(
+                responses=tuple(AIMessage(content=f"written {n}") for n in range(3))
+            ),
+            planner=planner,
+            plan_reviewer=ScriptedChatModel(
+                responses=tuple(_review(True, "ok") for _ in range(3))
+            ),
+            auditor=ScriptedChatModel(
+                responses=(
+                    _audit("operations", "the boss sits on the wrong face"),
+                    _audit(None, "now it matches"),
+                )
+            ),
+        )
+        result = graph.invoke({})
+
+    assert len(planner.received_messages) == 3
+
+    audited = _last_instruction(planner.received_messages[1])
+    assert "the boss sits on the wrong face" in audited
+
+    # The third entry is the coverage gap, not the audit again.
+    gap = _last_instruction(planner.received_messages[2])
+    complaint = gap.split("Current semantic hypothesis")[0]
+    assert "sem2" in complaint
+    assert "the boss sits on the wrong face" not in complaint
+    assert result["plan_coverage"].complete
+
+
+def test_a_stale_coverage_result_does_not_speak_for_a_plan_being_remade() -> None:
+    """The other half of the same invariant. A run whose revision budget ran
+    out reaches the coder with a gap still recorded; when the audit then sends
+    it back to semantics, operations must be told its premise changed, not
+    handed the reading of a plan that is about to be thrown away."""
+    planner = ScriptedChatModel(
+        responses=(
+            _plan("extrude it", builds=[1]),  # gap: sem2 unbuilt
+            _plan("extrude it", builds=[1]),  # still a gap, budget now spent
+            _plan("extrude it", builds=[1]),  # after the semantics redo
+        )
+    )
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            ScriptedChatModel(
+                responses=(
+                    _hypothesis("a plate", "a boss"),
+                    _hypothesis("a plate", "a boss"),
+                    _hypothesis("a plate"),
+                    _hypothesis("a plate"),
+                )
+            ),
+            ScriptedChatModel(responses=tuple(_review(True, "fine") for _ in range(4))),
+            ScriptedChatModel(
+                responses=tuple(AIMessage(content=f"written {n}") for n in range(3))
+            ),
+            planner=planner,
+            plan_reviewer=ScriptedChatModel(
+                responses=tuple(_review(True, "ok") for _ in range(3))
+            ),
+            auditor=ScriptedChatModel(
+                responses=(
+                    _audit("semantics", "the plate is the wrong size"),
+                    _audit(None, "now it matches"),
+                )
+            ),
+            max_plan_revisions=1,
+        )
+        graph.invoke({})
+
+    after_semantics_redo = _last_instruction(planner.received_messages[2])
+    assert "the plate is the wrong size" in after_semantics_redo
+    assert "no operation in the plan builds them" not in after_semantics_redo

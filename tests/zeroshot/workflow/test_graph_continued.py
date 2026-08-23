@@ -13,11 +13,14 @@ from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from tests.zeroshot.chat_models import ScriptedChatModel
 from tests.zeroshot.contracts import hypothesis as _semantic_hypothesis
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
-from zeroshot.pipeline.messages.contracts import SemanticHypothesis
+from zeroshot.pipeline.messages.contracts import (
+    Operation,
+    OperationPlan,
+    SemanticHypothesis,
+)
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import (
-    Proposal,
     create_agent,
     create_fanout_reduce_graph,
     create_proposer_reviewer_loop,
@@ -38,9 +41,19 @@ def _hypothesis(*items: str) -> AIMessage:
 
 
 def _plan(*items: str) -> AIMessage:
+    """A plan of `items`, each waiting on the one before it."""
     return AIMessage(
-        content=Proposal(
-            proposal=list(items), rationale="the views agree"
+        content=OperationPlan(
+            proposal=[
+                Operation(
+                    id=number,
+                    operation=item,
+                    depends_on=[number - 1] if number > 1 else [],
+                    semantics=[1],
+                )
+                for number, item in enumerate(items, start=1)
+            ],
+            rationale="the views agree",
         ).model_dump_json()
     )
 

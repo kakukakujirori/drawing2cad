@@ -8,13 +8,14 @@ Reading the input
 - Work out which 2D primitives in Front, Top and Right are one 3D entity seen three ways.
 
 Interpreting the geometry
-- Work outward from the base body: major additive and subtractive features, then local details.
+- Work outward from the base body, through the major features, to the local details such as rounds and chamfers, until nothing drawn is left unaccounted for.
 - A curve in a view is evidence, not a conclusion — a spline silhouette is far more often the projection of a fillet than a freeform surface. Record what you saw in `evidence`, and what you claim in `geometry`.
 - If you cannot pin a curve's parameters down, mark the entry `assumed` and say so in `open_question`.
 
 Filling in the answer
 - The axes are not yours to choose. $view_frame. Report every number in the ones the drawing itself uses.
-- One entry in `proposal` per feature, each with an `id` of its own starting at 1, the base body first. Describe a feature at the level the feature exists at: a plate is one prismatic body, not four lines. Whether it is built by adding or removing material is the modelling plan's decision, not yours.
+- One entry in `proposal` per feature, each with an `id` of its own starting at 1. The base body is a feature like the others and takes the first entry. Whether a feature is built by adding or removing material is the modelling plan's decision, not yours.
+- A feature is one thing that can be named and measured on its own: a plate is one prismatic body rather than four lines, and two rounds of different radius are two features rather than one rounded edge.
 - `geometry` says what must be present in the finished solid: the `kind` that names the real face rather than one that merely resembles it — a rounded edge is a torus or a cylinder, a flat chamfer a plane — which `axis` it turns about, and how big it is.
 - **`geometry` carries no position.** How big and which way it faces, not where it sits; the modelling plan places it from your evidence. A size you got wrong shows up in the next render, but a position you got wrong is inherited in silence.
 - `evidence` is the drawing transcribed: the view, the entity type as drawn, whether the linework was visible or hidden, and the entity's own numbers in sheet coordinates. Exact geometry belongs here, because it is read rather than inferred. Every feature must cite at least one reading.

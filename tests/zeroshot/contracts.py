@@ -4,7 +4,7 @@ something else.
 Tests *about* the contract build it explicitly -- see `messages/test_contracts.py`.
 """
 
-from zeroshot.pipeline.messages.contracts import (
+from zeroshot.pipeline.messages.contracts.semantics import (
     _CLAIMED_PARAMETERS,
     _DRAWN_PARAMETERS,
     DrawnEntity,

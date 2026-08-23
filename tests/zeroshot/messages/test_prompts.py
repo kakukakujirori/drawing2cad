@@ -8,6 +8,7 @@ from zeroshot.pipeline.messages.contracts import (
     VIEW_FRAME,
     DrawnEntity,
     GeometryKind,
+    Operation,
     view_frame_sentence,
 )
 
@@ -325,18 +326,23 @@ def test_the_frame_reaches_a_redo_as_well_as_a_first_entry() -> None:
     assert "Top is right=+x, up=-z" in rendered
 
 
-def test_the_plan_format_is_the_one_the_measured_baseline_used() -> None:
-    """Phase 1 is being measured on its own, so the only prompt changes it may
-    carry are the ones the new semantics contract forces: the view frame, that
-    `geometry` holds no position, and `open_question`.
-
-    The DAG format -- entries numbered `op<i>` and annotated with `depends on`
-    and `semantics` -- belongs to Phase 2. It was written here early once, and
-    landing it before the measurement would put it inside the measurement."""
+def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes() -> None:
+    """This test was the other way round while Phase 1 was measured: the DAG
+    format was held out of the prompt so that the measurement saw the
+    structured hypothesis and nothing else. The schema now carries it, so the
+    guard becomes its opposite -- the prompt must name the two fields the
+    contract will refuse a plan without."""
     guidelines = _guidelines("operations")
 
-    for phase_two in ("op<i>", "depends on:", "semantics: ["):
-        assert phase_two not in guidelines, phase_two
+    assert "`depends_on`" in guidelines
+    assert "`semantics`" in guidelines
+    assert set(Operation.model_fields) == {"id", "operation", "depends_on", "semantics"}
+
+
+def test_the_coder_is_told_the_plan_is_already_ordered() -> None:
+    """The order is derived, not written, so a coder that reordered it would be
+    undoing the one thing the graph was taken for."""
+    assert "already in build order" in _guidelines("coding")
 
 
 def test_a_stage_that_builds_in_3d_is_not_told_to_look_for_a_2d_entity() -> None:
@@ -352,3 +358,16 @@ def test_a_stage_that_builds_in_3d_is_not_told_to_look_for_a_2d_entity() -> None
     for stage in ("operations", "coding"):
         quoted = set(re.findall(r"`([a-z_]+)`", _guidelines(stage)))
         assert not quoted & flat_only, stage
+
+
+def test_the_plan_redo_does_not_credit_the_step_that_found_the_fault() -> None:
+    """Two things send the plan back: the audit, and the coverage check that
+    runs before any audit does. One instruction serves both, so it must name
+    neither -- it opened with "The audit found", which would have had the
+    planner answering a verdict nobody had reached."""
+    body = PromptTemplate("instructions/operations/targeted_redo").path.read_text(
+        encoding="utf-8"
+    )
+
+    assert "audit" not in body.lower()
+    assert "$rationale" in body

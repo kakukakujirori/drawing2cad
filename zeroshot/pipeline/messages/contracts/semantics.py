@@ -437,9 +437,9 @@ class SemanticHypothesis(BaseModel):
     proposal: list[SemanticFeature] = Field(
         ...,
         description=(
-            "Every feature of the part, the base body first. That order is "
-            "for reading; a feature is named by its `id`, never by where it "
-            "sits in this list."
+            "Every feature of the part, the base body among them and first. "
+            "That order is for reading; a feature is named by its `id`, never "
+            "by where it sits in this list."
         ),
     )
     rationale: str = Field(

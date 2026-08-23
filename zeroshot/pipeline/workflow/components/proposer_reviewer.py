@@ -59,7 +59,8 @@ class ProposerReviewerState(TypedDict):
 
     # proposer
     proposer_entry_instruction: HumanMessage
-    proposal: NotRequired[Proposal | None]
+    # Whatever `proposal_schema` this loop was built for, not `Proposal` alone.
+    proposal: NotRequired[BaseModel | None]
     proposer_state: NotRequired[AgentState | None]
 
     # reviewer
@@ -74,6 +75,7 @@ def create_proposer_reviewer_loop(
     reviewer_role: str,
     reviewer_model: BaseChatModel,
     tools: Sequence[BaseTool],
+    proposal_schema: type[BaseModel] = Proposal,
     prompt_context: Mapping[str, str] = MappingProxyType({}),
     response_format_strategy: Literal["provider", "tool"] = "provider",
     max_proposer_turns_per_revision: int = 30,
@@ -88,6 +90,10 @@ def create_proposer_reviewer_loop(
     checkpointer: Checkpointer = False,
 ):
     """Build a proposer-reviewer loop that stops on acceptance or its limits."""
+    if not (
+        isinstance(proposal_schema, type) and issubclass(proposal_schema, BaseModel)
+    ):
+        raise TypeError("proposal_schema must be a pydantic model")
     if max_revisions < 0:
         raise ValueError(f"{max_revisions=} must be non-negative")
 
@@ -118,7 +124,7 @@ def create_proposer_reviewer_loop(
     proposer = agent_builder(
         proposer_role,
         proposer_model,
-        Proposal,
+        proposal_schema,
         max_proposer_turns_per_revision,
     )
     reviewer = agent_builder(

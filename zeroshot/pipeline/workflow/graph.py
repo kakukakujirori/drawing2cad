@@ -20,8 +20,12 @@ from zeroshot.pipeline.messages import (
     build_instruction,
 )
 from zeroshot.pipeline.messages.contracts import (
+    OperationPlan,
     SemanticHypothesis,
+    plan_coverage,
     render_hypothesis,
+    render_plan,
+    render_plan_coverage,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import (
@@ -61,6 +65,7 @@ class ReasoningStageBuilder(Protocol):
         *,
         tools: Sequence[BaseTool],
         prompt_context: Mapping[str, str],
+        proposal_schema: type[BaseModel],
     ) -> CompiledGraph: ...
 
 
@@ -83,6 +88,12 @@ def _invocation_reason(
     state: ReconstructionState,
     current_stage: ReasoningStage,
 ) -> tuple[Literal["initial", "targeted_redo", "upstream_changed"], str]:
+    # Plan coverage check
+    coverage = state.get("plan_coverage")
+    incomplete = coverage is not None and not coverage.complete
+    if current_stage == "operations" and incomplete:
+        return "targeted_redo", render_plan_coverage(coverage)
+
     audit = state.get("audit")
     if audit is None:
         return "initial", ""
@@ -117,6 +128,7 @@ def create_reconstruction_graph(
     output_filename: str = "model.py",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     max_audit_reject_count: int = 3,
+    max_plan_revisions: int = 1,
     share_thread: bool = False,
     compact_between_stages: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
@@ -124,6 +136,8 @@ def create_reconstruction_graph(
     """Interpret and plan the part, implement it, then verify and audit it."""
     if max_audit_reject_count <= 0:
         raise ValueError(f"{max_audit_reject_count=} must be positive")
+    if max_plan_revisions < 0:
+        raise ValueError(f"{max_plan_revisions=} must be non-negative")
     if compact_between_stages is not None and not share_thread:
         raise ValueError(
             "compact_between_stages needs share_thread: with a transcript per "
@@ -166,6 +180,7 @@ def create_reconstruction_graph(
     operations_agent = operations_agent_builder(
         tools=basic_tools,
         prompt_context=prompt_context,
+        proposal_schema=OperationPlan,
     )
     coding_agent = coding_agent_builder(
         tools=basic_tools,
@@ -267,12 +282,37 @@ def create_reconstruction_graph(
         return {
             "operations_state": result,
             "operation_plan": result.get("proposal"),
+            "plan_coverage": None,
         }
+
+    def check_plan(state: ReconstructionState) -> dict[str, Any]:
+        """Check if the operation plan covers all semantic hypotheses."""
+        hypothesis = state.get("semantic_hypothesis")
+        plan = state.get("operation_plan")
+        if hypothesis is None or plan is None:
+            return {}
+
+        coverage = plan_coverage(plan, [feature.id for feature in hypothesis.proposal])
+        update: dict[str, Any] = {"plan_coverage": coverage}
+        if not coverage.complete:
+            update["plan_revision_count"] = 1
+        return update
 
     def after_operations(
         state: ReconstructionState,
-    ) -> Literal["coding", "__end__"]:
-        return "coding" if state.get("operation_plan") is not None else "__end__"
+    ) -> Literal["coding", "operations", "__end__"]:
+        if state.get("operation_plan") is None:
+            return "__end__"
+        coverage = state.get("plan_coverage")
+        if coverage is None or coverage.complete:
+            return "coding"
+        # `check_plan` has already spent one, so this reads as "a re-plan is
+        # still within the budget" rather than as an off-by-one.
+        if state.get("plan_revision_count", 0) <= max_plan_revisions:
+            return "operations"
+        # Out of re-plans, and a plan missing a feature still builds most of
+        # the part. The audit is what judges what came out.
+        return "coding"
 
     def write_code(state: ReconstructionState, config: RunnableConfig):
         semantic_hypothesis = state.get("semantic_hypothesis")
@@ -291,7 +331,7 @@ def create_reconstruction_graph(
             f"coding/{entry_reason}",
             **prompt_context,
             semantic_hypothesis=render_hypothesis(semantic_hypothesis),
-            operation_plan=operation_plan.model_dump_json(indent=2),
+            operation_plan=render_plan(operation_plan),
             rationale=audit_rationale,
         )
 
@@ -354,7 +394,7 @@ def create_reconstruction_graph(
             attempt_dir=last_attempt_dir,
             output_path=str(sandbox_workdir.sandbox_bind_dir / output_filename),
             semantic_hypothesis=render_hypothesis(semantic_hypothesis),
-            operation_plan=operation_plan.model_dump_json(indent=2),
+            operation_plan=render_plan(operation_plan),
         )
 
         if not messages:
@@ -379,6 +419,8 @@ def create_reconstruction_graph(
         }
         if audit is not None and audit.revise is not None:
             update["audit_reject_count"] = 1
+            # Prevent it from being read in different turns
+            update["plan_coverage"] = None
 
         return update
 
@@ -414,6 +456,7 @@ def create_reconstruction_graph(
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
     workflow.add_node("semantics", run_semantics)
     workflow.add_node("operations", run_operations)
+    workflow.add_node("check_plan", check_plan)
     workflow.add_node("coding", write_code)
     workflow.add_node("verify_final", verify_final)
     workflow.add_node("audit", audit_output)
@@ -426,7 +469,8 @@ def create_reconstruction_graph(
 
     workflow.add_edge(START, "semantics")
     workflow.add_conditional_edges(_exit("semantics"), after_semantics)
-    workflow.add_conditional_edges(_exit("operations"), after_operations)
+    workflow.add_edge(_exit("operations"), "check_plan")
+    workflow.add_conditional_edges("check_plan", after_operations)
     workflow.add_edge(_exit("coding"), "verify_final")
     workflow.add_conditional_edges("verify_final", after_verification)
     workflow.add_conditional_edges("audit", after_audit)
@@ -436,5 +480,6 @@ def create_reconstruction_graph(
     # ceiling is lower than the laps this budget allows.  Counted from the graph
     # itself so that adding a node cannot leave the ceiling behind.
     return graph.with_config(
-        recursion_limit=len(workflow.nodes) * (max_audit_reject_count + 2)
+        recursion_limit=len(workflow.nodes)
+        * (max_audit_reject_count + max_plan_revisions + 2)
     )

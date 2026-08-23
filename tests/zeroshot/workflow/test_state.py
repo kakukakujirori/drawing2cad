@@ -15,8 +15,11 @@ from zeroshot.pipeline.messages.contracts import (
     EdgeStyle,
     FeatureGeometry,
     GeometryKind,
+    Operation,
+    OperationPlan,
     Parameter,
     ParameterName,
+    PlanCoverage,
     SemanticFeature,
     SemanticHypothesis,
     View,
@@ -124,6 +127,18 @@ _A_HYPOTHESIS = hypothesis(
     ]
 )
 
+_A_PLAN = OperationPlan(
+    proposal=[
+        Operation(
+            id=1,
+            operation="Extrude the outline 25 mm along +z",
+            depends_on=[],
+            semantics=[1],
+        )
+    ],
+    rationale="one extrude reaches the stated height",
+)
+
 _ARTIFACTS: dict[str, object] = {
     "semantics_state": {
         "invocation_instruction": None,
@@ -139,10 +154,7 @@ _ARTIFACTS: dict[str, object] = {
     "operations_state": {
         "revision_count": 1,
         "proposer_entry_instruction": HumanMessage(content="propose operations"),
-        "proposal": Proposal(
-            proposal=["Extrude the outline 25 mm along +z"],
-            rationale="one extrude reaches the stated height",
-        ),
+        "proposal": _A_PLAN,
         "proposer_state": {
             "messages": [HumanMessage(content="propose operations")],
             "current_turn": 1,
@@ -165,10 +177,8 @@ _ARTIFACTS: dict[str, object] = {
         "stop_reason": StopReason.BUDGET_EXHAUSTED,
     },
     "semantic_hypothesis": _A_HYPOTHESIS,
-    "operation_plan": Proposal(
-        proposal=["Extrude the outline 25 mm along +z"],
-        rationale="one extrude reaches the stated height",
-    ),
+    "operation_plan": _A_PLAN,
+    "plan_coverage": PlanCoverage(uncovered=[2], unknown=[]),
     "audit": Audit(revise="operations", rationale="the boss is missing"),
     "last_verification": VerifyOutputResult(
         verification_id="v1",
@@ -181,7 +191,9 @@ _ARTIFACTS: dict[str, object] = {
 
 def test_custom_state_types_include_nested_runtime_values() -> None:
     assert set(CUSTOM_STATE_TYPES) == {
-        Proposal,
+        Operation,
+        OperationPlan,
+        PlanCoverage,
         SemanticHypothesis,
         SemanticFeature,
         FeatureGeometry,
@@ -251,7 +263,7 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
     assert type(semantics_state["reducer_state"]["stop_reason"]) is StopReason
 
     operations_state = restored["operations_state"]
-    assert type(operations_state["proposal"]) is Proposal
+    assert type(operations_state["proposal"]) is OperationPlan
     assert type(operations_state["review"]) is Review
 
 

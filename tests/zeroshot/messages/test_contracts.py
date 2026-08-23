@@ -13,7 +13,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from tests.zeroshot.contracts import evidence, feature, geometry, hypothesis
-from zeroshot.pipeline.messages.contracts import (
+from zeroshot.pipeline.messages.contracts.semantics import (
     _ARITY,
     _CLAIMED_PARAMETERS,
     _DRAWN_PARAMETERS,

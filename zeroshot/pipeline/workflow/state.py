@@ -16,13 +16,14 @@ from langchain_core.messages import AnyMessage
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import is_typeddict
 
-from zeroshot.pipeline.messages.contracts import SemanticHypothesis
+from zeroshot.pipeline.messages.contracts import (
+    OperationPlan,
+    PlanCoverage,
+    SemanticHypothesis,
+)
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.workflow.components.agent import AgentState
 from zeroshot.pipeline.workflow.components.fanout_reduce import FanoutReduceState
-from zeroshot.pipeline.workflow.components.proposer_reviewer import (
-    Proposal as OperationProposal,
-)
 from zeroshot.pipeline.workflow.components.proposer_reviewer import (
     ProposerReviewerState,
 )
@@ -62,10 +63,12 @@ class ReconstructionState(TypedDict):
     audit_state: NotRequired[AgentState]
 
     semantic_hypothesis: NotRequired[SemanticHypothesis | None]
-    operation_plan: NotRequired[OperationProposal | None]
+    operation_plan: NotRequired[OperationPlan | None]
+    plan_coverage: NotRequired[PlanCoverage | None]
     last_verification: NotRequired[VerifyOutputResult]
     audit: NotRequired[Audit | None]
     audit_reject_count: NotRequired[Annotated[int, operator.add]]
+    plan_revision_count: NotRequired[Annotated[int, operator.add]]
 
 
 # Which agent carries the thread through each reasoning stage, and where its

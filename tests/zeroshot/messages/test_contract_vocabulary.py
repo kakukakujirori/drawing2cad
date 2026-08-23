@@ -18,7 +18,7 @@ import ezdxf
 import pytest
 from ezdxf.tools import standards
 
-from zeroshot.pipeline.messages.contracts import (
+from zeroshot.pipeline.messages.contracts.semantics import (
     _EXCLUDED_GEOMETRY,
     VIEW_FRAME,
     DrawnEntity,

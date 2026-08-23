@@ -19,7 +19,11 @@ from tests.zeroshot.contracts import hypothesis
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
-from zeroshot.pipeline.messages.contracts import SemanticHypothesis
+from zeroshot.pipeline.messages.contracts import (
+    Operation,
+    OperationPlan,
+    SemanticHypothesis,
+)
 from zeroshot.pipeline.runner import GraphFactory, PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
@@ -85,7 +89,12 @@ def _operations_stage():
     return _reasoning_stage(
         "operation_planner",
         "operation_reviewer",
-        '{"proposal": ["extrude it"], "rationale": "one extrude"}',
+        OperationPlan(
+            proposal=[
+                Operation(id=1, operation="extrude it", depends_on=[], semantics=[1])
+            ],
+            rationale="one extrude",
+        ).model_dump_json(),
     )
 
 
