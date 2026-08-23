@@ -214,8 +214,19 @@ def test_an_arc_is_its_own_kind() -> None:
     """OCC stores an arc as a bounded circle, but the contract is what the
     model reasons in, and the two read differently off a drawing."""
     assert GeometryKind.ARC in _CLAIMED_PARAMETERS
-    assert "start" in _DRAWN_PARAMETERS[DrawnEntity.ARC]
-    assert "start" not in _DRAWN_PARAMETERS[DrawnEntity.CIRCLE]
+    assert "start_angle" in _DRAWN_PARAMETERS[DrawnEntity.ARC]
+    assert "start_angle" not in _DRAWN_PARAMETERS[DrawnEntity.CIRCLE]
+
+
+def test_an_arc_is_bounded_the_way_the_file_bounds_it() -> None:
+    """A DXF arc stores `start_angle` and `end_angle`; `start_point` is
+    something ezdxf computes from them. Asking for the point asked a reader to
+    derive a value and report it as a reading, and it answered with the angle
+    it had -- one number where a point takes two, which cost a retry on every
+    drawing with an arc in it."""
+    assert _ARITY["start_angle"] == 1
+    assert _ARITY["end_angle"] == 1
+    assert "start" not in _DRAWN_PARAMETERS[DrawnEntity.ARC]
 
 
 def test_a_feature_may_declare_no_geometry() -> None:

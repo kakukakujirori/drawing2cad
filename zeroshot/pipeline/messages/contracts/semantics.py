@@ -141,7 +141,7 @@ class Axis(StrEnum):
 
 _DRAWN_PARAMETERS: Mapping[DrawnEntity, tuple[str, ...]] = {
     DrawnEntity.LINE: ("start", "end"),
-    DrawnEntity.ARC: ("center", "radius", "start", "end"),
+    DrawnEntity.ARC: ("center", "radius", "start_angle", "end_angle"),
     DrawnEntity.CIRCLE: ("center", "radius"),
     DrawnEntity.ELLIPSE: ("center", "major_axis", "major_radius", "minor_radius"),
     DrawnEntity.SPLINE: ("control_points", "degree", "knots"),
@@ -171,6 +171,14 @@ _ARITY: Mapping[str, int] = {
     "end": 2,
     "center": 2,
     "major_axis": 2,
+    # where an arc begins and ends, in degrees about its centre. Angles rather
+    # than points because that is what the file holds: a DXF arc stores
+    # `start_angle` and `end_angle`, and ezdxf computes `start_point` from
+    # them. Asking for the point asked a reader of the drawing to derive
+    # something and then report it as a reading, and it answered with the
+    # angle it had -- one number where the contract wanted two.
+    "start_angle": 1,
+    "end_angle": 1,
     # a size
     "radius": 1,
     "major_radius": 1,
