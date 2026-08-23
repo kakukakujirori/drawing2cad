@@ -88,10 +88,21 @@ def _invocation_reason(
     state: ReconstructionState,
     current_stage: ReasoningStage,
 ) -> tuple[Literal["initial", "targeted_redo", "upstream_changed"], str]:
-    # Plan coverage check
+    # Plan coverage check. Read before the audit, because a gap in the plan
+    # that is in state now outranks a verdict from a lap earlier. `describes`
+    # is what makes that safe: a reading left over from earlier work answers
+    # no and falls through, so nobody has to remember to delete it.
     coverage = state.get("plan_coverage")
-    incomplete = coverage is not None and not coverage.complete
-    if current_stage == "operations" and incomplete:
+    plan = state.get("operation_plan")
+    hypothesis = state.get("semantic_hypothesis")
+    unbuilt = (
+        coverage is not None
+        and plan is not None
+        and hypothesis is not None
+        and coverage.describes(hypothesis, plan)
+        and not coverage.complete
+    )
+    if current_stage == "operations" and unbuilt:
         return "targeted_redo", render_plan_coverage(coverage)
 
     audit = state.get("audit")
@@ -128,7 +139,6 @@ def create_reconstruction_graph(
     output_filename: str = "model.py",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     max_audit_reject_count: int = 3,
-    max_plan_revisions: int = 1,
     share_thread: bool = False,
     compact_between_stages: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
@@ -136,8 +146,6 @@ def create_reconstruction_graph(
     """Interpret and plan the part, implement it, then verify and audit it."""
     if max_audit_reject_count <= 0:
         raise ValueError(f"{max_audit_reject_count=} must be positive")
-    if max_plan_revisions < 0:
-        raise ValueError(f"{max_plan_revisions=} must be non-negative")
     if compact_between_stages is not None and not share_thread:
         raise ValueError(
             "compact_between_stages needs share_thread: with a transcript per "
@@ -282,7 +290,6 @@ def create_reconstruction_graph(
         return {
             "operations_state": result,
             "operation_plan": result.get("proposal"),
-            "plan_coverage": None,
         }
 
     def check_plan(state: ReconstructionState) -> dict[str, Any]:
@@ -292,11 +299,7 @@ def create_reconstruction_graph(
         if hypothesis is None or plan is None:
             return {}
 
-        coverage = plan_coverage(plan, [feature.id for feature in hypothesis.proposal])
-        update: dict[str, Any] = {"plan_coverage": coverage}
-        if not coverage.complete:
-            update["plan_revision_count"] = 1
-        return update
+        return {"plan_coverage": plan_coverage(plan, hypothesis)}
 
     def after_operations(
         state: ReconstructionState,
@@ -306,13 +309,7 @@ def create_reconstruction_graph(
         coverage = state.get("plan_coverage")
         if coverage is None or coverage.complete:
             return "coding"
-        # `check_plan` has already spent one, so this reads as "a re-plan is
-        # still within the budget" rather than as an off-by-one.
-        if state.get("plan_revision_count", 0) <= max_plan_revisions:
-            return "operations"
-        # Out of re-plans, and a plan missing a feature still builds most of
-        # the part. The audit is what judges what came out.
-        return "coding"
+        return "operations"
 
     def write_code(state: ReconstructionState, config: RunnableConfig):
         semantic_hypothesis = state.get("semantic_hypothesis")
@@ -419,8 +416,6 @@ def create_reconstruction_graph(
         }
         if audit is not None and audit.revise is not None:
             update["audit_reject_count"] = 1
-            # Prevent it from being read in different turns
-            update["plan_coverage"] = None
 
         return update
 
@@ -480,6 +475,5 @@ def create_reconstruction_graph(
     # ceiling is lower than the laps this budget allows.  Counted from the graph
     # itself so that adding a node cannot leave the ceiling behind.
     return graph.with_config(
-        recursion_limit=len(workflow.nodes)
-        * (max_audit_reject_count + max_plan_revisions + 2)
+        recursion_limit=len(workflow.nodes) * (max_audit_reject_count + 2)
     )

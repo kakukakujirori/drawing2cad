@@ -68,7 +68,6 @@ class ReconstructionState(TypedDict):
     last_verification: NotRequired[VerifyOutputResult]
     audit: NotRequired[Audit | None]
     audit_reject_count: NotRequired[Annotated[int, operator.add]]
-    plan_revision_count: NotRequired[Annotated[int, operator.add]]
 
 
 # Which agent carries the thread through each reasoning stage, and where its

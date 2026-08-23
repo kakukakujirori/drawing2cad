@@ -28,6 +28,7 @@ from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
     SemanticHypothesis,
+    plan_coverage,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import VerifyOutputResult
@@ -42,6 +43,7 @@ from zeroshot.pipeline.workflow.components.proposer_reviewer import (
     create_proposer_reviewer_loop,
 )
 from zeroshot.pipeline.workflow.graph import AgentBuilder, create_reconstruction_graph
+from zeroshot.pipeline.workflow.state import Audit
 
 
 def _renderer() -> StepRenderer:
@@ -1103,36 +1105,6 @@ def test_a_plan_citing_a_feature_the_hypothesis_never_had_is_sent_back() -> None
     assert "sem9" in _last_instruction(planner.received_messages[1])
 
 
-def test_a_planner_that_keeps_missing_the_feature_still_reaches_the_coder() -> None:
-    """A plan missing a feature still builds most of the part, so the budget
-    running out hands what there is to the coder rather than ending the run.
-    Judging what came out is the audit's job."""
-    planner = ScriptedChatModel(
-        responses=tuple(_plan("extrude it", builds=[1]) for _ in range(4))
-    )
-    coder = ScriptedChatModel(responses=(AIMessage(content="written"),))
-    with SandboxWorkdir() as workdir:
-        graph = _graph(
-            workdir,
-            ScriptedChatModel(
-                responses=tuple(_hypothesis("a plate", "a boss") for _ in range(4))
-            ),
-            ScriptedChatModel(responses=tuple(_review(True, "fine") for _ in range(4))),
-            coder,
-            planner=planner,
-            plan_reviewer=ScriptedChatModel(
-                responses=tuple(_review(True, "ok") for _ in range(4))
-            ),
-            auditor=ScriptedChatModel(responses=(_audit(None, "as good as it gets"),)),
-            max_plan_revisions=1,
-        )
-        result = graph.invoke({})
-
-    assert len(planner.received_messages) == 2
-    assert len(coder.received_messages) == 1
-    assert result["plan_coverage"].uncovered == [2]
-
-
 def test_a_plan_that_accounts_for_every_feature_is_not_sent_back() -> None:
     planner = ScriptedChatModel(responses=(_plan("extrude it", builds=[1]),))
     with SandboxWorkdir() as workdir:
@@ -1206,47 +1178,60 @@ def test_a_coverage_gap_after_an_audit_send_back_names_the_feature_not_the_verdi
     assert result["plan_coverage"].complete
 
 
-def test_a_stale_coverage_result_does_not_speak_for_a_plan_being_remade() -> None:
-    """The other half of the same invariant. A run whose revision budget ran
-    out reaches the coder with a gap still recorded; when the audit then sends
-    it back to semantics, operations must be told its premise changed, not
-    handed the reading of a plan that is about to be thrown away."""
+def test_an_incomplete_plan_never_reaches_the_coder() -> None:
+    """What removing the revision ceiling buys. While a gap always sends the
+    plan back, the coder only ever sees a plan that accounts for every feature
+    -- and the case where a gap and an audit verdict both want to be the reason
+    the planner is running stops existing rather than having to be guarded.
+    """
     planner = ScriptedChatModel(
         responses=(
-            _plan("extrude it", builds=[1]),  # gap: sem2 unbuilt
-            _plan("extrude it", builds=[1]),  # still a gap, budget now spent
-            _plan("extrude it", builds=[1]),  # after the semantics redo
+            _plan("extrude it", builds=[1]),
+            _plan("extrude it", builds=[1]),
+            _plan("extrude it", "boss it", builds=[1, 2]),
         )
     )
+    coder = ScriptedChatModel(responses=(AIMessage(content="written"),))
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
             ScriptedChatModel(
-                responses=(
-                    _hypothesis("a plate", "a boss"),
-                    _hypothesis("a plate", "a boss"),
-                    _hypothesis("a plate"),
-                    _hypothesis("a plate"),
-                )
+                responses=tuple(_hypothesis("a plate", "a boss") for _ in range(4))
             ),
             ScriptedChatModel(responses=tuple(_review(True, "fine") for _ in range(4))),
-            ScriptedChatModel(
-                responses=tuple(AIMessage(content=f"written {n}") for n in range(3))
-            ),
+            coder,
             planner=planner,
             plan_reviewer=ScriptedChatModel(
-                responses=tuple(_review(True, "ok") for _ in range(3))
+                responses=tuple(_review(True, "ok") for _ in range(4))
             ),
-            auditor=ScriptedChatModel(
-                responses=(
-                    _audit("semantics", "the plate is the wrong size"),
-                    _audit(None, "now it matches"),
-                )
-            ),
-            max_plan_revisions=1,
+            auditor=ScriptedChatModel(responses=(_audit(None, "matches"),)),
         )
-        graph.invoke({})
+        result = graph.invoke({})
 
-    after_semantics_redo = _last_instruction(planner.received_messages[2])
-    assert "the plate is the wrong size" in after_semantics_redo
-    assert "no operation in the plan builds them" not in after_semantics_redo
+    assert len(planner.received_messages) == 3
+    assert len(coder.received_messages) == 1
+    assert result["plan_coverage"].complete
+
+
+def test_a_reading_of_an_earlier_hypothesis_is_not_a_reason_to_replan() -> None:
+    """The fingerprint doing its job, checked where it is read. A coverage left
+    over from work on a hypothesis that has since been redone must fall through
+    to the audit rather than send the planner after features that are no longer
+    in the answer."""
+    settled = hypothesis(proposal=[feature(1, "a plate"), feature(2, "a boss")])
+    plan = _proposed("extrude it", builds=[1])
+    stale = plan_coverage(plan, settled)
+    assert not stale.complete
+
+    remade = hypothesis(proposal=[feature(1, "a bigger plate")])
+    state = {
+        "semantic_hypothesis": remade,
+        "operation_plan": plan,
+        "plan_coverage": stale,
+        "audit": Audit(revise="semantics", rationale="the plate is the wrong size"),
+    }
+
+    reason, rationale = graph_module._invocation_reason(state, "operations")  # type: ignore[arg-type]
+
+    assert reason == "upstream_changed"
+    assert rationale == "the plate is the wrong size"

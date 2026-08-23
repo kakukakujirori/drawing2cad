@@ -7,10 +7,13 @@ the graph here, by code, so a plan that is right cannot be spoiled by being
 written down in the wrong order.
 """
 
-from collections.abc import Collection, Iterable
+from collections.abc import Iterable
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from zeroshot.pipeline.messages.contracts.fingerprint import fingerprint
+from zeroshot.pipeline.messages.contracts.semantics import SemanticHypothesis
 
 
 class Operation(BaseModel):
@@ -179,22 +182,40 @@ class PlanCoverage(BaseModel):
 
     uncovered: list[int]
     unknown: list[int]
+    of_hypothesis: str
+    of_plan: str
 
     @property
     def complete(self) -> bool:
         return not self.uncovered and not self.unknown
 
+    def describes(self, hypothesis: SemanticHypothesis, plan: OperationPlan) -> bool:
+        """Whether this still says anything about the pair given.
 
-def plan_coverage(plan: OperationPlan, feature_ids: Collection[int]) -> PlanCoverage:
+        A reading kept in state outlives the work it measured. Asking it this
+        first is what lets the two be replaced without anyone having to
+        remember to throw the reading away.
+        """
+        return self.of_hypothesis == fingerprint(
+            hypothesis
+        ) and self.of_plan == fingerprint(plan)
+
+
+def plan_coverage(plan: OperationPlan, hypothesis: SemanticHypothesis) -> PlanCoverage:
     """Compare what the plan builds against what the hypothesis established.
 
-    Takes the ids rather than the hypothesis so that the two contracts stay
-    independent of each other; the caller holds both and knows how to ask.
+    Both whole, rather than the hypothesis broken into its ids and its
+    fingerprint: split apart they are two things that have to be about the same
+    answer with nothing to check that they are, which is the shape of mistake
+    this reading exists to catch.
     """
+    established = {feature.id for feature in hypothesis.proposal}
     built = {sem for operation in plan.proposal for sem in operation.semantics}
     return PlanCoverage(
-        uncovered=sorted(set(feature_ids) - built),
-        unknown=sorted(built - set(feature_ids)),
+        uncovered=sorted(established - built),
+        unknown=sorted(built - established),
+        of_hypothesis=fingerprint(hypothesis),
+        of_plan=fingerprint(plan),
     )
 
 

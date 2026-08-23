@@ -24,6 +24,7 @@ from zeroshot.pipeline.messages.contracts import (
     SemanticHypothesis,
     View,
     ViewEvidence,
+    fingerprint,
 )
 from zeroshot.pipeline.tools import VerifyOutputResult
 from zeroshot.pipeline.workflow import (
@@ -178,7 +179,12 @@ _ARTIFACTS: dict[str, object] = {
     },
     "semantic_hypothesis": _A_HYPOTHESIS,
     "operation_plan": _A_PLAN,
-    "plan_coverage": PlanCoverage(uncovered=[2], unknown=[]),
+    "plan_coverage": PlanCoverage(
+        uncovered=[2],
+        unknown=[],
+        of_hypothesis=fingerprint(_A_HYPOTHESIS),
+        of_plan=fingerprint(_A_PLAN),
+    ),
     "audit": Audit(revise="operations", rationale="the boss is missing"),
     "last_verification": VerifyOutputResult(
         verification_id="v1",

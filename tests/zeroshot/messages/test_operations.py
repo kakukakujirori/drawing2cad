@@ -11,9 +11,12 @@ from collections.abc import Sequence
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from tests.zeroshot.contracts import feature, hypothesis
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
+    SemanticHypothesis,
+    fingerprint,
     linearise,
     plan_coverage,
     render_plan,
@@ -37,6 +40,13 @@ def op(
 
 def plan(*operations: Operation) -> OperationPlan:
     return OperationPlan(proposal=list(operations), rationale="because")
+
+
+def _features(*ids: int) -> SemanticHypothesis:
+    """A hypothesis that establishes exactly `ids`, and nothing else about it."""
+    return hypothesis(
+        proposal=[feature(identifier, f"feature {identifier}") for identifier in ids]
+    )
 
 
 @pytest.mark.parametrize("contract", [OperationPlan, Operation])
@@ -128,7 +138,9 @@ def test_a_feature_no_operation_builds_is_reported() -> None:
     """The check the plan's validator cannot make: a feature id points into an
     answer the planner produced separately, so only something holding both can
     tell that sem2 was established and then dropped."""
-    coverage = plan_coverage(plan(op(1, builds=[1]), op(2, builds=[3])), [1, 2, 3])
+    coverage = plan_coverage(
+        plan(op(1, builds=[1]), op(2, builds=[3])), _features(1, 2, 3)
+    )
 
     assert coverage.uncovered == [2]
     assert coverage.unknown == []
@@ -136,14 +148,16 @@ def test_a_feature_no_operation_builds_is_reported() -> None:
 
 
 def test_a_feature_the_plan_invents_is_reported() -> None:
-    coverage = plan_coverage(plan(op(1, builds=[9])), [1])
+    coverage = plan_coverage(plan(op(1, builds=[9])), _features(1))
 
     assert coverage.unknown == [9]
     assert coverage.uncovered == [1]
 
 
 def test_a_plan_that_accounts_for_every_feature_is_complete() -> None:
-    coverage = plan_coverage(plan(op(1, builds=[1, 2]), op(2, builds=[2])), [1, 2])
+    coverage = plan_coverage(
+        plan(op(1, builds=[1, 2]), op(2, builds=[2])), _features(1, 2)
+    )
 
     assert coverage.complete
 
@@ -171,7 +185,7 @@ def test_the_gap_is_reported_by_naming_the_features_it_left_out() -> None:
     """What the planner is sent back with. Named rather than counted: "sem2,
     sem5" is something to go and plan, where "two are missing" sends the stage
     back to compare two lists it has already been given."""
-    coverage = plan_coverage(plan(op(1, builds=[1])), [1, 2, 5])
+    coverage = plan_coverage(plan(op(1, builds=[1])), _features(1, 2, 5))
 
     told = render_plan_coverage(coverage)
 
@@ -182,7 +196,7 @@ def test_the_gap_is_reported_by_naming_the_features_it_left_out() -> None:
 def test_a_dangling_reference_is_reported_separately_from_a_gap() -> None:
     """They are different mistakes and take different corrections: one is a
     feature to go and build, the other a number to stop citing."""
-    coverage = plan_coverage(plan(op(1, builds=[9])), [1])
+    coverage = plan_coverage(plan(op(1, builds=[9])), _features(1))
 
     told = render_plan_coverage(coverage)
 
@@ -194,4 +208,40 @@ def test_a_dangling_reference_is_reported_separately_from_a_gap() -> None:
 def test_a_complete_plan_is_reported_as_nothing_at_all() -> None:
     """An empty string, not a sentence saying everything is fine: this only
     ever renders on the way back to a stage that has something to fix."""
-    assert render_plan_coverage(plan_coverage(plan(op(1, builds=[1])), [1])) == ""
+    assert (
+        render_plan_coverage(plan_coverage(plan(op(1, builds=[1])), _features(1))) == ""
+    )
+
+
+def test_a_fingerprint_follows_the_content_and_nothing_else() -> None:
+    """Two plans that say the same thing are the same plan as far as anything
+    downstream is concerned, and one that differs anywhere is not."""
+    one = plan(op(1, builds=[1]))
+    same = plan(op(1, builds=[1]))
+    other = plan(op(1, builds=[2]))
+
+    assert fingerprint(one) == fingerprint(same)
+    assert fingerprint(one) != fingerprint(other)
+
+
+def test_a_reading_knows_which_pair_it_was_taken_from() -> None:
+    """The whole point of carrying the fingerprints. A reading kept in state
+    outlives the work it measured, and this is what lets the two be replaced
+    without anyone having to remember to throw the reading away."""
+    established = _features(1, 2)
+    measured = plan(op(1, builds=[1]), op(2, builds=[2]))
+    coverage = plan_coverage(measured, established)
+
+    assert coverage.describes(established, measured)
+
+
+@pytest.mark.parametrize("changed", ["hypothesis", "plan"])
+def test_a_reading_disowns_a_pair_that_has_moved_on(changed: str) -> None:
+    established = _features(1, 2)
+    measured = plan(op(1, builds=[1]), op(2, builds=[2]))
+    coverage = plan_coverage(measured, established)
+
+    if changed == "hypothesis":
+        assert not coverage.describes(_features(1, 2, 3), measured)
+    else:
+        assert not coverage.describes(established, plan(op(1, builds=[1])))
