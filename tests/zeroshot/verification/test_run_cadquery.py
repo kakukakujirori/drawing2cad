@@ -236,6 +236,10 @@ def test_execute_writes_verified_step_to_requested_path(tmp_path: Path) -> None:
         returncode=0,
         stdout="construction log",
         stderr="construction warning",
+        # A box is six planes and twelve straight edges. The census is here so
+        # that a coder handed this report can see when its arcs came back as a
+        # hundred of them.
+        shape="faces 6 (Plane 6); edges 12 (Line 12)",
     )
     assert output_step_path.is_file()
     assert runner.calls[0][0] == "python /work/model.py"

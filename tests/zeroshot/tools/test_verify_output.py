@@ -203,7 +203,7 @@ def test_the_tool_result_is_what_the_model_reads(tmp_path: Path) -> None:
     assert _report_json(result)["status"] == "VERIFIED"
     # The source stays in the report the workflow keeps, never in the context.
     assert "source" not in _report_json(result)
-    assert "output.dxf" in _text(result)
+    assert "techdraw.dxf" in _text(result)
 
 
 def test_delegates_paths_and_returns_json_safe_mapping(tmp_path: Path) -> None:
@@ -233,6 +233,7 @@ def test_delegates_paths_and_returns_json_safe_mapping(tmp_path: Path) -> None:
         "stdout": "construction log",
         "stderr": "construction warning",
         "executor_error": None,
+        "shape": "",
     }
     report = _report_json(result)
     assert isinstance(report["returncode"], int)
@@ -265,6 +266,7 @@ def test_preserves_failed_attempt_and_execution_report(tmp_path: Path) -> None:
         "stdout": "partial output",
         "stderr": "execution failed",
         "executor_error": "output.step was not generated",
+        "shape": "",
     }
     attempt_dir = tmp_path / "attempts" / "000"
     assert (attempt_dir / "model.py").read_text(encoding="utf-8") == VALID_SOURCE
@@ -300,6 +302,7 @@ def test_rejects_missing_source_without_issuing_id(tmp_path: Path) -> None:
         "stdout": "",
         "stderr": "",
         "executor_error": "model.py was not found",
+        "shape": "",
     }
     assert executor.calls == []
     assert list((tmp_path / "attempts").iterdir()) == []
@@ -449,9 +452,9 @@ def test_verified_output_is_rendered_and_offered_to_the_model(tmp_path: Path) ->
     (rendered_step, _, _) = renderer.calls[0]
     assert rendered_step == verification_dir / "output.step"
     sandbox_dir = f"{workdir.sandbox_bind_dir}/attempts/000"
-    assert f"{sandbox_dir}/techdraw/dxf/output.dxf" in text
+    assert f"{sandbox_dir}/techdraw.dxf" in text
     for style in RENDER3D_STYLES:
-        assert f"{sandbox_dir}/render_3d/{style}/output.png" in text
+        assert f"{sandbox_dir}/render_3d/{style}.png" in text
 
 
 def test_rendered_artifacts_stay_inside_the_verification_directory(
@@ -476,11 +479,8 @@ def test_rendered_artifacts_stay_inside_the_verification_directory(
         tmp_path / "model.py",
         verification_dir / "model.py",
         verification_dir / "output.step",
-        verification_dir / "techdraw" / "dxf" / "output.dxf",
-        *(
-            verification_dir / "render_3d" / style / "output.png"
-            for style in RENDER3D_STYLES
-        ),
+        verification_dir / "techdraw.dxf",
+        *(verification_dir / "render_3d" / f"{style}.png" for style in RENDER3D_STYLES),
     }
 
 
@@ -505,7 +505,7 @@ def test_failed_verification_renders_nothing_and_reports_only_the_error(
 
     assert renderer.calls == []
     assert _report_json(result)["status"] == "FAILED"
-    assert "output.dxf" not in _text(result)
+    assert "techdraw.dxf" not in _text(result)
 
 
 def test_partial_render_offers_only_existing_styles_and_explains_the_rest(
@@ -525,8 +525,8 @@ def test_partial_render_offers_only_existing_styles_and_explains_the_rest(
     result = verifier.feedback()
     text = _text(result)
 
-    assert "transparent_shaded_edges_perspective/output.png" not in text
-    assert "hlg_perspective/output.png" in text
+    assert "transparent_shaded_edges_perspective.png" not in text
+    assert "hlg_perspective.png" in text
     # The reason belongs where the render would have been, not in the report.
     assert "render_errors" not in _report_json(result)
     assert (
@@ -551,10 +551,10 @@ def test_result_carries_paths_but_never_the_drawing_itself(
 
     text = _text(verifier.feedback())
 
-    dxf_body = (
-        tmp_path / "attempts" / "000" / "techdraw" / "dxf" / "output.dxf"
-    ).read_text(encoding="utf-8")
-    assert "output.dxf" in text
+    dxf_body = (tmp_path / "attempts" / "000" / "techdraw.dxf").read_text(
+        encoding="utf-8"
+    )
+    assert "techdraw.dxf" in text
     assert dxf_body not in text
 
 
@@ -593,5 +593,5 @@ def test_without_an_artifact_presenter_the_model_sees_only_the_report(
     result = verifier.feedback()
 
     assert _report_json(result)["status"] == "VERIFIED"
-    assert "output.dxf" not in _text(result)
-    assert (tmp_path / "attempts" / "000" / "techdraw" / "dxf" / "output.dxf").is_file()
+    assert "techdraw.dxf" not in _text(result)
+    assert (tmp_path / "attempts" / "000" / "techdraw.dxf").is_file()

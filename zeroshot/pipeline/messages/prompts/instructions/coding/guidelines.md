@@ -7,15 +7,17 @@ Requirements:
 - Store the final completed CadQuery solid in the `result` variable in $output_path.
 - The generated geometry must be valid and exportable to STEP format.
 - DO NOT use try-except blocks in $output_path. Resolve operation failures instead of hiding them.
-- When an operation in the plan cannot be made to work, drop it from the script and report it in your final answer.
+- When an operation in the plan cannot be made to work, leave a comment of a few lines at the point in $output_path where it belongs, saying which operation it is and what stopped it, and carry on. Report it in your final answer as well. Do not remove it silently.
 
 Verification:
-Every turn you edit $output_path, it is automatically executed and the final solid is exported to a STEP file along with: the execution status, the return code, stdout, stderr, any executor error, and the paths of its DXF and perspective renders under $verification_dir. This costs you no turn, so write early and often rather than saving the check for the end.
+Every turn you edit $output_path, it is automatically executed and the final solid is exported to a STEP file along with: the execution status, the return code, stdout, stderr, any executor error, a count of the faces and edges it is made of by kind, and the paths of its DXF and perspective renders under $verification_dir. This costs you no turn, so write early and often rather than saving the check for the end.
 
 Guidelines:
 - The plan is already in build order, worked out from the dependencies it states; follow it as given. Each entry names the hypothesis features it builds as `sem<id>`.
 - Take positions from the plan and shapes and sizes from the hypothesis. A number read off the hypothesis's `evidence` is in the sheet coordinates of the view the reading names: $view_frame.
 - Write an initial script implementing the operations in plan order, then read the verification that comes back before writing again.
+- Build curves as curves. An arc is one edge, not a chain of segments; a round hole is one cylindrical face, not a ring of narrow flat ones. Sampling a curve into points and joining them with straight segments is the mistake this warns against, and sampling it more finely makes it worse rather than better.
+- The verification reports what you built, counted by kind: `faces 85 (Cylinder 42, Plane 33, ...)`. Read it. A part whose faces are all one kind, or whose edge count runs into the hundreds, has been approximated somewhere.
 - Inspect the generated DXF / perspective renders under $verification_dir using `run_shell` / `load_image` to verify visual alignment with the source drawing.
 - Iteratively refine and add missing features (cutouts, hole patterns, fillets, chamfers), writing after each major addition so the next verification covers it.
 - Ensure that $output_path is executable before concluding your final answer.

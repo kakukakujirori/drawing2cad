@@ -9,6 +9,7 @@ from zeroshot.pipeline.sandbox import (
     SandboxStatus,
     SandboxWorkdir,
 )
+from zeroshot.pipeline.verification.shape_census import describe_shape
 
 
 class ExecutionStatus(Enum):
@@ -27,6 +28,7 @@ class CadQueryExecutionReport:
     returncode: int | None = None
     stdout: str = ""
     stderr: str = ""
+    shape: str = ""
 
 
 class CadQueryExecutor:
@@ -152,6 +154,9 @@ except Exception as e:
                     stderr=sandbox_result.stderr,
                 )
 
+            # What it is made of, read off the STEP that was just accepted.
+            shape = describe_shape(tmp_step_path)
+
             # Copy STEP
             if output_step_path is not None:
                 shutil.copyfile(tmp_step_path, output_step_path)
@@ -162,6 +167,7 @@ except Exception as e:
             returncode=sandbox_result.returncode,
             stdout=sandbox_result.stdout,
             stderr=sandbox_result.stderr,
+            shape=shape,
         )
 
     @staticmethod

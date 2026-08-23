@@ -69,12 +69,23 @@ class TechdrawPaths(_OutputPaths):
 
     @classmethod
     def from_path(cls, base_path: Path, stem: str) -> TechdrawPaths:
-        """Create TechdrawPaths from a base path and stem."""
+        """Lay the outputs out the way the dataset does: one format, one stem."""
         return cls(
             # svg=base_path / "svg" / f"{stem}.svg",
             dxf=base_path / "dxf" / f"{stem}.dxf",
             # pdf=base_path / "pdf" / f"{stem}.pdf",
         )
+
+    @classmethod
+    def flat(cls, base_path: Path) -> TechdrawPaths:
+        """Lay the outputs out the way the sandbox does: format as filename.
+
+        The dataset holds many samples, so it needs a directory per format and
+        a stem per sample. A verification attempt holds one drawing, so the
+        same layout would spend two path components saying nothing. See
+        `Render3dPaths.flat` for why the difference is worth removing.
+        """
+        return cls(dxf=base_path.with_name(f"{base_path.name}.dxf"))
 
 
 @dataclass(frozen=True)
@@ -93,7 +104,7 @@ class Render3dPaths(_OutputPaths):
 
     @classmethod
     def from_path(cls, base_path: Path, stem: str) -> Render3dPaths:
-        """Create Render3dPaths from a base path and stem."""
+        """Lay the outputs out the way the dataset does: one style, one stem."""
         return cls(
             hlg_perspective=base_path / "hlg_perspective" / f"{stem}.png",
             transparent_shaded_edges_perspective=base_path
@@ -102,4 +113,26 @@ class Render3dPaths(_OutputPaths):
             hlg_translucent_faces_perspective=base_path
             / "hlg_translucent_faces_perspective"
             / f"{stem}.png",
+        )
+
+    @classmethod
+    def flat(cls, base_path: Path) -> Render3dPaths:
+        """Lay the outputs out the way the sandbox does: style as filename.
+
+        The same three styles reach a model twice -- as the drawing's own
+        renders under `inputs/`, and as the renders of what it built. When the
+        two were laid out differently, an auditor that had read
+        `inputs/hlg_perspective.png` guessed `render_3d/hlg_perspective.png`
+        for its own output and spent three tool calls being told the file was
+        not there. One convention inside the sandbox removes the guess.
+
+        The dataset keeps its own layout: it holds many samples per style, so
+        the directory and the stem both carry something there.
+        """
+        return cls(
+            hlg_perspective=base_path / "hlg_perspective.png",
+            transparent_shaded_edges_perspective=base_path
+            / "transparent_shaded_edges_perspective.png",
+            hlg_translucent_faces_perspective=base_path
+            / "hlg_translucent_faces_perspective.png",
         )

@@ -31,6 +31,7 @@ class VerifyOutputResult:
     stdout: str = ""
     stderr: str = ""
     executor_error: str | None = None
+    shape: str = ""
 
     def import_from(self, report: CadQueryExecutionReport) -> Self:
         return replace(
@@ -41,6 +42,7 @@ class VerifyOutputResult:
             stdout=report.stdout,
             stderr=report.stderr,
             executor_error=report.executor_error,
+            shape=report.shape,
         )
 
     def serialize(self) -> dict[str, VerifyOutputValue]:
@@ -166,12 +168,10 @@ class OutputVerifier:
 
     def _render(self, step_path: Path, verification_dir: Path) -> RenderReport:
         """Render feedback artifacts into the verification directory."""
-        techdraw_paths = TechdrawPaths.from_path(
-            verification_dir / "techdraw", "output"
-        )
-        render3d_paths = Render3dPaths.from_path(
-            verification_dir / "render_3d", "output"
-        )
+        # Flat: an attempt holds one drawing and one set of renders, and the
+        # model has already been shown the inputs under the same convention.
+        techdraw_paths = TechdrawPaths.flat(verification_dir / "techdraw")
+        render3d_paths = Render3dPaths.flat(verification_dir / "render_3d")
         # The renderer leaves directory layout to its caller.
         for path in (
             *techdraw_paths.as_mapping().values(),
