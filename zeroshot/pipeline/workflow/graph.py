@@ -22,10 +22,10 @@ from zeroshot.pipeline.messages import (
 from zeroshot.pipeline.messages.contracts import (
     OperationPlan,
     SemanticHypothesis,
-    plan_coverage,
     render_hypothesis,
     render_plan,
-    render_plan_coverage,
+    render_plan_review,
+    review_plan,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import (
@@ -88,22 +88,22 @@ def _invocation_reason(
     state: ReconstructionState,
     current_stage: ReasoningStage,
 ) -> tuple[Literal["initial", "targeted_redo", "upstream_changed"], str]:
-    # Plan coverage check. Read before the audit, because a gap in the plan
-    # that is in state now outranks a verdict from a lap earlier. `describes`
-    # is what makes that safe: a reading left over from earlier work answers
-    # no and falls through, so nobody has to remember to delete it.
-    coverage = state.get("plan_coverage")
+    # The plan read against its hypothesis. Ahead of the audit, because a fault
+    # in the plan that is in state now outranks a verdict from a lap earlier.
+    # `describes` is what makes that safe: a reading left over from earlier
+    # work answers no and falls through, so nobody has to remember to delete it.
+    review = state.get("plan_review")
     plan = state.get("operation_plan")
     hypothesis = state.get("semantic_hypothesis")
-    unbuilt = (
-        coverage is not None
+    faulty = (
+        review is not None
         and plan is not None
         and hypothesis is not None
-        and coverage.describes(hypothesis, plan)
-        and not coverage.complete
+        and review.describes(hypothesis, plan)
+        and not review.sound
     )
-    if current_stage == "operations" and unbuilt:
-        return "targeted_redo", render_plan_coverage(coverage)
+    if current_stage == "operations" and faulty:
+        return "targeted_redo", render_plan_review(review)
 
     audit = state.get("audit")
     if audit is None:
@@ -293,21 +293,26 @@ def create_reconstruction_graph(
         }
 
     def check_plan(state: ReconstructionState) -> dict[str, Any]:
-        """Check if the operation plan covers all semantic hypotheses."""
+        """Read the plan against the hypothesis it was made from.
+
+        The only place holding both, so the only place that can see a feature
+        the plan dropped, a feature it invented, a measurement it copied out
+        instead of citing, or a citation that stands for nothing.
+        """
         hypothesis = state.get("semantic_hypothesis")
         plan = state.get("operation_plan")
         if hypothesis is None or plan is None:
             return {}
 
-        return {"plan_coverage": plan_coverage(plan, hypothesis)}
+        return {"plan_review": review_plan(plan, hypothesis)}
 
     def after_operations(
         state: ReconstructionState,
     ) -> Literal["coding", "operations", "__end__"]:
         if state.get("operation_plan") is None:
             return "__end__"
-        coverage = state.get("plan_coverage")
-        if coverage is None or coverage.complete:
+        review = state.get("plan_review")
+        if review is None or review.sound:
             return "coding"
         return "operations"
 
@@ -328,7 +333,7 @@ def create_reconstruction_graph(
             f"coding/{entry_reason}",
             **prompt_context,
             semantic_hypothesis=render_hypothesis(semantic_hypothesis),
-            operation_plan=render_plan(operation_plan),
+            operation_plan=render_plan(operation_plan, semantic_hypothesis),
             rationale=audit_rationale,
         )
 
@@ -391,7 +396,7 @@ def create_reconstruction_graph(
             attempt_dir=last_attempt_dir,
             output_path=str(sandbox_workdir.sandbox_bind_dir / output_filename),
             semantic_hypothesis=render_hypothesis(semantic_hypothesis),
-            operation_plan=render_plan(operation_plan),
+            operation_plan=render_plan(operation_plan, semantic_hypothesis),
         )
 
         if not messages:

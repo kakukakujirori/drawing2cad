@@ -14,7 +14,7 @@ Every turn you edit $output_path, it is automatically executed and the final sol
 
 Guidelines:
 - The plan is already in build order, worked out from the dependencies it states; follow it as given. Each entry names the hypothesis features it builds as `sem<id>`.
-- Take positions from the plan and shapes and sizes from the hypothesis. A number read off the hypothesis's `evidence` is in the sheet coordinates of the view the reading names: $view_frame.
+- Take positions from the plan and shapes and sizes from the hypothesis. A number read off the hypothesis's `evidence` is in the sheet coordinates of the view the reading names: $view_frame. Where the model's origin sits is yours to choose; choose it once and hold to it, since the plan places operations against features rather than against an origin.
 - Write an initial script implementing the operations in plan order, then read the verification that comes back before writing again.
 - Build curves as curves. An arc is one edge, not a chain of segments; a round hole is one cylindrical face, not a ring of narrow flat ones. Sampling a curve into points and joining them with straight segments is the mistake this warns against, and sampling it more finely makes it worse rather than better.
 - The verification reports what you built, counted by kind: `faces 85 (Cylinder 42, Plane 33, ...)`. Read it. A part whose faces are all one kind, or whose edge count runs into the hundreds, has been approximated somewhere.

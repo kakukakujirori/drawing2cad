@@ -1,6 +1,6 @@
 """What a value derived from a contract records about where it came from.
 
-A derived value outlives the thing it describes. `plan_coverage` is measured
+A derived value outlives the thing it describes. `review_plan` is measured
 against one plan and one hypothesis, and the state it is kept in has no idea
 when either of those is replaced -- so a reader that trusts it can be answering
 a question about work that no longer exists. That is cache invalidation, and

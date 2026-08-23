@@ -27,8 +27,9 @@ from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
+    OperationVerb,
     SemanticHypothesis,
-    plan_coverage,
+    review_plan,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import VerifyOutputResult
@@ -74,7 +75,8 @@ def _proposed(*items: str, builds: Sequence[int] = (1,)) -> OperationPlan:
         proposal=[
             Operation(
                 id=number,
-                operation=item,
+                verb=OperationVerb.EXTRUDE,
+                detail=item,
                 depends_on=[number - 1] if number > 1 else [],
                 semantics=list(builds),
             )
@@ -1071,7 +1073,7 @@ def test_a_plan_that_leaves_a_feature_unbuilt_is_sent_back_naming_it() -> None:
         result = graph.invoke({})
 
     assert len(planner.received_messages) == 2
-    assert result["plan_coverage"].complete
+    assert result["plan_review"].sound
 
     redo = _last_instruction(planner.received_messages[1])
     # The hypothesis names every feature, so what marks this out is the
@@ -1122,7 +1124,7 @@ def test_a_plan_that_accounts_for_every_feature_is_not_sent_back() -> None:
         result = graph.invoke({})
 
     assert len(planner.received_messages) == 1
-    assert result["plan_coverage"].complete
+    assert result["plan_review"].sound
     assert result.get("plan_revision_count", 0) == 0
 
 
@@ -1175,7 +1177,7 @@ def test_a_coverage_gap_after_an_audit_send_back_names_the_feature_not_the_verdi
     complaint = gap.split("Current semantic hypothesis")[0]
     assert "sem2" in complaint
     assert "the boss sits on the wrong face" not in complaint
-    assert result["plan_coverage"].complete
+    assert result["plan_review"].sound
 
 
 def test_an_incomplete_plan_never_reaches_the_coder() -> None:
@@ -1210,7 +1212,7 @@ def test_an_incomplete_plan_never_reaches_the_coder() -> None:
 
     assert len(planner.received_messages) == 3
     assert len(coder.received_messages) == 1
-    assert result["plan_coverage"].complete
+    assert result["plan_review"].sound
 
 
 def test_a_reading_of_an_earlier_hypothesis_is_not_a_reason_to_replan() -> None:
@@ -1220,14 +1222,14 @@ def test_a_reading_of_an_earlier_hypothesis_is_not_a_reason_to_replan() -> None:
     in the answer."""
     settled = hypothesis(proposal=[feature(1, "a plate"), feature(2, "a boss")])
     plan = _proposed("extrude it", builds=[1])
-    stale = plan_coverage(plan, settled)
-    assert not stale.complete
+    stale = review_plan(plan, settled)
+    assert not stale.sound
 
     remade = hypothesis(proposal=[feature(1, "a bigger plate")])
     state = {
         "semantic_hypothesis": remade,
         "operation_plan": plan,
-        "plan_coverage": stale,
+        "plan_review": stale,
         "audit": Audit(revise="semantics", rationale="the plate is the wrong size"),
     }
 

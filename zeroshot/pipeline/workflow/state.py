@@ -18,7 +18,7 @@ from typing_extensions import is_typeddict
 
 from zeroshot.pipeline.messages.contracts import (
     OperationPlan,
-    PlanCoverage,
+    PlanReview,
     SemanticHypothesis,
 )
 from zeroshot.pipeline.tools import VerifyOutputResult
@@ -64,7 +64,7 @@ class ReconstructionState(TypedDict):
 
     semantic_hypothesis: NotRequired[SemanticHypothesis | None]
     operation_plan: NotRequired[OperationPlan | None]
-    plan_coverage: NotRequired[PlanCoverage | None]
+    plan_review: NotRequired[PlanReview | None]
     last_verification: NotRequired[VerifyOutputResult]
     audit: NotRequired[Audit | None]
     audit_reject_count: NotRequired[Annotated[int, operator.add]]

@@ -22,6 +22,7 @@ from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
+    OperationVerb,
     SemanticHypothesis,
 )
 from zeroshot.pipeline.runner import GraphFactory, PipelineRunner
@@ -91,7 +92,13 @@ def _operations_stage():
         "operation_reviewer",
         OperationPlan(
             proposal=[
-                Operation(id=1, operation="extrude it", depends_on=[], semantics=[1])
+                Operation(
+                    id=1,
+                    verb=OperationVerb.EXTRUDE,
+                    detail="extrude it",
+                    depends_on=[],
+                    semantics=[1],
+                )
             ],
             rationale="one extrude",
         ).model_dump_json(),

@@ -17,9 +17,10 @@ from zeroshot.pipeline.messages.contracts import (
     GeometryKind,
     Operation,
     OperationPlan,
+    OperationVerb,
     Parameter,
     ParameterName,
-    PlanCoverage,
+    PlanReview,
     SemanticFeature,
     SemanticHypothesis,
     View,
@@ -132,7 +133,8 @@ _A_PLAN = OperationPlan(
     proposal=[
         Operation(
             id=1,
-            operation="Extrude the outline 25 mm along +z",
+            verb=OperationVerb.EXTRUDE,
+            detail="Extrude the outline 25 mm along +z",
             depends_on=[],
             semantics=[1],
         )
@@ -179,9 +181,11 @@ _ARTIFACTS: dict[str, object] = {
     },
     "semantic_hypothesis": _A_HYPOTHESIS,
     "operation_plan": _A_PLAN,
-    "plan_coverage": PlanCoverage(
+    "plan_review": PlanReview(
         uncovered=[2],
         unknown=[],
+        transcribed={},
+        unresolved={},
         of_hypothesis=fingerprint(_A_HYPOTHESIS),
         of_plan=fingerprint(_A_PLAN),
     ),
@@ -199,7 +203,8 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
     assert set(CUSTOM_STATE_TYPES) == {
         Operation,
         OperationPlan,
-        PlanCoverage,
+        OperationVerb,
+        PlanReview,
         SemanticHypothesis,
         SemanticFeature,
         FeatureGeometry,

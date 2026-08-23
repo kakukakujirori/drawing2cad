@@ -336,7 +336,14 @@ def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes() -> None:
 
     assert "`depends_on`" in guidelines
     assert "`semantics`" in guidelines
-    assert set(Operation.model_fields) == {"id", "operation", "depends_on", "semantics"}
+    assert "`verb`" in guidelines
+    assert set(Operation.model_fields) == {
+        "id",
+        "verb",
+        "detail",
+        "depends_on",
+        "semantics",
+    }
 
 
 def test_the_coder_is_told_the_plan_is_already_ordered() -> None:

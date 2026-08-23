@@ -16,6 +16,7 @@ from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
+    OperationVerb,
     SemanticHypothesis,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
@@ -47,7 +48,8 @@ def _plan(*items: str) -> AIMessage:
             proposal=[
                 Operation(
                     id=number,
-                    operation=item,
+                    verb=OperationVerb.EXTRUDE,
+                    detail=item,
                     depends_on=[number - 1] if number > 1 else [],
                     semantics=[1],
                 )

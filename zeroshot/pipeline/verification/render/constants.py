@@ -119,12 +119,11 @@ class Render3dPaths(_OutputPaths):
     def flat(cls, base_path: Path) -> Render3dPaths:
         """Lay the outputs out the way the sandbox does: style as filename.
 
-        The same three styles reach a model twice -- as the drawing's own
-        renders under `inputs/`, and as the renders of what it built. When the
-        two were laid out differently, an auditor that had read
-        `inputs/hlg_perspective.png` guessed `render_3d/hlg_perspective.png`
-        for its own output and spent three tool calls being told the file was
-        not there. One convention inside the sandbox removes the guess.
+        The same three styles reach a model twice: as the drawing's own renders
+        under `inputs/`, and as the renders of what it built. Two layouts for
+        one set of names leaves the second path to be guessed from the first,
+        and a guess that is wrong costs tool calls to find out. One convention
+        inside the sandbox is what removes the guess.
 
         The dataset keeps its own layout: it holds many samples per style, so
         the directory and the stem both carry something there.

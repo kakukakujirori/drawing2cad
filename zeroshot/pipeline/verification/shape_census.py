@@ -1,14 +1,12 @@
 """What a built solid is made of, counted by kind.
 
-The coder is told to model curves as curves, and three separate places in the
-prompts say so. On 001100 all three failed in the same direction: told to be
-exact, the model sampled its arcs and splines into a 200-point polyline, and
-the solid came out with 793 straight edges where the target has 119, 350 of
-them under a millimetre long. Nothing in the loop ever put a number in front of
-it, so there was nothing to notice.
+Several places in the prompts tell the coder to model curves as curves, and
+they can all fail the same way: told to be exact, a model samples its arcs
+more finely rather than differently, and the solid comes out faceted. One
+measured run reached 793 straight edges against a target of 119. Nothing in the
+loop had ever put that number in front of the coder.
 
-A census is that number. It says what was built rather than what should have
-been, and it costs one read of the STEP that has already been written.
+A census is that number, and it costs one read of a STEP already written.
 """
 
 from collections import Counter
