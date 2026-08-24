@@ -93,7 +93,7 @@ def _operations_stage():
         OperationPlan(
             proposal=[
                 Operation(
-                    id=1,
+                    name="op_base",
                     verb=OperationVerb.EXTRUDE,
                     detail="extrude it",
                     depends_on=[],

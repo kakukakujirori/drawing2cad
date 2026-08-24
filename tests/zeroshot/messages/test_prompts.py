@@ -22,6 +22,14 @@ def _write(path: Path, body: str) -> Path:
 _RUN_PATHS = {"output_path": "/work/model.py", "verification_dir": "/work/attempts"}
 
 
+_ENTRY_CONTEXT = {
+    "rationale": "the hole is misplaced",
+    "semantic_hypothesis": "a bracket",
+    "operation_plan": "extrude the base",
+    "outline_deletion": "",
+}
+
+
 def _guidelines(stage: str) -> str:
     """A stage's guidelines rendered the way `instruction_text` renders them.
 
@@ -30,7 +38,7 @@ def _guidelines(stage: str) -> str:
     stage was actually given.
     """
     return PromptTemplate(f"instructions/{stage}/guidelines").render(
-        **_RUN_PATHS, view_frame=view_frame_sentence()
+        **_RUN_PATHS, **_ENTRY_CONTEXT, view_frame=view_frame_sentence()
     )
 
 
@@ -81,6 +89,7 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
                 "rationale": "the hole is misplaced",
                 "semantic_hypothesis": "a bracket",
                 "operation_plan": "extrude the base",
+                "outline_deletion": "",
             },
         ),
         (
@@ -89,6 +98,7 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
                 "rationale": "wrong base feature",
                 "semantic_hypothesis": "a revised bracket",
                 "operation_plan": "rebuild the base",
+                "outline_deletion": "op_bore_through has been emptied",
             },
         ),
         (
@@ -128,6 +138,31 @@ def test_placeholders_are_filled_from_the_context() -> None:
     assert "$verification_dir" not in rendered
 
 
+def test_only_a_re_entry_is_told_what_the_laying_out_took_away() -> None:
+    """A deletion is what one laying-out took from the one before it, so the
+    entry that builds the file for the first time has nothing to be told and
+    does not ask for it -- rendering would raise if it did. The standing rule
+    that a revised step's section is emptied stays in the guidelines, where it
+    holds however the stage was entered."""
+    cleared = "op_bore_through has been emptied"
+
+    first = instruction_text(
+        "coding/initial",
+        **_RUN_PATHS,
+        semantic_hypothesis="a bracket",
+        operation_plan="extrude the base",
+    )
+    again = instruction_text(
+        "coding/upstream_changed",
+        **_RUN_PATHS,
+        **{**_ENTRY_CONTEXT, "outline_deletion": cleared},
+    )
+
+    assert cleared not in first
+    assert cleared in again
+    assert "emptied" in _guidelines("coding")
+
+
 @pytest.mark.parametrize(
     "role",
     [
@@ -150,11 +185,6 @@ _STAGE_ENTRIES = {
     "semantics": ("initial", "targeted_redo"),
     "operations": ("initial", "targeted_redo", "upstream_changed"),
     "coding": ("initial", "targeted_redo", "upstream_changed"),
-}
-_ENTRY_CONTEXT = {
-    "rationale": "the hole is misplaced",
-    "semantic_hypothesis": "a bracket",
-    "operation_plan": "extrude the base",
 }
 
 
@@ -338,7 +368,7 @@ def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes() -> None:
     assert "`semantics`" in guidelines
     assert "`verb`" in guidelines
     assert set(Operation.model_fields) == {
-        "id",
+        "name",
         "verb",
         "detail",
         "depends_on",

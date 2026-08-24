@@ -132,7 +132,7 @@ _A_HYPOTHESIS = hypothesis(
 _A_PLAN = OperationPlan(
     proposal=[
         Operation(
-            id=1,
+            name="op_base",
             verb=OperationVerb.EXTRUDE,
             detail="Extrude the outline 25 mm along +z",
             depends_on=[],

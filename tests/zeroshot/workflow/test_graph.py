@@ -33,7 +33,7 @@ from zeroshot.pipeline.messages.contracts import (
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import VerifyOutputResult
-from zeroshot.pipeline.verification import StepRenderer
+from zeroshot.pipeline.verification import ProgramOutline, StepRenderer
 from zeroshot.pipeline.workflow import (
     StopReason,
     create_agent,
@@ -74,10 +74,10 @@ def _proposed(*items: str, builds: Sequence[int] = (1,)) -> OperationPlan:
     return OperationPlan(
         proposal=[
             Operation(
-                id=number,
+                name=f"op_step{number}",
                 verb=OperationVerb.EXTRUDE,
                 detail=item,
-                depends_on=[number - 1] if number > 1 else [],
+                depends_on=[f"op_step{number - 1}"] if number > 1 else [],
                 semantics=list(builds),
             )
             for number, item in enumerate(items, start=1)
@@ -283,9 +283,12 @@ def test_an_accepted_hypothesis_reaches_the_coder_and_the_final_verification() -
             "output_auditor",
         )
     }
+    # Not "model.py was not found": the file is laid out from the plan before
+    # the coder starts, so a coder that wrote nothing leaves the markers and
+    # no code, and that is what the report says.
     assert result["last_verification"] == VerifyOutputResult(
-        status="REJECTED",
-        executor_error="model.py was not found",
+        status="INCOMPLETE",
+        executor_error="sections 0/1 -- op_step1 still to write.",
     )
 
     # Each active stage read what came before it, including the drawing.
@@ -404,6 +407,74 @@ def test_the_coder_is_given_both_settled_artifacts() -> None:
     instruction = coder.received_messages[0][-1].text
     assert "a flanged boss" in instruction
     assert "extrude the outline 25mm" in instruction
+
+
+def test_the_coder_is_handed_a_file_laid_out_in_the_derived_order() -> None:
+    """The program is laid out from the plan before the coder is handed the
+    plan, so the two cannot disagree about which step goes where. Written
+    bore-then-base and laid out base-then-bore: the file carries the order the
+    dependencies imply, and the interpreter then enforces it, since a section
+    standing on one below it would raise a NameError."""
+    written_backwards = OperationPlan(
+        proposal=[
+            Operation(
+                name="op_bore_through",
+                verb=OperationVerb.HOLE,
+                detail="cut the bore",
+                depends_on=["op_base_plate"],
+                semantics=[1],
+            ),
+            Operation(
+                name="op_base_plate",
+                verb=OperationVerb.EXTRUDE,
+                detail="extrude the outline",
+                depends_on=[],
+                semantics=[1],
+            ),
+        ],
+        rationale="the views agree",
+    )
+    coder = ScriptedChatModel(responses=(AIMessage(content="written"),))
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            _hypothesizer("a plate"),
+            ScriptedChatModel(responses=(_review(True, "fine"),)),
+            coder,
+            planner=ScriptedChatModel(
+                responses=(AIMessage(content=written_backwards.model_dump_json()),)
+            ),
+            plan_reviewer=ScriptedChatModel(responses=(_review(True, "builds it"),)),
+        )
+        graph.invoke({})
+        laid_out = (workdir.host_bind_dir / "model.py").read_text(encoding="utf-8")
+
+    markers = [line for line in laid_out.splitlines() if line.startswith("# ---- ")]
+    assert markers[0].startswith("# ---- op_base_plate ")
+    assert markers[2].startswith("# ---- op_bore_through ")
+    assert "cut the bore" in laid_out
+
+
+def test_laying_the_file_out_is_not_reported_as_the_coder_s_work() -> None:
+    """The free verification fires on a turn that changed the program. The
+    workflow's own layout is not a turn, and reporting it would open every
+    coding stage with an account of a program nobody had written yet."""
+    coder = ScriptedChatModel(responses=(AIMessage(content="written"),))
+
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            _hypothesizer("a plate"),
+            ScriptedChatModel(responses=(_review(True, "fine"),)),
+            coder,
+        )
+        graph.invoke({})
+
+    assert not any(
+        "has been executed" in getattr(message, "text", "")
+        for message in coder.received_messages[0]
+    )
 
 
 def test_a_plan_that_was_never_settled_leaves_the_coder_nothing_to_follow() -> None:
@@ -551,8 +622,16 @@ def test_the_coder_is_told_what_its_edit_built_without_asking(
     class StubVerifier:
         """One verifier serves both callers, as the graph builds only one."""
 
-        def __init__(self, source_path: Path) -> None:
-            self.source_path = source_path
+        def __init__(self, program: ProgramOutline) -> None:
+            self.program = program
+
+        @property
+        def source_path(self) -> Path:
+            return self.program.path
+
+        @property
+        def own_write(self) -> str | None:
+            return self.program.own_write
 
         def verify(self) -> tuple[VerifyOutputResult, None]:
             invocations.append("workflow")
@@ -563,9 +642,10 @@ def test_the_coder_is_told_what_its_edit_built_without_asking(
             return [{"type": "text", "text": "VERIFICATION_REPORT"}]
 
     with SandboxWorkdir() as workdir:
-        source_path = workdir.host_bind_dir / "model.py"
         monkeypatch.setattr(
-            graph_module, "OutputVerifier", lambda **kwargs: StubVerifier(source_path)
+            graph_module,
+            "OutputVerifier",
+            lambda **kwargs: StubVerifier(kwargs["program"]),
         )
         coder = ScriptedChatModel(
             responses=(
@@ -634,9 +714,12 @@ def test_the_workflow_runs_the_final_verification_after_a_coder_runs_out() -> No
         "coder": 3,
         "output_auditor": 1,
     }
+    # Not "model.py was not found": the file is laid out from the plan before
+    # the coder starts, so a coder that wrote nothing leaves the markers and
+    # no code, and that is what the report says.
     assert result["last_verification"] == VerifyOutputResult(
-        status="REJECTED",
-        executor_error="model.py was not found",
+        status="INCOMPLETE",
+        executor_error="sections 0/1 -- op_step1 still to write.",
     )
 
 

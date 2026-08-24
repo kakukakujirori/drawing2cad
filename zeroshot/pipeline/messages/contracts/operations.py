@@ -61,12 +61,19 @@ class OperationVerb(StrEnum):
 class Operation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: int = Field(
+    name: str = Field(
         ...,
         description=(
-            "Identifier for this operation, unique within the plan and 1 or "
-            "greater. Later stages cite it as op<id>. Keep an operation's id "
-            "when you revise it, so that a reference to it stays true."
+            "A name for this step, unique within the plan, beginning op_ and "
+            "carrying on in lower_snake_case: op_base_plate, op_bore_through, "
+            "op_fillet_top_edges. The op_ marks it as a step, as sem7 marks a "
+            "hypothesis feature, so that a step named after the feature it "
+            "builds still reads as the step. Name it for what it does rather "
+            "than for where it comes in the order, since the order is worked "
+            "out from the dependencies and the name is what every later stage "
+            "cites it by. Keep a step's name when you revise it, so that a "
+            "reference to it stays true, and give a step you add a new name of "
+            "its own rather than a number in a sequence."
         ),
     )
     verb: OperationVerb = Field(
@@ -91,13 +98,13 @@ class Operation(BaseModel):
             "state: a depth or an offset you worked out yourself."
         ),
     )
-    depends_on: list[int] = Field(
+    depends_on: list[str] = Field(
         ...,
         description=(
-            "The operations whose result this one consumes, as their plain id "
-            'numbers -- 3, not "op3". Empty for an operation that starts '
-            "from nothing. This is what fixes the build order; the order you "
-            "happen to list operations in does not."
+            "The operations whose result this one consumes, by their names -- "
+            '["op_base_plate"]. Empty for an operation that starts from nothing. '
+            "This is what fixes the build order; the order you happen to list "
+            "operations in does not."
         ),
     )
     semantics: list[int] = Field(
@@ -105,8 +112,10 @@ class Operation(BaseModel):
         description=(
             "The hypothesis features this operation helps build, as their "
             "plain id numbers -- 7 for the feature written sem7, not "
-            '"sem7". A feature may take several operations, and an '
-            "operation may serve several features."
+            '"sem7". Features are numbered where operations are named, so '
+            "this list holds numbers where `depends_on` holds names. A "
+            "feature may take several operations, and an operation may serve "
+            "several features."
         ),
     )
 
@@ -138,64 +147,93 @@ class OperationPlan(BaseModel):
         Whether the plan covers the hypothesis cannot be settled here -- the
         features live in another answer this model never sees -- so that check
         belongs to the graph. What is checkable here is that the graph is a
-        graph: ids that exist, and no step that waits on itself.
+        graph: names that exist, and no step that waits on itself.
         """
         if not self.proposal:
             raise ValueError("proposal must hold at least one operation")
 
-        ids = [operation.id for operation in self.proposal]
-        if any(identifier < 1 for identifier in ids):
-            raise ValueError("operation ids must be 1 or greater")
-        if len(set(ids)) != len(ids):
-            raise ValueError("operation ids must be unique; renumber the plan from 1")
+        names = [operation.name for operation in self.proposal]
+        for name in names:
+            _check_name(name)
+        duplicated = sorted({name for name in names if names.count(name) > 1})
+        if duplicated:
+            raise ValueError(
+                f"two operations are both called {', '.join(duplicated)}; give "
+                "each one a name of its own, since a name is how every later "
+                "stage tells them apart"
+            )
 
-        known = set(ids)
+        known = set(names)
         for operation in self.proposal:
             unknown = sorted(set(operation.depends_on) - known)
             if unknown:
                 raise ValueError(
-                    f"op{operation.id} depends on {unknown}, which no operation "
-                    "in this plan produces"
+                    f"{operation.name} depends on {', '.join(unknown)}, which "
+                    "no operation in this plan produces"
                 )
-            if operation.id in operation.depends_on:
-                raise ValueError(f"op{operation.id} depends on itself")
+            if operation.name in operation.depends_on:
+                raise ValueError(f"{operation.name} depends on itself")
 
         cycle = _first_cycle(self.proposal)
         if cycle:
             raise ValueError(
                 "operations wait on each other and nothing can start: "
-                + " -> ".join(f"op{identifier}" for identifier in cycle)
+                + " -> ".join(cycle)
             )
         return self
 
 
-def _first_cycle(operations: Iterable[Operation]) -> list[int]:
+# `op_` because a hypothesis feature is cited as `sem7`, and the two kinds of
+# identifier travel together through prose the coder and the audit both read.
+# A step named for the feature it builds is the likely case rather than the
+# awkward one -- the operation that bores the main bore has little else to be
+# called -- so the prefix is what keeps "the feature" and "the step that makes
+# it" from arriving as the same word. It also puts every name out of reach of
+# anything Python or the coding contract has already bound.
+_NAME = re.compile(r"^op_[a-z][a-z0-9_]*$")
+_LONGEST_NAME = 40
+
+
+def _check_name(name: str) -> None:
+    if not _NAME.fullmatch(name):
+        raise ValueError(
+            f"{name!r} is not a usable operation name. Begin with op_ and "
+            "carry on in lower_snake_case: op_base_plate, op_bore_through."
+        )
+    if len(name) > _LONGEST_NAME:
+        raise ValueError(
+            f"{name!r} is longer than {_LONGEST_NAME} characters. Name the "
+            "step, do not describe it; the description belongs in `detail`."
+        )
+
+
+def _first_cycle(operations: Iterable[Operation]) -> list[str]:
     """One cycle, named, or an empty list.
 
     Named rather than merely detected because the message is what the model
-    reads back through `middleware/model_retry.py`: "op3 -> op7 -> op3" says
+    reads back through `middleware/model_retry.py`: "base -> bore -> base" says
     which dependency to drop, where "the plan is cyclic" does not.
     """
-    needs = {operation.id: list(operation.depends_on) for operation in operations}
-    done: set[int] = set()
-    path: list[int] = []
+    needs = {operation.name: list(operation.depends_on) for operation in operations}
+    done: set[str] = set()
+    path: list[str] = []
 
-    def walk(identifier: int) -> list[int]:
-        if identifier in path:
-            return [*path[path.index(identifier) :], identifier]
-        if identifier in done:
+    def walk(name: str) -> list[str]:
+        if name in path:
+            return [*path[path.index(name) :], name]
+        if name in done:
             return []
-        path.append(identifier)
-        for needed in needs.get(identifier, ()):
+        path.append(name)
+        for needed in needs.get(name, ()):
             found = walk(needed)
             if found:
                 return found
         path.pop()
-        done.add(identifier)
+        done.add(name)
         return []
 
-    for identifier in needs:
-        found = walk(identifier)
+    for name in needs:
+        found = walk(name)
         if found:
             return found
     return []
@@ -210,16 +248,16 @@ def linearise(plan: OperationPlan) -> list[Operation]:
     two operations free to go in either order, the order they were written in
     decides, so the same plan always linearises the same way.
     """
-    by_id = {operation.id: operation for operation in plan.proposal}
+    by_name = {operation.name: operation for operation in plan.proposal}
     order: list[Operation] = []
-    placed: set[int] = set()
+    placed: set[str] = set()
 
     def place(operation: Operation) -> None:
-        if operation.id in placed:
+        if operation.name in placed:
             return
         for needed in operation.depends_on:
-            place(by_id[needed])
-        placed.add(operation.id)
+            place(by_name[needed])
+        placed.add(operation.name)
         order.append(operation)
 
     for operation in plan.proposal:
@@ -357,8 +395,8 @@ class PlanReview(BaseModel):
 
     uncovered: list[int]
     unknown: list[int]
-    transcribed: dict[int, list[str]]
-    unresolved: dict[int, list[str]]
+    transcribed: dict[str, list[str]]
+    unresolved: dict[str, list[str]]
     of_hypothesis: str
     of_plan: str
 
@@ -397,17 +435,37 @@ def review_plan(plan: OperationPlan, hypothesis: SemanticHypothesis) -> PlanRevi
         uncovered=sorted(established - built),
         unknown=sorted(built - established),
         transcribed={
-            operation.id: copied
+            operation.name: copied
             for operation in plan.proposal
             if (copied := _transcribed(operation.detail, held))
         },
         unresolved={
-            operation.id: broken
+            operation.name: broken
             for operation in plan.proposal
             if (broken := _unresolved(operation.detail, by_id))
         },
         of_hypothesis=fingerprint(hypothesis),
         of_plan=fingerprint(plan),
+    )
+
+
+def operation_heading(operation: Operation) -> str:
+    """How an operation announces itself, wherever it is written down.
+
+    One function because the plan the planner reads, the plan the coder reads
+    and the marker the coder writes under all have to say the same thing about
+    the same step. Two renderings that drift apart would leave the coder
+    holding one account of what a step is for and the machine holding another.
+    """
+    needs = (
+        "after " + ", ".join(operation.depends_on)
+        if operation.depends_on
+        else "needs nothing"
+    )
+    builds = ", ".join(f"sem{identifier}" for identifier in operation.semantics)
+    return (
+        f"{operation.name} {operation.verb.value} "
+        f"({needs}; builds {builds or 'nothing named'})"
     )
 
 
@@ -428,17 +486,12 @@ def render_plan(plan: OperationPlan, hypothesis: SemanticHypothesis) -> str:
         "rather than the order it was written in:"
     )
     lines = [heading]
-    for operation in linearise(plan):
-        needs = (
-            "after "
-            + ", ".join(f"op{identifier}" for identifier in operation.depends_on)
-            if operation.depends_on
-            else "from nothing"
-        )
-        builds = ", ".join(f"sem{identifier}" for identifier in operation.semantics)
+    # The step number is put on here rather than held in the plan: it is a
+    # position, and a position derived from the dependencies is not something
+    # the planner should have to keep in step with them.
+    for step, operation in enumerate(linearise(plan), start=1):
         lines.append(
-            f"  op{operation.id} {operation.verb.value} "
-            f"({needs}; builds {builds or 'nothing named'}) "
+            f"  step {step}  {operation_heading(operation)} "
             f"{resolve_reference(operation.detail, hypothesis)}"
         )
     lines.append(f"rationale: {plan.rationale}")
@@ -466,21 +519,21 @@ def render_plan_review(review: PlanReview) -> str:
             f"The plan cites {named}, which the hypothesis does not contain. "
             "Cite the features it does have."
         )
-    for identifier, copied in sorted(review.transcribed.items()):
+    for operation, copied in sorted(review.transcribed.items()):
         # A first plan can hold well over a hundred of these, and naming every
         # one would bury the instruction under the evidence for it.
         named = ", ".join(copied[:_NAMED_AT_MOST])
         if len(copied) > _NAMED_AT_MOST:
             named += f" and {len(copied) - _NAMED_AT_MOST} more"
         faults.append(
-            f"op{identifier} writes out {named}, which the hypothesis already "
+            f"{operation} writes out {named}, which the hypothesis already "
             "holds. Cite it as sem<id>.<parameter> instead; the number is put "
             "in for you, and a number retyped is a number that can be mistyped."
         )
-    for identifier, broken in sorted(review.unresolved.items()):
+    for operation, broken in sorted(review.unresolved.items()):
         named = ", ".join(broken)
         faults.append(
-            f"op{identifier} refers to {named}, which the hypothesis does not "
+            f"{operation} refers to {named}, which the hypothesis does not "
             "hold. Refer to a feature it has, and to a measurement that feature "
             "states."
         )

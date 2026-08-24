@@ -14,6 +14,8 @@ Current source program location:
 
 $output_path
 
+The program is laid out with one section per operation, marked by lines beginning `# ---- ` that name the step the code beneath them builds. Name the step when the fault belongs to one.
+
 Verification report:
 
 $report

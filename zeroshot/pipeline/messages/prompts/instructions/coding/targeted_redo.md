@@ -4,5 +4,7 @@ Feedback:
 
 $rationale
 
+$outline_deletion
+
 
 $guidelines

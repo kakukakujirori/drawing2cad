@@ -47,10 +47,10 @@ def _plan(*items: str) -> AIMessage:
         content=OperationPlan(
             proposal=[
                 Operation(
-                    id=number,
+                    name=f"op_step{number}",
                     verb=OperationVerb.EXTRUDE,
                     detail=item,
-                    depends_on=[number - 1] if number > 1 else [],
+                    depends_on=[f"op_step{number - 1}"] if number > 1 else [],
                     semantics=[1],
                 )
                 for number, item in enumerate(items, start=1)

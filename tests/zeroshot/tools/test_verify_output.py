@@ -11,6 +11,7 @@ from zeroshot.pipeline.tools.verify_output import (
     VerifyOutputResult,
     create_verify_output_tool,
 )
+from zeroshot.pipeline.verification.program_outline import ProgramOutline
 from zeroshot.pipeline.verification.render.constants import (
     Render3dPaths,
     TechdrawPaths,
@@ -87,7 +88,7 @@ def _create_verifier(
         workdir,
         renderer=renderer or StubRenderer(),  # type: ignore[arg-type]
         artifact_presenter=artifact_presenter,
-        source_filename=source_filename,
+        program=ProgramOutline(workdir.host_bind_dir / source_filename),
         output_dirname=output_dirname,
     )
 
@@ -367,36 +368,6 @@ def test_the_report_keeps_the_source_that_feedback_leaves_out(tmp_path: Path) ->
         returncode=0,
         stdout="construction log",
     )
-
-
-@pytest.mark.parametrize(
-    "source_filename",
-    [
-        "",
-        ".",
-        "..",
-        "./model.py",
-        "../model.py",
-        "nested/model.py",
-        "/work/model.py",
-    ],
-)
-def test_rejects_source_filename_outside_workdir_root(
-    tmp_path: Path,
-    source_filename: str,
-) -> None:
-    executor = StubCadQueryExecutor(_execution_report())
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-
-    with pytest.raises(
-        ValueError,
-        match="source_filename must be a filename in the workdir root",
-    ):
-        _create_verifier(
-            executor,
-            workdir,
-            source_filename=source_filename,
-        )
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,10 @@ from langchain_core.tools import BaseTool, tool
 
 from zeroshot.pipeline.messages import ArtifactPresenter, FeedbackManifest
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.verification.program_outline import (
+    ProgramOutline,
+    render_section_review,
+)
 from zeroshot.pipeline.verification.render.constants import (
     Render3dPaths,
     TechdrawPaths,
@@ -64,12 +68,9 @@ class OutputVerifier:
         workdir: SandboxWorkdir,
         renderer: StepRenderer,
         artifact_presenter: ArtifactPresenter | None,
-        source_filename: str = "model.py",
+        program: ProgramOutline,
         output_dirname: PurePosixPath = PurePosixPath("attempts"),
     ) -> None:
-        source_name = PurePosixPath(source_filename)
-        if source_name.name != source_filename or source_name.name in {"", ".", ".."}:
-            raise ValueError("source_filename must be a filename in the workdir root")
         if (
             output_dirname.is_absolute()
             or len(output_dirname.parts) != 1
@@ -81,7 +82,8 @@ class OutputVerifier:
         self.workdir = workdir
         self.renderer = renderer
         self.artifact_presenter = artifact_presenter
-        self.source_filename = source_filename
+        self.program = program
+        self.source_filename = program.path.name
         self.output_dirname = output_dirname
 
         host_outdir = workdir.host_bind_dir / output_dirname
@@ -96,7 +98,17 @@ class OutputVerifier:
     @property
     def source_path(self) -> Path:
         """The program this verifier builds, on the host side of the sandbox."""
-        return self.workdir.host_bind_dir / self.source_filename
+        return self.program.path
+
+    @property
+    def own_write(self) -> str | None:
+        """Whether the program as it stands was written by the machine.
+
+        Passed straight through from the outline. Whoever watches this file for
+        a turn's work asks one object about the program, and the object it asks
+        is the one that also runs it.
+        """
+        return self.program.own_write
 
     def _issue_verification_id_and_dir(self) -> tuple[str, Path]:
         host_outdir = self.workdir.host_bind_dir / self.output_dirname
@@ -130,6 +142,16 @@ class OutputVerifier:
                 executor_error=f"{self.source_filename} was not found",
             )
             return report, None
+
+        # A file of markers and no code is not a program that failed; it is one
+        # nobody has written yet, and running it would spend a sandbox to find
+        # that out and an attempt number to record it.
+        sections = self.program.review()
+        if sections is not None and sections.nothing_written:
+            return VerifyOutputResult(
+                status="INCOMPLETE",
+                executor_error=render_section_review(sections),
+            ), None
 
         # prepare artifact save dir and report
         verification_id, host_verification_dir = self._issue_verification_id_and_dir()
@@ -192,6 +214,10 @@ class OutputVerifier:
             ),
             create_text_block(json.dumps(report.serialize(), indent=2)),
         ]
+        # Not on INCOMPLETE: the report's executor_error already provides this text.
+        sections = self.program.review() if report.status != "INCOMPLETE" else None
+        if sections and (told := render_section_review(sections)):
+            blocks.append(create_text_block(told))
         if manifest and self.artifact_presenter:
             blocks.extend(
                 self.artifact_presenter.build_feedback_message_blocks(
@@ -214,13 +240,16 @@ def create_verify_output_tool(
     The staged workflow verifies the coder's writes without being asked, so it
     builds an `OutputVerifier` directly; this is for an agent whose turn is the
     right place to decide.
+
+    The outline is built and never prepared: this agent writes the whole file
+    itself, so there is no plan to read it against and `review` answers None.
     """
     verifier = OutputVerifier(
         executor,
         workdir,
         renderer=renderer,
         artifact_presenter=artifact_presenter,
-        source_filename=source_filename,
+        program=ProgramOutline(workdir.host_bind_dir / source_filename),
         output_dirname=output_dirname,
     )
     description = cleandoc(

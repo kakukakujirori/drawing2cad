@@ -33,7 +33,12 @@ from zeroshot.pipeline.tools import (
     create_load_image_tool,
     create_run_shell_tool,
 )
-from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
+from zeroshot.pipeline.verification import (
+    CadQueryExecutor,
+    ProgramOutline,
+    StepRenderer,
+    render_outline_deletion,
+)
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
@@ -158,14 +163,16 @@ def create_reconstruction_graph(
         create_run_shell_tool(sandbox_runner, sandbox_workdir),
         create_load_image_tool(sandbox_workdir),
     ]
-    # One verifier for the whole graph: the coder's turns and the workflow's
-    # own final check number their attempts from the same directory.
+    # One outline and one verifier for the whole graph: the program is written
+    # from the plan in one place, and the coder's turns and the workflow's own
+    # final check number their attempts from the same directory.
+    program = ProgramOutline(sandbox_workdir.host_bind_dir / output_filename)
     verifier = OutputVerifier(
         executor=executor,
         workdir=sandbox_workdir,
         renderer=renderer,
         artifact_presenter=artifact_presenter,
-        source_filename=output_filename,
+        program=program,
         output_dirname=verification_dirname,
     )
 
@@ -328,12 +335,16 @@ def create_reconstruction_graph(
         previous = state.get("coding_state") or {}
         messages = list(previous.get("messages") or [])
 
+        # update program outline
+        deleted = program.prepare(operation_plan, semantic_hypothesis)
+
         entry_reason, audit_rationale = _invocation_reason(state, "coding")
         instruction = build_instruction(
             f"coding/{entry_reason}",
             **prompt_context,
             semantic_hypothesis=render_hypothesis(semantic_hypothesis),
             operation_plan=render_plan(operation_plan, semantic_hypothesis),
+            outline_deletion=render_outline_deletion(deleted),
             rationale=audit_rationale,
         )
 
