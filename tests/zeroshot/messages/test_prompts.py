@@ -26,7 +26,7 @@ _ENTRY_CONTEXT = {
     "rationale": "the hole is misplaced",
     "semantic_hypothesis": "a bracket",
     "operation_plan": "extrude the base",
-    "outline_deletion": "",
+    "outline_changes": "",
 }
 
 
@@ -89,7 +89,7 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
                 "rationale": "the hole is misplaced",
                 "semantic_hypothesis": "a bracket",
                 "operation_plan": "extrude the base",
-                "outline_deletion": "",
+                "outline_changes": "",
             },
         ),
         (
@@ -98,7 +98,7 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
                 "rationale": "wrong base feature",
                 "semantic_hypothesis": "a revised bracket",
                 "operation_plan": "rebuild the base",
-                "outline_deletion": "op_bore_through has been emptied",
+                "outline_changes": "op_bore_through changed at L20-L24",
             },
         ),
         (
@@ -138,13 +138,12 @@ def test_placeholders_are_filled_from_the_context() -> None:
     assert "$verification_dir" not in rendered
 
 
-def test_only_a_re_entry_is_told_what_the_laying_out_took_away() -> None:
-    """A deletion is what one laying-out took from the one before it, so the
-    entry that builds the file for the first time has nothing to be told and
-    does not ask for it -- rendering would raise if it did. The standing rule
-    that a revised step's section is emptied stays in the guidelines, where it
-    holds however the stage was entered."""
-    cleared = "op_bore_through has been emptied"
+def test_only_a_re_entry_is_told_which_preserved_range_needs_revision() -> None:
+    """Initial layout has no earlier implementation to compare with."""
+    changed = (
+        "op_bore_through was preserved at /work/model.py:L20-L24. "
+        "Previous instruction: bore 10 mm. Current instruction: bore 12 mm."
+    )
 
     first = instruction_text(
         "coding/initial",
@@ -155,12 +154,13 @@ def test_only_a_re_entry_is_told_what_the_laying_out_took_away() -> None:
     again = instruction_text(
         "coding/upstream_changed",
         **_RUN_PATHS,
-        **{**_ENTRY_CONTEXT, "outline_deletion": cleared},
+        **{**_ENTRY_CONTEXT, "outline_changes": changed},
     )
 
-    assert cleared not in first
-    assert cleared in again
-    assert "emptied" in _guidelines("coding")
+    assert changed not in first
+    assert changed in again
+    assert "existing code is preserved" in _guidelines("coding")
+    assert "ret_<operation name without op_>" in _guidelines("coding")
 
 
 @pytest.mark.parametrize(

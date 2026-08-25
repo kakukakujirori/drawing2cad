@@ -3,9 +3,10 @@
 The coding stage writes a single file that runs as it stands. What this adds is
 a marker before each operation's code, written from the plan rather than by the
 coder. The markers buy three things at once: a defect belongs to a named step,
-a revision can clear one step's code and leave the rest, and the order the
-sections appear in is the order the dependencies imply, which the interpreter
-then enforces for free -- code that reached forward would raise a NameError.
+a revision can point at the exact code that now needs attention without
+deleting it, and the order the sections appear in is the order the dependencies
+imply, which the interpreter then enforces for free -- code that reached
+forward would raise a NameError.
 
 Sections rather than files or functions. Both of those cut the program up as
 well as marking it, and CadQuery is a fluent interface: a chain broken at a
@@ -15,7 +16,6 @@ A comment costs none of that and marks just as well.
 """
 
 import re
-import textwrap
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
@@ -31,21 +31,22 @@ from zeroshot.pipeline.messages.contracts import (
 
 __all__ = [
     "MARKER",
-    "OutlineDeletion",
+    "OutlineChange",
+    "OutlineUpdate",
     "ProgramOutline",
     "SectionReview",
-    "render_outline_deletion",
+    "render_outline_update",
     "render_section_review",
     "review_sections",
+    "section_variable",
     "update_program_outline",
 ]
 
-# `# ---- ` opens every line the machine owns, marker and continuation alike, so
-# that a comment the coder writes can never be mistaken for one of them.
+# `# ---- ` opens every line the machine owns, so a comment the coder writes
+# can never be mistaken for one. An operation's entire instruction is kept on
+# that one line: it is both the boundary and the version of the code below it.
 _OWNED = "# ---- "
 MARKER = re.compile(rf"^{re.escape(_OWNED)}(op_[a-z][a-z0-9_]*) ")
-
-_WIDTH = 88
 
 # What a file starts as, before any operation has been written. Only the import
 # every program needs.
@@ -58,22 +59,48 @@ _PREAMBLE = "import cadquery as cq\n"
 # Where the finished solid is named. `result` belongs to no operation -- it is
 # what the operations between them came to -- so it gets a place of its own
 # instead of riding on whichever step happens to land last. Without one it is
-# cleared along with that step whenever the step is revised, and the program
-# loses its answer over a revision that had nothing to do with it.
+# rewritten along with that step whenever the layout is refreshed, and the
+# program loses its answer over a revision that had nothing to do with it.
 _EPILOGUE = f"{_OWNED}result"
 _EPILOGUE_LINE = f"{_EPILOGUE} (not a step; kept across every revision)"
 
 
-@dataclass(frozen=True)
-class OutlineDeletion:
-    """The area of code that the coder's code was reverted to empty.
+def section_variable(name: str) -> str:
+    """Return the variable that holds one operation's completed solid.
 
-    `code_only` -- The comment instruction remains, but the code was deleted.
-    `entire_section` -- The entire section, including the comment instruction, was deleted.
+    The plan owns `op_bore`; the coder owns the solid it produced,
+    `ret_bore`. Keeping those namespaces visibly related lets later auditing
+    inspect the part immediately after a named operation.
+    """
+    return "ret_" + name.removeprefix("op_")
+
+
+@dataclass(frozen=True)
+class OutlineChange:
+    """One revised instruction and the preserved code answering the old one.
+
+    Line numbers are 1-based and inclusive in the newly written file. They
+    cover code only, not the machine-owned marker above it.
     """
 
-    code_only: list[str] = field(default_factory=list)
-    entire_section: list[str] = field(default_factory=list)
+    name: str
+    previous_instruction: str
+    current_instruction: str
+    first_line: int
+    last_line: int
+
+
+@dataclass(frozen=True)
+class OutlineUpdate:
+    """Changes made while bringing an existing program up to date.
+
+    Revised operations keep their code and are reported through `changed`.
+    An operation removed from the plan cannot remain executable, so its whole
+    section is still removed and named through `removed`.
+    """
+
+    changed: list[OutlineChange] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -107,6 +134,8 @@ class _Section:
     name: str
     marker: str
     body: str
+    first_line: int = 0
+    last_line: int = 0
 
     @property
     def says(self) -> str:
@@ -128,16 +157,11 @@ class _Section:
 
 
 def _says(marker: str) -> str:
-    """The words of a marker, with the prefix and the line breaks taken out.
-
-    The comparison this feeds answers "does the marker say the same thing", not
-    "was it wrapped at the same column". Both have to go: the wrapping is this
-    module's own doing and moves whenever the width does, and the prefix is
-    written once per line, so counting it would smuggle the line breaks back in
-    through the door the normalising was meant to shut.
-    """
+    """The normalised instruction carried by one machine-owned marker."""
     return " ".join(
-        word for line in marker.splitlines() for word in line[len(_OWNED) :].split()
+        word
+        for line in marker.splitlines()
+        for word in line.removeprefix(_OWNED).split()
     )
 
 
@@ -147,36 +171,52 @@ def _split(source: str) -> tuple[str, list[_Section], str]:
     Anything before the first marker is preamble -- the imports, and whatever
     else the coder put at the top -- and anything after the `result` marker is
     epilogue. Both are kept whole; only the sections between them answer to a
-    step and can be cleared.
+    step.
 
     A marker line the coder has damaged no longer matches, so the text under it
     stays in the section above rather than disappearing: the review says the
     marker has gone, and the code is still there to be moved back.
     """
     preamble: list[str] = []
-    sections: list[tuple[str, list[str], list[str]]] = []
+    opened: list[tuple[str, list[str], list[str], int]] = []
     epilogue: list[str] = []
-    ending = False
-    for line in source.splitlines(keepends=True):
-        if line.startswith(_EPILOGUE):
-            ending = True
+    epilogue_line = 0
+    ends: list[int] = []
+    total = 0
+    for total, line in enumerate(source.splitlines(keepends=True), start=1):
+        if line.startswith(_EPILOGUE) and not epilogue_line:
+            epilogue_line = total
+            ends.append(total - 1)
+        elif (found := MARKER.match(line)) and not epilogue_line:
+            ends.append(total - 1)
+            opened.append((found[1], [line], [], total))
         elif line.startswith(_OWNED):
-            # A marker opens a section; any other line the machine owns is a
-            # continuation of one, and is kept with it because together they
-            # are the instruction the code below was written against.
-            if (found := MARKER.match(line)) and not ending:
-                sections.append((found[1], [line], []))
-            elif sections and not ending and not sections[-1][2]:
-                sections[-1][1].append(line)
-        elif ending:
+            # The previous format used extra owned lines for wrapped detail.
+            # Read them into the previous instruction so the migration report
+            # can show it in full. They are emitted as part of the single new
+            # marker, never copied back as extra boundaries.
+            if opened and not epilogue_line and not opened[-1][2]:
+                opened[-1][1].append(line)
+            continue
+        elif epilogue_line:
             epilogue.append(line)
-        elif sections:
-            sections[-1][2].append(line)
+        elif opened:
+            opened[-1][2].append(line)
         else:
             preamble.append(line)
+
+    # The first entry closes the preamble. If there is no result marker, EOF
+    # closes the final operation section.
+    ends = ends[1:]
+    if len(ends) < len(opened):
+        ends.append(total)
+
     return (
         "".join(preamble),
-        [_Section(name, "".join(said), "".join(body)) for name, said, body in sections],
+        [
+            _Section(name, "".join(marker), "".join(body), first, last)
+            for (name, marker, body, first), last in zip(opened, ends, strict=True)
+        ],
         "".join(epilogue),
     )
 
@@ -189,20 +229,15 @@ def _marker(operation: Operation, hypothesis: SemanticHypothesis) -> str:
     citing a semantic parameter says the same words after the radius changes, and the
     code written under it is answering the old number.
 
-    This is also the whole record of what a section was written against. There
-    is no stamp beside it: a hash of the words would be a second copy of what
-    is already legible on the line it would sit on, and `fingerprint.py`
-    declined that same trade -- the content, not a mark standing for it.
+    This is also the whole record of what a section was written against. The
+    line is intentionally allowed to be long: wrapping it would make the block
+    boundary ambiguous again.
     """
     detail = " ".join(resolve_reference(operation.detail, hypothesis).split())
-    said = [
-        operation_heading(operation),
-        # Not on hyphens: a plan says "nut-capture pocket" and "lower-eye",
-        # and a marker that breaks those across lines is harder to read than
-        # one that runs a little long.
-        *(textwrap.wrap(detail, _WIDTH - len(_OWNED), break_on_hyphens=False) or [""]),
-    ]
-    return "\n".join(_OWNED + line for line in said)
+    heading = operation_heading(
+        operation, produces=section_variable(operation.name)
+    )
+    return f"{_OWNED}{heading} :: {detail}"
 
 
 ################################################################
@@ -236,21 +271,21 @@ class ProgramOutline:
 
     def prepare(
         self, plan: OperationPlan, hypothesis: SemanticHypothesis
-    ) -> OutlineDeletion:
+    ) -> OutlineUpdate:
         """Update the operation plan comments, and notify the difference from the previous."""
         existing = (
             self._path.read_text(encoding="utf-8", errors="replace")
             if self._path.is_file()
             else None
         )
-        written, deleted = update_program_outline(plan, hypothesis, existing)
+        written, update = update_program_outline(plan, hypothesis, existing)
         self._path.write_text(written, encoding="utf-8")
 
         # update the state
         self._plan = plan
         self._own_write = sha256(written.encode("utf-8")).hexdigest()
 
-        return deleted
+        return update
 
     def review(self) -> SectionReview | None:
         """How far the file has got, or None while there is nothing to read it against.
@@ -271,7 +306,7 @@ def update_program_outline(
     plan: OperationPlan,
     hypothesis: SemanticHypothesis,
     existing: str | None = None,
-) -> tuple[str, OutlineDeletion]:
+) -> tuple[str, OutlineUpdate]:
     """The file the coder fills in, brought up to date with the plan.
 
     An update rather than a fresh laying-out: most of the time a file is
@@ -280,33 +315,49 @@ def update_program_outline(
     rather than from anything this process remembers, which is what makes the
     answer survive a checkpoint restore and lets this stay a plain function.
 
-    A marker that still says what the plan says means the step has not moved
-    and its code is left alone. One that says something else means the step was
-    revised, and the code is cleared rather than reported as suspect --
-    reporting it leaves the coder free to agree with itself and move on, which
-    is the failure this exists to prevent.
+    A marker that still says what the plan says means the step has not moved.
+    One that says something else means the instruction was revised: the marker
+    is updated, the old code is deliberately preserved, and the caller gets
+    both instructions plus the exact current code range to hand to the coder.
     """
     preamble, held, epilogue = _split(existing or _PREAMBLE)
     by_name = {section.name: section for section in held}
     wanted = {operation.name for operation in plan.proposal}
 
-    emptied: list[str] = []
+    pending: dict[str, tuple[str, str]] = {}
     written = [preamble.rstrip("\n"), ""]
     for operation in linearise(plan):
         marker = _marker(operation, hypothesis)
         section = by_name.get(operation.name)
         keeps = section is not None and section.says == _says(marker)
         if section is not None and not keeps and not section.empty:
-            emptied.append(operation.name)
-        body = section.body.strip("\n") if keeps and section else ""
+            pending[operation.name] = (section.says, _says(marker))
+        body = section.body.strip("\n") if section else ""
         written.append(f"{marker}\n{body}\n" if body else f"{marker}\n")
 
     tail = epilogue.strip("\n")
     written.append(f"{_EPILOGUE_LINE}\n{tail}\n" if tail else f"{_EPILOGUE_LINE}\n")
 
-    return "\n".join(written).lstrip("\n"), OutlineDeletion(
-        code_only=emptied,
-        entire_section=[section.name for section in held if section.name not in wanted],
+    source = "\n".join(written).lstrip("\n")
+    _, current, _ = _split(source)
+    by_current_name = {section.name: section for section in current}
+    changed: list[OutlineChange] = []
+    for name, (previous, present) in pending.items():
+        section = by_current_name[name]
+        code_lines = len(section.body.rstrip("\n").splitlines())
+        changed.append(
+            OutlineChange(
+                name=name,
+                previous_instruction=previous,
+                current_instruction=present,
+                first_line=section.first_line + 1,
+                last_line=section.first_line + code_lines,
+            )
+        )
+
+    return source, OutlineUpdate(
+        changed=changed,
+        removed=[section.name for section in held if section.name not in wanted],
     )
 
 
@@ -327,22 +378,27 @@ def review_sections(source: str, plan: OperationPlan) -> SectionReview:
     )
 
 
-def render_outline_deletion(deleted: OutlineDeletion) -> str:
-    faults: list[str] = []
-    if deleted.code_only:
-        named = ", ".join(deleted.code_only)
-        faults.append(
-            f"The code under {named} was written against a different "
-            "instruction from the one its marker now carries, so it has been "
-            "cleared. Write it again against what the marker says."
+def render_outline_update(update: OutlineUpdate, output_path: str) -> str:
+    """Tell the coder exactly which preserved ranges answer old instructions."""
+    notices: list[str] = []
+    # Bottom-up locations stay valid if the coder chooses to edit the ranges
+    # in the order presented and an earlier replacement changes line count.
+    for change in sorted(update.changed, key=lambda item: item.first_line, reverse=True):
+        notices.append(
+            f"{change.name}: its previous code is preserved at "
+            f"{output_path}:L{change.first_line}-L{change.last_line}. Edit that "
+            "range to satisfy the current instruction; do not edit its one-line "
+            "marker.\n"
+            f"Previous instruction: {change.previous_instruction}\n"
+            f"Current instruction: {change.current_instruction}"
         )
-    if deleted.entire_section:
-        named = ", ".join(deleted.entire_section)
-        faults.append(
-            f"{named} is no longer in the plan, and the code for it has been "
-            "removed along with the marker."
+    if update.removed:
+        named = ", ".join(update.removed)
+        notices.append(
+            f"{named} is no longer in the plan, so its executable section and "
+            "marker were removed from the layout."
         )
-    return " ".join(faults)
+    return "\n\n".join(notices)
 
 
 def render_section_review(review: SectionReview) -> str:

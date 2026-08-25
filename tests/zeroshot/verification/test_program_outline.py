@@ -1,10 +1,8 @@
-"""The coder's file cut into sections: what survives a revision, and what does not.
+"""The coder's file cut into sections and preserved across plan revisions.
 
 The layout exists so that a plan revised in one place costs the coder one
-section rather than the whole part. That only holds if two things are true at
-once -- the code for a step that did not move stays, and the code for a step
-that did move goes -- so most of what follows is that pair, approached from
-either side.
+localized edit rather than the whole part. The marker changes when its
+instruction does, while the old code remains available in a reported range.
 """
 
 from collections.abc import Sequence
@@ -20,13 +18,13 @@ from zeroshot.pipeline.messages.contracts import (
     OperationVerb,
     SemanticHypothesis,
 )
-from zeroshot.pipeline.verification import program_outline
 from zeroshot.pipeline.verification.program_outline import (
     MARKER,
     ProgramOutline,
-    render_outline_deletion,
+    render_outline_update,
     render_section_review,
     review_sections,
+    section_variable,
     update_program_outline,
 )
 
@@ -120,11 +118,11 @@ def test_a_step_that_did_not_move_keeps_its_code() -> None:
     coded = fill(
         update_program_outline(two, held())[0],
         "op_base",
-        "part = cq.Workplane('XY').box(1)",
+        "ret_base = cq.Workplane('XY').box(1)",
     )
-    coded = fill(coded, "op_bore", "part = part.hole(10)")
+    coded = fill(coded, "op_bore", "ret_bore = ret_base.hole(10)")
 
-    revised, deleted = update_program_outline(
+    revised, update = update_program_outline(
         plan(
             op("op_base", builds=[1]),
             op("op_bore", needs=["op_base"], builds=[4], detail="deeper"),
@@ -133,26 +131,31 @@ def test_a_step_that_did_not_move_keeps_its_code() -> None:
         coded,
     )
 
-    assert body(revised, "op_base") == "part = cq.Workplane('XY').box(1)"
-    assert deleted.code_only == ["op_bore"]
+    assert body(revised, "op_base") == "ret_base = cq.Workplane('XY').box(1)"
+    assert [change.name for change in update.changed] == ["op_bore"]
 
 
-def test_a_step_that_moved_loses_its_code() -> None:
-    """Cleared rather than reported as suspect. Told about it, the coder is
-    free to agree with itself and carry on, and the stale code survives the
-    revision that invalidated it -- which is the failure this prevents."""
+def test_a_step_that_moved_keeps_its_code_and_reports_the_edit_range() -> None:
+    """The marker changes, but the old implementation remains as local context."""
     one = plan(op("op_base", builds=[1], detail="extrude 25 mm"))
-    coded = fill(update_program_outline(one, held())[0], "op_base", "part = 'old'")
+    coded = fill(
+        update_program_outline(one, held())[0], "op_base", "ret_base = 'old'"
+    )
 
-    revised, deleted = update_program_outline(
+    revised, update = update_program_outline(
         plan(op("op_base", builds=[1], detail="extrude 30 mm")), held(), coded
     )
 
-    assert body(revised, "op_base") == ""
-    assert "op_base" in render_outline_deletion(deleted)
+    assert body(revised, "op_base") == "ret_base = 'old'"
+    assert update.changed[0].first_line == 4
+    assert update.changed[0].last_line == 4
+    rendered = render_outline_update(update, "/work/model.py")
+    assert "/work/model.py:L4-L4" in rendered
+    assert "extrude 25 mm" in rendered
+    assert "extrude 30 mm" in rendered
 
 
-def test_a_measurement_that_moved_in_the_hypothesis_clears_the_step_too() -> None:
+def test_a_measurement_that_moved_in_the_hypothesis_marks_the_step_changed() -> None:
     """The step's own wording is not the whole of what it was asked to do. A
     plan citing a semantic parameter says the same words after the radius changes, and
     the code written under it is answering the old number."""
@@ -164,27 +167,29 @@ def test_a_measurement_that_moved_in_the_hypothesis_clears_the_step_too() -> Non
         )
     )
     coded = fill(
-        update_program_outline(one, held())[0], "op_bore", "part = part.hole(10)"
+        update_program_outline(one, held())[0],
+        "op_bore",
+        "ret_bore = ret_base.hole(10)",
     )
 
-    assert update_program_outline(one, held(radius=9.0), coded)[1].code_only == [
-        "op_bore"
-    ]
+    revised, update = update_program_outline(one, held(radius=9.0), coded)
+
+    assert [change.name for change in update.changed] == ["op_bore"]
+    assert body(revised, "op_bore") == "ret_bore = ret_base.hole(10)"
 
 
-def test_clearing_a_section_that_was_never_written_is_not_reported() -> None:
-    """`cleared` is what the coder lost. An empty section that moved cost it
-    nothing, and saying so would spend the message on something to ignore."""
+def test_changing_a_section_that_was_never_written_is_not_reported() -> None:
+    """An empty section has no old implementation to localize for editing."""
     seeded, _ = update_program_outline(
         plan(op("op_base", detail="extrude 25 mm")), held()
     )
 
-    _, deleted = update_program_outline(
+    _, update = update_program_outline(
         plan(op("op_base", detail="extrude 30 mm")), held(), seeded
     )
 
-    assert deleted.code_only == []
-    assert render_outline_deletion(deleted) == ""
+    assert update.changed == []
+    assert render_outline_update(update, "/work/model.py") == ""
 
 
 def test_a_step_the_plan_no_longer_holds_is_dropped_and_named() -> None:
@@ -193,11 +198,11 @@ def test_a_step_the_plan_no_longer_holds_is_dropped_and_named() -> None:
     two = plan(op("op_base"), op("op_spare"))
     coded = fill(update_program_outline(two, held())[0], "op_spare", "part = 'work'")
 
-    revised, deleted = update_program_outline(plan(op("op_base")), held(), coded)
+    revised, update = update_program_outline(plan(op("op_base")), held(), coded)
 
-    assert deleted.entire_section == ["op_spare"]
+    assert update.removed == ["op_spare"]
     assert "op_spare" not in revised
-    assert "op_spare" in render_outline_deletion(deleted)
+    assert "op_spare" in render_outline_update(update, "/work/model.py")
 
 
 def test_the_preamble_survives_every_rewrite() -> None:
@@ -321,8 +326,8 @@ def test_laying_a_file_out_again_changes_nothing(times: int) -> None:
     written = fill(update_program_outline(two, held())[0], "op_base", "part = 1")
 
     for _ in range(times):
-        written, deleted = update_program_outline(two, held(), written)
-        assert render_outline_deletion(deleted) == ""
+        written, update = update_program_outline(two, held(), written)
+        assert render_outline_update(update, "/work/model.py") == ""
 
     assert body(written, "op_base") == "part = 1"
 
@@ -338,13 +343,13 @@ def test_the_epilogue_outlives_the_step_that_happens_to_be_last() -> None:
         "# ---- result (not a step; kept across every revision)\nresult = part",
     )
 
-    revised, deleted = update_program_outline(
+    revised, update = update_program_outline(
         plan(op("op_base", detail="extrude 30 mm")), held(), coded
     )
 
-    assert deleted.code_only == ["op_base"]
+    assert [change.name for change in update.changed] == ["op_base"]
     assert "result = part" in revised
-    assert body(revised, "op_base") == ""
+    assert body(revised, "op_base") == "part = 1"
 
 
 def test_the_epilogue_is_not_a_section() -> None:
@@ -357,11 +362,8 @@ def test_the_epilogue_is_not_a_section() -> None:
     assert body(written, "op_base") == ""
 
 
-def test_rewrapping_a_marker_does_not_cost_the_coder_its_code(monkeypatch) -> None:
-    """The width the markers wrap at is this module's own doing. A section kept
-    or cleared by where a line happened to break would make every change to the
-    wrapping a change to every section, which is what a stamp over the rendered
-    lines used to do -- and what changing `break_on_hyphens` did in passing."""
+def test_a_long_instruction_remains_one_machine_owned_line() -> None:
+    """Long instructions may be ungainly, but never become fake boundaries."""
     one = plan(
         op(
             "op_base",
@@ -369,18 +371,15 @@ def test_rewrapping_a_marker_does_not_cost_the_coder_its_code(monkeypatch) -> No
             "lower-eye base plate of the carrier, which the bore goes through",
         )
     )
-    coded = fill(update_program_outline(one, held())[0], "op_base", "part = 1")
-    assert coded.count("# ---- op_base") + coded.count("# ---- Extrude") == 2
+    written, _ = update_program_outline(one, held())
 
-    monkeypatch.setattr(program_outline, "_WIDTH", 48)
-    revised, deleted = update_program_outline(one, held(), coded)
-
-    assert deleted.code_only == []
-    assert body(revised, "op_base") == "part = 1"
-    assert len(revised.splitlines()) > len(coded.splitlines())
+    owned = [line for line in written.splitlines() if line.startswith("# ---- op_")]
+    assert len(owned) == 1
+    assert "lower-eye base plate" in owned[0]
+    assert "-> ret_base" in owned[0]
 
 
-def test_a_marker_the_coder_rewrote_costs_it_that_section() -> None:
+def test_a_marker_the_coder_rewrote_preserves_and_localizes_that_section() -> None:
     """The marker is the whole record of what the code under it answers. One
     the coder has reworded no longer says what the plan says, and code kept
     under it would be code answering an instruction nobody issued."""
@@ -388,10 +387,34 @@ def test_a_marker_the_coder_rewrote_costs_it_that_section() -> None:
     coded = fill(update_program_outline(one, held())[0], "op_base", "part = 1")
     reworded = coded.replace("extrude 25 mm", "extrude 30 mm")
 
-    revised, deleted = update_program_outline(one, held(), reworded)
+    revised, update = update_program_outline(one, held(), reworded)
 
-    assert deleted.code_only == ["op_base"]
-    assert body(revised, "op_base") == ""
+    assert [change.name for change in update.changed] == ["op_base"]
+    assert body(revised, "op_base") == "part = 1"
+
+
+def test_a_legacy_multiline_marker_migrates_without_deleting_code() -> None:
+    """Phase 3 files get the new boundary format without losing their work."""
+    one = plan(op("op_base", builds=[1], detail="extrude 25 mm"))
+    legacy = (
+        "import cadquery as cq\n\n"
+        "# ---- op_base extrude (needs nothing; builds sem_feature_1)\n"
+        "# ---- extrude 25 mm\n"
+        "ret_base = cq.Workplane('XY').box(1)\n\n"
+        "# ---- result (not a step; kept across every revision)\n"
+        "result = ret_base\n"
+    )
+
+    revised, update = update_program_outline(one, held(), legacy)
+
+    assert body(revised, "op_base") == "ret_base = cq.Workplane('XY').box(1)"
+    assert [change.name for change in update.changed] == ["op_base"]
+    assert "extrude 25 mm" in update.changed[0].previous_instruction
+    assert len([line for line in revised.splitlines() if MARKER.match(line)]) == 1
+
+
+def test_section_variable_uses_the_operation_name_without_duplicate_prefix() -> None:
+    assert section_variable("op_base_plate") == "ret_base_plate"
 
 
 def test_an_outline_nobody_prepared_is_read_against_nothing(tmp_path) -> None:

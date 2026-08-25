@@ -6,22 +6,27 @@ It is already laid out for you: every operation in the plan has a marker there, 
 
 Example:
 ```
-# ---- op_base_plate extrude (needs nothing; builds sem_base_body)
-# ---- Extrude the front-view outline 25 mm along +z.
-[Write your code block for this operation here]
+# ---- op_base_plate extrude -> ret_base_plate (needs nothing; builds sem_base_body) :: Extrude the front-view outline 25 mm along +z.
+ret_base_plate = cq.Workplane("XY").rect(80, 60).extrude(25)
+
+# ---- op_bore_through hole -> ret_bore_through (after op_base_plate; builds sem_main_bore) :: Bore a 12 mm hole through the plate on the centre of the front view.
+ret_bore_through = ret_base_plate.faces(">Z").workplane().hole(12)
 ```
+
+Each operation instruction occupies exactly one marker line. The marker names the step, the operation, the variable that step's result goes in, the dependencies it follows, the semantic features it builds, and the resolved instruction after `::`.
 
 The file is one program and runs top to bottom, so a section stands on what the sections above it built. The last marker is `# ---- result`, which is not a step: put the finished solid there. Your code under that one is kept whatever the plan does; a step's section is not.
 
 Requirements:
 - Every line beginning `# ---- ` is written from the plan. Do not edit, move, reorder or add one; a marker you write yourself marks nothing, and code under the wrong marker is attributed to the wrong step.
 - Put each operation's code under its own marker, and nothing else there. Imports and anything shared go above the first marker.
+- Assign each operation's completed solid to the variable named by its marker, `ret_<operation name without op_>`. Use that variable as the input to later operations; do not use a generic `part` variable as the persistent inter-operation result.
 - The script must be self-contained and must not load the input DXF or external files at runtime.
-- Store the final completed CadQuery solid in the `result` variable, under the `# ---- result` marker at the end of $output_path.
+- Store the final completed CadQuery solid in the `result` variable, under the `# ---- result` marker at the end of $output_path. Normally this is the final operation's `ret_<operation>` variable, not a fresh build that bypasses the marked sections.
 - The generated geometry must be valid and exportable to STEP format.
 - DO NOT use try-except blocks in $output_path. Resolve operation failures instead of hiding them.
 - When an operation in the plan cannot be made to work, leave a comment of a few lines under its marker, saying what stopped it, and carry on. Report it in your final answer as well. Do not remove it silently.
-- When the plan is revised, the file is laid out again. A section whose step is unchanged keeps your code. A section whose step changed is emptied, and you are told by name which ones, so nothing goes missing without being said.
+- When an instruction is revised, its marker is updated but its existing code is preserved. The re-entry message gives the previous instruction, current instruction, and current `Lxx-Lyy` code range. Edit only that range and leave the one-line marker intact. Treat line numbers as a snapshot: after an edit changes line counts, locate later sections by their `op_` marker.
 
 Verification:
 Every turn you edit $output_path, it is automatically executed and the final solid is exported to a STEP file along with: the execution status, the return code, stdout, stderr, any executor error, a count of the faces and edges it is made of by kind, the paths of its DXF and perspective renders under $verification_dir, and how many of the plan's sections are written. This costs you no turn, so write early and often rather than saving the check for the end.

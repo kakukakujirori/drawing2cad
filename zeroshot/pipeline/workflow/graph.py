@@ -37,7 +37,7 @@ from zeroshot.pipeline.verification import (
     CadQueryExecutor,
     ProgramOutline,
     StepRenderer,
-    render_outline_deletion,
+    render_outline_update,
 )
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.components import compact_transcript
@@ -336,7 +336,7 @@ def create_reconstruction_graph(
         messages = list(previous.get("messages") or [])
 
         # update program outline
-        deleted = program.prepare(operation_plan, semantic_hypothesis)
+        outline_update = program.prepare(operation_plan, semantic_hypothesis)
 
         entry_reason, audit_rationale = _invocation_reason(state, "coding")
         instruction = build_instruction(
@@ -344,7 +344,9 @@ def create_reconstruction_graph(
             **prompt_context,
             semantic_hypothesis=render_hypothesis(semantic_hypothesis),
             operation_plan=render_plan(operation_plan, semantic_hypothesis),
-            outline_deletion=render_outline_deletion(deleted),
+            outline_changes=render_outline_update(
+                outline_update, prompt_context["output_path"]
+            ),
             rationale=audit_rationale,
         )
 

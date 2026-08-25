@@ -455,7 +455,9 @@ def test_the_coder_is_handed_a_file_laid_out_in_the_derived_order() -> None:
 
     markers = [line for line in laid_out.splitlines() if line.startswith("# ---- ")]
     assert markers[0].startswith("# ---- op_base_plate ")
-    assert markers[2].startswith("# ---- op_bore_through ")
+    assert markers[1].startswith("# ---- op_bore_through ")
+    assert "-> ret_base_plate" in markers[0]
+    assert "-> ret_bore_through" in markers[1]
     assert "cut the bore" in laid_out
 
 

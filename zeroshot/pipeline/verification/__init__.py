@@ -1,6 +1,6 @@
 from .program_outline import (
     ProgramOutline,
-    render_outline_deletion,
+    render_outline_update,
     render_section_review,
 )
 from .run_cadquery import (
@@ -20,6 +20,6 @@ __all__ = [
     "RenderReport",
     "RenderStatus",
     "StepRenderer",
-    "render_outline_deletion",
+    "render_outline_update",
     "render_section_review",
 ]

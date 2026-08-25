@@ -485,7 +485,7 @@ def review_plan(plan: OperationPlan, hypothesis: SemanticHypothesis) -> PlanRevi
     )
 
 
-def operation_heading(operation: Operation) -> str:
+def operation_heading(operation: Operation, *, produces: str = "") -> str:
     """How an operation announces itself, wherever it is written down.
 
     One function because the plan the planner reads, the plan the coder reads
@@ -499,8 +499,9 @@ def operation_heading(operation: Operation) -> str:
         else "needs nothing"
     )
     builds = ", ".join(operation.semantics)
+    output = f" -> {produces}" if produces else ""
     return (
-        f"{operation.name} {operation.verb.value} "
+        f"{operation.name} {operation.verb.value}{output} "
         f"({needs}; builds {builds or 'nothing named'})"
     )
 
