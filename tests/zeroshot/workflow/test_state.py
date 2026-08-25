@@ -136,7 +136,7 @@ _A_PLAN = OperationPlan(
             verb=OperationVerb.EXTRUDE,
             detail="Extrude the outline 25 mm along +z",
             depends_on=[],
-            semantics=[1],
+            semantics=["sem_feature_1"],
         )
     ],
     rationale="one extrude reaches the stated height",
@@ -182,7 +182,7 @@ _ARTIFACTS: dict[str, object] = {
     "semantic_hypothesis": _A_HYPOTHESIS,
     "operation_plan": _A_PLAN,
     "plan_review": PlanReview(
-        uncovered=[2],
+        uncovered=["sem_feature_2"],
         unknown=[],
         transcribed={},
         unresolved={},

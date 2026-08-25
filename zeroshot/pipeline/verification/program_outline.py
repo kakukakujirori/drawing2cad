@@ -186,7 +186,7 @@ def _marker(operation: Operation, hypothesis: SemanticHypothesis) -> str:
 
     The marker carries the resolved text rather than the operation, so that a
     measurement which moved in the hypothesis counts as a change too: a plan
-    citing sem4.radius says the same words after the radius changes, and the
+    citing a semantic parameter says the same words after the radius changes, and the
     code written under it is answering the old number.
 
     This is also the whole record of what a section was written against. There

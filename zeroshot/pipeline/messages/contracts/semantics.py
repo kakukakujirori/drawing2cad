@@ -5,6 +5,7 @@ No vocabulary here is invented: each is taken from the format that produces it
 census in `geometry_census.json`, which `test_contract_vocabulary.py` checks.
 """
 
+import re
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, Self
@@ -203,6 +204,18 @@ _DIRECTIONS = frozenset({"major_axis"})
 
 ParameterName = StrEnum("ParameterName", {name.upper(): name for name in _ARITY})
 
+_SEMANTIC_NAME = re.compile(r"^sem_[a-z][a-z0-9_]*$")
+_GEOMETRY_NAME = re.compile(r"^geo_[a-z][a-z0-9_]*$")
+_EVIDENCE_NAME = re.compile(r"^ev_[a-z][a-z0-9_]*$")
+
+
+def _require_name(name: str, prefix: str, pattern: re.Pattern[str]) -> None:
+    if not pattern.fullmatch(name):
+        raise ValueError(
+            f"{name!r} is not a usable {prefix.removesuffix('_')} name. "
+            f"Begin with {prefix} and carry on in lower_snake_case."
+        )
+
 
 def _rows(table: Mapping[Any, tuple[str, ...]]) -> str:
     """A table laid out for the field description that carries it.
@@ -284,6 +297,17 @@ def _checked(
 class ViewEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    name: str = Field(
+        ...,
+        description=(
+            "Stable reference name for this reading, unique within its "
+            "feature, beginning ev_ and continuing in lower_snake_case: "
+            "ev_front_outer_circle. Later stages cite a parameter as, for "
+            "example, sem_main_bore.ev_front_outer_circle.center. The name is "
+            "the reading's identity, not a display label: keep it when "
+            "revising the reading and give a new reading a new name."
+        ),
+    )
     view: View = Field(
         ...,
         description=(
@@ -319,6 +343,7 @@ class ViewEvidence(BaseModel):
 
     @model_validator(mode="after")
     def require_the_parameters_the_entity_states(self) -> Self:
+        _require_name(self.name, "ev_", _EVIDENCE_NAME)
         _checked(
             f"entity={self.entity.value!r}",
             _DRAWN_PARAMETERS[self.entity],
@@ -330,6 +355,17 @@ class ViewEvidence(BaseModel):
 class FeatureGeometry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    name: str = Field(
+        ...,
+        description=(
+            "Stable reference name for this geometry claim, unique within its "
+            "feature, beginning geo_ and continuing in lower_snake_case: "
+            "geo_bore_cylinder. Later stages cite a parameter as, for example, "
+            "sem_main_bore.geo_bore_cylinder.radius. The name is the claim's "
+            "identity, not a display label: keep it when revising the claim "
+            "and give a new claim a new name."
+        ),
+    )
     kind: GeometryKind = Field(
         ...,
         description=(
@@ -370,6 +406,7 @@ class FeatureGeometry(BaseModel):
 
     @model_validator(mode="after")
     def require_the_parameters_the_kind_is_measured_by(self) -> Self:
+        _require_name(self.name, "geo_", _GEOMETRY_NAME)
         _checked(
             f"kind={self.kind.value!r}",
             _CLAIMED_PARAMETERS[self.kind],
@@ -381,16 +418,15 @@ class FeatureGeometry(BaseModel):
 class SemanticFeature(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: int = Field(
+    name: str = Field(
         ...,
         description=(
-            "Identifier for this feature, unique within the hypothesis and 1 "
-            "or greater. Later stages cite it as sem<id>. Keep a feature's id "
-            "when you revise it; renumber only when you merge two lists."
+            "Stable reference name for this feature, unique within the "
+            "hypothesis, beginning sem_ and continuing in lower_snake_case: "
+            "sem_main_bore or sem_top_flange_fillet. This is the feature's "
+            "identity, not a separate display label. Keep it when revising the "
+            "feature and give a new feature a new name."
         ),
-    )
-    name: str = Field(
-        ..., description="Short label, e.g. 'main bore' or 'top flange fillet'."
     )
     description: str = Field(
         ...,
@@ -427,15 +463,23 @@ class SemanticFeature(BaseModel):
     )
 
     @model_validator(mode="after")
-    def require_geometry(self) -> Self:
-        if self.id < 1:
-            raise ValueError("id must be 1 or greater")
+    def require_uniquely_named_members(self) -> Self:
+        _require_name(self.name, "sem_", _SEMANTIC_NAME)
         if not self.evidence:
             raise ValueError(
-                f"feature {self.id} cites no evidence; a feature nothing in "
+                f"feature {self.name} cites no evidence; a feature nothing in "
                 "the drawing supports is a guess, and the exact numbers a "
                 "later stage builds from live in the evidence"
             )
+        for group, members in (("geometry", self.geometry), ("evidence", self.evidence)):
+            names = [member.name for member in members]
+            duplicated = sorted({name for name in names if names.count(name) > 1})
+            if duplicated:
+                rendered = ", ".join(duplicated)
+                raise ValueError(
+                    f"feature {self.name} has duplicate {group} names {rendered}; "
+                    "keep each member's name unique within its group"
+                )
         return self
 
 
@@ -458,18 +502,19 @@ class SemanticHypothesis(BaseModel):
     )
 
     @model_validator(mode="after")
-    def require_uniquely_numbered_features(self) -> Self:
+    def require_uniquely_named_features(self) -> Self:
         if not self.proposal:
             raise ValueError("proposal must hold at least one feature")
-        ids = [feature.id for feature in self.proposal]
-        if len(set(ids)) != len(ids):
+        names = [feature.name for feature in self.proposal]
+        if len(set(names)) != len(names):
             raise ValueError(
-                "feature ids must be unique; renumber the merged list from 1"
+                "feature names must be unique; keep each sem_ name as one "
+                "feature's stable identity"
             )
         return self
 
 
-def _numbers(values: list[float]) -> str:
+def render_parameter_values(values: list[float]) -> str:
     """`repr`, not a format: the coder builds from these, so every digit the
     stage transcribed has to survive. `f"{x:g}"` would round 33.0015507591 to
     six figures and quietly move the part."""
@@ -493,29 +538,29 @@ def render_hypothesis(hypothesis: "SemanticHypothesis") -> str:
     """
     lines: list[str] = []
     for feature in hypothesis.proposal:
-        lines.append(f"sem{feature.id} {feature.name}")
+        lines.append(feature.name)
         lines.append(f"  {feature.description}")
         claims = []
         for claim in feature.geometry:
             sizes = " ".join(
-                f"{parameter.name.value}={_numbers(parameter.values)}"
+                f"{parameter.name.value}={render_parameter_values(parameter.values)}"
                 for parameter in claim.parameters
             )
-            head = f"{claim.kind.value}({sizes})" if sizes else claim.kind.value
+            kind = f"{claim.kind.value}({sizes})" if sizes else claim.kind.value
             # `axis` is null for a kind that has none, so the phrase is absent
             # rather than rendered as the word for "no answer".
             axis = f" axis {claim.axis.value}" if claim.axis is not None else ""
-            claims.append(f"{head}{axis} {claim.source.value}")
+            claims.append(f"{claim.name} {kind}{axis} {claim.source.value}")
         lines.append("  geometry: " + ("; ".join(claims) or "(none stated)"))
         if feature.open_question:
             lines.append(f"  open question: {feature.open_question}")
         for reading in feature.evidence:
             given = " ".join(
-                f"{parameter.name.value}={_numbers(parameter.values)}"
+                f"{parameter.name.value}={render_parameter_values(parameter.values)}"
                 for parameter in reading.parameters
             )
             lines.append(
-                f"    {reading.view.value} {reading.entity.value} "
+                f"    {reading.name} {reading.view.value} {reading.entity.value} "
                 f"{reading.edge_style.value} {given}"
             )
     lines.append(f"rationale: {hypothesis.rationale}")

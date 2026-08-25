@@ -108,7 +108,13 @@ def test_every_kind_states_the_sizes_it_is_measured_by(kind: GeometryKind) -> No
     for name in _CLAIMED_PARAMETERS[kind]:
         thinned = [p for p in geometry(kind).parameters if p.name.value != name]
         with pytest.raises(ValidationError, match=name):
-            FeatureGeometry(kind=kind, source="exact", axis="z", parameters=thinned)
+            FeatureGeometry(
+                name=f"geo_{kind.value}",
+                kind=kind,
+                source="exact",
+                axis="z",
+                parameters=thinned,
+            )
 
 
 @pytest.mark.parametrize("kind", list(GeometryKind))
@@ -118,6 +124,7 @@ def test_no_kind_accepts_a_size_it_is_not_measured_by(kind: GeometryKind) -> Non
         pytest.skip(f"{kind} is measured by {extra.name.value}")
     with pytest.raises(ValidationError, match="unknown"):
         FeatureGeometry(
+            name=f"geo_{kind.value}",
             kind=kind,
             source="exact",
             axis="z",
@@ -153,7 +160,11 @@ def test_every_drawn_entity_states_the_parameters_it_carries(
         thinned = [p for p in evidence(entity).parameters if p.name.value != name]
         with pytest.raises(ValidationError, match=name):
             ViewEvidence(
-                view="front", entity=entity, edge_style="visible", parameters=thinned
+                name=f"ev_{entity.value}",
+                view="front",
+                entity=entity,
+                edge_style="visible",
+                parameters=thinned,
             )
 
 
@@ -171,6 +182,7 @@ def test_a_spline_reading_must_carry_its_poles() -> None:
     evidence("spline")
     with pytest.raises(ValidationError, match="control_points"):
         ViewEvidence(
+            name="ev_spline",
             view="front",
             entity="spline",
             edge_style="visible",
@@ -188,6 +200,7 @@ def test_a_spline_reading_must_carry_its_knot_vector() -> None:
     smooth, exact-looking, and not the one on the drawing."""
     with pytest.raises(ValidationError, match="knots"):
         ViewEvidence(
+            name="ev_spline",
             view="front",
             entity="spline",
             edge_style="visible",
@@ -256,26 +269,63 @@ def test_naming_a_kind_and_excluding_it_are_exclusive() -> None:
     assert not {name.lower() for name in _EXCLUDED_GEOMETRY} & named
 
 
-def test_a_feature_id_starts_at_one() -> None:
-    with pytest.raises(ValidationError, match="1 or greater"):
-        feature(0, "a boss")
+@pytest.mark.parametrize("name", ["main_bore", "sem-Main", "sem_", "sem_2d_bore"])
+def test_a_feature_name_must_be_a_semantic_identity(name: str) -> None:
+    with pytest.raises(ValidationError, match="usable sem name"):
+        feature(name, "a boss")
 
 
-def test_feature_ids_are_unique() -> None:
-    """Two proposers each number from 1, so the reducer has to renumber. The
-    message is what tells it to."""
-    with pytest.raises(ValidationError, match="renumber"):
-        hypothesis(proposal=[feature(1, "a boss"), feature(1, "a hole")])
+def test_feature_names_are_unique() -> None:
+    with pytest.raises(ValidationError, match="feature names must be unique"):
+        hypothesis(
+            proposal=[
+                feature("sem_main_bore", "a boss"),
+                feature("sem_main_bore", "a hole"),
+            ]
+        )
 
 
-def test_a_feature_is_named_by_its_id_and_not_by_its_place_in_the_list() -> None:
-    """Two numberings ride on `proposal`: the ids the model chose and the
-    positions the list gives it for free. They are allowed to disagree, because
-    an id has to survive a revision that drops or reorders a feature -- so
-    nothing may resolve a feature by index."""
-    revised = hypothesis(proposal=[feature(4, "a hole"), feature(2, "a boss")])
+@pytest.mark.parametrize("member", ["geometry", "evidence"])
+def test_member_names_are_unique_within_their_own_group(member: str) -> None:
+    """A member name is an address, not a label or list position, so one
+    address may not silently name two claims or two readings."""
+    overrides = {
+        member: [
+            geometry("sphere", name="geo_round_end"),
+            geometry("cylinder", name="geo_round_end"),
+        ]
+        if member == "geometry"
+        else [
+            evidence("circle", name="ev_front_edge"),
+            evidence("line", name="ev_front_edge"),
+        ]
+    }
 
-    assert [held.id for held in revised.proposal] == [4, 2]
+    with pytest.raises(ValidationError, match=rf"duplicate {member} names"):
+        feature(1, "a boss", **overrides)
+
+
+def test_geometry_and_evidence_names_mark_their_namespace() -> None:
+    with pytest.raises(ValidationError, match="usable geo name"):
+        geometry("sphere", name="round_end")
+    with pytest.raises(ValidationError, match="usable ev name"):
+        evidence("circle", name="front_circle")
+
+
+def test_a_feature_is_named_by_identity_and_not_by_its_place_in_the_list() -> None:
+    """A stable name survives a revision that drops or reorders a feature, so
+    nothing may resolve a feature by list index."""
+    revised = hypothesis(
+        proposal=[
+            feature("sem_main_hole", "a hole"),
+            feature("sem_outer_boss", "a boss"),
+        ]
+    )
+
+    assert [held.name for held in revised.proposal] == [
+        "sem_main_hole",
+        "sem_outer_boss",
+    ]
 
 
 def test_a_hypothesis_holds_at_least_one_feature() -> None:
@@ -361,12 +411,26 @@ def test_rendering_leads_with_the_feature_and_hangs_its_readings_underneath() ->
     )
     lines = rendered.splitlines()
 
-    assert lines[0] == "sem1 plate"
+    assert lines[0] == "sem_feature_1"
     assert lines[1].strip() == "plate"
-    assert lines[2].startswith("  geometry: cylinder(")
-    assert lines[3].startswith("    front line visible")
-    assert any(line == "sem2 bore" for line in lines)
+    assert lines[2].startswith("  geometry: geo_cylinder cylinder(")
+    assert lines[3].startswith("    ev_line front line visible")
+    assert any(line == "sem_feature_2" for line in lines)
     assert lines[-1].startswith("rationale:")
+
+
+def test_rendering_exposes_stable_member_addresses() -> None:
+    held = feature(
+        "sem_bored_boss",
+        "bored boss",
+        geometry=[geometry("cylinder", name="geo_bore_cylinder")],
+        evidence=[evidence("circle", name="ev_front_bore_circle")],
+    )
+
+    rendered = render_hypothesis(hypothesis(proposal=[held]))
+
+    assert "geo_bore_cylinder cylinder(" in rendered
+    assert "ev_front_bore_circle front circle visible" in rendered
 
 
 def test_a_feature_claiming_nothing_says_so_rather_than_going_quiet() -> None:
@@ -389,7 +453,10 @@ def test_rendering_costs_a_fraction_of_the_json_it_replaces() -> None:
                 index,
                 "rounded base plate",
                 geometry=[geometry("cylinder")],
-                evidence=[evidence("spline") for _ in range(4)],
+                evidence=[
+                    evidence("spline", name=f"ev_spline_{identifier}")
+                    for identifier in range(1, 5)
+                ],
             )
             for index in range(1, 8)
         ]
@@ -409,7 +476,7 @@ def test_rendering_survives_a_kind_that_has_no_axis() -> None:
         )
     )
 
-    assert "sphere(radius=5.0) exact" in rendered
+    assert "geo_sphere sphere(radius=5.0) exact" in rendered
     assert "axis" not in rendered.split("geometry:")[1].splitlines()[0]
 
 
@@ -429,7 +496,7 @@ def test_every_optional_field_of_the_contract_renders() -> None:
 
     rendered = render_hypothesis(hypothesis(proposal=[bare, full]))
 
-    assert "sem1 bare" in rendered
-    assert "sem2 full" in rendered
+    assert "sem_feature_1" in rendered
+    assert "sem_feature_2" in rendered
     assert "open question: is it blind?" in rendered
     assert "None" not in rendered

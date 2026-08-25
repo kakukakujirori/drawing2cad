@@ -14,13 +14,14 @@ Interpreting the geometry
 
 Filling in the answer
 - The axes are not yours to choose. $view_frame. Report every number in the ones the drawing itself uses.
-- One entry in `proposal` per feature, each with an `id` of its own starting at 1. The base body is a feature like the others and takes the first entry. Whether a feature is built by adding or removing material is the modelling plan's decision, not yours.
+- One entry in `proposal` per feature. Its `name` is its stable reference identity: begin it with `sem_` and continue in lower_snake_case, such as `sem_base_body` or `sem_main_bore`. Do not add a separate display label; make the reference name readable and explain the feature in `description`. Keep the name when revising the feature. The base body is a feature like the others and takes the first entry. Whether a feature is built by adding or removing material is the modelling plan's decision, not yours.
+- Give every member of a feature's `geometry` a stable `name`, unique within that list, beginning `geo_`, and every member of its `evidence` a stable `name`, unique within that list, beginning `ev_`. For example, later stages cite `sem_main_bore.geo_cylinder` and `sem_main_bore.ev_front_circle`. A name is an identity, not the member's position in the list: keep it when revising the member and give a new member a new name.
 - A feature is one thing that can be named and measured on its own: a plate is one prismatic body rather than four lines, and two rounds of different radius are two features rather than one rounded edge.
 - `geometry` says what must be present in the finished solid: the `kind` that names the real face rather than one that merely resembles it — a rounded edge is a torus or a cylinder, a flat chamfer a plane — which `axis` it turns about, and how big it is.
 - **`geometry` carries no position.** How big and which way it faces, not where it sits; the modelling plan places it from your evidence. A size you got wrong shows up in the next render, but a position you got wrong is inherited in silence.
 - `evidence` is the drawing transcribed: the view, the entity type as drawn, whether the linework was visible or hidden, and the entity's own numbers in sheet coordinates. Exact geometry belongs here, because it is read rather than inferred. Every feature must cite at least one reading.
 - `description` explains the feature. No dimension belongs there that belongs in `geometry`.
-- When you merge several models' answers into one, return a single list renumbered from 1.
+- When you merge several models' answers into one, return a single list whose `sem_`, `geo_`, and `ev_` names remain unique in their respective scopes. Preserve an existing name where the same feature or member survives; rename only to resolve a real collision.
 
 Working
 - If feedback from a review or audit step is present in the transcript, address every point it raises.

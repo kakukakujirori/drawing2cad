@@ -97,7 +97,7 @@ def _operations_stage():
                     verb=OperationVerb.EXTRUDE,
                     detail="extrude it",
                     depends_on=[],
-                    semantics=[1],
+                    semantics=["sem_feature_1"],
                 )
             ],
             rationale="one extrude",

@@ -35,7 +35,7 @@ def op(
     name: str,
     *,
     needs: Sequence[str] = (),
-    builds: Sequence[int] = (),
+    builds: Sequence[int | str] = (),
     detail: str = "",
     verb: OperationVerb = OperationVerb.EXTRUDE,
 ) -> Operation:
@@ -44,7 +44,9 @@ def op(
         verb=verb,
         detail=detail or f"do {name}",
         depends_on=list(needs),
-        semantics=list(builds),
+        semantics=[
+            f"sem_feature_{held}" if isinstance(held, int) else held for held in builds
+        ],
     )
 
 
@@ -152,9 +154,15 @@ def test_a_step_that_moved_loses_its_code() -> None:
 
 def test_a_measurement_that_moved_in_the_hypothesis_clears_the_step_too() -> None:
     """The step's own wording is not the whole of what it was asked to do. A
-    plan citing sem4.radius says the same words after the radius changes, and
+    plan citing a semantic parameter says the same words after the radius changes, and
     the code written under it is answering the old number."""
-    one = plan(op("op_bore", builds=[4], detail="Cut a hole of sem4.radius"))
+    one = plan(
+        op(
+            "op_bore",
+            builds=[4],
+            detail="Cut a hole of sem_feature_4.geo_cylinder.radius",
+        )
+    )
     coded = fill(
         update_program_outline(one, held())[0], "op_bore", "part = part.hole(10)"
     )

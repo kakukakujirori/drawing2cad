@@ -42,7 +42,9 @@ _STAND_IN: dict[str, list[float]] = {
 }
 
 
-def evidence(entity: str = "line", **values: float | list[float]) -> ViewEvidence:
+def evidence(
+    entity: str = "line", *, name: str | None = None, **values: float | list[float]
+) -> ViewEvidence:
     """A reading of `entity` whose parameters are its own row."""
     given = {
         name: values.pop(name, _STAND_IN.get(name, 5.0))
@@ -50,6 +52,7 @@ def evidence(entity: str = "line", **values: float | list[float]) -> ViewEvidenc
     }
     given |= values
     return ViewEvidence(
+        name=name or f"ev_{entity}",
         view="front",
         entity=entity,  # type: ignore[arg-type]
         edge_style="visible",
@@ -58,7 +61,11 @@ def evidence(entity: str = "line", **values: float | list[float]) -> ViewEvidenc
 
 
 def geometry(
-    kind: str = "torus", axis: str | None = "z", **sizes: float | list[float]
+    kind: str = "torus",
+    axis: str | None = "z",
+    *,
+    name: str | None = None,
+    **sizes: float | list[float],
 ) -> FeatureGeometry:
     """A claim of `kind` measured by its own row, overridden by name."""
     given: dict[str, float | list[float]] = {
@@ -66,6 +73,7 @@ def geometry(
     }
     given |= sizes
     return FeatureGeometry(
+        name=name or f"geo_{kind}",
         kind=kind,  # type: ignore[arg-type]
         source="exact",
         axis=axis,  # type: ignore[arg-type]
@@ -73,10 +81,13 @@ def geometry(
     )
 
 
-def feature(identifier: int, description: str, **overrides: object) -> SemanticFeature:
+def feature(
+    identifier: int | str, description: str, **overrides: object
+) -> SemanticFeature:
     fields: dict[str, object] = {
-        "id": identifier,
-        "name": description,
+        "name": (
+            f"sem_feature_{identifier}" if isinstance(identifier, int) else identifier
+        ),
         "description": description,
         "geometry": [],
         "evidence": [evidence()],

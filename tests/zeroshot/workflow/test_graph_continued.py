@@ -51,7 +51,7 @@ def _plan(*items: str) -> AIMessage:
                     verb=OperationVerb.EXTRUDE,
                     detail=item,
                     depends_on=[f"op_step{number - 1}"] if number > 1 else [],
-                    semantics=[1],
+                    semantics=["sem_feature_1"],
                 )
                 for number, item in enumerate(items, start=1)
             ],

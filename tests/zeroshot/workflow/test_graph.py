@@ -64,7 +64,7 @@ def _agent(role: str, model: BaseChatModel, **overrides: Any) -> AgentBuilder:
     return partial(create_agent, role=role, model=model, **overrides)
 
 
-def _proposed(*items: str, builds: Sequence[int] = (1,)) -> OperationPlan:
+def _proposed(*items: str, builds: Sequence[int | str] = (1,)) -> OperationPlan:
     """A plan of `items`, each waiting on the one before it.
 
     A straight chain rather than a graph: these tests are about the wiring the
@@ -78,7 +78,10 @@ def _proposed(*items: str, builds: Sequence[int] = (1,)) -> OperationPlan:
                 verb=OperationVerb.EXTRUDE,
                 detail=item,
                 depends_on=[f"op_step{number - 1}"] if number > 1 else [],
-                semantics=list(builds),
+                semantics=[
+                    f"sem_feature_{held}" if isinstance(held, int) else held
+                    for held in builds
+                ],
             )
             for number, item in enumerate(items, start=1)
         ],
@@ -117,7 +120,7 @@ def _silent_hypothesizer(turns: int) -> ScriptedChatModel:
     )
 
 
-def _plan(*operations: str, builds: Sequence[int] = (1,)) -> AIMessage:
+def _plan(*operations: str, builds: Sequence[int | str] = (1,)) -> AIMessage:
     return AIMessage(content=_proposed(*operations, builds=builds).model_dump_json())
 
 
@@ -422,14 +425,14 @@ def test_the_coder_is_handed_a_file_laid_out_in_the_derived_order() -> None:
                 verb=OperationVerb.HOLE,
                 detail="cut the bore",
                 depends_on=["op_base_plate"],
-                semantics=[1],
+                semantics=["sem_feature_1"],
             ),
             Operation(
                 name="op_base_plate",
                 verb=OperationVerb.EXTRUDE,
                 detail="extrude the outline",
                 depends_on=[],
-                semantics=[1],
+                semantics=["sem_feature_1"],
             ),
         ],
         rationale="the views agree",
@@ -1130,7 +1133,7 @@ def test_the_hypothesis_curve_parameters_reach_the_planner_and_the_coder() -> No
 def test_a_plan_that_leaves_a_feature_unbuilt_is_sent_back_naming_it() -> None:
     """The check the plan's own validator cannot make. A feature id points into
     an answer the planner produced separately, so only the graph, holding both,
-    can tell that sem2 was established and then dropped -- and nothing after
+    can tell that sem_feature_2 was established and then dropped -- and nothing after
     this would notice, because a model built from a shorter plan comes out
     whole, just without the feature."""
     planner = ScriptedChatModel(
@@ -1160,10 +1163,10 @@ def test_a_plan_that_leaves_a_feature_unbuilt_is_sent_back_naming_it() -> None:
 
     redo = _last_instruction(planner.received_messages[1])
     # The hypothesis names every feature, so what marks this out is the
-    # complaint: it says sem2 and does not blame an audit that never ran.
+    # complaint: it says sem_feature_2 and does not blame an audit that never ran.
     complaint = redo.split("Current semantic hypothesis")[0]
-    assert "sem2" in complaint
-    assert "sem1" not in complaint
+    assert "sem_feature_2" in complaint
+    assert "sem_feature_1" not in complaint
     assert "audit" not in complaint.lower() or "No audit has run" in complaint
 
 
@@ -1187,7 +1190,7 @@ def test_a_plan_citing_a_feature_the_hypothesis_never_had_is_sent_back() -> None
         )
         graph.invoke({})
 
-    assert "sem9" in _last_instruction(planner.received_messages[1])
+    assert "sem_feature_9" in _last_instruction(planner.received_messages[1])
 
 
 def test_a_plan_that_accounts_for_every_feature_is_not_sent_back() -> None:
@@ -1216,14 +1219,14 @@ def test_a_coverage_gap_after_an_audit_send_back_names_the_feature_not_the_verdi
 ):
     """`state["audit"]` is never cleared once set, so reading it first made the
     coverage branch unreachable for the rest of the run: a planner sent back
-    for dropping sem2 was handed the audit's complaint about something else,
+    for dropping sem_feature_2 was handed the audit's complaint about something else,
     with nothing to say which feature it had dropped. It would then spend the
     whole revision budget making the same plan.
     """
     planner = ScriptedChatModel(
         responses=(
             _plan("extrude it", builds=[1, 2]),  # complete, so coding runs
-            _plan("extrude it", builds=[1]),  # the audit's redo drops sem2
+            _plan("extrude it", builds=[1]),  # the audit's redo drops sem_feature_2
             _plan("extrude it", "boss it", builds=[1, 2]),  # the coverage redo
         )
     )
@@ -1258,7 +1261,7 @@ def test_a_coverage_gap_after_an_audit_send_back_names_the_feature_not_the_verdi
     # The third entry is the coverage gap, not the audit again.
     gap = _last_instruction(planner.received_messages[2])
     complaint = gap.split("Current semantic hypothesis")[0]
-    assert "sem2" in complaint
+    assert "sem_feature_2" in complaint
     assert "the boss sits on the wrong face" not in complaint
     assert result["plan_review"].sound
 

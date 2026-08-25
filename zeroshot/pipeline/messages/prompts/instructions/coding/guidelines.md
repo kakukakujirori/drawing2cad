@@ -6,7 +6,7 @@ It is already laid out for you: every operation in the plan has a marker there, 
 
 Example:
 ```
-# ---- op_base_plate extrude (needs nothing; builds sem1)
+# ---- op_base_plate extrude (needs nothing; builds sem_base_body)
 # ---- Extrude the front-view outline 25 mm along +z.
 [Write your code block for this operation here]
 ```
@@ -27,7 +27,7 @@ Verification:
 Every turn you edit $output_path, it is automatically executed and the final solid is exported to a STEP file along with: the execution status, the return code, stdout, stderr, any executor error, a count of the faces and edges it is made of by kind, the paths of its DXF and perspective renders under $verification_dir, and how many of the plan's sections are written. This costs you no turn, so write early and often rather than saving the check for the end.
 
 Guidelines:
-- The plan is already in build order, worked out from the dependencies it states, and the markers in $output_path follow it. Each entry names its step and the hypothesis features it builds as `sem<id>`.
+- The plan is already in build order, worked out from the dependencies it states, and the markers in $output_path follow it. Each entry names its step and the hypothesis features it builds by their stable `sem_` names.
 - Take positions from the plan and shapes and sizes from the hypothesis. A number read off the hypothesis's `evidence` is in the sheet coordinates of the view the reading names: $view_frame. Where the model's origin sits is yours to choose; choose it once and hold to it, since the plan places operations against features rather than against an origin.
 - Fill in the sections in order, then read the verification that comes back before writing again. Writing several sections in one turn is cheaper than one at a time, so do not hold back for the sake of it.
 - Build curves as curves. An arc is one edge, not a chain of segments; a round hole is one cylindrical face, not a ring of narrow flat ones. Sampling a curve into points and joining them with straight segments is the mistake this warns against, and sampling it more finely makes it worse rather than better.

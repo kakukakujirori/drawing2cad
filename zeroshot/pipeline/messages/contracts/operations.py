@@ -16,8 +16,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from zeroshot.pipeline.messages.contracts.fingerprint import fingerprint
 from zeroshot.pipeline.messages.contracts.semantics import (
+    Parameter,
     SemanticFeature,
     SemanticHypothesis,
+    render_parameter_values,
 )
 
 
@@ -66,7 +68,7 @@ class Operation(BaseModel):
         description=(
             "A name for this step, unique within the plan, beginning op_ and "
             "carrying on in lower_snake_case: op_base_plate, op_bore_through, "
-            "op_fillet_top_edges. The op_ marks it as a step, as sem7 marks a "
+            "op_fillet_top_edges. The op_ marks it as a step, as sem_ marks a "
             "hypothesis feature, so that a step named after the feature it "
             "builds still reads as the step. Name it for what it does rather "
             "than for where it comes in the order, since the order is worked "
@@ -91,8 +93,10 @@ class Operation(BaseModel):
             "What this step does, in a sentence or two: the profile or edges "
             "it acts on, the direction it goes in, and where on the part it "
             "lands. Cite a measurement the hypothesis states as "
-            "sem<id>.<parameter> -- sem7.radius, or sem1.torus.major_radius "
-            "where one feature claims more than one geometry. The citation is "
+            "sem_<feature>.geo_<claim>.<parameter> for a 3D claim or "
+            "sem_<feature>.ev_<reading>.<parameter> for a drawing reading -- "
+            "for example sem_main_bore.geo_cylinder.radius or "
+            "sem_base_profile.ev_front_left_edge.start. The citation is "
             "resolved to the value before the coder reads it, so cite rather "
             "than copy. Write out plainly any number the hypothesis does not "
             "state: a depth or an offset you worked out yourself."
@@ -107,13 +111,13 @@ class Operation(BaseModel):
             "operations in does not."
         ),
     )
-    semantics: list[int] = Field(
+    semantics: list[str] = Field(
         ...,
         description=(
-            "The hypothesis features this operation helps build, as their "
-            "plain id numbers -- 7 for the feature written sem7, not "
-            '"sem7". Features are numbered where operations are named, so '
-            "this list holds numbers where `depends_on` holds names. A "
+            "The hypothesis features this operation helps build, by their "
+            "stable sem_ names -- sem_main_bore, for example. Both operations "
+            "and features are named identities: `depends_on` holds op_ names "
+            "and `semantics` holds sem_ names. A "
             "feature may take several operations, and an operation may serve "
             "several features."
         ),
@@ -165,6 +169,20 @@ class OperationPlan(BaseModel):
 
         known = set(names)
         for operation in self.proposal:
+            for semantic in operation.semantics:
+                _check_semantic_name(semantic)
+            duplicated_semantics = sorted(
+                {
+                    semantic
+                    for semantic in operation.semantics
+                    if operation.semantics.count(semantic) > 1
+                }
+            )
+            if duplicated_semantics:
+                raise ValueError(
+                    f"{operation.name} lists {', '.join(duplicated_semantics)} "
+                    "more than once in semantics"
+                )
             unknown = sorted(set(operation.depends_on) - known)
             if unknown:
                 raise ValueError(
@@ -183,7 +201,7 @@ class OperationPlan(BaseModel):
         return self
 
 
-# `op_` because a hypothesis feature is cited as `sem7`, and the two kinds of
+# `op_` because a hypothesis feature is cited as `sem_main_bore`, and the two kinds of
 # identifier travel together through prose the coder and the audit both read.
 # A step named for the feature it builds is the likely case rather than the
 # awkward one -- the operation that bores the main bore has little else to be
@@ -191,6 +209,7 @@ class OperationPlan(BaseModel):
 # it" from arriving as the same word. It also puts every name out of reach of
 # anything Python or the coding contract has already bound.
 _NAME = re.compile(r"^op_[a-z][a-z0-9_]*$")
+_SEMANTIC_NAME = re.compile(r"^sem_[a-z][a-z0-9_]*$")
 _LONGEST_NAME = 40
 
 
@@ -204,6 +223,15 @@ def _check_name(name: str) -> None:
         raise ValueError(
             f"{name!r} is longer than {_LONGEST_NAME} characters. Name the "
             "step, do not describe it; the description belongs in `detail`."
+        )
+
+
+def _check_semantic_name(name: str) -> None:
+    if not _SEMANTIC_NAME.fullmatch(name):
+        raise ValueError(
+            f"{name!r} is not a usable semantic feature name. Begin with "
+            "sem_ and carry on in lower_snake_case: sem_base_body, "
+            "sem_main_bore."
         )
 
 
@@ -265,10 +293,16 @@ def linearise(plan: OperationPlan) -> list[Operation]:
     return order
 
 
-# `sem7.radius`, or `sem1.torus.major_radius` when a feature claims more than
-# one geometry. A feature is the deepest address: anything finer would be a
-# second numbering to keep in step with the hypothesis.
-_REFERENCE = re.compile(r"\bsem(\d+)\.([a-z_]+)(?:\.([a-z_]+))?\b")
+# Canonical addresses name the feature, the claim/reading within it, and the
+# parameter by its semantic name: `sem_main_bore.geo_cylinder.radius`,
+# `sem_base.ev_front_edge.start`. The parameter needs no identity of its own
+# because `_checked` makes its vocabulary name unique inside that member.
+_REFERENCE = re.compile(
+    r"\b(sem_[a-z][a-z0-9_]*)\.((?:geo|ev)_[a-z][a-z0-9_]*)\.([a-z_]+)\b(?!\.)"
+)
+_REFERENCE_LIKE = re.compile(
+    r"\bsem_[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\b"
+)
 
 # A number written to this many decimal places did not come from anybody's
 # head. Below it, `25` and `1.5` are the planner's own words and are left alone.
@@ -279,39 +313,36 @@ _DECIMAL = re.compile(rf"\d+\.\d{{{_COPIED_DECIMALS},}}")
 _NAMED_AT_MOST = 3
 
 
-def _values_of(feature: SemanticFeature, kind: str | None, name: str) -> list[float]:
-    """Every number `feature` holds under `name`, or nothing if it holds none.
+def _parameters_of(
+    feature: SemanticFeature, member_name: str, parameter_name: str
+) -> list[Parameter]:
+    """The parameter a canonical member address means, or nothing.
 
-    Either half of a feature can answer, because the planner should not have to
-    know which half a name lives in: `sem7.radius` is a question about sem7,
-    not about how the contract files it. `geometry` answers first, since that
-    is the feature's own claim -- a bore states one radius there and may carry
-    half a dozen arcs in its `evidence`, and the one is what a plan means.
-
-    A kind-qualified reference asks about `geometry` alone. `sem1.torus` names
-    a claim, and the readings are not filed under one.
+    The explicit geo_/ev_ namespace makes choosing by list position, geometry
+    kind, or first match unnecessary. Member names are unique within their
+    respective group, and parameter names are unique within each member.
     """
-    claimed = [
-        parameter.values
-        for claim in feature.geometry
-        if kind is None or claim.kind.value == kind
-        for parameter in claim.parameters
-        if parameter.name.value == name
-    ]
-    if claimed or kind is not None:
-        return [number for values in claimed for number in values]
-
-    return [
-        number
-        for reading in feature.evidence
-        for parameter in reading.parameters
-        if parameter.name.value == name
-        for number in parameter.values
-    ]
+    if member_name.startswith("geo_"):
+        return [
+            parameter
+            for claim in feature.geometry
+            if claim.name == member_name
+            for parameter in claim.parameters
+            if parameter.name.value == parameter_name
+        ]
+    if member_name.startswith("ev_"):
+        return [
+            parameter
+            for reading in feature.evidence
+            if reading.name == member_name
+            for parameter in reading.parameters
+            if parameter.name.value == parameter_name
+        ]
+    return []
 
 
 def resolve_reference(text: str, hypothesis: SemanticHypothesis) -> str:
-    """Replace each `sem<id>.<name>` in `text` with the number it stands for.
+    """Append the exact value named by every semantic reference in `text`.
 
     This is what makes referencing worth asking for. A planner made to carry
     geometry in prose has to retype it, and a retyped number can be mistyped: in
@@ -320,30 +351,35 @@ def resolve_reference(text: str, hypothesis: SemanticHypothesis) -> str:
     token. A reference resolved here never passes through a model's output, so
     that failure cannot happen rather than being caught after it has.
 
-    Only single numbers are substituted. A control-point list expands to
-    something nobody would read, and the coder holds the hypothesis anyway, so
-    the reference is left standing as the address it is.
+    A vector remains one parameter, so `sem_base.ev_front_edge.start` resolves
+    to its whole `[x y]` pair. Long lists are expanded too: a spline's exact poles are more
+    useful to the coder than an address it then has to search for elsewhere.
+    An absent reference is left standing; plan review refuses it before coding.
     """
-    by_id = {feature.id: feature for feature in hypothesis.proposal}
+    by_name = {feature.name: feature for feature in hypothesis.proposal}
 
     def substitute(match: re.Match[str]) -> str:
-        feature = by_id.get(int(match[1]))
+        feature = by_name.get(match[1])
         if feature is None:
             return match[0]
-        kind, name = (match[2], match[3]) if match[3] else (None, match[2])
-        values = _values_of(feature, kind, name)
-        return f"{match[0]} ({values[0]})" if len(values) == 1 else match[0]
+        parameters = _parameters_of(feature, match[2], match[3])
+        if len(parameters) != 1:
+            return match[0]
+        return f"{match[0]} ({render_parameter_values(parameters[0].values)})"
 
     return _REFERENCE.sub(substitute, text)
 
 
-def _unresolved(detail: str, by_id: Mapping[int, SemanticFeature]) -> list[str]:
-    """The references in `detail` that stand for nothing."""
+def _unresolved(detail: str, by_name: Mapping[str, SemanticFeature]) -> list[str]:
+    """The references in `detail` that do not name exactly one parameter."""
     broken = []
-    for match in _REFERENCE.finditer(detail):
-        feature = by_id.get(int(match[1]))
-        kind, name = (match[2], match[3]) if match[3] else (None, match[2])
-        if feature is None or not _values_of(feature, kind, name):
+    for token in _REFERENCE_LIKE.finditer(detail):
+        match = _REFERENCE.fullmatch(token[0])
+        if match is None:
+            broken.append(token[0])
+            continue
+        feature = by_name.get(match[1])
+        if feature is None or len(_parameters_of(feature, match[2], match[3])) != 1:
             broken.append(match[0])
     return broken
 
@@ -393,8 +429,8 @@ class PlanReview(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    uncovered: list[int]
-    unknown: list[int]
+    uncovered: list[str]
+    unknown: list[str]
     transcribed: dict[str, list[str]]
     unresolved: dict[str, list[str]]
     of_hypothesis: str
@@ -426,9 +462,9 @@ def review_plan(plan: OperationPlan, hypothesis: SemanticHypothesis) -> PlanRevi
     answer with nothing to check that they are, which is the shape of mistake
     this reading exists to catch.
     """
-    established = {feature.id for feature in hypothesis.proposal}
+    established = {feature.name for feature in hypothesis.proposal}
     built = {sem for operation in plan.proposal for sem in operation.semantics}
-    by_id = {feature.id: feature for feature in hypothesis.proposal}
+    by_name = {feature.name: feature for feature in hypothesis.proposal}
     held = _numbers_in(hypothesis)
 
     return PlanReview(
@@ -442,7 +478,7 @@ def review_plan(plan: OperationPlan, hypothesis: SemanticHypothesis) -> PlanRevi
         unresolved={
             operation.name: broken
             for operation in plan.proposal
-            if (broken := _unresolved(operation.detail, by_id))
+            if (broken := _unresolved(operation.detail, by_name))
         },
         of_hypothesis=fingerprint(hypothesis),
         of_plan=fingerprint(plan),
@@ -462,7 +498,7 @@ def operation_heading(operation: Operation) -> str:
         if operation.depends_on
         else "needs nothing"
     )
-    builds = ", ".join(f"sem{identifier}" for identifier in operation.semantics)
+    builds = ", ".join(operation.semantics)
     return (
         f"{operation.name} {operation.verb.value} "
         f"({needs}; builds {builds or 'nothing named'})"
@@ -501,20 +537,20 @@ def render_plan(plan: OperationPlan, hypothesis: SemanticHypothesis) -> str:
 def render_plan_review(review: PlanReview) -> str:
     """What to tell the planner about a plan the hypothesis contradicts.
 
-    Named rather than counted throughout: "sem2 and sem5" is something to go
+    Named rather than counted throughout: "sem_main_bore" is something to go
     and plan, where "two features are missing" sends the stage back to compare
     two lists it has already been given.
     """
     faults = []
     if review.uncovered:
-        named = ", ".join(f"sem{identifier}" for identifier in review.uncovered)
+        named = ", ".join(review.uncovered)
         faults.append(
             f"The hypothesis establishes {named}, and no operation in the plan "
             "builds them. Add the operations they take, or say in the rationale "
             "why the part is complete without them."
         )
     if review.unknown:
-        named = ", ".join(f"sem{identifier}" for identifier in review.unknown)
+        named = ", ".join(review.unknown)
         faults.append(
             f"The plan cites {named}, which the hypothesis does not contain. "
             "Cite the features it does have."
@@ -527,14 +563,16 @@ def render_plan_review(review: PlanReview) -> str:
             named += f" and {len(copied) - _NAMED_AT_MOST} more"
         faults.append(
             f"{operation} writes out {named}, which the hypothesis already "
-            "holds. Cite it as sem<id>.<parameter> instead; the number is put "
+            "holds. Cite it as sem_<feature>.geo_<claim>.<parameter> or "
+            "sem_<feature>.ev_<reading>.<parameter> instead; the number is put "
             "in for you, and a number retyped is a number that can be mistyped."
         )
     for operation, broken in sorted(review.unresolved.items()):
         named = ", ".join(broken)
         faults.append(
-            f"{operation} refers to {named}, which the hypothesis does not "
-            "hold. Refer to a feature it has, and to a measurement that feature "
-            "states."
+            f"{operation} refers to {named}, which does not identify exactly "
+            "one parameter in the hypothesis. Use the member name shown there, "
+            "such as sem_main_bore.geo_cylinder.radius or "
+            "sem_main_bore.ev_front_circle.center."
         )
     return " ".join(faults)

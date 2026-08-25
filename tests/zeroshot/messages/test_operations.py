@@ -30,7 +30,7 @@ def op(
     name: str,
     *,
     needs: Sequence[str] = (),
-    builds: Sequence[int] = (),
+    builds: Sequence[int | str] = (),
     detail: str = "",
     verb: OperationVerb = OperationVerb.EXTRUDE,
 ) -> Operation:
@@ -39,7 +39,9 @@ def op(
         verb=verb,
         detail=detail or f"operation {name}",
         depends_on=list(needs),
-        semantics=list(builds),
+        semantics=[
+            f"sem_feature_{held}" if isinstance(held, int) else held for held in builds
+        ],
     )
 
 
@@ -51,7 +53,7 @@ def plan(*operations: Operation) -> OperationPlan:
 
 
 def _features(*ids: int) -> SemanticHypothesis:
-    """A hypothesis that establishes exactly `ids`, and nothing else about it."""
+    """A hypothesis that establishes exactly the test features named by `ids`."""
     return hypothesis(
         proposal=[feature(identifier, f"feature {identifier}") for identifier in ids]
     )
@@ -87,6 +89,17 @@ def test_operation_names_are_unique() -> None:
     leaves every later stage unable to say which it means."""
     with pytest.raises(ValidationError, match="both called op_base"):
         plan(op("op_base"), op("op_base"))
+
+
+@pytest.mark.parametrize("name", ["main_bore", "sem-Main", "sem_", "sem_2d_bore"])
+def test_semantics_entries_are_stable_semantic_names(name: str) -> None:
+    with pytest.raises(ValidationError, match="usable semantic feature name"):
+        plan(op("op_bore", builds=[name]))
+
+
+def test_an_operation_does_not_repeat_one_semantic_name() -> None:
+    with pytest.raises(ValidationError, match="more than once in semantics"):
+        plan(op("op_bore", builds=["sem_main_bore", "sem_main_bore"]))
 
 
 @pytest.mark.parametrize(
@@ -202,14 +215,14 @@ def test_every_operation_is_placed_exactly_once() -> None:
 
 
 def test_a_feature_no_operation_builds_is_reported() -> None:
-    """The check the plan's validator cannot make: a feature id points into an
-    answer the planner produced separately, so only something holding both can
-    tell that sem2 was established and then dropped."""
+    """The check the plan's validator cannot make: a feature name points into
+    an answer the planner produced separately, so only something holding both
+    can tell that sem_feature_2 was established and then dropped."""
     review = review_plan(
         plan(op("op_a", builds=[1]), op("op_b", builds=[3])), _features(1, 2, 3)
     )
 
-    assert review.uncovered == [2]
+    assert review.uncovered == ["sem_feature_2"]
     assert review.unknown == []
     assert not review.sound
 
@@ -217,8 +230,8 @@ def test_a_feature_no_operation_builds_is_reported() -> None:
 def test_a_feature_the_plan_invents_is_reported() -> None:
     review = review_plan(plan(op("op_a", builds=[9])), _features(1))
 
-    assert review.unknown == [9]
-    assert review.uncovered == [1]
+    assert review.unknown == ["sem_feature_9"]
+    assert review.uncovered == ["sem_feature_1"]
 
 
 def test_a_plan_that_accounts_for_every_feature_is_complete() -> None:
@@ -238,8 +251,8 @@ def test_the_rendering_shows_the_derived_order_and_what_each_step_needs() -> Non
     )
     lines = rendered.splitlines()
 
-    assert "step 1  op_a extrude (needs nothing; builds sem1)" in lines[1]
-    assert "step 2  op_b extrude (after op_a; builds sem4)" in lines[2]
+    assert "step 1  op_a extrude (needs nothing; builds sem_feature_1)" in lines[1]
+    assert "step 2  op_b extrude (after op_a; builds sem_feature_4)" in lines[2]
 
 
 def test_the_step_number_is_derived_and_not_part_of_the_plan() -> None:
@@ -265,15 +278,15 @@ def test_an_operation_that_names_no_feature_says_so() -> None:
 
 
 def test_the_gap_is_reported_by_naming_the_features_it_left_out() -> None:
-    """What the planner is sent back with. Named rather than counted: "sem2,
-    sem5" is something to go and plan, where "two are missing" sends the stage
-    back to compare two lists it has already been given."""
+    """What the planner is sent back with. Named rather than counted:
+    "sem_feature_2, sem_feature_5" is actionable, where "two are missing"
+    sends the stage back to compare two lists it has already been given."""
     review = review_plan(plan(op("op_a", builds=[1])), _features(1, 2, 5))
 
     told = render_plan_review(review)
 
-    assert "sem2, sem5" in told
-    assert "sem1" not in told
+    assert "sem_feature_2, sem_feature_5" in told
+    assert "sem_feature_1" not in told
 
 
 def test_a_dangling_reference_is_reported_separately_from_a_gap() -> None:
@@ -283,9 +296,9 @@ def test_a_dangling_reference_is_reported_separately_from_a_gap() -> None:
 
     told = render_plan_review(review)
 
-    assert "sem1" in told
-    assert "sem9" in told
-    assert told.index("sem1") < told.index("sem9")
+    assert "sem_feature_1" in told
+    assert "sem_feature_9" in told
+    assert told.index("sem_feature_1") < told.index("sem_feature_9")
 
 
 def test_a_complete_plan_is_reported_as_nothing_at_all() -> None:
@@ -346,15 +359,16 @@ def _torus_feature() -> SemanticHypothesis:
 
 def geometry_feature():
     return feature(
-        7,
+        "sem_shoulder_blend",
         "shoulder blend",
         geometry=[
             geometry(
                 "torus",
+                name="geo_blend_torus",
                 major_radius=11.31245992416,
                 tube_radius=3.39440063713,
             ),
-            geometry("plane", axis="x"),
+            geometry("plane", axis="x", name="geo_side_plane"),
         ],
     )
 
@@ -364,34 +378,112 @@ def test_a_reference_is_filled_in_before_the_coder_reads_it() -> None:
     control points will eventually mistype one, and has: a reference resolved
     on the way out never passes through a model's output, so that cannot
     happen rather than being caught after it has."""
-    resolved = resolve_reference("Sweep a blend of sem7.major_radius", _torus_feature())
+    resolved = resolve_reference(
+        "Sweep a blend of sem_shoulder_blend.geo_blend_torus.major_radius",
+        _torus_feature(),
+    )
 
-    assert resolved == "Sweep a blend of sem7.major_radius (11.31245992416)"
+    assert resolved.endswith(
+        "sem_shoulder_blend.geo_blend_torus.major_radius (11.31245992416)"
+    )
 
 
 def test_a_reference_says_which_geometry_when_a_feature_claims_several() -> None:
-    """Qualified by kind rather than by position: an index into `geometry`
-    would be a second numbering to keep in step with the hypothesis."""
     held = _torus_feature()
 
-    assert "(3.39440063713)" in resolve_reference("sem7.torus.tube_radius", held)
-    assert "(11.31245992416)" in resolve_reference("sem7.torus.major_radius", held)
+    assert "(3.39440063713)" in resolve_reference(
+        "sem_shoulder_blend.geo_blend_torus.tube_radius", held
+    )
+    assert resolve_reference(
+        "sem_shoulder_blend.geo_side_plane.radius", held
+    ) == "sem_shoulder_blend.geo_side_plane.radius"
+
+
+def test_a_canonical_reference_names_one_geometry_even_when_kinds_repeat() -> None:
+    repeated = feature(
+        "sem_two_spherical_ends",
+        "two spherical ends",
+        geometry=[
+            geometry("sphere", name="geo_left_end", radius=4.25),
+            geometry("sphere", name="geo_right_end", radius=9.75),
+        ],
+    )
+    held = hypothesis(proposal=[repeated])
+
+    assert resolve_reference(
+        "sem_two_spherical_ends.geo_right_end.radius", held
+    ).endswith("geo_right_end.radius (9.75)")
+
+
+def test_a_canonical_reference_names_one_evidence_reading_and_its_vector() -> None:
+    bore = feature(
+        "sem_main_bore",
+        "main bore",
+        evidence=[
+            evidence(
+                "circle",
+                name="ev_front_circle",
+                center=[1.0, 2.0],
+                radius=3.0,
+            ),
+            evidence(
+                "circle",
+                name="ev_right_circle",
+                center=[12.0, 13.0],
+                radius=5.0,
+            ),
+        ],
+    )
+    held = hypothesis(proposal=[bore])
+
+    assert resolve_reference("at sem_main_bore.ev_right_circle.center", held) == (
+        "at sem_main_bore.ev_right_circle.center ([12.0 13.0])"
+    )
+    assert resolve_reference("radius sem_main_bore.ev_front_circle.radius", held).endswith(
+        "sem_main_bore.ev_front_circle.radius (3.0)"
+    )
 
 
 def test_a_reference_to_something_the_hypothesis_lacks_is_left_alone() -> None:
     """Rendering is not the place to fail. The plan review has already refused
     the plan for this; what the reader gets meanwhile is the text as written."""
-    assert resolve_reference("sem7.height", _torus_feature()) == "sem7.height"
-    assert resolve_reference("sem9.radius", _torus_feature()) == "sem9.radius"
+    assert resolve_reference(
+        "sem_shoulder_blend.geo_blend_torus.height", _torus_feature()
+    ) == "sem_shoulder_blend.geo_blend_torus.height"
+    assert resolve_reference(
+        "sem_missing.geo_sphere.radius", _torus_feature()
+    ) == "sem_missing.geo_sphere.radius"
 
 
-def test_a_list_of_numbers_stays_a_reference() -> None:
-    """A control-point list expanded inline is unreadable, and the coder holds
-    the hypothesis anyway, so the address is more use than the contents."""
-    held = hypothesis(proposal=[feature(1, "blend")])
+def test_a_reference_that_omits_the_member_namespace_is_refused() -> None:
+    made = plan(
+        op(
+            "op_blend",
+            builds=["sem_shoulder_blend"],
+            detail="Sweep sem_shoulder_blend.major_radius",
+        )
+    )
 
-    assert resolve_reference("follow sem1.control_points", held) == (
-        "follow sem1.control_points"
+    review = review_plan(made, _torus_feature())
+
+    assert review.unresolved == {
+        "op_blend": ["sem_shoulder_blend.major_radius"]
+    }
+
+
+def test_a_list_parameter_is_resolved_as_one_exactly_addressed_value() -> None:
+    held = hypothesis(
+        proposal=[
+            feature(
+                "sem_blend_profile",
+                "blend",
+                evidence=[evidence("spline", name="ev_front_spline")],
+            )
+        ]
+    )
+
+    assert "([0.0 0.0 1.0 1.0 2.0 0.0])" in resolve_reference(
+        "follow sem_blend_profile.ev_front_spline.control_points", held
     )
 
 
@@ -399,13 +491,19 @@ def test_a_number_the_hypothesis_already_holds_is_refused() -> None:
     """What forces the reference. The planner is not asked politely to cite;
     a plan that copies is sent back."""
     review = review_plan(
-        plan(op("op_a", builds=[7], detail="Sweep a blend of radius 11.31245992416")),
+        plan(
+            op(
+                "op_a",
+                builds=["sem_shoulder_blend"],
+                detail="Sweep a blend of radius 11.31245992416",
+            )
+        ),
         _torus_feature(),
     )
 
     assert review.transcribed == {"op_a": ["11.31245992416"]}
     assert not review.sound
-    assert "sem<id>.<parameter>" in render_plan_review(review)
+    assert "sem_<feature>.geo_<claim>.<parameter>" in render_plan_review(review)
 
 
 def test_a_number_the_planner_worked_out_itself_is_left_alone() -> None:
@@ -416,8 +514,11 @@ def test_a_number_the_planner_worked_out_itself_is_left_alone() -> None:
         plan(
             op(
                 "op_a",
-                builds=[7],
-                detail="Cut 5.65622996208 deep, half of sem7.major_radius",
+                builds=["sem_shoulder_blend"],
+                detail=(
+                    "Cut 5.65622996208 deep, half of "
+                    "sem_shoulder_blend.geo_blend_torus.major_radius"
+                ),
             )
         ),
         _torus_feature(),
@@ -430,12 +531,16 @@ def test_a_short_number_is_the_planners_own_words() -> None:
     """`25 mm` is a sentence, not a transcription, even where the hypothesis
     happens to hold 25."""
     held = hypothesis(
-        proposal=[feature(7, "boss", geometry=[geometry("sphere", radius=25.0)])]
+        proposal=[
+            feature(
+                "sem_boss", "boss", geometry=[geometry("sphere", radius=25.0)]
+            )
+        ]
     )
 
     assert (
         review_plan(
-            plan(op("op_a", builds=[7], detail="Extrude 25 mm")), held
+            plan(op("op_a", builds=["sem_boss"], detail="Extrude 25 mm")), held
         ).transcribed
         == {}
     )
@@ -443,12 +548,20 @@ def test_a_short_number_is_the_planners_own_words() -> None:
 
 def test_a_reference_that_stands_for_nothing_is_refused() -> None:
     review = review_plan(
-        plan(op("op_a", builds=[7], detail="Sweep sem7.height along +z")),
+        plan(
+            op(
+                "op_a",
+                builds=["sem_shoulder_blend"],
+                detail="Sweep sem_shoulder_blend.geo_blend_torus.height along +z",
+            )
+        ),
         _torus_feature(),
     )
 
-    assert review.unresolved == {"op_a": ["sem7.height"]}
-    assert "sem7.height" in render_plan_review(review)
+    assert review.unresolved == {
+        "op_a": ["sem_shoulder_blend.geo_blend_torus.height"]
+    }
+    assert "sem_shoulder_blend.geo_blend_torus.height" in render_plan_review(review)
 
 
 def test_a_plan_full_of_copied_numbers_is_still_told_in_a_sentence() -> None:
@@ -459,31 +572,46 @@ def test_a_plan_full_of_copied_numbers_is_still_told_in_a_sentence() -> None:
     held = hypothesis(
         proposal=[
             feature(
-                7,
+                "sem_blend",
                 "blend",
-                geometry=[geometry("sphere", radius=radius) for radius in radii],
+                geometry=[
+                    geometry(
+                        "sphere", name=f"geo_sphere_{identifier}", radius=radius
+                    )
+                    for identifier, radius in enumerate(radii, start=1)
+                ],
             )
         ]
     )
 
     told = render_plan_review(
-        review_plan(plan(op("op_a", builds=[7], detail=copied)), held)
+        review_plan(plan(op("op_a", builds=["sem_blend"], detail=copied)), held)
     )
 
     assert "and 37 more" in told
     assert len(told) < 400
 
 
-def test_a_claim_answers_before_the_readings_it_was_claimed_from() -> None:
-    """A bore states one radius in `geometry` and may carry half a dozen arcs
-    in `evidence`. `sem4.radius` means the one the feature claims."""
+def test_claim_and_evidence_parameters_are_separate_named_addresses() -> None:
     bore = feature(
-        4,
+        "sem_main_bore",
         "main bore",
-        geometry=[geometry("cylinder", radius=3.40755883124, height=16.5366825634)],
-        evidence=[evidence("arc", radius=99.9), evidence("arc", radius=88.8)],
+        geometry=[
+            geometry(
+                "cylinder",
+                name="geo_cylinder",
+                radius=3.40755883124,
+                height=16.5366825634,
+            )
+        ],
+        evidence=[
+            evidence("arc", name="ev_front_arc", radius=99.9),
+            evidence("arc", name="ev_right_arc", radius=88.8),
+        ],
     )
+    held = hypothesis(proposal=[bore])
 
     assert "(3.40755883124)" in resolve_reference(
-        "sem4.radius", hypothesis(proposal=[bore])
+        "sem_main_bore.geo_cylinder.radius", held
     )
+    assert "(99.9)" in resolve_reference("sem_main_bore.ev_front_arc.radius", held)
