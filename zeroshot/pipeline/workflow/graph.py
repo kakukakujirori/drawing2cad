@@ -29,12 +29,12 @@ from zeroshot.pipeline.messages.contracts import (
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import (
-    OutputVerifier,
     create_load_image_tool,
     create_run_shell_tool,
 )
 from zeroshot.pipeline.verification import (
     CadQueryExecutor,
+    OutputVerifier,
     ProgramOutline,
     StepRenderer,
     render_outline_update,

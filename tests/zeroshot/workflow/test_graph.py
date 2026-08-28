@@ -32,8 +32,11 @@ from zeroshot.pipeline.messages.contracts import (
     review_plan,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.tools import VerifyOutputResult
-from zeroshot.pipeline.verification import ProgramOutline, StepRenderer
+from zeroshot.pipeline.verification import (
+    ProgramOutline,
+    StepRenderer,
+    VerifyOutputResult,
+)
 from zeroshot.pipeline.workflow import (
     StopReason,
     create_agent,

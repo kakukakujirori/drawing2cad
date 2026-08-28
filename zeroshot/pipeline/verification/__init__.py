@@ -12,14 +12,20 @@ from .run_render import (
     RenderStatus,
     StepRenderer,
 )
+from .verify_output import (
+    OutputVerifier,
+    VerifyOutputResult,
+)
 
 __all__ = [
     "CadQueryExecutionReport",
     "CadQueryExecutor",
+    "OutputVerifier",
     "ProgramOutline",
     "RenderReport",
     "RenderStatus",
     "StepRenderer",
+    "VerifyOutputResult",
     "render_outline_update",
     "render_section_review",
 ]

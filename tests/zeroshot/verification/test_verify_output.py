@@ -6,11 +6,7 @@ import pytest
 
 from zeroshot.pipeline.messages import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.tools.verify_output import (
-    OutputVerifier,
-    VerifyOutputResult,
-    create_verify_output_tool,
-)
+from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
 from zeroshot.pipeline.verification.program_outline import ProgramOutline
 from zeroshot.pipeline.verification.render.constants import (
     Render3dPaths,
@@ -21,6 +17,10 @@ from zeroshot.pipeline.verification.run_cadquery import (
     ExecutionStatus,
 )
 from zeroshot.pipeline.verification.run_render import RenderReport, RenderStatus
+from zeroshot.pipeline.verification.verify_output import (
+    OutputVerifier,
+    VerifyOutputResult,
+)
 
 RENDER3D_STYLES = (
     "hlg_perspective",

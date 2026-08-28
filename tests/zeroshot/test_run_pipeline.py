@@ -9,8 +9,7 @@ from omegaconf import OmegaConf
 
 from zeroshot import run_pipeline
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
-from zeroshot.pipeline.tools import VerifyOutputResult
-from zeroshot.pipeline.verification import StepRenderer
+from zeroshot.pipeline.verification import StepRenderer, VerifyOutputResult
 from zeroshot.pipeline.workflow import (
     ReconstructionState,
     create_reconstruction_graph,

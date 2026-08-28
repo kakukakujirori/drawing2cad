@@ -21,7 +21,7 @@ from zeroshot.pipeline.messages.contracts import (
     PlanReview,
     SemanticHypothesis,
 )
-from zeroshot.pipeline.tools import VerifyOutputResult
+from zeroshot.pipeline.verification import VerifyOutputResult
 from zeroshot.pipeline.workflow.components.agent import AgentState
 from zeroshot.pipeline.workflow.components.fanout_reduce import FanoutReduceState
 from zeroshot.pipeline.workflow.components.proposer_reviewer import (

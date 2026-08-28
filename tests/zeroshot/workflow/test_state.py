@@ -27,7 +27,7 @@ from zeroshot.pipeline.messages.contracts import (
     ViewEvidence,
     fingerprint,
 )
-from zeroshot.pipeline.tools import VerifyOutputResult
+from zeroshot.pipeline.verification import VerifyOutputResult
 from zeroshot.pipeline.workflow import (
     CUSTOM_STATE_TYPES,
     Proposal,
