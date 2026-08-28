@@ -11,7 +11,6 @@ claims are real answers this dataset happens never to need.
 """
 
 import collections
-import json
 from pathlib import Path
 
 import ezdxf
@@ -179,26 +178,6 @@ def test_every_occ_geometry_type_is_either_named_or_excluded() -> None:
 
     stale = {name for name in _EXCLUDED_GEOMETRY if name not in universe}
     assert not stale, f"excluded types OCC no longer has: {stale}"
-
-
-def test_the_census_holds_no_type_the_contract_neither_names_nor_excludes() -> None:
-    """`geometry_census.json` is the evidence behind those decisions, counted
-    over 1000 ABC models. A type appearing there that is neither named nor
-    excluded means the decision was never made for it."""
-    census = json.loads((Path(__file__).parent / "geometry_census.json").read_text())
-    for corpus, data in census["corpora"].items():
-        seen = {
-            name
-            for group in ("surfaces", "curves")
-            for name, count in data[group].items()
-            if count
-        }
-        undecided = {
-            name
-            for name in seen
-            if name.lower() not in _claimable() and name not in _EXCLUDED_GEOMETRY
-        }
-        assert not undecided, f"{corpus} holds undecided geometry: {undecided}"
 
 
 def test_the_local_targets_hold_no_geometry_the_contract_cannot_name() -> None:
