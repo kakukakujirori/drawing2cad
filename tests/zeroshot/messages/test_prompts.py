@@ -26,7 +26,6 @@ _ENTRY_CONTEXT = {
     "rationale": "the hole is misplaced",
     "semantic_hypothesis": "a bracket",
     "operation_plan": "extrude the base",
-    "outline_changes": "",
 }
 
 
@@ -89,7 +88,6 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
                 "rationale": "the hole is misplaced",
                 "semantic_hypothesis": "a bracket",
                 "operation_plan": "extrude the base",
-                "outline_changes": "",
             },
         ),
         (
@@ -98,7 +96,6 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
                 "rationale": "wrong base feature",
                 "semantic_hypothesis": "a revised bracket",
                 "operation_plan": "rebuild the base",
-                "outline_changes": "op_bore_through changed at L20-L24",
             },
         ),
         (
@@ -138,29 +135,19 @@ def test_placeholders_are_filled_from_the_context() -> None:
     assert "$verification_dir" not in rendered
 
 
-def test_only_a_re_entry_is_told_which_preserved_range_needs_revision() -> None:
-    """Initial layout has no earlier implementation to compare with."""
-    changed = (
-        "op_bore_through was preserved at /work/model.py:L20-L24. "
-        "Previous instruction: bore 10 mm. Current instruction: bore 12 mm."
+@pytest.mark.parametrize("entry", ("initial", "targeted_redo", "upstream_changed"))
+def test_every_coding_entry_carries_current_artifacts_and_the_result_contract(
+    entry: str,
+) -> None:
+    rendered = instruction_text(
+        f"coding/{entry}", **_RUN_PATHS, **_ENTRY_CONTEXT
     )
 
-    first = instruction_text(
-        "coding/initial",
-        **_RUN_PATHS,
-        semantic_hypothesis="a bracket",
-        operation_plan="extrude the base",
-    )
-    again = instruction_text(
-        "coding/upstream_changed",
-        **_RUN_PATHS,
-        **{**_ENTRY_CONTEXT, "outline_changes": changed},
-    )
-
-    assert changed not in first
-    assert changed in again
-    assert "existing code is preserved" in _guidelines("coding")
-    assert "ret_<operation name without op_>" in _guidelines("coding")
+    assert "a bracket" in rendered
+    assert "extrude the base" in rendered
+    assert "ret_<operation name without op_>" in rendered
+    assert "# ----" not in rendered
+    assert "Lxx-Lyy" not in rendered
 
 
 @pytest.mark.parametrize(
@@ -379,7 +366,7 @@ def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes() -> None:
 def test_the_coder_is_told_the_plan_is_already_ordered() -> None:
     """The order is derived, not written, so a coder that reordered it would be
     undoing the one thing the graph was taken for."""
-    assert "already in build order" in _guidelines("coding")
+    assert "presented in dependency order" in _guidelines("coding")
 
 
 def test_a_stage_that_builds_in_3d_is_not_told_to_look_for_a_2d_entity() -> None:

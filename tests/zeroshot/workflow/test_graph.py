@@ -32,11 +32,7 @@ from zeroshot.pipeline.messages.contracts import (
     review_plan,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.verification import (
-    ProgramOutline,
-    StepRenderer,
-    VerifyOutputResult,
-)
+from zeroshot.pipeline.verification import StepRenderer, VerifyOutputResult
 from zeroshot.pipeline.workflow import (
     StopReason,
     create_agent,
@@ -289,12 +285,10 @@ def test_an_accepted_hypothesis_reaches_the_coder_and_the_final_verification() -
             "output_auditor",
         )
     }
-    # Not "model.py was not found": the file is laid out from the plan before
-    # the coder starts, so a coder that wrote nothing leaves the markers and
-    # no code, and that is what the report says.
+    # The framework no longer creates model.py on the coder's behalf.
     assert result["last_verification"] == VerifyOutputResult(
-        status="INCOMPLETE",
-        executor_error="sections 0/1 -- op_step1 still to write.",
+        status="REJECTED",
+        executor_error="model.py was not found",
     )
 
     # Each active stage read what came before it, including the drawing.
@@ -415,12 +409,8 @@ def test_the_coder_is_given_both_settled_artifacts() -> None:
     assert "extrude the outline 25mm" in instruction
 
 
-def test_the_coder_is_handed_a_file_laid_out_in_the_derived_order() -> None:
-    """The program is laid out from the plan before the coder is handed the
-    plan, so the two cannot disagree about which step goes where. Written
-    bore-then-base and laid out base-then-bore: the file carries the order the
-    dependencies imply, and the interpreter then enforces it, since a section
-    standing on one below it would raise a NameError."""
+def test_the_coder_gets_the_plan_in_dependency_order_without_a_source_rewrite() -> None:
+    """Planning orders the instructions; the framework does not edit model.py."""
     written_backwards = OperationPlan(
         proposal=[
             Operation(
@@ -443,6 +433,9 @@ def test_the_coder_is_handed_a_file_laid_out_in_the_derived_order() -> None:
     coder = ScriptedChatModel(responses=(AIMessage(content="written"),))
 
     with SandboxWorkdir() as workdir:
+        source_path = workdir.host_bind_dir / "model.py"
+        original_source = "result = object()\n"
+        source_path.write_text(original_source, encoding="utf-8")
         graph = _graph(
             workdir,
             _hypothesizer("a plate"),
@@ -454,20 +447,15 @@ def test_the_coder_is_handed_a_file_laid_out_in_the_derived_order() -> None:
             plan_reviewer=ScriptedChatModel(responses=(_review(True, "builds it"),)),
         )
         graph.invoke({})
-        laid_out = (workdir.host_bind_dir / "model.py").read_text(encoding="utf-8")
+        final_source = source_path.read_text(encoding="utf-8")
 
-    markers = [line for line in laid_out.splitlines() if line.startswith("# ---- ")]
-    assert markers[0].startswith("# ---- op_base_plate ")
-    assert markers[1].startswith("# ---- op_bore_through ")
-    assert "-> ret_base_plate" in markers[0]
-    assert "-> ret_bore_through" in markers[1]
-    assert "cut the bore" in laid_out
+    instruction = _last_instruction(coder.received_messages[0])
+    assert instruction.index("op_base_plate") < instruction.index("op_bore_through")
+    assert final_source == original_source
 
 
-def test_laying_the_file_out_is_not_reported_as_the_coder_s_work() -> None:
-    """The free verification fires on a turn that changed the program. The
-    workflow's own layout is not a turn, and reporting it would open every
-    coding stage with an account of a program nobody had written yet."""
+def test_entering_coding_without_a_write_triggers_no_automatic_verification() -> None:
+    """Automatic feedback is caused by a coder write, not stage entry."""
     coder = ScriptedChatModel(responses=(AIMessage(content="written"),))
 
     with SandboxWorkdir() as workdir:
@@ -630,16 +618,8 @@ def test_the_coder_is_told_what_its_edit_built_without_asking(
     class StubVerifier:
         """One verifier serves both callers, as the graph builds only one."""
 
-        def __init__(self, program: ProgramOutline) -> None:
-            self.program = program
-
-        @property
-        def source_path(self) -> Path:
-            return self.program.path
-
-        @property
-        def own_write(self) -> str | None:
-            return self.program.own_write
+        def __init__(self, source_path: Path) -> None:
+            self.source_path = source_path
 
         def verify(self) -> tuple[VerifyOutputResult, None]:
             invocations.append("workflow")
@@ -653,7 +633,9 @@ def test_the_coder_is_told_what_its_edit_built_without_asking(
         monkeypatch.setattr(
             graph_module,
             "OutputVerifier",
-            lambda **kwargs: StubVerifier(kwargs["program"]),
+            lambda **kwargs: StubVerifier(
+                kwargs["workdir"].host_bind_dir / kwargs["source_filename"]
+            ),
         )
         coder = ScriptedChatModel(
             responses=(
@@ -722,12 +704,10 @@ def test_the_workflow_runs_the_final_verification_after_a_coder_runs_out() -> No
         "coder": 3,
         "output_auditor": 1,
     }
-    # Not "model.py was not found": the file is laid out from the plan before
-    # the coder starts, so a coder that wrote nothing leaves the markers and
-    # no code, and that is what the report says.
+    # Running out of turns does not make the framework create a program.
     assert result["last_verification"] == VerifyOutputResult(
-        status="INCOMPLETE",
-        executor_error="sections 0/1 -- op_step1 still to write.",
+        status="REJECTED",
+        executor_error="model.py was not found",
     )
 
 
@@ -894,7 +874,7 @@ def test_a_coder_the_audit_sends_back_is_asked_for_a_correction() -> None:
     first, second = map(_last_instruction, coder.received_messages)
     assert "current semantic hypothesis" in first
     assert "the pocket is cut on the wrong face" in second
-    assert "audit of the program" in second
+    assert "audit rejected the current program" in second
 
 
 def test_a_coder_sent_back_after_running_out_carries_a_usable_transcript() -> None:
@@ -966,8 +946,8 @@ def test_a_coder_whose_plan_was_redone_is_told_the_plan_changed() -> None:
         graph.invoke({})
 
     first, second = map(_last_instruction, coder.received_messages)
-    assert "upstream stages have produced" in second
-    assert "upstream stages have produced" not in first
+    assert "upstream stages have revised" in second
+    assert "upstream stages have revised" not in first
     # It is rebuilding against the new plan, not answering for a fault of its own.
     assert "rejected" not in second
     assert "plan-v1" in second

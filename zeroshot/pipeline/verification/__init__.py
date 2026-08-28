@@ -1,8 +1,3 @@
-from .program_outline import (
-    ProgramOutline,
-    render_outline_update,
-    render_section_review,
-)
 from .run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
@@ -21,11 +16,8 @@ __all__ = [
     "CadQueryExecutionReport",
     "CadQueryExecutor",
     "OutputVerifier",
-    "ProgramOutline",
     "RenderReport",
     "RenderStatus",
     "StepRenderer",
     "VerifyOutputResult",
-    "render_outline_update",
-    "render_section_review",
 ]
