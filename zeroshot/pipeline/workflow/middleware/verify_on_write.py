@@ -12,7 +12,7 @@ from langgraph.runtime import Runtime
 
 
 class ProgramVerifier(Protocol):
-    """The file to watch, whose writes were the machine's, and the act.
+    """The file to watch and the verification to run after it changes.
 
     Structural so this module never imports a CAD kernel, and a test can answer
     it with a counter.
@@ -20,9 +20,6 @@ class ProgramVerifier(Protocol):
 
     @property
     def source_path(self) -> Path: ...
-
-    @property
-    def own_write(self) -> str | None: ...
 
     def feedback(self) -> list[ContentBlock]: ...
 
@@ -55,8 +52,4 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         if digest == self._last_seen:
             return None
         self._last_seen = digest
-        # At the first turn of each coding stage, the output file doesn't contain
-        # any new code. Therefore, the verifier doesn't have anything to report.
-        if digest is not None and digest == self.verifier.own_write:
-            return None
         return {"messages": [HumanMessage(content_blocks=self.verifier.feedback())]}

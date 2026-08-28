@@ -7,7 +7,6 @@ import pytest
 from zeroshot.pipeline.messages import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
-from zeroshot.pipeline.verification.program_outline import ProgramOutline
 from zeroshot.pipeline.verification.render.constants import (
     Render3dPaths,
     TechdrawPaths,
@@ -88,7 +87,7 @@ def _create_verifier(
         workdir,
         renderer=renderer or StubRenderer(),  # type: ignore[arg-type]
         artifact_presenter=artifact_presenter,
-        program=ProgramOutline(workdir.host_bind_dir / source_filename),
+        source_filename=source_filename,
         output_dirname=output_dirname,
     )
 
@@ -165,6 +164,23 @@ def test_construction_prepares_an_output_directory_the_sandbox_cannot_write(
     assert verifier.source_path == tmp_path / "candidate.py"
     assert (tmp_path / "attempts").is_dir()
     assert workdir.read_only_subdirs == [PurePosixPath("attempts")]
+
+
+@pytest.mark.parametrize(
+    "source_filename",
+    ["", ".", "..", "../model.py", "nested/model.py", "/work/model.py", "model.txt"],
+)
+def test_rejects_a_source_filename_outside_the_workdir_root_or_not_python(
+    tmp_path: Path,
+    source_filename: str,
+) -> None:
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+
+    with pytest.raises(
+        ValueError, match="source_filename must be a Python file basename"
+    ):
+        _create_verifier(executor, workdir, source_filename=source_filename)
 
 
 def test_the_tool_takes_no_arguments_and_names_the_file_it_builds(

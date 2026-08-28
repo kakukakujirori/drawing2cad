@@ -1,5 +1,4 @@
 import asyncio
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -846,12 +845,6 @@ class _CountingVerifier:
     def __init__(self, source_path: Path) -> None:
         self.source_path = source_path
         self.seen: list[str] = []
-        self.own_write: str | None = None
-
-    def machine_writes(self, text: str) -> None:
-        """Write the file the way the workflow does, not the way a turn does."""
-        self.source_path.write_text(text, encoding="utf-8")
-        self.own_write = sha256(text.encode("utf-8")).hexdigest()
 
     def feedback(self) -> list[ContentBlock]:
         self.seen.append(self.source_path.read_text(encoding="utf-8"))
@@ -903,32 +896,29 @@ def test_a_turn_that_rewrote_the_program_is_told_what_it_built(
     assert any("[verified] build 1" in message.text for message in result["messages"])
 
 
-def test_the_machines_own_write_is_not_reported_as_a_turns_work(
+def test_a_write_after_middleware_construction_is_reported(
     tmp_path: Path,
 ) -> None:
-    """The workflow brings the outline up to date with the plan before the
-    coding stage opens, and that write is nobody's turn. Reported, it would
-    open the stage by building a program the agent has not touched."""
+    """No framework writer remains, so every content change is meaningful."""
     path = tmp_path / "model.py"
     graph, verifier = _verifying_agent(
         ScriptedChatModel(responses=(AIMessage(content="done"),)),
         path,
         announce_turns=False,
     )
-    verifier.machine_writes("# ---- op_base extrude (needs nothing; builds sem1)\n")
+    path.write_text("result = 1", encoding="utf-8")
 
     graph.invoke({"messages": [HumanMessage(content="go")]})
 
-    assert verifier.seen == []
+    assert verifier.seen == ["result = 1"]
 
 
-def test_a_turn_that_wrote_over_the_machines_write_is_reported(
+def test_a_turn_that_rewrites_an_existing_program_is_reported(
     tmp_path: Path,
 ) -> None:
-    """Skipping the machine's own write must not swallow the write that comes
-    after it: the file has moved again, and this time somebody's turn moved
-    it."""
+    """The digest starts from existing source and reports only its later edit."""
     path = tmp_path / "model.py"
+    path.write_text("result = 0", encoding="utf-8")
     graph, verifier = _verifying_agent(
         ScriptedChatModel(
             responses=(
@@ -939,7 +929,6 @@ def test_a_turn_that_wrote_over_the_machines_write_is_reported(
         path,
         announce_turns=False,
     )
-    verifier.machine_writes("# ---- op_base extrude (needs nothing; builds sem1)\n")
 
     graph.invoke({"messages": [HumanMessage(content="go")]})
 

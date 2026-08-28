@@ -6,7 +6,6 @@ from langchain_core.tools import BaseTool, tool
 
 from zeroshot.pipeline.messages import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.verification.program_outline import ProgramOutline
 from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutor
 from zeroshot.pipeline.verification.run_render import StepRenderer
 from zeroshot.pipeline.verification.verify_output import OutputVerifier
@@ -25,16 +24,13 @@ def create_verify_output_tool(
     The staged workflow verifies the coder's writes without being asked, so it
     builds an `OutputVerifier` directly; this is for an agent whose turn is the
     right place to decide.
-
-    The outline is built and never prepared: this agent writes the whole file
-    itself, so there is no plan to read it against and `review` answers None.
     """
     verifier = OutputVerifier(
         executor,
         workdir,
         renderer=renderer,
         artifact_presenter=artifact_presenter,
-        program=ProgramOutline(workdir.host_bind_dir / source_filename),
+        source_filename=source_filename,
         output_dirname=output_dirname,
     )
     description = cleandoc(
