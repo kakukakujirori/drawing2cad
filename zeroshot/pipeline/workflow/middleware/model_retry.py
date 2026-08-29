@@ -41,19 +41,20 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         adjusted: bool,
     ) -> None:
         """Say which attempt failed, why, and what happens next."""
-        request.runtime.stream_writer(
-            {
-                "model_retry": {
-                    "role": self.role,
-                    "attempt": attempt + 1,
-                    "max_attempts": self.max_retries + 1,
-                    "error_type": type(error).__qualname__,
-                    "error": str(error)[:500],
-                    "retrying": retrying,
-                    "request_adjusted": adjusted,
-                }
-            }
-        )
+        details: dict[str, object] = {
+            "role": self.role,
+            "attempt": attempt + 1,
+            "max_attempts": self.max_retries + 1,
+            "error_type": type(error).__qualname__,
+            "error": str(error)[:500],
+            "retrying": retrying,
+            "request_adjusted": adjusted,
+        }
+        if isinstance(error, StructuredOutputValidationError):
+            # The retry request carries this response only in memory. Preserve
+            # the rejected raw output so a contract failure is reproducible.
+            details["failed_response"] = error.ai_message.text
+        request.runtime.stream_writer({"model_retry": details})
 
     @staticmethod
     def _retry_length_limited_request(
