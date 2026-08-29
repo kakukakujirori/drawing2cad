@@ -1,3 +1,4 @@
+from dataclasses import fields, is_dataclass
 from typing import cast
 
 import pytest
@@ -27,7 +28,7 @@ from zeroshot.pipeline.messages.contracts import (
     ViewEvidence,
     fingerprint,
 )
-from zeroshot.pipeline.verification import VerifyOutputResult
+from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow import (
     CUSTOM_STATE_TYPES,
     Proposal,
@@ -192,7 +193,7 @@ _ARTIFACTS: dict[str, object] = {
     "audit": Audit(revise="operations", rationale="the boss is missing"),
     "last_verification": VerifyOutputResult(
         verification_id="v1",
-        status="SUCCEEDED",
+        status=ExecutionStatus.VERIFIED,
         source="result = cq.Workplane()",
         returncode=0,
     ),
@@ -220,6 +221,7 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         EdgeStyle,
         GeometryKind,
         ClaimSource,
+        ExecutionStatus,
         Review,
         Audit,
         StopReason,
@@ -242,6 +244,10 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
             yield type(value)
             for held in dict(value).values():
                 yield from types(held)
+        elif is_dataclass(value) and not isinstance(value, type):
+            yield type(value)
+            for field in fields(value):
+                yield from types(getattr(value, field.name))
         else:
             yield type(value)
 

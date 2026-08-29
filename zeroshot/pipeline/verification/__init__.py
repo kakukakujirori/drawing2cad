@@ -2,6 +2,7 @@ from .check_program import ProgramCheck, check_program
 from .run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
+    ExecutionStatus,
 )
 from .run_render import (
     RenderReport,
@@ -16,6 +17,7 @@ from .verify_output import (
 __all__ = [
     "CadQueryExecutionReport",
     "CadQueryExecutor",
+    "ExecutionStatus",
     "OutputVerifier",
     "ProgramCheck",
     "RenderReport",

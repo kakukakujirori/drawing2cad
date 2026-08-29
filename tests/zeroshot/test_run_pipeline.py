@@ -9,7 +9,11 @@ from omegaconf import OmegaConf
 
 from zeroshot import run_pipeline
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
-from zeroshot.pipeline.verification import StepRenderer, VerifyOutputResult
+from zeroshot.pipeline.verification import (
+    ExecutionStatus,
+    StepRenderer,
+    VerifyOutputResult,
+)
 from zeroshot.pipeline.workflow import (
     ReconstructionState,
     create_reconstruction_graph,
@@ -84,7 +88,9 @@ def test_run_composes_dependencies_and_manifest(
         def run_sample(self, manifest: InputManifest) -> ReconstructionState:
             captured["manifest"] = manifest
             return ReconstructionState(
-                last_verification=VerifyOutputResult(status="VERIFIED")
+                last_verification=VerifyOutputResult(
+                    status=ExecutionStatus.VERIFIED
+                )
             )
 
     monkeypatch.setattr(run_pipeline, "SandboxRunner", StubSandboxRunner)
@@ -209,7 +215,9 @@ def test_null_renderer_falls_back_to_the_default_renderer(
 
         def run_sample(self, manifest: InputManifest) -> ReconstructionState:
             return ReconstructionState(
-                last_verification=VerifyOutputResult(status="VERIFIED")
+                last_verification=VerifyOutputResult(
+                    status=ExecutionStatus.VERIFIED
+                )
             )
 
     monkeypatch.setattr(run_pipeline, "PipelineRunner", StubPipelineRunner)

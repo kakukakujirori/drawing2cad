@@ -32,7 +32,11 @@ from zeroshot.pipeline.messages.contracts import (
     review_plan,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.verification import StepRenderer, VerifyOutputResult
+from zeroshot.pipeline.verification import (
+    ExecutionStatus,
+    StepRenderer,
+    VerifyOutputResult,
+)
 from zeroshot.pipeline.workflow import (
     StopReason,
     create_agent,
@@ -287,7 +291,7 @@ def test_an_accepted_hypothesis_reaches_the_coder_and_the_final_verification() -
     }
     # The framework no longer creates model.py on the coder's behalf.
     assert result["last_verification"] == VerifyOutputResult(
-        status="REJECTED",
+        status=ExecutionStatus.REJECTED,
         executor_error="model.py was not found",
     )
 
@@ -609,7 +613,7 @@ def test_the_coder_is_told_what_its_edit_built_without_asking(
     reviewer = ScriptedChatModel(responses=(_review(True, "fine"),))
     final_report = VerifyOutputResult(
         verification_id="001",
-        status="VERIFIED",
+        status=ExecutionStatus.VERIFIED,
         source="result = object()",
         returncode=0,
     )
@@ -706,7 +710,7 @@ def test_the_workflow_runs_the_final_verification_after_a_coder_runs_out() -> No
     }
     # Running out of turns does not make the framework create a program.
     assert result["last_verification"] == VerifyOutputResult(
-        status="REJECTED",
+        status=ExecutionStatus.REJECTED,
         executor_error="model.py was not found",
     )
 

@@ -1,7 +1,7 @@
 import ast
 import shutil
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from zeroshot.pipeline.sandbox import (
@@ -12,7 +12,8 @@ from zeroshot.pipeline.sandbox import (
 from zeroshot.pipeline.verification.shape_census import describe_shape
 
 
-class ExecutionStatus(Enum):
+class ExecutionStatus(StrEnum):
+    UNINITIALIZED = "UNINITIALIZED"
     VERIFIED = "VERIFIED"
     REJECTED = "REJECTED"  # syntax/validation error
     FAILED = "FAILED"  # execution error (no STEP generated)

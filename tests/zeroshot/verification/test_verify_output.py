@@ -379,7 +379,7 @@ def test_the_report_keeps_the_source_that_feedback_leaves_out(tmp_path: Path) ->
 
     assert report == VerifyOutputResult(
         verification_id="000",
-        status="VERIFIED",
+        status=ExecutionStatus.VERIFIED,
         source=VALID_SOURCE,
         returncode=0,
         stdout="construction log",

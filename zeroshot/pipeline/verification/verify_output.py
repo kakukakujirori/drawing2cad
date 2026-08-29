@@ -14,6 +14,7 @@ from zeroshot.pipeline.verification.render.constants import (
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
+    ExecutionStatus,
 )
 from zeroshot.pipeline.verification.run_render import RenderReport, StepRenderer
 
@@ -23,7 +24,7 @@ VerifyOutputValue: type = str | int | None
 @dataclass(frozen=True)
 class VerifyOutputResult:
     verification_id: str | None = None
-    status: str = "UNINITIALIZED"
+    status: ExecutionStatus = ExecutionStatus.UNINITIALIZED
     source: str | None = None
     returncode: int | None = None
     stdout: str = ""
@@ -34,7 +35,7 @@ class VerifyOutputResult:
     def import_from(self, report: CadQueryExecutionReport) -> Self:
         return replace(
             self,
-            status=report.status.value,
+            status=report.status,
             source=report.source,
             returncode=report.returncode,
             stdout=report.stdout,
@@ -121,14 +122,14 @@ class OutputVerifier:
         # file existence check
         if model_path.is_symlink():
             report = VerifyOutputResult(
-                status="REJECTED",
+                status=ExecutionStatus.REJECTED,
                 executor_error=f"{self.source_filename} must not be a symlink",
             )
             return report, None
 
         if not model_path.is_file():
             report = VerifyOutputResult(
-                status="REJECTED",
+                status=ExecutionStatus.REJECTED,
                 executor_error=f"{self.source_filename} was not found",
             )
             return report, None
@@ -153,7 +154,7 @@ class OutputVerifier:
         report = report.import_from(cq_report)
 
         # if verification failed, return early. No STEP means nothing to draw.
-        if not (report.status == "VERIFIED" and report.returncode == 0):
+        if not (report.status == ExecutionStatus.VERIFIED and report.returncode == 0):
             return report, None
 
         # render the three-view DXF and the perspective PNGs
