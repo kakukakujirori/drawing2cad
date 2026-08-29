@@ -197,11 +197,9 @@ zeroshot/pipeline/messages/contracts/reconstruction.py
     TicketResponse、Ticket、ReconstructionSnapshot、ReconstructionRun
     audit.pyのAuditFindingを一方向にimport
 
-zeroshot/pipeline/verification/check_audit.py
-    AuditReport x snapshotのpure cross validation
-
-zeroshot/pipeline/workflow/reconstruction_store.py
-    reconstruction.jsonのload、current roundのatomic更新、next round append
+zeroshot/pipeline/workflow/reconstruction.py
+    AuditReport x snapshotのpure cross validation、round遷移、
+    reconstruction.jsonのload / atomic save
 
 zeroshot/pipeline/workflow/graph.py
     stage順、retry、終了routingのみ
