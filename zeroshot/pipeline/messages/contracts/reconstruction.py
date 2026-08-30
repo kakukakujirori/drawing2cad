@@ -169,25 +169,26 @@ class ReconstructionSnapshot(BaseModel):
     semantics: SemanticHypothesis | None = Field(
         ...,
         description=(
-            "The current complete semantic hypothesis, or null before one has "
-            "ever been produced. A later round may begin with the previous "
-            "round's hypothesis."
+            "The complete semantic hypothesis produced in this round, or "
+            "null until this round's semantics stage completes. Earlier "
+            "hypotheses remain available in preceding snapshots."
         ),
     )
     operations: OperationPlan | None = Field(
         ...,
         description=(
-            "The current complete operation DAG, or null before one has ever "
-            "been produced. A later round may begin with the previous round's "
-            "plan."
+            "The complete operation DAG produced in this round, or null "
+            "until this round's operations stage completes. Earlier plans "
+            "remain available in preceding snapshots."
         ),
     )
     program_source: str | None = Field(
         ...,
         description=(
-            "The complete readable current model.py source, or null when no "
-            "readable program was produced. A later round may begin with the "
-            "previous round's source."
+            "The complete readable model.py source produced in this round, "
+            "or null until coding completes or when no readable program was "
+            "produced. Earlier programs remain available in preceding "
+            "snapshots."
         ),
     )
     verification: VerifyOutputResult | None = Field(
@@ -224,6 +225,29 @@ class ReconstructionSnapshot(BaseModel):
                     f"{expected_stages}, got {actual_stages}"
                 )
 
+        # Previous-round artifacts remain in ReconstructionRun and must not
+        # fill a stage that has not completed in this round.
+        unavailable_artifacts: dict[
+            ReasoningStage | None,
+            tuple[str, ...],
+        ] = {
+            None: ("semantics", "operations", "program_source"),
+            "semantics": ("operations", "program_source"),
+            "operations": ("program_source",),
+            "coding": (),
+        }
+        premature = [
+            artifact
+            for artifact in unavailable_artifacts[self.last_completed_stage]
+            if getattr(self, artifact) is not None
+        ]
+        if premature:
+            raise ValueError(
+                "unfinished stage artifacts must be null in the current round: "
+                + ", ".join(premature)
+            )
+
+        # Stage integrity checks
         if (
             self.last_completed_stage in {"semantics", "operations", "coding"}
             and self.semantics is None

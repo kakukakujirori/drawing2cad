@@ -18,21 +18,26 @@ from zeroshot.pipeline.messages.contracts.audit import (
 )
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     BootstrapWork,
+    CodingSubmission,
+    OperationSubmission,
     ReconstructionRun,
     ReconstructionSnapshot,
+    SemanticSubmission,
     Ticket,
     TicketResponse,
 )
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow import reconstruction as reconstruction_module
 from zeroshot.pipeline.workflow.reconstruction import (
-    AuditCrossValidationError,
-    check_audit_report,
+    advance_reconstruction,
     load_reconstruction,
     open_next_round,
-    replace_current_snapshot,
     save_reconstruction,
     start_reconstruction,
+)
+from zeroshot.pipeline.workflow.validate_deliverable import (
+    DeliverableValidationError,
+    validate_deliverable,
 )
 
 _SOURCE = "ret_base = object()\nret_hole = ret_base\nresult = ret_hole\n"
@@ -140,11 +145,49 @@ def _advance_snapshot(
     )
 
 
-def _completed_run() -> ReconstructionRun:
-    run = start_reconstruction("run_example", "Reconstruct the part.")
-    for stage in ("semantics", "operations", "coding"):
-        snapshot = _advance_snapshot(run.snapshots[-1], stage)
-        run = replace_current_snapshot(run, snapshot)
+def _stage_responses(
+    run: ReconstructionRun,
+    stage: str,
+) -> list[TicketResponse]:
+    return [
+        TicketResponse(
+            ticket_id=ticket.ticket_id,
+            stage=stage,  # type: ignore[arg-type]
+            summary=f"Reviewed the ticket during {stage}.",
+        )
+        for ticket in run.snapshots[-1].open_tickets
+    ]
+
+
+def _completed_run(run: ReconstructionRun | None = None) -> ReconstructionRun:
+    run = run or start_reconstruction("run_example", "Reconstruct the part.")
+    run = advance_reconstruction(
+        run,
+        SemanticSubmission(
+            deliverable=hypothesis("the base", "the hole"),
+            responses=_stage_responses(run, "semantics"),
+        ),
+    )
+    run = advance_reconstruction(
+        run,
+        OperationSubmission(
+            deliverable=_operations(),
+            responses=_stage_responses(run, "operations"),
+        ),
+    )
+    verification = VerifyOutputResult(
+        status=ExecutionStatus.VERIFIED,
+        source=_SOURCE,
+        returncode=0,
+    )
+    run = advance_reconstruction(
+        run,
+        CodingSubmission(
+            deliverable=None,
+            responses=_stage_responses(run, "coding"),
+        ),
+        verification=verification,
+    )
     return run
 
 
@@ -193,7 +236,7 @@ def test_audit_cross_validation_accepts_supported_backtrace_hops() -> None:
         _hop("operations", "op_hole", "semantics", "sem_feature_2"),
     )
 
-    check_audit_report(report, _snapshot())
+    validate_deliverable(report, _snapshot())
 
 
 @pytest.mark.parametrize(
@@ -217,49 +260,103 @@ def test_audit_cross_validation_rejects_unsupported_contract_links(
     hop: CausalHop,
     message: str,
 ) -> None:
-    with pytest.raises(AuditCrossValidationError, match=message):
-        check_audit_report(_report(hop), _snapshot())
+    with pytest.raises(DeliverableValidationError, match=message):
+        validate_deliverable(_report(hop), _snapshot())
 
 
 def test_audit_cross_validation_rejects_a_missing_revision_target() -> None:
     target = _ref("semantics", "sem_absent")
     report = _report(target=target)
 
-    with pytest.raises(AuditCrossValidationError, match="does not exist"):
-        check_audit_report(report, _snapshot())
+    with pytest.raises(DeliverableValidationError, match="does not exist"):
+        validate_deliverable(report, _snapshot())
 
 
 def test_named_code_references_require_parseable_source() -> None:
     source = "ret_base = (\n"
     report = _report(_hop("coding", "ret_base", "operations", "op_base"))
 
-    with pytest.raises(AuditCrossValidationError, match="invalid syntax"):
-        check_audit_report(report, _snapshot(source))
+    with pytest.raises(DeliverableValidationError, match="invalid syntax"):
+        validate_deliverable(report, _snapshot(source))
 
 
-def test_snapshot_replacement_advances_one_stage_without_mutating_the_run() -> None:
+def test_advance_reconstruction_integrates_each_stage_without_mutating_the_run() -> None:
     initial = start_reconstruction("run_example", "Reconstruct the part.")
     original_json = initial.model_dump_json()
 
-    semantics = _advance_snapshot(initial.snapshots[-1], "semantics")
-    after_semantics = replace_current_snapshot(initial, semantics)
-    operations = _advance_snapshot(after_semantics.snapshots[-1], "operations")
-    after_operations = replace_current_snapshot(after_semantics, operations)
-    coding = _advance_snapshot(after_operations.snapshots[-1], "coding")
-    completed = replace_current_snapshot(after_operations, coding)
+    completed = _completed_run(initial)
 
     assert initial.model_dump_json() == original_json
     assert completed.snapshots[-1].last_completed_stage == "coding"
+    assert completed.snapshots[-1].program_source == _SOURCE
 
 
-def test_snapshot_replacement_rejects_a_skipped_stage() -> None:
+def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
+    run = start_reconstruction("run_example", "Reconstruct the part.")
+    original_json = run.model_dump_json()
+    wrong_stage = OperationSubmission(
+        deliverable=_operations(),
+        responses=_stage_responses(run, "semantics"),
+    )
+
+    with pytest.raises(DeliverableValidationError, match="SemanticHypothesis"):
+        advance_reconstruction(run, wrong_stage)
+
+    assert run.model_dump_json() == original_json
+
+
+def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
+    completed = _completed_run()
+    first_finding = _report(
+        target=_ref("semantics", "sem_feature_1")
+    ).findings[0]
+    second_finding = first_finding.model_copy(
+        update={"name": "finding_second_mismatch"}
+    )
+    run = open_next_round(
+        completed,
+        AuditReport(
+            accepted=False,
+            findings=[first_finding, second_finding],
+        ),
+    )
+    current = run.snapshots[-1]
+    original_ticket_ids = [ticket.ticket_id for ticket in current.open_tickets]
+    responses = [
+        TicketResponse(
+            ticket_id=ticket.ticket_id,
+            stage="semantics",
+            summary=f"Addressed {ticket.ticket_id}.",
+        )
+        for ticket in reversed(current.open_tickets)
+    ]
+
+    advanced = advance_reconstruction(
+        run,
+        SemanticSubmission(
+            deliverable=hypothesis("the base", "the hole"),
+            responses=responses,
+        ),
+    )
+
+    updated_tickets = advanced.snapshots[-1].open_tickets
+    assert [ticket.ticket_id for ticket in updated_tickets] == original_ticket_ids
+    assert [ticket.responses[-1].ticket_id for ticket in updated_tickets] == (
+        original_ticket_ids
+    )
+    assert [ticket.responses[-1].summary for ticket in updated_tickets] == [
+        f"Addressed {ticket_id}." for ticket_id in original_ticket_ids
+    ]
+
+
+def test_snapshot_commit_rejects_a_skipped_stage() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.")
 
     with pytest.raises(ValueError, match="must advance"):
-        replace_current_snapshot(run, _snapshot())
+        reconstruction_module._commit_snapshot(run, _snapshot())
 
 
-def test_snapshot_replacement_preserves_ticket_subjects() -> None:
+def test_snapshot_commit_preserves_ticket_subjects() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.")
     semantics = _advance_snapshot(run.snapshots[-1], "semantics")
     original_ticket = semantics.open_tickets[0]
@@ -271,13 +368,13 @@ def test_snapshot_replacement_preserves_ticket_subjects() -> None:
     semantics = semantics.model_copy(update={"open_tickets": [changed_ticket]})
 
     with pytest.raises(ValueError, match="subject must not change"):
-        replace_current_snapshot(run, semantics)
+        reconstruction_module._commit_snapshot(run, semantics)
 
 
-def test_snapshot_replacement_preserves_prior_responses() -> None:
+def test_snapshot_commit_preserves_prior_responses() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.")
     semantics = _advance_snapshot(run.snapshots[-1], "semantics")
-    run = replace_current_snapshot(run, semantics)
+    run = reconstruction_module._commit_snapshot(run, semantics)
     operations = _advance_snapshot(run.snapshots[-1], "operations")
     ticket = operations.open_tickets[0]
     rewritten = TicketResponse(
@@ -293,20 +390,20 @@ def test_snapshot_replacement_preserves_prior_responses() -> None:
     operations = operations.model_copy(update={"open_tickets": [changed_ticket]})
 
     with pytest.raises(ValueError, match="without rewriting prior responses"):
-        replace_current_snapshot(run, operations)
+        reconstruction_module._commit_snapshot(run, operations)
 
 
-def test_snapshot_replacement_preserves_artifacts_owned_by_other_stages() -> None:
+def test_snapshot_commit_preserves_artifacts_owned_by_other_stages() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.")
     semantics = _advance_snapshot(run.snapshots[-1], "semantics")
-    run = replace_current_snapshot(run, semantics)
+    run = reconstruction_module._commit_snapshot(run, semantics)
     operations = _advance_snapshot(run.snapshots[-1], "operations")
     operations = operations.model_copy(
         update={"semantics": hypothesis("a replacement from the wrong stage")}
     )
 
     with pytest.raises(ValueError, match="must preserve the current semantics"):
-        replace_current_snapshot(run, operations)
+        reconstruction_module._commit_snapshot(run, operations)
 
 
 def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
@@ -324,9 +421,9 @@ def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
     assert len(updated.snapshots) == 2
     assert current.round == 1
     assert current.last_completed_stage is None
-    assert current.semantics == run.snapshots[-1].semantics
-    assert current.operations == run.snapshots[-1].operations
-    assert current.program_source == run.snapshots[-1].program_source
+    assert current.semantics is None
+    assert current.operations is None
+    assert current.program_source is None
     assert current.verification is None
     assert current.open_tickets[0].ticket_id == "ticket_001_shape_mismatch"
     assert current.open_tickets[0].subject == report.findings[0]
@@ -341,7 +438,7 @@ def test_accepted_or_invalid_audit_does_not_open_a_round() -> None:
 
     with pytest.raises(ValueError, match="accepted audit"):
         open_next_round(run, accepted)
-    with pytest.raises(AuditCrossValidationError, match="must use 'ret_hole'"):
+    with pytest.raises(DeliverableValidationError, match="must use 'ret_hole'"):
         open_next_round(run, invalid)
 
     assert run.model_dump_json() == original_json
