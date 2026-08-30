@@ -15,8 +15,11 @@ from zeroshot.pipeline.messages.contracts.audit import (
 )
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     BootstrapWork,
+    CodingSubmission,
+    OperationSubmission,
     ReconstructionRun,
     ReconstructionSnapshot,
+    SemanticSubmission,
     Ticket,
     TicketResponse,
 )
@@ -112,6 +115,63 @@ def _snapshot(
         program_source=verification.source if verification is not None else None,
         verification=verification,
     )
+
+
+def test_semantics_and_operations_accept_their_concrete_deliverables() -> None:
+    semantics = _semantics()
+    operations = _operations()
+
+    semantic_submission = SemanticSubmission(
+        deliverable=semantics,
+        responses=_responses("ticket_bootstrap", "semantics"),
+    )
+    operation_submission = OperationSubmission(
+        deliverable=operations,
+        responses=_responses("ticket_bootstrap", "operations"),
+    )
+
+    assert semantic_submission.deliverable is semantics
+    assert operation_submission.deliverable is operations
+
+
+def test_coding_requires_an_explicit_null_deliverable() -> None:
+    responses = _responses("ticket_bootstrap", "coding")
+
+    submission = CodingSubmission(deliverable=None, responses=responses)
+
+    assert submission.deliverable is None
+    with pytest.raises(ValidationError):
+        CodingSubmission.model_validate({"responses": responses})
+    with pytest.raises(ValidationError):
+        CodingSubmission(deliverable="model.py", responses=responses)
+
+
+def test_a_stage_submission_rejects_empty_responses_and_extra_fields() -> None:
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        SemanticSubmission(deliverable=_semantics(), responses=[])
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SemanticSubmission.model_validate(
+            {
+                "deliverable": _semantics(),
+                "responses": _responses("ticket_bootstrap", "semantics"),
+                "commentary": "not part of the submission contract",
+            }
+        )
+
+
+def test_each_stage_submission_exposes_its_concrete_json_schema() -> None:
+    semantic_schema = SemanticSubmission.model_json_schema()
+    operation_schema = OperationSubmission.model_json_schema()
+    coding_schema = CodingSubmission.model_json_schema()
+
+    assert semantic_schema["properties"]["deliverable"]["$ref"].endswith(
+        "/SemanticHypothesis"
+    )
+    assert operation_schema["properties"]["deliverable"]["$ref"].endswith(
+        "/OperationPlan"
+    )
+    assert coding_schema["properties"]["deliverable"]["type"] == "null"
 
 
 def test_a_round_checkpoint_requires_every_ticket_response_in_stage_order() -> None:

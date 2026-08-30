@@ -116,6 +116,29 @@ class Ticket(BaseModel):
         return self
 
 
+class StageSubmission[T](BaseModel):
+    """One stage's artifact and its response to every open ticket."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    deliverable: T = Field(
+        ...,
+        description="The complete artifact submitted by this reasoning stage.",
+    )
+    responses: list[TicketResponse] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Exactly one response for every ticket open in the current round. "
+            "The pipeline validates the ticket IDs against the current snapshot."
+        ),
+    )
+
+SemanticSubmission = StageSubmission[SemanticHypothesis]
+OperationSubmission = StageSubmission[OperationPlan]
+CodingSubmission = StageSubmission[None]  # deliverable is deferred to VerifyOutputResult
+
+
 class ReconstructionSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
