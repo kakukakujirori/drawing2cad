@@ -15,11 +15,10 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-type ReasoningStage = Literal[
-    "semantics",
-    "operations",
-    "coding",
-]
+from zeroshot.pipeline.messages.contracts.stages import (
+    PipelineStage,
+    ReasoningStage,
+)
 
 type RevisionAction = Literal[
     "add",
@@ -39,9 +38,9 @@ _CODE_NAME = re.compile(r"^ret_[a-z][a-z0-9_]*$|^result$")
 
 def _valid_member_name(stage: ReasoningStage, name: str) -> bool:
     pattern = {
-        "semantics": _SEMANTIC_NAME,
-        "operations": _OPERATION_NAME,
-        "coding": _CODE_NAME,
+        PipelineStage.SEMANTICS: _SEMANTIC_NAME,
+        PipelineStage.OPERATIONS: _OPERATION_NAME,
+        PipelineStage.CODING: _CODE_NAME,
     }[stage]
     return pattern.fullmatch(name) is not None
 
@@ -132,9 +131,7 @@ class RevisionRequest(BaseModel):
         if len(set(self.proposed_names)) != len(self.proposed_names):
             raise ValueError("proposed_names must not contain duplicates")
         invalid_names = [
-            name
-            for name in self.proposed_names
-            if not _valid_member_name(stage, name)
+            name for name in self.proposed_names if not _valid_member_name(stage, name)
         ]
         if invalid_names:
             raise ValueError(
@@ -217,9 +214,7 @@ class Backtrace(BaseModel):
     )
     revision_request: RevisionRequest = Field(
         ...,
-        description=(
-            "The revision requested at the final cause reached by this path."
-        ),
+        description=("The revision requested at the final cause reached by this path."),
     )
 
     @model_validator(mode="after")
@@ -243,9 +238,7 @@ class AuditFinding(BaseModel):
 
     name: str = Field(
         ...,
-        description=(
-            "A finding_... lower_snake_case name unique within this report."
-        ),
+        description=("A finding_... lower_snake_case name unique within this report."),
     )
     observation: str = Field(
         ...,
@@ -261,7 +254,7 @@ class AuditFinding(BaseModel):
             "an artifact path, canonical semantic reference, operation name or "
             "field, code result variable, or verification-report field. These are "
             "references only, not explanations."
-        )
+        ),
     )
     backtraces: list[Backtrace] = Field(
         ...,
@@ -294,9 +287,7 @@ class AuditReport(BaseModel):
 
     accepted: bool = Field(
         ...,
-        description=(
-            "True only when no reasoning-stage output requires correction."
-        ),
+        description=("True only when no reasoning-stage output requires correction."),
     )
     findings: list[AuditFinding] = Field(
         ...,

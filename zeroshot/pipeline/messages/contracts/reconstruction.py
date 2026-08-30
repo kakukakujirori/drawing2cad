@@ -11,16 +11,23 @@ from pydantic import (
     model_validator,
 )
 
-from zeroshot.pipeline.messages.contracts.audit import (
-    AuditFinding,
-    ReasoningStage,
-)
+from zeroshot.pipeline.messages.contracts.audit import AuditFinding
 from zeroshot.pipeline.messages.contracts.operations import OperationPlan
 from zeroshot.pipeline.messages.contracts.semantics import SemanticHypothesis
+from zeroshot.pipeline.messages.contracts.stages import (
+    REASONING_STAGES,
+    PipelineStage,
+    ReasoningStage,
+)
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 
 _TICKET_ID = re.compile(r"^ticket_[a-z0-9][a-z0-9_]*$")
 _RUN_ID = re.compile(r"^run_[a-z0-9][a-z0-9_]*$")
+_ARTIFACT_BY_STAGE = {
+    PipelineStage.SEMANTICS: "semantics",
+    PipelineStage.OPERATIONS: "operations",
+    PipelineStage.CODING: "program_source",
+}
 
 
 class TicketResponse(BaseModel):
@@ -78,8 +85,7 @@ class Ticket(BaseModel):
     ticket_id: str = Field(
         ...,
         description=(
-            "The stable ticket_... identifier assigned by the pipeline for "
-            "this round."
+            "The stable ticket_... identifier assigned by the pipeline for this round."
         ),
     )
     subject: BootstrapWork | AuditFinding = Field(
@@ -105,9 +111,7 @@ class Ticket(BaseModel):
         stages: list[ReasoningStage] = []
         for response in self.responses:
             if response.ticket_id != self.ticket_id:
-                raise ValueError(
-                    "every response must refer to its containing ticket"
-                )
+                raise ValueError("every response must refer to its containing ticket")
             stages.append(response.stage)
 
         if len(stages) != len(set(stages)):
@@ -134,9 +138,11 @@ class StageSubmission[T](BaseModel):
         ),
     )
 
+
 SemanticSubmission = StageSubmission[SemanticHypothesis]
 OperationSubmission = StageSubmission[OperationPlan]
-CodingSubmission = StageSubmission[None]  # deliverable is deferred to VerifyOutputResult
+CodingSubmission = StageSubmission[None]
+# NOTE: CodingSubmission deliverable is deferred to VerifyOutputResult
 
 
 class ReconstructionSnapshot(BaseModel):
@@ -210,13 +216,12 @@ class ReconstructionSnapshot(BaseModel):
         # A stage is complete only after it has answered every open ticket.
         # Responses are a chronological list, so no stage may be skipped or
         # appear before its predecessor.
-        _FINISHED_STAGES: dict[ReasoningStage | None, tuple[ReasoningStage, ...]] = {
-            None: (),
-            "semantics": ("semantics",),
-            "operations": ("semantics", "operations"),
-            "coding": ("semantics", "operations", "coding"),
-        }
-        expected_stages = _FINISHED_STAGES[self.last_completed_stage]
+        completed_count = (
+            0
+            if self.last_completed_stage is None
+            else REASONING_STAGES.index(self.last_completed_stage) + 1
+        )
+        expected_stages = REASONING_STAGES[:completed_count]
         for ticket in self.open_tickets:
             actual_stages = tuple(response.stage for response in ticket.responses)
             if actual_stages != expected_stages:
@@ -227,19 +232,10 @@ class ReconstructionSnapshot(BaseModel):
 
         # Previous-round artifacts remain in ReconstructionRun and must not
         # fill a stage that has not completed in this round.
-        unavailable_artifacts: dict[
-            ReasoningStage | None,
-            tuple[str, ...],
-        ] = {
-            None: ("semantics", "operations", "program_source"),
-            "semantics": ("operations", "program_source"),
-            "operations": ("program_source",),
-            "coding": (),
-        }
         premature = [
-            artifact
-            for artifact in unavailable_artifacts[self.last_completed_stage]
-            if getattr(self, artifact) is not None
+            _ARTIFACT_BY_STAGE[stage]
+            for stage in REASONING_STAGES[completed_count:]
+            if getattr(self, _ARTIFACT_BY_STAGE[stage]) is not None
         ]
         if premature:
             raise ValueError(
@@ -248,27 +244,19 @@ class ReconstructionSnapshot(BaseModel):
             )
 
         # Stage integrity checks
-        if (
-            self.last_completed_stage in {"semantics", "operations", "coding"}
-            and self.semantics is None
-        ):
+        if PipelineStage.SEMANTICS in expected_stages and self.semantics is None:
             raise ValueError("semantics must exist after semantics")
 
-        if (
-            self.last_completed_stage in {"operations", "coding"}
-            and self.operations is None
-        ):
+        if PipelineStage.OPERATIONS in expected_stages and self.operations is None:
             raise ValueError("operations must exist after operations")
 
-        if self.last_completed_stage == "coding":
+        if self.last_completed_stage is PipelineStage.CODING:
             if self.verification is None:
                 raise ValueError("verification must exist after coding")
             if self.verification.status is ExecutionStatus.UNINITIALIZED:
                 raise ValueError("verification must be completed after coding")
         elif self.verification is not None:
-            raise ValueError(
-                "verification must be null until coding completes"
-            )
+            raise ValueError("verification must be null until coding completes")
 
         return self
 
@@ -306,14 +294,12 @@ class ReconstructionRun(BaseModel):
         rounds = [snapshot.round for snapshot in self.snapshots]
         expected_rounds = list(range(len(self.snapshots)))
         if rounds != expected_rounds:
-            raise ValueError(
-                f"snapshot rounds must be {expected_rounds}, got {rounds}"
-            )
+            raise ValueError(f"snapshot rounds must be {expected_rounds}, got {rounds}")
 
         incomplete_history = [
             snapshot.round
             for snapshot in self.snapshots[:-1]
-            if snapshot.last_completed_stage != "coding"
+            if snapshot.last_completed_stage is not PipelineStage.CODING
         ]
         if incomplete_history:
             raise ValueError(
@@ -333,9 +319,7 @@ class ReconstructionRun(BaseModel):
         if len(first_tickets) != 1 or not isinstance(
             first_tickets[0].subject, BootstrapWork
         ):
-            raise ValueError(
-                "round 0 must contain exactly one bootstrap ticket"
-            )
+            raise ValueError("round 0 must contain exactly one bootstrap ticket")
 
         later_bootstrap_tickets = [
             ticket.ticket_id

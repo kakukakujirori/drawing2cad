@@ -34,8 +34,17 @@ from zeroshot.pipeline.messages.contracts.semantics import (
     render_hypothesis,
     view_frame_sentence,
 )
+from zeroshot.pipeline.messages.contracts.stages import (
+    PIPELINE_STAGES,
+    REASONING_STAGES,
+    PipelineStage,
+    ReasoningStage,
+    next_stage,
+)
 
 __all__ = [
+    "PIPELINE_STAGES",
+    "REASONING_STAGES",
     "VIEW_FRAME",
     "Axis",
     "ClaimSource",
@@ -48,12 +57,15 @@ __all__ = [
     "OperationVerb",
     "Parameter",
     "ParameterName",
+    "PipelineStage",
+    "ReasoningStage",
     "SemanticFeature",
     "SemanticHypothesis",
     "View",
     "ViewEvidence",
     "edge_style_for_linetype",
     "linearise",
+    "next_stage",
     "operation_heading",
     "render_hypothesis",
     "render_plan",

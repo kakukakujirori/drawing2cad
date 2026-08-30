@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from typing import cast
 
 from zeroshot.pipeline.messages.contracts import (
     Operation,
@@ -12,7 +13,6 @@ from zeroshot.pipeline.messages.contracts.audit import (
     AuditReport,
     Backtrace,
     CausalHop,
-    ReasoningStage,
     StageOutputRef,
 )
 from zeroshot.pipeline.messages.contracts.reconstruction import (
@@ -24,6 +24,12 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     Ticket,
     TicketResponse,
 )
+from zeroshot.pipeline.messages.contracts.stages import (
+    REASONING_STAGES,
+    PipelineStage,
+    ReasoningStage,
+    next_stage,
+)
 from zeroshot.pipeline.verification import (
     ExecutionStatus,
     VerifyOutputResult,
@@ -31,21 +37,10 @@ from zeroshot.pipeline.verification import (
 )
 
 type Deliverable = (
-    SemanticSubmission
-    | OperationSubmission
-    | CodingSubmission
-    | AuditReport
+    SemanticSubmission | OperationSubmission | CodingSubmission | AuditReport
 )
 
-_NEXT_STAGE: Mapping[ReasoningStage | None, ReasoningStage] = {
-    None: "semantics",
-    "semantics": "operations",
-    "operations": "coding",
-}
-
-_REFERENCE_LIKE = re.compile(
-    r"\bsem_[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\b"
-)
+_REFERENCE_LIKE = re.compile(r"\bsem_[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\b")
 _COPIED_DECIMALS = 4
 _DECIMAL = re.compile(rf"\d+\.\d{{{_COPIED_DECIMALS},}}")
 _NAMED_AT_MOST = 3
@@ -73,30 +68,28 @@ def validate_deliverable(
     if not isinstance(output, StageSubmission):
         raise TypeError(f"unsupported deliverable type: {type(output).__name__}")
 
-    stage = _next_stage(snapshot.last_completed_stage)
+    stage = _next_reasoning_stage(snapshot.last_completed_stage)
     _validate_ticket_responses(
         output.responses,
         snapshot.open_tickets,
         expected_stage=stage,
     )
-    if stage != "coding" and verification is not None:
-        raise DeliverableValidationError(
-            f"{stage} must not submit verification"
-        )
+    if stage is not PipelineStage.CODING and verification is not None:
+        raise DeliverableValidationError(f"{stage} must not submit verification")
 
     match stage:
-        case "semantics":
+        case PipelineStage.SEMANTICS:
             if not isinstance(output.deliverable, SemanticHypothesis):
                 raise DeliverableValidationError(
                     "semantics must submit a SemanticHypothesis"
                 )
-        case "operations":
+        case PipelineStage.OPERATIONS:
             if not isinstance(output.deliverable, OperationPlan):
                 raise DeliverableValidationError(
                     "operations must submit an OperationPlan"
                 )
             _validate_operations(output.deliverable, snapshot)
-        case "coding":
+        case PipelineStage.CODING:
             if output.deliverable is not None:
                 raise DeliverableValidationError(
                     "coding must submit null because model.py is written "
@@ -105,15 +98,19 @@ def validate_deliverable(
             _validate_coding(snapshot, verification)
 
 
-def _next_stage(completed_stage: ReasoningStage | None) -> ReasoningStage:
-    try:
-        return _NEXT_STAGE[completed_stage]
-    except KeyError:
+def _next_reasoning_stage(
+    completed_stage: ReasoningStage | None,
+) -> ReasoningStage:
+    stage = next_stage(completed_stage)
+    if stage not in REASONING_STAGES:
         raise DeliverableValidationError(
             "a completed coding snapshot accepts only an AuditReport"
-        ) from None
+        )
+    return stage
+
 
 ################################################################
+
 
 def _validate_ticket_responses(
     responses: Sequence[TicketResponse],
@@ -132,9 +129,7 @@ def _validate_ticket_responses(
     missing = sorted(expected_ids - submitted_ids)
     unknown = sorted(submitted_ids - expected_ids)
     wrong_stage = sorted(
-        response.ticket_id
-        for response in responses
-        if response.stage != expected_stage
+        response.ticket_id for response in responses if response.stage != expected_stage
     )
 
     errors: list[str] = []
@@ -153,7 +148,9 @@ def _validate_ticket_responses(
     if errors:
         raise DeliverableValidationError("\n".join(errors))
 
+
 ################################################################
+
 
 def _validate_operations(
     operations: OperationPlan,
@@ -178,9 +175,7 @@ def _operation_plan_errors(
     """Cross-stage contradictions that neither artifact can check alone."""
     established = {feature.name for feature in hypothesis.proposal}
     built = {
-        semantic
-        for operation in plan.proposal
-        for semantic in operation.semantics
+        semantic for operation in plan.proposal for semantic in operation.semantics
     }
     valid_references = _semantic_parameter_addresses(hypothesis)
     held_numbers = _hypothesis_numbers(hypothesis)
@@ -257,13 +252,13 @@ def _transcribed_numbers(detail: str, held_numbers: Sequence[float]) -> list[str
     copied: list[str] = []
     for literal in _DECIMAL.findall(detail):
         places = len(literal.split(".")[1])
-        if any(
-            round(number, places) == float(literal) for number in held_numbers
-        ):
+        if any(round(number, places) == float(literal) for number in held_numbers):
             copied.append(literal)
     return copied
 
+
 ################################################################
+
 
 def _validate_coding(
     snapshot: ReconstructionSnapshot,
@@ -274,13 +269,9 @@ def _validate_coding(
             "coding requires a terminal verification result"
         )
     if verification.status is ExecutionStatus.UNINITIALIZED:
-        raise DeliverableValidationError(
-            "coding verification must be terminal"
-        )
+        raise DeliverableValidationError("coding verification must be terminal")
     if snapshot.operations is None:
-        raise DeliverableValidationError(
-            "coding requires an integrated OperationPlan"
-        )
+        raise DeliverableValidationError("coding requires an integrated OperationPlan")
 
     # A missing or syntactically invalid source is already represented by a
     # terminal verification failure and must remain auditable. When readable
@@ -299,17 +290,17 @@ def _validate_coding(
             f"result_assigned={program_check.result_assigned}"
         )
 
+
 ################################################################
+
 
 def _validate_audit_report(
     report: AuditReport,
     snapshot: ReconstructionSnapshot,
 ) -> None:
     """Reject an audit report that contradicts the audited stage outputs."""
-    if snapshot.last_completed_stage != "coding":
-        raise DeliverableValidationError(
-            "audit requires a completed coding snapshot"
-        )
+    if snapshot.last_completed_stage is not PipelineStage.CODING:
+        raise DeliverableValidationError("audit requires a completed coding snapshot")
 
     backtraces = tuple(
         backtrace for finding in report.findings for backtrace in finding.backtraces
@@ -332,9 +323,9 @@ def _validate_audit_report(
     )
 
     known_members = {
-        "semantics": semantic_names,
-        "operations": set(operations_by_name),
-        "coding": coding_names,
+        PipelineStage.SEMANTICS: semantic_names,
+        PipelineStage.OPERATIONS: set(operations_by_name),
+        PipelineStage.CODING: coding_names,
     }
     errors = [coding_error] if coding_error is not None else []
     errors.extend(_missing_reference_errors(references, known_members))
@@ -378,7 +369,7 @@ def _inspect_coding_outputs(
 ) -> tuple[set[str], str | None]:
     """Return named code outputs and any syntax failure that hides them."""
     needs_named_outputs = any(
-        reference.stage == "coding" and reference.name is not None
+        reference.stage is PipelineStage.CODING and reference.name is not None
         for reference in references
     )
     if not needs_named_outputs or program_source is None or operations is None:
@@ -414,11 +405,11 @@ def _program_output_names(
 
 def _missing_reference_errors(
     references: Iterable[StageOutputRef],
-    known_members: Mapping[str, set[str]],
+    known_members: Mapping[PipelineStage, set[str]],
 ) -> list[str]:
     """Report each absent named output once, in first-reference order."""
     errors: list[str] = []
-    seen: set[tuple[str, str | None]] = set()
+    seen: set[tuple[ReasoningStage, str | None]] = set()
     for reference in references:
         key = (reference.stage, reference.name)
         if key in seen:
@@ -439,7 +430,7 @@ def _missing_reference_errors(
 def _causal_hop_error(
     hop: CausalHop,
     *,
-    known_members: Mapping[str, set[str]],
+    known_members: Mapping[PipelineStage, set[str]],
     operations_by_name: Mapping[str, Operation],
 ) -> str | None:
     """Validate only causal relations represented by an explicit contract."""
@@ -456,7 +447,7 @@ def _causal_hop_error(
     ):
         return None
 
-    if effect.stage == "coding" and cause.stage == "operations":
+    if effect.stage is PipelineStage.CODING and cause.stage is PipelineStage.OPERATIONS:
         expected_return = f"ret_{cause.name.removeprefix('op_')}"
         if effect.name != expected_return:
             return (
@@ -464,7 +455,10 @@ def _causal_hop_error(
                 f"{cause.name!r} must use {expected_return!r}"
             )
 
-    elif effect.stage == "operations" and cause.stage == "operations":
+    elif (
+        effect.stage is PipelineStage.OPERATIONS
+        and cause.stage is PipelineStage.OPERATIONS
+    ):
         operation = operations_by_name[effect.name]
         if cause.name not in operation.depends_on:
             return (
@@ -472,7 +466,10 @@ def _causal_hop_error(
                 f"not supported by {effect.name}.depends_on"
             )
 
-    elif effect.stage == "operations" and cause.stage == "semantics":
+    elif (
+        effect.stage is PipelineStage.OPERATIONS
+        and cause.stage is PipelineStage.SEMANTICS
+    ):
         operation = operations_by_name[effect.name]
         if cause.name not in operation.semantics:
             return (

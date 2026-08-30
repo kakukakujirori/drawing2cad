@@ -471,7 +471,10 @@ class SemanticFeature(BaseModel):
                 "the drawing supports is a guess, and the exact numbers a "
                 "later stage builds from live in the evidence"
             )
-        for group, members in (("geometry", self.geometry), ("evidence", self.evidence)):
+        for group, members in (
+            ("geometry", self.geometry),
+            ("evidence", self.evidence),
+        ):
             names = [member.name for member in members]
             duplicated = sorted({name for name in names if names.count(name) > 1})
             if duplicated:

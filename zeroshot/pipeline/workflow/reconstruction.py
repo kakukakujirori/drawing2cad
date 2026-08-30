@@ -9,7 +9,6 @@ from zeroshot.pipeline.messages.contracts import OperationPlan, SemanticHypothes
 from zeroshot.pipeline.messages.contracts.audit import (
     AuditFinding,
     AuditReport,
-    ReasoningStage,
 )
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     BootstrapWork,
@@ -20,18 +19,16 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     SemanticSubmission,
     Ticket,
 )
+from zeroshot.pipeline.messages.contracts.stages import (
+    REASONING_STAGES,
+    PipelineStage,
+    ReasoningStage,
+    next_stage,
+)
 from zeroshot.pipeline.verification import VerifyOutputResult
 from zeroshot.pipeline.workflow.validate_deliverable import validate_deliverable
 
-type ReasoningSubmission = (
-    SemanticSubmission | OperationSubmission | CodingSubmission
-)
-
-_NEXT_STAGE: dict[ReasoningStage | None, ReasoningStage] = {
-    None: "semantics",
-    "semantics": "operations",
-    "operations": "coding",
-}
+type ReasoningSubmission = SemanticSubmission | OperationSubmission | CodingSubmission
 
 # ---------------------------------------------------------------------------
 # Pure lifecycle transitions
@@ -114,7 +111,9 @@ def advance_reconstruction(
     """Validate and atomically integrate one reasoning-stage submission."""
     current = run.snapshots[-1]
     validate_deliverable(submission, current, verification=verification)
-    stage = _NEXT_STAGE[current.last_completed_stage]
+    stage = next_stage(current.last_completed_stage)
+    if stage not in REASONING_STAGES:
+        raise ValueError("a completed coding snapshot cannot advance again")
 
     responses_by_ticket = {
         response.ticket_id: response for response in submission.responses
@@ -136,11 +135,11 @@ def advance_reconstruction(
     program_source = current.program_source
     integrated_verification = current.verification
     match stage:
-        case "semantics":
+        case PipelineStage.SEMANTICS:
             semantics = cast(SemanticHypothesis, submission.deliverable)
-        case "operations":
+        case PipelineStage.OPERATIONS:
             operations = cast(OperationPlan, submission.deliverable)
-        case "coding":
+        case PipelineStage.CODING:
             integrated_verification = cast(VerifyOutputResult, verification)
             program_source = integrated_verification.source
 
@@ -163,12 +162,14 @@ def _commit_snapshot(
     """Commit one structurally valid current-round stage transition."""
     current = run.snapshots[-1]
 
-    if current.last_completed_stage == "coding":
+    if current.last_completed_stage is PipelineStage.CODING:
         raise ValueError("a completed coding snapshot is immutable")
     if snapshot.round != current.round:
         raise ValueError("replacement must belong to the current round")
 
-    expected_stage = _NEXT_STAGE[current.last_completed_stage]
+    expected_stage = next_stage(current.last_completed_stage)
+    if expected_stage not in REASONING_STAGES:
+        raise ValueError("a completed coding snapshot cannot be replaced")
     if snapshot.last_completed_stage != expected_stage:
         raise ValueError(
             f"current round must advance from {current.last_completed_stage!r} "
@@ -221,9 +222,9 @@ def _require_only_stage_artifact_changed(
 ) -> None:
     """A stage may replace its own artifact but not an upstream/downstream one."""
     owned_artifact = {
-        "semantics": "semantics",
-        "operations": "operations",
-        "coding": "program_source",
+        PipelineStage.SEMANTICS: "semantics",
+        PipelineStage.OPERATIONS: "operations",
+        PipelineStage.CODING: "program_source",
     }[stage]
     for artifact in ("semantics", "operations", "program_source"):
         if artifact == owned_artifact:

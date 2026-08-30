@@ -1,7 +1,6 @@
 from collections.abc import Mapping, Sequence
 from typing import (
     Any,
-    Literal,
     NotRequired,
     TypedDict,
     cast,
@@ -19,10 +18,12 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     ReconstructionRun,
     SemanticSubmission,
 )
+from zeroshot.pipeline.messages.contracts.stages import (
+    PipelineStage,
+    ReasoningStage,
+)
 from zeroshot.pipeline.workflow.components.agent import AgentState
 from zeroshot.pipeline.workflow.components.fanout_reduce import FanoutReduceState
-
-type ReasoningStage = Literal["semantics", "operations", "coding"]
 
 
 class ReconstructionState(TypedDict):
@@ -47,9 +48,9 @@ class ReconstructionState(TypedDict):
 # while the operation planner and coder are plain agents. The one place that
 # knows the three shapes.
 _LEAD_TRANSCRIPT: Mapping[ReasoningStage, tuple[str, str | None]] = {
-    "semantics": ("semantics_state", "reducer_state"),
-    "operations": ("operations_state", None),
-    "coding": ("coding_state", None),
+    PipelineStage.SEMANTICS: ("semantics_state", "reducer_state"),
+    PipelineStage.OPERATIONS: ("operations_state", None),
+    PipelineStage.CODING: ("coding_state", None),
 }
 
 
@@ -117,4 +118,6 @@ def _custom_state_types(*root_schemas: type) -> tuple[type, ...]:
     return tuple(collected[key] for key in sorted(collected))
 
 
-CUSTOM_STATE_TYPES = _custom_state_types(ReconstructionState)
+# ReasoningStage is a Literal of enum members, which generic annotation
+# traversal cannot discover as a class by itself.
+CUSTOM_STATE_TYPES = _custom_state_types(ReconstructionState, PipelineStage)

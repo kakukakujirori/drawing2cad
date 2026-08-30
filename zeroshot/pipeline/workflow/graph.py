@@ -2,7 +2,7 @@ import re
 from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import PurePosixPath
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Protocol, cast
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
@@ -27,6 +27,12 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     SemanticSubmission,
     StageSubmission,
 )
+from zeroshot.pipeline.messages.contracts.stages import (
+    REASONING_STAGES,
+    PipelineStage,
+    ReasoningStage,
+    next_stage,
+)
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import (
     create_load_image_tool,
@@ -47,7 +53,6 @@ from zeroshot.pipeline.workflow.reconstruction import (
     start_reconstruction,
 )
 from zeroshot.pipeline.workflow.state import (
-    ReasoningStage,
     ReconstructionState,
     carry_thread,
     lead_transcript,
@@ -58,7 +63,6 @@ from zeroshot.pipeline.workflow.validate_deliverable import (
 )
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
-type PipelineStage = ReasoningStage | Literal["audit"]
 
 
 class AgentBuilder(Protocol):
@@ -184,7 +188,7 @@ def create_reconstruction_graph(
     # Round initialization and common stage input
     # ------------------------------------------------------------------
 
-    def initialize_reconstruction(state: ReconstructionState) -> dict[str, Any]:
+    def initialize(state: ReconstructionState) -> dict[str, Any]:
         """Create and persist round zero before any model reads its tickets."""
         if state.get("reconstruction") is not None:
             return {}
@@ -218,7 +222,7 @@ def create_reconstruction_graph(
         """Build the same round/ticket view for every reasoning stage."""
         snapshot = current_snapshot(state)
         instruction = build_instruction(
-            f"{stage}/round",
+            f"{stage.value}/round",
             **prompt_context,
             current_round=str(snapshot.round),
             **extra_context,
@@ -227,8 +231,8 @@ def create_reconstruction_graph(
         if validation_error := state.get("stage_validation_error"):
             feedback = HumanMessage(
                 content=(
-                    f"[{stage.title()} Validation Error]\n"
-                    f"Your previous {stage} stage output was rejected. "
+                    f"[{stage.value.title()} Validation Error]\n"
+                    f"Your previous {stage.value} stage output was rejected. "
                     "Return the corrected complete output using this feedback:\n\n"
                     f"{validation_error}"
                 )
@@ -256,7 +260,7 @@ def create_reconstruction_graph(
                 **previous,
                 "invocation_instruction": build_stage_instruction(
                     state,
-                    "semantics",
+                    PipelineStage.SEMANTICS,
                     include_input=(not previous or compact_between_stages is not None),
                 ),
             },
@@ -269,7 +273,7 @@ def create_reconstruction_graph(
 
     def run_operations(state: ReconstructionState, config: RunnableConfig):
         snapshot = current_snapshot(state)
-        if snapshot.last_completed_stage != "semantics":
+        if snapshot.last_completed_stage is not PipelineStage.SEMANTICS:
             raise RuntimeError("operations requires integrated semantics")
 
         previous = state.get("operations_state") or {}
@@ -277,7 +281,7 @@ def create_reconstruction_graph(
             *list(previous.get("messages") or []),
             build_stage_instruction(
                 state,
-                "operations",
+                PipelineStage.OPERATIONS,
                 include_input=(not previous or compact_between_stages is not None),
             ),
         ]
@@ -296,7 +300,7 @@ def create_reconstruction_graph(
 
     def run_coding(state: ReconstructionState, config: RunnableConfig):
         snapshot = current_snapshot(state)
-        if snapshot.last_completed_stage != "operations":
+        if snapshot.last_completed_stage is not PipelineStage.OPERATIONS:
             raise RuntimeError("coding requires integrated operations")
 
         previous = state.get("coding_state") or {}
@@ -304,7 +308,7 @@ def create_reconstruction_graph(
             *list(previous.get("messages") or []),
             build_stage_instruction(
                 state,
-                "coding",
+                PipelineStage.CODING,
                 include_input=(not previous or compact_between_stages is not None),
             ),
         ]
@@ -361,7 +365,7 @@ def create_reconstruction_graph(
             raise RuntimeError("stage integration requires reconstruction")
 
         verification = None
-        if current_snapshot(state).last_completed_stage == "operations":
+        if current_snapshot(state).last_completed_stage is PipelineStage.OPERATIONS:
             if not isinstance(submission, CodingSubmission):
                 return _rejected_stage_submission(
                     state,
@@ -396,11 +400,10 @@ def create_reconstruction_graph(
                 state.get("stage_validation_failure_count", 0)
                 <= max_stage_validation_retries
             ):
-                return {
-                    None: "semantics",
-                    "semantics": "operations",
-                    "operations": "coding",
-                }[snapshot.last_completed_stage]
+                retry_stage = next_stage(snapshot.last_completed_stage)
+                if retry_stage not in REASONING_STAGES:
+                    raise RuntimeError("no reasoning stage is available to retry")
+                return retry_stage.value
             return "__end__"
 
         completed = snapshot.last_completed_stage
@@ -410,11 +413,10 @@ def create_reconstruction_graph(
             )
         if share_thread:
             return _handover_node(completed)
-        return {
-            "semantics": "operations",
-            "operations": "coding",
-            "coding": "audit",
-        }[completed]
+        following = next_stage(completed)
+        if following is None:
+            raise RuntimeError("coding must be followed by audit")
+        return following.value
 
     # ------------------------------------------------------------------
     # Audit validation and round transition
@@ -422,7 +424,7 @@ def create_reconstruction_graph(
 
     def run_audit(state: ReconstructionState, config: RunnableConfig):
         snapshot = current_snapshot(state)
-        if snapshot.last_completed_stage != "coding":
+        if snapshot.last_completed_stage is not PipelineStage.CODING:
             raise RuntimeError("audit requires a completed coding snapshot")
         verification = snapshot.verification
         if verification is None:
@@ -437,7 +439,7 @@ def create_reconstruction_graph(
         previous = state.get("audit_state") or {}
         instruction = build_stage_instruction(
             state,
-            "audit",
+            PipelineStage.AUDIT,
             include_input=not previous,
             attempt_dir=attempt_dir,
         )
@@ -501,11 +503,11 @@ def create_reconstruction_graph(
                 state.get("stage_validation_failure_count", 0)
                 <= max_stage_validation_retries
             ):
-                return "audit"
+                return PipelineStage.AUDIT.value
             return "__end__"
 
         if current_snapshot(state).last_completed_stage is None:
-            return "semantics"
+            return PipelineStage.SEMANTICS.value
         return "__end__"
 
     # ------------------------------------------------------------------
@@ -523,32 +525,32 @@ def create_reconstruction_graph(
             )
         return carry_thread(state, thread)
 
-    def _handover_node(stage: str) -> str:
-        return stage + "_handover"
+    def _handover_node(stage: ReasoningStage) -> str:
+        return stage.value + "_handover"
 
     # Construct a graph
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
-    workflow.add_node("initialize_reconstruction", initialize_reconstruction)
-    workflow.add_node("semantics", run_semantics)
-    workflow.add_node("operations", run_operations)
-    workflow.add_node("coding", run_coding)
-    workflow.add_node("audit", run_audit)
+    workflow.add_node("initialize", initialize)
+    workflow.add_node(PipelineStage.SEMANTICS.value, run_semantics)
+    workflow.add_node(PipelineStage.OPERATIONS.value, run_operations)
+    workflow.add_node(PipelineStage.CODING.value, run_coding)
+    workflow.add_node(PipelineStage.AUDIT.value, run_audit)
     workflow.add_node("integrate_stage_submission", integrate_stage_submission)
     workflow.add_node("integrate_audit_report", integrate_audit_report)
 
     if share_thread:
-        for stage in ["semantics", "operations", "coding"]:
+        for stage in REASONING_STAGES:
             workflow.add_node(_handover_node(stage), partial(handover, stage=stage))
-        workflow.add_edge(_handover_node("semantics"), "operations")
-        workflow.add_edge(_handover_node("operations"), "coding")
-        workflow.add_edge(_handover_node("coding"), "audit")
+            following = next_stage(stage)
+            if following is None:
+                raise RuntimeError(f"{stage.value} has no successor")
+            workflow.add_edge(_handover_node(stage), following.value)
 
-    workflow.add_edge(START, "initialize_reconstruction")
-    workflow.add_edge("initialize_reconstruction", "semantics")
-    workflow.add_edge("semantics", "integrate_stage_submission")
-    workflow.add_edge("operations", "integrate_stage_submission")
-    workflow.add_edge("coding", "integrate_stage_submission")
-    workflow.add_edge("audit", "integrate_audit_report")
+    workflow.add_edge(START, "initialize")
+    workflow.add_edge("initialize", PipelineStage.SEMANTICS.value)
+    for stage in REASONING_STAGES:
+        workflow.add_edge(stage.value, "integrate_stage_submission")
+    workflow.add_edge(PipelineStage.AUDIT.value, "integrate_audit_report")
     workflow.add_conditional_edges(
         "integrate_stage_submission",
         after_stage_integration,

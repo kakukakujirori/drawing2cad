@@ -35,9 +35,7 @@ def check_program(
     tree = ast.parse(source, filename=filename, mode="exec")
 
     assigned_names = {
-        name
-        for statement in tree.body
-        for name in _assigned_names(statement)
+        name for statement in tree.body for name in _assigned_names(statement)
     }
     assigned_returns = {name for name in assigned_names if name.startswith("ret_")}
     result_assigned = "result" in assigned_names
