@@ -8,13 +8,12 @@ written down in the wrong order.
 """
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from enum import StrEnum
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from zeroshot.pipeline.messages.contracts.fingerprint import fingerprint
 from zeroshot.pipeline.messages.contracts.semantics import (
     Parameter,
     SemanticFeature,
@@ -300,17 +299,6 @@ def linearise(plan: OperationPlan) -> list[Operation]:
 _REFERENCE = re.compile(
     r"\b(sem_[a-z][a-z0-9_]*)\.((?:geo|ev)_[a-z][a-z0-9_]*)\.([a-z_]+)\b(?!\.)"
 )
-_REFERENCE_LIKE = re.compile(
-    r"\bsem_[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\b"
-)
-
-# A number written to this many decimal places did not come from anybody's
-# head. Below it, `25` and `1.5` are the planner's own words and are left alone.
-_COPIED_DECIMALS = 4
-_DECIMAL = re.compile(rf"\d+\.\d{{{_COPIED_DECIMALS},}}")
-
-# How many of a fault's examples to name before counting the rest.
-_NAMED_AT_MOST = 3
 
 
 def _parameters_of(
@@ -354,7 +342,8 @@ def resolve_reference(text: str, hypothesis: SemanticHypothesis) -> str:
     A vector remains one parameter, so `sem_base.ev_front_edge.start` resolves
     to its whole `[x y]` pair. Long lists are expanded too: a spline's exact poles are more
     useful to the coder than an address it then has to search for elsewhere.
-    An absent reference is left standing; plan review refuses it before coding.
+    An absent reference is left standing; contextual validation refuses it
+    before coding.
     """
     by_name = {feature.name: feature for feature in hypothesis.proposal}
 
@@ -368,121 +357,6 @@ def resolve_reference(text: str, hypothesis: SemanticHypothesis) -> str:
         return f"{match[0]} ({render_parameter_values(parameters[0].values)})"
 
     return _REFERENCE.sub(substitute, text)
-
-
-def _unresolved(detail: str, by_name: Mapping[str, SemanticFeature]) -> list[str]:
-    """The references in `detail` that do not name exactly one parameter."""
-    broken = []
-    for token in _REFERENCE_LIKE.finditer(detail):
-        match = _REFERENCE.fullmatch(token[0])
-        if match is None:
-            broken.append(token[0])
-            continue
-        feature = by_name.get(match[1])
-        if feature is None or len(_parameters_of(feature, match[2], match[3])) != 1:
-            broken.append(match[0])
-    return broken
-
-
-def _transcribed(detail: str, held: Iterable[float]) -> list[str]:
-    """The numbers in `detail` that the hypothesis already holds.
-
-    Matched at the precision the planner wrote, so a value rounded on the way
-    across is caught alongside one copied whole. Numbers the planner worked out
-    for itself -- half a width, a clearance -- match nothing and are left alone,
-    which is what makes this safe to refuse on.
-    """
-    held = list(held)
-    copied = []
-    for literal in _DECIMAL.findall(detail):
-        places = len(literal.split(".")[1])
-        if any(round(number, places) == float(literal) for number in held):
-            copied.append(literal)
-    return copied
-
-
-def _numbers_in(hypothesis: SemanticHypothesis) -> list[float]:
-    return [
-        number
-        for feature in hypothesis.proposal
-        for parameters in (
-            [p for claim in feature.geometry for p in claim.parameters]
-            + [p for reading in feature.evidence for p in reading.parameters]
-        )
-        for number in parameters.values
-    ]
-
-
-class PlanReview(BaseModel):
-    """Everything wrong with a plan that only the hypothesis can reveal.
-
-    Four faults, one reading, because they are all the same kind of thing: a
-    claim the plan makes about an answer produced by another stage, which
-    neither answer can check alone. `uncovered` is the one that would otherwise
-    go unnoticed -- a feature established and then never built comes out as a
-    model that is whole and quietly missing something.
-
-    A model rather than a tuple because it is checkpointed: a `NamedTuple`
-    round-trips with its fields turned into lists, so a restored run would hold
-    something that compares unequal to what it saved.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    uncovered: list[str]
-    unknown: list[str]
-    transcribed: dict[str, list[str]]
-    unresolved: dict[str, list[str]]
-    of_hypothesis: str
-    of_plan: str
-
-    @property
-    def sound(self) -> bool:
-        return not (
-            self.uncovered or self.unknown or self.transcribed or self.unresolved
-        )
-
-    def describes(self, hypothesis: SemanticHypothesis, plan: OperationPlan) -> bool:
-        """Whether this still says anything about the pair given.
-
-        A reading kept in state outlives the work it measured. Asking it this
-        first is what lets the two be replaced without anyone having to
-        remember to throw the reading away.
-        """
-        return self.of_hypothesis == fingerprint(
-            hypothesis
-        ) and self.of_plan == fingerprint(plan)
-
-
-def review_plan(plan: OperationPlan, hypothesis: SemanticHypothesis) -> PlanReview:
-    """Read the plan against the hypothesis it was made from.
-
-    Both whole, rather than the hypothesis broken into its ids and its
-    fingerprint: split apart they are two things that have to be about the same
-    answer with nothing to check that they are, which is the shape of mistake
-    this reading exists to catch.
-    """
-    established = {feature.name for feature in hypothesis.proposal}
-    built = {sem for operation in plan.proposal for sem in operation.semantics}
-    by_name = {feature.name: feature for feature in hypothesis.proposal}
-    held = _numbers_in(hypothesis)
-
-    return PlanReview(
-        uncovered=sorted(established - built),
-        unknown=sorted(built - established),
-        transcribed={
-            operation.name: copied
-            for operation in plan.proposal
-            if (copied := _transcribed(operation.detail, held))
-        },
-        unresolved={
-            operation.name: broken
-            for operation in plan.proposal
-            if (broken := _unresolved(operation.detail, by_name))
-        },
-        of_hypothesis=fingerprint(hypothesis),
-        of_plan=fingerprint(plan),
-    )
 
 
 def operation_heading(operation: Operation, *, produces: str = "") -> str:
@@ -533,47 +407,3 @@ def render_plan(plan: OperationPlan, hypothesis: SemanticHypothesis) -> str:
         )
     lines.append(f"rationale: {plan.rationale}")
     return "\n".join(lines)
-
-
-def render_plan_review(review: PlanReview) -> str:
-    """What to tell the planner about a plan the hypothesis contradicts.
-
-    Named rather than counted throughout: "sem_main_bore" is something to go
-    and plan, where "two features are missing" sends the stage back to compare
-    two lists it has already been given.
-    """
-    faults = []
-    if review.uncovered:
-        named = ", ".join(review.uncovered)
-        faults.append(
-            f"The hypothesis establishes {named}, and no operation in the plan "
-            "builds them. Add the operations they take, or say in the rationale "
-            "why the part is complete without them."
-        )
-    if review.unknown:
-        named = ", ".join(review.unknown)
-        faults.append(
-            f"The plan cites {named}, which the hypothesis does not contain. "
-            "Cite the features it does have."
-        )
-    for operation, copied in sorted(review.transcribed.items()):
-        # A first plan can hold well over a hundred of these, and naming every
-        # one would bury the instruction under the evidence for it.
-        named = ", ".join(copied[:_NAMED_AT_MOST])
-        if len(copied) > _NAMED_AT_MOST:
-            named += f" and {len(copied) - _NAMED_AT_MOST} more"
-        faults.append(
-            f"{operation} writes out {named}, which the hypothesis already "
-            "holds. Cite it as sem_<feature>.geo_<claim>.<parameter> or "
-            "sem_<feature>.ev_<reading>.<parameter> instead; the number is put "
-            "in for you, and a number retyped is a number that can be mistyped."
-        )
-    for operation, broken in sorted(review.unresolved.items()):
-        named = ", ".join(broken)
-        faults.append(
-            f"{operation} refers to {named}, which does not identify exactly "
-            "one parameter in the hypothesis. Use the member name shown there, "
-            "such as sem_main_bore.geo_cylinder.radius or "
-            "sem_main_bore.ev_front_circle.center."
-        )
-    return " ".join(faults)

@@ -1,13 +1,12 @@
 """Contextual validation of stage outputs against a reconstruction snapshot."""
 
+import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
     SemanticHypothesis,
-    render_plan_review,
-    review_plan,
 )
 from zeroshot.pipeline.messages.contracts.audit import (
     AuditReport,
@@ -43,6 +42,13 @@ _NEXT_STAGE: Mapping[ReasoningStage | None, ReasoningStage] = {
     "semantics": "operations",
     "operations": "coding",
 }
+
+_REFERENCE_LIKE = re.compile(
+    r"\bsem_[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\b"
+)
+_COPIED_DECIMALS = 4
+_DECIMAL = re.compile(rf"\d+\.\d{{{_COPIED_DECIMALS},}}")
+_NAMED_AT_MOST = 3
 
 
 class DeliverableValidationError(ValueError):
@@ -107,6 +113,7 @@ def _next_stage(completed_stage: ReasoningStage | None) -> ReasoningStage:
             "a completed coding snapshot accepts only an AuditReport"
         ) from None
 
+################################################################
 
 def _validate_ticket_responses(
     responses: Sequence[TicketResponse],
@@ -146,6 +153,7 @@ def _validate_ticket_responses(
     if errors:
         raise DeliverableValidationError("\n".join(errors))
 
+################################################################
 
 def _validate_operations(
     operations: OperationPlan,
@@ -158,10 +166,104 @@ def _validate_operations(
 
     # The submitted plan is the operations candidate; the snapshot contains
     # the semantics already integrated earlier in this same round.
-    review = review_plan(operations, snapshot.semantics)
-    if not review.sound:
-        raise DeliverableValidationError(render_plan_review(review))
+    errors = _operation_plan_errors(operations, snapshot.semantics)
+    if errors:
+        raise DeliverableValidationError(" ".join(errors))
 
+
+def _operation_plan_errors(
+    plan: OperationPlan,
+    hypothesis: SemanticHypothesis,
+) -> list[str]:
+    """Cross-stage contradictions that neither artifact can check alone."""
+    established = {feature.name for feature in hypothesis.proposal}
+    built = {
+        semantic
+        for operation in plan.proposal
+        for semantic in operation.semantics
+    }
+    valid_references = _semantic_parameter_addresses(hypothesis)
+    held_numbers = _hypothesis_numbers(hypothesis)
+    errors: list[str] = []
+
+    if uncovered := sorted(established - built):
+        named = ", ".join(uncovered)
+        errors.append(
+            f"The hypothesis establishes {named}, and no operation in the plan "
+            "builds them. Add the operations they take, or say in the rationale "
+            "why the part is complete without them."
+        )
+
+    if unknown := sorted(built - established):
+        named = ", ".join(unknown)
+        errors.append(
+            f"The plan cites {named}, which the hypothesis does not contain. "
+            "Cite the features it does have."
+        )
+
+    for operation in sorted(plan.proposal, key=lambda item: item.name):
+        copied = _transcribed_numbers(operation.detail, held_numbers)
+        if not copied:
+            continue
+        named = ", ".join(copied[:_NAMED_AT_MOST])
+        if len(copied) > _NAMED_AT_MOST:
+            named += f" and {len(copied) - _NAMED_AT_MOST} more"
+        errors.append(
+            f"{operation.name} writes out {named}, which the hypothesis already "
+            "holds. Cite it as sem_<feature>.geo_<claim>.<parameter> or "
+            "sem_<feature>.ev_<reading>.<parameter> instead; the number is put "
+            "in for you, and a number retyped is a number that can be mistyped."
+        )
+
+    for operation in sorted(plan.proposal, key=lambda item: item.name):
+        unresolved = [
+            match[0]
+            for match in _REFERENCE_LIKE.finditer(operation.detail)
+            if match[0] not in valid_references
+        ]
+        if unresolved:
+            named = ", ".join(unresolved)
+            errors.append(
+                f"{operation.name} refers to {named}, which does not identify "
+                "exactly one parameter in the hypothesis. Use the member name "
+                "shown there, such as sem_main_bore.geo_cylinder.radius or "
+                "sem_main_bore.ev_front_circle.center."
+            )
+
+    return errors
+
+
+def _semantic_parameter_addresses(hypothesis: SemanticHypothesis) -> set[str]:
+    return {
+        f"{feature.name}.{member.name}.{parameter.name.value}"
+        for feature in hypothesis.proposal
+        for member in (*feature.geometry, *feature.evidence)
+        for parameter in member.parameters
+    }
+
+
+def _hypothesis_numbers(hypothesis: SemanticHypothesis) -> list[float]:
+    return [
+        number
+        for feature in hypothesis.proposal
+        for member in (*feature.geometry, *feature.evidence)
+        for parameter in member.parameters
+        for number in parameter.values
+    ]
+
+
+def _transcribed_numbers(detail: str, held_numbers: Sequence[float]) -> list[str]:
+    """Numbers copied at high precision from the semantic hypothesis."""
+    copied: list[str] = []
+    for literal in _DECIMAL.findall(detail):
+        places = len(literal.split(".")[1])
+        if any(
+            round(number, places) == float(literal) for number in held_numbers
+        ):
+            copied.append(literal)
+    return copied
+
+################################################################
 
 def _validate_coding(
     snapshot: ReconstructionSnapshot,
@@ -197,6 +299,7 @@ def _validate_coding(
             f"result_assigned={program_check.result_assigned}"
         )
 
+################################################################
 
 def _validate_audit_report(
     report: AuditReport,
