@@ -24,8 +24,15 @@ hydra:
 # with holes in it.
 on_existing: fail
 
+# Optional reconstruction history whose latest snapshot has completed
+# semantics but not operations. The new run copies that validated snapshot
+# into its own workspace and begins with operation planning.
+semantics_seed_path: null
+
 console:
   _target_: zeroshot.pipeline.event_logging.ConsoleReporter
+  muted_graph_nodes:
+    - propose_1
 
 artifact_presenter:
   _target_: zeroshot.pipeline.messages.ArtifactPresenter

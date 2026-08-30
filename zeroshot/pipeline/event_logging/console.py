@@ -61,12 +61,23 @@ class _ModelSection:
 class ConsoleReporter:
     """Render live pipeline activity without changing the canonical event log."""
 
-    def __init__(self, console: Console | None = None) -> None:
+    def __init__(
+        self,
+        console: Console | None = None,
+        muted_graph_nodes: Sequence[str] = (),
+    ) -> None:
         self.console = console or Console(stderr=True, highlight=False)
+        self._muted_graph_nodes = frozenset(muted_graph_nodes)
         # One per model call in flight, keyed by the run the pieces belong to.
         # An abandoned attempt leaves its entry behind unopened, which costs a
         # dict slot and nothing else.
         self._model_sections: dict[str, _ModelSection] = {}
+
+    def _is_muted(self, namespace: Sequence[str]) -> bool:
+        """Whether a configured graph node occurs in this nested call path."""
+        return bool(self._muted_graph_nodes) and any(
+            entry.split(":", 1)[0] in self._muted_graph_nodes for entry in namespace
+        )
 
     @contextmanager
     def run_context(
@@ -96,9 +107,10 @@ class ConsoleReporter:
             )
 
     def render_event(self, event: RunEvent) -> None:
+        if self._is_muted(event.get("namespace", ())):
+            return
         name = event["event"]
         data = event["data"]
-
         if name == "input":
             self.console.print("\n[input]", style="bold cyan", markup=False)
             self._render_messages(data.get("messages", []))
@@ -196,6 +208,8 @@ class ConsoleReporter:
         never come.  A call whose attempt was abandoned mid-flight simply stops
         contributing, and the next call renders normally.
         """
+        if self._is_muted(item.get("namespace", ())):
+            return
         if not item["streamed"]:
             self._render_whole_message(item)
             return
