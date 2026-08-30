@@ -28,22 +28,15 @@ workflow:
     checkpointer: false
 
   operations_agent_builder:
-    _target_: zeroshot.pipeline.workflow.create_proposer_reviewer_loop
+    _target_: zeroshot.pipeline.workflow.create_agent
     _partial_: true
+    role: operation_planner
+    model: ${model}
 
-    proposer_role: operation_planner
-    proposer_model: ${model}
-    reviewer_role: operation_reviewer
-    reviewer_model: ${model}
     response_format_strategy: provider
-    max_proposer_turns_per_revision: 10
-    max_reviewer_turns_per_revision: 10
+    max_turns: 10
     announce_turns: true
-    reset_proposer_turns_per_revision: true
-    reset_reviewer_turns_per_revision: true
-    max_revisions: 0  # Audit after coding is more informative
-    announce_revisions: false
-    reset_revision_count_when_reentrant: true
+    reset_turns_when_reentrant: true
     model_retries: 5
     checkpointer: false
 
@@ -75,6 +68,5 @@ workflow:
 
   # How many times the audit may send the run back to an earlier stage. Every
   # send-back re-runs everything downstream of its target, so this bounds the
-  # whole graph's cycle. `max_revisions` above cannot: that counts rounds
-  # inside one stage.
+  # whole graph's cycle rather than one agent invocation.
   max_audit_reject_count: 1
