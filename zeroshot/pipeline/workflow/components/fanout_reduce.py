@@ -45,7 +45,7 @@ def _proposal_lines(header: str, proposal: BaseModel) -> list[str]:
     structured geometry or a list of sentences and the merge prompt reads the
     same either way.
     """
-    return [f"[{header} Proposal]", proposal.model_dump_json(indent=2)]
+    return [f"[{header} Answer]", proposal.model_dump_json(indent=2)]
 
 
 def _workspace_message(workdir: str) -> HumanMessage:
@@ -65,16 +65,16 @@ def _other_proposals_message(proposals: Sequence[BaseModel]) -> HumanMessage:
     """Ask the head proposer to reconcile only the other models' answers."""
     lines = [
         "[Reduction Request]",
-        "Other models produced the proposals below. Compare them with your own",
-        "preceding proposal, if you produced one, and return one final",
-        "consolidated proposal:",
+        "Other models produced the structured answers below. Compare them with",
+        "your own preceding answer, if you produced one, and return one final",
+        "consolidated answer:",
         "",
-        "- Merge equivalent or duplicate proposals into one item.",
-        "- Adopt proposals absent from your answer when they appear correct.",
-        "- Resolve conflicting proposals in favor of the conclusion most likely",
+        "- Merge equivalent or duplicate content.",
+        "- Adopt content absent from your answer when it appears correct.",
+        "- Resolve conflicting answers in favor of the conclusion most likely",
         "  to be correct.",
-        "- Return the complete final proposal list, not a review or a list of",
-        "  changes, and update the rationale to explain the resolved answer.",
+        "- Return the complete final structured answer, not a review or a list",
+        "  of changes.",
         "- Fill every field the schema requires for the merged answer. Where it",
         "  requires values to be unique or to refer to one another, repair them",
         "  across the merge rather than carrying two numberings.",
@@ -90,8 +90,8 @@ def _current_proposal_message(proposal: BaseModel) -> HumanMessage:
     """Make the workflow's adopted answer explicit before a revision."""
     lines = [
         "[Revision Context]",
-        "The workflow currently adopts the proposal below as its answer. Treat",
-        "it as the proposal to revise, even if the preceding transcript ended",
+        "The workflow currently adopts the structured answer below. Treat it",
+        "as the answer to revise, even if the preceding transcript ended",
         "before you returned a final answer.",
         "",
         *_proposal_lines("Current", proposal),

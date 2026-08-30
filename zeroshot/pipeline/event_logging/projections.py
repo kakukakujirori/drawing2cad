@@ -249,13 +249,48 @@ class RunEventTransformer(StreamTransformer):
                         "message",
                         details,
                     )
-                if "last_verification" in update:
+                if "stage_submission" in update:
                     self._push(
                         event,
-                        "verification",
+                        "stage_submission",
                         {
                             "node": str(node),
-                            "report": _safe_value(update["last_verification"]),
+                            "submission": _safe_value(update["stage_submission"]),
+                        },
+                    )
+                if "reconstruction" in update:
+                    reconstruction = update["reconstruction"]
+                    snapshots = getattr(reconstruction, "snapshots", ())
+                    current = snapshots[-1] if snapshots else None
+                    verification = getattr(current, "verification", None)
+                    if verification is not None:
+                        self._push(
+                            event,
+                            "verification",
+                            {
+                                "node": str(node),
+                                "report": _safe_value(verification),
+                            },
+                        )
+                if "stage_validation_error" in update:
+                    self._push(
+                        event,
+                        "stage_validation",
+                        {
+                            "node": str(node),
+                            "error": _safe_value(update["stage_validation_error"]),
+                            "failure_count": _safe_value(
+                                update.get("stage_validation_failure_count")
+                            ),
+                        },
+                    )
+                if "audit_report" in update:
+                    self._push(
+                        event,
+                        "audit",
+                        {
+                            "node": str(node),
+                            "report": _safe_value(update.get("audit_report")),
                         },
                     )
                 # `lc_agent_name` arrives on the task-start event, while the

@@ -66,7 +66,10 @@ workflow:
     model_retries: 5
     checkpointer: false
 
-  # How many times the audit may send the run back to an earlier stage. Every
-  # send-back re-runs everything downstream of its target, so this bounds the
-  # whole graph's cycle rather than one agent invocation.
+  # How many rejected audits may open a fresh round. Every new round runs all
+  # three reasoning stages against the complete set of new tickets.
   max_audit_reject_count: 1
+
+  # Invalid structured stage submissions return to that stage with the
+  # validator's exact feedback. This bounds those graph-level retries.
+  max_stage_validation_retries: 3

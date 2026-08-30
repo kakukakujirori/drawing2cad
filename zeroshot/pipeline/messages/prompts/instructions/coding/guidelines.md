@@ -37,4 +37,4 @@ Guidelines:
 - Address every applicable point from review or audit feedback in the transcript.
 - Your turn budget is announced in the transcript as `[turn n/N]`. Turns increment when you use tools.
 
-Answer in prose, describing what the script builds and what, if anything, it could not reproduce.
+When you stop, return only the structured `CodingSubmission` requested by the current instruction.

@@ -1,11 +1,8 @@
-import operator
 from collections.abc import Mapping, Sequence
 from typing import (
-    Annotated,
     Any,
     Literal,
     NotRequired,
-    Self,
     TypedDict,
     cast,
     get_args,
@@ -13,70 +10,45 @@ from typing import (
 )
 
 from langchain_core.messages import AnyMessage
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import is_typeddict
 
-from zeroshot.pipeline.messages.contracts import (
-    OperationPlan,
-    PlanReview,
-    SemanticHypothesis,
+from zeroshot.pipeline.messages.contracts.audit import AuditReport
+from zeroshot.pipeline.messages.contracts.reconstruction import (
+    CodingSubmission,
+    OperationSubmission,
+    ReconstructionRun,
+    SemanticSubmission,
 )
-from zeroshot.pipeline.verification import VerifyOutputResult
 from zeroshot.pipeline.workflow.components.agent import AgentState
 from zeroshot.pipeline.workflow.components.fanout_reduce import FanoutReduceState
-from zeroshot.pipeline.workflow.components.proposer_reviewer import (
-    ProposerReviewerState,
-)
 
 type ReasoningStage = Literal["semantics", "operations", "coding"]
 
 
-class Audit(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    revise: ReasoningStage | None = Field(
-        ...,
-        description=(
-            "The earliest stage that must be redone. "
-            "None if the reconstruction is accepted."
-        ),
-    )
-    rationale: str = Field(
-        ...,
-        description=(
-            "Why the selected stage needs revision, what is wrong and what to change."
-            "It must be specific enough to act on without guessing."
-            "If `revise=None`, state why the reconstruction is accepted."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def require_rationale_for_redo(self) -> Self:
-        if self.revise is not None and not self.rationale.strip():
-            raise ValueError("rationale is required when a stage is revised")
-        return self
-
-
 class ReconstructionState(TypedDict):
     semantics_state: NotRequired[FanoutReduceState]
-    operations_state: NotRequired[ProposerReviewerState]
+    operations_state: NotRequired[AgentState]
     coding_state: NotRequired[AgentState]
     audit_state: NotRequired[AgentState]
 
-    semantic_hypothesis: NotRequired[SemanticHypothesis | None]
-    operation_plan: NotRequired[OperationPlan | None]
-    plan_review: NotRequired[PlanReview | None]
-    last_verification: NotRequired[VerifyOutputResult]
-    audit: NotRequired[Audit | None]
-    audit_reject_count: NotRequired[Annotated[int, operator.add]]
+    reconstruction: NotRequired[ReconstructionRun]
+    # Keep the concrete models inline: checkpoint type discovery walks this
+    # annotation and must see every runtime submission class.
+    stage_submission: NotRequired[
+        SemanticSubmission | OperationSubmission | CodingSubmission | None
+    ]
+    stage_validation_error: NotRequired[str | None]
+    stage_validation_failure_count: NotRequired[int]
+    audit_report: NotRequired[AuditReport | None]
 
 
 # Which agent carries the thread through each reasoning stage, and where its
 # transcript is kept: the fan-out continues its head proposer as the reducer,
-# the proposer-reviewer loop continues its proposer, and a plain agent is its
-# own.  The one place that knows the three shapes.
+# while the operation planner and coder are plain agents. The one place that
+# knows the three shapes.
 _LEAD_TRANSCRIPT: Mapping[ReasoningStage, tuple[str, str | None]] = {
     "semantics": ("semantics_state", "reducer_state"),
-    "operations": ("operations_state", "proposer_state"),
+    "operations": ("operations_state", None),
     "coding": ("coding_state", None),
 }
 

@@ -1,4 +1,4 @@
-import json
+import re
 from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import PurePosixPath
@@ -19,13 +19,13 @@ from zeroshot.pipeline.messages import (
     InputManifest,
     build_instruction,
 )
-from zeroshot.pipeline.messages.contracts import (
-    OperationPlan,
-    SemanticHypothesis,
-    render_hypothesis,
-    render_plan,
-    render_plan_review,
-    review_plan,
+from zeroshot.pipeline.messages.contracts.audit import AuditReport
+from zeroshot.pipeline.messages.contracts.reconstruction import (
+    CodingSubmission,
+    OperationSubmission,
+    ReconstructionSnapshot,
+    SemanticSubmission,
+    StageSubmission,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import (
@@ -40,15 +40,25 @@ from zeroshot.pipeline.verification import (
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
+from zeroshot.pipeline.workflow.reconstruction import (
+    advance_reconstruction,
+    open_next_round,
+    save_reconstruction,
+    start_reconstruction,
+)
 from zeroshot.pipeline.workflow.state import (
-    Audit,
     ReasoningStage,
     ReconstructionState,
     carry_thread,
     lead_transcript,
 )
+from zeroshot.pipeline.workflow.validate_deliverable import (
+    DeliverableValidationError,
+    validate_deliverable,
+)
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
+type PipelineStage = ReasoningStage | Literal["audit"]
 
 
 class AgentBuilder(Protocol):
@@ -59,16 +69,6 @@ class AgentBuilder(Protocol):
         prompt_context: Mapping[str, str],
         output_schema: type[BaseModel] | None = None,
         extra_middleware: Sequence[AgentMiddleware[Any, None, Any]] = (),
-    ) -> CompiledGraph: ...
-
-
-class ReasoningStageBuilder(Protocol):
-    def __call__(
-        self,
-        *,
-        tools: Sequence[BaseTool],
-        prompt_context: Mapping[str, str],
-        proposal_schema: type[BaseModel],
     ) -> CompiledGraph: ...
 
 
@@ -83,55 +83,9 @@ class FanoutReduceBuilder(Protocol):
     ) -> CompiledGraph: ...
 
 
-_STAGE_ORDER = ["semantics", "operations", "coding", "audit"]
-
-
-# audit rerouting
-def _invocation_reason(
-    state: ReconstructionState,
-    current_stage: ReasoningStage,
-) -> tuple[Literal["initial", "targeted_redo", "upstream_changed"], str]:
-    # The plan read against its hypothesis. Ahead of the audit, because a fault
-    # in the plan that is in state now outranks a verdict from a lap earlier.
-    # `describes` is what makes that safe: a reading left over from earlier
-    # work answers no and falls through, so nobody has to remember to delete it.
-    review = state.get("plan_review")
-    plan = state.get("operation_plan")
-    hypothesis = state.get("semantic_hypothesis")
-    faulty = (
-        review is not None
-        and plan is not None
-        and hypothesis is not None
-        and review.describes(hypothesis, plan)
-        and not review.sound
-    )
-    if current_stage == "operations" and faulty:
-        return "targeted_redo", render_plan_review(review)
-
-    audit = state.get("audit")
-    if audit is None:
-        return "initial", ""
-
-    restart_from = audit.revise
-    rationale = audit.rationale
-
-    if restart_from is None:
-        raise RuntimeError(
-            f"_invocation_reason called for {current_stage} after audit accept."
-        )
-    elif restart_from == current_stage:
-        return "targeted_redo", rationale
-    elif _STAGE_ORDER.index(restart_from) < _STAGE_ORDER.index(current_stage):
-        return "upstream_changed", rationale
-
-    raise RuntimeError(
-        f"{current_stage!r} cannot run after restart from {restart_from!r}"
-    )
-
-
 def create_reconstruction_graph(
     semantics_agent_builder: FanoutReduceBuilder,
-    operations_agent_builder: ReasoningStageBuilder,
+    operations_agent_builder: AgentBuilder,
     coding_agent_builder: AgentBuilder,
     audit_agent_builder: AgentBuilder,
     sandbox_runner: SandboxRunner,
@@ -141,14 +95,18 @@ def create_reconstruction_graph(
     input_manifest: InputManifest,
     output_filename: str = "model.py",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
+    reconstruction_history_filename: str = "reconstruction.json",
     max_audit_reject_count: int = 3,
+    max_stage_validation_retries: int = 3,
     share_thread: bool = False,
     compact_between_stages: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ):
     """Interpret and plan the part, implement it, then verify and audit it."""
-    if max_audit_reject_count <= 0:
-        raise ValueError(f"{max_audit_reject_count=} must be positive")
+    if max_audit_reject_count < 0:
+        raise ValueError(f"{max_audit_reject_count=} must be non-negative")
+    if max_stage_validation_retries < 0:
+        raise ValueError(f"{max_stage_validation_retries=} must be non-negative")
     if compact_between_stages is not None and not share_thread:
         raise ValueError(
             "compact_between_stages needs share_thread: with a transcript per "
@@ -156,11 +114,11 @@ def create_reconstruction_graph(
         )
 
     # Create tools
-    executor = CadQueryExecutor(sandbox_runner=sandbox_runner)
     basic_tools = [
         create_run_shell_tool(sandbox_runner, sandbox_workdir),
         create_load_image_tool(sandbox_workdir),
     ]
+    executor = CadQueryExecutor(sandbox_runner=sandbox_runner)
     verifier = OutputVerifier(
         executor=executor,
         workdir=sandbox_workdir,
@@ -176,12 +134,16 @@ def create_reconstruction_graph(
         "verification_dir": str(
             sandbox_workdir.sandbox_bind_dir / verification_dirname
         ),
+        # TODO: move to read-only directory (e.g., `inputs`)
+        "reconstruction_path": str(
+            sandbox_workdir.sandbox_bind_dir / reconstruction_history_filename
+        ),
     }
 
     semantics_agent = semantics_agent_builder(
         tools=basic_tools,
         prompt_context=prompt_context,
-        proposal_schema=SemanticHypothesis,
+        proposal_schema=SemanticSubmission,
         fanout_workdir_prefix=str(
             sandbox_workdir.sandbox_bind_dir / "semantic_hypothesis"
         ),
@@ -189,17 +151,18 @@ def create_reconstruction_graph(
     operations_agent = operations_agent_builder(
         tools=basic_tools,
         prompt_context=prompt_context,
-        proposal_schema=OperationPlan,
+        output_schema=OperationSubmission,
     )
     coding_agent = coding_agent_builder(
         tools=basic_tools,
         prompt_context=prompt_context,
+        output_schema=CodingSubmission,
         extra_middleware=[VerifyOnWriteMiddleware(verifier)],
     )
     audit_agent = audit_agent_builder(
         tools=basic_tools,
         prompt_context=prompt_context,
-        output_schema=Audit,
+        output_schema=AuditReport,
     )
 
     # prepare inputs (by calling it on-the-fly, prevent message_id duplication)
@@ -211,229 +174,343 @@ def create_reconstruction_graph(
             )
         )
 
-    # define nodes
-    def run_semantics(state: ReconstructionState, config: RunnableConfig):
-        previous = state.get("semantics_state") or {}
-        entry_reason, audit_rationale = _invocation_reason(state, "semantics")
+    def current_snapshot(state: ReconstructionState) -> ReconstructionSnapshot:
+        reconstruction = state.get("reconstruction")
+        if reconstruction is None:
+            raise RuntimeError("reconstruction has not been initialized")
+        return reconstruction.snapshots[-1]
 
-        proposer_instruction = build_instruction(
-            f"semantics/{entry_reason}",
-            **prompt_context,
-            rationale=audit_rationale,
-        )
-        if entry_reason == "initial" or compact_between_stages is not None:
-            # `merge_message_runs` merges multiple HumanMessages into one
-            (proposer_instruction,) = merge_message_runs(
-                [proposer_instruction, _prepare_input_message()]
-            )
+    # ------------------------------------------------------------------
+    # Round initialization and common stage input
+    # ------------------------------------------------------------------
 
-        # The first call fans out; later audit-driven calls revise through the
-        # reducer without re-running the independent proposers.
-        result = semantics_agent.invoke(
-            {
-                **previous,
-                "invocation_instruction": proposer_instruction,
-            },
-            config=_child_graph_config(config),
-        )
-
-        return {
-            "semantics_state": result,
-            "semantic_hypothesis": result.get("proposal"),
-        }
-
-    def after_semantics(
-        state: ReconstructionState,
-    ) -> Literal["operations", "__end__"]:
-        return (
-            "operations" if state.get("semantic_hypothesis") is not None else "__end__"
-        )
-
-    def run_operations(state: ReconstructionState, config: RunnableConfig):
-        semantic_hypothesis = state.get("semantic_hypothesis")
-        if semantic_hypothesis is None:
-            raise RuntimeError("operations requires semantic_hypothesis")
-        semantic_hypothesis_json = render_hypothesis(semantic_hypothesis)
-
-        previous = state.get("operations_state") or {}
-        entry_reason, audit_rationale = _invocation_reason(state, "operations")
-
-        proposer_instruction = build_instruction(
-            f"operations/{entry_reason}",
-            **prompt_context,
-            semantic_hypothesis=semantic_hypothesis_json,
-            rationale=audit_rationale,
-        )
-        reviewer_instruction = build_instruction(
-            "operations/review",
-            semantic_hypothesis=semantic_hypothesis_json,
-        )
-
-        if entry_reason == "initial" or compact_between_stages is not None:
-            # `merge_message_runs` merges multiple HumanMessages into one
-            (proposer_instruction,) = merge_message_runs(
-                [proposer_instruction, _prepare_input_message()]
-            )
-            (reviewer_instruction,) = merge_message_runs(
-                [reviewer_instruction, _prepare_input_message()]
-            )
-
-        # invoke (proposer_reviewer subgraph provides `xxx_entry_instruction`)
-        result = operations_agent.invoke(
-            {
-                **previous,
-                "proposer_entry_instruction": proposer_instruction,
-                "reviewer_entry_instruction": reviewer_instruction,
-            },
-            config=_child_graph_config(config),
-        )
-
-        return {
-            "operations_state": result,
-            "operation_plan": result.get("proposal"),
-        }
-
-    def check_plan(state: ReconstructionState) -> dict[str, Any]:
-        """Read the plan against the hypothesis it was made from.
-
-        The only place holding both, so the only place that can see a feature
-        the plan dropped, a feature it invented, a measurement it copied out
-        instead of citing, or a citation that stands for nothing.
-        """
-        hypothesis = state.get("semantic_hypothesis")
-        plan = state.get("operation_plan")
-        if hypothesis is None or plan is None:
+    def initialize_reconstruction(state: ReconstructionState) -> dict[str, Any]:
+        """Create and persist round zero before any model reads its tickets."""
+        if state.get("reconstruction") is not None:
             return {}
 
-        return {"plan_review": review_plan(plan, hypothesis)}
+        run_suffix = re.sub(
+            r"[^a-z0-9]+", "_", input_manifest.sample_id.casefold()
+        ).strip("_")
+        run = start_reconstruction(
+            run_id=f"run_{run_suffix or 'sample'}",
+            instruction="Reconstruct the input drawing as a CadQuery model.",
+        )
+        save_reconstruction(
+            sandbox_workdir.host_bind_dir / reconstruction_history_filename,
+            run,
+        )
+        return {
+            "reconstruction": run,
+            "stage_submission": None,
+            "stage_validation_error": None,
+            "stage_validation_failure_count": 0,
+            "audit_report": None,
+        }
 
-    def after_operations(
+    def build_stage_instruction(
         state: ReconstructionState,
-    ) -> Literal["coding", "operations", "__end__"]:
-        if state.get("operation_plan") is None:
-            return "__end__"
-        review = state.get("plan_review")
-        if review is None or review.sound:
-            return "coding"
-        return "operations"
-
-    def write_code(state: ReconstructionState, config: RunnableConfig):
-        semantic_hypothesis = state.get("semantic_hypothesis")
-        operation_plan = state.get("operation_plan")
-        if semantic_hypothesis is None or operation_plan is None:
-            raise RuntimeError(
-                "coding requires both semantic_hypothesis and operation_plan"
-            )
-
-        # add messages
-        previous = state.get("coding_state") or {}
-        messages = list(previous.get("messages") or [])
-
-        entry_reason, audit_rationale = _invocation_reason(state, "coding")
+        stage: PipelineStage,
+        *,
+        include_input: bool,
+        **extra_context: str,
+    ) -> HumanMessage:
+        """Build the same round/ticket view for every reasoning stage."""
+        snapshot = current_snapshot(state)
         instruction = build_instruction(
-            f"coding/{entry_reason}",
+            f"{stage}/round",
             **prompt_context,
-            semantic_hypothesis=render_hypothesis(semantic_hypothesis),
-            operation_plan=render_plan(operation_plan, semantic_hypothesis),
-            rationale=audit_rationale,
+            current_round=str(snapshot.round),
+            **extra_context,
         )
 
-        if entry_reason == "initial" or compact_between_stages is not None:
+        if validation_error := state.get("stage_validation_error"):
+            feedback = HumanMessage(
+                content=(
+                    f"[{stage.title()} Validation Error]\n"
+                    f"Your previous {stage} stage output was rejected. "
+                    "Return the corrected complete output using this feedback:\n\n"
+                    f"{validation_error}"
+                )
+            )
+            (instruction,) = cast(
+                list[HumanMessage],
+                merge_message_runs([instruction, feedback]),
+            )
+
+        if include_input:
             (instruction,) = cast(
                 list[HumanMessage],
                 merge_message_runs([instruction, _prepare_input_message()]),
             )
+        return instruction
 
-        messages.append(instruction)
+    # ------------------------------------------------------------------
+    # Reasoning-stage inference
+    # ------------------------------------------------------------------
 
-        # invoke
-        result = coding_agent.invoke(
-            {**previous, "messages": messages},
+    def run_semantics(state: ReconstructionState, config: RunnableConfig):
+        previous = state.get("semantics_state") or {}
+        result = semantics_agent.invoke(
+            {
+                **previous,
+                "invocation_instruction": build_stage_instruction(
+                    state,
+                    "semantics",
+                    include_input=(not previous or compact_between_stages is not None),
+                ),
+            },
             config=_child_graph_config(config),
         )
-        return {"coding_state": result}
+        return {
+            "semantics_state": result,
+            "stage_submission": result.get("proposal"),
+        }
 
-    def verify_final(state: ReconstructionState):
-        del state
-        # The report alone: the rendered views are feedback for whoever is
-        # still editing, and this runs after the coder has stopped.
-        report, _ = verifier.verify()
-        return {"last_verification": report}
+    def run_operations(state: ReconstructionState, config: RunnableConfig):
+        snapshot = current_snapshot(state)
+        if snapshot.last_completed_stage != "semantics":
+            raise RuntimeError("operations requires integrated semantics")
 
-    def after_verification(state: ReconstructionState) -> Literal["audit", "__end__"]:
-        """Whether an audit could still send the run back.
+        previous = state.get("operations_state") or {}
+        messages = [
+            *list(previous.get("messages") or []),
+            build_stage_instruction(
+                state,
+                "operations",
+                include_input=(not previous or compact_between_stages is not None),
+            ),
+        ]
+        result = operations_agent.invoke(
+            {
+                **previous,
+                "messages": messages,
+                "structured_response": None,
+            },
+            config=_child_graph_config(config),
+        )
+        return {
+            "operations_state": result,
+            "stage_submission": result.get("structured_response"),
+        }
 
-        Note that the inequality below includes "=", which means the final audit round
-        doesn't run because there is nobody consumes the audit result.
-        """
-        if state.get("audit_reject_count", 0) >= max_audit_reject_count:
+    def run_coding(state: ReconstructionState, config: RunnableConfig):
+        snapshot = current_snapshot(state)
+        if snapshot.last_completed_stage != "operations":
+            raise RuntimeError("coding requires integrated operations")
+
+        previous = state.get("coding_state") or {}
+        messages = [
+            *list(previous.get("messages") or []),
+            build_stage_instruction(
+                state,
+                "coding",
+                include_input=(not previous or compact_between_stages is not None),
+            ),
+        ]
+        result = coding_agent.invoke(
+            {
+                **previous,
+                "messages": messages,
+                "structured_response": None,
+            },
+            config=_child_graph_config(config),
+        )
+        return {
+            "coding_state": result,
+            "stage_submission": result.get("structured_response"),
+        }
+
+    # ------------------------------------------------------------------
+    # Reasoning-stage validation, integration, and routing
+    # ------------------------------------------------------------------
+
+    def _validation_failure(
+        state: ReconstructionState,
+        error: str,
+    ) -> dict[str, Any]:
+        return {
+            "stage_validation_error": error,
+            "stage_validation_failure_count": (
+                state.get("stage_validation_failure_count", 0) + 1
+            ),
+        }
+
+    def _rejected_stage_submission(
+        state: ReconstructionState,
+        error: str,
+    ) -> dict[str, Any]:
+        return {
+            **_validation_failure(state, error),
+            "stage_submission": None,
+        }
+
+    def integrate_stage_submission(
+        state: ReconstructionState,
+    ) -> dict[str, Any]:
+        """Validate and atomically integrate the pending reasoning output."""
+        submission = state.get("stage_submission")
+        if not isinstance(submission, StageSubmission):
+            return _rejected_stage_submission(
+                state,
+                "the reasoning stage did not return a StageSubmission",
+            )
+
+        reconstruction = state.get("reconstruction")
+        if reconstruction is None:
+            raise RuntimeError("stage integration requires reconstruction")
+
+        verification = None
+        if current_snapshot(state).last_completed_stage == "operations":
+            if not isinstance(submission, CodingSubmission):
+                return _rejected_stage_submission(
+                    state,
+                    "coding did not return a CodingSubmission",
+                )
+            verification, _ = verifier.verify()
+
+        try:
+            updated = advance_reconstruction(
+                reconstruction,
+                submission,
+                verification=verification,
+            )
+        except DeliverableValidationError as error:
+            return _rejected_stage_submission(state, str(error))
+
+        save_reconstruction(
+            sandbox_workdir.host_bind_dir / reconstruction_history_filename,
+            updated,
+        )
+        return {
+            "reconstruction": updated,
+            "stage_submission": None,
+            "stage_validation_error": None,
+            "stage_validation_failure_count": 0,
+        }
+
+    def after_stage_integration(state: ReconstructionState) -> str:
+        snapshot = current_snapshot(state)
+        if state.get("stage_validation_error") is not None:
+            if (
+                state.get("stage_validation_failure_count", 0)
+                <= max_stage_validation_retries
+            ):
+                return {
+                    None: "semantics",
+                    "semantics": "operations",
+                    "operations": "coding",
+                }[snapshot.last_completed_stage]
             return "__end__"
-        return "audit"
 
-    def audit_output(state: ReconstructionState, config: RunnableConfig):
-        """Judge the verified model, and say which stage owns any mismatch."""
-        semantic_hypothesis = state.get("semantic_hypothesis")
-        operation_plan = state.get("operation_plan")
-        verification = state.get("last_verification")
-        if semantic_hypothesis is None or operation_plan is None:
-            raise RuntimeError("audit requires semantic_hypothesis and operation_plan")
+        completed = snapshot.last_completed_stage
+        if completed is None:
+            raise RuntimeError(
+                "successful stage integration did not complete a reasoning stage"
+            )
+        if share_thread:
+            return _handover_node(completed)
+        return {
+            "semantics": "operations",
+            "operations": "coding",
+            "coding": "audit",
+        }[completed]
+
+    # ------------------------------------------------------------------
+    # Audit validation and round transition
+    # ------------------------------------------------------------------
+
+    def run_audit(state: ReconstructionState, config: RunnableConfig):
+        snapshot = current_snapshot(state)
+        if snapshot.last_completed_stage != "coding":
+            raise RuntimeError("audit requires a completed coding snapshot")
+        verification = snapshot.verification
         if verification is None:
-            raise RuntimeError("audit requires last_verification")
+            raise RuntimeError("audit requires verification")
 
         attempts_dir = sandbox_workdir.sandbox_bind_dir / verification_dirname
-        last_attempt_dir = str(
+        attempt_dir = str(
             attempts_dir / verification.verification_id
             if verification.verification_id is not None
             else attempts_dir
         )
-
-        # add messages
         previous = state.get("audit_state") or {}
-        messages = list(previous.get("messages") or [])
-
-        instruction = build_instruction(
+        instruction = build_stage_instruction(
+            state,
             "audit",
-            report=json.dumps(verification.serialize(), indent=2),
-            attempt_dir=last_attempt_dir,
-            output_path=str(sandbox_workdir.sandbox_bind_dir / output_filename),
-            semantic_hypothesis=render_hypothesis(semantic_hypothesis),
-            operation_plan=render_plan(operation_plan, semantic_hypothesis),
+            include_input=not previous,
+            attempt_dir=attempt_dir,
         )
-
-        if not messages:
-            # first time, so add input artifact messages
-            (instruction,) = cast(
-                list[HumanMessage],
-                merge_message_runs([instruction, _prepare_input_message()]),
-            )
-
-        messages.append(instruction)
-
-        # invoke
         result = audit_agent.invoke(
-            {**previous, "messages": messages},
+            {
+                **previous,
+                "messages": [
+                    *list(previous.get("messages") or []),
+                    instruction,
+                ],
+                "structured_response": None,
+            },
             config=_child_graph_config(config),
         )
-        audit = cast(Audit | None, result.get("structured_response"))
-
-        update: dict[str, Any] = {
+        return {
             "audit_state": result,
-            "audit": audit,
+            "audit_report": result.get("structured_response"),
         }
-        if audit is not None and audit.revise is not None:
-            update["audit_reject_count"] = 1
 
-        return update
+    def integrate_audit_report(state: ReconstructionState) -> dict[str, Any]:
+        """Validate an audit and atomically open its requested next round."""
+        report = state.get("audit_report")
+        if not isinstance(report, AuditReport):
+            return _validation_failure(
+                state,
+                "the auditor did not return an AuditReport",
+            )
+        try:
+            validate_deliverable(report, current_snapshot(state))
+        except DeliverableValidationError as error:
+            return _validation_failure(state, str(error))
 
-    def after_audit(
-        state: ReconstructionState,
-    ) -> Literal["semantics", "operations", "coding", "__end__"]:
-        audit = state.get("audit")
-        if audit is None or audit.revise is None:
+        if (
+            not report.accepted
+            and current_snapshot(state).round < max_audit_reject_count
+        ):
+            reconstruction = state.get("reconstruction")
+            if reconstruction is None:
+                raise RuntimeError("audit integration requires reconstruction")
+            updated = open_next_round(reconstruction, report)
+            save_reconstruction(
+                sandbox_workdir.host_bind_dir / reconstruction_history_filename,
+                updated,
+            )
+            return {
+                "reconstruction": updated,
+                "stage_submission": None,
+                "stage_validation_error": None,
+                "stage_validation_failure_count": 0,
+                "audit_report": None,
+            }
+
+        return {
+            "stage_validation_error": None,
+            "stage_validation_failure_count": 0,
+        }
+
+    def after_audit_integration(state: ReconstructionState) -> str:
+        if state.get("stage_validation_error") is not None:
+            if (
+                state.get("stage_validation_failure_count", 0)
+                <= max_stage_validation_retries
+            ):
+                return "audit"
             return "__end__"
-        # The budget is spent before the audit runs, not after it: `audit` is
-        # only reached while a send-back is still left.
-        return audit.revise
+
+        if current_snapshot(state).last_completed_stage is None:
+            return "semantics"
+        return "__end__"
+
+    # ------------------------------------------------------------------
+    # Graph construction
+    # ------------------------------------------------------------------
 
     # compaction after stage & carry thread through stages
     def handover(
@@ -449,37 +526,41 @@ def create_reconstruction_graph(
     def _handover_node(stage: str) -> str:
         return stage + "_handover"
 
-    def _exit(stage: str) -> str:
-        """Where a reasoning stage hands over to the rest of the graph."""
-        return _handover_node(stage) if share_thread else stage
-
     # Construct a graph
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
+    workflow.add_node("initialize_reconstruction", initialize_reconstruction)
     workflow.add_node("semantics", run_semantics)
     workflow.add_node("operations", run_operations)
-    workflow.add_node("check_plan", check_plan)
-    workflow.add_node("coding", write_code)
-    workflow.add_node("verify_final", verify_final)
-    workflow.add_node("audit", audit_output)
+    workflow.add_node("coding", run_coding)
+    workflow.add_node("audit", run_audit)
+    workflow.add_node("integrate_stage_submission", integrate_stage_submission)
+    workflow.add_node("integrate_audit_report", integrate_audit_report)
 
     if share_thread:
-        # broadcast states across all stages
         for stage in ["semantics", "operations", "coding"]:
             workflow.add_node(_handover_node(stage), partial(handover, stage=stage))
-            workflow.add_edge(stage, _handover_node(stage))
+        workflow.add_edge(_handover_node("semantics"), "operations")
+        workflow.add_edge(_handover_node("operations"), "coding")
+        workflow.add_edge(_handover_node("coding"), "audit")
 
-    workflow.add_edge(START, "semantics")
-    workflow.add_conditional_edges(_exit("semantics"), after_semantics)
-    workflow.add_edge(_exit("operations"), "check_plan")
-    workflow.add_conditional_edges("check_plan", after_operations)
-    workflow.add_edge(_exit("coding"), "verify_final")
-    workflow.add_conditional_edges("verify_final", after_verification)
-    workflow.add_conditional_edges("audit", after_audit)
+    workflow.add_edge(START, "initialize_reconstruction")
+    workflow.add_edge("initialize_reconstruction", "semantics")
+    workflow.add_edge("semantics", "integrate_stage_submission")
+    workflow.add_edge("operations", "integrate_stage_submission")
+    workflow.add_edge("coding", "integrate_stage_submission")
+    workflow.add_edge("audit", "integrate_audit_report")
+    workflow.add_conditional_edges(
+        "integrate_stage_submission",
+        after_stage_integration,
+    )
+    workflow.add_conditional_edges(
+        "integrate_audit_report",
+        after_audit_integration,
+    )
 
     graph = workflow.compile(checkpointer=checkpointer)
-    # Every send-back is another lap of the graph, and LangGraph's default
-    # ceiling is lower than the laps this budget allows.  Counted from the graph
-    # itself so that adding a node cannot leave the ceiling behind.
+    rounds = max_audit_reject_count + 1
+    attempts_per_stage = max_stage_validation_retries + 1
     return graph.with_config(
-        recursion_limit=len(workflow.nodes) * (max_audit_reject_count + 2)
+        recursion_limit=len(workflow.nodes) * rounds * attempts_per_stage + 10
     )
