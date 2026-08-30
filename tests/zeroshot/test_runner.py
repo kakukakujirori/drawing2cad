@@ -23,16 +23,24 @@ from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
-    SemanticHypothesis,
+)
+from zeroshot.pipeline.messages.contracts.reconstruction import (
+    CodingSubmission,
+    OperationSubmission,
+    SemanticSubmission,
+    TicketResponse,
 )
 from zeroshot.pipeline.runner import GraphFactory, PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
-from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
+from zeroshot.pipeline.verification import (
+    CadQueryExecutor,
+    StepRenderer,
+    VerifyOutputResult,
+)
 from zeroshot.pipeline.workflow import (
     StopReason,
     create_agent,
     create_fanout_reduce_graph,
-    create_proposer_reviewer_loop,
     create_reconstruction_graph,
 )
 
@@ -41,31 +49,23 @@ def _agent(role: str, model: BaseChatModel, **overrides: Any):
     return partial(create_agent, role=role, model=model, **overrides)
 
 
-_ACCEPTED = AIMessage(content='{"accept": true, "rationale": "matches"}')
-# Its own message, not a second reference to the one above: LangChain stamps an
-# id onto the object it is handed, so two roles sharing one would answer with
-# one id, and `add_messages` would keep a single message for both.
-_ACCEPTED_AUDIT = AIMessage(content='{"revise": null, "rationale": "built"}')
+_ACCEPTED_AUDIT = AIMessage(content='{"accepted": true, "findings": []}')
 
 
-def _reasoning_stage(proposer_role: str, reviewer_role: str, proposal: str):
-    """A reasoning stage scripted to agree at once.
-
-    The runner is what these tests are about, so each stage is reduced to the
-    shortest run that still hands the coder a settled artifact.
-    """
-    return partial(
-        create_proposer_reviewer_loop,
-        proposer_role=proposer_role,
-        proposer_model=ScriptedChatModel(responses=(AIMessage(content=proposal),)),
-        reviewer_role=reviewer_role,
-        reviewer_model=ScriptedChatModel(responses=(_ACCEPTED,)),
-        announce_turns=False,
-        max_revisions=1,
+def _ticket_response(stage: str, summary: str) -> TicketResponse:
+    return TicketResponse(
+        ticket_id="ticket_initial",
+        stage=stage,  # type: ignore[arg-type]
+        summary=summary,
     )
 
 
-_A_BOX = AIMessage(content=hypothesis("a box").model_dump_json())
+_A_BOX = AIMessage(
+    content=SemanticSubmission(
+        deliverable=hypothesis("a box"),
+        responses=[_ticket_response("semantics", "Established sem_feature_1.")],
+    ).model_dump_json()
+)
 
 
 def _semantic_stage():
@@ -81,16 +81,13 @@ def _semantic_stage():
             ScriptedChatModel(responses=(_A_BOX, _A_BOX)),
             ScriptedChatModel(responses=(_A_BOX,)),
         ],
-        proposal_schema=SemanticHypothesis,
         announce_turns=False,
     )
 
 
 def _operations_stage():
-    return _reasoning_stage(
-        "operation_planner",
-        "operation_reviewer",
-        OperationPlan(
+    submission = OperationSubmission(
+        deliverable=OperationPlan(
             proposal=[
                 Operation(
                     name="op_base",
@@ -101,31 +98,56 @@ def _operations_stage():
                 )
             ],
             rationale="one extrude",
-        ).model_dump_json(),
+        ),
+        responses=[_ticket_response("operations", "Established op_base.")],
+    )
+    return _agent(
+        "operation_planner",
+        ScriptedChatModel(responses=(AIMessage(content=submission.model_dump_json()),)),
+        announce_turns=False,
     )
 
 
-def _graph_factory(model: BaseChatModel, **overrides: Any) -> GraphFactory:
+_CODING_ANSWER = AIMessage(
+    content=CodingSubmission(
+        deliverable=None,
+        responses=[_ticket_response("coding", "Implemented ret_base and result.")],
+    ).model_dump_json()
+)
+
+
+def _graph_factory(
+    model: BaseChatModel,
+    *,
+    max_stage_validation_retries: int = 3,
+    **agent_overrides: Any,
+) -> GraphFactory:
     """The staged graph with a cast bound. A cast is a graph's own setting,
     so a run's config -- or a test -- binds it before the runner ever sees it."""
     return partial(
         create_reconstruction_graph,
         semantics_agent_builder=_semantic_stage(),
         operations_agent_builder=_operations_stage(),
-        coding_agent_builder=_agent("coder", model, **overrides),
+        coding_agent_builder=_agent("coder", model, **agent_overrides),
         audit_agent_builder=_agent(
             "output_auditor",
             ScriptedChatModel(responses=(_ACCEPTED_AUDIT,)),
             announce_turns=False,
         ),
+        max_stage_validation_retries=max_stage_validation_retries,
     )
 
 
 VALID_BOX_SOURCE = """\
 import cadquery as cq
 
-result = cq.Workplane("XY").box(10, 20, 30)
+ret_base = cq.Workplane("XY").box(10, 20, 30)
+result = ret_base
 """
+
+
+def _final_verification(result: Mapping[str, Any]) -> VerifyOutputResult | None:
+    return result["reconstruction"].snapshots[-1].verification
 
 
 def _message_text(message: BaseMessage) -> str:
@@ -237,7 +259,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
                     }
                 ],
             ),
-            AIMessage(content="done"),
+            _CODING_ANSWER,
         )
     )
     artifact_presenter = ArtifactPresenter(
@@ -261,6 +283,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
 
     result = runner.run_sample(manifest)
 
+    assert result is not None
     assert model.bound_tool_names == (
         "run_shell",
         "load_image",
@@ -362,7 +385,16 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     final_verification = next(
         event for event in events if event["event"] == "verification"
     )
-    assert final_verification["data"]["node"] == "verify_final"
+    assert final_verification["data"]["node"] == "integrate_stage_submission"
+    audit = next(
+        event
+        for event in events
+        if event["event"] == "audit" and event["data"]["report"] is not None
+    )
+    assert audit["data"] == {
+        "node": "audit",
+        "report": {"accepted": True, "findings": []},
+    }
     assert "verify_output" not in {event["data"].get("tool_name") for event in events}
     assert "output" not in {event["event"] for event in events}
 
@@ -445,7 +477,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
                     }
                 ],
             ),
-            AIMessage(content="done"),
+            _CODING_ANSWER,
         )
     )
     artifact_root = tmp_path / "artifacts"
@@ -468,7 +500,9 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
 
     result = runner.run_sample(manifest)
 
-    report = result["last_verification"]
+    assert result is not None
+    report = _final_verification(result)
+    assert report is not None
     assert report.status == "VERIFIED"
     # 000 is the build the coder's write triggered without asking for it; 001
     # is the workflow's own final verification of the same source.
@@ -476,7 +510,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     rendered_console = console_output.getvalue()
     assert "[node] model started — waiting" in rendered_console
     assert "tool call: run_shell" in rendered_console
-    assert "done" in rendered_console
+    assert "ticket_initial" in rendered_console
     assert "[verification]" in rendered_console
     assert "run completed" in rendered_console
 
@@ -535,7 +569,7 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
                     }
                 ],
             ),
-            AIMessage(content="done"),
+            _CODING_ANSWER,
         )
     )
     artifact_root = tmp_path / "artifacts"
@@ -549,6 +583,7 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
 
     result = runner.run_sample(manifest)
 
+    assert result is not None
     # The coder never asked to be told: the broken write is reported to it at
     # the start of the turn that repairs it, which is a turn it still has.
     reports = [
@@ -562,7 +597,8 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
     assert reports[0]["status"] == "REJECTED"
     assert reports[0]["verification_id"] == "000"
 
-    final_report = result["last_verification"]
+    final_report = _final_verification(result)
+    assert final_report is not None
     assert final_report.status == "VERIFIED"
     assert final_report.verification_id == "002"
 
@@ -580,9 +616,7 @@ def _runner_for_rerun(
     on_existing: str = "fail",
 ) -> PipelineRunner:
     return PipelineRunner(
-        graph_factory=_graph_factory(
-            ScriptedChatModel(responses=(AIMessage(content="done"),))
-        ),
+        graph_factory=_graph_factory(ScriptedChatModel(responses=(_CODING_ANSWER,))),
         artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
@@ -687,7 +721,7 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
             semantics_agent_builder=_semantic_stage(),
             operations_agent_builder=_operations_stage(),
             coding_agent_builder=_agent(
-                "coder", ScriptedChatModel(responses=(AIMessage(content="x"),))
+                "coder", ScriptedChatModel(responses=(_CODING_ANSWER,))
             ),
             audit_agent_builder=_agent(
                 "output_auditor", ScriptedChatModel(responses=(_ACCEPTED_AUDIT,))
@@ -740,7 +774,11 @@ def test_a_graphs_own_settings_reach_it_through_the_factory(tmp_path: Path) -> N
         sandbox_runner=_sandbox_runner(),
         artifact_root=tmp_path / "artifacts",
         renderer=_renderer(),
-        graph_factory=_graph_factory(coder, max_turns=2),
+        graph_factory=_graph_factory(
+            coder,
+            max_turns=2,
+            max_stage_validation_retries=0,
+        ),
     )
 
     result = runner.run_sample(manifest)
@@ -846,7 +884,12 @@ def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         renderer=_renderer(),
-        graph_factory=_graph_factory(model, max_turns=2, announce_turns=True),
+        graph_factory=_graph_factory(
+            model,
+            max_turns=2,
+            announce_turns=True,
+            max_stage_validation_retries=0,
+        ),
     ).run_sample(_manifest_without_renders(tmp_path, "announced"))
 
     assert [
@@ -883,7 +926,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
         artifact_root=artifact_root,
         renderer=_renderer(),
         graph_factory=_graph_factory(
-            ScriptedChatModel(responses=(AIMessage(content="done"),)),
+            ScriptedChatModel(responses=(_CODING_ANSWER,)),
             announce_turns=False,
         ),
     ).run_sample(_manifest_without_renders(tmp_path, "prompted"))
@@ -900,7 +943,6 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
         "semantic_hypothesizer",
         "semantic_hypothesizer",
         "operation_planner",
-        "operation_reviewer",
         "coder",
         "output_auditor",
     ]
@@ -920,7 +962,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
         for block in message["content"]
         if isinstance(block, Mapping) and block.get("type") == "text"
     )
-    assert "Implement the current semantic hypothesis" in instruction
+    assert "Implement the complete CadQuery program" in instruction
     # The run's paths reach the stage that needs them through its instruction,
     # not through a role that every stage of a shared thread would read.
     assert "/work/model.py" in instruction
@@ -950,7 +992,7 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             ),
             "BUDGET_EXHAUSTED",
         ),
-        "stopped-by-agent": ((AIMessage(content="done"),), "COMPLETED"),
+        "stopped-by-agent": ((_CODING_ANSWER,), "COMPLETED"),
     }
 
     for sample_id, (responses, expected) in cases.items():
@@ -961,7 +1003,9 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             artifact_root=artifact_root,
             renderer=_renderer(),
             graph_factory=_graph_factory(
-                ScriptedChatModel(responses=responses), max_turns=2
+                ScriptedChatModel(responses=responses),
+                max_turns=2,
+                max_stage_validation_retries=0,
             ),
         ).run_sample(_manifest_without_renders(tmp_path, sample_id))
 
@@ -973,10 +1017,10 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
         expected_reasons = {
             "semantic_hypothesizer": "COMPLETED",
             "operation_planner": "COMPLETED",
-            "operation_reviewer": "COMPLETED",
             "coder": expected,
-            "output_auditor": "COMPLETED",
         }
+        if expected == "COMPLETED":
+            expected_reasons["output_auditor"] = "COMPLETED"
         assert {
             event["data"]["role"]: event["data"]["reason"] for event in events
         } == expected_reasons, sample_id

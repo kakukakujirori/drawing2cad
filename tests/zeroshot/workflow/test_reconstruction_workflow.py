@@ -280,7 +280,9 @@ def test_named_code_references_require_parseable_source() -> None:
         validate_deliverable(report, _snapshot(source))
 
 
-def test_advance_reconstruction_integrates_each_stage_without_mutating_the_run() -> None:
+def test_advance_reconstruction_integrates_each_stage_without_mutating_the_run() -> (
+    None
+):
     initial = start_reconstruction("run_example", "Reconstruct the part.")
     original_json = initial.model_dump_json()
 
@@ -307,9 +309,7 @@ def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
 
 def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     completed = _completed_run()
-    first_finding = _report(
-        target=_ref("semantics", "sem_feature_1")
-    ).findings[0]
+    first_finding = _report(target=_ref("semantics", "sem_feature_1")).findings[0]
     second_finding = first_finding.model_copy(
         update={"name": "finding_second_mismatch"}
     )

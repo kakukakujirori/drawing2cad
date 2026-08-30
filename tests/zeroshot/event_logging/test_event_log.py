@@ -5,7 +5,12 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from zeroshot.pipeline.event_logging.jsonl import JsonlEventWriter, has_run_completed
-from zeroshot.pipeline.event_logging.projections import _safe_value
+from zeroshot.pipeline.event_logging.projections import (
+    RunEvent,
+    RunEventTransformer,
+    _safe_value,
+)
+from zeroshot.pipeline.messages.contracts.audit import AuditReport
 
 
 def test_event_serialization_redacts_images_and_secrets() -> None:
@@ -21,6 +26,66 @@ def test_event_serialization_redacts_images_and_secrets() -> None:
     assert image["omitted"] == "base64"
     assert image["size_bytes"] == len("raw-image-data")
     assert serialized["openai_api_key"] == "<redacted>"
+
+
+def test_audit_and_validation_are_recorded_as_their_raw_node_updates() -> None:
+    events: list[RunEvent] = []
+    transformer = RunEventTransformer(sink=events.append)
+    transformer.init()
+
+    transformer.process(  # type: ignore[arg-type]
+        {
+            "type": "event",
+            "method": "updates",
+            "params": {
+                "timestamp": 1000,
+                "namespace": [],
+                "data": {
+                    "audit": {
+                        "audit_report": AuditReport(accepted=True, findings=[]),
+                    }
+                },
+            },
+        }
+    )
+    transformer.process(  # type: ignore[arg-type]
+        {
+            "type": "event",
+            "method": "updates",
+            "params": {
+                "timestamp": 1001,
+                "namespace": [],
+                "data": {
+                    "integrate_audit_report": {
+                        "stage_validation_error": None,
+                        "stage_validation_failure_count": 0,
+                    }
+                },
+            },
+        }
+    )
+
+    assert events == [
+        {
+            "event": "audit",
+            "timestamp_ms": 1000,
+            "namespace": [],
+            "data": {
+                "node": "audit",
+                "report": {"accepted": True, "findings": []},
+            },
+        },
+        {
+            "event": "stage_validation",
+            "timestamp_ms": 1001,
+            "namespace": [],
+            "data": {
+                "node": "integrate_audit_report",
+                "error": None,
+                "failure_count": 0,
+            },
+        },
+    ]
 
 
 def test_writer_flushes_events_and_records_failure(tmp_path: Path) -> None:

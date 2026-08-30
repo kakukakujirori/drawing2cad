@@ -19,7 +19,9 @@ def _operation(name: str, *, depends_on: tuple[str, ...] = ()) -> Operation:
 
 
 def _plan(*operations: Operation) -> OperationPlan:
-    return OperationPlan(proposal=list(operations), rationale="build in dependency order")
+    return OperationPlan(
+        proposal=list(operations), rationale="build in dependency order"
+    )
 
 
 def test_accepts_one_module_level_result_for_every_planned_operation() -> None:

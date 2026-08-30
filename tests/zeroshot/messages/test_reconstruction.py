@@ -102,9 +102,7 @@ def _snapshot(
         else None
     )
     operations = (
-        _operations()
-        if last_completed_stage in {"operations", "coding"}
-        else None
+        _operations() if last_completed_stage in {"operations", "coding"} else None
     )
     return ReconstructionSnapshot(
         open_tickets=[ticket or _ticket()],
@@ -221,6 +219,35 @@ def test_an_uninitialized_verification_does_not_complete_coding() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("completed_stage", "field", "value"),
+    [
+        (None, "semantics", _semantics()),
+        ("semantics", "operations", _operations()),
+        ("operations", "program_source", "result = object()\n"),
+    ],
+)
+def test_snapshot_rejects_an_artifact_from_an_unfinished_stage(
+    completed_stage: str | None,
+    field: str,
+    value,
+) -> None:
+    completed_stages = {
+        None: (),
+        "semantics": ("semantics",),
+        "operations": ("semantics", "operations"),
+    }[completed_stage]
+    snapshot = _snapshot(
+        ticket=_ticket(stages=completed_stages),
+        last_completed_stage=completed_stage,
+    )
+    data = snapshot.model_dump()
+    data[field] = value
+
+    with pytest.raises(ValidationError, match="unfinished stage artifacts"):
+        ReconstructionSnapshot.model_validate(data)
+
+
 def test_round_zero_requires_exactly_one_bootstrap_ticket() -> None:
     first = _snapshot()
     second_ticket = _ticket("ticket_second_bootstrap")
@@ -297,9 +324,9 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
         ],
         round=1,
         last_completed_stage=None,
-        semantics=first.semantics,
-        operations=first.operations,
-        program_source=first.program_source,
+        semantics=None,
+        operations=None,
+        program_source=None,
         verification=None,
     )
     run = ReconstructionRun(

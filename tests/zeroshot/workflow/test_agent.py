@@ -483,6 +483,27 @@ def test_agent_returns_invalid_structured_output_to_the_model_for_correction() -
     )
 
 
+def test_a_rejected_structured_response_is_preserved_in_the_retry_event() -> None:
+    invalid_answer = '{"proposal": "not a list", "rationale": "wrong type"}'
+    model = ScriptedChatModel(
+        responses=(AIMessage(content=invalid_answer), AIMessage(content=_ANSWER))
+    )
+    reports: list[dict[str, Any]] = []
+
+    for chunk in _subgraph(
+        model,
+        announce_turns=False,
+        output_schema=Proposal,
+        model_retries=1,
+    ).stream({"messages": [HumanMessage(content="go")]}, stream_mode="custom"):
+        if "model_retry" in chunk:
+            reports.append(chunk["model_retry"])
+
+    (report,) = reports
+    assert report["error_type"] == "StructuredOutputValidationError"
+    assert report["failed_response"] == invalid_answer
+
+
 def test_agent_bounds_invalid_structured_output_retries() -> None:
     model = ScriptedChatModel(
         responses=(AIMessage(content=""), AIMessage(content="still not JSON"))

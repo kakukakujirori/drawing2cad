@@ -1,19 +1,15 @@
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from hydra.utils import instantiate
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from zeroshot import run_pipeline
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
-from zeroshot.pipeline.verification import (
-    ExecutionStatus,
-    StepRenderer,
-    VerifyOutputResult,
-)
+from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import (
     ReconstructionState,
     create_reconstruction_graph,
@@ -87,11 +83,7 @@ def test_run_composes_dependencies_and_manifest(
 
         def run_sample(self, manifest: InputManifest) -> ReconstructionState:
             captured["manifest"] = manifest
-            return ReconstructionState(
-                last_verification=VerifyOutputResult(
-                    status=ExecutionStatus.VERIFIED
-                )
-            )
+            return ReconstructionState()
 
     monkeypatch.setattr(run_pipeline, "SandboxRunner", StubSandboxRunner)
     monkeypatch.setattr(run_pipeline, "PipelineRunner", StubPipelineRunner)
@@ -167,7 +159,7 @@ def test_run_composes_dependencies_and_manifest(
         render3d_paths={},
     )
     assert result is not None
-    assert result["last_verification"].status == "VERIFIED"
+    assert result == {}
 
 
 def test_module_help_uses_hydra_entrypoint() -> None:
@@ -191,7 +183,10 @@ def test_shipped_config_actually_builds_a_renderer() -> None:
     """The renderer is optional in code, so only the config decides whether
     visual feedback happens at all.  A default that quietly omits it renders
     nothing while every test still passes."""
-    config = OmegaConf.load(Path(run_pipeline.__file__).parent / "configs/default.yaml")
+    config = cast(
+        DictConfig,
+        OmegaConf.load(Path(run_pipeline.__file__).parent / "configs/default.yaml"),
+    )
 
     assert config.get("renderer") is not None
     renderer = instantiate(config.renderer)
@@ -214,11 +209,7 @@ def test_null_renderer_falls_back_to_the_default_renderer(
             captured["runner_options"] = kwargs
 
         def run_sample(self, manifest: InputManifest) -> ReconstructionState:
-            return ReconstructionState(
-                last_verification=VerifyOutputResult(
-                    status=ExecutionStatus.VERIFIED
-                )
-            )
+            return ReconstructionState()
 
     monkeypatch.setattr(run_pipeline, "PipelineRunner", StubPipelineRunner)
     dxf_path = tmp_path / "input.dxf"

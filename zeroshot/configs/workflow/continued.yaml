@@ -26,6 +26,6 @@ workflow:
   semantics_agent_builder:
     proposer_role: cad_reconstructor
   operations_agent_builder:
-    proposer_role: cad_reconstructor
+    role: cad_reconstructor
   coding_agent_builder:
     role: cad_reconstructor

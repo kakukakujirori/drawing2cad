@@ -139,10 +139,17 @@ class StageSubmission[T](BaseModel):
     )
 
 
-SemanticSubmission = StageSubmission[SemanticHypothesis]
-OperationSubmission = StageSubmission[OperationPlan]
-CodingSubmission = StageSubmission[None]
-# NOTE: CodingSubmission deliverable is deferred to VerifyOutputResult
+class SemanticSubmission(StageSubmission[SemanticHypothesis]):
+    pass
+
+
+class OperationSubmission(StageSubmission[OperationPlan]):
+    pass
+
+
+class CodingSubmission(StageSubmission[None]):
+    # NOTE: CodingSubmission deliverable is deferred to VerifyOutputResult
+    pass
 
 
 class ReconstructionSnapshot(BaseModel):

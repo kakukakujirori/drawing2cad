@@ -48,17 +48,21 @@ class TicketResponse(BaseModel):
     stage: Literal["semantics", "operations", "coding"]
     summary: str
 
+
 class BootstrapWork(BaseModel):
     instruction: str
+
 
 class Ticket(BaseModel):
     ticket_id: str
     subject: BootstrapWork | AuditFinding
     responses: list[TicketResponse]
 
+
 class AuditReport(BaseModel):
     accepted: bool
     findings: list[AuditFinding]
+
 
 class ReconstructionSnapshot(BaseModel):
     round: int
@@ -68,6 +72,7 @@ class ReconstructionSnapshot(BaseModel):
     program_source: str | None
     verification: VerifyOutputResult | None
     open_tickets: list[Ticket]
+
 
 class ReconstructionRun(BaseModel):
     schema_version: int
@@ -220,7 +225,7 @@ zeroshot/pipeline/workflow/graph.py
 - **C2a (`e4caa75`):** 現在の`AuditReport`、finding、causal path、
   revision requestのself validationを実装済み。graph未接続。
 
-### C2b: Ticket / Snapshot / Run contracts
+### C2b: Ticket / Snapshot / Run contracts — completed (`1ddf8cb`)
 
 - 上記domain modelとbootstrapを実装する。
 - `AuditReport`はC2aの純粋なfinding出力のまま維持する。
@@ -229,7 +234,7 @@ zeroshot/pipeline/workflow/graph.py
 
 レビューfixture: bootstrap、finding由来ticket、stage response、invalid response。
 
-### C2c: Cross validation / Persistence
+### C2c: Cross validation / Persistence — completed (`9d4289e`)
 
 - pureな`check_audit_report()`を実装する。
 - validated findingからfresh ticketを機械生成し、IDを発行する。
@@ -237,12 +242,15 @@ zeroshot/pipeline/workflow/graph.py
 - schema version、round indexの連続性、新規ticket IDの一意性を検査する。
 - invalid reportやwrite失敗でpartial stateを残さないtestを書く。
 
-### C3: Audit dry-run
+### C3: Audit dry-run — completed (pending review)
 
 - auditorへcurrent artifacts、verification、run pathを渡す。
 - 新reportをparse、self validate、cross validateする。
 - raw prompt/outputとvalidation errorを事実として保存する。
 - ticketを次roundの修正にはまだ接続しない。
+
+C3では一時bridgeが既存stage stateからround 0 snapshotを一括生成する。これは
+C4のstageごとのsnapshot更新へ置換し、削除する。
 
 保存済み失敗例一件で、evidence、各hop、revision rootを人手確認する。
 
@@ -251,6 +259,8 @@ zeroshot/pipeline/workflow/graph.py
 - 全stageへ同じopen-ticket viewとrun pathを渡す。
 - complete artifact + TicketResponseのstage出力契約を追加する。
 - stage成功ごとにcurrent snapshotを更新し、coding verification後にfreezeする。
+- Operationsの新validation経路をgraphへ接続した後、`review_plan()`の検査を
+  `_validate_operations()`へ移し、`PlanReview`と旧review node/stateを削除する。
 - rejected audit時だけfresh ticketsを持つnext round snapshotを追加する。
 - `targeted_redo` / `upstream_changed`の排他的routingを共通round処理へ置換する。
 - validなaccepted AuditReport、round上限、retry上限だけを終了条件にする。

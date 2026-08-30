@@ -2,7 +2,6 @@
 
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from typing import cast
 
 from zeroshot.pipeline.messages.contracts import (
     Operation,
@@ -96,6 +95,8 @@ def validate_deliverable(
                     "through the workspace"
                 )
             _validate_coding(snapshot, verification)
+        case _:
+            raise DeliverableValidationError(f"unexpected reasoning stage: {stage}")
 
 
 def _next_reasoning_stage(

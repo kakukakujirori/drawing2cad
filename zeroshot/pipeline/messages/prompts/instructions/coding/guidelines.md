@@ -27,7 +27,7 @@ Verification:
 Every turn you edit $output_path, it is automatically executed and the final solid is exported to a STEP file. The feedback includes the execution status, return code, stdout, stderr, any executor error, a count of faces and edges by kind, and paths to the generated DXF and perspective renders under $verification_dir. This costs you no turn, so write early enough to use the feedback before you stop.
 
 Guidelines:
-- The operation plan is presented in dependency order. Each entry names the operation, what it depends on, and the semantic features it implements by their stable `sem_` names.
+- The operation plan is a DAG. Read each entry's `depends_on` and implement dependencies before the operations that consume them; the JSON list order is not the build order. Each entry also names the semantic features it implements by their stable `sem_` names.
 - Take positions from the plan and shapes and sizes from the hypothesis. A number read from the hypothesis's `evidence` is in the sheet coordinates of the view the reading names: $view_frame. Where the model's origin sits is yours to choose; choose it once and keep it consistent.
 - Build curves as curves. An arc is one edge, not a chain of segments; a round hole is one cylindrical face, not a ring of narrow flat ones. Sampling a curve into points and joining them with straight segments is an approximation, and sampling more finely does not make it an exact curve.
 - Read the geometry census in verification feedback. A part whose faces are all one kind, or whose edge count runs into the hundreds, may contain an unintended approximation.

@@ -1,10 +1,10 @@
 import sys
+from inspect import signature
 from pathlib import Path
 
 import pytest
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
-from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.codex import _ChatOpenAICodex
 
@@ -16,7 +16,6 @@ from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.workflow import (
     create_agent,
     create_fanout_reduce_graph,
-    create_proposer_reviewer_loop,
     create_reconstruction_graph,
 )
 
@@ -241,6 +240,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "coding_agent_builder",
         "audit_agent_builder",
         "max_audit_reject_count",
+        "max_stage_validation_retries",
     }
 
     coder = graph_factory.keywords["coding_agent_builder"]
@@ -252,8 +252,9 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert coder.keywords["model_retries"] == 1
     # `model: ${model}` follows the run, so one override still swaps every
     # agent that did not ask for a backend of its own.
-    assert isinstance(coder.keywords["model"], BaseChatModel)
-    assert coder.keywords["model"].model_name == "gemma4:e2b"
+    coder_model = coder.keywords["model"]
+    assert isinstance(coder_model, ChatOpenAI)
+    assert coder_model.model_name == "gemma4:e2b"
 
     stage = graph_factory.keywords["semantics_agent_builder"]
     assert stage.func is create_fanout_reduce_graph
@@ -280,11 +281,9 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert all(model.model_name == "gemma4:e2b" for model in proposer_models)
 
     operations = graph_factory.keywords["operations_agent_builder"]
-    assert operations.func is create_proposer_reviewer_loop
-    assert operations.keywords["proposer_role"] == "operation_planner"
-    assert operations.keywords["reviewer_role"] == "operation_reviewer"
-    for role in ("operation_planner", "operation_reviewer"):
-        assert PromptTemplate(f"roles/{role}").path.is_file()
+    assert operations.func is create_agent
+    assert operations.keywords["role"] == "operation_planner"
+    assert PromptTemplate("roles/operation_planner").path.is_file()
     assert "output_schema" not in stage.keywords
     assert "agent" not in config
 
@@ -306,11 +305,23 @@ def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None
 
     roles = {
         graph_factory.keywords["semantics_agent_builder"].keywords["proposer_role"],
-        graph_factory.keywords["operations_agent_builder"].keywords["proposer_role"],
+        graph_factory.keywords["operations_agent_builder"].keywords["role"],
         graph_factory.keywords["coding_agent_builder"].keywords["role"],
     }
     assert roles == {"cad_reconstructor"}
     assert PromptTemplate("roles/cad_reconstructor").path.is_file()
+
+    # Hydra partials accept unknown keywords and otherwise defer this failure
+    # until the first sample builds its graph. Check every configured builder
+    # against its callable now so configuration drift fails in this test.
+    for key in (
+        "semantics_agent_builder",
+        "operations_agent_builder",
+        "coding_agent_builder",
+        "audit_agent_builder",
+    ):
+        builder = graph_factory.keywords[key]
+        signature(builder.func).bind_partial(**builder.keywords)
 
     # The audit reads the result on its own, so it keeps its own role.
     assert (

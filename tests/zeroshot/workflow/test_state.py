@@ -21,12 +21,30 @@ from zeroshot.pipeline.messages.contracts import (
     OperationVerb,
     Parameter,
     ParameterName,
-    PlanReview,
+    PipelineStage,
+    ReasoningStage,
     SemanticFeature,
     SemanticHypothesis,
     View,
     ViewEvidence,
-    fingerprint,
+)
+from zeroshot.pipeline.messages.contracts.audit import (
+    AuditFinding,
+    AuditReport,
+    Backtrace,
+    CausalHop,
+    RevisionRequest,
+    StageOutputRef,
+)
+from zeroshot.pipeline.messages.contracts.reconstruction import (
+    BootstrapWork,
+    CodingSubmission,
+    OperationSubmission,
+    ReconstructionRun,
+    ReconstructionSnapshot,
+    SemanticSubmission,
+    Ticket,
+    TicketResponse,
 )
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow import (
@@ -36,7 +54,6 @@ from zeroshot.pipeline.workflow import (
 from zeroshot.pipeline.workflow.components.agent import StopReason
 from zeroshot.pipeline.workflow.components.proposer_reviewer import Review
 from zeroshot.pipeline.workflow.state import (
-    Audit,
     ReconstructionState,
     carry_thread,
     lead_transcript,
@@ -53,7 +70,6 @@ from zeroshot.pipeline.workflow.state import (
         Parameter,
         ViewEvidence,
         Review,
-        Audit,
     ],
 )
 def test_a_contract_carries_no_prose_beyond_its_field_descriptions(
@@ -143,60 +159,150 @@ _A_PLAN = OperationPlan(
     rationale="one extrude reaches the stated height",
 )
 
+_VERIFICATION = VerifyOutputResult(
+    verification_id="v1",
+    status=ExecutionStatus.VERIFIED,
+    source="ret_base = object()\nresult = ret_base\n",
+    returncode=0,
+)
+
+_AUDIT_REPORT = AuditReport(
+    accepted=False,
+    findings=[
+        AuditFinding(
+            name="finding_missing_boss",
+            observation="the boss is missing",
+            evidence=["attempts/v1/techdraw.dxf"],
+            backtraces=[
+                Backtrace(
+                    hops=[
+                        CausalHop(
+                            effect=StageOutputRef(
+                                stage=PipelineStage.CODING, name="ret_base"
+                            ),
+                            cause=StageOutputRef(
+                                stage=PipelineStage.OPERATIONS, name="op_base"
+                            ),
+                            rationale="the return implements the base operation",
+                        )
+                    ],
+                    revision_request=RevisionRequest(
+                        action="modify",
+                        targets=[
+                            StageOutputRef(
+                                stage=PipelineStage.OPERATIONS, name="op_base"
+                            )
+                        ],
+                        instruction="add the omitted boss operation",
+                        proposed_names=[],
+                    ),
+                )
+            ],
+        )
+    ],
+)
+
+_RECONSTRUCTION = ReconstructionRun(
+    schema_version=1,
+    run_id="run_test",
+    snapshots=[
+        ReconstructionSnapshot(
+            open_tickets=[
+                Ticket(
+                    ticket_id="ticket_initial",
+                    subject=BootstrapWork(instruction="reconstruct the drawing"),
+                    responses=[
+                        TicketResponse(
+                            ticket_id="ticket_initial",
+                            stage=PipelineStage.SEMANTICS,
+                            summary="established sem_feature_1 and sem_feature_2",
+                        ),
+                        TicketResponse(
+                            ticket_id="ticket_initial",
+                            stage=PipelineStage.OPERATIONS,
+                            summary="established op_base",
+                        ),
+                        TicketResponse(
+                            ticket_id="ticket_initial",
+                            stage=PipelineStage.CODING,
+                            summary="implemented ret_base and result",
+                        ),
+                    ],
+                )
+            ],
+            round=0,
+            last_completed_stage=PipelineStage.CODING,
+            semantics=_A_HYPOTHESIS,
+            operations=_A_PLAN,
+            program_source=_VERIFICATION.source,
+            verification=_VERIFICATION,
+        )
+    ],
+)
+
+_SEMANTIC_SUBMISSION = SemanticSubmission(
+    deliverable=_A_HYPOTHESIS,
+    responses=[
+        TicketResponse(
+            ticket_id="ticket_initial",
+            stage=PipelineStage.SEMANTICS,
+            summary="established sem_feature_1 and sem_feature_2",
+        )
+    ],
+)
+_OPERATION_SUBMISSION = OperationSubmission(
+    deliverable=_A_PLAN,
+    responses=[
+        TicketResponse(
+            ticket_id="ticket_initial",
+            stage=PipelineStage.OPERATIONS,
+            summary="established op_base",
+        )
+    ],
+)
+_CODING_SUBMISSION = CodingSubmission(
+    deliverable=None,
+    responses=[
+        TicketResponse(
+            ticket_id="ticket_initial",
+            stage=PipelineStage.CODING,
+            summary="implemented ret_base and result",
+        )
+    ],
+)
+
 _ARTIFACTS: dict[str, object] = {
     "semantics_state": {
         "invocation_instruction": None,
-        "branch_proposals": {"propose_0": _A_HYPOTHESIS},
-        "proposal": _A_HYPOTHESIS,
+        "branch_proposals": {"propose_0": _SEMANTIC_SUBMISSION},
+        "proposal": _SEMANTIC_SUBMISSION,
         "reducer_state": {
             "messages": [HumanMessage(content="propose semantics")],
+            "structured_response": _SEMANTIC_SUBMISSION,
             "current_turn": 1,
             "total_turns": 1,
             "stop_reason": StopReason.COMPLETED,
         },
     },
     "operations_state": {
-        "revision_count": 1,
-        "proposer_entry_instruction": HumanMessage(content="propose operations"),
-        "proposal": _A_PLAN,
-        "proposer_state": {
-            "messages": [HumanMessage(content="propose operations")],
-            "current_turn": 1,
-            "total_turns": 1,
-            "stop_reason": StopReason.COMPLETED,
-        },
-        "reviewer_entry_instruction": HumanMessage(content="review semantics"),
-        "review": Review(accept=True, rationale="the views agree"),
-        "reviewer_state": {
-            "messages": [HumanMessage(content="review semantics")],
-            "current_turn": 1,
-            "total_turns": 1,
-            "stop_reason": StopReason.COMPLETED,
-        },
+        "messages": [HumanMessage(content="propose operations")],
+        "structured_response": _OPERATION_SUBMISSION,
+        "current_turn": 1,
+        "total_turns": 1,
+        "stop_reason": StopReason.COMPLETED,
     },
     "coding_state": {
         "messages": [HumanMessage(content="write code")],
+        "structured_response": _CODING_SUBMISSION,
         "current_turn": 3,
         "total_turns": 3,
         "stop_reason": StopReason.BUDGET_EXHAUSTED,
     },
-    "semantic_hypothesis": _A_HYPOTHESIS,
-    "operation_plan": _A_PLAN,
-    "plan_review": PlanReview(
-        uncovered=["sem_feature_2"],
-        unknown=[],
-        transcribed={},
-        unresolved={},
-        of_hypothesis=fingerprint(_A_HYPOTHESIS),
-        of_plan=fingerprint(_A_PLAN),
-    ),
-    "audit": Audit(revise="operations", rationale="the boss is missing"),
-    "last_verification": VerifyOutputResult(
-        verification_id="v1",
-        status=ExecutionStatus.VERIFIED,
-        source="result = cq.Workplane()",
-        returncode=0,
-    ),
+    "stage_submission": _CODING_SUBMISSION,
+    "stage_validation_error": None,
+    "stage_validation_failure_count": 0,
+    "reconstruction": _RECONSTRUCTION,
+    "audit_report": _AUDIT_REPORT,
 }
 
 
@@ -205,7 +311,6 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         Operation,
         OperationPlan,
         OperationVerb,
-        PlanReview,
         SemanticHypothesis,
         SemanticFeature,
         FeatureGeometry,
@@ -222,10 +327,23 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         GeometryKind,
         ClaimSource,
         ExecutionStatus,
-        Review,
-        Audit,
         StopReason,
         VerifyOutputResult,
+        AuditFinding,
+        AuditReport,
+        Backtrace,
+        CausalHop,
+        RevisionRequest,
+        StageOutputRef,
+        BootstrapWork,
+        ReconstructionRun,
+        ReconstructionSnapshot,
+        Ticket,
+        TicketResponse,
+        PipelineStage,
+        SemanticSubmission,
+        OperationSubmission,
+        CodingSubmission,
     }
 
 
@@ -255,11 +373,11 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
         CUSTOM_STATE_TYPES
     )
 
-    def store(_: ReconstructionState) -> dict[str, object]:
-        return dict(_ARTIFACTS)
+    def store(_: ReconstructionState) -> ReconstructionState:
+        return cast(ReconstructionState, dict(_ARTIFACTS))
 
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
-    workflow.add_node("store", store)
+    workflow.add_node("store", store)  # pyrefly: ignore [bad-argument-type]
     workflow.add_edge(START, "store")
     workflow.add_edge("store", END)
 
@@ -275,13 +393,12 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
         assert restored[field] == value
 
     semantics_state = restored["semantics_state"]
-    assert type(semantics_state["proposal"]) is SemanticHypothesis
-    assert type(semantics_state["branch_proposals"]["propose_0"]) is SemanticHypothesis
+    assert type(semantics_state["proposal"]) is SemanticSubmission
+    assert type(semantics_state["branch_proposals"]["propose_0"]) is SemanticSubmission
     assert type(semantics_state["reducer_state"]["stop_reason"]) is StopReason
 
     operations_state = restored["operations_state"]
-    assert type(operations_state["proposal"]) is OperationPlan
-    assert type(operations_state["review"]) is Review
+    assert type(operations_state["structured_response"]) is OperationSubmission
 
 
 def _threaded_state(**stages: object) -> ReconstructionState:
@@ -293,8 +410,8 @@ def _threaded_state(**stages: object) -> ReconstructionState:
             "reducer_state": {"messages": read},
         },
         "operations_state": {
-            "revision_count": 2,
-            "proposer_state": {"messages": read},
+            "messages": read,
+            "current_turn": 2,
         },
         "coding_state": {"current_turn": 4},
         "audit_state": {"messages": [HumanMessage(content="judge it")]},
@@ -305,19 +422,22 @@ def _threaded_state(**stages: object) -> ReconstructionState:
 @pytest.mark.parametrize(
     ("stage", "stage_state"),
     [
-        ("semantics", {"semantics_state": {"reducer_state": {"messages": ["it"]}}}),
-        ("operations", {"operations_state": {"proposer_state": {"messages": ["it"]}}}),
-        ("coding", {"coding_state": {"messages": ["it"]}}),
+        (
+            PipelineStage.SEMANTICS,
+            {"semantics_state": {"reducer_state": {"messages": ["it"]}}},
+        ),
+        (PipelineStage.OPERATIONS, {"operations_state": {"messages": ["it"]}}),
+        (PipelineStage.CODING, {"coding_state": {"messages": ["it"]}}),
     ],
 )
 def test_the_thread_is_taken_from_whichever_agent_carried_it(
-    stage: str, stage_state: dict[str, object]
+    stage: ReasoningStage, stage_state: dict[str, object]
 ) -> None:
     """Each template continues a different one of its agents, so where the
     finished thread sits differs by stage."""
     state = _threaded_state(**stage_state)
 
-    update = carry_thread(state, lead_transcript(state, stage))  # type: ignore[arg-type]
+    update = carry_thread(state, lead_transcript(state, stage))
 
     assert update["coding_state"]["messages"] == ["it"]
 
@@ -327,13 +447,11 @@ def test_the_thread_reaches_every_reasoning_stage_but_not_the_audit() -> None:
     it marking its own work."""
     state = _threaded_state(coding_state={"messages": ["wrote the model"]})
 
-    update = carry_thread(state, lead_transcript(state, "coding"))
+    update = carry_thread(state, lead_transcript(state, PipelineStage.CODING))
 
     assert set(update) == {"semantics_state", "operations_state", "coding_state"}
     assert update["semantics_state"]["reducer_state"]["messages"] == ["wrote the model"]
-    assert update["operations_state"]["proposer_state"]["messages"] == [
-        "wrote the model"
-    ]
+    assert update["operations_state"]["messages"] == ["wrote the model"]
 
 
 def test_the_stage_that_wrote_the_thread_is_given_back_what_it_wrote() -> None:
@@ -341,7 +459,7 @@ def test_the_stage_that_wrote_the_thread_is_given_back_what_it_wrote() -> None:
     case less than leaving it out."""
     state = _threaded_state(coding_state={"messages": ["wrote the model"]})
 
-    update = carry_thread(state, lead_transcript(state, "coding"))
+    update = carry_thread(state, lead_transcript(state, PipelineStage.CODING))
 
     assert update["coding_state"]["messages"] == ["wrote the model"]
 
@@ -350,11 +468,12 @@ def test_what_a_stage_holds_besides_its_messages_survives_the_thread() -> None:
     """Branch proposals and revision counts belong to their stage, not to the
     thread that happens to be passing through it."""
     update = carry_thread(
-        _threaded_state(), lead_transcript(_threaded_state(), "coding")
+        _threaded_state(),
+        lead_transcript(_threaded_state(), PipelineStage.CODING),
     )
 
     assert update["semantics_state"]["branch_proposals"] == {"propose_0": None}
-    assert update["operations_state"]["revision_count"] == 2
+    assert update["operations_state"]["current_turn"] == 2
 
 
 def test_the_prompt_log_is_told_where_the_inherited_thread_ends() -> None:
@@ -364,7 +483,7 @@ def test_the_prompt_log_is_told_where_the_inherited_thread_ends() -> None:
         semantics_state={"reducer_state": {"messages": ["one", "two"]}}
     )
 
-    update = carry_thread(state, lead_transcript(state, "semantics"))
+    update = carry_thread(state, lead_transcript(state, PipelineStage.SEMANTICS))
 
     assert update["coding_state"]["reported_message_count"] == 2
     assert update["coding_state"]["current_turn"] == 4

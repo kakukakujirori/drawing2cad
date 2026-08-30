@@ -17,12 +17,9 @@ from zeroshot.pipeline.messages.contracts import (
     OperationPlan,
     OperationVerb,
     SemanticHypothesis,
-    fingerprint,
     linearise,
     render_plan,
-    render_plan_review,
     resolve_reference,
-    review_plan,
 )
 
 
@@ -214,34 +211,6 @@ def test_every_operation_is_placed_exactly_once() -> None:
     assert len(order) == len(set(order))
 
 
-def test_a_feature_no_operation_builds_is_reported() -> None:
-    """The check the plan's validator cannot make: a feature name points into
-    an answer the planner produced separately, so only something holding both
-    can tell that sem_feature_2 was established and then dropped."""
-    review = review_plan(
-        plan(op("op_a", builds=[1]), op("op_b", builds=[3])), _features(1, 2, 3)
-    )
-
-    assert review.uncovered == ["sem_feature_2"]
-    assert review.unknown == []
-    assert not review.sound
-
-
-def test_a_feature_the_plan_invents_is_reported() -> None:
-    review = review_plan(plan(op("op_a", builds=[9])), _features(1))
-
-    assert review.unknown == ["sem_feature_9"]
-    assert review.uncovered == ["sem_feature_1"]
-
-
-def test_a_plan_that_accounts_for_every_feature_is_complete() -> None:
-    review = review_plan(
-        plan(op("op_a", builds=[1, 2]), op("op_b", builds=[2])), _features(1, 2)
-    )
-
-    assert review.sound
-
-
 def test_the_rendering_shows_the_derived_order_and_what_each_step_needs() -> None:
     """What the coder is handed. It is the order, not the graph: following it
     is the job, and a plan whose dependencies were wrong reads as wrong here."""
@@ -275,73 +244,6 @@ def test_an_operation_that_names_no_feature_says_so() -> None:
     """Rendering it as an empty list would read as a formatting slip; saying it
     plainly keeps the gap visible to whoever reads the plan."""
     assert "builds nothing named" in render_plan(plan(op("op_a")), _features(1))
-
-
-def test_the_gap_is_reported_by_naming_the_features_it_left_out() -> None:
-    """What the planner is sent back with. Named rather than counted:
-    "sem_feature_2, sem_feature_5" is actionable, where "two are missing"
-    sends the stage back to compare two lists it has already been given."""
-    review = review_plan(plan(op("op_a", builds=[1])), _features(1, 2, 5))
-
-    told = render_plan_review(review)
-
-    assert "sem_feature_2, sem_feature_5" in told
-    assert "sem_feature_1" not in told
-
-
-def test_a_dangling_reference_is_reported_separately_from_a_gap() -> None:
-    """They are different mistakes and take different corrections: one is a
-    feature to go and build, the other a number to stop citing."""
-    review = review_plan(plan(op("op_a", builds=[9])), _features(1))
-
-    told = render_plan_review(review)
-
-    assert "sem_feature_1" in told
-    assert "sem_feature_9" in told
-    assert told.index("sem_feature_1") < told.index("sem_feature_9")
-
-
-def test_a_complete_plan_is_reported_as_nothing_at_all() -> None:
-    """An empty string, not a sentence saying everything is fine: this only
-    ever renders on the way back to a stage that has something to fix."""
-    assert (
-        render_plan_review(review_plan(plan(op("op_a", builds=[1])), _features(1)))
-        == ""
-    )
-
-
-def test_a_fingerprint_follows_the_content_and_nothing_else() -> None:
-    """Two plans that say the same thing are the same plan as far as anything
-    downstream is concerned, and one that differs anywhere is not."""
-    one = plan(op("op_a", builds=[1]))
-    same = plan(op("op_a", builds=[1]))
-    other = plan(op("op_a", builds=[2]))
-
-    assert fingerprint(one) == fingerprint(same)
-    assert fingerprint(one) != fingerprint(other)
-
-
-def test_a_reading_knows_which_pair_it_was_taken_from() -> None:
-    """The whole point of carrying the fingerprints. A reading kept in state
-    outlives the work it measured, and this is what lets the two be replaced
-    without anyone having to remember to throw the reading away."""
-    established = _features(1, 2)
-    measured = plan(op("op_a", builds=[1]), op("op_b", builds=[2]))
-    review = review_plan(measured, established)
-
-    assert review.describes(established, measured)
-
-
-@pytest.mark.parametrize("changed", ["hypothesis", "plan"])
-def test_a_reading_disowns_a_pair_that_has_moved_on(changed: str) -> None:
-    established = _features(1, 2)
-    measured = plan(op("op_a", builds=[1]), op("op_b", builds=[2]))
-    review = review_plan(measured, established)
-
-    if changed == "hypothesis":
-        assert not review.describes(_features(1, 2, 3), measured)
-    else:
-        assert not review.describes(established, plan(op("op_a", builds=[1])))
 
 
 def _torus_feature() -> SemanticHypothesis:
@@ -394,9 +296,10 @@ def test_a_reference_says_which_geometry_when_a_feature_claims_several() -> None
     assert "(3.39440063713)" in resolve_reference(
         "sem_shoulder_blend.geo_blend_torus.tube_radius", held
     )
-    assert resolve_reference(
-        "sem_shoulder_blend.geo_side_plane.radius", held
-    ) == "sem_shoulder_blend.geo_side_plane.radius"
+    assert (
+        resolve_reference("sem_shoulder_blend.geo_side_plane.radius", held)
+        == "sem_shoulder_blend.geo_side_plane.radius"
+    )
 
 
 def test_a_canonical_reference_names_one_geometry_even_when_kinds_repeat() -> None:
@@ -439,36 +342,21 @@ def test_a_canonical_reference_names_one_evidence_reading_and_its_vector() -> No
     assert resolve_reference("at sem_main_bore.ev_right_circle.center", held) == (
         "at sem_main_bore.ev_right_circle.center ([12.0 13.0])"
     )
-    assert resolve_reference("radius sem_main_bore.ev_front_circle.radius", held).endswith(
-        "sem_main_bore.ev_front_circle.radius (3.0)"
-    )
+    assert resolve_reference(
+        "radius sem_main_bore.ev_front_circle.radius", held
+    ).endswith("sem_main_bore.ev_front_circle.radius (3.0)")
 
 
 def test_a_reference_to_something_the_hypothesis_lacks_is_left_alone() -> None:
-    """Rendering is not the place to fail. The plan review has already refused
-    the plan for this; what the reader gets meanwhile is the text as written."""
-    assert resolve_reference(
-        "sem_shoulder_blend.geo_blend_torus.height", _torus_feature()
-    ) == "sem_shoulder_blend.geo_blend_torus.height"
-    assert resolve_reference(
-        "sem_missing.geo_sphere.radius", _torus_feature()
-    ) == "sem_missing.geo_sphere.radius"
-
-
-def test_a_reference_that_omits_the_member_namespace_is_refused() -> None:
-    made = plan(
-        op(
-            "op_blend",
-            builds=["sem_shoulder_blend"],
-            detail="Sweep sem_shoulder_blend.major_radius",
-        )
+    """Rendering is not the place to fail; contextual validation owns that."""
+    assert (
+        resolve_reference("sem_shoulder_blend.geo_blend_torus.height", _torus_feature())
+        == "sem_shoulder_blend.geo_blend_torus.height"
     )
-
-    review = review_plan(made, _torus_feature())
-
-    assert review.unresolved == {
-        "op_blend": ["sem_shoulder_blend.major_radius"]
-    }
+    assert (
+        resolve_reference("sem_missing.geo_sphere.radius", _torus_feature())
+        == "sem_missing.geo_sphere.radius"
+    )
 
 
 def test_a_list_parameter_is_resolved_as_one_exactly_addressed_value() -> None:
@@ -485,111 +373,6 @@ def test_a_list_parameter_is_resolved_as_one_exactly_addressed_value() -> None:
     assert "([0.0 0.0 1.0 1.0 2.0 0.0])" in resolve_reference(
         "follow sem_blend_profile.ev_front_spline.control_points", held
     )
-
-
-def test_a_number_the_hypothesis_already_holds_is_refused() -> None:
-    """What forces the reference. The planner is not asked politely to cite;
-    a plan that copies is sent back."""
-    review = review_plan(
-        plan(
-            op(
-                "op_a",
-                builds=["sem_shoulder_blend"],
-                detail="Sweep a blend of radius 11.31245992416",
-            )
-        ),
-        _torus_feature(),
-    )
-
-    assert review.transcribed == {"op_a": ["11.31245992416"]}
-    assert not review.sound
-    assert "sem_<feature>.geo_<claim>.<parameter>" in render_plan_review(review)
-
-
-def test_a_number_the_planner_worked_out_itself_is_left_alone() -> None:
-    """Half a width, a clearance, a chosen depth. These are the planner's own
-    and have nowhere else to live, which is what makes refusing on the others
-    safe."""
-    review = review_plan(
-        plan(
-            op(
-                "op_a",
-                builds=["sem_shoulder_blend"],
-                detail=(
-                    "Cut 5.65622996208 deep, half of "
-                    "sem_shoulder_blend.geo_blend_torus.major_radius"
-                ),
-            )
-        ),
-        _torus_feature(),
-    )
-
-    assert review.transcribed == {}
-
-
-def test_a_short_number_is_the_planners_own_words() -> None:
-    """`25 mm` is a sentence, not a transcription, even where the hypothesis
-    happens to hold 25."""
-    held = hypothesis(
-        proposal=[
-            feature(
-                "sem_boss", "boss", geometry=[geometry("sphere", radius=25.0)]
-            )
-        ]
-    )
-
-    assert (
-        review_plan(
-            plan(op("op_a", builds=["sem_boss"], detail="Extrude 25 mm")), held
-        ).transcribed
-        == {}
-    )
-
-
-def test_a_reference_that_stands_for_nothing_is_refused() -> None:
-    review = review_plan(
-        plan(
-            op(
-                "op_a",
-                builds=["sem_shoulder_blend"],
-                detail="Sweep sem_shoulder_blend.geo_blend_torus.height along +z",
-            )
-        ),
-        _torus_feature(),
-    )
-
-    assert review.unresolved == {
-        "op_a": ["sem_shoulder_blend.geo_blend_torus.height"]
-    }
-    assert "sem_shoulder_blend.geo_blend_torus.height" in render_plan_review(review)
-
-
-def test_a_plan_full_of_copied_numbers_is_still_told_in_a_sentence() -> None:
-    """A first plan can hold well over a hundred of them. Naming every one
-    would bury the instruction under the evidence for it."""
-    radii = [11.31245992416 + n for n in range(40)]
-    copied = " ".join(f"{radius:.11f}" for radius in radii)
-    held = hypothesis(
-        proposal=[
-            feature(
-                "sem_blend",
-                "blend",
-                geometry=[
-                    geometry(
-                        "sphere", name=f"geo_sphere_{identifier}", radius=radius
-                    )
-                    for identifier, radius in enumerate(radii, start=1)
-                ],
-            )
-        ]
-    )
-
-    told = render_plan_review(
-        review_plan(plan(op("op_a", builds=["sem_blend"], detail=copied)), held)
-    )
-
-    assert "and 37 more" in told
-    assert len(told) < 400
 
 
 def test_claim_and_evidence_parameters_are_separate_named_addresses() -> None:
