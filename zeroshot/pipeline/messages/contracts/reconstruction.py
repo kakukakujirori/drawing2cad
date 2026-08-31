@@ -197,6 +197,11 @@ class StageSubmission[M](BaseModel):
         ),
     )
 
+    @classmethod
+    def unchanged(cls) -> Self:
+        """A revision that leaves the preceding round's artifact as it is."""
+        return cls(edits=[], deleted=[], rationale=None, responses=[])
+
     @model_validator(mode="after")
     def require_distinct_edited_and_deleted_names(self) -> Self:
         named = [edit.name for edit in self.edits]  # type: ignore[attr-defined]

@@ -281,6 +281,10 @@ def create_reconstruction_graph(
     # ------------------------------------------------------------------
 
     def run_semantics(state: ReconstructionState, config: RunnableConfig):
+        snapshot = current_snapshot(state)
+        if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.SEMANTICS):
+            return {"stage_submission": SemanticSubmission.unchanged()}
+
         previous = state.get("semantics_state") or {}
         result = semantics_agent.invoke(
             {
@@ -302,6 +306,9 @@ def create_reconstruction_graph(
         snapshot = current_snapshot(state)
         if snapshot.last_completed_stage is not PipelineStage.SEMANTICS:
             raise RuntimeError("operations requires integrated semantics")
+
+        if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.OPERATIONS):
+            return {"stage_submission": OperationSubmission.unchanged()}
 
         previous = state.get("operations_state") or {}
         messages = [

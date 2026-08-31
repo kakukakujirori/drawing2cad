@@ -624,13 +624,9 @@ def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(
 ) -> None:
     _stub_verification(monkeypatch, _verified("000"), _verified("001"))
     first_semantics = _semantic_submission()
-    head = ScriptedChatModel(
-        responses=(first_semantics, first_semantics, _semantic_submission(None))
-    )
+    head = ScriptedChatModel(responses=(first_semantics, first_semantics))
     peer = ScriptedChatModel(responses=(first_semantics,))
-    planner = ScriptedChatModel(
-        responses=(_operation_submission(), _operation_submission(None))
-    )
+    planner = ScriptedChatModel(responses=(_operation_submission(),))
     coder = ScriptedChatModel(
         responses=(_coding_submission(), _coding_submission(_ROUND_ONE_TICKET))
     )
@@ -647,9 +643,17 @@ def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(
             max_audit_reject_count=1,
         ).invoke({})
 
-    ticket = result["reconstruction"].snapshots[1].open_tickets[0]
+    first, second = result["reconstruction"].snapshots
+    ticket = second.open_tickets[0]
     assert ticket.assigned_stages == [PipelineStage.CODING]
     assert [response.stage for response in ticket.responses] == [PipelineStage.CODING]
+
+    # The unassigned stages were not asked again, and their artifacts stand.
+    assert len(head.received_messages) == 2
+    assert len(planner.received_messages) == 1
+    assert len(coder.received_messages) == 2
+    assert second.semantics == first.semantics
+    assert second.operations == first.operations
 
 
 def test_rejection_at_the_round_limit_finishes_without_opening_another_round(

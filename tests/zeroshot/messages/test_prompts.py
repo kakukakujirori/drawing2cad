@@ -183,6 +183,15 @@ def test_structured_output_roles_render_their_contract(role: str) -> None:
 
 
 @pytest.mark.parametrize("stage", ["semantics", "operations", "coding"])
+def test_a_round_asks_for_a_revision_rather_than_a_whole_artifact(stage: str) -> None:
+    rendered = instruction_text(f"{stage}/round", **_round_context(current_round="1"))
+
+    assert "`edits`" in rendered
+    assert "`deleted`" in rendered
+    assert "deliverable" not in rendered
+
+
+@pytest.mark.parametrize("stage", ["semantics", "operations", "coding"])
 def test_every_reasoning_round_carries_that_stage_s_guidelines(stage: str) -> None:
     guidelines = _guidelines(stage)
 
