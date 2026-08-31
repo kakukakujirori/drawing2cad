@@ -392,16 +392,13 @@ def _program_output_names(
     source: str,
     operations: OperationPlan,
 ) -> set[str]:
-    """The module-level ``ret_*`` and ``result`` names established by source."""
+    """The stable module-level ``ret_*`` names established by source."""
     program_check = check_program(source, operations)
     expected_operations = {operation.name for operation in operations.proposal}
     implemented_operations = (
         expected_operations - set(program_check.missing_operations)
     ) | set(program_check.unknown_operations)
-    names = {f"ret_{name.removeprefix('op_')}" for name in implemented_operations}
-    if program_check.result_assigned:
-        names.add("result")
-    return names
+    return {f"ret_{name.removeprefix('op_')}" for name in implemented_operations}
 
 
 def _missing_reference_errors(

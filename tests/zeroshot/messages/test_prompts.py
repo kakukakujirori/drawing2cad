@@ -3,13 +3,24 @@ from pathlib import Path
 
 import pytest
 
-from zeroshot.pipeline.messages import PromptTemplate, instruction_text
+from zeroshot.pipeline.messages import (
+    PromptTemplate,
+    instruction_text,
+    system_prompt_text,
+)
 from zeroshot.pipeline.messages.contracts import (
     VIEW_FRAME,
     DrawnEntity,
     GeometryKind,
     Operation,
     view_frame_sentence,
+)
+from zeroshot.pipeline.messages.contracts.audit import AuditReport
+from zeroshot.pipeline.messages.contracts.reconstruction import (
+    ReconstructionRun,
+    ReconstructionSnapshot,
+    Ticket,
+    TicketResponse,
 )
 
 
@@ -72,6 +83,58 @@ def test_stage_instruction_prompts_match_the_invocation_reasons(
     assert "$" not in rendered
 
 
+def test_reconstruction_guide_tracks_the_durable_contract() -> None:
+    guide = PromptTemplate("roles/reconstruction_history").render(**_RUN_PATHS)
+
+    for contract in (ReconstructionRun, ReconstructionSnapshot, Ticket, TicketResponse):
+        for field in contract.model_fields:
+            assert f"`{field}`" in guide
+
+
+def test_the_shared_role_explains_selective_history_navigation() -> None:
+    rendered = system_prompt_text("cad_reconstructor", _RUN_PATHS)
+    guide = PromptTemplate("roles/reconstruction_history").render(**_RUN_PATHS)
+
+    assert guide in rendered
+    assert "semantics -> operations -> coding + verification -> audit" in rendered
+    assert "ReconstructionRun" in rendered
+    assert "jq '.snapshots[-1]" in rendered
+    assert ".snapshots[-2]" in rendered
+    assert "diff -u" in rendered
+    assert "Do not print the whole history file" in rendered
+
+
+def test_round_instructions_do_not_repeat_the_reconstruction_guide() -> None:
+    rendered = instruction_text("semantics/round", **_RUN_PATHS, current_round="1")
+
+    assert "## Reconstruction history" not in rendered
+    assert "ReconstructionRun" not in rendered
+
+
+def test_audit_explains_how_to_report_a_missing_semantic_feature() -> None:
+    rendered = instruction_text(
+        "audit/round",
+        **_RUN_PATHS,
+        current_round="1",
+        attempt_dir="/work/attempts/001",
+    )
+
+    assert "empty `hops`" in rendered
+    assert "whole semantics stage (`name: null`)" in rendered
+    assert "propose one or more stable `sem_...` names" in rendered
+
+
+def test_auditor_keeps_result_out_of_the_backtrace_graph() -> None:
+    rendered = system_prompt_text(
+        "output_auditor",
+        {**_RUN_PATHS, "max_turns": "10"},
+        AuditReport,
+    )
+
+    assert "`result` is the terminal export and is not a backtrace node" in rendered
+    assert "whole coding output with `name: null`" in rendered
+
+
 def test_placeholders_are_filled_from_the_context() -> None:
     """The run's paths reach the guidelines the coding instruction carries."""
     rendered = instruction_text(
@@ -82,7 +145,6 @@ def test_placeholders_are_filled_from_the_context() -> None:
 
     assert "/work/model.py" in rendered
     assert "/work/attempts" in rendered
-    assert "/work/reconstruction.json" in rendered
     assert "$output_path" not in rendered
     assert "$verification_dir" not in rendered
 
@@ -90,7 +152,6 @@ def test_placeholders_are_filled_from_the_context() -> None:
 def test_the_coding_round_carries_the_history_and_result_contract() -> None:
     rendered = instruction_text("coding/round", **_RUN_PATHS, current_round="2")
 
-    assert "/work/reconstruction.json" in rendered
     assert "ret_<operation name without op_>" in rendered
     assert "# ----" not in rendered
     assert "Lxx-Lyy" not in rendered

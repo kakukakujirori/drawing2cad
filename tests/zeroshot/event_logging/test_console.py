@@ -122,6 +122,55 @@ def test_two_callers_a_role_cannot_tell_apart_are_named_by_where_they_run() -> N
     assert "2222" not in rendered
 
 
+def test_muted_graph_nodes_suppress_non_head_fanout_model_output() -> None:
+    output = StringIO()
+    reporter = ConsoleReporter(
+        Console(file=output, color_system=None, force_terminal=False, highlight=False),
+        muted_graph_nodes=["propose_1"],
+    )
+
+    for branch, run_id, text in (
+        ("propose_0", "branch-0", "HEAD_OUTPUT"),
+        ("propose_1", "branch-1", "MUTED_OUTPUT"),
+    ):
+        reporter.render_model_item(
+            {
+                "role": "semantic_hypothesizer",
+                "node": "model",
+                "namespace": ["semantics:1111", f"{branch}:2222"],
+                "run_id": run_id,
+                "streamed": False,
+                "payload": {"type": "ai", "content": [{"type": "text", "text": text}]},
+            }
+        )
+
+    rendered = output.getvalue()
+    assert "HEAD_OUTPUT" in rendered
+    assert "MUTED_OUTPUT" not in rendered
+    assert "propose_0" in rendered
+    assert "propose_1" not in rendered
+
+
+def test_muted_graph_nodes_suppress_nested_run_events() -> None:
+    output = StringIO()
+    reporter = ConsoleReporter(
+        Console(file=output, color_system=None, force_terminal=False, highlight=False),
+        muted_graph_nodes=["propose_1"],
+    )
+
+    for branch in ("propose_0", "propose_1"):
+        reporter.render_event(
+            {
+                "event": "node_started",
+                "timestamp_ms": 1,
+                "namespace": ["semantics:1111", f"{branch}:2222"],
+                "data": {"node": "model", "triggers": []},
+            }
+        )
+
+    assert output.getvalue().count("[node] model started") == 1
+
+
 def test_a_call_outside_any_subgraph_is_named_by_its_role_alone() -> None:
     output = StringIO()
     reporter = ConsoleReporter(

@@ -36,11 +36,6 @@ def backtrace(
     return Backtrace(
         hops=[
             CausalHop(
-                effect=ref("coding", "result"),
-                cause=ref("coding", "ret_bore"),
-                rationale="The final solid contains the bore from this result.",
-            ),
-            CausalHop(
                 effect=ref("coding", "ret_bore"),
                 cause=ref("operations", "op_bore"),
                 rationale="The code result implements this operation.",
@@ -71,6 +66,7 @@ def finding(name: str = "finding_wrong_bore") -> AuditFinding:
         ("operations", "sem_bore"),
         ("coding", "op_bore"),
         ("coding", "part"),
+        ("coding", "result"),
     ],
 )
 def test_a_stage_reference_rejects_a_name_owned_by_another_stage(
@@ -173,6 +169,10 @@ def test_a_backtrace_must_end_at_a_revision_target() -> None:
 
 def test_an_empty_backtrace_is_valid_when_the_finding_is_already_at_its_root() -> None:
     Backtrace(hops=[], revision_request=request())
+    Backtrace(
+        hops=[],
+        revision_request=request(targets=[ref("coding", None)]),
+    )
 
 
 @pytest.mark.parametrize(

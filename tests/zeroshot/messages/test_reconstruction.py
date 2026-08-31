@@ -1,11 +1,12 @@
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from tests.zeroshot.contracts import hypothesis
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
+    PipelineStage,
 )
 from zeroshot.pipeline.messages.contracts.audit import (
     AuditFinding,
@@ -46,7 +47,10 @@ def _operations() -> OperationPlan:
 
 
 def _finding() -> AuditFinding:
-    target = StageOutputRef(stage="semantics", name="sem_feature_1")
+    target = StageOutputRef(
+        stage=PipelineStage.SEMANTICS,
+        name="sem_feature_1",
+    )
     return AuditFinding(
         name="finding_wrong_base",
         observation="The reconstructed base is too wide.",
@@ -141,7 +145,9 @@ def test_coding_requires_an_explicit_null_deliverable() -> None:
     with pytest.raises(ValidationError):
         CodingSubmission.model_validate({"responses": responses})
     with pytest.raises(ValidationError):
-        CodingSubmission(deliverable="model.py", responses=responses)
+        CodingSubmission.model_validate(
+            {"deliverable": "model.py", "responses": responses}
+        )
 
 
 def test_a_stage_submission_rejects_empty_responses_and_extra_fields() -> None:
@@ -170,6 +176,22 @@ def test_each_stage_submission_exposes_its_concrete_json_schema() -> None:
         "/OperationPlan"
     )
     assert coding_schema["properties"]["deliverable"]["type"] == "null"
+
+
+@pytest.mark.parametrize(
+    ("submission", "expected_name"),
+    [
+        (SemanticSubmission, "SemanticSubmission"),
+        (OperationSubmission, "OperationSubmission"),
+        (CodingSubmission, "CodingSubmission"),
+    ],
+)
+def test_stage_submission_schema_names_are_provider_safe(
+    submission: type[BaseModel],
+    expected_name: str,
+) -> None:
+    assert submission.__name__ == expected_name
+    assert submission.model_json_schema()["title"] == expected_name
 
 
 def test_a_round_checkpoint_requires_every_ticket_response_in_stage_order() -> None:

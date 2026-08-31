@@ -14,7 +14,7 @@ Audit procedure:
 1. Read the current snapshot and verification result first. If the program did not produce one valid solid, inspect whether the cause is in coding or in an upstream artifact.
 2. Inspect the generated projections and perspective renders. Compare them with every input view.
 3. Compare the semantic hypothesis with the input drawing, the operation plan with that hypothesis and drawing, and the source program and built solid with the plan.
-4. For each defect, record exact evidence locators, then one backtrace per independently necessary revision root. A path runs from downstream effect to adjacent cause. Use `ret_...` or `result` for coding members, `op_...` for operations, and `sem_...` for semantics.
+4. For each defect, record exact evidence locators, then one backtrace per independently necessary revision root. A path runs from downstream effect to adjacent cause. Coding members in a backtrace are only stable `ret_...` outputs; `result` is the terminal export and is not a backtrace node. If its final assignment is defective, request `modify` on the whole coding output with `name: null`. Use `op_...` for operations and `sem_...` for semantics.
 5. Request a change only at a root whose own output is incorrect. Do not blame an upstream artifact merely because downstream work failed to follow a correct artifact. Use an empty hop list when the observed defect is already at its revision root.
 6. Accept only when the verified solid matches the drawing in all material respects and no stage output requires correction.
 

@@ -80,7 +80,12 @@ def test_initial_call_fans_out_and_reduces() -> None:
     assert commands == ["mkdir -p -- /work/semantics_0 /work/semantics_1"]
     assert len(head.received_messages) == 2
     assert len(peer.received_messages) == 1
-    assert "through hole" in head.received_messages[1][-1].text
+    reduction_instruction = head.received_messages[1][-1].text
+    assert "through hole" in reduction_instruction
+    assert _proposal("through hole").model_dump_json() in reduction_instruction
+    assert (
+        _proposal("through hole").model_dump_json(indent=2) not in reduction_instruction
+    )
 
 
 def test_reentry_revises_the_adopted_proposal_without_fanning_out_again() -> None:
