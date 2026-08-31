@@ -30,8 +30,7 @@ resume_from: null
 
 console:
   _target_: zeroshot.pipeline.event_logging.ConsoleReporter
-  muted_graph_nodes:
-    - propose_1
+  muted_graph_nodes: []
 
 artifact_presenter:
   _target_: zeroshot.pipeline.messages.ArtifactPresenter

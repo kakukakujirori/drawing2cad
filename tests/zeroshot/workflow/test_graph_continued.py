@@ -22,7 +22,7 @@ from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.messages.contracts import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.verification import StepRenderer
-from zeroshot.pipeline.workflow import create_agent, create_fanout_reduce_graph
+from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.components.compact import (
     COMPACTION_INSTRUCTION,
     SUMMARY_PREAMBLE,
@@ -35,7 +35,6 @@ _INPUT_MARKER = "[Input DXF path:"
 
 class _Models(TypedDict):
     lead: ScriptedChatModel
-    peer: ScriptedChatModel
     planner: ScriptedChatModel
     coder: ScriptedChatModel
     auditor: ScriptedChatModel
@@ -45,7 +44,6 @@ def _continued_graph(
     workdir: SandboxWorkdir,
     *,
     lead: ScriptedChatModel,
-    peer: ScriptedChatModel,
     planner: ScriptedChatModel,
     coder: ScriptedChatModel,
     auditor: ScriptedChatModel,
@@ -61,11 +59,10 @@ def _continued_graph(
     dxf_path.write_text("0\nSECTION\n0\nEOF\n", encoding="utf-8")
     return create_reconstruction_graph(
         semantics_agent_builder=partial(
-            create_fanout_reduce_graph,
-            proposer_role=_ROLE,
-            proposer_models=[lead, peer],
-            max_proposer_turns=5,
-            max_reducer_turns=5,
+            create_agent,
+            role=_ROLE,
+            model=lead,
+            max_turns=5,
             **common,
         ),
         operations_agent_builder=partial(
@@ -115,8 +112,7 @@ def _continued_graph(
 def models() -> _Models:
     semantic = _semantic_submission()
     return {
-        "lead": ScriptedChatModel(responses=(semantic, semantic)),
-        "peer": ScriptedChatModel(responses=(semantic,)),
+        "lead": ScriptedChatModel(responses=(semantic,)),
         "planner": ScriptedChatModel(responses=(_operation_submission(),)),
         "coder": ScriptedChatModel(responses=(_coding_submission(),)),
         "auditor": ScriptedChatModel(responses=(_accepted_audit(),)),
@@ -135,7 +131,7 @@ def _system_prompt(model: ScriptedChatModel) -> str:
 
 def _lead_thread(result: dict[str, Any], stage: PipelineStage) -> list[BaseMessage]:
     if stage is PipelineStage.SEMANTICS:
-        return list(result["semantics_state"]["reducer_state"]["messages"])
+        return list(result["semantics_state"]["messages"])
     if stage is PipelineStage.OPERATIONS:
         return list(result["operations_state"]["messages"])
     return list(result["coding_state"]["messages"])
@@ -199,7 +195,7 @@ def test_reasoning_states_end_with_the_same_latest_thread(
     )
 
 
-def test_peer_and_auditor_remain_outside_the_shared_thread(
+def test_the_auditor_remains_outside_the_shared_thread(
     monkeypatch: pytest.MonkeyPatch,
     models: _Models,
 ) -> None:
@@ -207,9 +203,7 @@ def test_peer_and_auditor_remain_outside_the_shared_thread(
     with SandboxWorkdir() as workdir:
         _continued_graph(workdir, **models).invoke({})
 
-    peer_prompt = _texts(models["peer"].received_messages[0])
     audit_prompt = _texts(models["auditor"].received_messages[0])
-    assert sum(_INPUT_MARKER in text for text in peer_prompt) == 1
     assert sum(_INPUT_MARKER in text for text in audit_prompt) == 1
     assert not any('"deliverable"' in text for text in audit_prompt)
 

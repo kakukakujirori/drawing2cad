@@ -23,11 +23,10 @@ from zeroshot.pipeline.messages.contracts.stages import (
     ReasoningStage,
 )
 from zeroshot.pipeline.workflow.components.agent import AgentState
-from zeroshot.pipeline.workflow.components.fanout_reduce import FanoutReduceState
 
 
 class ReconstructionState(TypedDict):
-    semantics_state: NotRequired[FanoutReduceState]
+    semantics_state: NotRequired[AgentState]
     operations_state: NotRequired[AgentState]
     coding_state: NotRequired[AgentState]
     audit_state: NotRequired[AgentState]
@@ -43,14 +42,12 @@ class ReconstructionState(TypedDict):
     audit_report: NotRequired[AuditReport | None]
 
 
-# Which agent carries the thread through each reasoning stage, and where its
-# transcript is kept: the fan-out continues its head proposer as the reducer,
-# while the operation planner and coder are plain agents. The one place that
-# knows the three shapes.
-_LEAD_TRANSCRIPT: Mapping[ReasoningStage, tuple[str, str | None]] = {
-    PipelineStage.SEMANTICS: ("semantics_state", "reducer_state"),
-    PipelineStage.OPERATIONS: ("operations_state", None),
-    PipelineStage.CODING: ("coding_state", None),
+# Where each reasoning stage keeps the transcript of the agent that carried
+# the thread. The one place that knows which channel belongs to which stage.
+_LEAD_TRANSCRIPT: Mapping[ReasoningStage, str] = {
+    PipelineStage.SEMANTICS: "semantics_state",
+    PipelineStage.OPERATIONS: "operations_state",
+    PipelineStage.CODING: "coding_state",
 }
 
 
@@ -58,10 +55,8 @@ def lead_transcript(
     state: ReconstructionState, stage: ReasoningStage
 ) -> list[AnyMessage]:
     """The transcript of the agent that carried the thread through `stage`."""
-    channel, nested = _LEAD_TRANSCRIPT[stage]
-    stage_state = cast(Mapping[str, Any], state).get(channel) or {}
-    lead = (stage_state.get(nested) or {}) if nested is not None else stage_state
-    return list(lead.get("messages") or [])
+    stage_state = cast(Mapping[str, Any], state).get(_LEAD_TRANSCRIPT[stage]) or {}
+    return list(stage_state.get("messages") or [])
 
 
 def carry_thread(
@@ -71,15 +66,10 @@ def carry_thread(
     seeded = {"messages": list(thread), "reported_message_count": len(thread)}
 
     stage_states = cast(Mapping[str, Any], state)
-    update: dict[str, Any] = {}
-    for channel, nested in _LEAD_TRANSCRIPT.values():
-        existing = dict(stage_states.get(channel) or {})
-        update[channel] = (
-            {**existing, **seeded}
-            if nested is None
-            else {**existing, nested: {**(existing.get(nested) or {}), **seeded}}
-        )
-    return update
+    return {
+        channel: {**(dict(stage_states.get(channel) or {})), **seeded}
+        for channel in _LEAD_TRANSCRIPT.values()
+    }
 
 
 def _custom_state_types(*root_schemas: type) -> tuple[type, ...]:

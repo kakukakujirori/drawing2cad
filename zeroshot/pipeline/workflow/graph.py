@@ -78,19 +78,8 @@ class AgentBuilder(Protocol):
     ) -> CompiledGraph: ...
 
 
-class FanoutReduceBuilder(Protocol):
-    def __call__(
-        self,
-        *,
-        tools: Sequence[BaseTool],
-        prompt_context: Mapping[str, str],
-        fanout_workdir_prefix: str,
-        proposal_schema: type[BaseModel],
-    ) -> CompiledGraph: ...
-
-
 def create_reconstruction_graph(
-    semantics_agent_builder: FanoutReduceBuilder,
+    semantics_agent_builder: AgentBuilder,
     operations_agent_builder: AgentBuilder,
     coding_agent_builder: AgentBuilder,
     audit_agent_builder: AgentBuilder,
@@ -149,10 +138,7 @@ def create_reconstruction_graph(
     semantics_agent = semantics_agent_builder(
         tools=basic_tools,
         prompt_context=prompt_context,
-        proposal_schema=SemanticSubmission,
-        fanout_workdir_prefix=str(
-            sandbox_workdir.sandbox_bind_dir / "semantic_hypothesis"
-        ),
+        output_schema=SemanticSubmission,
     )
     operations_agent = operations_agent_builder(
         tools=basic_tools,
@@ -286,20 +272,25 @@ def create_reconstruction_graph(
             return {"stage_submission": SemanticSubmission.unchanged()}
 
         previous = state.get("semantics_state") or {}
+        messages = [
+            *list(previous.get("messages") or []),
+            build_stage_instruction(
+                state,
+                PipelineStage.SEMANTICS,
+                include_input=(not previous or compact_between_stages is not None),
+            ),
+        ]
         result = semantics_agent.invoke(
             {
                 **previous,
-                "invocation_instruction": build_stage_instruction(
-                    state,
-                    PipelineStage.SEMANTICS,
-                    include_input=(not previous or compact_between_stages is not None),
-                ),
+                "messages": messages,
+                "structured_response": None,
             },
             config=_child_graph_config(config),
         )
         return {
             "semantics_state": result,
-            "stage_submission": result.get("proposal"),
+            "stage_submission": result.get("structured_response"),
         }
 
     def run_operations(state: ReconstructionState, config: RunnableConfig):

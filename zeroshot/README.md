@@ -8,7 +8,7 @@ Generate:
 
 ```bash
 python -m zeroshot.run_pipeline --multirun \
-    model=gpt5_6_luna_codex \
+    model=gpt5.6_luna_codex \
     artifact_root=outputs/baseline_luna_xhigh \
     on_existing=retry \
     sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)

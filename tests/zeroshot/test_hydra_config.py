@@ -14,11 +14,7 @@ from zeroshot.pipeline.event_logging import ConsoleReporter
 from zeroshot.pipeline.messages import ArtifactPresenter, PromptTemplate
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
-from zeroshot.pipeline.workflow import (
-    create_agent,
-    create_fanout_reduce_graph,
-    create_reconstruction_graph,
-)
+from zeroshot.pipeline.workflow import create_agent, create_reconstruction_graph
 
 CONFIG_DIR = Path(__file__).parents[2] / "zeroshot" / "configs"
 
@@ -319,28 +315,11 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert coder_model.model_name == "gemma4:e2b"
 
     stage = graph_factory.keywords["semantics_agent_builder"]
-    assert stage.func is create_fanout_reduce_graph
-    assert set(stage.keywords) == {
-        "proposer_role",
-        "proposer_models",
-        "response_format_strategy",
-        "max_proposer_turns",
-        "max_reducer_turns",
-        "announce_turns",
-        "model_retries",
-        "checkpointer",
-    }
-    assert stage.keywords["response_format_strategy"] == "provider"
-    assert stage.keywords["proposer_role"] == "semantic_hypothesizer"
+    assert stage.func is create_agent
+    assert stage.keywords["role"] == "semantic_hypothesizer"
     assert PromptTemplate("roles/semantic_hypothesizer").path.is_file()
-    proposer_models = stage.keywords["proposer_models"]
-    # How wide the fan-out is set is a checked-in default an experiment flips;
-    # what the config must not get wrong is the contract the stage enforces --
-    # at least two proposers, each its own instance so the branches are
-    # independent, all following the run's model.
-    assert len(proposer_models) >= 2
-    assert len({id(model) for model in proposer_models}) == len(proposer_models)
-    assert all(model.model_name == "gemma4:e2b" for model in proposer_models)
+    assert stage.keywords["response_format_strategy"] == "provider"
+    assert stage.keywords["model"].model_name == "gemma4:e2b"
 
     operations = graph_factory.keywords["operations_agent_builder"]
     assert operations.func is create_agent
@@ -366,7 +345,7 @@ def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None
     assert graph_factory.keywords["share_thread"] is True
 
     roles = {
-        graph_factory.keywords["semantics_agent_builder"].keywords["proposer_role"],
+        graph_factory.keywords["semantics_agent_builder"].keywords["role"],
         graph_factory.keywords["operations_agent_builder"].keywords["role"],
         graph_factory.keywords["coding_agent_builder"].keywords["role"],
     }

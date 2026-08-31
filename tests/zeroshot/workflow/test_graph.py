@@ -40,7 +40,7 @@ from zeroshot.pipeline.verification import (
     StepRenderer,
     VerifyOutputResult,
 )
-from zeroshot.pipeline.workflow import create_agent, create_fanout_reduce_graph
+from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow import graph as graph_module
 from zeroshot.pipeline.workflow.graph import AgentBuilder, create_reconstruction_graph
 from zeroshot.pipeline.workflow.reconstruction import (
@@ -206,7 +206,6 @@ def _graph(
     workdir: SandboxWorkdir,
     *,
     head: ScriptedChatModel,
-    peer: ScriptedChatModel,
     planner: ScriptedChatModel,
     coder: ScriptedChatModel,
     auditor: ScriptedChatModel,
@@ -221,13 +220,8 @@ def _graph(
         "checkpointer": False,
     }
     return create_reconstruction_graph(
-        semantics_agent_builder=partial(
-            create_fanout_reduce_graph,
-            proposer_role="semantic_hypothesizer",
-            proposer_models=[head, peer],
-            max_proposer_turns=5,
-            max_reducer_turns=5,
-            **common,
+        semantics_agent_builder=_agent(
+            "semantic_hypothesizer", head, max_turns=5, **common
         ),
         operations_agent_builder=_agent(
             "operation_planner", planner, max_turns=5, **common
@@ -322,8 +316,7 @@ def test_an_accepted_round_is_integrated_and_persisted(
 ) -> None:
     calls = _stub_verification(monkeypatch, _verified())
     semantic = _semantic_submission()
-    head = ScriptedChatModel(responses=(semantic, semantic))
-    peer = ScriptedChatModel(responses=(semantic,))
+    head = ScriptedChatModel(responses=(semantic,))
     planner = ScriptedChatModel(responses=(_operation_submission(),))
     coder = ScriptedChatModel(responses=(_coding_submission(),))
     auditor = ScriptedChatModel(responses=(_accepted_audit(),))
@@ -332,7 +325,6 @@ def test_an_accepted_round_is_integrated_and_persisted(
         result = _graph(
             workdir,
             head=head,
-            peer=peer,
             planner=planner,
             coder=coder,
             auditor=auditor,
@@ -363,7 +355,6 @@ def test_a_semantics_seed_starts_at_operations_without_calling_semantics(
 ) -> None:
     calls = _stub_verification(monkeypatch, _verified())
     head = ScriptedChatModel(responses=())
-    peer = ScriptedChatModel(responses=())
     planner = ScriptedChatModel(responses=(_operation_submission(),))
     coder = ScriptedChatModel(responses=(_coding_submission(),))
     auditor = ScriptedChatModel(responses=(_accepted_audit(),))
@@ -372,7 +363,6 @@ def test_a_semantics_seed_starts_at_operations_without_calling_semantics(
         result = _graph(
             workdir,
             head=head,
-            peer=peer,
             planner=planner,
             coder=coder,
             auditor=auditor,
@@ -382,7 +372,6 @@ def test_a_semantics_seed_starts_at_operations_without_calling_semantics(
         )
 
     assert head.received_messages == []
-    assert peer.received_messages == []
     assert len(planner.received_messages) == 1
     assert calls == ["verify"]
     assert persisted == result["reconstruction"]
@@ -395,7 +384,6 @@ def test_an_operations_checkpoint_resumes_at_coding(
 ) -> None:
     calls = _stub_verification(monkeypatch, _verified())
     head = ScriptedChatModel(responses=())
-    peer = ScriptedChatModel(responses=())
     planner = ScriptedChatModel(responses=())
     coder = ScriptedChatModel(responses=(_coding_submission(),))
     auditor = ScriptedChatModel(responses=(_accepted_audit(),))
@@ -404,14 +392,12 @@ def test_an_operations_checkpoint_resumes_at_coding(
         result = _graph(
             workdir,
             head=head,
-            peer=peer,
             planner=planner,
             coder=coder,
             auditor=auditor,
         ).invoke({"reconstruction": _operations_resume()})
 
     assert head.received_messages == []
-    assert peer.received_messages == []
     assert planner.received_messages == []
     assert len(coder.received_messages) == 1
     assert len(auditor.received_messages) == 1
@@ -427,8 +413,7 @@ def test_every_stage_reads_the_same_history_path_and_current_round(
 ) -> None:
     _stub_verification(monkeypatch, _verified())
     semantic = _semantic_submission()
-    head = ScriptedChatModel(responses=(semantic, semantic))
-    peer = ScriptedChatModel(responses=(semantic,))
+    head = ScriptedChatModel(responses=(semantic,))
     planner = ScriptedChatModel(responses=(_operation_submission(),))
     coder = ScriptedChatModel(responses=(_coding_submission(),))
     auditor = ScriptedChatModel(responses=(_accepted_audit(),))
@@ -437,7 +422,6 @@ def test_every_stage_reads_the_same_history_path_and_current_round(
         _graph(
             workdir,
             head=head,
-            peer=peer,
             planner=planner,
             coder=coder,
             auditor=auditor,
@@ -445,7 +429,7 @@ def test_every_stage_reads_the_same_history_path_and_current_round(
         ).invoke({})
         assert (workdir.host_bind_dir / "history.json").is_file()
 
-    for model in (head, peer, planner, coder, auditor):
+    for model in (head, planner, coder, auditor):
         prompt = "\n".join(message.text for message in model.received_messages[0])
         assert "/work/history.json" in prompt
         assert "round 0" in prompt
@@ -456,7 +440,7 @@ def test_invalid_operations_retry_without_reaching_coding(
 ) -> None:
     calls = _stub_verification(monkeypatch, _verified())
     semantic = _semantic_submission(_ROUND_ZERO_TICKET, "a plate")
-    head = ScriptedChatModel(responses=(semantic, semantic))
+    head = ScriptedChatModel(responses=(semantic,))
     planner = ScriptedChatModel(
         responses=(
             _operation_submission(builds=("sem_absent",)),
@@ -469,7 +453,6 @@ def test_invalid_operations_retry_without_reaching_coding(
         result = _graph(
             workdir,
             head=head,
-            peer=ScriptedChatModel(responses=(semantic,)),
             planner=planner,
             coder=coder,
             auditor=ScriptedChatModel(responses=(_accepted_audit(),)),
@@ -508,8 +491,7 @@ def test_stage_validation_retry_limit_stops_before_downstream_work(
     with SandboxWorkdir() as workdir:
         result = _graph(
             workdir,
-            head=ScriptedChatModel(responses=(semantic, semantic)),
-            peer=ScriptedChatModel(responses=(semantic,)),
+            head=ScriptedChatModel(responses=(semantic,)),
             planner=planner,
             coder=coder,
             auditor=auditor,
@@ -537,8 +519,7 @@ def test_an_invalid_audit_is_retried_against_the_same_snapshot(
     with SandboxWorkdir() as workdir:
         result = _graph(
             workdir,
-            head=ScriptedChatModel(responses=(semantic, semantic)),
-            peer=ScriptedChatModel(responses=(semantic,)),
+            head=ScriptedChatModel(responses=(semantic,)),
             planner=ScriptedChatModel(responses=(_operation_submission(),)),
             coder=ScriptedChatModel(responses=(_coding_submission(),)),
             auditor=auditor,
@@ -562,10 +543,7 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(
         _ROUND_ONE_TICKET,
         "a revised plate",
     )
-    head = ScriptedChatModel(
-        responses=(first_semantics, first_semantics, second_semantics)
-    )
-    peer = ScriptedChatModel(responses=(first_semantics,))
+    head = ScriptedChatModel(responses=(first_semantics, second_semantics))
     planner = ScriptedChatModel(
         responses=(
             _operation_submission(),
@@ -593,7 +571,6 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(
         result = _graph(
             workdir,
             head=head,
-            peer=peer,
             planner=planner,
             coder=coder,
             auditor=auditor,
@@ -611,8 +588,7 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(
     assert first.operations == _plan()
     assert second.operations == _plan(detail="extrude revised plate")
     assert all(len(ticket.responses) == 3 for ticket in second.open_tickets)
-    assert len(head.received_messages) == 3
-    assert len(peer.received_messages) == 1
+    assert len(head.received_messages) == 2
     assert len(planner.received_messages) == 2
     assert len(coder.received_messages) == 2
     assert len(auditor.received_messages) == 1
@@ -624,8 +600,7 @@ def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(
 ) -> None:
     _stub_verification(monkeypatch, _verified("000"), _verified("001"))
     first_semantics = _semantic_submission()
-    head = ScriptedChatModel(responses=(first_semantics, first_semantics))
-    peer = ScriptedChatModel(responses=(first_semantics,))
+    head = ScriptedChatModel(responses=(first_semantics,))
     planner = ScriptedChatModel(responses=(_operation_submission(),))
     coder = ScriptedChatModel(
         responses=(_coding_submission(), _coding_submission(_ROUND_ONE_TICKET))
@@ -636,7 +611,6 @@ def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(
         result = _graph(
             workdir,
             head=head,
-            peer=peer,
             planner=planner,
             coder=coder,
             auditor=auditor,
@@ -649,7 +623,7 @@ def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(
     assert [response.stage for response in ticket.responses] == [PipelineStage.CODING]
 
     # The unassigned stages were not asked again, and their artifacts stand.
-    assert len(head.received_messages) == 2
+    assert len(head.received_messages) == 1
     assert len(planner.received_messages) == 1
     assert len(coder.received_messages) == 2
     assert second.semantics == first.semantics
@@ -666,8 +640,7 @@ def test_rejection_at_the_round_limit_finishes_without_opening_another_round(
     with SandboxWorkdir() as workdir:
         result = _graph(
             workdir,
-            head=ScriptedChatModel(responses=(semantic, semantic)),
-            peer=ScriptedChatModel(responses=(semantic,)),
+            head=ScriptedChatModel(responses=(semantic,)),
             planner=ScriptedChatModel(responses=(_operation_submission(),)),
             coder=ScriptedChatModel(responses=(_coding_submission(),)),
             auditor=auditor,

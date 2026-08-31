@@ -24,7 +24,7 @@ workflow:
   # `$output_schema` nor `$max_turns`, so every stage renders it identically
   # while keeping its own turn budget and its own answer contract.
   semantics_agent_builder:
-    proposer_role: cad_reconstructor
+    role: cad_reconstructor
   operations_agent_builder:
     role: cad_reconstructor
   coding_agent_builder:

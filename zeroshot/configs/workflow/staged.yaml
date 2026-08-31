@@ -12,18 +12,15 @@ workflow:
   _partial_: true
 
   semantics_agent_builder:
-    _target_: zeroshot.pipeline.workflow.create_fanout_reduce_graph
+    _target_: zeroshot.pipeline.workflow.create_agent
     _partial_: true
+    role: semantic_hypothesizer
+    model: ${model}
 
-    proposer_role: semantic_hypothesizer
-    proposer_models:
-      - ${model}
-      - ${model}
     response_format_strategy: ${response_format_strategy}
-    max_proposer_turns: 20
-    max_reducer_turns: 10
+    max_turns: 20
     announce_turns: true
-    # Sole retry owner; model SDK configs keep max_retries at 0.
+    reset_turns_when_reentrant: true
     model_retries: 5
     checkpointer: false
 

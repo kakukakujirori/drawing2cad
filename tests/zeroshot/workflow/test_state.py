@@ -274,16 +274,11 @@ _CODING_SUBMISSION = CodingSubmission(
 
 _ARTIFACTS: dict[str, object] = {
     "semantics_state": {
-        "invocation_instruction": None,
-        "branch_proposals": {"propose_0": _SEMANTIC_SUBMISSION},
-        "proposal": _SEMANTIC_SUBMISSION,
-        "reducer_state": {
-            "messages": [HumanMessage(content="propose semantics")],
-            "structured_response": _SEMANTIC_SUBMISSION,
-            "current_turn": 1,
-            "total_turns": 1,
-            "stop_reason": StopReason.COMPLETED,
-        },
+        "messages": [HumanMessage(content="propose semantics")],
+        "structured_response": _SEMANTIC_SUBMISSION,
+        "current_turn": 1,
+        "total_turns": 1,
+        "stop_reason": StopReason.COMPLETED,
     },
     "operations_state": {
         "messages": [HumanMessage(content="propose operations")],
@@ -394,9 +389,8 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
         assert restored[field] == value
 
     semantics_state = restored["semantics_state"]
-    assert type(semantics_state["proposal"]) is SemanticSubmission
-    assert type(semantics_state["branch_proposals"]["propose_0"]) is SemanticSubmission
-    assert type(semantics_state["reducer_state"]["stop_reason"]) is StopReason
+    assert type(semantics_state["structured_response"]) is SemanticSubmission
+    assert type(semantics_state["stop_reason"]) is StopReason
 
     operations_state = restored["operations_state"]
     assert type(operations_state["structured_response"]) is OperationSubmission
@@ -406,10 +400,7 @@ def _threaded_state(**stages: object) -> ReconstructionState:
     """A run part-way through, each stage holding what is its own."""
     read = [HumanMessage(content="read the views")]
     state: dict[str, object] = {
-        "semantics_state": {
-            "branch_proposals": {"propose_0": None},
-            "reducer_state": {"messages": read},
-        },
+        "semantics_state": {"messages": read, "current_turn": 3},
         "operations_state": {
             "messages": read,
             "current_turn": 2,
@@ -423,10 +414,7 @@ def _threaded_state(**stages: object) -> ReconstructionState:
 @pytest.mark.parametrize(
     ("stage", "stage_state"),
     [
-        (
-            PipelineStage.SEMANTICS,
-            {"semantics_state": {"reducer_state": {"messages": ["it"]}}},
-        ),
+        (PipelineStage.SEMANTICS, {"semantics_state": {"messages": ["it"]}}),
         (PipelineStage.OPERATIONS, {"operations_state": {"messages": ["it"]}}),
         (PipelineStage.CODING, {"coding_state": {"messages": ["it"]}}),
     ],
@@ -434,8 +422,7 @@ def _threaded_state(**stages: object) -> ReconstructionState:
 def test_the_thread_is_taken_from_whichever_agent_carried_it(
     stage: ReasoningStage, stage_state: dict[str, object]
 ) -> None:
-    """Each template continues a different one of its agents, so where the
-    finished thread sits differs by stage."""
+    """The thread a stage finished is read from that stage's own channel."""
     state = _threaded_state(**stage_state)
 
     update = carry_thread(state, lead_transcript(state, stage))
@@ -451,7 +438,7 @@ def test_the_thread_reaches_every_reasoning_stage_but_not_the_audit() -> None:
     update = carry_thread(state, lead_transcript(state, PipelineStage.CODING))
 
     assert set(update) == {"semantics_state", "operations_state", "coding_state"}
-    assert update["semantics_state"]["reducer_state"]["messages"] == ["wrote the model"]
+    assert update["semantics_state"]["messages"] == ["wrote the model"]
     assert update["operations_state"]["messages"] == ["wrote the model"]
 
 
@@ -466,23 +453,21 @@ def test_the_stage_that_wrote_the_thread_is_given_back_what_it_wrote() -> None:
 
 
 def test_what_a_stage_holds_besides_its_messages_survives_the_thread() -> None:
-    """Branch proposals and revision counts belong to their stage, not to the
-    thread that happens to be passing through it."""
+    """Turn counts belong to their stage, not to the thread that happens to be
+    passing through it."""
     update = carry_thread(
         _threaded_state(),
         lead_transcript(_threaded_state(), PipelineStage.CODING),
     )
 
-    assert update["semantics_state"]["branch_proposals"] == {"propose_0": None}
+    assert update["semantics_state"]["current_turn"] == 3
     assert update["operations_state"]["current_turn"] == 2
 
 
 def test_the_prompt_log_is_told_where_the_inherited_thread_ends() -> None:
     """Without the watermark a stage reports the transcript it was handed as
     the prompt it was given."""
-    state = _threaded_state(
-        semantics_state={"reducer_state": {"messages": ["one", "two"]}}
-    )
+    state = _threaded_state(semantics_state={"messages": ["one", "two"]})
 
     update = carry_thread(state, lead_transcript(state, PipelineStage.SEMANTICS))
 
@@ -494,5 +479,6 @@ def test_a_stage_that_has_not_run_is_seeded_all_the_same() -> None:
     update = carry_thread(ReconstructionState(), [])
 
     assert update["semantics_state"] == {
-        "reducer_state": {"messages": [], "reported_message_count": 0}
+        "messages": [],
+        "reported_message_count": 0,
     }

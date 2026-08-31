@@ -45,7 +45,6 @@ from zeroshot.pipeline.verification import (
 from zeroshot.pipeline.workflow import (
     StopReason,
     create_agent,
-    create_fanout_reduce_graph,
     create_reconstruction_graph,
 )
 from zeroshot.pipeline.workflow.reconstruction import (
@@ -79,18 +78,10 @@ _A_BOX = AIMessage(
 
 
 def _semantic_stage():
-    """Two proposers, because that is the smallest fan-out the stage allows.
-
-    The head answers twice: once on its own branch, and once more as the
-    reducer merging the peer's answer into it.
-    """
     return partial(
-        create_fanout_reduce_graph,
-        proposer_role="semantic_hypothesizer",
-        proposer_models=[
-            ScriptedChatModel(responses=(_A_BOX, _A_BOX)),
-            ScriptedChatModel(responses=(_A_BOX,)),
-        ],
+        create_agent,
+        role="semantic_hypothesizer",
+        model=ScriptedChatModel(responses=(_A_BOX,)),
         announce_turns=False,
     )
 
@@ -1062,23 +1053,13 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
     prompts = [event["data"] for event in events if event["event"] == "prompt"]
 
     # One per ask, not one per model call: the report is what an agent was
-    # asked when it was asked, and a retry re-asks nothing new.  The
-    # hypothesizer role is asked three times because the stage fans out --
-    # once per proposer branch, and once more to reduce them.
+    # asked when it was asked, and a retry re-asks nothing new.
     assert [prompt["role"] for prompt in prompts] == [
-        "semantic_hypothesizer",
-        "semantic_hypothesizer",
         "semantic_hypothesizer",
         "operation_planner",
         "coder",
         "output_auditor",
     ]
-
-    # The reducer continues its head proposer's transcript, and reports the
-    # request that reopened it rather than replaying what it was handed.
-    reduction = prompts[2]
-    assert reduction["system"] == ""
-    assert len(reduction["messages"]) == 1
 
     coder = next(prompt for prompt in prompts if prompt["role"] == "coder")
     assert "expert CAD engineer" in coder["system"]
