@@ -45,7 +45,7 @@ type Submission = (
     SemanticSubmission | OperationSubmission | CodingSubmission | AuditReport
 )
 
-_REFERENCE_LIKE = re.compile(r"\bsem_[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\b")
+_REFERENCE_LIKE = re.compile(r"\bsem_[a-z0-9_]+(?:\.[a-z0-9_]+)+\b")
 _COPIED_DECIMALS = 4
 _DECIMAL = re.compile(rf"\d+\.\d{{{_COPIED_DECIMALS},}}")
 _NAMED_AT_MOST = 3

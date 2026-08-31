@@ -473,6 +473,12 @@ def test_invalid_operations_retry_without_reaching_coding(
     )
     assert isinstance(validation_message.content, list)
     assert all(isinstance(block, dict) for block in validation_message.content)
+
+    # The round's terms and guidelines already stand in the transcript, so a
+    # re-ask that repeated them would pay for them twice.
+    assert "Revise the operation plan" not in retry
+    assert "Guidelines:" not in retry
+
     assert result["reconstruction"].snapshots[0].operations == _plan()
     assert result["stage_validation_failure_count"] == 0
 

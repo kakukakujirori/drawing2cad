@@ -269,10 +269,17 @@ def test_naming_a_kind_and_excluding_it_are_exclusive() -> None:
     assert not {name.lower() for name in _EXCLUDED_GEOMETRY} & named
 
 
-@pytest.mark.parametrize("name", ["main_bore", "sem-Main", "sem_", "sem_2d_bore"])
+@pytest.mark.parametrize("name", ["main_bore", "sem-Main", "sem_"])
 def test_a_feature_name_must_be_a_semantic_identity(name: str) -> None:
     with pytest.raises(ValidationError, match="usable sem name"):
         feature(name, "a boss")
+
+
+def test_a_name_may_carry_a_digit_anywhere_after_its_prefix() -> None:
+    """The prefix already keeps a name off anything Python binds, so what
+    follows it needs no second rule about where a digit may sit."""
+    assert feature("sem_2d_bore", "a boss").name == "sem_2d_bore"
+    assert geometry("sphere", name="geo_5radius").name == "geo_5radius"
 
 
 def test_feature_names_are_unique() -> None:
@@ -310,6 +317,13 @@ def test_geometry_and_evidence_names_mark_their_namespace() -> None:
         geometry("sphere", name="round_end")
     with pytest.raises(ValidationError, match="usable ev name"):
         evidence("circle", name="front_circle")
+
+
+def test_a_rejected_name_names_the_characters_to_remove() -> None:
+    """`lower_snake_case` does not tell a model that wrote geo_baseradius5.79
+    that the period alone is the problem."""
+    with pytest.raises(ValidationError, match=r"Remove '\.'"):
+        geometry("sphere", name="geo_baseradius5.79")
 
 
 def test_a_feature_is_named_by_identity_and_not_by_its_place_in_the_list() -> None:

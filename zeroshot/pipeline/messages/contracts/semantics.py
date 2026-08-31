@@ -204,17 +204,20 @@ _DIRECTIONS = frozenset({"major_axis"})
 
 ParameterName = StrEnum("ParameterName", {name.upper(): name for name in _ARITY})
 
-_SEMANTIC_NAME = re.compile(r"^sem_[a-z][a-z0-9_]*$")
-_GEOMETRY_NAME = re.compile(r"^geo_[a-z][a-z0-9_]*$")
-_EVIDENCE_NAME = re.compile(r"^ev_[a-z][a-z0-9_]*$")
+_SEMANTIC_NAME = re.compile(r"^sem_[a-z0-9_]+$")
+_GEOMETRY_NAME = re.compile(r"^geo_[a-z0-9_]+$")
+_EVIDENCE_NAME = re.compile(r"^ev_[a-z0-9_]+$")
 
 
 def _require_name(name: str, prefix: str, pattern: re.Pattern[str]) -> None:
-    if not pattern.fullmatch(name):
-        raise ValueError(
-            f"{name!r} is not a usable {prefix.removesuffix('_')} name. "
-            f"Begin with {prefix} and carry on in lower_snake_case."
-        )
+    if pattern.fullmatch(name):
+        return
+    stray = dict.fromkeys(re.findall(r"[^a-z0-9_]", name.removeprefix(prefix)))
+    raise ValueError(
+        f"{name!r} is not a usable {prefix.removesuffix('_')} name. "
+        f"Begin with {prefix} and carry on in lower_snake_case."
+        + (f" Remove {', '.join(map(repr, stray))}." if stray else "")
+    )
 
 
 def _rows(table: Mapping[Any, tuple[str, ...]]) -> str:
@@ -305,7 +308,8 @@ class ViewEvidence(BaseModel):
             "ev_front_outer_circle. Later stages cite a parameter as, for "
             "example, sem_main_bore.ev_front_outer_circle.center. The name is "
             "the reading's identity, not a display label: keep it when "
-            "revising the reading and give a new reading a new name."
+            "revising the reading and give a new reading a new name. Do not "
+            "write measurements here; they belong in `parameters`."
         ),
     )
     view: View = Field(
@@ -363,7 +367,8 @@ class FeatureGeometry(BaseModel):
             "geo_bore_cylinder. Later stages cite a parameter as, for example, "
             "sem_main_bore.geo_bore_cylinder.radius. The name is the claim's "
             "identity, not a display label: keep it when revising the claim "
-            "and give a new claim a new name."
+            "and give a new claim a new name. Do not write measurements here; "
+            "they belong in `parameters`."
         ),
     )
     kind: GeometryKind = Field(
@@ -425,7 +430,8 @@ class SemanticFeature(BaseModel):
             "hypothesis, beginning sem_ and continuing in lower_snake_case: "
             "sem_main_bore or sem_top_flange_fillet. This is the feature's "
             "identity, not a separate display label. Keep it when revising the "
-            "feature and give a new feature a new name."
+            "feature and give a new feature a new name. Do not write "
+            "measurements here; they belong in its geometry and evidence."
         ),
     )
     description: str = Field(

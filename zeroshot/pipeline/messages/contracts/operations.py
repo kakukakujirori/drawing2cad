@@ -207,8 +207,8 @@ class OperationPlan(BaseModel):
 # called -- so the prefix is what keeps "the feature" and "the step that makes
 # it" from arriving as the same word. It also puts every name out of reach of
 # anything Python or the coding contract has already bound.
-_NAME = re.compile(r"^op_[a-z][a-z0-9_]*$")
-_SEMANTIC_NAME = re.compile(r"^sem_[a-z][a-z0-9_]*$")
+_NAME = re.compile(r"^op_[a-z0-9_]+$")
+_SEMANTIC_NAME = re.compile(r"^sem_[a-z0-9_]+$")
 _LONGEST_NAME = 40
 
 
@@ -297,7 +297,7 @@ def linearise(plan: OperationPlan) -> list[Operation]:
 # `sem_base.ev_front_edge.start`. The parameter needs no identity of its own
 # because `_checked` makes its vocabulary name unique inside that member.
 _REFERENCE = re.compile(
-    r"\b(sem_[a-z][a-z0-9_]*)\.((?:geo|ev)_[a-z][a-z0-9_]*)\.([a-z_]+)\b(?!\.)"
+    r"\b(sem_[a-z0-9_]+)\.((?:geo|ev)_[a-z0-9_]+)\.([a-z_]+)\b(?!\.)"
 )
 
 

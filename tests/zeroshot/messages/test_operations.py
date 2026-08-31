@@ -88,7 +88,7 @@ def test_operation_names_are_unique() -> None:
         plan(op("op_base"), op("op_base"))
 
 
-@pytest.mark.parametrize("name", ["main_bore", "sem-Main", "sem_", "sem_2d_bore"])
+@pytest.mark.parametrize("name", ["main_bore", "sem-Main", "sem_"])
 def test_semantics_entries_are_stable_semantic_names(name: str) -> None:
     with pytest.raises(ValidationError, match="usable semantic feature name"):
         plan(op("op_bore", builds=[name]))

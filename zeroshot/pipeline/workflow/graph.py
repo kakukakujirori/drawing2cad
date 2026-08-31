@@ -230,17 +230,10 @@ def create_reconstruction_graph(
         **extra_context: str,
     ) -> HumanMessage:
         """Build the same round/ticket view for every reasoning stage."""
-        snapshot = current_snapshot(state)
-        instruction = build_instruction(
-            f"{stage.value}/round",
-            **prompt_context,
-            current_round=str(snapshot.round),
-            assigned_tickets=assigned_ticket_ids(snapshot, stage),
-            **extra_context,
-        )
-
         if validation_error := state.get("stage_validation_error"):
-            feedback = HumanMessage(
+            # A re-ask, so the round's terms and guidelines already stand in
+            # the transcript and only the rejection is new.
+            return HumanMessage(
                 content_blocks=[
                     create_text_block(
                         f"[{stage.value.title()} Validation Error]\n"
@@ -250,10 +243,15 @@ def create_reconstruction_graph(
                     )
                 ]
             )
-            (instruction,) = cast(
-                list[HumanMessage],
-                merge_message_runs([instruction, feedback]),
-            )
+
+        snapshot = current_snapshot(state)
+        instruction = build_instruction(
+            f"{stage.value}/round",
+            **prompt_context,
+            current_round=str(snapshot.round),
+            assigned_tickets=assigned_ticket_ids(snapshot, stage),
+            **extra_context,
+        )
 
         if include_input:
             (instruction,) = cast(
