@@ -30,10 +30,15 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     SemanticSubmission,
     TicketResponse,
 )
-from zeroshot.pipeline.runner import GraphFactory, PipelineRunner
+from zeroshot.pipeline.runner import (
+    GraphFactory,
+    PipelineRunner,
+    _latest_program_source,
+)
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import (
     CadQueryExecutor,
+    ExecutionStatus,
     StepRenderer,
     VerifyOutputResult,
 )
@@ -42,6 +47,11 @@ from zeroshot.pipeline.workflow import (
     create_agent,
     create_fanout_reduce_graph,
     create_reconstruction_graph,
+)
+from zeroshot.pipeline.workflow.reconstruction import (
+    advance_reconstruction,
+    save_reconstruction,
+    start_reconstruction,
 )
 
 
@@ -144,6 +154,117 @@ import cadquery as cq
 ret_base = cq.Workplane("XY").box(10, 20, 30)
 result = ret_base
 """
+
+
+def _verified_resume_run():
+    run = start_reconstruction("run_sample", "Reconstruct the drawing.")
+    run = advance_reconstruction(
+        run,
+        SemanticSubmission(
+            deliverable=hypothesis("a box"),
+            responses=[_ticket_response("semantics", "Established sem_feature_1.")],
+        ),
+    )
+    run = advance_reconstruction(
+        run,
+        OperationSubmission(
+            deliverable=OperationPlan(
+                proposal=[
+                    Operation(
+                        name="op_base",
+                        verb=OperationVerb.EXTRUDE,
+                        detail="extrude it",
+                        depends_on=[],
+                        semantics=["sem_feature_1"],
+                    )
+                ],
+                rationale="one extrude",
+            ),
+            responses=[_ticket_response("operations", "Established op_base.")],
+        ),
+    )
+    run = advance_reconstruction(
+        run,
+        CodingSubmission(
+            deliverable=None,
+            responses=[_ticket_response("coding", "Implemented ret_base and result.")],
+        ),
+        verification=VerifyOutputResult(
+            verification_id="007",
+            status=ExecutionStatus.VERIFIED,
+            source=VALID_BOX_SOURCE,
+            returncode=0,
+        ),
+    )
+
+    return run
+
+
+def test_resume_copies_an_external_attempt_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _verified_resume_run()
+
+    source_workspace = tmp_path / "source" / "workspace"
+    attempt = source_workspace / "attempts" / "007"
+    attempt.mkdir(parents=True)
+    (attempt / "output.step").write_bytes(b"STEP")
+    resume_path = source_workspace / "reconstruction.json"
+    save_reconstruction(resume_path, run)
+
+    def reject_temporary_directory(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("an external resume source needs no temporary copy")
+
+    monkeypatch.setattr(
+        "zeroshot.pipeline.runner.tempfile.TemporaryDirectory",
+        reject_temporary_directory,
+    )
+    artifact_root = tmp_path / "destination"
+    runner = _runner_for_rerun(
+        artifact_root,
+        "retry",
+        resume_from=resume_path,
+    )
+    sample_root = artifact_root / "sample"
+
+    workspace = runner._prepare_workspace(
+        sample_root,
+        sample_root / "events.jsonl",
+        run,
+    )
+
+    assert _latest_program_source(run) == VALID_BOX_SOURCE
+    assert (workspace / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE
+    assert (workspace / "attempts" / "007" / "output.step").read_bytes() == b"STEP"
+    assert (attempt / "output.step").is_file()
+
+
+def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
+    tmp_path: Path,
+) -> None:
+    run = _verified_resume_run()
+    artifact_root = tmp_path / "artifacts"
+    sample_root = artifact_root / "sample"
+    workspace = sample_root / "workspace"
+    attempt = workspace / "attempts" / "007"
+    attempt.mkdir(parents=True)
+    (attempt / "output.step").write_bytes(b"STEP")
+    (workspace / "stale.txt").write_text("stale", encoding="utf-8")
+    resume_path = workspace / "reconstruction.json"
+    save_reconstruction(resume_path, run)
+    events_path = sample_root / "events.jsonl"
+    events_path.write_text('{"event":"run_started"}\n', encoding="utf-8")
+    runner = _runner_for_rerun(
+        artifact_root,
+        "retry",
+        resume_from=resume_path,
+    )
+
+    prepared = runner._prepare_workspace(sample_root, events_path, run)
+
+    assert not (prepared / "stale.txt").exists()
+    assert (prepared / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE
+    assert (prepared / "attempts" / "007" / "output.step").read_bytes() == b"STEP"
 
 
 def _final_verification(result: Mapping[str, Any]) -> VerifyOutputResult | None:
@@ -614,6 +735,7 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
 def _runner_for_rerun(
     artifact_root: Path,
     on_existing: str = "fail",
+    resume_from: Path | None = None,
 ) -> PipelineRunner:
     return PipelineRunner(
         graph_factory=_graph_factory(ScriptedChatModel(responses=(_CODING_ANSWER,))),
@@ -622,6 +744,7 @@ def _runner_for_rerun(
         artifact_root=artifact_root,
         renderer=_renderer(),
         on_existing=on_existing,  # type: ignore[arg-type]
+        resume_from=resume_from,
     )
 
 

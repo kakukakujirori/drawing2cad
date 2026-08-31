@@ -36,6 +36,8 @@ def test_default_config_instantiates_artifact_presenter() -> None:
     console_reporter = instantiate(config.console)
     assert isinstance(presenter, ArtifactPresenter)
     assert isinstance(console_reporter, ConsoleReporter)
+    assert console_reporter._muted_graph_nodes == frozenset({"propose_1"})
+    assert config.resume_from is None
 
 
 def test_gemma4_ollama_config_instantiates_chat_openai() -> None:

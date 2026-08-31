@@ -45,7 +45,7 @@ def _proposal_lines(header: str, proposal: BaseModel) -> list[str]:
     structured geometry or a list of sentences and the merge prompt reads the
     same either way.
     """
-    return [f"[{header} Answer]", proposal.model_dump_json(indent=2)]
+    return [f"[{header} Answer]", proposal.model_dump_json()]
 
 
 def _workspace_message(workdir: str) -> HumanMessage:

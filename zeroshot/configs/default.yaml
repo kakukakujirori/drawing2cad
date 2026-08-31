@@ -19,15 +19,14 @@ hydra:
 # How re-issuing a sweep treats samples that already have a directory.
 #   fail  - refuse either way
 #   skip  - pass over the ones that reached `run_completed`
-#   retry - the same, and redo the interrupted ones from scratch
+#   retry - the same, and redo interrupted ones (or continue `resume_from`)
 # No policy skips an interrupted sample; that would report a sweep as done
 # with holes in it.
 on_existing: fail
 
-# Optional reconstruction history whose latest snapshot has completed
-# semantics but not operations. The new run copies that validated snapshot
-# into its own workspace and begins with operation planning.
-semantics_seed_path: null
+# Optional durable reconstruction history to continue. The next stage is
+# inferred from its latest committed snapshot; no agent transcript is restored.
+resume_from: null
 
 console:
   _target_: zeroshot.pipeline.event_logging.ConsoleReporter

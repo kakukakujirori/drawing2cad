@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from collections.abc import Callable
 from contextlib import ExitStack
 from functools import partial
@@ -20,9 +21,11 @@ from zeroshot.pipeline.event_logging import (
     has_run_completed,
 )
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
+from zeroshot.pipeline.messages.contracts.reconstruction import ReconstructionRun
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, ReconstructionState
+from zeroshot.pipeline.workflow.reconstruction import load_reconstruction
 
 # What the runner hands a graph: the run environment and the artifact contract.
 # A graph's own settings are bound into the factory before it gets here, so
@@ -31,6 +34,18 @@ GraphFactory = Callable[..., Any]
 
 OnExisting = Literal["fail", "skip", "retry"]
 _ON_EXISTING = ("fail", "skip", "retry")
+
+
+def _latest_program_source(reconstruction: ReconstructionRun) -> str | None:
+    """Return the newest committed program available before the resumed stage."""
+    return next(
+        (
+            snapshot.program_source
+            for snapshot in reversed(reconstruction.snapshots)
+            if snapshot.program_source is not None
+        ),
+        None,
+    )
 
 
 def _clear_incomplete_run(sample_artifact_root: Path) -> None:
@@ -66,6 +81,7 @@ class PipelineRunner:
         verification_dirname: PurePosixPath = PurePosixPath("attempts"),
         on_existing: OnExisting = "fail",
         console_reporter: ConsoleReporter | None = None,
+        resume_from: str | Path | None = None,
     ) -> None:
         if on_existing not in _ON_EXISTING:
             raise ValueError(
@@ -80,6 +96,71 @@ class PipelineRunner:
         self.graph_factory = graph_factory
         self.on_existing = on_existing
         self.console_reporter = console_reporter
+        self.resume_from = Path(resume_from) if resume_from is not None else None
+
+    def _prepare_workspace(
+        self,
+        sample_artifact_root: Path,
+        events_path: Path,
+        reconstruction: ReconstructionRun | None,
+    ) -> Path:
+        """Reset one sample and restore the files needed by a resumed stage.
+
+        A temporary copy is needed only when `retry` is about to remove the
+        attempt that also serves as the resume source. External resume sources
+        are copied directly into the new workspace.
+        """
+        verification = (
+            reconstruction.snapshots[-1].verification if reconstruction else None
+        )
+        attempt = (
+            self.resume_from.parent
+            / self.verification_dirname
+            / verification.verification_id
+            if self.resume_from and verification and verification.verification_id
+            else None
+        )
+        if attempt is not None and not attempt.is_dir():
+            raise FileNotFoundError(f"resume attempt is missing: {attempt}")
+
+        temporary: tempfile.TemporaryDirectory[str] | None = None
+        try:
+            if (
+                self.on_existing == "retry"
+                and attempt is not None
+                and attempt.resolve().is_relative_to(sample_artifact_root.resolve())
+            ):
+                temporary = tempfile.TemporaryDirectory(
+                    prefix="drawing2cad-resume-"
+                )
+                staged = Path(temporary.name) / attempt.name
+                shutil.copytree(attempt, staged)
+                attempt = staged
+
+            if self.on_existing == "retry":
+                _clear_incomplete_run(sample_artifact_root)
+            elif events_path.exists():
+                raise FileExistsError(
+                    "incomplete run left behind, delete it to redo: "
+                    f"{sample_artifact_root}"
+                )
+
+            sample_artifact_root.mkdir(parents=True, exist_ok=True)
+            workspace = sample_artifact_root / self.WORKSPACE_DIRNAME
+            workspace.mkdir()
+
+            source = _latest_program_source(reconstruction) if reconstruction else None
+            if source is not None:
+                (workspace / self.output_filename).write_text(source, encoding="utf-8")
+            if attempt is not None:
+                destination = workspace / self.verification_dirname / attempt.name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(attempt, destination)
+
+            return workspace
+        finally:
+            if temporary is not None:
+                temporary.cleanup()
 
     def run_sample(self, manifest: InputManifest) -> ReconstructionState | None:
         """Run one sample, or return None when the policy skips it.
@@ -95,13 +176,19 @@ class PipelineRunner:
             if self.on_existing in {"skip", "retry"}:
                 return None
             raise FileExistsError(f"sample already ran: {sample_artifact_root}")
-        if self.on_existing == "retry":
-            _clear_incomplete_run(sample_artifact_root)
-        elif events_path.exists():
-            raise FileExistsError(
-                f"incomplete run left behind, delete it to redo: {sample_artifact_root}"
-            )
-        sample_artifact_root.mkdir(parents=True, exist_ok=True)
+
+        # Read before `retry` clears the destination. This also permits an
+        # interrupted run to resume from its own durable history.
+        reconstruction_resume = (
+            load_reconstruction(self.resume_from)
+            if self.resume_from is not None
+            else None
+        )
+        workspace_path = self._prepare_workspace(
+            sample_artifact_root,
+            events_path,
+            reconstruction_resume,
+        )
 
         run_id = f"{manifest.sample_id}:{uuid4()}"
         checkpoint_path = sample_artifact_root / "checkpoints.sqlite"
@@ -124,8 +211,6 @@ class PipelineRunner:
                 )
 
             # instantiate sandbox directly in the persistent sample workspace
-            workspace_path = sample_artifact_root / self.WORKSPACE_DIRNAME
-            workspace_path.mkdir()
             workdir = stack.enter_context(SandboxWorkdir(host_bind_dir=workspace_path))
 
             # copy input files to sandbox
@@ -162,8 +247,12 @@ class PipelineRunner:
                 event_writer.write(event)
 
             # run the graph
+            initial_state = ReconstructionState()
+            if reconstruction_resume is not None:
+                initial_state["reconstruction"] = reconstruction_resume
+
             stream = graph.stream_events(
-                ReconstructionState(),
+                initial_state,
                 config={"configurable": {"thread_id": run_id}},
                 version="v3",
                 durability="sync",

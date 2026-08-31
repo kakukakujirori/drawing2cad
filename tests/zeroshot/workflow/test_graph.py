@@ -43,6 +43,10 @@ from zeroshot.pipeline.verification import (
 from zeroshot.pipeline.workflow import create_agent, create_fanout_reduce_graph
 from zeroshot.pipeline.workflow import graph as graph_module
 from zeroshot.pipeline.workflow.graph import AgentBuilder, create_reconstruction_graph
+from zeroshot.pipeline.workflow.reconstruction import (
+    advance_reconstruction,
+    start_reconstruction,
+)
 
 _ROUND_ZERO_TICKET = "ticket_initial"
 _ROUND_ONE_TICKET = "ticket_001_missing_hole"
@@ -288,6 +292,26 @@ def _last_instruction(messages: list[BaseMessage]) -> str:
     )
 
 
+def _semantics_seed() -> ReconstructionRun:
+    return advance_reconstruction(
+        start_reconstruction("run_test", "Reconstruct the drawing."),
+        SemanticSubmission(
+            deliverable=hypothesis("a plate"),
+            responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.SEMANTICS)],
+        ),
+    )
+
+
+def _operations_resume() -> ReconstructionRun:
+    return advance_reconstruction(
+        _semantics_seed(),
+        OperationSubmission(
+            deliverable=_plan(),
+            responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.OPERATIONS)],
+        ),
+    )
+
+
 def test_an_accepted_round_is_integrated_and_persisted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -327,6 +351,70 @@ def test_an_accepted_round_is_integrated_and_persisted(
     assert result["audit_report"].accepted is True
     assert result["stage_submission"] is None
     assert result["stage_validation_error"] is None
+
+
+def test_a_semantics_seed_starts_at_operations_without_calling_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _stub_verification(monkeypatch, _verified())
+    head = ScriptedChatModel(responses=())
+    peer = ScriptedChatModel(responses=())
+    planner = ScriptedChatModel(responses=(_operation_submission(),))
+    coder = ScriptedChatModel(responses=(_coding_submission(),))
+    auditor = ScriptedChatModel(responses=(_accepted_audit(),))
+
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            head=head,
+            peer=peer,
+            planner=planner,
+            coder=coder,
+            auditor=auditor,
+        ).invoke({"reconstruction": _semantics_seed()})
+        persisted = ReconstructionRun.model_validate_json(
+            (workdir.host_bind_dir / "reconstruction.json").read_text(encoding="utf-8")
+        )
+
+    assert head.received_messages == []
+    assert peer.received_messages == []
+    assert len(planner.received_messages) == 1
+    assert calls == ["verify"]
+    assert persisted == result["reconstruction"]
+    assert persisted.snapshots[-1].semantics == hypothesis("a plate")
+    assert persisted.snapshots[-1].last_completed_stage is PipelineStage.CODING
+
+
+def test_an_operations_checkpoint_resumes_at_coding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _stub_verification(monkeypatch, _verified())
+    head = ScriptedChatModel(responses=())
+    peer = ScriptedChatModel(responses=())
+    planner = ScriptedChatModel(responses=())
+    coder = ScriptedChatModel(responses=(_coding_submission(),))
+    auditor = ScriptedChatModel(responses=(_accepted_audit(),))
+
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            head=head,
+            peer=peer,
+            planner=planner,
+            coder=coder,
+            auditor=auditor,
+        ).invoke({"reconstruction": _operations_resume()})
+
+    assert head.received_messages == []
+    assert peer.received_messages == []
+    assert planner.received_messages == []
+    assert len(coder.received_messages) == 1
+    assert len(auditor.received_messages) == 1
+    assert calls == ["verify"]
+    assert (
+        result["reconstruction"].snapshots[-1].last_completed_stage
+        is PipelineStage.CODING
+    )
 
 
 def test_every_stage_reads_the_same_history_path_and_current_round(
@@ -389,6 +477,14 @@ def test_invalid_operations_retry_without_reaching_coding(
     retry = _last_instruction(planner.received_messages[1])
     assert "Operations Validation Error" in retry
     assert "sem_feature_1" in retry
+    validation_message = next(
+        message
+        for message in planner.received_messages[1]
+        if isinstance(message, HumanMessage)
+        and "Operations Validation Error" in message.text
+    )
+    assert isinstance(validation_message.content, list)
+    assert all(isinstance(block, dict) for block in validation_message.content)
     assert result["reconstruction"].snapshots[0].operations == _plan()
     assert result["stage_validation_failure_count"] == 0
 
@@ -477,7 +573,7 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(
             _coding_submission(_ROUND_ONE_TICKET),
         )
     )
-    auditor = ScriptedChatModel(responses=(_rejected_audit(), _accepted_audit()))
+    auditor = ScriptedChatModel(responses=(_rejected_audit(),))
 
     with SandboxWorkdir() as workdir:
         result = _graph(
@@ -505,7 +601,7 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(
     assert len(peer.received_messages) == 1
     assert len(planner.received_messages) == 2
     assert len(coder.received_messages) == 2
-    assert len(auditor.received_messages) == 2
+    assert len(auditor.received_messages) == 1
     assert "round 1" in _last_instruction(planner.received_messages[1])
 
 
@@ -515,6 +611,7 @@ def test_rejection_at_the_round_limit_finishes_without_opening_another_round(
     _stub_verification(monkeypatch, _verified())
     semantic = _semantic_submission()
 
+    auditor = ScriptedChatModel(responses=(_rejected_audit(),))
     with SandboxWorkdir() as workdir:
         result = _graph(
             workdir,
@@ -522,10 +619,12 @@ def test_rejection_at_the_round_limit_finishes_without_opening_another_round(
             peer=ScriptedChatModel(responses=(semantic,)),
             planner=ScriptedChatModel(responses=(_operation_submission(),)),
             coder=ScriptedChatModel(responses=(_coding_submission(),)),
-            auditor=ScriptedChatModel(responses=(_rejected_audit(),)),
+            auditor=auditor,
             max_audit_reject_count=0,
+            share_thread=True,
         ).invoke({})
 
     assert len(result["reconstruction"].snapshots) == 1
-    assert result["audit_report"].accepted is False
+    assert auditor.received_messages == []
+    assert result["audit_report"] is None
     assert result["stage_validation_error"] is None

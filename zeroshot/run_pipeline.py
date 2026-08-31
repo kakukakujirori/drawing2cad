@@ -28,6 +28,7 @@ def run(config: DictConfig) -> ReconstructionState | None:
         max_stderr_bytes=config.sandbox_runner.max_stderr_bytes,
     )
 
+    resume_from = config.get("resume_from")
     runner = PipelineRunner(
         sandbox_runner=sandbox_runner,
         graph_factory=instantiate(config.workflow),
@@ -36,6 +37,11 @@ def run(config: DictConfig) -> ReconstructionState | None:
         renderer=instantiate(config.renderer) or StepRenderer(),
         on_existing=config.on_existing,
         console_reporter=instantiate(config.console),
+        resume_from=(
+            Path(to_absolute_path(str(resume_from)))
+            if resume_from is not None
+            else None
+        ),
     )
 
     manifest = InputManifest(

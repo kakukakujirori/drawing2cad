@@ -92,6 +92,7 @@ def test_run_composes_dependencies_and_manifest(
         {
             "artifact_root": str(artifact_root),
             "on_existing": "fail",
+            "resume_from": str(tmp_path / "reconstruction.json"),
             "workflow": {
                 "_target_": (
                     "zeroshot.pipeline.workflow.graph.create_reconstruction_graph"
@@ -142,6 +143,7 @@ def test_run_composes_dependencies_and_manifest(
     assert isinstance(runner_options["sandbox_runner"], StubSandboxRunner)
     assert runner_options["artifact_root"] == artifact_root
     assert runner_options["console_reporter"] is None
+    assert runner_options["resume_from"] == tmp_path / "reconstruction.json"
     assert isinstance(runner_options["renderer"], StepRenderer)
     assert runner_options["renderer"].timeout_s == 42.0
     graph_factory = runner_options["graph_factory"]

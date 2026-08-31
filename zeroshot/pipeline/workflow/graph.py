@@ -7,6 +7,7 @@ from typing import Any, Protocol, cast
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, merge_message_runs
+from langchain_core.messages.content import create_text_block
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -189,17 +190,16 @@ def create_reconstruction_graph(
     # ------------------------------------------------------------------
 
     def initialize(state: ReconstructionState) -> dict[str, Any]:
-        """Create and persist round zero before any model reads its tickets."""
-        if state.get("reconstruction") is not None:
-            return {}
-
-        run_suffix = re.sub(
-            r"[^a-z0-9]+", "_", input_manifest.sample_id.casefold()
-        ).strip("_")
-        run = start_reconstruction(
-            run_id=f"run_{run_suffix or 'sample'}",
-            instruction="Reconstruct the input drawing as a CadQuery model.",
-        )
+        """Create or adopt and persist the history before any model reads it."""
+        run = state.get("reconstruction")
+        if run is None:
+            run_suffix = re.sub(
+                r"[^a-z0-9]+", "_", input_manifest.sample_id.casefold()
+            ).strip("_")
+            run = start_reconstruction(
+                run_id=f"run_{run_suffix or 'sample'}",
+                instruction="Reconstruct the input drawing as a CadQuery model.",
+            )
         save_reconstruction(
             sandbox_workdir.host_bind_dir / reconstruction_history_filename,
             run,
@@ -211,6 +211,19 @@ def create_reconstruction_graph(
             "stage_validation_failure_count": 0,
             "audit_report": None,
         }
+
+    def after_initialize(state: ReconstructionState) -> str:
+        """Enter the first unfinished stage of a new or resumed history."""
+        snapshot = current_snapshot(state)
+        if (
+            snapshot.last_completed_stage is PipelineStage.CODING
+            and snapshot.round >= max_audit_reject_count
+        ):
+            return "__end__"
+        following = next_stage(snapshot.last_completed_stage)
+        if following is None:
+            raise RuntimeError("the initial reconstruction has no unfinished stage")
+        return following.value
 
     def build_stage_instruction(
         state: ReconstructionState,
@@ -230,12 +243,14 @@ def create_reconstruction_graph(
 
         if validation_error := state.get("stage_validation_error"):
             feedback = HumanMessage(
-                content=(
-                    f"[{stage.value.title()} Validation Error]\n"
-                    f"Your previous {stage.value} stage output was rejected. "
-                    "Return the corrected complete output using this feedback:\n\n"
-                    f"{validation_error}"
-                )
+                content_blocks=[
+                    create_text_block(
+                        f"[{stage.value.title()} Validation Error]\n"
+                        f"Your previous {stage.value} stage output was rejected. "
+                        "Return the corrected complete output using this feedback:\n\n"
+                        f"{validation_error}"
+                    )
+                ]
             )
             (instruction,) = cast(
                 list[HumanMessage],
@@ -411,6 +426,11 @@ def create_reconstruction_graph(
             raise RuntimeError(
                 "successful stage integration did not complete a reasoning stage"
             )
+        if (
+            completed is PipelineStage.CODING
+            and snapshot.round >= max_audit_reject_count
+        ):
+            return "__end__"
         if share_thread:
             return _handover_node(completed)
         following = next_stage(completed)
@@ -547,7 +567,7 @@ def create_reconstruction_graph(
             workflow.add_edge(_handover_node(stage), following.value)
 
     workflow.add_edge(START, "initialize")
-    workflow.add_edge("initialize", PipelineStage.SEMANTICS.value)
+    workflow.add_conditional_edges("initialize", after_initialize)
     for stage in REASONING_STAGES:
         workflow.add_edge(stage.value, "integrate_stage_submission")
     workflow.add_edge(PipelineStage.AUDIT.value, "integrate_audit_report")
