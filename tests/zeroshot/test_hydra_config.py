@@ -7,6 +7,7 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.codex import _ChatOpenAICodex
+from langchain_openrouter import ChatOpenRouter
 
 from zeroshot.models import SGLangChatOpenAI
 from zeroshot.pipeline.event_logging import ConsoleReporter
@@ -108,8 +109,8 @@ def test_qwen3_6_sglang_thinking_and_output_limit_are_overridable() -> None:
 @pytest.mark.parametrize(
     ("model_config", "model_name"),
     [
-        ("gpt5_6_luna_codex", "gpt-5.6-luna"),
-        ("gpt5_6_terra_codex", "gpt-5.6-terra"),
+        ("gpt5.6_luna_codex", "gpt-5.6-luna"),
+        ("gpt5.6_terra_codex", "gpt-5.6-terra"),
     ],
 )
 def test_gpt5_6_codex_config_instantiates_oauth_model(
@@ -137,6 +138,65 @@ def test_gpt5_6_codex_config_instantiates_oauth_model(
     assert model.max_tokens is None
     # Agent middleware is the sole retry owner; SDK-level retries stay off.
     assert model.max_retries == 0
+
+
+def test_glm5_3_flash_openrouter_config_instantiates_chat_openrouter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(
+            config_name="default",
+            overrides=["model=glm5.3_flash_openrouter"],
+        )
+
+    model = instantiate(config.model)
+
+    assert isinstance(model, ChatOpenRouter)
+    assert model.model_name == "z-ai/glm-5.3-flash"
+    assert model.request_timeout == 600000
+    assert model.max_retries == 0
+
+
+@pytest.mark.parametrize(
+    ("model_config", "strategy"),
+    [
+        ("gemma4_ollama", "provider"),
+        ("glm5.3_flash_openrouter", "tool"),
+    ],
+)
+def test_the_backend_chosen_decides_how_every_agent_is_asked_for_structured_output(
+    model_config: str,
+    strategy: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter takes no json_schema response format and the local backends
+    do, so the strategy has to follow the `model` group rather than be restated
+    per agent."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(
+            config_name="default",
+            overrides=[f"model={model_config}"],
+        )
+
+    builders = [
+        "semantics_agent_builder",
+        "operations_agent_builder",
+        "coding_agent_builder",
+        "audit_agent_builder",
+    ]
+    assert [
+        config.workflow[builder].response_format_strategy for builder in builders
+    ] == [strategy] * len(builders)
 
 
 def test_a_sweep_only_has_to_override_the_sample_id() -> None:

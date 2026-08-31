@@ -28,4 +28,4 @@ Working
 - If feedback from a review or audit step is present in the transcript, address every point it raises.
 - Your turn budget is announced in the transcript as `[turn n/N]`. Turns increment by using tools.
 
-Stop calling tools when you answer, and write nothing around the answer itself.
+Analyse the drawing with `run_shell` and `load_image` before you answer. Submit your answer only once the analysis is complete, and write nothing around the answer itself.

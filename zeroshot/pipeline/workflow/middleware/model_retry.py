@@ -89,9 +89,10 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     content=(
                         f"Your previous response could not be parsed as the required "
                         f"{error.tool_name} structured output. Validation error: "
-                        f"{error.source} Do not call tools. Return only corrected "
-                        "raw JSON that matches the required schema, with no "
-                        "explanation or Markdown outside it."
+                        f"{error.source}. You may continue using tools if you need "
+                        "more information. When you are ready to answer, return "
+                        "corrected raw JSON that matches the required schema, "
+                        "with no explanation or Markdown outside it."
                     )
                 ),
             ]

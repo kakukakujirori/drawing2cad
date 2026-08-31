@@ -11,6 +11,7 @@ hydra-colorlog
 jsonschema
 langchain
 langchain-openai
+langchain-openrouter
 langgraph
 langgraph-checkpoint-sqlite
 manifold3d

@@ -217,7 +217,11 @@ class StageSubmission[M](BaseModel):
 
 
 class SemanticSubmission(StageSubmission[SemanticFeature]):
-    """Your revision of the semantic hypothesis, and your ticket responses."""
+    """Your revision of the semantic hypothesis, and your ticket responses.
+
+    This ends the semantics stage: give it once, after the analysis
+    behind it is complete.
+    """
 
     edits: list[SemanticFeature] = Field(
         ...,
@@ -245,7 +249,11 @@ class SemanticSubmission(StageSubmission[SemanticFeature]):
 
 
 class OperationSubmission(StageSubmission[Operation]):
-    """Your revision of the operation plan, and your ticket responses."""
+    """Your revision of the operation plan, and your ticket responses.
+
+    This ends the operations stage: give it once, after the analysis
+    behind it is complete.
+    """
 
     edits: list[Operation] = Field(
         ...,
@@ -267,7 +275,11 @@ class OperationSubmission(StageSubmission[Operation]):
 
 
 class CodingSubmission(StageSubmission[None]):
-    """Your ticket responses. The program itself is read from the workspace."""
+    """Your ticket responses. The program itself is read from the workspace.
+
+    This ends the coding stage: give it once, after the program in the
+    workspace is the one you mean to submit.
+    """
 
     edits: list[None] = Field(
         ...,

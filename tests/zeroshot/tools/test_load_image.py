@@ -1,5 +1,7 @@
 import base64
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -18,6 +20,14 @@ def _write_image(path: Path, image_format: str) -> bytes:
         format=image_format,
     )
     return path.read_bytes()
+
+
+def _data_uri(block: dict[str, Any]) -> str:
+    return block["image_url"]["url"]
+
+
+def _decoded(block: dict[str, Any]) -> bytes:
+    return base64.b64decode(_data_uri(block).partition(",")[2])
 
 
 def test_tool_schema_exposes_only_image_path(tmp_path: Path) -> None:
@@ -67,10 +77,61 @@ def test_tool_returns_image_content_block(
     assert len(result.content) == 1
 
     block = result.content[0]
-    assert block["type"] == "image"
-    assert block["mime_type"] == expected_mime_type
-    assert base64.b64decode(block["base64"]) == expected_bytes
-    assert result.content_blocks == result.content
+    assert isinstance(block, dict)
+    assert block["type"] == "image_url"
+    assert _data_uri(block).startswith(f"data:{expected_mime_type};base64,")
+    assert _decoded(block) == expected_bytes
+
+    # langchain reads the block back as an image, so a client that normalises
+    # tool content instead of passing it through still sends the picture.
+    (normalised,) = result.content_blocks
+    assert normalised["type"] == "image"
+    assert normalised["mime_type"] == expected_mime_type
+    assert base64.b64decode(normalised["base64"]) == expected_bytes
+
+
+@pytest.mark.parametrize(
+    "client",
+    ["openai-chat-completions", "openai-responses", "openrouter"],
+)
+def test_every_client_puts_the_picture_on_the_wire(
+    tmp_path: Path,
+    client: str,
+) -> None:
+    """Every client the pipeline can run on puts the picture on the wire as an
+    inline data URI. A block that arrives unconverted runs the stage blind
+    against an image the API never received, and only the wire says whether it
+    did. The converters are private, so an upgrade moving them should fail here
+    rather than in a run.
+    """
+    from langchain_openai.chat_models.base import (
+        _construct_responses_api_input,
+        _convert_message_to_dict,
+    )
+    from langchain_openrouter.chat_models import (
+        _convert_message_to_dict as _convert_openrouter_message_to_dict,
+    )
+
+    image_bytes = _write_image(tmp_path / "view.png", "PNG")
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    load_image = create_load_image_tool(workdir)
+    message = load_image.invoke(
+        {
+            "type": "tool_call",
+            "name": "load_image",
+            "args": {"image_path": "/work/view.png"},
+            "id": "call-load-image",
+        }
+    )
+    encoded = base64.b64encode(image_bytes).decode("utf-8")
+    data_uri = f"data:image/png;base64,{encoded}"
+
+    converters = {
+        "openai-chat-completions": _convert_message_to_dict,
+        "openai-responses": lambda m: _construct_responses_api_input([m]),
+        "openrouter": _convert_openrouter_message_to_dict,
+    }
+    assert data_uri in json.dumps(converters[client](message))
 
 
 def test_tool_loads_image_through_symlink_within_workdir(tmp_path: Path) -> None:
@@ -82,7 +143,7 @@ def test_tool_loads_image_through_symlink_within_workdir(tmp_path: Path) -> None
     result = load_image.invoke({"image_path": "/work/link.png"})
 
     assert len(result) == 1
-    assert base64.b64decode(result[0]["base64"]) == expected_bytes
+    assert _decoded(result[0]) == expected_bytes
 
 
 @pytest.mark.parametrize(

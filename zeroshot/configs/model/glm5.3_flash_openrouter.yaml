@@ -1,0 +1,18 @@
+# @package _global_
+
+# OpenRouter rejects a json_schema response format, so the answer contract is
+# bound as a tool instead.
+response_format_strategy: tool
+
+model:
+  _target_: langchain_openrouter.chat_models.ChatOpenRouter
+
+  model: z-ai/glm-5.3-flash
+  reasoning:
+    effort: xhigh
+    summary: detailed
+  output_version: v1
+  api_key: ${oc.env:OPENROUTER_API_KEY}
+
+  timeout: 600000  # milliseconds
+  max_retries: 0

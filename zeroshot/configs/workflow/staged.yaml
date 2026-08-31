@@ -19,7 +19,7 @@ workflow:
     proposer_models:
       - ${model}
       - ${model}
-    response_format_strategy: provider
+    response_format_strategy: ${response_format_strategy}
     max_proposer_turns: 20
     max_reducer_turns: 10
     announce_turns: true
@@ -33,7 +33,7 @@ workflow:
     role: operation_planner
     model: ${model}
 
-    response_format_strategy: provider
+    response_format_strategy: ${response_format_strategy}
     max_turns: 10
     announce_turns: true
     reset_turns_when_reentrant: true
@@ -46,7 +46,7 @@ workflow:
     role: coder
     model: ${model}
 
-    response_format_strategy: provider
+    response_format_strategy: ${response_format_strategy}
     max_turns: 10
     announce_turns: true
     reset_turns_when_reentrant: true
@@ -59,7 +59,7 @@ workflow:
     role: output_auditor
     model: ${model}
 
-    response_format_strategy: provider
+    response_format_strategy: ${response_format_strategy}
     max_turns: 10
     announce_turns: true
     reset_turns_when_reentrant: true

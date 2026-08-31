@@ -282,7 +282,11 @@ class AuditFinding(BaseModel):
 
 
 class AuditReport(BaseModel):
-    """The auditor's complete acceptance decision and defect analysis."""
+    """The auditor's complete acceptance decision and defect analysis.
+
+    This ends the audit: give it once, after the analysis behind it is
+    complete.
+    """
 
     model_config = ConfigDict(extra="forbid")
 

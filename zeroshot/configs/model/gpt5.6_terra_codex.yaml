@@ -1,0 +1,18 @@
+# @package _global_
+
+response_format_strategy: provider
+
+model:
+  _target_: langchain_openai.chat_models.codex._ChatOpenAICodex
+
+  model: gpt-5.6-terra
+  reasoning:
+    effort: xhigh
+    summary: detailed
+  output_version: responses/v1
+
+  timeout: 600.0
+
+  # Agent middleware owns the retry policy. Keep SDK retries disabled so a single
+  # failure cannot multiply two independently configured retry loops.
+  max_retries: 0

@@ -1,11 +1,8 @@
 import base64
 from io import BytesIO
 from pathlib import Path, PurePosixPath
+from typing import Any
 
-from langchain_core.messages.content import (
-    ImageContentBlock,
-    create_image_block,
-)
 from langchain_core.tools import BaseTool, tool
 from PIL import Image
 
@@ -35,7 +32,7 @@ def create_load_image_tool(workdir: SandboxWorkdir) -> BaseTool:
         return host_image_path
 
     @tool("load_image")
-    def load_image(image_path: str) -> list[ImageContentBlock]:
+    def load_image(image_path: str) -> list[dict[str, Any]]:
         """
         Load an image from a file path.
         Args:
@@ -55,11 +52,20 @@ def create_load_image_tool(workdir: SandboxWorkdir) -> BaseTool:
         if mime_type is None:
             raise ToolFeedbackError(f"Unknown image format: {host_image_path.name}")
 
+        # Return OpenAI-native image_url blocks directly.  langchain-openrouter
+        # does not run ToolMessage content through _format_message_content, so
+        # the langchain-internal ImageContentBlock format would reach the API
+        # unconverted and the model would not see the image.  The image_url
+        # format is the wire format both langchain-openai and
+        # langchain-openrouter pass through unchanged.
+        data_uri = (
+            f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+        )
         return [
-            create_image_block(
-                base64=base64.b64encode(image_bytes).decode("utf-8"),
-                mime_type=mime_type,
-            )
+            {
+                "type": "image_url",
+                "image_url": {"url": data_uri},
+            }
         ]
 
     return load_image

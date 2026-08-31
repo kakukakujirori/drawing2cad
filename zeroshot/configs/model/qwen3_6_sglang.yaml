@@ -1,24 +1,29 @@
-_target_: zeroshot.models.SGLangChatOpenAI
-_convert_: all
+# @package _global_
 
-model: ${oc.env:SGLANG_MODEL,Qwen/Qwen3.6-35B-A3B-FP8}
-base_url: ${oc.env:SGLANG_BASE_URL,http://127.0.0.1:30000/v1}
-api_key: ${oc.env:SGLANG_API_KEY,EMPTY}
+response_format_strategy: provider
 
-timeout: 600.0
-max_retries: 0
-streaming: true
-stream_usage: true
+model:
+  _target_: zeroshot.models.SGLangChatOpenAI
+  _convert_: all
 
-# Qwen3.6's recommended sampling parameters for precise coding tasks.
-temperature: 0.6
-top_p: 0.95
-seed: 0
-presence_penalty: 0.0
-max_tokens: 65536
-extra_body:
-  top_k: 20
-  chat_template_kwargs:
-    # SGLang has no native thinking-only token budget. Override this to false
-    # for zero-thinking runs; max_tokens bounds total output per model turn.
-    enable_thinking: true
+  model: ${oc.env:SGLANG_MODEL,Qwen/Qwen3.6-35B-A3B-FP8}
+  base_url: ${oc.env:SGLANG_BASE_URL,http://127.0.0.1:30000/v1}
+  api_key: ${oc.env:SGLANG_API_KEY,EMPTY}
+
+  timeout: 600.0
+  max_retries: 0
+  streaming: true
+  stream_usage: true
+
+  # Qwen3.6's recommended sampling parameters for precise coding tasks.
+  temperature: 0.6
+  top_p: 0.95
+  seed: 0
+  presence_penalty: 0.0
+  max_tokens: 65536
+  extra_body:
+    top_k: 20
+    chat_template_kwargs:
+      # SGLang has no native thinking-only token budget. Override this to false
+      # for zero-thinking runs; max_tokens bounds total output per model turn.
+      enable_thinking: true
