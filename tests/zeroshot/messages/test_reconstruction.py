@@ -85,10 +85,12 @@ def _ticket(
     *,
     subject: BootstrapWork | AuditFinding | None = None,
     stages: tuple[str, ...] = (),
+    assigned: tuple[str, ...] = ("semantics", "operations", "coding"),
 ) -> Ticket:
     return Ticket(
         ticket_id=ticket_id,
         subject=subject or BootstrapWork(instruction="Reconstruct the part."),
+        assigned_stages=list(assigned),  # type: ignore[arg-type]
         responses=_responses(ticket_id, *stages),
     )
 
@@ -150,10 +152,7 @@ def test_coding_requires_an_explicit_null_deliverable() -> None:
         )
 
 
-def test_a_stage_submission_rejects_empty_responses_and_extra_fields() -> None:
-    with pytest.raises(ValidationError, match="at least 1 item"):
-        SemanticSubmission(deliverable=_semantics(), responses=[])
-
+def test_a_stage_submission_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         SemanticSubmission.model_validate(
             {
@@ -204,11 +203,37 @@ def test_a_round_checkpoint_requires_every_ticket_response_in_stage_order() -> N
         )
 
 
+@pytest.mark.parametrize(
+    "assigned",
+    [(), ("semantics",), ("semantics", "coding"), ("coding", "operations")],
+)
+def test_a_ticket_assignment_runs_from_one_revision_root_through_coding(
+    assigned: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValidationError, match="assigned"):
+        _ticket(assigned=assigned)
+
+
+def test_a_ticket_rejects_a_response_from_a_stage_it_does_not_assign() -> None:
+    with pytest.raises(ValidationError, match="not assigned to this ticket"):
+        _ticket(stages=("semantics",), assigned=("operations", "coding"))
+
+
+def test_a_completed_stage_leaves_no_response_on_a_ticket_it_is_not_assigned() -> None:
+    snapshot = _snapshot(
+        ticket=_ticket(assigned=("operations", "coding")),
+        last_completed_stage="semantics",
+    )
+
+    assert snapshot.open_tickets[0].responses == []
+
+
 def test_a_ticket_rejects_a_response_for_another_ticket() -> None:
     with pytest.raises(ValidationError, match="containing ticket"):
         Ticket(
             ticket_id="ticket_one",
             subject=BootstrapWork(instruction="Reconstruct the part."),
+            assigned_stages=["semantics", "operations", "coding"],
             responses=_responses("ticket_other", "semantics"),
         )
 

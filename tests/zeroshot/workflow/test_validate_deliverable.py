@@ -1,5 +1,6 @@
 """Contextual validation shared by all reconstruction stages."""
 
+from collections.abc import Sequence
 from typing import cast
 
 import pytest
@@ -22,6 +23,7 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     Ticket,
     TicketResponse,
 )
+from zeroshot.pipeline.messages.contracts.stages import REASONING_STAGES
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow.validate_deliverable import (
     DeliverableValidationError,
@@ -75,10 +77,15 @@ def _response(ticket_id: str, stage: ReasoningStage) -> TicketResponse:
     )
 
 
-def _ticket(ticket_id: str, *completed_stages: ReasoningStage) -> Ticket:
+def _ticket(
+    ticket_id: str,
+    *completed_stages: ReasoningStage,
+    assigned: Sequence[ReasoningStage] = REASONING_STAGES,
+) -> Ticket:
     return Ticket(
         ticket_id=ticket_id,
         subject=BootstrapWork(instruction="Reconstruct the part."),
+        assigned_stages=list(assigned),
         responses=[_response(ticket_id, stage) for stage in completed_stages],
     )
 
@@ -203,6 +210,48 @@ def test_ticket_responses_must_cover_the_current_snapshot_exactly_once(
 
     with pytest.raises(DeliverableValidationError, match=message):
         validate_deliverable(submission, snapshot)
+
+
+def test_a_stage_answers_its_assigned_tickets_and_only_those() -> None:
+    snapshot = _snapshot(
+        None,
+        tickets=[
+            _ticket("ticket_one"),
+            _ticket("ticket_two", assigned=(PipelineStage.CODING,)),
+        ],
+    )
+
+    validate_deliverable(
+        SemanticSubmission(
+            deliverable=_semantics(),
+            responses=[_response("ticket_one", PipelineStage.SEMANTICS)],
+        ),
+        snapshot,
+    )
+
+    with pytest.raises(DeliverableValidationError, match="not assigned.*ticket_two"):
+        validate_deliverable(
+            SemanticSubmission(
+                deliverable=_semantics(),
+                responses=[
+                    _response("ticket_one", PipelineStage.SEMANTICS),
+                    _response("ticket_two", PipelineStage.SEMANTICS),
+                ],
+            ),
+            snapshot,
+        )
+
+
+def test_a_stage_assigned_nothing_answers_nothing() -> None:
+    snapshot = _snapshot(
+        None,
+        tickets=[_ticket("ticket_one", assigned=(PipelineStage.CODING,))],
+    )
+
+    validate_deliverable(
+        SemanticSubmission(deliverable=_semantics(), responses=[]),
+        snapshot,
+    )
 
 
 def test_the_current_snapshot_decides_which_deliverable_type_is_valid() -> None:

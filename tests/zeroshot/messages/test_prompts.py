@@ -37,6 +37,11 @@ _RUN_PATHS = {
 }
 
 
+def _round_context(**varying: str) -> dict[str, str]:
+    """What the graph gives every round instruction, plus what a test varies."""
+    return {**_RUN_PATHS, "assigned_tickets": "ticket_initial", **varying}
+
+
 def _guidelines(stage: str) -> str:
     """A stage's guidelines rendered the way `instruction_text` renders them.
 
@@ -61,9 +66,9 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
 @pytest.mark.parametrize(
     ("name", "context"),
     [
-        ("semantics/round", {"current_round": "0"}),
-        ("operations/round", {"current_round": "0"}),
-        ("coding/round", {"current_round": "0"}),
+        ("semantics/round", {"current_round": "0", "assigned_tickets": "t_a"}),
+        ("operations/round", {"current_round": "0", "assigned_tickets": "t_a"}),
+        ("coding/round", {"current_round": "0", "assigned_tickets": "t_a"}),
         (
             "audit/round",
             {
@@ -105,7 +110,7 @@ def test_the_shared_role_explains_selective_history_navigation() -> None:
 
 
 def test_round_instructions_do_not_repeat_the_reconstruction_guide() -> None:
-    rendered = instruction_text("semantics/round", **_RUN_PATHS, current_round="1")
+    rendered = instruction_text("semantics/round", **_round_context(current_round="1"))
 
     assert "## Reconstruction history" not in rendered
     assert "ReconstructionRun" not in rendered
@@ -137,11 +142,7 @@ def test_auditor_keeps_result_out_of_the_backtrace_graph() -> None:
 
 def test_placeholders_are_filled_from_the_context() -> None:
     """The run's paths reach the guidelines the coding instruction carries."""
-    rendered = instruction_text(
-        "coding/round",
-        **_RUN_PATHS,
-        current_round="3",
-    )
+    rendered = instruction_text("coding/round", **_round_context(current_round="3"))
 
     assert "/work/model.py" in rendered
     assert "/work/attempts" in rendered
@@ -150,7 +151,7 @@ def test_placeholders_are_filled_from_the_context() -> None:
 
 
 def test_the_coding_round_carries_the_history_and_result_contract() -> None:
-    rendered = instruction_text("coding/round", **_RUN_PATHS, current_round="2")
+    rendered = instruction_text("coding/round", **_round_context(current_round="2"))
 
     assert "ret_<operation name without op_>" in rendered
     assert "# ----" not in rendered
@@ -178,7 +179,7 @@ def test_structured_output_roles_render_their_contract(role: str) -> None:
 def test_every_reasoning_round_carries_that_stage_s_guidelines(stage: str) -> None:
     guidelines = _guidelines(stage)
 
-    rendered = instruction_text(f"{stage}/round", **_RUN_PATHS, current_round="1")
+    rendered = instruction_text(f"{stage}/round", **_round_context(current_round="1"))
     assert guidelines in rendered
 
 
@@ -317,9 +318,7 @@ def test_every_stage_that_handles_a_coordinate_is_given_the_frame(name: str) -> 
     the stage rather than that a copy of it is still correct."""
     rendered = instruction_text(
         name,
-        **_RUN_PATHS,
-        current_round="0",
-        attempt_dir="/work/a",
+        **_round_context(current_round="0", attempt_dir="/work/a"),
     )
 
     for view, (right, up, _) in VIEW_FRAME.items():

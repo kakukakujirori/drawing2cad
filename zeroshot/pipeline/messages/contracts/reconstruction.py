@@ -1,6 +1,7 @@
 """Durable reconstruction snapshots shared across revision rounds."""
 
 import re
+from collections.abc import Sequence
 from typing import Literal, Self
 
 from pydantic import (
@@ -92,14 +93,24 @@ class Ticket(BaseModel):
         ...,
         description=(
             "The initial reconstruction instruction or the audited defect "
-            "that every reasoning stage must consider."
+            "that the assigned reasoning stages must address."
+        ),
+    )
+    assigned_stages: list[ReasoningStage] = Field(
+        ...,
+        description=(
+            "The stages that must answer this ticket, assigned by the pipeline "
+            "from the revision roots the audit requested: the earliest root and "
+            "every stage downstream of it, because a corrected artifact has to "
+            "be carried through to the program. A stage that is not listed here "
+            "must leave this ticket alone. No agent writes this field."
         ),
     )
     responses: list[TicketResponse] = Field(
         ...,
         description=(
-            "One response from each completed reasoning stage, kept in stage "
-            "order. A newly opened ticket has an empty list."
+            "One response from each assigned stage that has completed, kept in "
+            "stage order. A newly opened ticket has an empty list."
         ),
     )
 
@@ -108,10 +119,23 @@ class Ticket(BaseModel):
         if _TICKET_ID.fullmatch(self.ticket_id) is None:
             raise ValueError("ticket_id must be a ticket_... identifier")
 
+        if not self.assigned_stages:
+            raise ValueError("a ticket must be assigned to at least one stage")
+        if (
+            tuple(self.assigned_stages)
+            != REASONING_STAGES[-len(self.assigned_stages) :]
+        ):
+            raise ValueError(
+                "assigned_stages must run from one revision root through coding, "
+                f"got {self.assigned_stages}"
+            )
+
         stages: list[ReasoningStage] = []
         for response in self.responses:
             if response.ticket_id != self.ticket_id:
                 raise ValueError("every response must refer to its containing ticket")
+            if response.stage not in self.assigned_stages:
+                raise ValueError(f"{response.stage} is not assigned to this ticket")
             stages.append(response.stage)
 
         if len(stages) != len(set(stages)):
@@ -120,8 +144,15 @@ class Ticket(BaseModel):
         return self
 
 
+def tickets_assigned_to(
+    tickets: Sequence[Ticket],
+    stage: ReasoningStage,
+) -> list[Ticket]:
+    return [ticket for ticket in tickets if stage in ticket.assigned_stages]
+
+
 class StageSubmission[T](BaseModel):
-    """One stage's artifact and its response to every open ticket."""
+    """One stage's artifact and its response to every ticket assigned to it."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -131,10 +162,10 @@ class StageSubmission[T](BaseModel):
     )
     responses: list[TicketResponse] = Field(
         ...,
-        min_length=1,
         description=(
-            "Exactly one response for every ticket open in the current round. "
-            "The pipeline validates the ticket IDs against the current snapshot."
+            "Exactly one response for every open ticket this stage is assigned "
+            "to, and none for the others. The pipeline validates the ticket IDs "
+            "and the assignment against the current snapshot."
         ),
     )
 
@@ -159,8 +190,8 @@ class ReconstructionSnapshot(BaseModel):
         ...,
         min_length=1,
         description=(
-            "Every ticket the semantics, operations, and coding stages must "
-            "address during this round."
+            "Every ticket raised for this round, each naming the stages "
+            "assigned to answer it."
         ),
     )
     round: int = Field(
@@ -230,8 +261,11 @@ class ReconstructionSnapshot(BaseModel):
             if self.last_completed_stage is None
             else REASONING_STAGES.index(self.last_completed_stage) + 1
         )
-        expected_stages = REASONING_STAGES[:completed_count]
+        completed_stages = REASONING_STAGES[:completed_count]
         for ticket in self.open_tickets:
+            expected_stages = tuple(
+                stage for stage in completed_stages if stage in ticket.assigned_stages
+            )
             actual_stages = tuple(response.stage for response in ticket.responses)
             if actual_stages != expected_stages:
                 raise ValueError(
@@ -253,10 +287,10 @@ class ReconstructionSnapshot(BaseModel):
             )
 
         # Stage integrity checks
-        if PipelineStage.SEMANTICS in expected_stages and self.semantics is None:
+        if PipelineStage.SEMANTICS in completed_stages and self.semantics is None:
             raise ValueError("semantics must exist after semantics")
 
-        if PipelineStage.OPERATIONS in expected_stages and self.operations is None:
+        if PipelineStage.OPERATIONS in completed_stages and self.operations is None:
             raise ValueError("operations must exist after operations")
 
         if self.last_completed_stage is PipelineStage.CODING:

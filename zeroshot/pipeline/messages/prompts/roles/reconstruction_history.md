@@ -13,34 +13,35 @@ The pipeline, not an agent, owns `$reconstruction_path`. It stores one `Reconstr
 
 ```text
 ReconstructionRun
-|- `schema_version`
-|- `run_id`
-`- `snapshots`: ReconstructionSnapshot[]
-   |- `open_tickets`: Ticket[]
-   |  |- `ticket_id`
-   |  |- `subject`: BootstrapWork | AuditFinding
-   |  |  |- BootstrapWork: `instruction`
-   |  |  `- AuditFinding: `name`, `observation`, `evidence`, `backtraces[]`
-   |  |     `- backtrace: `hops[]` plus `revision_request`
-   |  |        |- hop: `effect`, `cause`, `rationale`
-   |  |        `- request: `action`, `targets`, `instruction`, `proposed_names`
-   |  `- `responses`: TicketResponse[]
-   |     |- `ticket_id`
-   |     |- `stage`
-   |     `- `summary`
-   |- `round`
-   |- `last_completed_stage`
-   |- `semantics`: SemanticHypothesis | null
-   |  |- `proposal[]`: `name`, `description`, `geometry[]`, `evidence[]`, `open_question`
-   |  |  |- geometry: `name`, `kind`, `source`, `axis`, `parameters[]`
-   |  |  `- evidence: `name`, `view`, `entity`, `edge_style`, `parameters[]`
-   |  `- `rationale`
-   |- `operations`: OperationPlan | null
-   |  |- `proposal[]`: `name`, `verb`, `detail`, `depends_on`, `semantics`
-   |  `- `rationale`
-   |- `program_source`: str | null
-   `- `verification`: VerifyOutputResult | null
-      `- `verification_id`, `status`, `returncode`, `stdout`, `stderr`, `executor_error`, `shape`
+├─ `schema_version`
+├─ `run_id`
+└─ `snapshots`: ReconstructionSnapshot[]
+   ├─ `open_tickets`: Ticket[]
+   │  ├─ `ticket_id`
+   │  ├─ `subject`: BootstrapWork | AuditFinding
+   │  │  ├─ BootstrapWork: `instruction`
+   │  │  └─ AuditFinding: `name`, `observation`, `evidence`, `backtraces[]`
+   │  │     └─ backtrace: `hops[]` plus `revision_request`
+   │  │        ├─ hop: `effect`, `cause`, `rationale`
+   │  │        └─ request: `action`, `targets`, `instruction`, `proposed_names`
+   │  ├─ `assigned_stages`: ReasoningStage[]
+   │  └─ `responses`: TicketResponse[]
+   │     ├─ `ticket_id`
+   │     ├─ `stage`
+   │     └─ `summary`
+   ├─ `round`
+   ├─ `last_completed_stage`
+   ├─ `semantics`: SemanticHypothesis | null
+   │  ├─ `proposal[]`: `name`, `description`, `geometry[]`, `evidence[]`, `open_question`
+   │  │  ├─ geometry: `name`, `kind`, `source`, `axis`, `parameters[]`
+   │  │  └─ evidence: `name`, `view`, `entity`, `edge_style`, `parameters[]`
+   │  └─ `rationale`
+   ├─ `operations`: OperationPlan | null
+   │  ├─ `proposal[]`: `name`, `verb`, `detail`, `depends_on`, `semantics`
+   │  └─ `rationale`
+   ├─ `program_source`: str | null
+   └─ `verification`: VerifyOutputResult | null
+      └─ `verification_id`, `status`, `returncode`, `stdout`, `stderr`, `executor_error`, `shape`
 ```
 
 Inspect only what the current task needs. Do not print the whole history file. Useful starting points are:
@@ -65,4 +66,4 @@ For example:
 diff -u <(jq -S '.snapshots[-2].operations' '$reconstruction_path') <(jq -S '.snapshots[-1].operations' '$reconstruction_path')
 ```
 
-Read the latest open tickets before acting. A bootstrap subject describes the initial build; an audit-finding subject describes an observed defect and traces it to the requested revision. Each reasoning stage must answer every ticket, and earlier responses on it explain what upstream stages changed. Do not edit the history file yourself.
+A bootstrap subject describes the initial build; an audit-finding subject describes an observed defect and traces it to the requested revision. The pipeline sets `assigned_stages` from that revision root and runs it through coding, because a corrected artifact has to be carried down into the program. Your instruction names the tickets assigned to you: answer each of those, and leave every other ticket to the stage that owns it. Earlier responses on a ticket explain what upstream stages already changed. Do not edit the history file yourself.

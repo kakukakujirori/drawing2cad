@@ -91,6 +91,7 @@ def _snapshot(source: str | None = _SOURCE) -> ReconstructionSnapshot:
             Ticket(
                 ticket_id=ticket_id,
                 subject=BootstrapWork(instruction="Reconstruct the part."),
+                assigned_stages=["semantics", "operations", "coding"],
                 responses=responses,
             )
         ],
@@ -111,6 +112,7 @@ def _advance_snapshot(
         Ticket(
             ticket_id=ticket.ticket_id,
             subject=ticket.subject,
+            assigned_stages=ticket.assigned_stages,
             responses=[
                 *ticket.responses,
                 TicketResponse(
@@ -156,6 +158,7 @@ def _stage_responses(
             summary=f"Reviewed the ticket during {stage}.",
         )
         for ticket in run.snapshots[-1].open_tickets
+        if stage in ticket.assigned_stages
     ]
 
 
@@ -385,6 +388,7 @@ def test_snapshot_commit_preserves_ticket_subjects() -> None:
     changed_ticket = Ticket(
         ticket_id=original_ticket.ticket_id,
         subject=BootstrapWork(instruction="A different task."),
+        assigned_stages=original_ticket.assigned_stages,
         responses=original_ticket.responses,
     )
     semantics = semantics.model_copy(update={"open_tickets": [changed_ticket]})
@@ -407,6 +411,7 @@ def test_snapshot_commit_preserves_prior_responses() -> None:
     changed_ticket = Ticket(
         ticket_id=ticket.ticket_id,
         subject=ticket.subject,
+        assigned_stages=ticket.assigned_stages,
         responses=[rewritten, ticket.responses[-1]],
     )
     operations = operations.model_copy(update={"open_tickets": [changed_ticket]})
@@ -426,6 +431,67 @@ def test_snapshot_commit_preserves_artifacts_owned_by_other_stages() -> None:
 
     with pytest.raises(ValueError, match="must preserve the current semantics"):
         reconstruction_module._commit_snapshot(run, operations)
+
+
+@pytest.mark.parametrize(
+    ("root", "member", "expected"),
+    [
+        ("semantics", "sem_feature_2", ["semantics", "operations", "coding"]),
+        ("operations", "op_hole", ["operations", "coding"]),
+        ("coding", "ret_hole", ["coding"]),
+    ],
+)
+def test_a_ticket_is_assigned_from_its_revision_root_downstream(
+    root: str,
+    member: str,
+    expected: list[str],
+) -> None:
+    report = _report(target=_ref(root, member))
+
+    run = open_next_round(_completed_run(), report)
+
+    assert run.snapshots[-1].open_tickets[0].assigned_stages == expected
+
+
+def test_the_earliest_revision_root_decides_the_assignment() -> None:
+    finding = _report(target=_ref("coding", "ret_hole")).findings[0]
+    two_roots = finding.model_copy(
+        update={
+            "backtraces": [
+                *finding.backtraces,
+                Backtrace(
+                    hops=[],
+                    revision_request=RevisionRequest(
+                        action="modify",
+                        targets=[_ref("operations", "op_hole")],
+                        instruction="Correct the operation as well.",
+                        proposed_names=[],
+                    ),
+                ),
+            ]
+        }
+    )
+    report = AuditReport(accepted=False, findings=[two_roots])
+
+    run = open_next_round(_completed_run(), report)
+
+    assert run.snapshots[-1].open_tickets[0].assigned_stages == ["operations", "coding"]
+
+
+def test_an_unassigned_stage_leaves_the_ticket_untouched() -> None:
+    run = open_next_round(_completed_run(), _report(target=_ref("coding", "ret_hole")))
+
+    run = advance_reconstruction(
+        run,
+        SemanticSubmission(
+            deliverable=hypothesis("the base", "the hole"),
+            responses=[],
+        ),
+    )
+    ticket = run.snapshots[-1].open_tickets[0]
+
+    assert ticket.assigned_stages == ["coding"]
+    assert ticket.responses == []
 
 
 def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:

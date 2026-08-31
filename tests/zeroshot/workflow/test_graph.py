@@ -65,14 +65,18 @@ def _response(ticket_id: str, stage: PipelineStage) -> TicketResponse:
     )
 
 
+def _responses(ticket_id: str | None, stage: PipelineStage) -> list[TicketResponse]:
+    return [_response(ticket_id, stage)] if ticket_id is not None else []
+
+
 def _semantic_submission(
-    ticket_id: str = _ROUND_ZERO_TICKET,
+    ticket_id: str | None = _ROUND_ZERO_TICKET,
     *features: str,
 ) -> AIMessage:
     return _message(
         SemanticSubmission(
             deliverable=hypothesis(*(features or ("a plate",))),
-            responses=[_response(ticket_id, PipelineStage.SEMANTICS)],
+            responses=_responses(ticket_id, PipelineStage.SEMANTICS),
         )
     )
 
@@ -96,7 +100,7 @@ def _plan(*, builds: Sequence[int | str] = (1,), detail: str = "extrude"):
 
 
 def _operation_submission(
-    ticket_id: str = _ROUND_ZERO_TICKET,
+    ticket_id: str | None = _ROUND_ZERO_TICKET,
     *,
     builds: Sequence[int | str] = (1,),
     detail: str = "extrude",
@@ -104,16 +108,16 @@ def _operation_submission(
     return _message(
         OperationSubmission(
             deliverable=_plan(builds=builds, detail=detail),
-            responses=[_response(ticket_id, PipelineStage.OPERATIONS)],
+            responses=_responses(ticket_id, PipelineStage.OPERATIONS),
         )
     )
 
 
-def _coding_submission(ticket_id: str = _ROUND_ZERO_TICKET) -> AIMessage:
+def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
     return _message(
         CodingSubmission(
             deliverable=None,
-            responses=[_response(ticket_id, PipelineStage.CODING)],
+            responses=_responses(ticket_id, PipelineStage.CODING),
         )
     )
 
@@ -122,7 +126,7 @@ def _accepted_audit() -> AIMessage:
     return _message(AuditReport(accepted=True, findings=[]))
 
 
-def _rejected_audit() -> AIMessage:
+def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
     return _message(
         AuditReport(
             accepted=False,
@@ -137,7 +141,8 @@ def _rejected_audit() -> AIMessage:
                             revision_request=RevisionRequest(
                                 action="modify",
                                 targets=[
-                                    StageOutputRef(
+                                    root
+                                    or StageOutputRef(
                                         stage=PipelineStage.CODING,
                                         name="ret_step1",
                                     )
@@ -573,7 +578,16 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(
             _coding_submission(_ROUND_ONE_TICKET),
         )
     )
-    auditor = ScriptedChatModel(responses=(_rejected_audit(),))
+    auditor = ScriptedChatModel(
+        responses=(
+            _rejected_audit(
+                StageOutputRef(
+                    stage=PipelineStage.SEMANTICS,
+                    name="sem_feature_1",
+                )
+            ),
+        )
+    )
 
     with SandboxWorkdir() as workdir:
         result = _graph(
@@ -603,6 +617,39 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(
     assert len(coder.received_messages) == 2
     assert len(auditor.received_messages) == 1
     assert "round 1" in _last_instruction(planner.received_messages[1])
+
+
+def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_verification(monkeypatch, _verified("000"), _verified("001"))
+    first_semantics = _semantic_submission()
+    head = ScriptedChatModel(
+        responses=(first_semantics, first_semantics, _semantic_submission(None))
+    )
+    peer = ScriptedChatModel(responses=(first_semantics,))
+    planner = ScriptedChatModel(
+        responses=(_operation_submission(), _operation_submission(None))
+    )
+    coder = ScriptedChatModel(
+        responses=(_coding_submission(), _coding_submission(_ROUND_ONE_TICKET))
+    )
+    auditor = ScriptedChatModel(responses=(_rejected_audit(),))
+
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            head=head,
+            peer=peer,
+            planner=planner,
+            coder=coder,
+            auditor=auditor,
+            max_audit_reject_count=1,
+        ).invoke({})
+
+    ticket = result["reconstruction"].snapshots[1].open_tickets[0]
+    assert ticket.assigned_stages == [PipelineStage.CODING]
+    assert [response.stage for response in ticket.responses] == [PipelineStage.CODING]
 
 
 def test_rejection_at_the_round_limit_finishes_without_opening_another_round(

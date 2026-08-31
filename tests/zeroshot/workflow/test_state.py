@@ -211,6 +211,7 @@ _RECONSTRUCTION = ReconstructionRun(
                 Ticket(
                     ticket_id="ticket_initial",
                     subject=BootstrapWork(instruction="reconstruct the drawing"),
+                    assigned_stages=["semantics", "operations", "coding"],
                     responses=[
                         TicketResponse(
                             ticket_id="ticket_initial",

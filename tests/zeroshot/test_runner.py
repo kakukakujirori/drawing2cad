@@ -652,7 +652,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     verification = next(event for event in events if event["event"] == "verification")
     assert verification["data"]["report"]["status"] == "VERIFIED"
     assert verification["data"]["report"]["verification_id"] == "001"
-    assert verification["data"]["report"]["source"]["omitted"] == "source"
+    assert verification["data"]["report"]["source"] is None
 
 
 def test_run_sample_repairs_model_after_intermediate_verification_failure(

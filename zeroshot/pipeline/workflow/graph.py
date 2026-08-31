@@ -27,6 +27,7 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     ReconstructionSnapshot,
     SemanticSubmission,
     StageSubmission,
+    tickets_assigned_to,
 )
 from zeroshot.pipeline.messages.contracts.stages import (
     REASONING_STAGES,
@@ -225,6 +226,16 @@ def create_reconstruction_graph(
             raise RuntimeError("the initial reconstruction has no unfinished stage")
         return following.value
 
+    def assigned_ticket_ids(
+        snapshot: ReconstructionSnapshot,
+        stage: PipelineStage,
+    ) -> str:
+        """Name the tickets this stage owns, so it never has to go looking."""
+        if stage not in REASONING_STAGES:
+            return "none"
+        assigned = tickets_assigned_to(snapshot.open_tickets, stage)
+        return ", ".join(ticket.ticket_id for ticket in assigned) or "none"
+
     def build_stage_instruction(
         state: ReconstructionState,
         stage: PipelineStage,
@@ -238,6 +249,7 @@ def create_reconstruction_graph(
             f"{stage.value}/round",
             **prompt_context,
             current_round=str(snapshot.round),
+            assigned_tickets=assigned_ticket_ids(snapshot, stage),
             **extra_context,
         )
 

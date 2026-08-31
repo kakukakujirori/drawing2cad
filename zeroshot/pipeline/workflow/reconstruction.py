@@ -19,6 +19,7 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     ReconstructionSnapshot,
     SemanticSubmission,
     Ticket,
+    TicketResponse,
 )
 from zeroshot.pipeline.messages.contracts.stages import (
     REASONING_STAGES,
@@ -47,6 +48,7 @@ def start_reconstruction(
             Ticket(
                 ticket_id="ticket_initial",
                 subject=BootstrapWork(instruction=instruction),
+                assigned_stages=list(REASONING_STAGES),
                 responses=[],
             )
         ],
@@ -101,8 +103,19 @@ def _ticket_from_finding(
     return Ticket(
         ticket_id=f"ticket_{round_number:03d}_{suffix}",
         subject=finding,
+        assigned_stages=_assigned_stages(finding),
         responses=[],
     )
+
+
+def _assigned_stages(finding: AuditFinding) -> list[ReasoningStage]:
+    """The earliest stage a revision was requested at, and everything after it."""
+    roots = [
+        REASONING_STAGES.index(target.stage)
+        for backtrace in finding.backtraces
+        for target in backtrace.revision_request.targets
+    ]
+    return list(REASONING_STAGES[min(roots) :])
 
 
 def advance_reconstruction(
@@ -122,13 +135,18 @@ def advance_reconstruction(
         response.ticket_id: response for response in submission.responses
     }
     tickets = [
-        Ticket(
-            ticket_id=ticket.ticket_id,
-            subject=ticket.subject,
-            responses=[
-                *ticket.responses,
-                responses_by_ticket[ticket.ticket_id],
-            ],
+        (
+            Ticket(
+                ticket_id=ticket.ticket_id,
+                subject=ticket.subject,
+                assigned_stages=ticket.assigned_stages,
+                responses=[
+                    *ticket.responses,
+                    responses_by_ticket[ticket.ticket_id],
+                ],
+            )
+            if stage in ticket.assigned_stages
+            else ticket
         )
         for ticket in current.open_tickets
     ]
@@ -198,7 +216,7 @@ def _commit_snapshot(
             f"to {expected_stage!r}"
         )
 
-    _require_ticket_progress(current, snapshot)
+    _require_ticket_progress(current, snapshot, expected_stage)
     _require_only_stage_artifact_changed(current, snapshot, expected_stage)
 
     return ReconstructionRun(
@@ -211,6 +229,7 @@ def _commit_snapshot(
 def _require_ticket_progress(
     current: ReconstructionSnapshot,
     replacement: ReconstructionSnapshot,
+    stage: ReasoningStage,
 ) -> None:
     """Keep ticket identity and prior responses fixed within one round."""
     current_ids = [ticket.ticket_id for ticket in current.open_tickets]
@@ -227,7 +246,17 @@ def _require_ticket_progress(
             raise ValueError(
                 f"{previous.ticket_id} subject must not change within a round"
             )
-        if (
+        if updated.assigned_stages != previous.assigned_stages:
+            raise ValueError(
+                f"{previous.ticket_id} assignment must not change within a round"
+            )
+        if stage not in updated.assigned_stages:
+            if updated.responses != previous.responses:
+                raise ValueError(
+                    f"{previous.ticket_id} is not assigned to {stage} and must "
+                    "keep its responses unchanged"
+                )
+        elif (
             len(updated.responses) != len(previous.responses) + 1
             or updated.responses[:-1] != previous.responses
         ):

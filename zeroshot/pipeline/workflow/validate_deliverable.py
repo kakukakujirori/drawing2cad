@@ -22,6 +22,7 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     StageSubmission,
     Ticket,
     TicketResponse,
+    tickets_assigned_to,
 )
 from zeroshot.pipeline.messages.contracts.stages import (
     REASONING_STAGES,
@@ -119,8 +120,11 @@ def _validate_ticket_responses(
     *,
     expected_stage: ReasoningStage,
 ) -> None:
-    """Require exactly one response for every current ticket, in any order."""
-    expected_ids = {ticket.ticket_id for ticket in tickets}
+    """Require one response for every ticket assigned to this stage, and no other."""
+    known_ids = {ticket.ticket_id for ticket in tickets}
+    expected_ids = {
+        ticket.ticket_id for ticket in tickets_assigned_to(tickets, expected_stage)
+    }
     response_ids = [response.ticket_id for response in responses]
     submitted_ids = set(response_ids)
 
@@ -128,7 +132,8 @@ def _validate_ticket_responses(
         ticket_id for ticket_id in submitted_ids if response_ids.count(ticket_id) > 1
     )
     missing = sorted(expected_ids - submitted_ids)
-    unknown = sorted(submitted_ids - expected_ids)
+    unassigned = sorted(submitted_ids & (known_ids - expected_ids))
+    unknown = sorted(submitted_ids - known_ids)
     wrong_stage = sorted(
         response.ticket_id for response in responses if response.stage != expected_stage
     )
@@ -138,6 +143,11 @@ def _validate_ticket_responses(
         errors.append("duplicate ticket responses: " + ", ".join(duplicated))
     if missing:
         errors.append("missing ticket responses: " + ", ".join(missing))
+    if unassigned:
+        errors.append(
+            f"{expected_stage} is not assigned to these tickets and must not "
+            "respond to them: " + ", ".join(unassigned)
+        )
     if unknown:
         errors.append("unknown ticket responses: " + ", ".join(unknown))
     if wrong_stage:
