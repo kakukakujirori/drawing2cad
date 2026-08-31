@@ -208,7 +208,9 @@ class ReconstructionSnapshot(BaseModel):
         ...,
         description=(
             "The terminal result of the verification attempt that closes this "
-            "round's coding stage. It is null before that attempt completes."
+            "round's coding stage. It is null before that attempt completes. "
+            "Its own `source` is always null because the program is kept once, "
+            "in `program_source`, and long logs are clipped."
         ),
     )
 

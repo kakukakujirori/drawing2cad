@@ -40,7 +40,7 @@ ReconstructionRun
    |  `- `rationale`
    |- `program_source`: str | null
    `- `verification`: VerifyOutputResult | null
-      `- `verification_id`, `status`, `source`, `returncode`, `stdout`, `stderr`, `executor_error`, `shape`
+      `- `verification_id`, `status`, `returncode`, `stdout`, `stderr`, `executor_error`, `shape`
 ```
 
 Inspect only what the current task needs. Do not print the whole history file. Useful starting points are:

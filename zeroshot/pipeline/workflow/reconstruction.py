@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -29,6 +30,8 @@ from zeroshot.pipeline.verification import VerifyOutputResult
 from zeroshot.pipeline.workflow.validate_deliverable import validate_deliverable
 
 type ReasoningSubmission = SemanticSubmission | OperationSubmission | CodingSubmission
+
+_LOG_LIMIT = 4000
 
 # ---------------------------------------------------------------------------
 # Pure lifecycle transitions
@@ -140,8 +143,9 @@ def advance_reconstruction(
         case PipelineStage.OPERATIONS:
             operations = cast(OperationPlan, submission.deliverable)
         case PipelineStage.CODING:
-            integrated_verification = cast(VerifyOutputResult, verification)
-            program_source = integrated_verification.source
+            terminal = cast(VerifyOutputResult, verification)
+            integrated_verification = _durable_verification(terminal)
+            program_source = terminal.source
 
     candidate = ReconstructionSnapshot(
         open_tickets=tickets,
@@ -153,6 +157,24 @@ def advance_reconstruction(
         verification=integrated_verification,
     )
     return _commit_snapshot(run, candidate)
+
+
+def _clip_log(log: str) -> str:
+    if len(log) <= _LOG_LIMIT:
+        return log
+    half = _LOG_LIMIT // 2
+    omitted = len(log) - 2 * half
+    return f"{log[:half]}\n...[{omitted} characters omitted]...\n{log[-half:]}"
+
+
+def _durable_verification(verification: VerifyOutputResult) -> VerifyOutputResult:
+    """Strip what the snapshot already keeps, and what it need not keep whole."""
+    return replace(
+        verification,
+        source=None,  # logged in `program_source` already
+        stdout=_clip_log(verification.stdout),
+        stderr=_clip_log(verification.stderr),
+    )
 
 
 def _commit_snapshot(

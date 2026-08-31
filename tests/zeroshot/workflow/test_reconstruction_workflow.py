@@ -159,7 +159,10 @@ def _stage_responses(
     ]
 
 
-def _completed_run(run: ReconstructionRun | None = None) -> ReconstructionRun:
+def _completed_run(
+    run: ReconstructionRun | None = None,
+    verification: VerifyOutputResult | None = None,
+) -> ReconstructionRun:
     run = run or start_reconstruction("run_example", "Reconstruct the part.")
     run = advance_reconstruction(
         run,
@@ -175,7 +178,7 @@ def _completed_run(run: ReconstructionRun | None = None) -> ReconstructionRun:
             responses=_stage_responses(run, "operations"),
         ),
     )
-    verification = VerifyOutputResult(
+    verification = verification or VerifyOutputResult(
         status=ExecutionStatus.VERIFIED,
         source=_SOURCE,
         returncode=0,
@@ -231,9 +234,9 @@ def _report(*hops: CausalHop, target: StageOutputRef | None = None) -> AuditRepo
 
 def test_audit_cross_validation_accepts_supported_backtrace_hops() -> None:
     report = _report(
-        _hop("coding", "result", "coding", "ret_hole"),
-        _hop("coding", "ret_hole", "operations", "op_hole"),
-        _hop("operations", "op_hole", "semantics", "sem_feature_2"),
+        _hop("coding", "ret_hole", "coding", "ret_base"),
+        _hop("coding", "ret_base", "operations", "op_base"),
+        _hop("operations", "op_base", "semantics", "sem_feature_1"),
     )
 
     validate_deliverable(report, _snapshot())
@@ -291,6 +294,25 @@ def test_advance_reconstruction_integrates_each_stage_without_mutating_the_run()
     assert initial.model_dump_json() == original_json
     assert completed.snapshots[-1].last_completed_stage == "coding"
     assert completed.snapshots[-1].program_source == _SOURCE
+
+
+def test_coding_stores_the_program_once_and_clips_long_logs() -> None:
+    noisy = VerifyOutputResult(
+        status=ExecutionStatus.VERIFIED,
+        source=_SOURCE,
+        returncode=0,
+        stdout="x" * 10_000,
+        stderr="short",
+    )
+
+    snapshot = _completed_run(verification=noisy).snapshots[-1]
+
+    assert snapshot.program_source == _SOURCE
+    assert snapshot.verification is not None
+    assert snapshot.verification.source is None
+    assert "characters omitted" in snapshot.verification.stdout
+    assert len(snapshot.verification.stdout) < len(noisy.stdout)
+    assert snapshot.verification.stderr == "short"
 
 
 def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
