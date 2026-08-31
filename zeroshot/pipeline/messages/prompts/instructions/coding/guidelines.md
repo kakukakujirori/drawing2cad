@@ -34,6 +34,7 @@ Guidelines:
 - Inspect the generated DXF and perspective renders under $verification_dir using `run_shell` and `load_image` to compare the result with the source drawing.
 - Iteratively refine missing or incorrect features such as cutouts, hole patterns, fillets, and chamfers, writing after each meaningful group of edits so the next verification covers it.
 - Ensure that $output_path is executable before concluding your final answer.
+- If the plan or the hypothesis looks wrong, or is missing a number you need, build your best reading, then name the `op_` or `sem_` member you doubt and what you did in your ticket response. Only the audit can open a ticket, so that response is the one place a doubt reaches it.
 - Address every applicable point from review or audit feedback in the transcript.
 - Your turn budget is announced in the transcript as `[turn n/N]`. Turns increment when you use tools.
 

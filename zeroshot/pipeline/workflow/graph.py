@@ -42,8 +42,10 @@ from zeroshot.pipeline.tools import (
 )
 from zeroshot.pipeline.verification import (
     CadQueryExecutor,
+    ExecutionStatus,
     OutputVerifier,
     StepRenderer,
+    VerifyOutputResult,
 )
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.components import compact_transcript
@@ -369,6 +371,30 @@ def create_reconstruction_graph(
             "stage_submission": None,
         }
 
+    def _build_failure(
+        verification: VerifyOutputResult, detail_display_limit: int = 2000
+    ) -> str | None:
+        """Return what to tell the coder, or None when the build produced a STEP.
+
+        The test matches the one the renderer gates on, so a round that reaches
+        audit always carries the STEP, the DXF and the renders it compares.
+        """
+        if (
+            verification.status is ExecutionStatus.VERIFIED
+            and verification.returncode == 0
+        ):
+            return None
+        detail = (
+            verification.executor_error
+            or verification.stderr.strip()
+            or verification.stdout.strip()
+        )
+        return (
+            f"model.py did not build: {verification.status.value}. "
+            f"{detail[-detail_display_limit:]}\n"
+            "Write a model.py that builds, then submit again."
+        )
+
     def integrate_stage_submission(
         state: ReconstructionState,
     ) -> dict[str, Any]:
@@ -392,6 +418,17 @@ def create_reconstruction_graph(
                     "coding did not return a CodingSubmission",
                 )
             verification, _ = verifier.verify()
+
+            # Send a build that produced no STEP back to the coder. Not a hard
+            # rejection: once the attempts are spent it integrates anyway, so a
+            # failed run still leaves a record the audit has seen.
+            build_failure = _build_failure(verification)
+            retries_remain = (
+                state.get("stage_validation_failure_count", 0)
+                < max_stage_validation_retries
+            )
+            if build_failure is not None and retries_remain:
+                return _rejected_stage_submission(state, build_failure)
 
         try:
             updated = advance_reconstruction(

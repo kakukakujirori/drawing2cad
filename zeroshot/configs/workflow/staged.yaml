@@ -31,7 +31,7 @@ workflow:
     model: ${model}
 
     response_format_strategy: ${response_format_strategy}
-    max_turns: 10
+    max_turns: 20
     announce_turns: true
     reset_turns_when_reentrant: true
     model_retries: 5
@@ -44,7 +44,7 @@ workflow:
     model: ${model}
 
     response_format_strategy: ${response_format_strategy}
-    max_turns: 10
+    max_turns: 20
     announce_turns: true
     reset_turns_when_reentrant: true
     model_retries: 5
@@ -57,7 +57,7 @@ workflow:
     model: ${model}
 
     response_format_strategy: ${response_format_strategy}
-    max_turns: 10
+    max_turns: 20
     announce_turns: true
     reset_turns_when_reentrant: true
     model_retries: 5
@@ -65,7 +65,7 @@ workflow:
 
   # How many rejected audits may open a fresh round. Every new round runs all
   # three reasoning stages against the complete set of new tickets.
-  max_audit_reject_count: 1
+  max_audit_reject_count: 3
 
   # Invalid structured stage submissions return to that stage with the
   # validator's exact feedback. This bounds those graph-level retries.

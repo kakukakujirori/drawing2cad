@@ -11,6 +11,7 @@ Guidelines:
 - Account for the whole part: the base volume, then what is added to and cut from it, then the fillets and chamfers. Every feature the hypothesis establishes needs an operation that builds it. A repeated feature is written as the operations it repeats, one entry each.
 - Revise an existing entry to answer feedback about the operation it performs, keeping its name so that references to it stay true and so that it replaces that entry rather than adding another. An entry you add takes a new name of its own; no existing identity changes or shifts. An entry you leave out of `edits` stays exactly as it was.
 - Where the hypothesis records an `open_question`, or leaves it open whether a region is added or removed material, choose one, record the choice, and continue.
+- If the hypothesis looks wrong, or is missing a number you need, plan anyway: choose, then name the `sem_` member you doubt and your choice in your ticket response. Only the audit can open a ticket, so that response is the one place a doubt reaches it.
 - Use `run_shell` and `load_image` to inspect the drawing or the perspective renders when the hypothesis leaves a dimension or a placement in doubt.
 - If feedback from a review or audit step is present in the transcript, address every point it raises.
 - Your turn budget is announced in the transcript as `[turn n/N]`. Turns increment by using tools.

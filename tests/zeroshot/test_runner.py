@@ -387,7 +387,9 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     runner = PipelineRunner(
         # This test is about input staging and transcript contents, not budget
         # announcements, so keep those extra HumanMessages out of its fixture.
-        graph_factory=_graph_factory(model, announce_turns=False),
+        graph_factory=_graph_factory(
+            model, announce_turns=False, max_stage_validation_retries=0
+        ),
         artifact_presenter=artifact_presenter,
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable),
@@ -733,7 +735,12 @@ def _runner_for_rerun(
     resume_from: Path | None = None,
 ) -> PipelineRunner:
     return PipelineRunner(
-        graph_factory=_graph_factory(ScriptedChatModel(responses=(_CODING_ANSWER,))),
+        # This coder answers without writing model.py, which the graph would
+        # otherwise send back to it. These tests are about rerun policy.
+        graph_factory=_graph_factory(
+            ScriptedChatModel(responses=(_CODING_ANSWER,)),
+            max_stage_validation_retries=0,
+        ),
         artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
@@ -844,6 +851,7 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
             audit_agent_builder=_agent(
                 "output_auditor", ScriptedChatModel(responses=(_ACCEPTED_AUDIT,))
             ),
+            max_stage_validation_retries=0,
             **kwargs,
         )
 
@@ -1046,6 +1054,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
         graph_factory=_graph_factory(
             ScriptedChatModel(responses=(_CODING_ANSWER,)),
             announce_turns=False,
+            max_stage_validation_retries=0,
         ),
     ).run_sample(_manifest_without_renders(tmp_path, "prompted"))
 

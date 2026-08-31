@@ -283,6 +283,13 @@ def _verified(identifier: str = "000", source: str = _PROGRAM) -> VerifyOutputRe
     )
 
 
+def _unbuilt(reason: str = "model.py was not found") -> VerifyOutputResult:
+    return VerifyOutputResult(
+        status=ExecutionStatus.REJECTED,
+        executor_error=reason,
+    )
+
+
 def _last_instruction(messages: list[BaseMessage]) -> str:
     return next(
         message.text
@@ -658,3 +665,56 @@ def test_rejection_at_the_round_limit_finishes_without_opening_another_round(
     assert auditor.received_messages == []
     assert result["audit_report"] is None
     assert result["stage_validation_error"] is None
+
+
+def test_a_build_that_produced_nothing_returns_to_coding_before_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _stub_verification(monkeypatch, _unbuilt(), _verified())
+    coder = ScriptedChatModel(responses=(_coding_submission(), _coding_submission()))
+    auditor = ScriptedChatModel(responses=(_accepted_audit(),))
+
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            head=ScriptedChatModel(responses=(_semantic_submission(),)),
+            planner=ScriptedChatModel(responses=(_operation_submission(),)),
+            coder=coder,
+            auditor=auditor,
+        ).invoke({})
+
+    assert calls == ["verify", "verify"]
+    assert len(coder.received_messages) == 2
+    assert len(auditor.received_messages) == 1
+    retry = _last_instruction(coder.received_messages[1])
+    assert "Coding Validation Error" in retry
+    assert "model.py was not found" in retry
+    snapshot = result["reconstruction"].snapshots[0]
+    assert snapshot.verification.status is ExecutionStatus.VERIFIED
+    assert result["stage_validation_failure_count"] == 0
+
+
+def test_a_build_that_keeps_failing_is_audited_once_the_attempts_are_spent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failed build still has to reach the audit, or the run records nothing."""
+    calls = _stub_verification(monkeypatch, _unbuilt(), _unbuilt())
+    coder = ScriptedChatModel(responses=(_coding_submission(), _coding_submission()))
+    auditor = ScriptedChatModel(responses=(_accepted_audit(),))
+
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            head=ScriptedChatModel(responses=(_semantic_submission(),)),
+            planner=ScriptedChatModel(responses=(_operation_submission(),)),
+            coder=coder,
+            auditor=auditor,
+            max_stage_validation_retries=1,
+        ).invoke({})
+
+    assert calls == ["verify", "verify"]
+    assert len(coder.received_messages) == 2
+    assert len(auditor.received_messages) == 1
+    snapshot = result["reconstruction"].snapshots[0]
+    assert snapshot.last_completed_stage is PipelineStage.CODING
+    assert snapshot.verification.status is ExecutionStatus.REJECTED

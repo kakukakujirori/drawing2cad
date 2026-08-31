@@ -57,6 +57,9 @@ jq -c '.snapshots[-1].open_tickets[] | select(.ticket_id == "ticket_001_wrong_bo
 jq -c '[.snapshots[-1].semantics.proposal[] | {name, geo: [.geometry[].name], ev: [.evidence[].name]}]' '$reconstruction_path'
 jq -c '[.snapshots[-1].operations.proposal[] | {name, verb, depends_on, semantics}]' '$reconstruction_path'
 
+# What each stage reported, including any doubt it raised about the stage above it.
+jq -c '[.snapshots[-1].open_tickets[].responses[] | {ticket_id, stage, summary}]' '$reconstruction_path'
+
 # Then one member in full, by a name the index gave you.
 jq -c '.snapshots[-1].semantics.proposal[] | select(.name == "sem_main_bore")' '$reconstruction_path'
 jq -c '.snapshots[-1].operations.proposal[] | select(.semantics | index("sem_main_bore"))' '$reconstruction_path'

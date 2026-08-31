@@ -9,9 +9,17 @@ from typing import Any, override
 import httpx
 from langchain.agents import AgentState as _AgentState
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
-from langchain.agents.structured_output import StructuredOutputValidationError
+from langchain.agents.structured_output import (
+    MultipleStructuredOutputsError,
+    StructuredOutputError,
+    StructuredOutputValidationError,
+)
 from langchain_core.messages import HumanMessage
 from openai import APIConnectionError, APIError, APIStatusError, LengthFinishReasonError
+
+
+class UnansweredModelCall(Exception):
+    """A model call that came back with no tool call, no text and no answer."""
 
 
 class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
@@ -50,7 +58,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             "retrying": retrying,
             "request_adjusted": adjusted,
         }
-        if isinstance(error, StructuredOutputValidationError):
+        if isinstance(error, StructuredOutputError):
             # The retry request carries this response only in memory. Preserve
             # the rejected raw output so a contract failure is reproducible.
             details["failed_response"] = error.ai_message.text
@@ -76,23 +84,35 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         )
 
     @staticmethod
-    def _retry_invalid_structured_output_request(
+    def _retry_structured_output_request(
         request: ModelRequest[None],
-        error: StructuredOutputValidationError,
+        error: StructuredOutputError,
     ) -> ModelRequest[None]:
-        failed_response = [error.ai_message] if error.ai_message.text.strip() else []
+        # Replaying an AI message whose tool calls have no results makes the
+        # next request invalid, so carry back only a plain-text answer.
+        rejected = error.ai_message
+        replay = [rejected] if rejected.text.strip() and not rejected.tool_calls else []
         return request.override(
             messages=[
                 *request.messages,
-                *failed_response,
+                *replay,
+                HumanMessage(content=_correction_text(error)),
+            ]
+        )
+
+    @staticmethod
+    def _retry_unanswered_request(
+        request: ModelRequest[None],
+    ) -> ModelRequest[None]:
+        return request.override(
+            messages=[
+                *request.messages,
                 HumanMessage(
                     content=(
-                        f"Your previous response could not be parsed as the required "
-                        f"{error.tool_name} structured output. Validation error: "
-                        f"{error.source}. You may continue using tools if you need "
-                        "more information. When you are ready to answer, return "
-                        "corrected raw JSON that matches the required schema, "
-                        "with no explanation or Markdown outside it."
+                        "Your last turn spent its whole output budget on thinking "
+                        "and came back empty. You have been thinking a long time, "
+                        "so answer now. The analysis you have already done is "
+                        "above; build on it rather than starting over."
                     )
                 ),
             ]
@@ -114,7 +134,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         current_request = request
         for attempt in range(self.max_retries + 1):
             try:
-                return handler(current_request)
+                response = handler(current_request)
             except LengthFinishReasonError as error:
                 retrying = attempt < self.max_retries
                 self._report(
@@ -123,14 +143,14 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 if not retrying:
                     raise
                 current_request = self._retry_length_limited_request(current_request)
-            except StructuredOutputValidationError as error:
+            except StructuredOutputError as error:
                 retrying = attempt < self.max_retries
                 self._report(
                     current_request, attempt, error, retrying=retrying, adjusted=True
                 )
                 if not retrying:
                     raise
-                current_request = self._retry_invalid_structured_output_request(
+                current_request = self._retry_structured_output_request(
                     current_request,
                     error,
                 )
@@ -144,6 +164,17 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 if not retrying:
                     raise
                 time.sleep(self._backoff_delay(attempt))
+            else:
+                if not _is_unanswered(response) or attempt == self.max_retries:
+                    return response
+                self._report(
+                    current_request,
+                    attempt,
+                    UnansweredModelCall(_UNANSWERED),
+                    retrying=True,
+                    adjusted=True,
+                )
+                current_request = self._retry_unanswered_request(current_request)
         raise AssertionError("unreachable")
 
     @override
@@ -155,7 +186,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         current_request = request
         for attempt in range(self.max_retries + 1):
             try:
-                return await handler(current_request)
+                response = await handler(current_request)
             except LengthFinishReasonError as error:
                 retrying = attempt < self.max_retries
                 self._report(
@@ -164,14 +195,14 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 if not retrying:
                     raise
                 current_request = self._retry_length_limited_request(current_request)
-            except StructuredOutputValidationError as error:
+            except StructuredOutputError as error:
                 retrying = attempt < self.max_retries
                 self._report(
                     current_request, attempt, error, retrying=retrying, adjusted=True
                 )
                 if not retrying:
                     raise
-                current_request = self._retry_invalid_structured_output_request(
+                current_request = self._retry_structured_output_request(
                     current_request,
                     error,
                 )
@@ -185,7 +216,55 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 if not retrying:
                     raise
                 await asyncio.sleep(self._backoff_delay(attempt))
+            else:
+                if not _is_unanswered(response) or attempt == self.max_retries:
+                    return response
+                self._report(
+                    current_request,
+                    attempt,
+                    UnansweredModelCall(_UNANSWERED),
+                    retrying=True,
+                    adjusted=True,
+                )
+                current_request = self._retry_unanswered_request(current_request)
         raise AssertionError("unreachable")
+
+
+_UNANSWERED = "the model returned no tool call, no text and no structured output"
+
+
+def _is_unanswered(response: ModelResponse[Any]) -> bool:
+    """Whether the response holds nothing to act on.
+
+    Reasoning alone leaves this true: a model that spends its output budget
+    thinking returns a message the agent loop reads as a finished answer.
+    """
+    if response.structured_response is not None:
+        return False
+    return not any(
+        getattr(message, "tool_calls", None) or message.text.strip()
+        for message in response.result
+    )
+
+
+def _correction_text(error: StructuredOutputError) -> str:
+    """Tell the model what was wrong with its answer, in terms it can act on."""
+    if isinstance(error, MultipleStructuredOutputsError):
+        return (
+            f"You returned {len(error.tool_names)} structured responses "
+            f"({', '.join(error.tool_names)}) when exactly one is expected. "
+            "Return one call that carries the whole answer."
+        )
+    if isinstance(error, StructuredOutputValidationError):
+        return (
+            f"Your previous response could not be parsed as the required "
+            f"{error.tool_name} structured output. Validation error: "
+            f"{error.source}. You may continue using tools if you need more "
+            "information. When you are ready to answer, return corrected raw "
+            "JSON that matches the required schema, with no explanation or "
+            "Markdown outside it."
+        )
+    return f"Your previous response was rejected: {error}. Answer again."
 
 
 def _is_retryable_model_error(exception: Exception) -> bool:
