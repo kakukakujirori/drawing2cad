@@ -103,10 +103,17 @@ def test_the_shared_role_explains_selective_history_navigation() -> None:
     assert guide in rendered
     assert "semantics -> operations -> coding + verification -> audit" in rendered
     assert "ReconstructionRun" in rendered
-    assert "jq '.snapshots[-1]" in rendered
+    assert "Do not print the whole history file" in rendered
+    assert "never `cat` it" in rendered
     assert ".snapshots[-2]" in rendered
     assert "diff -u" in rendered
-    assert "Do not print the whole history file" in rendered
+
+    # Index of names first, then one member by name: no recipe dumps an artifact.
+    assert "jq -c" in rendered
+    assert "[.geometry[].name]" in rendered
+    assert 'select(.name == "sem_main_bore")' in rendered
+    assert "'.snapshots[-1].semantics'" not in rendered
+    assert "'.snapshots[-1].operations'" not in rendered
 
 
 def test_round_instructions_do_not_repeat_the_reconstruction_guide() -> None:

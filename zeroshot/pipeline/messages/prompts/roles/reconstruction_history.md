@@ -44,26 +44,38 @@ ReconstructionRun
       └─ `verification_id`, `status`, `returncode`, `stdout`, `stderr`, `executor_error`, `shape`
 ```
 
-Inspect only what the current task needs. Do not print the whole history file. Useful starting points are:
+Inspect only what the current task needs. Do not print the whole history file, and never `cat` it: one round's hypothesis alone runs to tens of thousands of tokens, and the file holds every round. Read an index of stable names first, then fetch by name the one member you need. `jq -c` keeps a record to a line.
 
 ```bash
-jq '.snapshots[-1] | {round, last_completed_stage, open_tickets}' '$reconstruction_path'
-jq '.snapshots[-1].semantics' '$reconstruction_path'
-jq '.snapshots[-1].operations' '$reconstruction_path'
-jq -r '.snapshots[-1].program_source' '$reconstruction_path'
+# Where the round stands, and who owns each ticket.
+jq -c '.snapshots[-1] | {round, last_completed_stage, tickets: [.open_tickets[] | {ticket_id, assigned_stages}]}' '$reconstruction_path'
+
+# What one ticket asks, by the id your instruction gave you.
+jq -c '.snapshots[-1].open_tickets[] | select(.ticket_id == "ticket_001_wrong_bore") | .subject.backtraces[].revision_request' '$reconstruction_path'
+
+# An index of names. Read this before any artifact body.
+jq -c '[.snapshots[-1].semantics.proposal[] | {name, geo: [.geometry[].name], ev: [.evidence[].name]}]' '$reconstruction_path'
+jq -c '[.snapshots[-1].operations.proposal[] | {name, verb, depends_on, semantics}]' '$reconstruction_path'
+
+# Then one member in full, by a name the index gave you.
+jq -c '.snapshots[-1].semantics.proposal[] | select(.name == "sem_main_bore")' '$reconstruction_path'
+jq -c '.snapshots[-1].operations.proposal[] | select(.semantics | index("sem_main_bore"))' '$reconstruction_path'
+
+# The program by the operation it implements, not the whole file.
+jq -r '.snapshots[-1].program_source' '$reconstruction_path' | grep -n 'ret_main_bore'
 ```
 
-Use `.snapshots[-2]` only when at least two snapshots exist. Compare only the upstream artifact relevant to your stage, using stable sorted JSON where useful:
+Use `.snapshots[-2]` only when at least two snapshots exist, and compare only the upstream artifact your stage reads. A later stage's artifact is still null in the current round, and iterating over it fails.
 
-- Semantics: inspect the current tickets and the preceding semantics when revising.
-- Operations: compare preceding and current semantics.
-- Coding: compare preceding and current operations.
-- Audit: compare rounds only when deciding whether a defect persisted or regressed.
+- Semantics: your tickets, and the preceding semantics when revising.
+- Operations: the preceding semantics against the current one.
+- Coding: the preceding operations against the current ones.
+- Audit: compare rounds only to decide whether a defect persisted or regressed.
 
-For example:
+Diff the index rather than the bodies, sorted so that the diff is about content and not about order:
 
 ```bash
-diff -u <(jq -S '.snapshots[-2].operations' '$reconstruction_path') <(jq -S '.snapshots[-1].operations' '$reconstruction_path')
+diff -u <(jq -S '[.snapshots[-2].operations.proposal[] | {name, verb, detail}] | sort_by(.name)' '$reconstruction_path') <(jq -S '[.snapshots[-1].operations.proposal[] | {name, verb, detail}] | sort_by(.name)' '$reconstruction_path')
 ```
 
 A bootstrap subject describes the initial build; an audit-finding subject describes an observed defect and traces it to the requested revision. The pipeline sets `assigned_stages` from that revision root and runs it through coding, because a corrected artifact has to be carried down into the program. Your instruction names the tickets assigned to you: answer each of those, and leave every other ticket to the stage that owns it. Earlier responses on a ticket explain what upstream stages already changed. Do not edit the history file yourself.
