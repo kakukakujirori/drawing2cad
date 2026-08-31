@@ -59,7 +59,12 @@ def system_prompt_text(
             indent=2,
         )
 
-    return PromptTemplate(f"roles/{role}").render(**context)
+    sections = [PromptTemplate(f"roles/{role}").render(**context)]
+    if "reconstruction_path" in context:
+        sections.append(
+            PromptTemplate("roles/reconstruction_history").render(**context)
+        )
+    return "\n\n".join(sections)
 
 
 def build_system_prompt(

@@ -1,11 +1,5 @@
 Coding and verification for reconstruction round $current_round are complete. Audit that immutable snapshot against the input drawing.
 
-The complete reconstruction history is stored at:
-
-$reconstruction_path
-
-Inspect it with `jq`, `rg`, or another read-only shell command. The final item in `snapshots` is the round being audited and contains its open tickets, semantic hypothesis, operation plan, complete `model.py` source, and verification result.
-
 The current workspace source is at:
 
 $output_path
@@ -18,5 +12,7 @@ The built artifacts are in $attempt_dir, laid out as:
 - `render_3d/<style>.png` — its perspective renders, named as the inputs are
 
 If the report shows the program did not produce a solid, the directory holds no projection or renders.
+
+If a feature visible in the input drawing has no corresponding `sem_...` member, there is no existing causal chain to traverse. Do not invent evidence-free hops through unrelated outputs. Return a backtrace with empty `hops` and an `add` revision request targeting the whole semantics stage (`name: null`), and propose one or more stable `sem_...` names for the missing feature.
 
 Do not edit the reconstruction history, source program, or generated artifacts. Return one `AuditReport`; the pipeline will validate every named reference and causal link against the immutable snapshot.
