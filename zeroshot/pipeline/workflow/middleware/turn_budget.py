@@ -47,12 +47,15 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
     def before_agent(
         self, state: TurnBudgetState, runtime: Runtime[None]
     ) -> dict[str, Any] | None:
-        """Reset progress that belongs to this invocation."""
+        """Reset progress that belongs to this invocation.
+
+        No need to set `structured_response: None`.
+        Langchain keeps it out of the agent's input schema, so
+        no answer survives an invocation to be reset, and writing
+        one tells the agent an answer has already been given.
+        """
         del runtime
-        update: dict[str, Any] = {
-            "structured_response": None,
-            "stop_reason": None,
-        }
+        update: dict[str, Any] = {"stop_reason": None}
         # `current_turn > 0` checks that this is 're'entrant
         if self.reset_turns_when_reentrant and state.get("current_turn", 0) > 0:
             update |= {

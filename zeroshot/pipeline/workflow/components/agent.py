@@ -58,7 +58,9 @@ def _build_response_format(
     if response_format_strategy == "provider":
         return ProviderStrategy(schema=output_schema)
     elif response_format_strategy == "tool":
-        return ToolStrategy(schema=output_schema)
+        # NOTE: `handle_errors` must be `False`.
+        # This routes the error to our `ModelCallRetryMiddleware`.
+        return ToolStrategy(schema=output_schema, handle_errors=False)
     else:
         raise ValueError(
             f"Unknown response format strategy: {response_format_strategy}"

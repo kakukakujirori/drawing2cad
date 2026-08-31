@@ -284,7 +284,6 @@ def create_reconstruction_graph(
             {
                 **previous,
                 "messages": messages,
-                "structured_response": None,
             },
             config=_child_graph_config(config),
         )
@@ -314,7 +313,6 @@ def create_reconstruction_graph(
             {
                 **previous,
                 "messages": messages,
-                "structured_response": None,
             },
             config=_child_graph_config(config),
         )
@@ -341,7 +339,6 @@ def create_reconstruction_graph(
             {
                 **previous,
                 "messages": messages,
-                "structured_response": None,
             },
             config=_child_graph_config(config),
         )
@@ -480,7 +477,6 @@ def create_reconstruction_graph(
                     *list(previous.get("messages") or []),
                     instruction,
                 ],
-                "structured_response": None,
             },
             config=_child_graph_config(config),
         )

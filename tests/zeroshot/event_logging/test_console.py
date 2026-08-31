@@ -171,6 +171,62 @@ def test_muted_graph_nodes_suppress_nested_run_events() -> None:
     assert output.getvalue().count("[node] model started") == 1
 
 
+def _reported(*events: dict) -> str:
+    output = StringIO()
+    reporter = ConsoleReporter(
+        Console(file=output, color_system=None, force_terminal=False, highlight=False)
+    )
+    for data in events:
+        reporter.render_event(
+            {
+                "event": data.pop("event"),
+                "timestamp_ms": 1,
+                "namespace": [],
+                "data": data,
+            }
+        )
+    return output.getvalue()
+
+
+def test_the_lifecycle_events_a_stage_reports_are_rendered_not_dumped() -> None:
+    """Every event name the pipeline emits needs a branch here. One without
+    falls through to `[unhandled event]`, which buries the run's own failures
+    in the raw payloads of the events around them."""
+    rendered = _reported(
+        {
+            "event": "stage_validation",
+            "node": "integrate_stage_submission",
+            "error": "the reasoning stage did not return a StageSubmission",
+            "failure_count": 2,
+        },
+        {"event": "stage_submission", "node": "semantics", "submission": {"edits": []}},
+        {"event": "audit", "node": "audit", "report": {"accepted": False}},
+    )
+
+    assert "[unhandled" not in rendered
+    assert "[invalid] integrate_stage_submission — failure 2" in rendered
+    assert "did not return a StageSubmission" in rendered
+    assert "[submission] semantics" in rendered
+    assert "[audit] rejected" in rendered
+
+
+def test_a_cleared_stage_channel_is_not_reported_as_an_answer() -> None:
+    """Every node that touches the channel reports it, so most reports are the
+    clearing rather than an answer."""
+    rendered = _reported(
+        {"event": "stage_submission", "node": "initialize", "submission": None},
+        {
+            "event": "stage_validation",
+            "node": "initialize",
+            "error": None,
+            "failure_count": 0,
+        },
+        {"event": "audit", "node": "initialize", "report": None},
+    )
+
+    assert rendered == ""
+
+
 def test_a_call_outside_any_subgraph_is_named_by_its_role_alone() -> None:
     output = StringIO()
     reporter = ConsoleReporter(

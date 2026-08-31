@@ -194,6 +194,32 @@ class ConsoleReporter:
                 style="bold yellow",
                 markup=False,
             )
+        elif name == "stage_submission":
+            # Most carry null: every node that touches the channel reports it,
+            # and clearing it says nothing the model output did not.
+            if (submission := data.get("submission")) is not None:
+                self.console.print(
+                    f"\n[submission] {data.get('node', 'unknown')}",
+                    style="bold cyan",
+                    markup=False,
+                )
+                self._render_value(submission)
+        elif name == "stage_validation":
+            if error := data.get("error"):
+                self.console.print(
+                    f"\n[invalid] {data.get('node', 'unknown')} — "
+                    f"failure {data.get('failure_count')}",
+                    style="bold red",
+                    markup=False,
+                )
+                self._render_value(error)
+        elif name == "audit":
+            if (report := data.get("report")) is not None:
+                verdict = "accepted" if report.get("accepted") else "rejected"
+                self.console.print(
+                    f"\n[audit] {verdict}", style="bold yellow", markup=False
+                )
+                self._render_value(report)
         elif name == "message":
             # The corresponding ChatModelStream is rendered incrementally instead.
             return
