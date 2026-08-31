@@ -5,7 +5,7 @@ from typing import cast
 
 import pytest
 
-from tests.zeroshot.contracts import feature, geometry, hypothesis
+from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing, unchanged
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -23,11 +23,12 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     Ticket,
     TicketResponse,
 )
-from zeroshot.pipeline.messages.contracts.stages import REASONING_STAGES
+from zeroshot.pipeline.messages.contracts.stages import REASONING_STAGES, next_stage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
-from zeroshot.pipeline.workflow.validate_deliverable import (
-    DeliverableValidationError,
-    validate_deliverable,
+from zeroshot.pipeline.workflow.merge_submission import merge_submission
+from zeroshot.pipeline.workflow.validate_submission import (
+    SubmissionValidationError,
+    validate_submission,
 )
 
 
@@ -140,24 +141,47 @@ def _snapshot(
     )
 
 
+def _merge_and_validate(
+    output: SemanticSubmission | OperationSubmission | CodingSubmission,
+    snapshot: ReconstructionSnapshot,
+    *,
+    verification: VerifyOutputResult | None = None,
+) -> None:
+    """Merge the revision and validate the result, as the pipeline does.
+
+    Every snapshot here belongs to a first round, so there is no preceding
+    artifact for the edits to apply to.
+    """
+    stage = next_stage(snapshot.last_completed_stage)
+    if stage not in REASONING_STAGES:
+        validate_submission(output, snapshot, verification=verification)
+        return
+    validate_submission(
+        output,
+        snapshot,
+        deliverable=merge_submission(output, None, stage),
+        verification=verification,
+    )
+
+
 def test_every_reasoning_stage_accepts_its_expected_deliverable() -> None:
-    validate_deliverable(
+    _merge_and_validate(
         SemanticSubmission(
-            deliverable=_semantics(),
+            **replacing(_semantics()),
             responses=[_response("ticket_initial", PipelineStage.SEMANTICS)],
         ),
         _snapshot(None),
     )
-    validate_deliverable(
+    _merge_and_validate(
         OperationSubmission(
-            deliverable=_operations(),
+            **replacing(_operations()),
             responses=[_response("ticket_initial", PipelineStage.OPERATIONS)],
         ),
         _snapshot(PipelineStage.SEMANTICS),
     )
-    validate_deliverable(
+    _merge_and_validate(
         CodingSubmission(
-            deliverable=None,
+            **unchanged(),
             responses=[_response("ticket_initial", PipelineStage.CODING)],
         ),
         _snapshot(PipelineStage.OPERATIONS),
@@ -204,12 +228,12 @@ def test_ticket_responses_must_cover_the_current_snapshot_exactly_once(
         tickets=[_ticket("ticket_one"), _ticket("ticket_two")],
     )
     submission = SemanticSubmission(
-        deliverable=_semantics(),
+        **replacing(_semantics()),
         responses=responses,
     )
 
-    with pytest.raises(DeliverableValidationError, match=message):
-        validate_deliverable(submission, snapshot)
+    with pytest.raises(SubmissionValidationError, match=message):
+        _merge_and_validate(submission, snapshot)
 
 
 def test_a_stage_answers_its_assigned_tickets_and_only_those() -> None:
@@ -221,18 +245,18 @@ def test_a_stage_answers_its_assigned_tickets_and_only_those() -> None:
         ],
     )
 
-    validate_deliverable(
+    _merge_and_validate(
         SemanticSubmission(
-            deliverable=_semantics(),
+            **replacing(_semantics()),
             responses=[_response("ticket_one", PipelineStage.SEMANTICS)],
         ),
         snapshot,
     )
 
-    with pytest.raises(DeliverableValidationError, match="not assigned.*ticket_two"):
-        validate_deliverable(
+    with pytest.raises(SubmissionValidationError, match="not assigned.*ticket_two"):
+        _merge_and_validate(
             SemanticSubmission(
-                deliverable=_semantics(),
+                **replacing(_semantics()),
                 responses=[
                     _response("ticket_one", PipelineStage.SEMANTICS),
                     _response("ticket_two", PipelineStage.SEMANTICS),
@@ -248,39 +272,39 @@ def test_a_stage_assigned_nothing_answers_nothing() -> None:
         tickets=[_ticket("ticket_one", assigned=(PipelineStage.CODING,))],
     )
 
-    validate_deliverable(
-        SemanticSubmission(deliverable=_semantics(), responses=[]),
+    _merge_and_validate(
+        SemanticSubmission(**replacing(_semantics()), responses=[]),
         snapshot,
     )
 
 
 def test_the_current_snapshot_decides_which_deliverable_type_is_valid() -> None:
     operations = OperationSubmission(
-        deliverable=_operations(),
+        **replacing(_operations()),
         responses=[_response("ticket_initial", PipelineStage.SEMANTICS)],
     )
 
-    with pytest.raises(DeliverableValidationError, match="SemanticHypothesis"):
-        validate_deliverable(operations, _snapshot(None))
+    with pytest.raises(SubmissionValidationError, match="SemanticSubmission"):
+        _merge_and_validate(operations, _snapshot(None))
 
 
 def test_operations_must_cover_only_current_semantic_features() -> None:
     submission = OperationSubmission(
-        deliverable=_operations(semantics=["sem_absent"]),
+        **replacing(_operations(semantics=["sem_absent"])),
         responses=[_response("ticket_initial", PipelineStage.OPERATIONS)],
     )
 
-    with pytest.raises(DeliverableValidationError, match="sem_feature_1"):
-        validate_deliverable(submission, _snapshot(PipelineStage.SEMANTICS))
+    with pytest.raises(SubmissionValidationError, match="sem_feature_1"):
+        _merge_and_validate(submission, _snapshot(PipelineStage.SEMANTICS))
 
 
 def _validate_plan(
     plan: OperationPlan,
     semantics: SemanticHypothesis,
 ) -> None:
-    validate_deliverable(
+    _merge_and_validate(
         OperationSubmission(
-            deliverable=plan,
+            **replacing(plan),
             responses=[_response("ticket_initial", PipelineStage.OPERATIONS)],
         ),
         _snapshot(PipelineStage.SEMANTICS, semantics=semantics),
@@ -290,7 +314,7 @@ def _validate_plan(
 def test_operation_validation_names_both_missing_and_invented_features() -> None:
     semantics = hypothesis("base", "bore")
 
-    with pytest.raises(DeliverableValidationError) as caught:
+    with pytest.raises(SubmissionValidationError) as caught:
         _validate_plan(_plan_for(["sem_feature_1", "sem_absent"]), semantics)
 
     message = str(caught.value)
@@ -320,7 +344,7 @@ def _measured_blend() -> SemanticHypothesis:
 
 
 def test_operation_validation_rejects_a_copied_high_precision_number() -> None:
-    with pytest.raises(DeliverableValidationError) as caught:
+    with pytest.raises(SubmissionValidationError) as caught:
         _validate_plan(
             _plan_for(
                 ["sem_shoulder_blend"],
@@ -364,7 +388,7 @@ def test_operation_validation_accepts_derived_and_short_numbers() -> None:
 def test_operation_validation_rejects_a_nonexistent_parameter_address() -> None:
     address = "sem_shoulder_blend.geo_blend_torus.height"
 
-    with pytest.raises(DeliverableValidationError, match=address):
+    with pytest.raises(SubmissionValidationError, match=address):
         _validate_plan(
             _plan_for(
                 ["sem_shoulder_blend"],
@@ -393,7 +417,7 @@ def test_many_copied_numbers_produce_one_bounded_validation_message() -> None:
         ]
     )
 
-    with pytest.raises(DeliverableValidationError) as caught:
+    with pytest.raises(SubmissionValidationError) as caught:
         _validate_plan(
             _plan_for(
                 ["sem_blend"],
@@ -408,24 +432,24 @@ def test_many_copied_numbers_produce_one_bounded_validation_message() -> None:
 
 def test_only_coding_accepts_a_separate_terminal_verification() -> None:
     semantic_submission = SemanticSubmission(
-        deliverable=_semantics(),
+        **replacing(_semantics()),
         responses=[_response("ticket_initial", PipelineStage.SEMANTICS)],
     )
     coding_submission = CodingSubmission(
-        deliverable=None,
+        **unchanged(),
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
-    with pytest.raises(DeliverableValidationError, match="must not submit"):
-        validate_deliverable(
+    with pytest.raises(SubmissionValidationError, match="must not submit"):
+        _merge_and_validate(
             semantic_submission,
             _snapshot(None),
             verification=VerifyOutputResult(status=ExecutionStatus.REJECTED),
         )
-    with pytest.raises(DeliverableValidationError, match="requires"):
-        validate_deliverable(coding_submission, _snapshot(PipelineStage.OPERATIONS))
-    with pytest.raises(DeliverableValidationError, match="must be terminal"):
-        validate_deliverable(
+    with pytest.raises(SubmissionValidationError, match="requires"):
+        _merge_and_validate(coding_submission, _snapshot(PipelineStage.OPERATIONS))
+    with pytest.raises(SubmissionValidationError, match="must be terminal"):
+        _merge_and_validate(
             coding_submission,
             _snapshot(PipelineStage.OPERATIONS),
             verification=VerifyOutputResult(),
@@ -434,12 +458,12 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
 
 def test_coding_checks_the_submitted_program_against_current_round_operations() -> None:
     submission = CodingSubmission(
-        deliverable=None,
+        **unchanged(),
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
-    with pytest.raises(DeliverableValidationError, match="missing.*op_base"):
-        validate_deliverable(
+    with pytest.raises(SubmissionValidationError, match="missing.*op_base"):
+        _merge_and_validate(
             submission,
             _snapshot(PipelineStage.OPERATIONS),
             verification=VerifyOutputResult(
@@ -451,11 +475,11 @@ def test_coding_checks_the_submitted_program_against_current_round_operations() 
 
 def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
     submission = CodingSubmission(
-        deliverable=None,
+        **unchanged(),
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
-    validate_deliverable(
+    _merge_and_validate(
         submission,
         _snapshot(PipelineStage.OPERATIONS),
         verification=VerifyOutputResult(status=ExecutionStatus.REJECTED),
@@ -464,12 +488,12 @@ def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
 
 def test_completed_coding_accepts_only_an_audit_report() -> None:
     submission = CodingSubmission(
-        deliverable=None,
+        **unchanged(),
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
-    with pytest.raises(DeliverableValidationError, match="only an AuditReport"):
-        validate_deliverable(
+    with pytest.raises(SubmissionValidationError, match="only an AuditReport"):
+        _merge_and_validate(
             submission,
             _snapshot(PipelineStage.CODING),
             verification=VerifyOutputResult(status=ExecutionStatus.REJECTED),

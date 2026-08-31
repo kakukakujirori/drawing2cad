@@ -364,11 +364,16 @@ def test_the_rendered_hypothesis_drops_the_parameters_a_kind_does_not_use() -> N
     assert "null" not in rendered
 
 
-def test_a_feature_must_cite_evidence() -> None:
+def test_a_hypothesis_feature_must_cite_evidence() -> None:
     """The split puts the exact numbers in the evidence, so a feature with none
-    hands the stages after it a type and a size and nothing to place them by."""
+    hands the stages after it a type and a size and nothing to place them by.
+
+    The requirement holds of the hypothesis rather than of the feature: a
+    feature travels between rounds carrying only the members that changed."""
+    partial = feature(1, "a boss", evidence=[])
+
     with pytest.raises(ValidationError, match="cites no evidence"):
-        feature(1, "a boss", evidence=[])
+        SemanticHypothesis(proposal=[partial], rationale="the views agree")
 
 
 def test_the_two_tables_agree_on_every_name_they_share() -> None:

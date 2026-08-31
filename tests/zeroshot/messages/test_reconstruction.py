@@ -1,7 +1,7 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from tests.zeroshot.contracts import hypothesis
+from tests.zeroshot.contracts import hypothesis, replacing, unchanged
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -121,34 +121,35 @@ def _snapshot(
     )
 
 
-def test_semantics_and_operations_accept_their_concrete_deliverables() -> None:
+def test_semantics_and_operations_edit_their_own_member_types() -> None:
     semantics = _semantics()
     operations = _operations()
 
     semantic_submission = SemanticSubmission(
-        deliverable=semantics,
+        **replacing(semantics),
         responses=_responses("ticket_bootstrap", "semantics"),
     )
     operation_submission = OperationSubmission(
-        deliverable=operations,
+        **replacing(operations),
         responses=_responses("ticket_bootstrap", "operations"),
     )
 
-    assert semantic_submission.deliverable is semantics
-    assert operation_submission.deliverable is operations
+    assert semantic_submission.edits == semantics.proposal
+    assert operation_submission.edits == operations.proposal
 
 
-def test_coding_requires_an_explicit_null_deliverable() -> None:
+def test_coding_submits_an_empty_revision() -> None:
     responses = _responses("ticket_bootstrap", "coding")
 
-    submission = CodingSubmission(deliverable=None, responses=responses)
+    submission = CodingSubmission(**unchanged(), responses=responses)
 
-    assert submission.deliverable is None
+    assert submission.edits == []
+    assert submission.deleted == []
     with pytest.raises(ValidationError):
         CodingSubmission.model_validate({"responses": responses})
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="coding submits no edits"):
         CodingSubmission.model_validate(
-            {"deliverable": "model.py", "responses": responses}
+            {**unchanged(), "rationale": "why", "responses": responses}
         )
 
 
@@ -156,7 +157,7 @@ def test_a_stage_submission_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         SemanticSubmission.model_validate(
             {
-                "deliverable": _semantics(),
+                **replacing(_semantics()),
                 "responses": _responses("ticket_bootstrap", "semantics"),
                 "commentary": "not part of the submission contract",
             }
@@ -168,13 +169,13 @@ def test_each_stage_submission_exposes_its_concrete_json_schema() -> None:
     operation_schema = OperationSubmission.model_json_schema()
     coding_schema = CodingSubmission.model_json_schema()
 
-    assert semantic_schema["properties"]["deliverable"]["$ref"].endswith(
-        "/SemanticHypothesis"
+    assert semantic_schema["properties"]["edits"]["items"]["$ref"].endswith(
+        "/SemanticFeature"
     )
-    assert operation_schema["properties"]["deliverable"]["$ref"].endswith(
-        "/OperationPlan"
+    assert operation_schema["properties"]["edits"]["items"]["$ref"].endswith(
+        "/Operation"
     )
-    assert coding_schema["properties"]["deliverable"]["type"] == "null"
+    assert coding_schema["properties"]["edits"]["items"]["type"] == "null"
 
 
 @pytest.mark.parametrize(

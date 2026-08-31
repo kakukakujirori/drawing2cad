@@ -4,6 +4,9 @@ something else.
 Tests *about* the contract build it explicitly -- see `messages/test_contracts.py`.
 """
 
+from typing import Any
+
+from zeroshot.pipeline.messages.contracts.operations import OperationPlan
 from zeroshot.pipeline.messages.contracts.semantics import (
     _CLAIMED_PARAMETERS,
     _DRAWN_PARAMETERS,
@@ -108,3 +111,17 @@ def hypothesis(*descriptions: str, **overrides: object) -> SemanticHypothesis:
         **overrides,
     }
     return SemanticHypothesis(**fields)  # type: ignore[arg-type]
+
+
+def replacing(artifact: SemanticHypothesis | OperationPlan) -> dict[str, Any]:
+    """The submission fields that build `artifact` from nothing, as round 0 does."""
+    return {
+        "edits": list(artifact.proposal),
+        "deleted": [],
+        "rationale": artifact.rationale,
+    }
+
+
+def unchanged() -> dict[str, Any]:
+    """The submission fields that leave the preceding round's artifact as it is."""
+    return {"edits": [], "deleted": [], "rationale": None}

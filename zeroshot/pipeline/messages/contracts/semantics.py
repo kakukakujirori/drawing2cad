@@ -463,14 +463,16 @@ class SemanticFeature(BaseModel):
     )
 
     @model_validator(mode="after")
-    def require_uniquely_named_members(self) -> Self:
+    def require_usable_names(self) -> Self:
+        """Check the feature's own name, and that no two of its geometry
+        members and no two of its evidence members share a name.
+
+        Not that it cites any evidence at all: a feature also travels as a
+        revision carrying only the members that changed, where an empty list
+        means "unchanged" rather than "unsupported". `SemanticHypothesis`
+        checks that instead.
+        """
         _require_name(self.name, "sem_", _SEMANTIC_NAME)
-        if not self.evidence:
-            raise ValueError(
-                f"feature {self.name} cites no evidence; a feature nothing in "
-                "the drawing supports is a guess, and the exact numbers a "
-                "later stage builds from live in the evidence"
-            )
         for group, members in (
             ("geometry", self.geometry),
             ("evidence", self.evidence),
@@ -505,7 +507,7 @@ class SemanticHypothesis(BaseModel):
     )
 
     @model_validator(mode="after")
-    def require_uniquely_named_features(self) -> Self:
+    def require_uniquely_named_features_that_cite_evidence(self) -> Self:
         if not self.proposal:
             raise ValueError("proposal must hold at least one feature")
         names = [feature.name for feature in self.proposal]
@@ -513,6 +515,15 @@ class SemanticHypothesis(BaseModel):
             raise ValueError(
                 "feature names must be unique; keep each sem_ name as one "
                 "feature's stable identity"
+            )
+        unsupported = [
+            feature.name for feature in self.proposal if not feature.evidence
+        ]
+        if unsupported:
+            raise ValueError(
+                f"{', '.join(unsupported)} cites no evidence; a feature nothing "
+                "in the drawing supports is a guess, and the exact numbers a "
+                "later stage builds from live in the evidence"
             )
         return self
 

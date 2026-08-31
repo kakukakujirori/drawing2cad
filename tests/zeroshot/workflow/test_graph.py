@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.messages.content import ContentBlock
 
 from tests.zeroshot.chat_models import ScriptedChatModel
-from tests.zeroshot.contracts import hypothesis
+from tests.zeroshot.contracts import hypothesis, replacing, unchanged
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.messages.contracts import (
     Operation,
@@ -75,7 +75,7 @@ def _semantic_submission(
 ) -> AIMessage:
     return _message(
         SemanticSubmission(
-            deliverable=hypothesis(*(features or ("a plate",))),
+            **replacing(hypothesis(*(features or ("a plate",)))),
             responses=_responses(ticket_id, PipelineStage.SEMANTICS),
         )
     )
@@ -107,7 +107,7 @@ def _operation_submission(
 ) -> AIMessage:
     return _message(
         OperationSubmission(
-            deliverable=_plan(builds=builds, detail=detail),
+            **replacing(_plan(builds=builds, detail=detail)),
             responses=_responses(ticket_id, PipelineStage.OPERATIONS),
         )
     )
@@ -116,7 +116,7 @@ def _operation_submission(
 def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
     return _message(
         CodingSubmission(
-            deliverable=None,
+            **unchanged(),
             responses=_responses(ticket_id, PipelineStage.CODING),
         )
     )
@@ -301,7 +301,7 @@ def _semantics_seed() -> ReconstructionRun:
     return advance_reconstruction(
         start_reconstruction("run_test", "Reconstruct the drawing."),
         SemanticSubmission(
-            deliverable=hypothesis("a plate"),
+            **replacing(hypothesis("a plate")),
             responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.SEMANTICS)],
         ),
     )
@@ -311,7 +311,7 @@ def _operations_resume() -> ReconstructionRun:
     return advance_reconstruction(
         _semantics_seed(),
         OperationSubmission(
-            deliverable=_plan(),
+            **replacing(_plan()),
             responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.OPERATIONS)],
         ),
     )

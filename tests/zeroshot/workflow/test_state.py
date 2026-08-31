@@ -8,7 +8,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
-from tests.zeroshot.contracts import feature, geometry, hypothesis
+from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing, unchanged
 from zeroshot.pipeline.messages.contracts import (
     Axis,
     ClaimSource,
@@ -242,7 +242,7 @@ _RECONSTRUCTION = ReconstructionRun(
 )
 
 _SEMANTIC_SUBMISSION = SemanticSubmission(
-    deliverable=_A_HYPOTHESIS,
+    **replacing(_A_HYPOTHESIS),
     responses=[
         TicketResponse(
             ticket_id="ticket_initial",
@@ -252,7 +252,7 @@ _SEMANTIC_SUBMISSION = SemanticSubmission(
     ],
 )
 _OPERATION_SUBMISSION = OperationSubmission(
-    deliverable=_A_PLAN,
+    **replacing(_A_PLAN),
     responses=[
         TicketResponse(
             ticket_id="ticket_initial",
@@ -262,7 +262,7 @@ _OPERATION_SUBMISSION = OperationSubmission(
     ],
 )
 _CODING_SUBMISSION = CodingSubmission(
-    deliverable=None,
+    **unchanged(),
     responses=[
         TicketResponse(
             ticket_id="ticket_initial",

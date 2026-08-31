@@ -19,7 +19,6 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     ReconstructionSnapshot,
     SemanticSubmission,
     Ticket,
-    TicketResponse,
 )
 from zeroshot.pipeline.messages.contracts.stages import (
     REASONING_STAGES,
@@ -28,7 +27,8 @@ from zeroshot.pipeline.messages.contracts.stages import (
     next_stage,
 )
 from zeroshot.pipeline.verification import VerifyOutputResult
-from zeroshot.pipeline.workflow.validate_deliverable import validate_deliverable
+from zeroshot.pipeline.workflow.merge_submission import merge_submission
+from zeroshot.pipeline.workflow.validate_submission import validate_submission
 
 type ReasoningSubmission = SemanticSubmission | OperationSubmission | CodingSubmission
 
@@ -72,7 +72,7 @@ def open_next_round(
 ) -> ReconstructionRun:
     """Create the next round from a rejected, cross-validated audit report."""
     current = run.snapshots[-1]
-    validate_deliverable(report, current)
+    validate_submission(report, current)
 
     if report.accepted:
         raise ValueError("an accepted audit does not open another round")
@@ -126,10 +126,18 @@ def advance_reconstruction(
 ) -> ReconstructionRun:
     """Validate and atomically integrate one reasoning-stage submission."""
     current = run.snapshots[-1]
-    validate_deliverable(submission, current, verification=verification)
     stage = next_stage(current.last_completed_stage)
     if stage not in REASONING_STAGES:
         raise ValueError("a completed coding snapshot cannot advance again")
+
+    preceding = run.snapshots[-2] if len(run.snapshots) > 1 else None
+    deliverable = merge_submission(submission, preceding, stage)
+    validate_submission(
+        submission,
+        current,
+        deliverable=deliverable,
+        verification=verification,
+    )
 
     responses_by_ticket = {
         response.ticket_id: response for response in submission.responses
@@ -157,9 +165,9 @@ def advance_reconstruction(
     integrated_verification = current.verification
     match stage:
         case PipelineStage.SEMANTICS:
-            semantics = cast(SemanticHypothesis, submission.deliverable)
+            semantics = cast(SemanticHypothesis, deliverable)
         case PipelineStage.OPERATIONS:
-            operations = cast(OperationPlan, submission.deliverable)
+            operations = cast(OperationPlan, deliverable)
         case PipelineStage.CODING:
             terminal = cast(VerifyOutputResult, verification)
             integrated_verification = _durable_verification(terminal)

@@ -1,4 +1,9 @@
-"""Contextual validation of stage outputs against a reconstruction snapshot."""
+"""Contextual validation of one stage's submission against its snapshot.
+
+A reasoning stage submits a revision rather than a whole artifact, so what
+is measured against the snapshot is the artifact that revision merges to.
+`merge_submission` produces it and hands it here as `deliverable`.
+"""
 
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -36,7 +41,7 @@ from zeroshot.pipeline.verification import (
     check_program,
 )
 
-type Deliverable = (
+type Submission = (
     SemanticSubmission | OperationSubmission | CodingSubmission | AuditReport
 )
 
@@ -46,58 +51,61 @@ _DECIMAL = re.compile(rf"\d+\.\d{{{_COPIED_DECIMALS},}}")
 _NAMED_AT_MOST = 3
 
 
-class DeliverableValidationError(ValueError):
-    """A stage output contradicts the current reconstruction snapshot."""
+class SubmissionValidationError(ValueError):
+    """A stage's submission contradicts the current reconstruction snapshot."""
 
 
-def validate_deliverable(
-    output: Deliverable,
+def validate_submission(
+    submission: Submission,
     snapshot: ReconstructionSnapshot,
     *,
+    deliverable: SemanticHypothesis | OperationPlan | None = None,
     verification: VerifyOutputResult | None = None,
 ) -> None:
-    """Validate one stage output as the next artifact of the current round."""
-    if isinstance(output, AuditReport):
+    """Reject a submission that contradicts the round it belongs to.
+
+    `deliverable` is what this submission merges to; an audit report has none.
+    """
+    if isinstance(submission, AuditReport):
         if verification is not None:
-            raise DeliverableValidationError(
+            raise SubmissionValidationError(
                 "audit does not accept a separate verification"
             )
-        _validate_audit_report(output, snapshot)
+        _validate_audit_report(submission, snapshot)
         return
 
-    if not isinstance(output, StageSubmission):
-        raise TypeError(f"unsupported deliverable type: {type(output).__name__}")
+    if not isinstance(submission, StageSubmission):
+        raise TypeError(f"unsupported submission type: {type(submission).__name__}")
 
     stage = _next_reasoning_stage(snapshot.last_completed_stage)
     _validate_ticket_responses(
-        output.responses,
+        submission.responses,
         snapshot.open_tickets,
         expected_stage=stage,
     )
     if stage is not PipelineStage.CODING and verification is not None:
-        raise DeliverableValidationError(f"{stage} must not submit verification")
+        raise SubmissionValidationError(f"{stage} must not submit verification")
 
     match stage:
         case PipelineStage.SEMANTICS:
-            if not isinstance(output.deliverable, SemanticHypothesis):
-                raise DeliverableValidationError(
-                    "semantics must submit a SemanticHypothesis"
+            if not isinstance(deliverable, SemanticHypothesis):
+                raise SubmissionValidationError(
+                    "semantics must revise a SemanticHypothesis"
                 )
         case PipelineStage.OPERATIONS:
-            if not isinstance(output.deliverable, OperationPlan):
-                raise DeliverableValidationError(
-                    "operations must submit an OperationPlan"
+            if not isinstance(deliverable, OperationPlan):
+                raise SubmissionValidationError(
+                    "operations must revise an OperationPlan"
                 )
-            _validate_operations(output.deliverable, snapshot)
+            _validate_operations(deliverable, snapshot)
         case PipelineStage.CODING:
-            if output.deliverable is not None:
-                raise DeliverableValidationError(
-                    "coding must submit null because model.py is written "
-                    "through the workspace"
+            if deliverable is not None:
+                raise SubmissionValidationError(
+                    "coding revises model.py through the workspace"
                 )
             _validate_coding(snapshot, verification)
         case _:
-            raise DeliverableValidationError(f"unexpected reasoning stage: {stage}")
+            raise SubmissionValidationError(f"unexpected reasoning stage: {stage}")
 
 
 def _next_reasoning_stage(
@@ -105,7 +113,7 @@ def _next_reasoning_stage(
 ) -> ReasoningStage:
     stage = next_stage(completed_stage)
     if stage not in REASONING_STAGES:
-        raise DeliverableValidationError(
+        raise SubmissionValidationError(
             "a completed coding snapshot accepts only an AuditReport"
         )
     return stage
@@ -157,7 +165,7 @@ def _validate_ticket_responses(
         )
 
     if errors:
-        raise DeliverableValidationError("\n".join(errors))
+        raise SubmissionValidationError("\n".join(errors))
 
 
 ################################################################
@@ -168,7 +176,7 @@ def _validate_operations(
     snapshot: ReconstructionSnapshot,
 ) -> None:
     if snapshot.semantics is None:
-        raise DeliverableValidationError(
+        raise SubmissionValidationError(
             "operations requires an integrated SemanticHypothesis"
         )
 
@@ -176,7 +184,7 @@ def _validate_operations(
     # the semantics already integrated earlier in this same round.
     errors = _operation_plan_errors(operations, snapshot.semantics)
     if errors:
-        raise DeliverableValidationError(" ".join(errors))
+        raise SubmissionValidationError(" ".join(errors))
 
 
 def _operation_plan_errors(
@@ -276,13 +284,13 @@ def _validate_coding(
     verification: VerifyOutputResult | None,
 ) -> None:
     if verification is None:
-        raise DeliverableValidationError(
+        raise SubmissionValidationError(
             "coding requires a terminal verification result"
         )
     if verification.status is ExecutionStatus.UNINITIALIZED:
-        raise DeliverableValidationError("coding verification must be terminal")
+        raise SubmissionValidationError("coding verification must be terminal")
     if snapshot.operations is None:
-        raise DeliverableValidationError("coding requires an integrated OperationPlan")
+        raise SubmissionValidationError("coding requires an integrated OperationPlan")
 
     # A missing or syntactically invalid source is already represented by a
     # terminal verification failure and must remain auditable. When readable
@@ -294,7 +302,7 @@ def _validate_coding(
     except SyntaxError:
         return
     if not program_check.sound:
-        raise DeliverableValidationError(
+        raise SubmissionValidationError(
             "model.py does not match the current OperationPlan: "
             f"missing={program_check.missing_operations}, "
             f"unknown={program_check.unknown_operations}, "
@@ -311,7 +319,7 @@ def _validate_audit_report(
 ) -> None:
     """Reject an audit report that contradicts the audited stage outputs."""
     if snapshot.last_completed_stage is not PipelineStage.CODING:
-        raise DeliverableValidationError("audit requires a completed coding snapshot")
+        raise SubmissionValidationError("audit requires a completed coding snapshot")
 
     backtraces = tuple(
         backtrace for finding in report.findings for backtrace in finding.backtraces
@@ -353,7 +361,7 @@ def _validate_audit_report(
         # A repeated reference or hop should not make the model repair the
         # same mechanical contradiction more than once.
         unique_errors = list(dict.fromkeys(errors))
-        raise DeliverableValidationError("\n".join(unique_errors))
+        raise SubmissionValidationError("\n".join(unique_errors))
 
 
 def _iter_references(

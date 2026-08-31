@@ -13,8 +13,11 @@ from pydantic import (
 )
 
 from zeroshot.pipeline.messages.contracts.audit import AuditFinding
-from zeroshot.pipeline.messages.contracts.operations import OperationPlan
-from zeroshot.pipeline.messages.contracts.semantics import SemanticHypothesis
+from zeroshot.pipeline.messages.contracts.operations import Operation, OperationPlan
+from zeroshot.pipeline.messages.contracts.semantics import (
+    SemanticFeature,
+    SemanticHypothesis,
+)
 from zeroshot.pipeline.messages.contracts.stages import (
     REASONING_STAGES,
     PipelineStage,
@@ -151,14 +154,39 @@ def tickets_assigned_to(
     return [ticket for ticket in tickets if stage in ticket.assigned_stages]
 
 
-class StageSubmission[T](BaseModel):
-    """One stage's artifact and its response to every ticket assigned to it."""
+class StageSubmission[M](BaseModel):
+    """One stage's revision of its artifact, and its answers to its tickets.
+
+    A model reads the concrete subclass, never this: pydantic takes a schema
+    description from the class it is asked for, so the wording that names
+    sem_, op_ or the workspace program belongs to the subclass that means it.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    deliverable: T = Field(
+    edits: list[M] = Field(
         ...,
-        description="The complete artifact submitted by this reasoning stage.",
+        description=(
+            "The members this stage changed, each complete and under its own "
+            "stable name. A name the artifact already holds replaces that "
+            "member, a new name adds one, and a member left out keeps what it "
+            "had."
+        ),
+    )
+    deleted: list[str] = Field(
+        ...,
+        description=(
+            "The members this stage dropped, by the names the artifact holds "
+            "them under. A name given here must not also appear in `edits`."
+        ),
+    )
+    rationale: str | None = Field(
+        ...,
+        description=(
+            "The artifact's rationale, rewritten when this revision changed "
+            "the reasoning behind it, or null to keep the one it already has. "
+            "The first round has none to keep, so it must be stated there."
+        ),
     )
     responses: list[TicketResponse] = Field(
         ...,
@@ -169,18 +197,88 @@ class StageSubmission[T](BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def require_distinct_edited_and_deleted_names(self) -> Self:
+        named = [edit.name for edit in self.edits]  # type: ignore[attr-defined]
+        duplicated = sorted({name for name in named if named.count(name) > 1})
+        if duplicated:
+            raise ValueError(f"edits name {', '.join(duplicated)} more than once")
+        if len(set(self.deleted)) != len(self.deleted):
+            raise ValueError("deleted must not name the same address twice")
+        both = sorted(set(named) & set(self.deleted))
+        if both:
+            raise ValueError(f"{', '.join(both)} is both edited and deleted")
+        return self
 
-class SemanticSubmission(StageSubmission[SemanticHypothesis]):
-    pass
+
+class SemanticSubmission(StageSubmission[SemanticFeature]):
+    """Your revision of the semantic hypothesis, and your ticket responses."""
+
+    edits: list[SemanticFeature] = Field(
+        ...,
+        description=(
+            "Every feature you changed, each complete and under its stable "
+            "sem_ name: a name the hypothesis already holds replaces that "
+            "feature, and a new name adds one. A feature is itself a list of "
+            "named geo_ and ev_ members, and the same rule holds within it -- "
+            "give the members you changed and leave the rest out, and the ones "
+            "you leave out keep what they had. `description` and "
+            "`open_question` carry no name of their own, so state them "
+            "whenever you give a feature."
+        ),
+    )
+    deleted: list[str] = Field(
+        ...,
+        description=(
+            "Every feature or member you dropped: a whole feature as "
+            "sem_main_bore, and one member of a feature as "
+            "sem_main_bore.geo_cylinder or sem_main_bore.ev_front_circle. A "
+            "member may be dropped from a feature you are not otherwise "
+            "changing. A name given here must not also appear in `edits`."
+        ),
+    )
 
 
-class OperationSubmission(StageSubmission[OperationPlan]):
-    pass
+class OperationSubmission(StageSubmission[Operation]):
+    """Your revision of the operation plan, and your ticket responses."""
+
+    edits: list[Operation] = Field(
+        ...,
+        description=(
+            "Every operation you changed, each complete and under its stable "
+            "op_ name: a name the plan already holds replaces that operation, "
+            "and a new name adds one. An operation you leave out keeps what it "
+            "had."
+        ),
+    )
+    deleted: list[str] = Field(
+        ...,
+        description=(
+            "Every operation you dropped, by its own op_ name. An operation "
+            "holds no named members, so nothing finer can be addressed here. A "
+            "name given here must not also appear in `edits`."
+        ),
+    )
 
 
 class CodingSubmission(StageSubmission[None]):
-    # NOTE: CodingSubmission deliverable is deferred to VerifyOutputResult
-    pass
+    """Your ticket responses. The program itself is read from the workspace."""
+
+    edits: list[None] = Field(
+        ...,
+        description="Always empty: you revise the program in the workspace.",
+    )
+    deleted: list[str] = Field(..., description="Always empty.")
+    rationale: str | None = Field(..., description="Always null.")
+
+    @model_validator(mode="after")
+    def require_an_empty_revision(self) -> Self:
+        if self.edits or self.deleted or self.rationale is not None:
+            raise ValueError(
+                "coding submits no edits, no deletions and no rationale: the "
+                "program is captured from the workspace through verification"
+            )
+        return self
 
 
 class ReconstructionSnapshot(BaseModel):

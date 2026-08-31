@@ -15,7 +15,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from rich.console import Console
 
 from tests.zeroshot.chat_models import ScriptedChatModel
-from tests.zeroshot.contracts import hypothesis
+from tests.zeroshot.contracts import hypothesis, replacing, unchanged
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
@@ -72,7 +72,7 @@ def _ticket_response(stage: str, summary: str) -> TicketResponse:
 
 _A_BOX = AIMessage(
     content=SemanticSubmission(
-        deliverable=hypothesis("a box"),
+        **replacing(hypothesis("a box")),
         responses=[_ticket_response("semantics", "Established sem_feature_1.")],
     ).model_dump_json()
 )
@@ -97,17 +97,19 @@ def _semantic_stage():
 
 def _operations_stage():
     submission = OperationSubmission(
-        deliverable=OperationPlan(
-            proposal=[
-                Operation(
-                    name="op_base",
-                    verb=OperationVerb.EXTRUDE,
-                    detail="extrude it",
-                    depends_on=[],
-                    semantics=["sem_feature_1"],
-                )
-            ],
-            rationale="one extrude",
+        **replacing(
+            OperationPlan(
+                proposal=[
+                    Operation(
+                        name="op_base",
+                        verb=OperationVerb.EXTRUDE,
+                        detail="extrude it",
+                        depends_on=[],
+                        semantics=["sem_feature_1"],
+                    )
+                ],
+                rationale="one extrude",
+            )
         ),
         responses=[_ticket_response("operations", "Established op_base.")],
     )
@@ -120,7 +122,7 @@ def _operations_stage():
 
 _CODING_ANSWER = AIMessage(
     content=CodingSubmission(
-        deliverable=None,
+        **unchanged(),
         responses=[_ticket_response("coding", "Implemented ret_base and result.")],
     ).model_dump_json()
 )
@@ -161,24 +163,26 @@ def _verified_resume_run():
     run = advance_reconstruction(
         run,
         SemanticSubmission(
-            deliverable=hypothesis("a box"),
+            **replacing(hypothesis("a box")),
             responses=[_ticket_response("semantics", "Established sem_feature_1.")],
         ),
     )
     run = advance_reconstruction(
         run,
         OperationSubmission(
-            deliverable=OperationPlan(
-                proposal=[
-                    Operation(
-                        name="op_base",
-                        verb=OperationVerb.EXTRUDE,
-                        detail="extrude it",
-                        depends_on=[],
-                        semantics=["sem_feature_1"],
-                    )
-                ],
-                rationale="one extrude",
+            **replacing(
+                OperationPlan(
+                    proposal=[
+                        Operation(
+                            name="op_base",
+                            verb=OperationVerb.EXTRUDE,
+                            detail="extrude it",
+                            depends_on=[],
+                            semantics=["sem_feature_1"],
+                        )
+                    ],
+                    rationale="one extrude",
+                )
             ),
             responses=[_ticket_response("operations", "Established op_base.")],
         ),
@@ -186,7 +190,7 @@ def _verified_resume_run():
     run = advance_reconstruction(
         run,
         CodingSubmission(
-            deliverable=None,
+            **unchanged(),
             responses=[_ticket_response("coding", "Implemented ret_base and result.")],
         ),
         verification=VerifyOutputResult(

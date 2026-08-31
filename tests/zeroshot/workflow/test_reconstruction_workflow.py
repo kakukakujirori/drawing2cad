@@ -2,7 +2,7 @@
 
 import pytest
 
-from tests.zeroshot.contracts import hypothesis
+from tests.zeroshot.contracts import feature, hypothesis, replacing, unchanged
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -35,9 +35,9 @@ from zeroshot.pipeline.workflow.reconstruction import (
     save_reconstruction,
     start_reconstruction,
 )
-from zeroshot.pipeline.workflow.validate_deliverable import (
-    DeliverableValidationError,
-    validate_deliverable,
+from zeroshot.pipeline.workflow.validate_submission import (
+    SubmissionValidationError,
+    validate_submission,
 )
 
 _SOURCE = "ret_base = object()\nret_hole = ret_base\nresult = ret_hole\n"
@@ -170,14 +170,14 @@ def _completed_run(
     run = advance_reconstruction(
         run,
         SemanticSubmission(
-            deliverable=hypothesis("the base", "the hole"),
+            **replacing(hypothesis("the base", "the hole")),
             responses=_stage_responses(run, "semantics"),
         ),
     )
     run = advance_reconstruction(
         run,
         OperationSubmission(
-            deliverable=_operations(),
+            **replacing(_operations()),
             responses=_stage_responses(run, "operations"),
         ),
     )
@@ -189,7 +189,7 @@ def _completed_run(
     run = advance_reconstruction(
         run,
         CodingSubmission(
-            deliverable=None,
+            **unchanged(),
             responses=_stage_responses(run, "coding"),
         ),
         verification=verification,
@@ -242,7 +242,7 @@ def test_audit_cross_validation_accepts_supported_backtrace_hops() -> None:
         _hop("operations", "op_base", "semantics", "sem_feature_1"),
     )
 
-    validate_deliverable(report, _snapshot())
+    validate_submission(report, _snapshot())
 
 
 @pytest.mark.parametrize(
@@ -266,24 +266,24 @@ def test_audit_cross_validation_rejects_unsupported_contract_links(
     hop: CausalHop,
     message: str,
 ) -> None:
-    with pytest.raises(DeliverableValidationError, match=message):
-        validate_deliverable(_report(hop), _snapshot())
+    with pytest.raises(SubmissionValidationError, match=message):
+        validate_submission(_report(hop), _snapshot())
 
 
 def test_audit_cross_validation_rejects_a_missing_revision_target() -> None:
     target = _ref("semantics", "sem_absent")
     report = _report(target=target)
 
-    with pytest.raises(DeliverableValidationError, match="does not exist"):
-        validate_deliverable(report, _snapshot())
+    with pytest.raises(SubmissionValidationError, match="does not exist"):
+        validate_submission(report, _snapshot())
 
 
 def test_named_code_references_require_parseable_source() -> None:
     source = "ret_base = (\n"
     report = _report(_hop("coding", "ret_base", "operations", "op_base"))
 
-    with pytest.raises(DeliverableValidationError, match="invalid syntax"):
-        validate_deliverable(report, _snapshot(source))
+    with pytest.raises(SubmissionValidationError, match="invalid syntax"):
+        validate_submission(report, _snapshot(source))
 
 
 def test_advance_reconstruction_integrates_each_stage_without_mutating_the_run() -> (
@@ -322,11 +322,11 @@ def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.")
     original_json = run.model_dump_json()
     wrong_stage = OperationSubmission(
-        deliverable=_operations(),
+        **replacing(_operations()),
         responses=_stage_responses(run, "semantics"),
     )
 
-    with pytest.raises(DeliverableValidationError, match="SemanticHypothesis"):
+    with pytest.raises(SubmissionValidationError, match="SemanticSubmission"):
         advance_reconstruction(run, wrong_stage)
 
     assert run.model_dump_json() == original_json
@@ -359,7 +359,7 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     advanced = advance_reconstruction(
         run,
         SemanticSubmission(
-            deliverable=hypothesis("the base", "the hole"),
+            **replacing(hypothesis("the base", "the hole")),
             responses=responses,
         ),
     )
@@ -484,7 +484,7 @@ def test_an_unassigned_stage_leaves_the_ticket_untouched() -> None:
     run = advance_reconstruction(
         run,
         SemanticSubmission(
-            deliverable=hypothesis("the base", "the hole"),
+            **replacing(hypothesis("the base", "the hole")),
             responses=[],
         ),
     )
@@ -492,6 +492,35 @@ def test_an_unassigned_stage_leaves_the_ticket_untouched() -> None:
 
     assert ticket.assigned_stages == ["coding"]
     assert ticket.responses == []
+
+
+def test_a_revision_round_carries_the_untouched_hypothesis_forward() -> None:
+    run = open_next_round(
+        _completed_run(),
+        _report(target=_ref("semantics", "sem_feature_2")),
+    )
+    previous = run.snapshots[-2].semantics
+    assert previous is not None
+
+    run = advance_reconstruction(
+        run,
+        SemanticSubmission(
+            edits=[feature("sem_feature_1", "the base, corrected")],
+            deleted=[],
+            rationale=None,
+            responses=_stage_responses(run, "semantics"),
+        ),
+    )
+    current = run.snapshots[-1].semantics
+    assert current is not None
+
+    assert [entry.name for entry in current.proposal] == [
+        "sem_feature_1",
+        "sem_feature_2",
+    ]
+    assert current.proposal[0].description == "the base, corrected"
+    assert current.proposal[1] == previous.proposal[1]
+    assert current.rationale == previous.rationale
 
 
 def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
@@ -526,7 +555,7 @@ def test_accepted_or_invalid_audit_does_not_open_a_round() -> None:
 
     with pytest.raises(ValueError, match="accepted audit"):
         open_next_round(run, accepted)
-    with pytest.raises(DeliverableValidationError, match="must use 'ret_hole'"):
+    with pytest.raises(SubmissionValidationError, match="must use 'ret_hole'"):
         open_next_round(run, invalid)
 
     assert run.model_dump_json() == original_json

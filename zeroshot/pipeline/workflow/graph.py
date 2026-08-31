@@ -59,9 +59,9 @@ from zeroshot.pipeline.workflow.state import (
     carry_thread,
     lead_transcript,
 )
-from zeroshot.pipeline.workflow.validate_deliverable import (
-    DeliverableValidationError,
-    validate_deliverable,
+from zeroshot.pipeline.workflow.validate_submission import (
+    SubmissionValidationError,
+    validate_submission,
 )
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
@@ -406,7 +406,7 @@ def create_reconstruction_graph(
                 submission,
                 verification=verification,
             )
-        except DeliverableValidationError as error:
+        except SubmissionValidationError as error:
             return _rejected_stage_submission(state, str(error))
 
         save_reconstruction(
@@ -500,8 +500,8 @@ def create_reconstruction_graph(
                 "the auditor did not return an AuditReport",
             )
         try:
-            validate_deliverable(report, current_snapshot(state))
-        except DeliverableValidationError as error:
+            validate_submission(report, current_snapshot(state))
+        except SubmissionValidationError as error:
             return _validation_failure(state, str(error))
 
         if (
