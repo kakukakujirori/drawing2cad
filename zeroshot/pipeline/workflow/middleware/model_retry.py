@@ -210,7 +210,11 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     response=response,
                 )
                 rejected += 1
-                current_request = self._retry_unanswered_request(current_request)
+                current_request = (
+                    self._retry_length_limited_request(current_request)
+                    if _ran_out_of_output(response)
+                    else self._retry_unanswered_request(current_request)
+                )
 
     @override
     async def awrap_model_call(
@@ -274,7 +278,11 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     response=response,
                 )
                 rejected += 1
-                current_request = self._retry_unanswered_request(current_request)
+                current_request = (
+                    self._retry_length_limited_request(current_request)
+                    if _ran_out_of_output(response)
+                    else self._retry_unanswered_request(current_request)
+                )
 
 
 _UNANSWERED = "the model returned no tool call, no text and no structured output"
@@ -294,6 +302,24 @@ def _is_unanswered(response: ModelResponse[Any]) -> bool:
     )
 
 
+def _finish_reason(response: ModelResponse[Any]) -> str | None:
+    last = response.result[-1] if response.result else None
+    metadata = getattr(last, "response_metadata", None) or {}
+    return metadata.get("finish_reason")
+
+
+def _ran_out_of_output(response: ModelResponse[Any]) -> bool:
+    """Whether the backend cut this answer off at the output limit.
+
+    The OpenAI client raises `LengthFinishReasonError` for this, and the
+    correction it earns -- drop the tools, keep the JSON short enough to close
+    -- is written for it. A backend that reports the same thing in
+    `finish_reason` instead would otherwise get the generic nudge, which asks
+    the model to answer without telling it why the last one did not fit.
+    """
+    return _finish_reason(response) == "length"
+
+
 def _unanswered_diagnosis(response: ModelResponse[Any]) -> dict[str, object]:
     """Say what the backend reported about an answer that carried nothing.
 
@@ -308,7 +334,7 @@ def _unanswered_diagnosis(response: ModelResponse[Any]) -> dict[str, object]:
     metadata = getattr(last, "response_metadata", None) or {}
     usage = getattr(last, "usage_metadata", None) or {}
     return {
-        "finish_reason": metadata.get("finish_reason"),
+        "finish_reason": _finish_reason(response),
         "provider": metadata.get("provider"),
         "output_tokens": usage.get("output_tokens"),
         "reasoning_tokens": (usage.get("output_token_details") or {}).get("reasoning"),

@@ -1206,3 +1206,34 @@ def test_agent_offers_only_the_answer_on_its_final_turn() -> None:
     assert result["structured_response"] == Proposal(
         proposal=["a boss", "a through hole"], rationale="both are turned"
     )
+
+
+def _empty(finish_reason: str) -> AIMessage:
+    """An answer carrying nothing, with the backend's reason for it."""
+    return AIMessage(content="", response_metadata={"finish_reason": finish_reason})
+
+
+def test_a_length_truncated_answer_earns_the_length_correction() -> None:
+    """A backend that reports truncation in `finish_reason` rather than by
+    raising still gets the correction written for running out of room."""
+    model = ScriptedChatModel(
+        responses=(_empty("length"), AIMessage(content="done")),
+    )
+
+    _subgraph(model, announce_turns=False, model_retries=1).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    assert "output-token limit" in model.received_messages[-1][-1].text
+
+
+def test_an_empty_answer_that_did_not_run_out_earns_the_plain_nudge() -> None:
+    model = ScriptedChatModel(
+        responses=(_empty("stop"), AIMessage(content="done")),
+    )
+
+    _subgraph(model, announce_turns=False, model_retries=1).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    assert "whole output budget on thinking" in model.received_messages[-1][-1].text
