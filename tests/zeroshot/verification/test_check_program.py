@@ -32,7 +32,7 @@ def test_accepts_one_module_level_result_for_every_planned_operation() -> None:
     source = """\
 part = object()
 ret_base = part
-ret_hole: object = ret_base
+ret_hole: object = ret_base.cut(part)
 result = ret_hole
 """
 
@@ -161,6 +161,76 @@ result = ret_base
 """
 
     assert check_program(source, plan).sound
+
+
+def test_a_result_that_hands_back_its_input_does_not_implement_its_operation() -> None:
+    plan = _plan(_operation("op_base"), _operation("op_hole"))
+    source = """\
+ret_base = object()
+ret_hole = ret_base.clean()
+result = ret_hole
+"""
+
+    check = check_program(source, plan)
+
+    assert check.identity_operations == ("ret_hole",)
+    assert not check.sound
+
+
+def test_a_tidy_up_after_real_work_still_implements_its_operation() -> None:
+    plan = _plan(_operation("op_base"), _operation("op_hole"))
+    source = """\
+ret_base = object()
+ret_hole = ret_base.cut(object())
+ret_hole = ret_hole.clean()
+result = ret_hole
+"""
+
+    assert check_program(source, plan).sound
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    (
+        "ret_hole = drill(ret_base)",
+        "ret_hole = ret_base.cut(object())",
+        "ret_hole = ret_base.union(object()).clean()",
+        "ret_hole = ret_base.copy(deep=True)",
+        "ret_hole = [ret_base]",
+    ),
+)
+def test_an_expression_that_may_build_something_is_not_an_identity(
+    assignment: str,
+) -> None:
+    plan = _plan(_operation("op_base"), _operation("op_hole"))
+    source = f"ret_base = object()\n{assignment}\nresult = ret_hole\n"
+
+    assert check_program(source, plan).identity_operations == ()
+
+
+def test_a_result_nothing_reads_never_reaches_the_exported_solid() -> None:
+    plan = _plan(_operation("op_base"), _operation("op_pad"), _operation("op_hole"))
+    source = """\
+ret_base = object()
+ret_pad = ret_base.cut(object())
+ret_hole = ret_base.cut(object())
+result = ret_hole
+"""
+
+    check = check_program(source, plan)
+
+    assert check.unconsumed_operations == ("ret_pad",)
+    assert not check.sound
+
+
+def test_the_last_result_is_consumed_by_the_exported_solid() -> None:
+    plan = _plan(_operation("op_base"))
+    source = """\
+ret_base = object().cut(object())
+result = ret_base
+"""
+
+    assert check_program(source, plan).unconsumed_operations == ()
 
 
 def test_syntax_errors_keep_the_supplied_filename() -> None:

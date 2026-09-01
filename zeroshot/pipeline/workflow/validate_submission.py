@@ -301,13 +301,8 @@ def _validate_coding(
         program_check = check_program(verification.source, snapshot.operations)
     except SyntaxError:
         return
-    if not program_check.sound:
-        raise SubmissionValidationError(
-            "model.py does not match the current OperationPlan: "
-            f"missing={program_check.missing_operations}, "
-            f"unknown={program_check.unknown_operations}, "
-            f"result_assigned={program_check.result_assigned}"
-        )
+    if program_check.faults:
+        raise SubmissionValidationError("\n".join(program_check.faults))
 
 
 ################################################################
