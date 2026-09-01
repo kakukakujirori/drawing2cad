@@ -8,9 +8,10 @@ model:
   _target_: zeroshot.models.ChatOpenRouterSingleReasoning
 
   model: z-ai/glm-5.3-flash
+  # `summary` is not part of OpenRouter's reasoning contract -- that is the
+  # OpenAI Responses shape -- so only `effort` is set here.
   reasoning:
     effort: xhigh
-    summary: detailed
   output_version: v1
   api_key: ${oc.env:OPENROUTER_API_KEY}
 
@@ -24,9 +25,11 @@ model:
     order: [Cloudflare, Fireworks, DeepInfra]
     allow_fallbacks: false
 
-  # Reasoning shares the completion budget, so an unbounded one lets a turn
-  # spend the whole window thinking and return nothing.
-  max_tokens: 32768
+  # `effort` is a fraction of this: xhigh caps reasoning at roughly 95% of it
+  # and leaves the rest for the answer. A stage's answer runs to ~7k tokens and
+  # its thinking has been measured at 30k, so this has to be large enough that
+  # 5% of it still holds the answer. Every pinned provider accepts it.
+  max_tokens: 200000
 
   timeout: 600000  # milliseconds
   max_retries: 0

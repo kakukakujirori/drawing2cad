@@ -48,6 +48,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         *,
         retrying: bool,
         adjusted: bool,
+        response: ModelResponse[Any] | None = None,
     ) -> None:
         """Say which attempt failed, why, and what happens next."""
         details: dict[str, object] = {
@@ -63,6 +64,8 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             # The retry request carries this response only in memory. Preserve
             # the rejected raw output so a contract failure is reproducible.
             details["failed_response"] = error.ai_message.text
+        if isinstance(error, UnansweredModelCall) and response is not None:
+            details.update(_unanswered_diagnosis(response))
         request.runtime.stream_writer({"model_retry": details})
 
     @staticmethod
@@ -174,6 +177,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     UnansweredModelCall(_UNANSWERED),
                     retrying=True,
                     adjusted=True,
+                    response=response,
                 )
                 current_request = self._retry_unanswered_request(current_request)
         raise AssertionError("unreachable")
@@ -226,6 +230,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     UnansweredModelCall(_UNANSWERED),
                     retrying=True,
                     adjusted=True,
+                    response=response,
                 )
                 current_request = self._retry_unanswered_request(current_request)
         raise AssertionError("unreachable")
@@ -246,6 +251,27 @@ def _is_unanswered(response: ModelResponse[Any]) -> bool:
         getattr(message, "tool_calls", None) or message.text.strip()
         for message in response.result
     )
+
+
+def _unanswered_diagnosis(response: ModelResponse[Any]) -> dict[str, object]:
+    """Say what the backend reported about an answer that carried nothing.
+
+    An empty completion is the same event whether the model ran out of output
+    budget mid-thought, was cut off upstream, or simply stopped -- and the
+    three want different fixes. The backend distinguishes them and this is the
+    only place that sees its report.
+    """
+    last = response.result[-1] if response.result else None
+    if last is None:
+        return {}
+    metadata = getattr(last, "response_metadata", None) or {}
+    usage = getattr(last, "usage_metadata", None) or {}
+    return {
+        "finish_reason": metadata.get("finish_reason"),
+        "provider": metadata.get("provider"),
+        "output_tokens": usage.get("output_tokens"),
+        "reasoning_tokens": (usage.get("output_token_details") or {}).get("reasoning"),
+    }
 
 
 def _correction_text(error: StructuredOutputError) -> str:
