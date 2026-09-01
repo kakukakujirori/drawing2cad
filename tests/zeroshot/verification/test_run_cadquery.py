@@ -18,12 +18,23 @@ from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutor,
     ExecutionStatus,
     StepVerificationError,
+    _returned_names,
 )
 
 VALID_BOX_SOURCE = """\
 import cadquery as cq
 
 result = cq.Workplane("XY").box(10, 20, 30)
+"""
+
+TWO_RESULT_SOURCE = """\
+import cadquery as cq
+
+ret_base = cq.Workplane("XY").box(10, 20, 30)  # the block
+ret_hole = ret_base.cut(
+    cq.Workplane("XY").box(2, 2, 100)
+)
+result = ret_hole
 """
 
 
@@ -242,7 +253,7 @@ def test_execute_writes_verified_step_to_requested_path(tmp_path: Path) -> None:
         shape="faces 6 (Plane 6); edges 12 (Line 12)",
     )
     assert output_step_path.is_file()
-    assert runner.calls[0][0] == "python /work/model.py"
+    assert runner.calls[0][0] == "python /work/_run_program.py /work/model.py"
     CadQueryExecutor.verify_step(output_step_path)
 
 
@@ -461,3 +472,137 @@ def test_execute_rejects_sandbox_output_symlink(tmp_path: Path) -> None:
     assert report.executor_error is not None
     assert "symlink" in report.executor_error
     assert not requested_output_path.exists()
+
+
+def test_the_returned_names_are_the_ones_the_program_assigns_in_order() -> None:
+    assert _returned_names(TWO_RESULT_SOURCE, "model.py") == ["ret_base", "ret_hole"]
+
+
+def test_a_nested_assignment_is_not_kept() -> None:
+    source = """\
+def build():
+    ret_inner = object()
+    return ret_inner
+
+result = build()
+"""
+
+    assert _returned_names(source, "model.py") == []
+
+
+def test_execute_keeps_every_named_output_when_asked_for_them(
+    tmp_path: Path,
+) -> None:
+    executor = CadQueryExecutor(
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable),
+            default_timeout_s=60.0,
+        ),
+    )
+    model_path = _write_model(tmp_path, TWO_RESULT_SOURCE)
+    output_step_path = tmp_path / "output.step"
+    intermediate_returns_dir = tmp_path / "intermediate_returns"
+
+    report = executor.execute(
+        model_path, output_step_path, intermediate_returns_dir=intermediate_returns_dir
+    )
+
+    assert report.status is ExecutionStatus.VERIFIED
+    # The reported source stays what the coder wrote, not what was run.
+    assert report.source == TWO_RESULT_SOURCE
+    assert [output.name for output in report.intermediate_returns] == [
+        "ret_base",
+        "ret_hole",
+    ]
+    for output in report.intermediate_returns:
+        assert output.error is None
+        assert output.step_path is not None
+        CadQueryExecutor.verify_step(output.step_path)
+
+
+def test_a_program_that_does_not_build_keeps_nothing(tmp_path: Path) -> None:
+    executor = CadQueryExecutor(
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable),
+            default_timeout_s=60.0,
+        ),
+    )
+    source = """\
+import cadquery as cq
+
+ret_base = cq.Workplane("XY").box(10, 20, 30)
+ret_hole = ret_base.no_such_method()
+result = ret_hole
+"""
+    model_path = _write_model(tmp_path, source)
+
+    report = executor.execute(
+        model_path, intermediate_returns_dir=tmp_path / "intermediate_returns"
+    )
+
+    assert report.status is ExecutionStatus.FAILED
+    assert report.intermediate_returns == ()
+    # What that run needs said is the line the coder wrote.
+    assert "line 4" in report.stderr
+
+
+def test_a_named_output_that_is_not_a_shape_is_reported_rather_than_kept(
+    tmp_path: Path,
+) -> None:
+    executor = CadQueryExecutor(
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable),
+            default_timeout_s=60.0,
+        ),
+    )
+    source = """\
+import cadquery as cq
+
+ret_base = cq.Workplane("XY").box(10, 20, 30)
+ret_count = 3
+result = ret_base
+"""
+    model_path = _write_model(tmp_path, source)
+
+    report = executor.execute(
+        model_path, intermediate_returns_dir=tmp_path / "intermediate_returns"
+    )
+
+    assert report.status is ExecutionStatus.VERIFIED
+    reported = {output.name: output.error for output in report.intermediate_returns}
+    assert reported["ret_base"] is None
+    # Whatever the exporter said about an int, said back rather than raised.
+    assert reported["ret_count"]
+    assert not (tmp_path / "intermediate_returns" / "ret_count.step").exists()
+
+
+def test_the_staged_program_is_the_one_the_coder_wrote(tmp_path: Path) -> None:
+    # Read inside the run: the sandbox workdir is gone once execute returns.
+    seen: dict[str, object] = {}
+
+    def capture(step_path: Path) -> None:
+        seen["source"] = (step_path.parent / "model.py").read_text(encoding="utf-8")
+        _write_valid_box_step(step_path)
+
+    executor, runner = _executor(_sandbox_result(), capture)
+    model_path = _write_model(tmp_path, TWO_RESULT_SOURCE)
+
+    report = executor.execute(model_path)
+    command, _ = runner.calls[0]
+
+    assert report.intermediate_returns == ()
+    assert seen["source"] == TWO_RESULT_SOURCE
+    # No returns was asked for, so the runner is given no output to keep.
+    assert command == "python /work/_run_program.py /work/model.py"
+
+
+def test_the_runner_is_told_which_outputs_to_keep(tmp_path: Path) -> None:
+    executor, runner = _executor(_sandbox_result(), _write_valid_box_step)
+    model_path = _write_model(tmp_path, TWO_RESULT_SOURCE)
+
+    executor.execute(
+        model_path, intermediate_returns_dir=tmp_path / "intermediate_returns"
+    )
+    command, _ = runner.calls[0]
+
+    assert command == "python /work/_run_program.py /work/model.py ret_base ret_hole"

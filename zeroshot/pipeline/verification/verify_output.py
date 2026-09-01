@@ -7,6 +7,7 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 
 from zeroshot.pipeline.messages import ArtifactPresenter, FeedbackManifest
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.render.constants import (
     Render3dPaths,
     TechdrawPaths,
@@ -142,8 +143,12 @@ class OutputVerifier:
         output_model_path = host_verification_dir / self.source_filename
         output_step_path = host_verification_dir / "output.step"
 
-        # execute
-        cq_report = self.executor.execute(model_path, output_step_path)
+        # execute, keeping the solid each planned operation left behind (ret_xxx)
+        cq_report = self.executor.execute(
+            model_path,
+            output_step_path,
+            intermediate_returns_dir=host_verification_dir / INTERMEDIATE_RETURNS_DIR,
+        )
 
         # copy source code to output dir
         if cq_report.source is not None:

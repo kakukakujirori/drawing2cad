@@ -38,13 +38,16 @@ class StubCadQueryExecutor:
     def __init__(self, report: CadQueryExecutionReport) -> None:
         self.report = report
         self.calls: list[tuple[Path, Path | None]] = []
+        self.intermediate_returns_dirs: list[Path | None] = []
 
     def execute(
         self,
         model_path: Path,
         output_step_path: Path | None = None,
+        intermediate_returns_dir: Path | None = None,
     ) -> CadQueryExecutionReport:
         self.calls.append((model_path, output_step_path))
+        self.intermediate_returns_dirs.append(intermediate_returns_dir)
         # A verified run leaves the STEP behind, which is what gets rendered.
         if (
             output_step_path is not None
@@ -288,6 +291,21 @@ def test_preserves_failed_attempt_and_execution_report(tmp_path: Path) -> None:
     attempt_dir = tmp_path / "attempts" / "000"
     assert (attempt_dir / "model.py").read_text(encoding="utf-8") == VALID_SOURCE
     assert not (attempt_dir / "output.step").exists()
+
+
+def test_the_intermediate_returns_are_kept_beside_their_attempt(
+    tmp_path: Path,
+) -> None:
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verifier = _create_verifier(executor, workdir)
+
+    report, _ = verifier.verify()
+
+    assert executor.intermediate_returns_dirs == [
+        tmp_path / "attempts" / report.verification_id / "intermediate_returns"
+    ]
 
 
 def test_assigns_incrementing_verification_ids(tmp_path: Path) -> None:

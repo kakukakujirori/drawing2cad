@@ -39,7 +39,7 @@ from zeroshot.pipeline.workflow.validate_submission import (
     validate_submission,
 )
 
-_SOURCE = "ret_base = object()\nret_hole = ret_base\nresult = ret_hole\n"
+_SOURCE = "ret_base = object()\nret_hole = ret_base.cut(object())\nresult = ret_hole\n"
 
 
 def _ref(stage: str, name: str | None) -> StageOutputRef:

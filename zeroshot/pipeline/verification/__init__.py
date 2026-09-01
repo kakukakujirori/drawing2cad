@@ -3,6 +3,7 @@ from .run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
     ExecutionStatus,
+    IntermediateReturn,
 )
 from .run_render import (
     RenderReport,
@@ -18,6 +19,7 @@ __all__ = [
     "CadQueryExecutionReport",
     "CadQueryExecutor",
     "ExecutionStatus",
+    "IntermediateReturn",
     "OutputVerifier",
     "ProgramCheck",
     "RenderReport",
