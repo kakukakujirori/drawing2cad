@@ -4,7 +4,6 @@ from pydantic import BaseModel, ValidationError
 from zeroshot.pipeline.messages.contracts.audit import (
     AuditFinding,
     AuditReport,
-    Backtrace,
     CausalHop,
     RevisionRequest,
     StageOutputRef,
@@ -29,33 +28,33 @@ def request(
     )
 
 
-def backtrace(
+def backtrace() -> list[CausalHop]:
+    return [
+        CausalHop(
+            effect=ref("coding", "ret_bore"),
+            cause=ref("operations", "op_bore"),
+            rationale="The code result implements this operation.",
+        ),
+        CausalHop(
+            effect=ref("operations", "op_bore"),
+            cause=ref("semantics", "sem_bore"),
+            rationale="The operation implements this semantic feature.",
+        ),
+    ]
+
+
+def finding(
+    name: str = "finding_wrong_bore",
     *,
+    hops: list[CausalHop] | None = None,
     revision_request: RevisionRequest | None = None,
-) -> Backtrace:
-    return Backtrace(
-        hops=[
-            CausalHop(
-                effect=ref("coding", "ret_bore"),
-                cause=ref("operations", "op_bore"),
-                rationale="The code result implements this operation.",
-            ),
-            CausalHop(
-                effect=ref("operations", "op_bore"),
-                cause=ref("semantics", "sem_bore"),
-                rationale="The operation implements this semantic feature.",
-            ),
-        ],
-        revision_request=revision_request or request(),
-    )
-
-
-def finding(name: str = "finding_wrong_bore") -> AuditFinding:
+) -> AuditFinding:
     return AuditFinding(
         name=name,
         observation="The reconstructed bore is too wide.",
         evidence=["render_3d/hlg_front.png", "sem_bore.geo_cylinder.radius"],
-        backtraces=[backtrace()],
+        backtrace=backtrace() if hops is None else hops,
+        revision_request=revision_request or request(),
     )
 
 
@@ -82,7 +81,17 @@ def test_a_stage_reference_rejects_a_name_owned_by_another_stage(
         ("add", [ref("semantics", None)], ["sem_bore"]),
         ("modify", [ref("semantics", None)], []),
         ("modify", [ref("semantics", "sem_bore")], []),
+        (
+            "modify",
+            [ref("semantics", "sem_bore"), ref("semantics", "sem_hole")],
+            [],
+        ),
         ("delete", [ref("operations", "op_bore")], []),
+        (
+            "delete",
+            [ref("operations", "op_bore"), ref("operations", "op_hole")],
+            [],
+        ),
         (
             "split",
             [ref("operations", "op_hole")],
@@ -109,7 +118,19 @@ def test_each_revision_action_accepts_its_defined_shape(
     [
         ("add", [ref("semantics", "sem_bore")], ["sem_hole"], "whole-stage"),
         ("modify", [ref("semantics", "sem_bore")], ["sem_hole"], "does not"),
+        (
+            "modify",
+            [ref("semantics", None), ref("semantics", "sem_bore")],
+            [],
+            "not both",
+        ),
         ("delete", [ref("operations", None)], [], "named target"),
+        (
+            "delete",
+            [ref("operations", None), ref("operations", "op_bore")],
+            [],
+            "named target",
+        ),
         ("split", [ref("operations", "op_hole")], ["op_bore"], "at least two"),
         (
             "merge",
@@ -152,27 +173,21 @@ def test_a_proposed_name_belongs_to_the_target_stage() -> None:
 
 
 def test_a_backtrace_must_be_contiguous() -> None:
-    trace = backtrace()
-    trace.hops[1] = trace.hops[1].model_copy(
-        update={"effect": ref("coding", "ret_other")}
-    )
+    broken = backtrace()
+    broken[1] = broken[1].model_copy(update={"effect": ref("coding", "ret_other")})
 
     with pytest.raises(ValidationError, match="next hop"):
-        Backtrace.model_validate(trace.model_dump())
+        finding(hops=broken)
 
 
 def test_a_backtrace_must_end_at_a_revision_target() -> None:
-    wrong_request = request(targets=[ref("semantics", "sem_other")])
     with pytest.raises(ValidationError, match="final causal cause"):
-        backtrace(revision_request=wrong_request)
+        finding(revision_request=request(targets=[ref("semantics", "sem_other")]))
 
 
 def test_an_empty_backtrace_is_valid_when_the_finding_is_already_at_its_root() -> None:
-    Backtrace(hops=[], revision_request=request())
-    Backtrace(
-        hops=[],
-        revision_request=request(targets=[ref("coding", None)]),
-    )
+    finding(hops=[])
+    finding(hops=[], revision_request=request(targets=[ref("coding", None)]))
 
 
 @pytest.mark.parametrize(
@@ -191,7 +206,8 @@ def test_a_finding_requires_distinct_evidence_locators(
             name="finding_wrong_bore",
             observation="The bore is wrong.",
             evidence=evidence,
-            backtraces=[backtrace()],
+            backtrace=backtrace(),
+            revision_request=request(),
         )
 
 
@@ -229,7 +245,6 @@ def _object_schemas(node: object) -> list[dict]:
         StageOutputRef,
         RevisionRequest,
         CausalHop,
-        Backtrace,
         AuditFinding,
         AuditReport,
     ],

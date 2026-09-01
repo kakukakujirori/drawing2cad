@@ -131,7 +131,7 @@ def test_audit_explains_how_to_report_a_missing_semantic_feature() -> None:
         attempt_dir="/work/attempts/001",
     )
 
-    assert "empty `hops`" in rendered
+    assert "leave the `backtrace` empty" in rendered
     assert "whole semantics stage (`name: null`)" in rendered
     assert "propose one or more stable `sem_...` names" in rendered
 

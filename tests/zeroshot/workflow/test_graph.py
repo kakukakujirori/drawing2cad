@@ -23,7 +23,6 @@ from zeroshot.pipeline.messages.contracts import (
 from zeroshot.pipeline.messages.contracts.audit import (
     AuditFinding,
     AuditReport,
-    Backtrace,
     RevisionRequest,
     StageOutputRef,
 )
@@ -135,23 +134,19 @@ def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
                     name="finding_missing_hole",
                     observation="The drawing contains a hole that the model omits.",
                     evidence=["render_3d/hlg_front.png"],
-                    backtraces=[
-                        Backtrace(
-                            hops=[],
-                            revision_request=RevisionRequest(
-                                action="modify",
-                                targets=[
-                                    root
-                                    or StageOutputRef(
-                                        stage=PipelineStage.CODING,
-                                        name="ret_step1",
-                                    )
-                                ],
-                                instruction="Implement the missing hole.",
-                                proposed_names=[],
-                            ),
-                        )
-                    ],
+                    backtrace=[],
+                    revision_request=RevisionRequest(
+                        action="modify",
+                        targets=[
+                            root
+                            or StageOutputRef(
+                                stage=PipelineStage.CODING,
+                                name="ret_step1",
+                            )
+                        ],
+                        instruction="Implement the missing hole.",
+                        proposed_names=[],
+                    ),
                 )
             ],
         )
@@ -167,22 +162,18 @@ def _invalid_audit() -> AIMessage:
                     name="finding_unknown_operation",
                     observation="The model is incorrect.",
                     evidence=["verification.status"],
-                    backtraces=[
-                        Backtrace(
-                            hops=[],
-                            revision_request=RevisionRequest(
-                                action="modify",
-                                targets=[
-                                    StageOutputRef(
-                                        stage=PipelineStage.OPERATIONS,
-                                        name="op_missing",
-                                    )
-                                ],
-                                instruction="Correct the absent operation.",
-                                proposed_names=[],
-                            ),
-                        )
-                    ],
+                    backtrace=[],
+                    revision_request=RevisionRequest(
+                        action="modify",
+                        targets=[
+                            StageOutputRef(
+                                stage=PipelineStage.OPERATIONS,
+                                name="op_missing",
+                            )
+                        ],
+                        instruction="Correct the absent operation.",
+                        proposed_names=[],
+                    ),
                 )
             ],
         )

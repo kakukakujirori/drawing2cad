@@ -2,12 +2,11 @@
 
 AuditReport
 └── findings: AuditFinding[]
-    └── backtraces: Backtrace[]
-        ├── hops: CausalHop[]
-        │   ├── effect: StageOutputRef
-        │   └── cause: StageOutputRef
-        └── revision_request: RevisionRequest
-            └── targets: StageOutputRef[]
+    ├── backtrace: CausalHop[]
+    │   ├── effect: StageOutputRef
+    │   └── cause: StageOutputRef
+    └── revision_request: RevisionRequest
+        └── targets: StageOutputRef[]
 """
 
 import re
@@ -74,7 +73,7 @@ class StageOutputRef(BaseModel):
 
 
 class RevisionRequest(BaseModel):
-    """One revision intent issued at the root reached by a backtrace."""
+    """The change one finding requires at the root its backtrace reaches."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -89,11 +88,11 @@ class RevisionRequest(BaseModel):
         ...,
         description=(
             "The existing outputs affected by this request. For add, give one "
-            "whole-stage reference whose name is null. For modify, delete, "
-            "split, and rename, give exactly one target; split, delete, and "
-            "rename require a named member, while modify may target either a "
-            "member or the complete stage output. For merge, give at least two "
-            "named members. Every target must belong to the same stage."
+            "whole-stage reference whose name is null. Modify and delete take "
+            "every named member that shares the defect; modify may instead take "
+            "one whole-stage reference, but not both at once. Split and rename "
+            "take exactly one named member, and merge at least two. Every "
+            "target must belong to the same stage."
         ),
     )
     instruction: str = Field(
@@ -146,13 +145,16 @@ class RevisionRequest(BaseModel):
             if not self.proposed_names:
                 raise ValueError("add requires at least one proposed name")
         elif self.action == "modify":
-            if len(self.targets) != 1:
-                raise ValueError("modify requires exactly one target")
+            if named_targets and len(named_targets) != len(self.targets):
+                raise ValueError(
+                    "modify requires either named targets or one whole-stage "
+                    "target, not both"
+                )
             if self.proposed_names:
                 raise ValueError("modify does not accept proposed names")
         elif self.action == "delete":
-            if len(self.targets) != 1 or len(named_targets) != 1:
-                raise ValueError("delete requires exactly one named target")
+            if len(named_targets) != len(self.targets):
+                raise ValueError("delete requires named targets")
             if self.proposed_names:
                 raise ValueError("delete does not accept proposed names")
         elif self.action == "split":
@@ -201,39 +203,8 @@ class CausalHop(BaseModel):
         return self
 
 
-class Backtrace(BaseModel):
-    """One ordered causal path from a symptom to one revision root."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    hops: list[CausalHop] = Field(
-        ...,
-        description=(
-            "Adjacent effect-to-cause steps in traversal order. Each hop's "
-            "cause must equal the next hop's effect."
-        ),
-    )
-    revision_request: RevisionRequest = Field(
-        ...,
-        description=("The revision requested at the final cause reached by this path."),
-    )
-
-    @model_validator(mode="after")
-    def require_a_contiguous_path_to_the_revision_target(self) -> Self:
-        for current, following in zip(self.hops, self.hops[1:], strict=False):
-            if current.cause != following.effect:
-                raise ValueError(
-                    "each causal hop's cause must equal the next hop's effect"
-                )
-        if self.hops and self.hops[-1].cause not in self.revision_request.targets:
-            raise ValueError(
-                "the final causal cause must be one of the revision targets"
-            )
-        return self
-
-
 class AuditFinding(BaseModel):
-    """One material defect, its evidence, and its possible causal roots."""
+    """One material defect, its evidence, and the revision it requires."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -257,10 +228,20 @@ class AuditFinding(BaseModel):
             "references only, not explanations."
         ),
     )
-    backtraces: list[Backtrace] = Field(
+    backtrace: list[CausalHop] = Field(
         ...,
         description=(
-            "One causal path for each independently identified revision root."
+            "The causal path from the observed effect to the revision root, as "
+            "adjacent effect-to-cause steps in traversal order. Each hop's cause "
+            "must equal the next hop's effect, and the last cause must be one of "
+            "the revision targets. Leave it empty when the defect is already at "
+            "its root."
+        ),
+    )
+    revision_request: RevisionRequest = Field(
+        ...,
+        description=(
+            "The revision this defect requires, at the root its backtrace reaches."
         ),
     )
 
@@ -276,8 +257,18 @@ class AuditFinding(BaseModel):
             raise ValueError("evidence locators must not be blank")
         if len(set(self.evidence)) != len(self.evidence):
             raise ValueError("evidence locators must not contain duplicates")
-        if not self.backtraces:
-            raise ValueError("backtraces must not be empty")
+        for current, following in zip(self.backtrace, self.backtrace[1:], strict=False):
+            if current.cause != following.effect:
+                raise ValueError(
+                    "each causal hop's cause must equal the next hop's effect"
+                )
+        if (
+            self.backtrace
+            and self.backtrace[-1].cause not in self.revision_request.targets
+        ):
+            raise ValueError(
+                "the final causal cause must be one of the revision targets"
+            )
         return self
 
 

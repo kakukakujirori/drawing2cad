@@ -1,6 +1,8 @@
 # @package _global_
 
-response_format_strategy: provider
+# Binds the answer as a tool. A json_schema response format is accepted here
+# but suppresses tool calling, so a stage answers on turn 1 having read nothing.
+response_format_strategy: tool
 
 model:
   _target_: langchain_openrouter.chat_models.ChatOpenRouter

@@ -14,8 +14,8 @@ from zeroshot.pipeline.messages.contracts import (
     SemanticHypothesis,
 )
 from zeroshot.pipeline.messages.contracts.audit import (
+    AuditFinding,
     AuditReport,
-    Backtrace,
     CausalHop,
     StageOutputRef,
 )
@@ -321,10 +321,7 @@ def _validate_audit_report(
     if snapshot.last_completed_stage is not PipelineStage.CODING:
         raise SubmissionValidationError("audit requires a completed coding snapshot")
 
-    backtraces = tuple(
-        backtrace for finding in report.findings for backtrace in finding.backtraces
-    )
-    references = tuple(_iter_references(backtraces))
+    references = tuple(_iter_references(report.findings))
     semantic_names = (
         {feature.name for feature in snapshot.semantics.proposal}
         if snapshot.semantics is not None
@@ -348,7 +345,7 @@ def _validate_audit_report(
     }
     errors = [coding_error] if coding_error is not None else []
     errors.extend(_missing_reference_errors(references, known_members))
-    for hop in _iter_hops(backtraces):
+    for hop in _iter_hops(report.findings):
         error = _causal_hop_error(
             hop,
             known_members=known_members,
@@ -365,20 +362,20 @@ def _validate_audit_report(
 
 
 def _iter_references(
-    backtraces: Iterable[Backtrace],
+    findings: Iterable[AuditFinding],
 ) -> Iterator[StageOutputRef]:
     """Every existing output that an audit report claims to address."""
-    for backtrace in backtraces:
-        for hop in backtrace.hops:
+    for finding in findings:
+        for hop in finding.backtrace:
             yield hop.effect
             yield hop.cause
-        yield from backtrace.revision_request.targets
+        yield from finding.revision_request.targets
 
 
-def _iter_hops(backtraces: Iterable[Backtrace]) -> Iterator[CausalHop]:
+def _iter_hops(findings: Iterable[AuditFinding]) -> Iterator[CausalHop]:
     """Yield causal hops in report order."""
-    for backtrace in backtraces:
-        yield from backtrace.hops
+    for finding in findings:
+        yield from finding.backtrace
 
 
 def _inspect_coding_outputs(

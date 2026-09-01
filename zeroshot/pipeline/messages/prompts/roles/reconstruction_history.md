@@ -20,10 +20,9 @@ ReconstructionRun
    │  ├─ `ticket_id`
    │  ├─ `subject`: BootstrapWork | AuditFinding
    │  │  ├─ BootstrapWork: `instruction`
-   │  │  └─ AuditFinding: `name`, `observation`, `evidence`, `backtraces[]`
-   │  │     └─ backtrace: `hops[]` plus `revision_request`
-   │  │        ├─ hop: `effect`, `cause`, `rationale`
-   │  │        └─ request: `action`, `targets`, `instruction`, `proposed_names`
+   │  │  └─ AuditFinding: `name`, `observation`, `evidence`, `backtrace[]`, `revision_request`
+   │  │     ├─ hop: `effect`, `cause`, `rationale`
+   │  │     └─ request: `action`, `targets`, `instruction`, `proposed_names`
    │  ├─ `assigned_stages`: ReasoningStage[]
    │  └─ `responses`: TicketResponse[]
    │     ├─ `ticket_id`
@@ -51,7 +50,7 @@ Inspect only what the current task needs. Do not print the whole history file, a
 jq -c '.snapshots[-1] | {round, last_completed_stage, tickets: [.open_tickets[] | {ticket_id, assigned_stages}]}' '$reconstruction_path'
 
 # What one ticket asks, by the id your instruction gave you.
-jq -c '.snapshots[-1].open_tickets[] | select(.ticket_id == "ticket_001_wrong_bore") | .subject.backtraces[].revision_request' '$reconstruction_path'
+jq -c '.snapshots[-1].open_tickets[] | select(.ticket_id == "ticket_001_wrong_bore") | .subject.revision_request' '$reconstruction_path'
 
 # An index of names. Read this before any artifact body.
 jq -c '[.snapshots[-1].semantics.proposal[] | {name, geo: [.geometry[].name], ev: [.evidence[].name]}]' '$reconstruction_path'

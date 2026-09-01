@@ -11,7 +11,6 @@ from zeroshot.pipeline.messages.contracts import (
 from zeroshot.pipeline.messages.contracts.audit import (
     AuditFinding,
     AuditReport,
-    Backtrace,
     CausalHop,
     RevisionRequest,
     StageOutputRef,
@@ -219,17 +218,13 @@ def _report(*hops: CausalHop, target: StageOutputRef | None = None) -> AuditRepo
                 name="finding_shape_mismatch",
                 observation="The rendered shape differs from the drawing.",
                 evidence=["render_3d/hlg_front.png"],
-                backtraces=[
-                    Backtrace(
-                        hops=list(hops),
-                        revision_request=RevisionRequest(
-                            action="modify",
-                            targets=[revision_target],
-                            instruction="Correct the source of the mismatch.",
-                            proposed_names=[],
-                        ),
-                    )
-                ],
+                backtrace=list(hops),
+                revision_request=RevisionRequest(
+                    action="modify",
+                    targets=[revision_target],
+                    instruction="Correct the source of the mismatch.",
+                    proposed_names=[],
+                ),
             )
         ],
     )
@@ -453,25 +448,19 @@ def test_a_ticket_is_assigned_from_its_revision_root_downstream(
     assert run.snapshots[-1].open_tickets[0].assigned_stages == expected
 
 
-def test_the_earliest_revision_root_decides_the_assignment() -> None:
-    finding = _report(target=_ref("coding", "ret_hole")).findings[0]
-    two_roots = finding.model_copy(
+def test_one_request_over_several_members_assigns_their_shared_stage() -> None:
+    finding = _report(target=_ref("operations", "op_hole")).findings[0]
+    two_targets = finding.model_copy(
         update={
-            "backtraces": [
-                *finding.backtraces,
-                Backtrace(
-                    hops=[],
-                    revision_request=RevisionRequest(
-                        action="modify",
-                        targets=[_ref("operations", "op_hole")],
-                        instruction="Correct the operation as well.",
-                        proposed_names=[],
-                    ),
-                ),
-            ]
+            "revision_request": RevisionRequest(
+                action="modify",
+                targets=[_ref("operations", "op_hole"), _ref("operations", "op_base")],
+                instruction="Correct both operations.",
+                proposed_names=[],
+            )
         }
     )
-    report = AuditReport(accepted=False, findings=[two_roots])
+    report = AuditReport(accepted=False, findings=[two_targets])
 
     run = open_next_round(_completed_run(), report)
 

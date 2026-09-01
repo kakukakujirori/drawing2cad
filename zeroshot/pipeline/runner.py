@@ -130,9 +130,7 @@ class PipelineRunner:
                 and attempt is not None
                 and attempt.resolve().is_relative_to(sample_artifact_root.resolve())
             ):
-                temporary = tempfile.TemporaryDirectory(
-                    prefix="drawing2cad-resume-"
-                )
+                temporary = tempfile.TemporaryDirectory(prefix="drawing2cad-resume-")
                 staged = Path(temporary.name) / attempt.name
                 shutil.copytree(attempt, staged)
                 attempt = staged

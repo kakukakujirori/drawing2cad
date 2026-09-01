@@ -10,7 +10,6 @@ from zeroshot.pipeline.messages.contracts import (
 )
 from zeroshot.pipeline.messages.contracts.audit import (
     AuditFinding,
-    Backtrace,
     RevisionRequest,
     StageOutputRef,
 )
@@ -55,17 +54,13 @@ def _finding() -> AuditFinding:
         name="finding_wrong_base",
         observation="The reconstructed base is too wide.",
         evidence=["render_3d/hlg_front.png"],
-        backtraces=[
-            Backtrace(
-                hops=[],
-                revision_request=RevisionRequest(
-                    action="modify",
-                    targets=[target],
-                    instruction="Correct the interpreted base width.",
-                    proposed_names=[],
-                ),
-            )
-        ],
+        backtrace=[],
+        revision_request=RevisionRequest(
+            action="modify",
+            targets=[target],
+            instruction="Correct the interpreted base width.",
+            proposed_names=[],
+        ),
     )
 
 

@@ -162,7 +162,7 @@ def test_glm5_3_flash_openrouter_config_instantiates_chat_openrouter(
     ("model_config", "strategy"),
     [
         ("gemma4_ollama", "provider"),
-        ("glm5.3_flash_openrouter", "provider"),
+        ("glm5.3_flash_openrouter", "tool"),
     ],
 )
 def test_the_backend_chosen_decides_how_every_agent_is_asked_for_structured_output(

@@ -31,7 +31,6 @@ from zeroshot.pipeline.messages.contracts import (
 from zeroshot.pipeline.messages.contracts.audit import (
     AuditFinding,
     AuditReport,
-    Backtrace,
     CausalHop,
     RevisionRequest,
     StageOutputRef,
@@ -173,31 +172,23 @@ _AUDIT_REPORT = AuditReport(
             name="finding_missing_boss",
             observation="the boss is missing",
             evidence=["attempts/v1/techdraw.dxf"],
-            backtraces=[
-                Backtrace(
-                    hops=[
-                        CausalHop(
-                            effect=StageOutputRef(
-                                stage=PipelineStage.CODING, name="ret_base"
-                            ),
-                            cause=StageOutputRef(
-                                stage=PipelineStage.OPERATIONS, name="op_base"
-                            ),
-                            rationale="the return implements the base operation",
-                        )
-                    ],
-                    revision_request=RevisionRequest(
-                        action="modify",
-                        targets=[
-                            StageOutputRef(
-                                stage=PipelineStage.OPERATIONS, name="op_base"
-                            )
-                        ],
-                        instruction="add the omitted boss operation",
-                        proposed_names=[],
+            backtrace=[
+                CausalHop(
+                    effect=StageOutputRef(stage=PipelineStage.CODING, name="ret_base"),
+                    cause=StageOutputRef(
+                        stage=PipelineStage.OPERATIONS, name="op_base"
                     ),
+                    rationale="the return implements the base operation",
                 )
             ],
+            revision_request=RevisionRequest(
+                action="modify",
+                targets=[
+                    StageOutputRef(stage=PipelineStage.OPERATIONS, name="op_base")
+                ],
+                instruction="add the omitted boss operation",
+                proposed_names=[],
+            ),
         )
     ],
 )
@@ -327,7 +318,6 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         VerifyOutputResult,
         AuditFinding,
         AuditReport,
-        Backtrace,
         CausalHop,
         RevisionRequest,
         StageOutputRef,
