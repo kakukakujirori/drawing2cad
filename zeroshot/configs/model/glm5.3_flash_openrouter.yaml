@@ -5,7 +5,7 @@
 response_format_strategy: tool
 
 model:
-  _target_: langchain_openrouter.chat_models.ChatOpenRouter
+  _target_: zeroshot.models.ChatOpenRouterSingleReasoning
 
   model: z-ai/glm-5.3-flash
   reasoning:
@@ -13,6 +13,20 @@ model:
     summary: detailed
   output_version: v1
   api_key: ${oc.env:OPENROUTER_API_KEY}
+
+  # OpenRouter spreads this model over 22 upstreams that differ in what they
+  # accept, and picks one per request. `response_format_strategy: tool` needs
+  # `tool_choice`, which several of them do not implement at all -- a stage
+  # routed to one of those answers with no tool call, no text and no structured
+  # output. Pin the ones that carry the whole contract: tool_choice
+  # required/function, structured outputs, and the full context window.
+  openrouter_provider:
+    order: [Cloudflare, Fireworks, DeepInfra]
+    allow_fallbacks: false
+
+  # Reasoning shares the completion budget, so an unbounded one lets a turn
+  # spend the whole window thinking and return nothing.
+  max_tokens: 32768
 
   timeout: 600000  # milliseconds
   max_retries: 0
