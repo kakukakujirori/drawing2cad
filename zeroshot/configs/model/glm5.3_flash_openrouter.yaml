@@ -10,8 +10,14 @@ model:
   model: z-ai/glm-5.3-flash
   # `summary` is not part of OpenRouter's reasoning contract -- that is the
   # OpenAI Responses shape -- so only `effort` is set here.
+  #
+  # OpenRouter reads effort as a share of `max_tokens`: xhigh is ~95% of it and
+  # high ~80%. Above the model's own 131,072-token output ceiling either share
+  # is unreachable, so the effort stops meaning anything and the model thinks
+  # until the ceiling stops it -- one measured turn spent 96,547 tokens
+  # reasoning, hit `finish_reason: length` at 131,072, and returned nothing.
   reasoning:
-    effort: xhigh
+    effort: high
   output_version: v1
   api_key: ${oc.env:OPENROUTER_API_KEY}
 
@@ -25,11 +31,11 @@ model:
     order: [Cloudflare, Fireworks, DeepInfra]
     allow_fallbacks: false
 
-  # `effort` is a fraction of this: xhigh caps reasoning at roughly 95% of it
-  # and leaves the rest for the answer. A stage's answer runs to ~7k tokens and
-  # its thinking has been measured at 30k, so this has to be large enough that
-  # 5% of it still holds the answer. Every pinned provider accepts it.
-  max_tokens: 200000
+  # Small enough that the effort share binds, and split from what the run
+  # measured: turns that produced a usable result reasoned for 1.5k-6.5k
+  # tokens, and the largest answer was ~7k. At 80% this caps thinking at 32k --
+  # five times the widest healthy turn -- and leaves 8k for the answer.
+  max_tokens: 40000
 
   timeout: 600000  # milliseconds
   max_retries: 0
