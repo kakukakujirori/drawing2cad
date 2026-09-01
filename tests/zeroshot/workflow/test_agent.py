@@ -679,33 +679,50 @@ def _generic_api_error() -> APIError:
     return APIError("backend overloaded", request, body=None)
 
 
-def test_agent_shares_one_budget_across_output_and_transport_retries() -> None:
+def test_a_dropped_stream_does_not_spend_a_correction() -> None:
+    """A transport failure says nothing about the answer, so the one retry the
+    model is owed for a rejected answer is still there afterwards."""
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="done"),),
+        errors=(_generic_api_error(), _length_failure()),
+    )
+
+    result = _subgraph(model, announce_turns=False, model_retries=1).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    assert model.attempts == 3
+    assert result["messages"][-1].text == "done"
+
+
+def test_async_dropped_stream_does_not_spend_a_correction() -> None:
+    model = _FlakyChatModel(
+        responses=(AIMessage(content="done"),),
+        errors=(_generic_api_error(), _length_failure()),
+    )
+
+    async def invoke() -> Any:
+        return await _subgraph(
+            model, announce_turns=False, model_retries=1
+        ).ainvoke({"messages": [HumanMessage(content="go")]})
+
+    result = asyncio.run(invoke())
+
+    assert model.attempts == 3
+    assert result["messages"][-1].text == "done"
+
+
+def test_transport_retries_are_bounded_on_their_own() -> None:
+    """Separating the budgets must not make a broken backend retry forever."""
     model = _FlakyChatModel(
         responses=(AIMessage(content="unused"),),
-        errors=(_length_failure(), _generic_api_error()),
+        errors=(_generic_api_error(), _generic_api_error()),
     )
 
     with pytest.raises(APIError, match="backend overloaded"):
         _subgraph(model, announce_turns=False, model_retries=1).invoke(
             {"messages": [HumanMessage(content="go")]}
         )
-
-    assert model.attempts == 2
-
-
-def test_async_agent_shares_one_budget_across_mixed_retries() -> None:
-    model = _FlakyChatModel(
-        responses=(AIMessage(content="unused"),),
-        errors=(_length_failure(), _generic_api_error()),
-    )
-
-    async def invoke() -> None:
-        await _subgraph(model, announce_turns=False, model_retries=1).ainvoke(
-            {"messages": [HumanMessage(content="go")]}
-        )
-
-    with pytest.raises(APIError, match="backend overloaded"):
-        asyncio.run(invoke())
 
     assert model.attempts == 2
 

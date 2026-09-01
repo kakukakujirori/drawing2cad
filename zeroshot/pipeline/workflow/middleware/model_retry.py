@@ -24,7 +24,14 @@ class UnansweredModelCall(Exception):
 
 
 class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
-    """Retry transient and incomplete model calls from one shared budget.
+    """Retry incomplete model calls, and transport failures beside them.
+
+    The two are counted apart. An answer this middleware rejects -- truncated,
+    unparseable, or empty -- is evidence about the model, and the retry that
+    follows carries feedback the next attempt is meant to act on. A dropped
+    stream or a gateway timeout is evidence about nothing: the model never
+    answered, the request goes back unchanged, and spending one of the
+    corrections on it would take away a chance the model never got to use.
 
     Every attempt it gives up on is reported. A retry is otherwise invisible:
     it leaves no turn, no message and no event, so the only trace is an extra
@@ -33,11 +40,21 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     will ever finish -- so a run has to be able to say when one happened.
     """
 
-    def __init__(self, max_retries: int, role: str = "") -> None:
+    def __init__(
+        self,
+        max_retries: int,
+        role: str = "",
+        max_transport_retries: int | None = None,
+    ) -> None:
         super().__init__()
         if max_retries < 0:
             raise ValueError("max_retries must be >= 0")
+        if max_transport_retries is not None and max_transport_retries < 0:
+            raise ValueError("max_transport_retries must be >= 0")
         self.max_retries = max_retries
+        self.max_transport_retries = (
+            max_retries if max_transport_retries is None else max_transport_retries
+        )
         self.role = role
 
     def _report(
@@ -49,12 +66,14 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         retrying: bool,
         adjusted: bool,
         response: ModelResponse[Any] | None = None,
+        max_attempts: int | None = None,
     ) -> None:
         """Say which attempt failed, why, and what happens next."""
         details: dict[str, object] = {
             "role": self.role,
             "attempt": attempt + 1,
-            "max_attempts": self.max_retries + 1,
+            "max_attempts": (self.max_retries if max_attempts is None else max_attempts)
+            + 1,
             "error_type": type(error).__qualname__,
             "error": str(error)[:500],
             "retrying": retrying,
@@ -136,51 +155,62 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         handler: Callable[[ModelRequest[None]], ModelResponse[Any]],
     ) -> ModelResponse[Any]:
         current_request = request
-        for attempt in range(self.max_retries + 1):
+        rejected = 0
+        dropped = 0
+        while True:
             try:
                 response = handler(current_request)
             except LengthFinishReasonError as error:
-                retrying = attempt < self.max_retries
+                retrying = rejected < self.max_retries
                 self._report(
-                    current_request, attempt, error, retrying=retrying, adjusted=True
+                    current_request, rejected, error, retrying=retrying, adjusted=True
                 )
                 if not retrying:
                     raise
+                rejected += 1
                 current_request = self._retry_length_limited_request(current_request)
             except StructuredOutputError as error:
-                retrying = attempt < self.max_retries
+                retrying = rejected < self.max_retries
                 self._report(
-                    current_request, attempt, error, retrying=retrying, adjusted=True
+                    current_request, rejected, error, retrying=retrying, adjusted=True
                 )
                 if not retrying:
                     raise
+                rejected += 1
                 current_request = self._retry_structured_output_request(
                     current_request,
                     error,
                 )
             except Exception as error:
                 retrying = (
-                    _is_retryable_model_error(error) and attempt < self.max_retries
+                    _is_retryable_model_error(error)
+                    and dropped < self.max_transport_retries
                 )
                 self._report(
-                    current_request, attempt, error, retrying=retrying, adjusted=False
+                    current_request,
+                    dropped,
+                    error,
+                    retrying=retrying,
+                    adjusted=False,
+                    max_attempts=self.max_transport_retries,
                 )
                 if not retrying:
                     raise
-                time.sleep(self._backoff_delay(attempt))
+                dropped += 1
+                time.sleep(self._backoff_delay(dropped))
             else:
-                if not _is_unanswered(response) or attempt == self.max_retries:
+                if not _is_unanswered(response) or rejected >= self.max_retries:
                     return response
                 self._report(
                     current_request,
-                    attempt,
+                    rejected,
                     UnansweredModelCall(_UNANSWERED),
                     retrying=True,
                     adjusted=True,
                     response=response,
                 )
+                rejected += 1
                 current_request = self._retry_unanswered_request(current_request)
-        raise AssertionError("unreachable")
 
     @override
     async def awrap_model_call(
@@ -189,51 +219,62 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         handler: Callable[[ModelRequest[None]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
         current_request = request
-        for attempt in range(self.max_retries + 1):
+        rejected = 0
+        dropped = 0
+        while True:
             try:
                 response = await handler(current_request)
             except LengthFinishReasonError as error:
-                retrying = attempt < self.max_retries
+                retrying = rejected < self.max_retries
                 self._report(
-                    current_request, attempt, error, retrying=retrying, adjusted=True
+                    current_request, rejected, error, retrying=retrying, adjusted=True
                 )
                 if not retrying:
                     raise
+                rejected += 1
                 current_request = self._retry_length_limited_request(current_request)
             except StructuredOutputError as error:
-                retrying = attempt < self.max_retries
+                retrying = rejected < self.max_retries
                 self._report(
-                    current_request, attempt, error, retrying=retrying, adjusted=True
+                    current_request, rejected, error, retrying=retrying, adjusted=True
                 )
                 if not retrying:
                     raise
+                rejected += 1
                 current_request = self._retry_structured_output_request(
                     current_request,
                     error,
                 )
             except Exception as error:
                 retrying = (
-                    _is_retryable_model_error(error) and attempt < self.max_retries
+                    _is_retryable_model_error(error)
+                    and dropped < self.max_transport_retries
                 )
                 self._report(
-                    current_request, attempt, error, retrying=retrying, adjusted=False
+                    current_request,
+                    dropped,
+                    error,
+                    retrying=retrying,
+                    adjusted=False,
+                    max_attempts=self.max_transport_retries,
                 )
                 if not retrying:
                     raise
-                await asyncio.sleep(self._backoff_delay(attempt))
+                dropped += 1
+                await asyncio.sleep(self._backoff_delay(dropped))
             else:
-                if not _is_unanswered(response) or attempt == self.max_retries:
+                if not _is_unanswered(response) or rejected >= self.max_retries:
                     return response
                 self._report(
                     current_request,
-                    attempt,
+                    rejected,
                     UnansweredModelCall(_UNANSWERED),
                     retrying=True,
                     adjusted=True,
                     response=response,
                 )
+                rejected += 1
                 current_request = self._retry_unanswered_request(current_request)
-        raise AssertionError("unreachable")
 
 
 _UNANSWERED = "the model returned no tool call, no text and no structured output"
