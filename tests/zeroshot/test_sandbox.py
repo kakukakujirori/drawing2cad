@@ -354,3 +354,46 @@ def test_sandbox_times_out_infinite_loop(
 
     assert result.status is SandboxStatus.TIMEOUT
     assert result.returncode is None
+
+
+def test_tmp_is_writable_and_survives_between_runs(
+    sandbox_runner: SandboxRunner,
+) -> None:
+    with SandboxWorkdir() as workdir:
+        written = sandbox_runner.run(
+            _python_command("open('/tmp/scratch.txt', 'w').write('kept')"),
+            workdir,
+        )
+        read_back = sandbox_runner.run("cat /tmp/scratch.txt", workdir)
+
+    assert written.returncode == 0, written.stderr
+    assert read_back.stdout == "kept"
+
+
+def test_tempfile_works_inside_sandbox(sandbox_runner: SandboxRunner) -> None:
+    result = sandbox_runner.run(
+        _python_command(
+            "import tempfile\n"
+            "with tempfile.NamedTemporaryFile() as handle:\n"
+            "    print(handle.name)"
+        ),
+        workdir=SandboxWorkdir(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("/tmp/")
+
+
+def test_tmp_and_work_name_the_same_file(tmp_path: Path) -> None:
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+
+    assert workdir.sandbox_to_host_path(
+        "/tmp/crop.png"
+    ) == workdir.sandbox_to_host_path("/work/tmp/crop.png")
+
+
+def test_tmp_path_cannot_escape_the_work_dir(tmp_path: Path) -> None:
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+
+    with pytest.raises(ValueError):
+        workdir.sandbox_to_host_path("/tmp/../../etc/passwd")

@@ -25,6 +25,14 @@ class SandboxResult:
 class SandboxWorkdir:
     sandbox_bind_dir = PurePosixPath("/work")
 
+    # Scratch. `tempfile` and everything built on it resolve to `/tmp`, and a
+    # sandbox without one fails every library that writes a temporary file. It
+    # is a second name for one directory under the bind dir rather than a
+    # tmpfs, so a file written on one turn is still there on the next and is
+    # reachable by either name.
+    sandbox_tmp_dir = PurePosixPath("/tmp")
+    tmp_subdir = "tmp"
+
     def __init__(
         self,
         host_bind_dir: Path | None = None,
@@ -44,6 +52,8 @@ class SandboxWorkdir:
 
         # read-only subdirs
         self.read_only_subdirs = list(read_only_subdirs)
+
+        (self.host_bind_dir / self.tmp_subdir).mkdir(exist_ok=True)
 
     def __enter__(self) -> Self:
         return self
@@ -73,6 +83,11 @@ class SandboxWorkdir:
 
         if not sandbox_path.is_absolute():
             sandbox_path = self.sandbox_bind_dir / sandbox_path
+
+        if sandbox_path.is_relative_to(self.sandbox_tmp_dir):
+            sandbox_path = self.sandbox_bind_dir / self.tmp_subdir / (
+                sandbox_path.relative_to(self.sandbox_tmp_dir)
+            )
 
         try:
             relative_path = sandbox_path.relative_to(self.sandbox_bind_dir)
@@ -150,6 +165,9 @@ class SandboxRunner:
             "--setenv", "LANG", "C.UTF-8",
             "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
             "--bind", str(host_workdir), str(sandbox_workdir),
+            # After the bind, so the target it points at exists.
+            "--symlink", str(sandbox_workdir / workdir.tmp_subdir), "/tmp",
+            "--setenv", "TMPDIR", "/tmp",
             "--chdir", str(sandbox_workdir),
         ]
         # fmt: on
