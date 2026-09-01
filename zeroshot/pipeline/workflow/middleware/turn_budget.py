@@ -1,10 +1,16 @@
 """How many model turns an agent may spend, and what it is told about them."""
 
 from enum import Enum
+from collections.abc import Awaitable, Callable
 from typing import Any, NotRequired, override
 
 from langchain.agents import AgentState as _AgentState
-from langchain.agents.middleware import AgentMiddleware, hook_config
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    ModelRequest,
+    ModelResponse,
+    hook_config,
+)
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
@@ -109,6 +115,35 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
                 "answer still depends on."
             )
         return countdown
+
+    def _answer_only(self, request: ModelRequest[None]) -> ModelRequest[None]:
+        """Take the tools away on the final turn, leaving the answer.
+
+        The announcement already says a tool call made now returns nothing.
+        Left bound, the tools make that a request the model may decline -- and
+        one that declines spends its last turn on a result it never sees, then
+        ends the stage with no answer at all. The answer contract is bound
+        separately from the tools, so it survives.
+        """
+        if request.state.get("current_turn", 0) < self.max_turns - 1:
+            return request
+        return request.override(tools=[])
+
+    @override
+    def wrap_model_call(
+        self,
+        request: ModelRequest[None],
+        handler: Callable[[ModelRequest[None]], ModelResponse[Any]],
+    ) -> ModelResponse[Any]:
+        return handler(self._answer_only(request))
+
+    @override
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[None],
+        handler: Callable[[ModelRequest[None]], Awaitable[ModelResponse[Any]]],
+    ) -> ModelResponse[Any]:
+        return await handler(self._answer_only(request))
 
     @override
     def after_model(

@@ -24,6 +24,9 @@ class ScriptedChatModel(BaseChatModel):
     _response_index: int = PrivateAttr(default=0)
     _received_messages: list[list[BaseMessage]] = PrivateAttr(default_factory=list)
     _bound_tool_names: tuple[str, ...] = PrivateAttr(default=())
+    _bound_tool_name_history: list[tuple[str, ...]] = PrivateAttr(
+        default_factory=list
+    )
 
     @property
     def _llm_type(self) -> str:
@@ -36,6 +39,11 @@ class ScriptedChatModel(BaseChatModel):
     @property
     def bound_tool_names(self) -> tuple[str, ...]:
         return self._bound_tool_names
+
+    @property
+    def bound_tool_name_history(self) -> list[tuple[str, ...]]:
+        """What was bound on each call, so a per-turn change is visible."""
+        return self._bound_tool_name_history
 
     def bind_tools(
         self,
@@ -52,6 +60,7 @@ class ScriptedChatModel(BaseChatModel):
         self._bound_tool_names = tuple(
             tool.name for tool in tools if isinstance(tool, BaseTool)
         )
+        self._bound_tool_name_history.append(self._bound_tool_names)
         return self
 
     def _generate(

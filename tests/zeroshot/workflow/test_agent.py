@@ -1167,3 +1167,25 @@ def test_a_refusal_repeats_what_the_build_reported(tmp_path: Path) -> None:
     # The answer came in a turn that wrote nothing, so no build ran for it;
     # the refusal still carries the report from the build that did.
     assert "[verified] build 1" in refusal
+
+
+def test_agent_offers_only_the_answer_on_its_final_turn() -> None:
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("echo", {"value": "looking"}, "call-1"),
+            AIMessage(content=_ANSWER),
+        )
+    )
+
+    result = _subgraph(
+        model,
+        max_turns=2,
+        output_schema=Proposal,
+    ).invoke({"messages": [HumanMessage(content="go")]})
+
+    working_turn, final_turn = model.bound_tool_name_history
+    assert "echo" in working_turn
+    assert "echo" not in final_turn
+    assert result["structured_response"] == Proposal(
+        proposal=["a boss", "a through hole"], rationale="both are turned"
+    )
