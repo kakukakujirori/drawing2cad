@@ -162,7 +162,7 @@ def test_glm5_3_flash_openrouter_config_instantiates_chat_openrouter(
     ("model_config", "strategy"),
     [
         ("gemma4_ollama", "provider"),
-        ("glm5.3_flash_openrouter", "tool"),
+        ("glm5.3_flash_openrouter", "provider"),
     ],
 )
 def test_the_backend_chosen_decides_how_every_agent_is_asked_for_structured_output(
@@ -170,9 +170,9 @@ def test_the_backend_chosen_decides_how_every_agent_is_asked_for_structured_outp
     strategy: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """OpenRouter takes no json_schema response format and the local backends
-    do, so the strategy has to follow the `model` group rather than be restated
-    per agent."""
+    """A backend that takes no json_schema response format has to bind the
+    answer as a tool instead, so the strategy follows the `model` group rather
+    than being restated per agent."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     with initialize_config_dir(

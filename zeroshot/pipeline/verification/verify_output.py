@@ -96,6 +96,8 @@ class OutputVerifier:
         if output_dirname not in workdir.read_only_subdirs:
             workdir.read_only_subdirs.append(output_dirname)
 
+        self._last_feedback_report: VerifyOutputResult | None = None
+
     @property
     def source_path(self) -> Path:
         """The program this verifier builds, on the host side of the sandbox."""
@@ -184,9 +186,22 @@ class OutputVerifier:
 
         return self.renderer.render(step_path, techdraw_paths, render3d_paths)
 
+    @property
+    def confirmed_a_solid(self) -> bool:
+        """Whether the most recent `feedback` build yielded a usable STEP.
+
+        False before the first build, so a program never built cannot pass for
+        one that did.
+        """
+        report = self._last_feedback_report
+        if report is None:
+            return False
+        return report.status is ExecutionStatus.VERIFIED and report.returncode == 0
+
     def feedback(self) -> list[ContentBlock]:
         """Verify, and say what happened in blocks a message can carry."""
         report, manifest = self.verify()
+        self._last_feedback_report = report
         sandbox_source = self.workdir.sandbox_bind_dir / self.source_filename
         blocks: list[ContentBlock] = [
             create_text_block(

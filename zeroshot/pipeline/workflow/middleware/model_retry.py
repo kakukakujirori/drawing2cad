@@ -2,6 +2,7 @@
 
 import asyncio
 import random
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, override
@@ -236,8 +237,8 @@ _UNANSWERED = "the model returned no tool call, no text and no structured output
 def _is_unanswered(response: ModelResponse[Any]) -> bool:
     """Whether the response holds nothing to act on.
 
-    Reasoning alone leaves this true: a model that spends its output budget
-    thinking returns a message the agent loop reads as a finished answer.
+    Reasoning alone leaves this true, and the agent loop reads that as a
+    finished answer.
     """
     if response.structured_response is not None:
         return False
@@ -267,21 +268,33 @@ def _correction_text(error: StructuredOutputError) -> str:
     return f"Your previous response was rejected: {error}. Answer again."
 
 
-def _is_retryable_model_error(exception: Exception) -> bool:
-    """Retry transient failures in the agent layer only.
+_OPENROUTER_STREAM_ERROR = re.compile(
+    r"^OpenRouter API returned an error during streaming:.*\(code: (\d+)\)$",
+    re.DOTALL,
+)
 
-    Model clients are configured with SDK retries disabled so this predicate is
-    the single retry policy. Codex can report an overloaded stream as a plain
-    ``APIError`` after HTTP 200; match that exact class without accidentally
-    admitting every ``APIStatusError`` subclass. Status failures are eligible
-    only when they are rate limits or server errors.
 
-    A backend that accepts the request and then stalls surfaces as a bare
-    ``httpx.TimeoutException``: the SDK wraps a timeout as ``APITimeoutError``
-    only while it owns the request, and a stream that dies mid-body is past
-    that point. ``TimeoutException`` is a sibling of ``NetworkError``, not a
-    subclass, so it has to be named here.
+def _openrouter_stream_status(exception: Exception) -> int | None:
+    """Return the HTTP status behind a streaming failure, or None if not one.
+
+    The library puts the status only in the message text, so a reworded message
+    silently stops matching — costing a retry, not correctness.
     """
+    if type(exception) is not ValueError:
+        return None
+    match = _OPENROUTER_STREAM_ERROR.match(str(exception))
+    return int(match[1]) if match else None
+
+
+def _is_retryable_model_error(exception: Exception) -> bool:
+    """Whether to re-issue this call. SDK retries are off, so this is the policy.
+
+    ``APIError`` is matched by exact class, not isinstance: Codex reports an
+    overloaded stream as one after HTTP 200. ``TimeoutException`` is a sibling
+    of ``NetworkError``, not a subclass, so it has to be named.
+    """
+    if (status := _openrouter_stream_status(exception)) is not None:
+        return status == 429 or status >= 500
     if type(exception) is APIError:
         return True
     if isinstance(exception, APIConnectionError):

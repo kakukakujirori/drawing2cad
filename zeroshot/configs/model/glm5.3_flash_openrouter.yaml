@@ -1,8 +1,6 @@
 # @package _global_
 
-# OpenRouter rejects a json_schema response format, so the answer contract is
-# bound as a tool instead.
-response_format_strategy: tool
+response_format_strategy: provider
 
 model:
   _target_: langchain_openrouter.chat_models.ChatOpenRouter

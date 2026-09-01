@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ from openai import (
     LengthFinishReasonError,
 )
 from openai.types.chat import ChatCompletion
-from pydantic import PrivateAttr
+from pydantic import BaseModel, PrivateAttr
 
 from tests.zeroshot.chat_models import (
     ScriptedChatModel,
@@ -861,14 +862,25 @@ def test_agent_forwards_a_correctable_tool_error_as_feedback() -> None:
 
 
 class _CountingVerifier:
-    """A verifier that records when it was asked, and for what."""
+    """A verifier that records when it was asked, and for what.
 
-    def __init__(self, source_path: Path) -> None:
+    `builds` decides the outcome of each build in order, so a test can say the
+    program is broken until the model repairs it.
+    """
+
+    def __init__(self, source_path: Path, builds: Sequence[bool] = ()) -> None:
         self.source_path = source_path
         self.seen: list[str] = []
+        self._builds = list(builds)
+        self._sound = False
+
+    @property
+    def confirmed_a_solid(self) -> bool:
+        return self._sound
 
     def feedback(self) -> list[ContentBlock]:
         self.seen.append(self.source_path.read_text(encoding="utf-8"))
+        self._sound = self._builds.pop(0) if self._builds else True
         return [create_text_block(f"[verified] build {len(self.seen)}")]
 
 
@@ -883,9 +895,12 @@ def _writing_tool(path: Path) -> BaseTool:
 
 
 def _verifying_agent(
-    model: ScriptedChatModel, path: Path, **agent_options: Any
+    model: ScriptedChatModel,
+    path: Path,
+    builds: Sequence[bool] = (),
+    **agent_options: Any,
 ) -> tuple[Any, _CountingVerifier]:
-    verifier = _CountingVerifier(path)
+    verifier = _CountingVerifier(path, builds)
     graph = _subgraph(
         model,
         tools=(_writing_tool(path), echo),
@@ -1048,3 +1063,107 @@ def test_a_budget_already_spent_builds_nothing(tmp_path: Path) -> None:
     # Two turns wrote, but TurnBudget ends the agent ahead of this middleware,
     # so the second write is never built.
     assert verifier.seen == ["result = 0"]
+
+
+class _Answer(BaseModel):
+    """The stage's answer."""
+
+    done: bool
+
+
+def _answer_call(call_id: str) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "_Answer",
+                "args": {"done": True},
+                "id": call_id,
+                "type": "tool_call",
+            }
+        ],
+    )
+
+
+def test_an_answer_is_refused_while_the_program_does_not_build(
+    tmp_path: Path,
+) -> None:
+    """The answer schema is bound as a tool, so a model can call it part-way
+    through the work; only the build stops a broken program ending the stage."""
+    path = tmp_path / "model.py"
+    path.write_text("result = broken", encoding="utf-8")
+    graph, verifier = _verifying_agent(
+        ScriptedChatModel(
+            responses=(
+                _answer_call("call-1"),
+                tool_call("write", {"text": "result = 1"}, "call-2"),
+                _answer_call("call-3"),
+            )
+        ),
+        path,
+        builds=[False, True],
+        announce_turns=False,
+        output_schema=_Answer,
+        response_format_strategy="tool",
+    )
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["structured_response"] == _Answer(done=True)
+    refusal = next(
+        message.text
+        for message in result["messages"]
+        if "does not build" in message.text
+    )
+    assert "not ready to submit" in refusal
+    assert verifier.seen == ["result = broken", "result = 1"]
+
+
+def test_an_answer_stands_when_the_program_builds(tmp_path: Path) -> None:
+    path = tmp_path / "model.py"
+    path.write_text("result = 1", encoding="utf-8")
+    graph, _ = _verifying_agent(
+        ScriptedChatModel(responses=(_answer_call("call-1"),)),
+        path,
+        announce_turns=False,
+        output_schema=_Answer,
+        response_format_strategy="tool",
+    )
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["structured_response"] == _Answer(done=True)
+    assert not any("does not build" in m.text for m in result["messages"])
+
+
+def test_a_refusal_repeats_what_the_build_reported(tmp_path: Path) -> None:
+    """The failure has to travel with the refusal; a turn behind it is a turn
+    the model has to go looking for."""
+    path = tmp_path / "model.py"
+    path.write_text("result = broken", encoding="utf-8")
+    graph, _ = _verifying_agent(
+        ScriptedChatModel(
+            responses=(
+                tool_call("write", {"text": "still broken"}, "call-1"),
+                _answer_call("call-2"),
+                tool_call("write", {"text": "result = 1"}, "call-3"),
+                _answer_call("call-4"),
+            )
+        ),
+        path,
+        builds=[False, True],
+        announce_turns=False,
+        output_schema=_Answer,
+        response_format_strategy="tool",
+    )
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    refusal = next(
+        message.text
+        for message in result["messages"]
+        if "does not build" in message.text
+    )
+    # The answer came in a turn that wrote nothing, so no build ran for it;
+    # the refusal still carries the report from the build that did.
+    assert "[verified] build 1" in refusal

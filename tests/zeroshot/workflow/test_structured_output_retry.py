@@ -12,6 +12,9 @@ from pydantic import BaseModel, field_validator
 
 from tests.zeroshot.chat_models import ScriptedChatModel
 from zeroshot.pipeline.workflow import create_agent
+from zeroshot.pipeline.workflow.middleware.model_retry import (
+    _is_retryable_model_error,
+)
 
 
 class Answer(BaseModel):
@@ -166,3 +169,29 @@ def test_a_model_that_never_answers_ends_the_stage_without_failing_the_run() -> 
 
     assert result.get("structured_response") is None
     assert len(model.received_messages) == 3
+
+
+_STREAM_ERROR = "OpenRouter API returned an error during streaming: "
+
+
+@pytest.mark.parametrize(
+    ("message", "retryable"),
+    [
+        (_STREAM_ERROR + "Network connection lost. (code: 502)", True),
+        (_STREAM_ERROR + "Rate limited. (code: 429)", True),
+        (_STREAM_ERROR + "Bad request. (code: 400)", False),
+        ("some unrelated ValueError", False),
+    ],
+)
+def test_a_dropped_openrouter_stream_is_retryable_by_its_status(
+    message: str, retryable: bool
+) -> None:
+    """The library raises a bare ValueError with the status only in the text."""
+    assert _is_retryable_model_error(ValueError(message)) is retryable
+
+
+def test_a_non_valueerror_carrying_the_same_text_is_not_matched() -> None:
+    """Matching is on the library's own exception type, not on any message."""
+    assert not _is_retryable_model_error(
+        RuntimeError("OpenRouter API returned an error during streaming: x (code: 502)")
+    )

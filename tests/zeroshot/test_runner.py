@@ -111,6 +111,25 @@ def _operations_stage():
     )
 
 
+def _writing_model(call_id: str = "call-write-model") -> AIMessage:
+    """One turn that puts a building program in the workspace.
+
+    The gate in `VerifyOnWriteMiddleware` refuses an answer while the program
+    does not build, so a coder fixture has to write one before it answers.
+    """
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "run_shell",
+                "args": {"command": _write_text_command("model.py", VALID_BOX_SOURCE)},
+                "id": call_id,
+                "type": "tool_call",
+            }
+        ],
+    )
+
+
 _CODING_ANSWER = AIMessage(
     content=CodingSubmission(
         **unchanged(),
@@ -375,6 +394,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
                     }
                 ],
             ),
+            _writing_model(),
             _CODING_ANSWER,
         )
     )
@@ -406,7 +426,8 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         "run_shell",
         "load_image",
     )
-    assert len(model.received_messages) == 3
+    # Two inspections, the write, and the answer.
+    assert len(model.received_messages) == 4
 
     # The coder opens on the workflow transcript: its own prompt, the run's
     # input, then what the semantic stage made of it.
@@ -430,9 +451,12 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         ToolMessage,
         AIMessage,
         ToolMessage,
+        AIMessage,
+        ToolMessage,
+        HumanMessage,
     ]
 
-    inspect_result = messages[-3]
+    inspect_result = messages[-6]
     assert isinstance(inspect_result, ToolMessage)
     assert inspect_result.tool_call_id == "call-inspect-inputs"
     assert isinstance(inspect_result.content, str)
@@ -443,7 +467,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         "stderr": "",
     }
 
-    persistence_result = messages[-1]
+    persistence_result = messages[-4]
     assert isinstance(persistence_result, ToolMessage)
     assert persistence_result.tool_call_id == "call-read-scratch"
     assert isinstance(persistence_result.content, str)
@@ -738,7 +762,7 @@ def _runner_for_rerun(
         # This coder answers without writing model.py, which the graph would
         # otherwise send back to it. These tests are about rerun policy.
         graph_factory=_graph_factory(
-            ScriptedChatModel(responses=(_CODING_ANSWER,)),
+            ScriptedChatModel(responses=(_writing_model(), _CODING_ANSWER)),
             max_stage_validation_retries=0,
         ),
         artifact_presenter=_artifact_presenter_without_renders(),
@@ -846,7 +870,8 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
             semantics_agent_builder=_semantic_stage(),
             operations_agent_builder=_operations_stage(),
             coding_agent_builder=_agent(
-                "coder", ScriptedChatModel(responses=(_CODING_ANSWER,))
+                "coder",
+                ScriptedChatModel(responses=(_writing_model(), _CODING_ANSWER)),
             ),
             audit_agent_builder=_agent(
                 "output_auditor", ScriptedChatModel(responses=(_ACCEPTED_AUDIT,))
@@ -1052,7 +1077,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
         artifact_root=artifact_root,
         renderer=_renderer(),
         graph_factory=_graph_factory(
-            ScriptedChatModel(responses=(_CODING_ANSWER,)),
+            ScriptedChatModel(responses=(_writing_model(), _CODING_ANSWER)),
             announce_turns=False,
             max_stage_validation_retries=0,
         ),
@@ -1109,7 +1134,7 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             ),
             "BUDGET_EXHAUSTED",
         ),
-        "stopped-by-agent": ((_CODING_ANSWER,), "COMPLETED"),
+        "stopped-by-agent": ((_writing_model(), _CODING_ANSWER), "COMPLETED"),
     }
 
     for sample_id, (responses, expected) in cases.items():

@@ -65,7 +65,7 @@ workflow:
 
   # How many rejected audits may open a fresh round. Every new round runs all
   # three reasoning stages against the complete set of new tickets.
-  max_audit_reject_count: 3
+  max_audit_reject_count: 1  # 3
 
   # Invalid structured stage submissions return to that stage with the
   # validator's exact feedback. This bounds those graph-level retries.
