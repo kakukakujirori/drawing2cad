@@ -1,5 +1,6 @@
 import errno
 import sys
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -20,6 +21,7 @@ from zeroshot.pipeline.verification.run_cadquery import (
     StepVerificationError,
     _returned_names,
 )
+from zeroshot.pipeline.verification.shape_census import ShapeCensus
 
 VALID_BOX_SOURCE = """\
 import cadquery as cq
@@ -247,10 +249,10 @@ def test_execute_writes_verified_step_to_requested_path(tmp_path: Path) -> None:
         returncode=0,
         stdout="construction log",
         stderr="construction warning",
-        # A box is six planes and twelve straight edges. The census is here so
-        # that a coder handed this report can see when its arcs came back as a
-        # hundred of them.
-        shape="faces 6 (Plane 6); edges 12 (Line 12)",
+        # A 10x20x30 box is six planes and twelve straight edges. The census
+        # is here so that a coder handed this report can see when its arcs came
+        # back as a hundred of them.
+        census=ShapeCensus(6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
     )
     assert output_step_path.is_file()
     assert runner.calls[0][0] == "python /work/_run_program.py /work/model.py"
@@ -606,3 +608,25 @@ def test_the_runner_is_told_which_outputs_to_keep(tmp_path: Path) -> None:
     command, _ = runner.calls[0]
 
     assert command == "python /work/_run_program.py /work/model.py ret_base ret_hole"
+
+
+def test_a_kept_return_is_counted(tmp_path: Path) -> None:
+    executor = CadQueryExecutor(
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable),
+            default_timeout_s=60.0,
+        ),
+    )
+    model_path = _write_model(tmp_path, TWO_RESULT_SOURCE)
+
+    report = executor.execute(
+        model_path, intermediate_returns_dir=tmp_path / "intermediate_returns"
+    )
+    counted = {output.name: output.census for output in report.intermediate_returns}
+
+    assert counted["ret_base"] is not None
+    assert counted["ret_base"].volume == pytest.approx(6000.0)
+    assert counted["ret_base"].faces == Counter({"Plane": 6})
+    # A 2x2 bar cut through the 30mm depth of the block.
+    assert counted["ret_hole"] is not None
+    assert counted["ret_hole"].volume == pytest.approx(5880.0)

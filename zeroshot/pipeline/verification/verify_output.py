@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Self, cast
@@ -42,7 +43,7 @@ class VerifyOutputResult:
             stdout=report.stdout,
             stderr=report.stderr,
             executor_error=report.executor_error,
-            shape=report.shape,
+            shape=report.census.describe() if report.census else "",
         )
 
     def serialize(self) -> dict[str, VerifyOutputValue]:

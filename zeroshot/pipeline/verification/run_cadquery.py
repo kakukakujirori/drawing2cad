@@ -15,7 +15,7 @@ from zeroshot.pipeline.verification._run_program import (
     INTERMEDIATE_RETURNS_DIR,
 )
 from zeroshot.pipeline.verification.check_program import assigned_names
-from zeroshot.pipeline.verification.shape_census import describe_shape
+from zeroshot.pipeline.verification.shape_census import ShapeCensus, read_census
 
 _RUNNER = "_run_program.py"
 
@@ -36,6 +36,7 @@ class IntermediateReturn:
     name: str
     step_path: Path | None = None
     error: str | None = None
+    census: ShapeCensus | None = None
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,7 @@ class CadQueryExecutionReport:
     returncode: int | None = None
     stdout: str = ""
     stderr: str = ""
-    shape: str = ""
+    census: ShapeCensus | None = None
     # In program order, and empty unless `execute` was asked to keep them.
     intermediate_returns: tuple[IntermediateReturn, ...] = ()
 
@@ -80,9 +81,10 @@ def _read_returns(
     for name in ret_names:
         built = sandbox_temp_returns_dir / f"{name}.step"
         if built.is_file():
-            shutil.copyfile(built, host_dest_returns_dir / built.name)
+            kept = host_dest_returns_dir / built.name
+            shutil.copyfile(built, kept)
             outputs.append(
-                IntermediateReturn(name, step_path=host_dest_returns_dir / built.name)
+                IntermediateReturn(name, step_path=kept, census=read_census(kept))
             )
             continue
         reported = sandbox_temp_returns_dir / f"{name}{ERROR_SUFFIX}"
@@ -246,9 +248,6 @@ class CadQueryExecutor:
                     intermediate_returns=intermediate_returns,
                 )
 
-            # What it is made of, read off the STEP that was just accepted.
-            shape = describe_shape(tmp_step_path)
-
             # Copy STEP
             if output_step_path is not None:
                 shutil.copyfile(tmp_step_path, output_step_path)
@@ -260,7 +259,7 @@ class CadQueryExecutor:
             stdout=sandbox_result.stdout,
             stderr=sandbox_result.stderr,
             intermediate_returns=intermediate_returns,
-            shape=shape,
+            census=read_census(tmp_step_path),
         )
 
     @staticmethod

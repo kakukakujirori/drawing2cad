@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
@@ -14,11 +15,14 @@ from zeroshot.pipeline.verification.render.constants import (
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     ExecutionStatus,
+    IntermediateReturn,
 )
 from zeroshot.pipeline.verification.run_render import RenderReport, RenderStatus
+from zeroshot.pipeline.verification.shape_census import ShapeCensus
 from zeroshot.pipeline.verification.verify_output import (
     OutputVerifier,
     VerifyOutputResult,
+    _describe_returns,
 )
 
 RENDER3D_STYLES = (
@@ -600,3 +604,64 @@ def test_without_an_artifact_presenter_the_model_sees_only_the_report(
     assert _report_json(result)["status"] == "VERIFIED"
     assert "techdraw.dxf" not in _text(result)
     assert (tmp_path / "attempts" / "000" / "techdraw.dxf").is_file()
+
+
+def test_the_table_states_each_return_and_its_change() -> None:
+    returns = (
+        IntermediateReturn(
+            "ret_base",
+            census=ShapeCensus(6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+        ),
+        IntermediateReturn(
+            "ret_hole",
+            census=ShapeCensus(
+                5880.0,
+                Counter({"Plane": 10}),
+                Counter({"Line": 20, "Circle": 4}),
+            ),
+        ),
+    )
+
+    assert _describe_returns(returns).splitlines() == [
+        "ret_base  volume 6000.0; faces 6 (Plane 6); edges 12 (Line 12)",
+        (
+            "ret_hole  volume 5880.0 (-120.0); faces 10 (+4: Plane +4); "
+            "edges 24 (+12: Line +8, Circle +4)"
+        ),
+    ]
+
+
+def test_an_operation_that_built_nothing_shows_no_change() -> None:
+    census = ShapeCensus(6000.0, Counter({"Plane": 6}), Counter({"Line": 12}))
+    returns = (
+        IntermediateReturn("ret_base", census=census),
+        IntermediateReturn("ret_cleaned", census=census),
+    )
+
+    assert _describe_returns(returns).splitlines()[1] == (
+        "ret_cleaned  volume 6000.0 (+0.0); faces 6 (+0); edges 12 (+0)"
+    )
+
+
+def test_a_return_that_was_not_exported_carries_the_reason() -> None:
+    returns = (
+        IntermediateReturn(
+            "ret_base",
+            census=ShapeCensus(6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+        ),
+        IntermediateReturn("ret_count", error="TypeError: not a shape"),
+        IntermediateReturn(
+            "ret_grown",
+            census=ShapeCensus(9000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+        ),
+    )
+
+    lines = _describe_returns(returns).splitlines()
+
+    assert lines[1] == "ret_count  not exported: TypeError: not a shape"
+    # The change is measured from the last return that reached a STEP.
+    assert lines[2].startswith("ret_grown  volume 9000.0 (+3000.0)")
+
+
+def test_the_table_of_nothing_is_empty() -> None:
+    assert _describe_returns(()) == ""

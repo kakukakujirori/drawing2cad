@@ -10,6 +10,7 @@ A census is that number, and it costs one read of a STEP already written.
 """
 
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -21,16 +22,69 @@ def _kinds(items: list, adaptor) -> Counter[str]:
     return counted
 
 
-def describe_shape(step_path: Path) -> str:
-    """Count the faces and edges of a STEP by surface and curve kind.
+def _by_kind(counted: Counter[str]) -> str:
+    return ", ".join(f"{kind} {n}" for kind, n in counted.most_common())
 
-    One line, in the report the coder reads every turn: `faces 85 (Cylinder 42,
-    Plane 33, ...)`. Kinds rather than a total, because a total says a part is
-    complicated and a kind says a cylinder came out as a hundred flat strips.
 
-    Returns an empty string when the file cannot be read as a shape; the caller
-    is reporting a build that already succeeded, and a census that fails is not
-    a reason to fail it.
+def _by_kind_change(now: Counter[str], before: Counter[str]) -> str:
+    changed = {kind: now[kind] - before[kind] for kind in now.keys() | before.keys()}
+    return ", ".join(
+        f"{kind} {delta:+d}"
+        for kind, delta in sorted(changed.items(), key=lambda kv: (-abs(kv[1]), kv[0]))
+        if delta
+    )
+
+
+@dataclass(frozen=True)
+class ShapeCensus:
+    """How big a solid is, and which surfaces and curves bound it."""
+
+    volume: float
+    faces: Counter[str]
+    edges: Counter[str]
+
+    def describe(self) -> str:
+        """Give the volume, then count the faces and edges by kind.
+
+        One line, in the report the coder reads every turn: `faces 85 (Cylinder
+        42, Plane 33, ...)`. Kinds rather than a total, because a total says a
+        part is complicated and a kind says a cylinder came out as a hundred
+        flat strips.
+        """
+        return "; ".join(
+            [
+                f"volume {self.volume:.1f}",
+                *(
+                    f"{label} {sum(counted.values())} ({_by_kind(counted)})"
+                    for label, counted in (("faces", self.faces), ("edges", self.edges))
+                    if counted
+                ),
+            ]
+        )
+
+    def describe_change_from(self, previous: "ShapeCensus") -> str:
+        """Give the same counts, and after each one its change since `previous`.
+
+        An operation that built nothing shows `+0.0` volume and `+0` faces.
+        That is what an accidental identity looks like from the outside.
+        """
+        parts = [f"volume {self.volume:.1f} ({self.volume - previous.volume:+.1f})"]
+        for label, now, before in (
+            ("faces", self.faces, previous.faces),
+            ("edges", self.edges, previous.edges),
+        ):
+            total, delta = sum(now.values()), sum(now.values()) - sum(before.values())
+            kinds = _by_kind_change(now, before)
+            parts.append(f"{label} {total} ({delta:+d}{f': {kinds}' if kinds else ''})")
+        return "; ".join(parts)
+
+
+def read_census(step_path: Path) -> ShapeCensus | None:
+    """Read a STEP and count the volume, faces and edges of its solid.
+
+    None when the file cannot be read as a shape; the caller is reporting a
+    build that already succeeded, and a census that fails is not a reason to
+    fail it.
     """
     # Imported here, as `verify_step` does, so that reading this module costs
     # nothing to a process that never builds anything.
@@ -39,18 +93,16 @@ def describe_shape(step_path: Path) -> str:
 
     try:
         shape = cq.importers.importStep(str(step_path)).val()
+        volume = shape.Volume()
     except (OSError, ValueError, RuntimeError, IndexError):
         # A build that reached here has already been accepted as one valid
         # solid, so this should not fire. It is here because a census is a
         # diagnostic: failing to count what was built must not turn a build
         # that worked into a run that crashed.
-        return ""
+        return None
 
-    faces = _kinds(shape.Faces(), BRepAdaptor_Surface)
-    edges = _kinds(shape.Edges(), BRepAdaptor_Curve)
-    return "; ".join(
-        f"{label} {sum(counted.values())} "
-        f"({', '.join(f'{kind} {n}' for kind, n in counted.most_common())})"
-        for label, counted in (("faces", faces), ("edges", edges))
-        if counted
+    return ShapeCensus(
+        volume=volume,
+        faces=_kinds(shape.Faces(), BRepAdaptor_Surface),
+        edges=_kinds(shape.Edges(), BRepAdaptor_Curve),
     )
