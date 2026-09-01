@@ -18,6 +18,7 @@ def create_verify_output_tool(
     artifact_presenter: ArtifactPresenter | None,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
+    show_intermediate_returns: bool = True,
 ) -> BaseTool:
     """Offer verification to an agent that must ask for it.
 
@@ -32,6 +33,7 @@ def create_verify_output_tool(
         artifact_presenter=artifact_presenter,
         source_filename=source_filename,
         output_dirname=output_dirname,
+        show_intermediate_returns=show_intermediate_returns,
     )
     description = cleandoc(
         f"""

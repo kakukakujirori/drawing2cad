@@ -299,6 +299,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "audit_agent_builder",
         "max_audit_reject_count",
         "max_stage_validation_retries",
+        "show_intermediate_returns",
     }
 
     coder = graph_factory.keywords["coding_agent_builder"]

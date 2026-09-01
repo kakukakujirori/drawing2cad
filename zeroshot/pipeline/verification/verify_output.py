@@ -1,5 +1,5 @@
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Self, cast
@@ -17,10 +17,79 @@ from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
     ExecutionStatus,
+    IntermediateReturn,
 )
 from zeroshot.pipeline.verification.run_render import RenderReport, StepRenderer
+from zeroshot.pipeline.verification.shape_census import ShapeCensus
 
 VerifyOutputValue: type = str | int | None
+
+
+def _census_table(returns: Sequence[IntermediateReturn]) -> str:
+    """Lay out what each `ret_*` held, one line each, in program order.
+
+    Every line after the first states its change from the line above, so an
+    operation that built nothing and an operation that undid the one before it
+    both show on the face of the table. A return that never reached a STEP
+    carries the reason instead, and the line after it compares against the last
+    return that did.
+    """
+    width = max((len(output.name) for output in returns), default=0)
+    lines: list[str] = []
+    previous: ShapeCensus | None = None
+    for output in returns:
+        if output.census is None:
+            lines.append(f"{output.name:<{width}}  not exported: {output.error}")
+            continue
+        lines.append(
+            f"{output.name:<{width}}  "
+            + (
+                output.census.describe()
+                if previous is None
+                else output.census.describe_change_from(previous)
+            )
+        )
+        previous = output.census
+    return "\n".join(lines)
+
+
+def _describe_returns(
+    intermediate_returns: Sequence[IntermediateReturn],
+    intermediate_renders: Mapping[str, RenderReport],
+    sandbox_returns_dir: PurePosixPath,
+) -> str:
+    """Say what every `ret_*` came out as, and where its views were written.
+
+    One sentence for the layout rather than four paths per return: every
+    directory holds the same file names, so listing them all would spend
+    tokens on a convention the reader can apply once.
+    """
+    if not intermediate_returns:
+        return ""
+    failures = [
+        f"{name}: {reason}"
+        for name, report in intermediate_renders.items()
+        for reason in (
+            *report.techdraw_errors.values(),
+            *report.render3d_errors.values(),
+        )
+    ]
+    return "\n".join(
+        [
+            (
+                "Intermediate returns, in program order. Each line is the solid "
+                "the operation left behind, and how it differs from the line above."
+            ),
+            "",
+            _census_table(intermediate_returns),
+            "",
+            (
+                f"Each is written to {sandbox_returns_dir}/<name>/ as output.step, "
+                "techdraw.dxf and render_3d/<style>.png."
+            ),
+            *(["", "Views that could not be drawn:", *failures] if failures else []),
+        ]
+    )
 
 
 @dataclass(frozen=True)
@@ -33,6 +102,8 @@ class VerifyOutputResult:
     stderr: str = ""
     executor_error: str | None = None
     shape: str = ""
+    # Host paths never reach here, so this is written in sandbox paths.
+    intermediate_returns: str = ""
 
     def import_from(self, report: CadQueryExecutionReport) -> Self:
         return replace(
@@ -49,6 +120,9 @@ class VerifyOutputResult:
     def serialize(self) -> dict[str, VerifyOutputValue]:
         ret = cast(dict[str, VerifyOutputValue], asdict(self))
         ret.pop("source")
+        # Carried as its own block, because JSON escaping makes a table
+        # of many lines unreadable.
+        ret.pop("intermediate_returns")
         return ret
 
 
@@ -67,6 +141,7 @@ class OutputVerifier:
         artifact_presenter: ArtifactPresenter | None,
         source_filename: str = "model.py",
         output_dirname: PurePosixPath = PurePosixPath("attempts"),
+        show_intermediate_returns: bool = True,
     ) -> None:
         source_path = PurePosixPath(source_filename)
         if (
@@ -88,6 +163,7 @@ class OutputVerifier:
         self.artifact_presenter = artifact_presenter
         self.source_filename = source_filename
         self.output_dirname = output_dirname
+        self.show_intermediate_returns = show_intermediate_returns
 
         host_outdir = workdir.host_bind_dir / output_dirname
         if host_outdir.is_symlink():
@@ -148,7 +224,11 @@ class OutputVerifier:
         cq_report = self.executor.execute(
             model_path,
             output_step_path,
-            intermediate_returns_dir=host_verification_dir / INTERMEDIATE_RETURNS_DIR,
+            intermediate_returns_dir=(
+                host_verification_dir / INTERMEDIATE_RETURNS_DIR
+                if self.show_intermediate_returns
+                else None
+            ),
         )
 
         # copy source code to output dir
@@ -167,6 +247,25 @@ class OutputVerifier:
 
         # render the three-view DXF and the perspective PNGs
         render_report = self._render(output_step_path, host_verification_dir)
+
+        # the same views again, once per ret_xxx the program left behind
+        host_returns_dir = host_verification_dir / INTERMEDIATE_RETURNS_DIR
+        renders = {
+            output.name: self._render(output.step_path, host_returns_dir / output.name)
+            for output in cq_report.intermediate_returns
+            if output.step_path is not None
+        }
+        report = replace(
+            report,
+            intermediate_returns=_describe_returns(
+                cq_report.intermediate_returns,
+                renders,
+                self.workdir.sandbox_bind_dir
+                / self.output_dirname
+                / verification_id
+                / INTERMEDIATE_RETURNS_DIR,
+            ),
+        )
 
         manifest = FeedbackManifest(
             verification_id=verification_id,
@@ -216,6 +315,8 @@ class OutputVerifier:
             ),
             create_text_block(json.dumps(report.serialize(), indent=2)),
         ]
+        if report.intermediate_returns:
+            blocks.append(create_text_block(report.intermediate_returns))
         if manifest and self.artifact_presenter:
             blocks.extend(
                 self.artifact_presenter.build_feedback_message_blocks(

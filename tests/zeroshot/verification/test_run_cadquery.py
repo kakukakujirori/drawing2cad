@@ -630,3 +630,64 @@ def test_a_kept_return_is_counted(tmp_path: Path) -> None:
     # A 2x2 bar cut through the 30mm depth of the block.
     assert counted["ret_hole"] is not None
     assert counted["ret_hole"].volume == pytest.approx(5880.0)
+
+
+def test_a_syntax_error_is_reported_with_the_line_and_the_caret(
+    tmp_path: Path,
+) -> None:
+    executor, _ = _executor(_sandbox_result())
+    model_path = _write_model(tmp_path, 'result = cq.Workplane("XY".box(1, 2, 3)\n')
+
+    report = executor.execute(model_path)
+
+    assert report.status is ExecutionStatus.REJECTED
+    assert report.executor_error is not None
+    assert 'result = cq.Workplane("XY".box(1, 2, 3)' in report.executor_error
+    assert "^" in report.executor_error
+    assert "SyntaxError: '(' was never closed" in report.executor_error
+
+
+def test_an_export_failure_carries_the_traceback_that_explains_it(
+    tmp_path: Path,
+) -> None:
+    executor = CadQueryExecutor(
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable),
+            default_timeout_s=60.0,
+        ),
+    )
+    source = """\
+import cadquery as cq
+
+ret_base = cq.Workplane("XY").box(10, 20, 30)
+result = 3
+"""
+
+    report = executor.execute(_write_model(tmp_path, source))
+
+    assert report.status is ExecutionStatus.FAILED
+    assert "Failed to export `result` to STEP:" in report.stderr
+    # The exporter's own frames, not one line saying it raised.
+    assert "cadquery/occ_impl/exporters" in report.stderr
+    assert "TypeError" in report.stderr
+
+
+def test_a_traceback_names_only_files_the_coder_can_edit(tmp_path: Path) -> None:
+    executor = CadQueryExecutor(
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable),
+            default_timeout_s=60.0,
+        ),
+    )
+    source = """\
+import cadquery as cq
+
+result = cq.Workplane("XY").box(10, 20, 30).faces(">Z").fillet(100.0)
+"""
+
+    report = executor.execute(_write_model(tmp_path, source))
+
+    assert report.status is ExecutionStatus.FAILED
+    assert report.stderr.startswith("Traceback (most recent call last):\n  File")
+    assert "_run_program.py" not in report.stderr
+    assert "/work/model.py" in report.stderr

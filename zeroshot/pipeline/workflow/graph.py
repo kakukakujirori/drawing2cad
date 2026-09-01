@@ -93,6 +93,7 @@ def create_reconstruction_graph(
     reconstruction_history_filename: str = "reconstruction.json",
     max_audit_reject_count: int = 3,
     max_stage_validation_retries: int = 3,
+    show_intermediate_returns: bool = True,
     share_thread: bool = False,
     compact_between_stages: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
@@ -121,6 +122,7 @@ def create_reconstruction_graph(
         artifact_presenter=artifact_presenter,
         source_filename=output_filename,
         output_dirname=verification_dirname,
+        show_intermediate_returns=show_intermediate_returns,
     )
 
     # instantiate agents

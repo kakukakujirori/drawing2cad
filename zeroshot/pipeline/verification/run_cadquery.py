@@ -1,5 +1,6 @@
 import ast
 import shutil
+import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -52,6 +53,17 @@ class CadQueryExecutionReport:
     intermediate_returns: tuple[IntermediateReturn, ...] = ()
 
 
+def _rejection(error: SyntaxError | ValueError) -> str:
+    """Say what is wrong with the source.
+
+    A syntax error is given the offending line and the caret under it, which
+    `str` leaves out.
+    """
+    if not isinstance(error, SyntaxError):
+        return str(error)
+    return "".join(traceback.format_exception_only(type(error), error)).strip()
+
+
 def _returned_names(source: str, filename: str) -> list[str]:
     """List the `ret_*` names the program assigns, in the order it assigns them."""
     tree = ast.parse(source, filename=filename, mode="exec")
@@ -81,7 +93,9 @@ def _read_returns(
     for name in ret_names:
         built = sandbox_temp_returns_dir / f"{name}.step"
         if built.is_file():
-            kept = host_dest_returns_dir / built.name
+            # One directory per return, laid out like the attempt that holds it.
+            kept = host_dest_returns_dir / name / "output.step"
+            kept.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(built, kept)
             outputs.append(
                 IntermediateReturn(name, step_path=kept, census=read_census(kept))
@@ -146,7 +160,7 @@ class CadQueryExecutor:
             return CadQueryExecutionReport(
                 source=source,
                 status=ExecutionStatus.REJECTED,
-                executor_error=str(e),
+                executor_error=_rejection(e),
             )
 
         # Prepare workdir to bind into the sandbox
@@ -248,6 +262,9 @@ class CadQueryExecutor:
                     intermediate_returns=intermediate_returns,
                 )
 
+            # Read inside the block: the workdir is gone once it exits.
+            census = read_census(tmp_step_path)
+
             # Copy STEP
             if output_step_path is not None:
                 shutil.copyfile(tmp_step_path, output_step_path)
@@ -259,7 +276,7 @@ class CadQueryExecutor:
             stdout=sandbox_result.stdout,
             stderr=sandbox_result.stderr,
             intermediate_returns=intermediate_returns,
-            census=read_census(tmp_step_path),
+            census=census,
         )
 
     @staticmethod
