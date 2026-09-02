@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.messages.content import ContentBlock
 
 from tests.zeroshot.chat_models import ScriptedChatModel
-from tests.zeroshot.contracts import hypothesis, replacing, unchanged
+from tests.zeroshot.contracts import hypothesis, replacing
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.messages.contracts import (
     Operation,
@@ -115,7 +115,6 @@ def _operation_submission(
 def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
     return _message(
         CodingSubmission(
-            **unchanged(),
             responses=_responses(ticket_id, PipelineStage.CODING),
         )
     )

@@ -2,7 +2,7 @@
 
 import pytest
 
-from tests.zeroshot.contracts import feature, hypothesis, replacing, unchanged
+from tests.zeroshot.contracts import feature, hypothesis, replacing
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -188,7 +188,6 @@ def _completed_run(
     run = advance_reconstruction(
         run,
         CodingSubmission(
-            **unchanged(),
             responses=_stage_responses(run, "coding"),
         ),
         verification=verification,

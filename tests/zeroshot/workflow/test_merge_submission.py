@@ -2,7 +2,7 @@
 
 import pytest
 
-from tests.zeroshot.contracts import evidence, feature, geometry, replacing, unchanged
+from tests.zeroshot.contracts import evidence, feature, geometry, replacing
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -17,8 +17,10 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     ReconstructionSnapshot,
     SemanticSubmission,
     Ticket,
+    TicketAnswers,
     TicketResponse,
 )
+from zeroshot.pipeline.messages.contracts.stages import ReasoningStage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow.merge_submission import merge_submission
 from zeroshot.pipeline.workflow.validate_submission import SubmissionValidationError
@@ -272,6 +274,31 @@ def test_operations_replace_by_name_and_keep_their_place() -> None:
 
 
 def test_coding_merges_to_nothing() -> None:
-    coding = CodingSubmission(**unchanged(), responses=_responses(PipelineStage.CODING))
+    coding = CodingSubmission(responses=_responses(PipelineStage.CODING))
 
     assert merge_submission(coding, _preceding(), PipelineStage.CODING) is None
+
+
+@pytest.mark.parametrize(
+    ("stage", "submission", "message"),
+    [
+        (
+            PipelineStage.CODING,
+            _semantics(),
+            "coding must submit a CodingSubmission",
+        ),
+        (
+            PipelineStage.SEMANTICS,
+            CodingSubmission(responses=_responses(PipelineStage.SEMANTICS)),
+            "semantics must submit a SemanticSubmission",
+        ),
+    ],
+)
+def test_a_stage_is_given_the_submission_type_it_merges(
+    stage: ReasoningStage,
+    submission: TicketAnswers,
+    message: str,
+) -> None:
+    """Coding merges to nothing, so its check is the one the early return skips."""
+    with pytest.raises(SubmissionValidationError, match=message):
+        merge_submission(submission, None, stage)

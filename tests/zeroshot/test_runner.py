@@ -15,7 +15,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from rich.console import Console
 
 from tests.zeroshot.chat_models import ScriptedChatModel
-from tests.zeroshot.contracts import hypothesis, replacing, unchanged
+from tests.zeroshot.contracts import hypothesis, replacing
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
@@ -132,7 +132,6 @@ def _writing_model(call_id: str = "call-write-model") -> AIMessage:
 
 _CODING_ANSWER = AIMessage(
     content=CodingSubmission(
-        **unchanged(),
         responses=[_ticket_response("coding", "Implemented ret_base and result.")],
     ).model_dump_json()
 )
@@ -200,7 +199,6 @@ def _verified_resume_run():
     run = advance_reconstruction(
         run,
         CodingSubmission(
-            **unchanged(),
             responses=[_ticket_response("coding", "Implemented ret_base and result.")],
         ),
         verification=VerifyOutputResult(

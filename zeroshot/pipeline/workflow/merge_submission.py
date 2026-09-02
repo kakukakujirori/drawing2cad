@@ -17,6 +17,7 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     ReconstructionSnapshot,
     SemanticSubmission,
     StageSubmission,
+    TicketAnswers,
 )
 from zeroshot.pipeline.messages.contracts.stages import PipelineStage, ReasoningStage
 from zeroshot.pipeline.workflow.validate_submission import SubmissionValidationError
@@ -28,15 +29,16 @@ class _Named(Protocol):
     name: str
 
 
-_SUBMISSION_BY_STAGE: Mapping[ReasoningStage, type[StageSubmission]] = {
+# Only the two stages that revise an artifact; coding is settled before this
+# is read, which is what leaves the rest of the merge a `StageSubmission`.
+_REVISION_BY_STAGE: Mapping[ReasoningStage, type[StageSubmission]] = {
     PipelineStage.SEMANTICS: SemanticSubmission,
     PipelineStage.OPERATIONS: OperationSubmission,
-    PipelineStage.CODING: CodingSubmission,
 }
 
 
 def merge_submission(
-    submission: StageSubmission,
+    submission: TicketAnswers,
     previous: ReconstructionSnapshot | None,
     stage: ReasoningStage,
 ) -> StageArtifact | None:
@@ -47,11 +49,14 @@ def merge_submission(
     workspace, so it merges to nothing and the program is captured through
     verification instead.
     """
-    expected = _SUBMISSION_BY_STAGE[stage]
+    if stage is PipelineStage.CODING:
+        if not isinstance(submission, CodingSubmission):
+            raise SubmissionValidationError("coding must submit a CodingSubmission")
+        return None
+
+    expected = _REVISION_BY_STAGE[stage]
     if not isinstance(submission, expected):
         raise SubmissionValidationError(f"{stage} must submit a {expected.__name__}")
-    if stage is PipelineStage.CODING:
-        return None
 
     revised = _revised_artifact(previous, stage)
     rationale = _rationale(submission, revised)

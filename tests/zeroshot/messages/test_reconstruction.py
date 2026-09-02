@@ -1,7 +1,7 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from tests.zeroshot.contracts import hypothesis, replacing, unchanged
+from tests.zeroshot.contracts import hypothesis, replacing
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -133,19 +133,21 @@ def test_semantics_and_operations_edit_their_own_member_types() -> None:
     assert operation_submission.edits == operations.proposal
 
 
-def test_coding_submits_an_empty_revision() -> None:
+def test_coding_carries_its_ticket_answers_and_nothing_else() -> None:
+    """A field coding must leave empty is a field it can get wrong: four of ten
+    GLM runs died sending `rationale` a string against a validator that refused
+    it. The revision members are not in this schema at all."""
     responses = _responses("ticket_bootstrap", "coding")
 
-    submission = CodingSubmission(**unchanged(), responses=responses)
+    submission = CodingSubmission(responses=responses)
 
-    assert submission.edits == []
-    assert submission.deleted == []
-    with pytest.raises(ValidationError):
-        CodingSubmission.model_validate({"responses": responses})
-    with pytest.raises(ValidationError, match="coding carries no revision"):
-        CodingSubmission.model_validate(
-            {**unchanged(), "rationale": "why", "responses": responses}
-        )
+    assert submission.responses == responses
+    assert set(CodingSubmission.model_fields) == {"responses"}
+    for revision in ("edits", "deleted", "rationale"):
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            CodingSubmission.model_validate(
+                {"responses": responses, revision: "anything"}
+            )
 
 
 def test_a_stage_submission_rejects_extra_fields() -> None:
@@ -170,7 +172,7 @@ def test_each_stage_submission_exposes_its_concrete_json_schema() -> None:
     assert operation_schema["properties"]["edits"]["items"]["$ref"].endswith(
         "/Operation"
     )
-    assert coding_schema["properties"]["edits"]["items"]["type"] == "null"
+    assert set(coding_schema["properties"]) == {"responses"}
 
 
 @pytest.mark.parametrize(
@@ -387,39 +389,5 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
     assert isinstance(restored.snapshots[1].open_tickets[0].subject, AuditFinding)
 
 
-def test_coding_accepts_a_blank_rationale_as_no_rationale() -> None:
-    """A model that means "nothing to say" writes "" as readily as null, and
-    the contract does not care about the difference."""
-    responses = _responses("ticket_initial", "coding")
-
-    for blank in (None, "", "   "):
-        submission = CodingSubmission(
-            edits=[], deleted=[], rationale=blank, responses=responses
-        )
-        assert submission.rationale == blank
-
-
-def test_coding_names_the_member_that_carried_a_revision() -> None:
-    """The message reaches the model as the correction it has to act on, so it
-    has to say which member was wrong, not restate the rule."""
-    responses = _responses("ticket_initial", "coding")
-
-    with pytest.raises(ValidationError, match=r"rationale is a string"):
-        CodingSubmission(
-            edits=[], deleted=[], rationale="Implemented every op.", responses=responses
-        )
-    with pytest.raises(ValidationError, match=r"deleted names op_gone"):
-        CodingSubmission(
-            edits=[], deleted=["op_gone"], rationale=None, responses=responses
-        )
-
-
-def test_a_null_coding_edit_is_rejected_rather_than_crashing() -> None:
-    """`edits` is typed `list[None]`, so `[null]` passes the field check and
-    reaches the shared validator, which would read `.name` off it."""
-    responses = _responses("ticket_initial", "coding")
-
-    with pytest.raises(ValidationError, match=r"edits has 1 entries"):
-        CodingSubmission(
-            edits=[None], deleted=[], rationale=None, responses=responses
-        )
+def test_a_coding_stage_with_no_ticket_of_its_own_answers_nothing() -> None:
+    assert CodingSubmission.unchanged().responses == []

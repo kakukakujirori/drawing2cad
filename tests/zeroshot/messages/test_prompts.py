@@ -237,13 +237,24 @@ def test_structured_output_roles_render_their_contract(role: str) -> None:
     assert "$output_schema" not in rendered
 
 
-@pytest.mark.parametrize("stage", ["semantics", "operations", "coding"])
+@pytest.mark.parametrize("stage", ["semantics", "operations"])
 def test_a_round_asks_for_a_revision_rather_than_a_whole_artifact(stage: str) -> None:
     rendered = instruction_text(f"{stage}/round", **_round_context(current_round="1"))
 
     assert "`edits`" in rendered
     assert "`deleted`" in rendered
     assert "deliverable" not in rendered
+
+
+def test_the_coding_round_asks_only_for_ticket_responses() -> None:
+    """Coding revises the workspace, so its answer has no revision members to
+    name -- and a member a stage cannot fill is one it can get wrong."""
+    rendered = instruction_text("coding/round", **_round_context(current_round="1"))
+
+    assert "`edits`" not in rendered
+    assert "`deleted`" not in rendered
+    assert "`rationale`" not in rendered
+    assert "ticket responses and nothing else" in rendered
 
 
 @pytest.mark.parametrize("stage", ["semantics", "operations", "coding"])

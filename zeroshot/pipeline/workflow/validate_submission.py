@@ -25,8 +25,8 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     OperationSubmission,
     ReconstructionSnapshot,
     SemanticSubmission,
-    StageSubmission,
     Ticket,
+    TicketAnswers,
     TicketResponse,
     tickets_assigned_to,
 )
@@ -75,7 +75,7 @@ def validate_submission(
         _validate_audit_report(submission, snapshot)
         return
 
-    if not isinstance(submission, StageSubmission):
+    if not isinstance(submission, TicketAnswers):
         raise TypeError(f"unsupported submission type: {type(submission).__name__}")
 
     stage = _next_reasoning_stage(snapshot.last_completed_stage)

@@ -154,15 +154,35 @@ def tickets_assigned_to(
     return [ticket for ticket in tickets if stage in ticket.assigned_stages]
 
 
-class StageSubmission[M](BaseModel):
+class TicketAnswers(BaseModel):
+    """What every reasoning stage owes the round: one answer per open ticket.
+
+    Separate from the revision below because coding has nothing else to send.
+    A schema that showed it `edits`, `deleted` and `rationale` and then refused
+    every value it put in them cost four of ten GLM runs, which died after six
+    corrections that could not tell the model what to write instead of a
+    string. A field a stage must leave empty does not belong in its answer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    responses: list[TicketResponse] = Field(
+        ...,
+        description=(
+            "Exactly one response for every open ticket this stage is assigned "
+            "to, and none for the others. The pipeline validates the ticket IDs "
+            "and the assignment against the current snapshot."
+        ),
+    )
+
+
+class StageSubmission[M: SemanticFeature | Operation](TicketAnswers):
     """One stage's revision of its artifact, and its answers to its tickets.
 
     A model reads the concrete subclass, never this: pydantic takes a schema
     description from the class it is asked for, so the wording that names
     sem_, op_ or the workspace program belongs to the subclass that means it.
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     edits: list[M] = Field(
         ...,
@@ -188,14 +208,6 @@ class StageSubmission[M](BaseModel):
             "The first round has none to keep, so it must be stated there."
         ),
     )
-    responses: list[TicketResponse] = Field(
-        ...,
-        description=(
-            "Exactly one response for every open ticket this stage is assigned "
-            "to, and none for the others. The pipeline validates the ticket IDs "
-            "and the assignment against the current snapshot."
-        ),
-    )
 
     @classmethod
     def unchanged(cls) -> Self:
@@ -204,15 +216,7 @@ class StageSubmission[M](BaseModel):
 
     @model_validator(mode="after")
     def require_distinct_edited_and_deleted_names(self) -> Self:
-        # `CodingSubmission` types its edits `list[None]`, so a model that
-        # sends `[null]` passes the field check and arrives here; reading
-        # `.name` off it would raise AttributeError instead of the rejection
-        # the retry loop knows how to feed back.
-        named = [
-            edit.name  # type: ignore[attr-defined]
-            for edit in self.edits
-            if edit is not None
-        ]
+        named = [edit.name for edit in self.edits]
         duplicated = sorted({name for name in named if named.count(name) > 1})
         if duplicated:
             raise ValueError(f"edits name {', '.join(duplicated)} more than once")
@@ -282,46 +286,17 @@ class OperationSubmission(StageSubmission[Operation]):
     )
 
 
-class CodingSubmission(StageSubmission[None]):
+class CodingSubmission(TicketAnswers):
     """Your ticket responses. The program itself is read from the workspace.
 
     This ends the coding stage: give it once, after the program in the
     workspace is the one you mean to submit.
     """
 
-    edits: list[None] = Field(
-        ...,
-        description="Always empty: you revise the program in the workspace.",
-    )
-    deleted: list[str] = Field(..., description="Always empty.")
-    rationale: str | None = Field(..., description="Always null.")
-
-    @model_validator(mode="after")
-    def require_an_empty_revision(self) -> Self:
-        """Reject a revision, and say which member carried one.
-
-        `rationale` counts as absent when it is blank as well as when it is
-        null: a model that means "nothing to say" writes `""` as readily as
-        `null`, and rejecting that spends a retry on a distinction the contract
-        does not care about. The message names the member that was not empty,
-        because it reaches the model as the correction it has to act on -- one
-        that only restates the rule reads as a description of what the model
-        just did, and it sends the same answer again.
-        """
-        carried = []
-        if self.edits:
-            carried.append(f"edits has {len(self.edits)} entries, expected []")
-        if self.deleted:
-            carried.append(f"deleted names {', '.join(self.deleted)}, expected []")
-        if self.rationale is not None and self.rationale.strip():
-            carried.append("rationale is a string, expected null")
-        if carried:
-            raise ValueError(
-                f"coding carries no revision of its own ({'; '.join(carried)}): "
-                "the program is captured from the workspace through "
-                "verification, so only `responses` is yours to fill"
-            )
-        return self
+    @classmethod
+    def unchanged(cls) -> Self:
+        """The answer a coding stage with no ticket of its own would give."""
+        return cls(responses=[])
 
 
 class ReconstructionSnapshot(BaseModel):

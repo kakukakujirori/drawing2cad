@@ -5,7 +5,7 @@ from typing import cast
 
 import pytest
 
-from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing, unchanged
+from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -181,7 +181,6 @@ def test_every_reasoning_stage_accepts_its_expected_deliverable() -> None:
     )
     _merge_and_validate(
         CodingSubmission(
-            **unchanged(),
             responses=[_response("ticket_initial", PipelineStage.CODING)],
         ),
         _snapshot(PipelineStage.OPERATIONS),
@@ -436,7 +435,6 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
         responses=[_response("ticket_initial", PipelineStage.SEMANTICS)],
     )
     coding_submission = CodingSubmission(
-        **unchanged(),
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
@@ -458,7 +456,6 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
 
 def test_coding_checks_the_submitted_program_against_current_round_operations() -> None:
     submission = CodingSubmission(
-        **unchanged(),
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
@@ -475,7 +472,6 @@ def test_coding_checks_the_submitted_program_against_current_round_operations() 
 
 def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
     submission = CodingSubmission(
-        **unchanged(),
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
@@ -488,7 +484,6 @@ def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
 
 def test_completed_coding_accepts_only_an_audit_report() -> None:
     submission = CodingSubmission(
-        **unchanged(),
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 

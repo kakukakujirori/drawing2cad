@@ -27,7 +27,7 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     OperationSubmission,
     ReconstructionSnapshot,
     SemanticSubmission,
-    StageSubmission,
+    TicketAnswers,
     tickets_assigned_to,
 )
 from zeroshot.pipeline.messages.contracts.stages import (
@@ -378,10 +378,10 @@ def create_reconstruction_graph(
     ) -> dict[str, Any]:
         """Validate and atomically integrate the pending reasoning output."""
         submission = state.get("stage_submission")
-        if not isinstance(submission, StageSubmission):
+        if not isinstance(submission, TicketAnswers):
             return _rejected_stage_submission(
                 state,
-                "the reasoning stage did not return a StageSubmission",
+                "the reasoning stage did not return its ticket answers",
             )
 
         reconstruction = state.get("reconstruction")
