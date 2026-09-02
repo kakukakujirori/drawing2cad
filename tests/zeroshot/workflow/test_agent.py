@@ -1220,11 +1220,28 @@ def test_a_length_truncated_answer_earns_the_length_correction() -> None:
         responses=(_empty("length"), AIMessage(content="done")),
     )
 
-    _subgraph(model, announce_turns=False, model_retries=1).invoke(
+    # No tools, so the turn had nothing to do but answer.
+    _subgraph(model, tools=(), announce_turns=False, model_retries=1).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
     assert "output-token limit" in model.received_messages[-1][-1].text
+
+
+def test_a_working_turn_that_ran_long_is_not_told_to_stop_using_tools() -> None:
+    """`Do not call tools` reads as give up while there is still work to do --
+    one coding stage answered "not yet implemented" on its first turn."""
+    model = ScriptedChatModel(
+        responses=(_empty("length"), AIMessage(content="done")),
+    )
+
+    _subgraph(model, announce_turns=False, model_retries=1).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    correction = model.received_messages[-1][-1].text
+    assert "Do not call tools" not in correction
+    assert "whole output budget on thinking" in correction
 
 
 def test_an_empty_answer_that_did_not_run_out_earns_the_plain_nudge() -> None:

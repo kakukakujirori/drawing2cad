@@ -212,7 +212,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 rejected += 1
                 current_request = (
                     self._retry_length_limited_request(current_request)
-                    if _ran_out_of_output(response)
+                    if _answering_ran_out_of_output(current_request, response)
                     else self._retry_unanswered_request(current_request)
                 )
 
@@ -280,7 +280,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 rejected += 1
                 current_request = (
                     self._retry_length_limited_request(current_request)
-                    if _ran_out_of_output(response)
+                    if _answering_ran_out_of_output(current_request, response)
                     else self._retry_unanswered_request(current_request)
                 )
 
@@ -308,16 +308,22 @@ def _finish_reason(response: ModelResponse[Any]) -> str | None:
     return metadata.get("finish_reason")
 
 
-def _ran_out_of_output(response: ModelResponse[Any]) -> bool:
-    """Whether the backend cut this answer off at the output limit.
+def _answering_ran_out_of_output(
+    request: ModelRequest[None],
+    response: ModelResponse[Any],
+) -> bool:
+    """Whether an answer, rather than a working turn, hit the output limit.
 
-    The OpenAI client raises `LengthFinishReasonError` for this, and the
-    correction it earns -- drop the tools, keep the JSON short enough to close
-    -- is written for it. A backend that reports the same thing in
-    `finish_reason` instead would otherwise get the generic nudge, which asks
-    the model to answer without telling it why the last one did not fit.
+    The OpenAI client raises `LengthFinishReasonError` for a truncated answer,
+    and the correction it earns -- call no tools, keep the JSON short enough to
+    close -- is written for one. A backend reporting the same thing in
+    `finish_reason` deserves it too, but only where it means the same thing: on
+    a turn that still has tools the model was working, not answering, and
+    telling it to stop calling them reads as an instruction to give up. One
+    coding stage did exactly that, and submitted "not yet implemented" on its
+    first turn.
     """
-    return _finish_reason(response) == "length"
+    return _finish_reason(response) == "length" and not request.tools
 
 
 def _unanswered_diagnosis(response: ModelResponse[Any]) -> dict[str, object]:
