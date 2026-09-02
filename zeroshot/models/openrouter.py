@@ -34,24 +34,31 @@ from langchain_openrouter.chat_models import ChatOpenRouter
 _CONSTANT_DETAIL_FIELDS = ("format", "signature", "provider", "model")
 
 
-def _thin_reasoning_details(details: Any, seen: set[Any]) -> None:
-    """Keep each constant field on the first delta of a block, drop the rest.
+def _thin_reasoning_details(details: Any, kept: set[Any]) -> None:
+    """Keep each constant field once per block, and drop the repeats.
 
     Merging then reproduces the shape a non-streaming response would have had:
-    the field appears once, with the value the provider sent.
+    the field appears once, carrying the value the provider sent.
+
+    A field counts as kept only once a delta carries something for it, because
+    `merge_dicts` lets a later value stand in for a `None` one and dropping the
+    repeats must not take that repair away -- a block whose first delta has
+    `format: null` would otherwise go back to the API with the null, and be
+    refused as a string that is not a string.
     """
     if not isinstance(details, list):
         return
     for entry in details:
         if not isinstance(entry, dict):
             continue
-        key = (entry.get("type"), entry.get("index"), entry.get("id"))
-        first = key not in seen
-        seen.add(key)
-        if first:
-            continue
+        block = (entry.get("type"), entry.get("index"), entry.get("id"))
         for field in _CONSTANT_DETAIL_FIELDS:
-            entry.pop(field, None)
+            if field not in entry:
+                continue
+            if (block, field) in kept:
+                entry.pop(field)
+            elif entry[field] is not None:
+                kept.add((block, field))
 
 
 class ChatOpenRouterSingleReasoning(ChatOpenRouter):
@@ -65,9 +72,9 @@ class ChatOpenRouterSingleReasoning(ChatOpenRouter):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        seen: set[Any] = set()
+        kept: set[Any] = set()
         for chunk in super()._stream(messages, stop, run_manager, **kwargs):
-            _thin_chunk(chunk, seen)
+            _thin_chunk(chunk, kept)
             yield chunk
 
     @override
@@ -78,9 +85,9 @@ class ChatOpenRouterSingleReasoning(ChatOpenRouter):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
-        seen: set[Any] = set()
+        kept: set[Any] = set()
         async for chunk in super()._astream(messages, stop, run_manager, **kwargs):
-            _thin_chunk(chunk, seen)
+            _thin_chunk(chunk, kept)
             yield chunk
 
     @override
@@ -89,16 +96,35 @@ class ChatOpenRouterSingleReasoning(ChatOpenRouter):
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         message_dicts, params = super()._create_message_dicts(messages, stop)
         for message_dict in message_dicts:
+            _drop_null_detail_fields(message_dict)
             _drop_redundant_reasoning(message_dict)
         return message_dicts, params
 
 
-def _thin_chunk(chunk: ChatGenerationChunk, seen: set[Any]) -> None:
+def _thin_chunk(chunk: ChatGenerationChunk, kept: set[Any]) -> None:
     message = chunk.message
     if isinstance(message, AIMessageChunk):
         _thin_reasoning_details(
-            message.additional_kwargs.get("reasoning_details"), seen
+            message.additional_kwargs.get("reasoning_details"), kept
         )
+
+
+def _drop_null_detail_fields(message_dict: dict[str, Any]) -> None:
+    """Say nothing rather than null in a reasoning detail.
+
+    These fields are typed as strings, so a null the provider sent is refused
+    when it goes back -- 422, `Input should be a valid string` -- while leaving
+    the field out is what a response without it looks like anyway.
+    """
+    details = message_dict.get("reasoning_details")
+    if not isinstance(details, list):
+        return
+    message_dict["reasoning_details"] = [
+        {key: value for key, value in entry.items() if value is not None}
+        if isinstance(entry, dict)
+        else entry
+        for entry in details
+    ]
 
 
 def _drop_redundant_reasoning(message_dict: dict[str, Any]) -> None:
