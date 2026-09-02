@@ -438,7 +438,7 @@ def _outline(value: Any) -> Any:
 
 
 _OPENROUTER_STREAM_ERROR = re.compile(
-    r"^OpenRouter API returned an error during streaming:.*\(code: (\d+)\)$",
+    r"^OpenRouter API returned an error during streaming:.*\(code: (\d+)\)",
     re.DOTALL,
 )
 
