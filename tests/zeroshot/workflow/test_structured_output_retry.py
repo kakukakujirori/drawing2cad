@@ -14,6 +14,7 @@ from tests.zeroshot.chat_models import ScriptedChatModel
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.middleware.model_retry import (
     _is_retryable_model_error,
+    _rejected_arguments,
 )
 
 
@@ -195,3 +196,40 @@ def test_a_non_valueerror_carrying_the_same_text_is_not_matched() -> None:
     assert not _is_retryable_model_error(
         RuntimeError("OpenRouter API returned an error during streaming: x (code: 502)")
     )
+
+
+def test_a_tool_call_answer_is_shown_back_to_its_author() -> None:
+    """A tool-call answer is never replayed as a message -- a call with no
+    result invalidates the next request -- so without this the model is told
+    only that its answer was wrong, never what it sent."""
+    model = ScriptedChatModel(
+        responses=(_answering("T1", "call_1"), _answering("ticket_initial", "call_2"))
+    )
+
+    _agent(model).invoke({"messages": []})
+
+    correction = str(model.received_messages[1][-1].content)
+    assert 'You sent: {"ticket_id": "T1"}' in correction
+
+
+def test_a_large_rejected_answer_comes_back_as_its_shape() -> None:
+    """Which member was wrong is what a rejected answer has to show. A whole
+    hypothesis restated is the same information at fifty times the price."""
+    long_id = "T" + "x" * 4000
+    model = ScriptedChatModel(
+        responses=(
+            _answering(long_id, "call_1"),
+            _answering("ticket_initial", "call_2"),
+        )
+    )
+
+    _agent(model).invoke({"messages": []})
+
+    correction = str(model.received_messages[1][-1].content)
+    assert long_id not in correction
+    assert '"ticket_id": "<4001 characters>"' in correction
+
+
+def test_a_plain_text_answer_is_not_shown_back_twice() -> None:
+    """It is already replayed as the message it was."""
+    assert _rejected_arguments(AIMessage(content="not JSON")) == ""
