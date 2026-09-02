@@ -142,7 +142,7 @@ def test_coding_submits_an_empty_revision() -> None:
     assert submission.deleted == []
     with pytest.raises(ValidationError):
         CodingSubmission.model_validate({"responses": responses})
-    with pytest.raises(ValidationError, match="coding submits no edits"):
+    with pytest.raises(ValidationError, match="coding carries no revision"):
         CodingSubmission.model_validate(
             {**unchanged(), "rationale": "why", "responses": responses}
         )
@@ -385,3 +385,41 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
     assert restored.snapshots[0].verification is not None
     assert restored.snapshots[0].verification.status is ExecutionStatus.VERIFIED
     assert isinstance(restored.snapshots[1].open_tickets[0].subject, AuditFinding)
+
+
+def test_coding_accepts_a_blank_rationale_as_no_rationale() -> None:
+    """A model that means "nothing to say" writes "" as readily as null, and
+    the contract does not care about the difference."""
+    responses = _responses("ticket_initial", "coding")
+
+    for blank in (None, "", "   "):
+        submission = CodingSubmission(
+            edits=[], deleted=[], rationale=blank, responses=responses
+        )
+        assert submission.rationale == blank
+
+
+def test_coding_names_the_member_that_carried_a_revision() -> None:
+    """The message reaches the model as the correction it has to act on, so it
+    has to say which member was wrong, not restate the rule."""
+    responses = _responses("ticket_initial", "coding")
+
+    with pytest.raises(ValidationError, match=r"rationale is a string"):
+        CodingSubmission(
+            edits=[], deleted=[], rationale="Implemented every op.", responses=responses
+        )
+    with pytest.raises(ValidationError, match=r"deleted names op_gone"):
+        CodingSubmission(
+            edits=[], deleted=["op_gone"], rationale=None, responses=responses
+        )
+
+
+def test_a_null_coding_edit_is_rejected_rather_than_crashing() -> None:
+    """`edits` is typed `list[None]`, so `[null]` passes the field check and
+    reaches the shared validator, which would read `.name` off it."""
+    responses = _responses("ticket_initial", "coding")
+
+    with pytest.raises(ValidationError, match=r"edits has 1 entries"):
+        CodingSubmission(
+            edits=[None], deleted=[], rationale=None, responses=responses
+        )

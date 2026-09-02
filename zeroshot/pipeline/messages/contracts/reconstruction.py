@@ -204,7 +204,15 @@ class StageSubmission[M](BaseModel):
 
     @model_validator(mode="after")
     def require_distinct_edited_and_deleted_names(self) -> Self:
-        named = [edit.name for edit in self.edits]  # type: ignore[attr-defined]
+        # `CodingSubmission` types its edits `list[None]`, so a model that
+        # sends `[null]` passes the field check and arrives here; reading
+        # `.name` off it would raise AttributeError instead of the rejection
+        # the retry loop knows how to feed back.
+        named = [
+            edit.name  # type: ignore[attr-defined]
+            for edit in self.edits
+            if edit is not None
+        ]
         duplicated = sorted({name for name in named if named.count(name) > 1})
         if duplicated:
             raise ValueError(f"edits name {', '.join(duplicated)} more than once")
@@ -290,10 +298,28 @@ class CodingSubmission(StageSubmission[None]):
 
     @model_validator(mode="after")
     def require_an_empty_revision(self) -> Self:
-        if self.edits or self.deleted or self.rationale is not None:
+        """Reject a revision, and say which member carried one.
+
+        `rationale` counts as absent when it is blank as well as when it is
+        null: a model that means "nothing to say" writes `""` as readily as
+        `null`, and rejecting that spends a retry on a distinction the contract
+        does not care about. The message names the member that was not empty,
+        because it reaches the model as the correction it has to act on -- one
+        that only restates the rule reads as a description of what the model
+        just did, and it sends the same answer again.
+        """
+        carried = []
+        if self.edits:
+            carried.append(f"edits has {len(self.edits)} entries, expected []")
+        if self.deleted:
+            carried.append(f"deleted names {', '.join(self.deleted)}, expected []")
+        if self.rationale is not None and self.rationale.strip():
+            carried.append("rationale is a string, expected null")
+        if carried:
             raise ValueError(
-                "coding submits no edits, no deletions and no rationale: the "
-                "program is captured from the workspace through verification"
+                f"coding carries no revision of its own ({'; '.join(carried)}): "
+                "the program is captured from the workspace through "
+                "verification, so only `responses` is yours to fill"
             )
         return self
 
