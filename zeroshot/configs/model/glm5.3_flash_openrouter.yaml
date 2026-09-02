@@ -17,7 +17,7 @@ model:
   # until the ceiling stops it -- one measured turn spent 96,547 tokens
   # reasoning, hit `finish_reason: length` at 131,072, and returned nothing.
   reasoning:
-    effort: high
+    effort: medium
   output_version: v1
   api_key: ${oc.env:OPENROUTER_API_KEY}
 
@@ -31,11 +31,15 @@ model:
     order: [Cloudflare, Fireworks, DeepInfra]
     allow_fallbacks: false
 
-  # Small enough that the effort share binds, and split from what the run
-  # measured: turns that produced a usable result reasoned for 1.5k-6.5k
-  # tokens, and the largest answer was ~7k. At 80% this caps thinking at 32k --
-  # five times the widest healthy turn -- and leaves 8k for the answer.
-  max_tokens: 40000
+  # Small enough that the effort share binds, and split from what the runs
+  # measured. On a hard turn this model reaches for the same amount of thinking
+  # every time -- 25.0k, 29.7k, 30.4k, 31.2k tokens across four stages -- so the
+  # cap belongs there rather than below it, where thinking simply eats the
+  # answer. The other half is the answer, and coding's answer is a whole
+  # CadQuery program in one tool call: at 40k total, reasoning took 31k, the
+  # call carrying the program was cut off mid-argument, and the turn came back
+  # with `finish_reason: tool_calls` and no call in it.
+  max_tokens: 60000
 
   timeout: 600000  # milliseconds
   max_retries: 0
