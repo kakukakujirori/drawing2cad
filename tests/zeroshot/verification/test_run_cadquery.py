@@ -252,7 +252,7 @@ def test_execute_writes_verified_step_to_requested_path(tmp_path: Path) -> None:
         # A 10x20x30 box is six planes and twelve straight edges. The census
         # is here so that a coder handed this report can see when its arcs came
         # back as a hundred of them.
-        census=ShapeCensus(6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+        census=ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
     )
     assert output_step_path.is_file()
     assert runner.calls[0][0] == "python /work/_run_program.py /work/model.py"
@@ -691,3 +691,31 @@ result = cq.Workplane("XY").box(10, 20, 30).faces(">Z").fillet(100.0)
     assert report.stderr.startswith("Traceback (most recent call last):\n  File")
     assert "_run_program.py" not in report.stderr
     assert "/work/model.py" in report.stderr
+
+
+def test_a_return_in_several_pieces_is_counted_whole(tmp_path: Path) -> None:
+    executor = CadQueryExecutor(
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable),
+            default_timeout_s=60.0,
+        ),
+    )
+    source = """\
+import cadquery as cq
+
+ret_apart = cq.Workplane("XY").box(10, 10, 10).union(
+    cq.Workplane("XY").box(10, 10, 10).translate((100, 0, 0))
+)
+result = ret_apart
+"""
+
+    report = executor.execute(
+        _write_model(tmp_path, source),
+        intermediate_returns_dir=tmp_path / "intermediate_returns",
+    )
+    counted = report.intermediate_returns[0].census
+
+    assert counted is not None
+    assert counted.solids == 2
+    # Both boxes, not just the one `.val()` would have returned.
+    assert counted.volume == pytest.approx(2000.0)

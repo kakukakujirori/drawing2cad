@@ -37,8 +37,9 @@ def _by_kind_change(now: Counter[str], before: Counter[str]) -> str:
 
 @dataclass(frozen=True)
 class ShapeCensus:
-    """How big a solid is, and which surfaces and curves bound it."""
+    """How many pieces a part is in, how big it is, and what bounds it."""
 
+    solids: int
     volume: float
     faces: Counter[str]
     edges: Counter[str]
@@ -50,9 +51,13 @@ class ShapeCensus:
         42, Plane 33, ...)`. Kinds rather than a total, because a total says a
         part is complicated and a kind says a cylinder came out as a hundred
         flat strips.
+
+        A part that is not one solid says so first. One solid is the normal
+        case and goes unsaid.
         """
         return "; ".join(
             [
+                *([f"solids {self.solids}"] if self.solids != 1 else []),
                 f"volume {self.volume:.1f}",
                 *(
                     f"{label} {sum(counted.values())} ({_by_kind(counted)})"
@@ -66,9 +71,17 @@ class ShapeCensus:
         """Give the same counts, and after each one its change since `previous`.
 
         An operation that built nothing shows `+0.0` volume and `+0` faces.
-        That is what an accidental identity looks like from the outside.
+        That is what an accidental identity looks like from the outside. An
+        operation that broke the part apart shows the solid count going up.
         """
-        parts = [f"volume {self.volume:.1f} ({self.volume - previous.volume:+.1f})"]
+        parts = [
+            *(
+                [f"solids {self.solids} ({self.solids - previous.solids:+d})"]
+                if self.solids != 1 or previous.solids != 1
+                else []
+            ),
+            f"volume {self.volume:.1f} ({self.volume - previous.volume:+.1f})",
+        ]
         for label, now, before in (
             ("faces", self.faces, previous.faces),
             ("edges", self.edges, previous.edges),
@@ -92,7 +105,11 @@ def read_census(step_path: Path) -> ShapeCensus | None:
     from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 
     try:
-        shape = cq.importers.importStep(str(step_path)).val()
+        # The whole compound, not `.val()`: a part that broke apart must be
+        # counted whole, or the census silently reports one of its pieces.
+        shape = cq.Compound.makeCompound(
+            cq.importers.importStep(str(step_path)).vals()  # type: ignore[arg-type]
+        )
         volume = shape.Volume()
     except (OSError, ValueError, RuntimeError, IndexError):
         # A build that reached here has already been accepted as one valid
@@ -102,6 +119,7 @@ def read_census(step_path: Path) -> ShapeCensus | None:
         return None
 
     return ShapeCensus(
+        solids=len(shape.Solids()),
         volume=volume,
         faces=_kinds(shape.Faces(), BRepAdaptor_Surface),
         edges=_kinds(shape.Edges(), BRepAdaptor_Curve),

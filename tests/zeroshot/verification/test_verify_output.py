@@ -63,10 +63,9 @@ class StubCadQueryExecutor:
             and self.report.status is ExecutionStatus.VERIFIED
         ):
             output_step_path.write_text("ISO-10303-21;\nEND-ISO-10303-21;\n")
-        if (
-            intermediate_returns_dir is None
-            or self.report.status is not ExecutionStatus.VERIFIED
-        ):
+        # Kept whenever the program ran, as the real executor does: a
+        # `result` that fails to verify still leaves every ret_xxx behind.
+        if intermediate_returns_dir is None or not self.return_names:
             return self.report
         return replace(
             self.report,
@@ -85,7 +84,7 @@ class StubCadQueryExecutor:
             name,
             step_path=step_path,
             census=ShapeCensus(
-                100.0 * (index + 1), Counter({"Plane": 6}), Counter({"Line": 12})
+                1, 100.0 * (index + 1), Counter({"Plane": 6}), Counter({"Line": 12})
             ),
         )
 
@@ -639,11 +638,12 @@ def test_the_table_states_each_return_and_its_change() -> None:
     returns = (
         IntermediateReturn(
             "ret_base",
-            census=ShapeCensus(6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+            census=ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
         ),
         IntermediateReturn(
             "ret_hole",
             census=ShapeCensus(
+                1,
                 5880.0,
                 Counter({"Plane": 10}),
                 Counter({"Line": 20, "Circle": 4}),
@@ -661,7 +661,7 @@ def test_the_table_states_each_return_and_its_change() -> None:
 
 
 def test_an_operation_that_built_nothing_shows_no_change() -> None:
-    census = ShapeCensus(6000.0, Counter({"Plane": 6}), Counter({"Line": 12}))
+    census = ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12}))
     returns = (
         IntermediateReturn("ret_base", census=census),
         IntermediateReturn("ret_cleaned", census=census),
@@ -676,12 +676,12 @@ def test_a_return_that_was_not_exported_carries_the_reason() -> None:
     returns = (
         IntermediateReturn(
             "ret_base",
-            census=ShapeCensus(6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+            census=ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
         ),
         IntermediateReturn("ret_count", error="TypeError: not a shape"),
         IntermediateReturn(
             "ret_grown",
-            census=ShapeCensus(9000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+            census=ShapeCensus(1, 9000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
         ),
     )
 
@@ -789,3 +789,47 @@ def test_the_returns_are_neither_kept_nor_drawn_when_switched_off(
     assert "Intermediate returns" not in text
     # One render, for the attempt itself.
     assert len(renderer.calls) == 1
+
+
+def test_a_result_that_fails_still_reports_what_the_returns_built(
+    tmp_path: Path,
+) -> None:
+    executor = StubCadQueryExecutor(
+        _execution_report(status=ExecutionStatus.FAILED, returncode=0),
+        return_names=("ret_base", "ret_hole"),
+    )
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verifier = _create_verifier(executor, workdir)
+
+    text = _text(verifier.feedback())
+
+    # The program ran, so its returns are the diagnostic for why `result` is not
+    # one valid solid.
+    assert "ret_base  volume 100.0" in text
+    assert "ret_hole  volume 200.0 (+100.0)" in text
+    returns_dir = tmp_path / "attempts" / "000" / "intermediate_returns"
+    assert (returns_dir / "ret_base" / "techdraw.dxf").is_file()
+    # No STEP of its own, so the attempt's own views are absent.
+    assert "attempts/000/techdraw.dxf" not in text
+
+
+def test_a_part_that_broke_apart_says_how_many_pieces() -> None:
+    returns = (
+        IntermediateReturn(
+            "ret_whole",
+            census=ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+        ),
+        IntermediateReturn(
+            "ret_split",
+            census=ShapeCensus(
+                3, 5000.0, Counter({"Plane": 18}), Counter({"Line": 36})
+            ),
+        ),
+    )
+
+    lines = _census_table(returns).splitlines()
+
+    # One solid is the normal case and goes unsaid.
+    assert lines[0].startswith("ret_whole  volume 6000.0")
+    assert lines[1].startswith("ret_split  solids 3 (+2); volume 5000.0 (-1000.0)")

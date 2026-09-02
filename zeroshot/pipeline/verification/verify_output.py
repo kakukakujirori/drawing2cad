@@ -241,14 +241,9 @@ class OutputVerifier:
         # update report
         report = report.import_from(cq_report)
 
-        # if verification failed, return early. No STEP means nothing to draw.
-        if not (report.status == ExecutionStatus.VERIFIED and report.returncode == 0):
-            return report, None
-
-        # render the three-view DXF and the perspective PNGs
-        render_report = self._render(output_step_path, host_verification_dir)
-
-        # the same views again, once per ret_xxx the program left behind
+        # Draw and describe every ret_xxx the program left behind. A program
+        # that ran leaves these whether or not `result` passed, and a result
+        # that failed is when they are most worth reading.
         host_returns_dir = host_verification_dir / INTERMEDIATE_RETURNS_DIR
         renders = {
             output.name: self._render(output.step_path, host_returns_dir / output.name)
@@ -266,6 +261,13 @@ class OutputVerifier:
                 / INTERMEDIATE_RETURNS_DIR,
             ),
         )
+
+        # A result that did not build has no STEP of its own to draw.
+        if not (report.status == ExecutionStatus.VERIFIED and report.returncode == 0):
+            return report, None
+
+        # render the three-view DXF and the perspective PNGs
+        render_report = self._render(output_step_path, host_verification_dir)
 
         manifest = FeedbackManifest(
             verification_id=verification_id,
