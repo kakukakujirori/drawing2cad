@@ -921,3 +921,36 @@ def test_a_part_that_broke_apart_says_how_many_pieces() -> None:
     # One solid is the normal case and goes unsaid.
     assert lines[0].startswith("ret_whole  volume 6000.0")
     assert lines[1].startswith("ret_split  solids 3 (+2); volume 5000.0 (-1000.0)")
+
+
+@pytest.mark.parametrize(
+    "status", [ExecutionStatus.TIMEOUT, ExecutionStatus.INFRA_ERROR]
+)
+def test_a_build_the_machine_spoiled_is_attempted_again(
+    status: ExecutionStatus, tmp_path: Path
+) -> None:
+    """Neither outcome describes the program, so the same bytes are built again."""
+    executor = StubCadQueryExecutor(_execution_report(status=status, returncode=None))
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verifier = _create_verifier(executor, workdir)
+
+    verifier.verify()
+    verifier.verify()
+
+    assert len(executor.calls) == 2
+
+
+def test_a_build_the_program_broke_is_not_attempted_again(tmp_path: Path) -> None:
+    """A program that fails on its own fails the same way, so the build is kept."""
+    executor = StubCadQueryExecutor(
+        _execution_report(status=ExecutionStatus.FAILED, returncode=1)
+    )
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verifier = _create_verifier(executor, workdir)
+
+    verifier.verify()
+    verifier.verify()
+
+    assert len(executor.calls) == 1

@@ -29,6 +29,10 @@ from zeroshot.pipeline.verification.shape_census import ShapeCensus
 
 VerifyOutputValue: type = str | int | None
 
+# Build outcomes a second attempt at the same bytes could come out of
+# differently, because they turn on how loaded the machine was.
+_TRANSIENT_OUTCOMES = frozenset({ExecutionStatus.TIMEOUT, ExecutionStatus.INFRA_ERROR})
+
 
 def _census_table(returns: Sequence[IntermediateReturn]) -> str:
     """Lay out what each `ret_*` held, one line each, in program order.
@@ -218,7 +222,8 @@ class OutputVerifier:
         STEP and the same twenty renders. The coder's turn is checked by
         middleware, and the same program reaches the graph's own verification a
         moment later, so without this every coding stage paid for its build
-        twice.
+        twice. A transient outcome is the exception: it is not kept, and the
+        same bytes are built again.
 
         The manifest stays out of the report because it carries host paths, and
         only the report is msgpack-serialisable enough to reach graph state.
@@ -228,7 +233,7 @@ class OutputVerifier:
             return self._built
 
         report, manifest = self._build()
-        if digest is not None:
+        if digest is not None and report.status not in _TRANSIENT_OUTCOMES:
             self._built, self._built_from_digest = (report, manifest), digest
         return report, manifest
 
