@@ -18,6 +18,7 @@ manifold3d
 opencv-python-headless
 peft
 Pillow
+pymupdf
 pytest
 pyyaml
 rich
