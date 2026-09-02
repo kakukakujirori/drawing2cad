@@ -15,7 +15,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.components.agent import AgentState, create_agent
-from zeroshot.pipeline.workflow.middleware import StopReason
 
 
 class Proposal(BaseModel):
@@ -225,15 +224,10 @@ def create_proposer_reviewer_loop(
             if state.get("revision_count", 0) >= max_revisions:
                 return "__end__"
             return "review"
-        elif proposer_state := state.get("proposer_state"):
-            if proposer_state.get("stop_reason") == StopReason.BUDGET_EXHAUSTED:
-                return "__end__"
-            else:
-                # Internal error, try again
-                return "propose"
-        else:
-            # Abnormal case, try again
-            return "propose"
+        # No proposal: the proposer either ran out of turns or ran out of
+        # corrections for an answer that would not parse. Either way it has
+        # already retried everything asking again would ask for.
+        return "__end__"
 
     def review(state: ProposerReviewerState, config: RunnableConfig) -> dict:
         """Ask the reviewer to review a proposal."""
@@ -285,17 +279,10 @@ def create_proposer_reviewer_loop(
             revision_count = state.get("revision_count", 0)  # NOTE: already incremented
             if review.accept or revision_count >= max_revisions:
                 return "__end__"
-            else:
-                return "propose"
-        elif review_state := state.get("reviewer_state"):
-            if review_state.get("stop_reason") == StopReason.BUDGET_EXHAUSTED:
-                return "__end__"
-            else:
-                # Internal error, try again
-                return "review"
-        else:
-            # Abnormal case, try again
-            return "review"
+            return "propose"
+        # No review, for the same two reasons a proposal can be missing, and
+        # the proposal it was asked about still stands.
+        return "__end__"
 
     stage = StateGraph(state_schema=ProposerReviewerState)  # type: ignore[type-var]
 

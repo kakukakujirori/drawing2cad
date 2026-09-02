@@ -2,7 +2,6 @@ import json
 from typing import Any
 
 import pytest
-from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
@@ -211,14 +210,18 @@ def test_a_proposer_that_runs_out_of_turns_is_not_reviewed() -> None:
     assert reviewer.received_messages == []
 
 
-def test_a_proposal_that_breaks_its_contract_stops_the_run() -> None:
+def test_a_proposal_that_breaks_its_contract_ends_the_loop() -> None:
+    """The proposer has already spent its corrections on that answer, so asking
+    the same node again would only repeat them."""
     proposer = ScriptedChatModel(
         responses=(AIMessage(content='{"proposal": "a plate"}'),)
     )
     reviewer = ScriptedChatModel(responses=())
 
-    with pytest.raises(StructuredOutputValidationError, match="Proposal"):
-        _loop(proposer, reviewer, model_retries=0).invoke(_entry())
+    result = _loop(proposer, reviewer, model_retries=0).invoke(_entry())
+
+    assert result.get("proposal") is None
+    assert reviewer.received_messages == []
 
 
 def test_stage_reentry_resets_per_invocation_counts_but_keeps_agent_memory() -> None:

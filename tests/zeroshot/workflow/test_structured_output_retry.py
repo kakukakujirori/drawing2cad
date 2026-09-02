@@ -87,17 +87,20 @@ def test_a_rejected_answer_is_returned_to_the_model_to_correct() -> None:
     assert "ticket_id must be a ticket_... identifier" in str(correction.content)
 
 
-def test_an_answer_that_stays_malformed_ends_the_run_rather_than_the_stage() -> None:
-    """Exhausting the budget has to raise. Ending the stage quietly would hand
-    the graph no submission and no reason for one."""
+def test_an_answer_that_stays_malformed_ends_the_stage_and_says_why() -> None:
+    """Exhausting the budget ends the turn with no answer. The graph re-asks a
+    stage that produced none, and raising here reached none of that."""
     model = ScriptedChatModel(
         responses=tuple(_answering("T1", "call") for _ in range(3))
     )
 
-    with pytest.raises(Exception, match="ticket_id must be a ticket_"):
-        _agent(model, model_retries=2).invoke({"messages": []})
+    result = _agent(model, model_retries=2).invoke({"messages": []})
 
     assert len(model.received_messages) == 3
+    assert result.get("structured_response") is None
+    gave_up = result["messages"][-1].text
+    assert "still could not be read" in gave_up
+    assert "ticket_id must be a ticket_" in gave_up
 
 
 def test_a_stage_re_entry_does_not_carry_an_answer_into_the_next_invocation() -> None:
@@ -170,6 +173,9 @@ def test_a_model_that_never_answers_ends_the_stage_without_failing_the_run() -> 
 
     assert result.get("structured_response") is None
     assert len(model.received_messages) == 3
+    gave_up = result["messages"][-1].text
+    assert "still could not be read" in gave_up
+    assert "no tool call, no text" in gave_up
 
 
 _STREAM_ERROR = "OpenRouter API returned an error during streaming: "

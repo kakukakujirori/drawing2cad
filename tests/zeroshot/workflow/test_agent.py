@@ -5,7 +5,6 @@ from typing import Any
 
 import httpx
 import pytest
-from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import (
     AIMessage,
@@ -431,13 +430,15 @@ def test_agent_reports_the_typed_answer_its_role_owes() -> None:
 def test_agent_refuses_an_answer_that_breaks_its_output_contract() -> None:
     model = ScriptedChatModel(responses=(AIMessage(content='{"proposal": "a boss"}'),))
 
-    with pytest.raises(StructuredOutputValidationError, match="Proposal"):
-        _subgraph(
-            model,
-            announce_turns=False,
-            output_schema=Proposal,
-            model_retries=0,
-        ).invoke({"messages": [HumanMessage(content="go")]})
+    result = _subgraph(
+        model,
+        announce_turns=False,
+        output_schema=Proposal,
+        model_retries=0,
+    ).invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result.get("structured_response") is None
+    assert "still could not be read" in result["messages"][-1].text
 
 
 def test_agent_retries_an_empty_structured_output() -> None:
@@ -510,15 +511,16 @@ def test_agent_bounds_invalid_structured_output_retries() -> None:
         responses=(AIMessage(content=""), AIMessage(content="still not JSON"))
     )
 
-    with pytest.raises(StructuredOutputValidationError, match="Proposal"):
-        _subgraph(
-            model,
-            announce_turns=False,
-            output_schema=Proposal,
-            model_retries=1,
-        ).invoke({"messages": [HumanMessage(content="go")]})
+    result = _subgraph(
+        model,
+        announce_turns=False,
+        output_schema=Proposal,
+        model_retries=1,
+    ).invoke({"messages": [HumanMessage(content="go")]})
 
     assert len(model.received_messages) == 2
+    assert result.get("structured_response") is None
+    assert "Proposal" in result["messages"][-1].text
 
 
 def test_async_agent_retries_invalid_structured_output() -> None:
@@ -666,12 +668,13 @@ def test_agent_bounds_length_limited_output_retries() -> None:
         errors=(_length_failure(), _length_failure()),
     )
 
-    with pytest.raises(LengthFinishReasonError):
-        _subgraph(model, announce_turns=False, model_retries=1).invoke(
-            {"messages": [HumanMessage(content="go")]}
-        )
+    result = _subgraph(model, announce_turns=False, model_retries=1).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
 
     assert model.attempts == 2
+    assert result.get("structured_response") is None
+    assert "still could not be read" in result["messages"][-1].text
 
 
 def _generic_api_error() -> APIError:

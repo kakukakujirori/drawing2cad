@@ -34,6 +34,16 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     answered, the request goes back unchanged, and spending one of the
     corrections on it would take away a chance the model never got to use.
 
+    An answer failure it runs out of corrections for ends the turn rather than
+    the run. The graph already knows what to do with a stage that produced no
+    answer -- it re-asks that stage, and stops the round when the re-asks run
+    out -- and raising here reached none of that: one GLM audit put a
+    `"type": "object"` from the schema text into every finding, and six
+    identical corrections later the sample died with everything it had built
+    unscored. Empty, truncated and unparseable all end the turn the same way,
+    on a message saying how many attempts it took and what the last problem
+    was.
+
     Every attempt it gives up on is reported. A retry is otherwise invisible:
     it leaves no turn, no message and no event, so the only trace is an extra
     HTTP request in a log that also shows requests a single attempt made. What
@@ -169,7 +179,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     current_request, rejected, error, retrying=retrying, adjusted=True
                 )
                 if not retrying:
-                    raise
+                    return _gave_up_answering(rejected + 1, error)
                 rejected += 1
                 current_request = self._retry_length_limited_request(current_request)
             except StructuredOutputError as error:
@@ -178,7 +188,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     current_request, rejected, error, retrying=retrying, adjusted=True
                 )
                 if not retrying:
-                    raise
+                    return _gave_up_answering(rejected + 1, error)
                 rejected += 1
                 current_request = self._retry_structured_output_request(
                     current_request,
@@ -202,16 +212,20 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 dropped += 1
                 time.sleep(self._backoff_delay(dropped))
             else:
-                if not _is_unanswered(response) or rejected >= self.max_retries:
+                if not _is_unanswered(response):
                     return response
+                unanswered = UnansweredModelCall(_UNANSWERED)
+                retrying = rejected < self.max_retries
                 self._report(
                     current_request,
                     rejected,
-                    UnansweredModelCall(_UNANSWERED),
-                    retrying=True,
+                    unanswered,
+                    retrying=retrying,
                     adjusted=True,
                     response=response,
                 )
+                if not retrying:
+                    return _gave_up_answering(rejected + 1, unanswered)
                 rejected += 1
                 current_request = (
                     self._retry_length_limited_request(current_request)
@@ -237,7 +251,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     current_request, rejected, error, retrying=retrying, adjusted=True
                 )
                 if not retrying:
-                    raise
+                    return _gave_up_answering(rejected + 1, error)
                 rejected += 1
                 current_request = self._retry_length_limited_request(current_request)
             except StructuredOutputError as error:
@@ -246,7 +260,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     current_request, rejected, error, retrying=retrying, adjusted=True
                 )
                 if not retrying:
-                    raise
+                    return _gave_up_answering(rejected + 1, error)
                 rejected += 1
                 current_request = self._retry_structured_output_request(
                     current_request,
@@ -270,22 +284,51 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 dropped += 1
                 await asyncio.sleep(self._backoff_delay(dropped))
             else:
-                if not _is_unanswered(response) or rejected >= self.max_retries:
+                if not _is_unanswered(response):
                     return response
+                unanswered = UnansweredModelCall(_UNANSWERED)
+                retrying = rejected < self.max_retries
                 self._report(
                     current_request,
                     rejected,
-                    UnansweredModelCall(_UNANSWERED),
-                    retrying=True,
+                    unanswered,
+                    retrying=retrying,
                     adjusted=True,
                     response=response,
                 )
+                if not retrying:
+                    return _gave_up_answering(rejected + 1, unanswered)
                 rejected += 1
                 current_request = (
                     self._retry_length_limited_request(current_request)
                     if _answering_ran_out_of_output(current_request, response)
                     else self._retry_unanswered_request(current_request)
                 )
+
+
+_GAVE_UP = (
+    "After {attempts} attempts your answer still could not be read as the "
+    "required structured output. The last problem was: {error}. This stage is "
+    "now unanswered; if you are asked again, answer with the corrected JSON "
+    "and nothing else."
+)
+
+
+def _gave_up_answering(attempts: int, error: Exception) -> ModelResponse[Any]:
+    """End the turn with no answer, saying why.
+
+    Plain text and no tool calls: this message is kept in the stage's
+    transcript and replayed on the re-ask, and a tool call with no result
+    would make that request invalid.
+    """
+    return ModelResponse(
+        result=[
+            AIMessage(
+                content=_GAVE_UP.format(attempts=attempts, error=str(error)[:500])
+            )
+        ],
+        structured_response=None,
+    )
 
 
 _UNANSWERED = "the model returned no tool call, no text and no structured output"
