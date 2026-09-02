@@ -113,7 +113,9 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         error: StructuredOutputError,
     ) -> ModelRequest[None]:
         # Replaying an AI message whose tool calls have no results makes the
-        # next request invalid, so carry back only a plain-text answer.
+        # next request invalid, so carry back only a plain-text answer. An
+        # answer that came as a tool call goes back inside the correction
+        # instead, where it is text and needs no result to match it.
         rejected = error.ai_message
         replay = [rejected] if rejected.text.strip() and not rejected.tool_calls else []
         return request.override(
@@ -378,12 +380,61 @@ def _correction_text(error: StructuredOutputError) -> str:
         return (
             f"Your previous response could not be parsed as the required "
             f"{error.tool_name} structured output. Validation error: "
-            f"{error.source}. You may continue using tools if you need more "
+            f"{error.source}."
+            + _rejected_arguments(error.ai_message)
+            + " You may continue using tools if you need more "
             "information. When you are ready to answer, return corrected raw "
             "JSON that matches the required schema, with no explanation or "
             "Markdown outside it."
         )
     return f"Your previous response was rejected: {error}. Answer again."
+
+
+# What a rejected answer may spend on being shown back to its author. A
+# hypothesis runs to tens of thousands of characters, and replaying one whole
+# would cost more than the turn it is meant to save.
+_REJECTED_BUDGET = 1200
+
+
+def _rejected_arguments(message: AIMessage) -> str:
+    """The answer the model sent, when the model cannot otherwise see it.
+
+    A tool-call answer is never replayed as a message -- a tool call with no
+    result invalidates the next request -- so without this the model is told
+    only that its answer was wrong. It sent `rationale: ""` six times running
+    against a validator that said what the rule was but not which member broke
+    it, and nothing in the exchange could have told it which of the three it
+    had filled.
+
+    Large arguments come back as a shape rather than a value. Which member was
+    wrong is what a rejected answer has to show; a whole hypothesis restated is
+    the same information at fifty times the price.
+    """
+    if not message.tool_calls:
+        return ""
+    arguments = message.tool_calls[0].get("args")
+    if not isinstance(arguments, dict):
+        return ""
+
+    rendered = json.dumps(arguments, ensure_ascii=False, default=str)
+    if len(rendered) > _REJECTED_BUDGET:
+        rendered = json.dumps(
+            {key: _outline(value) for key, value in arguments.items()},
+            ensure_ascii=False,
+            default=str,
+        )
+    return f" You sent: {rendered}."
+
+
+def _outline(value: Any) -> Any:
+    """One member of a rejected answer, small enough to show alongside the rest."""
+    if isinstance(value, str) and len(value) > 80:
+        return f"<{len(value)} characters>"
+    if isinstance(value, list):
+        return f"<{len(value)} entries>" if value else []
+    if isinstance(value, dict):
+        return f"<{len(value)} keys>" if value else {}
+    return value
 
 
 _OPENROUTER_STREAM_ERROR = re.compile(
