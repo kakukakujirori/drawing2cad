@@ -48,6 +48,10 @@ artifact_presenter:
 renderer:
   _target_: zeroshot.pipeline.verification.StepRenderer
   timeout_s: 120.0
+  # A build draws one view set per planned operation, so a batch is ~20 renders
+  # of a few seconds each. Each runs in its own process and holds ~1 GB while
+  # it does, so this is bounded by memory rather than by the core count.
+  max_workers: 8
 
 sandbox_runner:
   python_executable: ${oc.env:CONDA_PREFIX}/bin/python

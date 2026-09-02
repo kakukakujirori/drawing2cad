@@ -4,6 +4,7 @@ from dataclasses import fields
 from pathlib import Path
 
 import cadquery as cq
+import pytest
 from PIL import Image
 
 from zeroshot.pipeline.verification import run_render
@@ -115,6 +116,10 @@ def test_degenerate_techdraw_keeps_the_reason(tmp_path, monkeypatch):
 
 
 class _ClosedConnection:
+    def poll(self, timeout=None):
+        del timeout
+        return False
+
     def close(self):
         pass
 
@@ -234,3 +239,102 @@ def test_every_error_key_names_a_field_of_its_paths_dto(tmp_path, monkeypatch):
     assert set(report.techdraw_errors) <= techdraw_fields
     assert set(report.render3d_errors) <= render3d_fields
     assert report.techdraw_errors and report.render3d_errors
+
+
+def test_batch_renders_every_request_in_order_within_the_worker_limit(tmp_path):
+    """Two more requests than workers, so the last ones only start once slots free."""
+    boxes = [cq.Workplane("XY").box(10.0 + index, 20.0, 30.0) for index in range(4)]
+    requests = []
+    for index, box in enumerate(boxes):
+        directory = tmp_path / f"job{index}"
+        directory.mkdir()
+        step_path = directory / "shape.step"
+        cq.exporters.export(box, str(step_path), exportType="STEP")
+        requests.append(
+            run_render.RenderRequest(
+                step_path,
+                TechdrawPaths(dxf=directory / "drawing.dxf"),
+                _paths(directory),
+            )
+        )
+
+    reports = StepRenderer(timeout_s=120.0, max_workers=2).render_many(requests)
+
+    assert len(reports) == len(requests)
+    for request, report in zip(requests, reports, strict=True):
+        assert report.status is RenderStatus.OK
+        assert report.techdraw_paths == request.techdraw_paths
+        assert report.render3d_paths == request.render3d_paths
+        for path in _present_paths(report.render3d_paths):
+            assert path.is_file()
+
+
+def test_an_empty_batch_starts_no_process(monkeypatch):
+    def fail(_method):
+        raise AssertionError("no context is needed for an empty batch")
+
+    monkeypatch.setattr(run_render.mp, "get_context", fail)
+
+    assert StepRenderer(timeout_s=1.0).render_many([]) == []
+
+
+class _CountingProcess:
+    exitcode = 0
+
+    def __init__(self):
+        self.alive = True
+        self.terminated = False
+
+    def start(self):
+        pass
+
+    def join(self, timeout=None):
+        del timeout
+
+    def is_alive(self):
+        return self.alive
+
+    def terminate(self):
+        self.terminated = True
+        self.alive = False
+
+    def kill(self):
+        self.alive = False
+
+
+class _FailingContext:
+    def __init__(self, fail_at: int):
+        self.fail_at = fail_at
+        self.processes: list[_CountingProcess] = []
+
+    def Pipe(self, duplex=False):
+        assert duplex is False
+        return _ClosedConnection(), _ClosedConnection()
+
+    def Process(self, **kwargs):
+        assert kwargs["daemon"] is True
+        if len(self.processes) == self.fail_at:
+            raise OSError("cannot start a render process")
+        self.processes.append(_CountingProcess())
+        return self.processes[-1]
+
+
+def test_a_batch_that_cannot_start_ends_the_renders_it_already_started(
+    tmp_path, monkeypatch
+):
+    """The third start fails, and the two processes already running are ended."""
+    context = _FailingContext(fail_at=2)
+    monkeypatch.setattr(run_render.mp, "get_context", lambda method: context)
+    requests = [
+        run_render.RenderRequest(
+            tmp_path / f"shape{index}.step",
+            _techdraw_paths(tmp_path),
+            _paths(tmp_path),
+        )
+        for index in range(3)
+    ]
+
+    with pytest.raises(OSError, match="cannot start a render process"):
+        StepRenderer(timeout_s=60.0, max_workers=4).render_many(requests)
+
+    assert [process.terminated for process in context.processes] == [True, True]

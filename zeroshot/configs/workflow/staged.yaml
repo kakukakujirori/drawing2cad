@@ -72,6 +72,7 @@ workflow:
   max_stage_validation_retries: 3
 
   # Show the coder what every ret_xxx came out as: one census line per return,
-  # and a drawing and renders beside its STEP. Costs a render per return: one
-  # measured attempt went from 7s and 0.6MB to 99s and 9.8MB.
+  # and a drawing and renders beside its STEP. Costs a render per return, run
+  # `renderer.max_workers` at a time: one measured attempt of twenty returns
+  # went from 7s and 0.6MB to 28s and 9.8MB.
   show_intermediate_returns: true

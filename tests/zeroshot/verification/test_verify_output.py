@@ -1,5 +1,6 @@
 import json
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
@@ -17,7 +18,11 @@ from zeroshot.pipeline.verification.run_cadquery import (
     ExecutionStatus,
     IntermediateReturn,
 )
-from zeroshot.pipeline.verification.run_render import RenderReport, RenderStatus
+from zeroshot.pipeline.verification.run_render import (
+    RenderReport,
+    RenderRequest,
+    RenderStatus,
+)
 from zeroshot.pipeline.verification.shape_census import ShapeCensus
 from zeroshot.pipeline.verification.verify_output import (
     OutputVerifier,
@@ -137,6 +142,16 @@ class StubRenderer:
     def __init__(self, *, skip_styles: tuple[str, ...] = ()) -> None:
         self.skip_styles = skip_styles
         self.calls: list[tuple[Path, TechdrawPaths, Render3dPaths]] = []
+
+    def render_many(self, requests: Sequence[RenderRequest]) -> list[RenderReport]:
+        return [
+            self.render(
+                request.step_path,
+                request.techdraw_paths,
+                request.render3d_paths,
+            )
+            for request in requests
+        ]
 
     def render(
         self,

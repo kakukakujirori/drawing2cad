@@ -19,7 +19,11 @@ from zeroshot.pipeline.verification.run_cadquery import (
     ExecutionStatus,
     IntermediateReturn,
 )
-from zeroshot.pipeline.verification.run_render import RenderReport, StepRenderer
+from zeroshot.pipeline.verification.run_render import (
+    RenderReport,
+    RenderRequest,
+    StepRenderer,
+)
 from zeroshot.pipeline.verification.shape_census import ShapeCensus
 
 VerifyOutputValue: type = str | int | None
@@ -241,15 +245,29 @@ class OutputVerifier:
         # update report
         report = report.import_from(cq_report)
 
-        # Draw and describe every ret_xxx the program left behind. A program
-        # that ran leaves these whether or not `result` passed, and a result
-        # that failed is when they are most worth reading.
+        # Draw and describe every ret_xxx the program left behind, and the
+        # result beside them. A program that ran leaves the returns whether or
+        # not `result` passed, and a result that failed is when they are most
+        # worth reading; a result that passed adds one more drawing of the same
+        # kind, so all of them are drawn in one batch.
         host_returns_dir = host_verification_dir / INTERMEDIATE_RETURNS_DIR
-        renders = {
-            output.name: self._render(output.step_path, host_returns_dir / output.name)
+        built = [
+            (output.name, output.step_path)
             for output in cq_report.intermediate_returns
             if output.step_path is not None
-        }
+        ]
+        result_built = (
+            report.status == ExecutionStatus.VERIFIED and report.returncode == 0
+        )
+        requests = [
+            self._request(step_path, host_returns_dir / name)
+            for name, step_path in built
+        ]
+        if result_built:
+            requests.append(self._request(output_step_path, host_verification_dir))
+
+        results = self.renderer.render_many(requests)
+        renders = {name: result for (name, _), result in zip(built, results)}
         report = replace(
             report,
             intermediate_returns=_describe_returns(
@@ -263,12 +281,10 @@ class OutputVerifier:
         )
 
         # A result that did not build has no STEP of its own to draw.
-        if not (report.status == ExecutionStatus.VERIFIED and report.returncode == 0):
+        if not result_built:
             return report, None
 
-        # render the three-view DXF and the perspective PNGs
-        render_report = self._render(output_step_path, host_verification_dir)
-
+        render_report = results[-1]
         manifest = FeedbackManifest(
             verification_id=verification_id,
             dxf_path=render_report.techdraw_paths.dxf,
@@ -278,8 +294,8 @@ class OutputVerifier:
         )
         return report, manifest
 
-    def _render(self, step_path: Path, verification_dir: Path) -> RenderReport:
-        """Render feedback artifacts into the verification directory."""
+    def _request(self, step_path: Path, verification_dir: Path) -> RenderRequest:
+        """Name the feedback artifacts one STEP is to be drawn into."""
         # Flat: an attempt holds one drawing and one set of renders, and the
         # model has already been shown the inputs under the same convention.
         techdraw_paths = TechdrawPaths.flat(verification_dir / "techdraw")
@@ -291,7 +307,7 @@ class OutputVerifier:
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
 
-        return self.renderer.render(step_path, techdraw_paths, render3d_paths)
+        return RenderRequest(step_path, techdraw_paths, render3d_paths)
 
     @property
     def confirmed_a_solid(self) -> bool:

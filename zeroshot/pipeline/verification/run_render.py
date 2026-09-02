@@ -1,18 +1,25 @@
-"""Render a verified STEP to explicitly assigned DXF and PNG paths.
+"""Render verified STEPs to explicitly assigned DXF and PNG paths.
 
-OCC HLR and VTK can hang in native code, so rendering runs in a fresh
+OCC HLR and VTK can hang in native code, so every render runs in a fresh
 ``spawn`` process.  The caller owns artifact naming and directory layout; this
-module only runs the render stages and supervises that process.
+module only runs the render stages and supervises those processes.
+
+A build reports one drawing per planned operation, so the renders come in
+batches of twenty-odd; they are independent, and ``render_many`` runs them
+several at a time.
 """
 
 from __future__ import annotations
 
 import multiprocessing as mp
-from collections.abc import Mapping
+import time
+from collections import deque
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
 from enum import Enum
 from multiprocessing.connection import Connection
 from pathlib import Path
+from typing import Any
 
 from zeroshot.pipeline.verification.render._render3d import generate_render3d
 from zeroshot.pipeline.verification.render.arrange import arrange
@@ -40,6 +47,15 @@ class RenderReport:
     render3d_paths: Render3dPaths
     techdraw_errors: Mapping[str, str] = field(default_factory=dict)
     render3d_errors: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RenderRequest:
+    """One STEP and the paths its views are to be written to."""
+
+    step_path: Path
+    techdraw_paths: TechdrawPaths
+    render3d_paths: Render3dPaths
 
 
 def _render_techdraw(
@@ -185,11 +201,31 @@ def _worker(
         connection.close()
 
 
+@dataclass
+class _Attempt:
+    """A render in flight, and when it stops being worth waiting for."""
+
+    index: int
+    request: RenderRequest
+    process: Any
+    receiver: Connection
+    deadline: float
+
+
+# Short next to a render that takes seconds, so a worker that finished is
+# collected -- and its slot handed to the next request -- without a delay
+# worth measuring.
+_POLL_INTERVAL_S = 0.05
+
+
 class StepRenderer:
-    def __init__(self, timeout_s: float = 120.0) -> None:
+    def __init__(self, timeout_s: float = 120.0, max_workers: int = 8) -> None:
         if timeout_s <= 0:
             raise ValueError("timeout_s must be positive")
+        if max_workers < 1:
+            raise ValueError("max_workers must be at least 1")
         self.timeout_s = timeout_s
+        self.max_workers = max_workers
 
     def render(
         self,
@@ -198,67 +234,149 @@ class StepRenderer:
         output_render3d_paths: Render3dPaths,
     ) -> RenderReport:
         """Render one STEP while supervising native-code hangs."""
+        (report,) = self.render_many(
+            [
+                RenderRequest(
+                    input_step_path,
+                    output_techdraw_paths,
+                    output_render3d_paths,
+                )
+            ]
+        )
+        return report
+
+    def render_many(self, requests: Sequence[RenderRequest]) -> list[RenderReport]:
+        """Render every request, at most `max_workers` at a time, in request order.
+
+        One process per request rather than a pool of reusable workers: a
+        render that hangs in native code is ended by killing the process it
+        holds, and a pool that lost a worker that way could not carry on.
+
+        Each request owns its own timeout, counted from the moment it starts
+        rather than from the batch, so a request that waited for a slot is
+        given the same time to run as the one that started first.
+        """
+        # A build that failed early leaves nothing to draw, which is the
+        # common case; it costs no process machinery at all.
+        if not requests:
+            return []
+
         context = mp.get_context("spawn")
+        reports: dict[int, RenderReport] = {}
+        queued = deque(range(len(requests)))
+        running: list[_Attempt] = []
+
+        try:
+            while queued or running:
+                while queued and len(running) < self.max_workers:
+                    index = queued.popleft()
+                    running.append(self._start(context, index, requests[index]))
+
+                waiting: list[_Attempt] = []
+                for attempt in running:
+                    if attempt.receiver.poll():
+                        reports[attempt.index] = self._collect(attempt)
+                    elif time.monotonic() >= attempt.deadline:
+                        reports[attempt.index] = self._give_up(attempt)
+                    else:
+                        waiting.append(attempt)
+                collected = len(running) - len(waiting)
+                running = waiting
+                if not collected and running:
+                    time.sleep(_POLL_INTERVAL_S)
+        finally:
+            # A batch holds several renders at once, each of them a process of
+            # its own: leaving on any other path than the loop's own end has to
+            # end them, or they are left running and holding their memory.
+            for abandoned in running:
+                abandoned.receiver.close()
+                _end(abandoned.process, terminate=True)
+
+        # Indexed rather than appended, so a request whose report went missing
+        # raises here instead of shifting every later report onto the wrong one.
+        return [reports[index] for index in range(len(requests))]
+
+    def _start(
+        self,
+        context: Any,
+        index: int,
+        request: RenderRequest,
+    ) -> _Attempt:
         receiver, sender = context.Pipe(duplex=False)
         process = context.Process(
             target=_worker,
             args=(
-                input_step_path,
-                output_techdraw_paths,
-                output_render3d_paths,
+                request.step_path,
+                request.techdraw_paths,
+                request.render3d_paths,
                 sender,
             ),
             daemon=True,
         )
         process.start()
         sender.close()
+        return _Attempt(
+            index=index,
+            request=request,
+            process=process,
+            receiver=receiver,
+            deadline=time.monotonic() + self.timeout_s,
+        )
 
-        process.join(self.timeout_s)
-        timed_out = process.is_alive()
-        if timed_out:
-            process.terminate()
-            process.join(5.0)
-            if process.is_alive():
-                process.kill()
-                process.join()
-
+    def _collect(self, attempt: _Attempt) -> RenderReport:
+        """Read what a worker sent, and reap it."""
         try:
-            report = receiver.recv() if not timed_out and receiver.poll() else None
+            report = attempt.receiver.recv()
         except EOFError:
             report = None
         finally:
-            receiver.close()
+            attempt.receiver.close()
+        _end(attempt.process)
 
         if isinstance(report, RenderReport):
             return report
-
-        # --- below is error handling --- #
-
-        for path in (
-            *(
-                getattr(output_techdraw_paths, path_field.name)
-                for path_field in fields(output_techdraw_paths)
-            ),
-            *(
-                getattr(output_render3d_paths, path_field.name)
-                for path_field in fields(output_render3d_paths)
-            ),
-        ):
-            if path is not None:
-                path.unlink(missing_ok=True)
-
-        if timed_out:
-            message = f"render timed out after {self.timeout_s:g}s"
-            status = RenderStatus.TIMEOUT
-        else:
-            message = (
-                f"render process exited without a report (exitcode={process.exitcode})"
-            )
-            status = RenderStatus.FAILED
-        return RenderReport(
-            status=status,
-            techdraw_paths=TechdrawPaths(),
-            render3d_paths=Render3dPaths(),
-            techdraw_errors=dict.fromkeys(output_techdraw_paths.as_mapping(), message),
-            render3d_errors=dict.fromkeys(output_render3d_paths.as_mapping(), message),
+        return _failure_report(
+            attempt.request,
+            RenderStatus.FAILED,
+            "render process exited without a report "
+            f"(exitcode={attempt.process.exitcode})",
         )
+
+    def _give_up(self, attempt: _Attempt) -> RenderReport:
+        """End a render that ran out of time and say so."""
+        _end(attempt.process, terminate=True)
+        attempt.receiver.close()
+        return _failure_report(
+            attempt.request,
+            RenderStatus.TIMEOUT,
+            f"render timed out after {self.timeout_s:g}s",
+        )
+
+
+def _end(process: Any, terminate: bool = False) -> None:
+    if terminate:
+        process.terminate()
+        process.join(5.0)
+    else:
+        process.join(5.0)
+    if process.is_alive():
+        process.kill()
+        process.join()
+
+
+def _failure_report(
+    request: RenderRequest,
+    status: RenderStatus,
+    message: str,
+) -> RenderReport:
+    """Discard whatever a failed render left behind, and name it as the reason."""
+    for paths in (request.techdraw_paths, request.render3d_paths):
+        for path in paths.as_mapping().values():
+            path.unlink(missing_ok=True)
+    return RenderReport(
+        status=status,
+        techdraw_paths=TechdrawPaths(),
+        render3d_paths=Render3dPaths(),
+        techdraw_errors=dict.fromkeys(request.techdraw_paths.as_mapping(), message),
+        render3d_errors=dict.fromkeys(request.render3d_paths.as_mapping(), message),
+    )
