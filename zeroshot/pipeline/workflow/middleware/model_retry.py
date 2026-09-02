@@ -1,6 +1,7 @@
 """Re-issue a model call the client could not retry itself, and say so."""
 
 import asyncio
+import json
 import random
 import re
 import time
@@ -15,7 +16,7 @@ from langchain.agents.structured_output import (
     StructuredOutputError,
     StructuredOutputValidationError,
 )
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from openai import APIConnectionError, APIError, APIStatusError, LengthFinishReasonError
 
 
@@ -82,7 +83,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         if isinstance(error, StructuredOutputError):
             # The retry request carries this response only in memory. Preserve
             # the rejected raw output so a contract failure is reproducible.
-            details["failed_response"] = error.ai_message.text
+            details["failed_response"] = _extract_text_or_tool_args(error.ai_message)
         if isinstance(error, UnansweredModelCall) and response is not None:
             details.update(_unanswered_diagnosis(response))
         request.runtime.stream_writer({"model_retry": details})
@@ -300,6 +301,24 @@ def _is_unanswered(response: ModelResponse[Any]) -> bool:
         getattr(message, "tool_calls", None) or message.text.strip()
         for message in response.result
     )
+
+
+def _extract_text_or_tool_args(message: AIMessage) -> str:
+    """What the model actually answered with, whichever channel carried it.
+
+    Under `ToolStrategy` the answer is a tool call and `text` is empty, so
+    recording the text alone preserves nothing of a contract failure.
+    """
+    if message.tool_calls:
+        return json.dumps(
+            [
+                {"name": call.get("name"), "args": call.get("args")}
+                for call in message.tool_calls
+            ],
+            ensure_ascii=False,
+            default=str,
+        )
+    return message.text
 
 
 def _finish_reason(response: ModelResponse[Any]) -> str | None:
