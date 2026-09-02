@@ -181,6 +181,11 @@ _STREAM_ERROR = "OpenRouter API returned an error during streaming: "
         (_STREAM_ERROR + "Network connection lost. (code: 502)", True),
         (_STREAM_ERROR + "Rate limited. (code: 429)", True),
         (_STREAM_ERROR + "Bad request. (code: 400)", False),
+        # A refusal of the request: sending it again would be refused again.
+        (_STREAM_ERROR + "Input should be a valid string (code: 422)", False),
+        # The model wrapper names the fields it could have been about, so the
+        # status is no longer the last thing in the message.
+        (_STREAM_ERROR + "Rate limited. (code: 429) Suspect fields: a.b.", True),
         ("some unrelated ValueError", False),
     ],
 )
