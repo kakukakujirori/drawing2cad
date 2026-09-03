@@ -5,6 +5,7 @@ import pytest
 
 from zeroshot.pipeline.messages import (
     PromptTemplate,
+    instruction_section,
     instruction_text,
     system_prompt_text,
 )
@@ -22,6 +23,7 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     Ticket,
     TicketResponse,
 )
+from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 
 
 def _write(path: Path, body: str) -> Path:
@@ -39,7 +41,12 @@ _RUN_PATHS = {
 
 def _round_context(**varying: str) -> dict[str, str]:
     """What the graph gives every round instruction, plus what a test varies."""
-    return {**_RUN_PATHS, "assigned_tickets": "ticket_initial", **varying}
+    return {
+        **_RUN_PATHS,
+        "assigned_tickets": "ticket_initial",
+        "intermediate_returns": "",
+        **varying,
+    }
 
 
 def _guidelines(stage: str) -> str:
@@ -74,6 +81,7 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
             {
                 "current_round": "0",
                 "attempt_dir": "/work/attempts/000",
+                "intermediate_returns": "",
             },
         ),
     ],
@@ -129,11 +137,49 @@ def test_audit_explains_how_to_report_a_missing_semantic_feature() -> None:
         **_RUN_PATHS,
         current_round="1",
         attempt_dir="/work/attempts/001",
+        intermediate_returns="",
     )
 
     assert "leave the `backtrace` empty" in rendered
     assert "whole semantics stage (`name: null`)" in rendered
     assert "propose one or more stable `sem_...` names" in rendered
+
+
+def test_the_returns_section_says_what_the_directory_is_for() -> None:
+    """The layout line alone does not say which `ret_` a defect belongs to."""
+    section = instruction_section(
+        "audit/intermediate_returns",
+        True,
+        returns_dir=INTERMEDIATE_RETURNS_DIR,
+    )
+
+    assert INTERMEDIATE_RETURNS_DIR in section
+    assert "ret_" in section
+    assert "what the plan meant it to" in section
+
+
+def test_a_build_that_wrote_no_returns_leaves_the_section_out() -> None:
+    assert instruction_section("audit/intermediate_returns", False) == ""
+
+
+def test_the_audit_reads_the_attempt_directory_the_build_actually_wrote() -> None:
+    """The per-operation views are what localise a defect to one `ret_...`, and
+    the auditor only looks in a directory it was told about."""
+    section = instruction_section(
+        "audit/intermediate_returns",
+        True,
+        returns_dir=INTERMEDIATE_RETURNS_DIR,
+    )
+    rendered = instruction_text(
+        "audit/round",
+        **_RUN_PATHS,
+        current_round="1",
+        attempt_dir="/work/attempts/001",
+        intermediate_returns=section,
+    )
+
+    assert "/work/attempts/001" in rendered
+    assert section in rendered
 
 
 def test_auditor_keeps_result_out_of_the_backtrace_graph() -> None:
@@ -163,6 +209,15 @@ def test_the_coding_round_carries_the_history_and_result_contract() -> None:
     assert "ret_<operation name without op_>" in rendered
     assert "# ----" not in rendered
     assert "Lxx-Lyy" not in rendered
+
+
+def test_the_auditor_is_told_the_walk_rule_the_pipeline_would_reject_it_for() -> None:
+    """A validator-only rule costs a retry the auditor cannot learn from."""
+    rendered = PromptTemplate("roles/output_auditor").render(
+        output_schema="{}", max_turns="10"
+    )
+
+    assert "at most one hop inside any one stage" in rendered
 
 
 @pytest.mark.parametrize(

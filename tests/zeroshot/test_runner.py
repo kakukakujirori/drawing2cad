@@ -646,9 +646,9 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     report = _final_verification(result)
     assert report is not None
     assert report.status == "VERIFIED"
-    # 000 is the build the coder's write triggered without asking for it; 001
-    # is the workflow's own final verification of the same source.
-    assert report.verification_id == "001"
+    # One build: the coder's write triggered it without being asked, and the
+    # workflow's own final verification found the same source already built.
+    assert report.verification_id == "000"
     rendered_console = console_output.getvalue()
     assert "[node] model started — waiting" in rendered_console
     assert "tool call: run_shell" in rendered_console
@@ -657,10 +657,8 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     assert "run completed" in rendered_console
 
     attempts = artifact_root / "valid-box" / "workspace" / "attempts"
-    assert (attempts / "000" / "model.py").read_text(
-        encoding="utf-8"
-    ) == VALID_BOX_SOURCE
-    final_attempt = attempts / "001"
+    assert [path.name for path in attempts.iterdir()] == ["000"]
+    final_attempt = attempts / "000"
     assert (final_attempt / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE
     CadQueryExecutor.verify_step(final_attempt / "output.step")
 
@@ -672,7 +670,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     ]
     verification = next(event for event in events if event["event"] == "verification")
     assert verification["data"]["report"]["status"] == "VERIFIED"
-    assert verification["data"]["report"]["verification_id"] == "001"
+    assert verification["data"]["report"]["verification_id"] == "000"
     assert verification["data"]["report"]["source"] is None
 
 
@@ -742,15 +740,18 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
     final_report = _final_verification(result)
     assert final_report is not None
     assert final_report.status == "VERIFIED"
-    assert final_report.verification_id == "002"
+    assert final_report.verification_id == "001"
 
+    # One attempt per program: the broken one, then the repair the workflow's
+    # own verification found already built.
     attempts = artifact_root / "repair-box" / "workspace" / "attempts"
+    assert sorted(path.name for path in attempts.iterdir()) == ["000", "001"]
     assert (attempts / "000" / "model.py").read_text(encoding="utf-8") == "result = ("
     assert not (attempts / "000" / "output.step").exists()
     assert (attempts / "001" / "model.py").read_text(
         encoding="utf-8"
     ) == VALID_BOX_SOURCE
-    CadQueryExecutor.verify_step(attempts / "002" / "output.step")
+    CadQueryExecutor.verify_step(attempts / "001" / "output.step")
 
 
 def _runner_for_rerun(

@@ -1,6 +1,7 @@
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Self, cast
 
@@ -89,7 +90,9 @@ def _describe_returns(
             "",
             (
                 f"Each is written to {sandbox_returns_dir}/<name>/ as output.step, "
-                "techdraw.dxf and render_3d/<style>.png."
+                "techdraw.dxf and render_3d/<style>.png. Open them with `run_shell` "
+                "and `load_image` to see whether an operation built what it was "
+                "meant to."
             ),
             *(["", "Views that could not be drawn:", *failures] if failures else []),
         ]
@@ -179,6 +182,11 @@ class OutputVerifier:
             workdir.read_only_subdirs.append(output_dirname)
 
         self._last_feedback_report: VerifyOutputResult | None = None
+        # What the last build returned, and the digest of the program it ran
+        # on. Assigned together, so one is never read against the other. See
+        # `verify`.
+        self._built: tuple[VerifyOutputResult, FeedbackManifest | None] | None = None
+        self._built_from_digest: str | None = None
 
     @property
     def source_path(self) -> Path:
@@ -195,12 +203,36 @@ class OutputVerifier:
         host_verification_dir.mkdir(parents=True, exist_ok=False)
         return verification_id, host_verification_dir
 
+    def _source_digest(self) -> str | None:
+        """What the program is right now, or nothing when there is no program."""
+        path = self.source_path
+        if path.is_symlink() or not path.is_file():
+            return None
+        return sha256(path.read_bytes()).hexdigest()
+
     def verify(self) -> tuple[VerifyOutputResult, FeedbackManifest | None]:
         """Verify the program and, when it yields a solid, render its views.
+
+        A program byte-identical to the one the last build ran on is not built
+        again: it would land in a second attempt directory holding the same
+        STEP and the same twenty renders. The coder's turn is checked by
+        middleware, and the same program reaches the graph's own verification a
+        moment later, so without this every coding stage paid for its build
+        twice.
 
         The manifest stays out of the report because it carries host paths, and
         only the report is msgpack-serialisable enough to reach graph state.
         """
+        digest = self._source_digest()
+        if self._built is not None and digest == self._built_from_digest:
+            return self._built
+
+        report, manifest = self._build()
+        if digest is not None:
+            self._built, self._built_from_digest = (report, manifest), digest
+        return report, manifest
+
+    def _build(self) -> tuple[VerifyOutputResult, FeedbackManifest | None]:
         model_path = self.source_path
 
         # file existence check

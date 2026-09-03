@@ -18,6 +18,7 @@ from .manifest import FeedbackManifest, InputManifest
 from .prompt import (
     build_instruction,
     build_system_prompt,
+    instruction_section,
     instruction_text,
     system_prompt_text,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "ViewEvidence",
     "build_instruction",
     "build_system_prompt",
+    "instruction_section",
     "instruction_text",
     "system_prompt_text",
 ]

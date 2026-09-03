@@ -6,6 +6,7 @@ is measured against the snapshot is the artifact that revision merges to.
 """
 
 import re
+from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from zeroshot.pipeline.messages.contracts import (
@@ -340,6 +341,10 @@ def _validate_audit_report(
     }
     errors = [coding_error] if coding_error is not None else []
     errors.extend(_missing_reference_errors(references, known_members))
+    for finding in report.findings:
+        error = _within_stage_walk_error(finding)
+        if error is not None:
+            errors.append(error)
     for hop in _iter_hops(report.findings):
         error = _causal_hop_error(
             hop,
@@ -433,6 +438,40 @@ def _missing_reference_errors(
                 "in the audited snapshot"
             )
     return errors
+
+
+def _within_stage_walk_error(finding: AuditFinding) -> str | None:
+    """Refuse a backtrace that walks a stage instead of crossing out of it.
+
+    A hop between two members of one stage claims the effect is wrong because
+    the cause is, which for a chain of them restates the dependencies the
+    artifact already declares. One run's auditor reached every revision target
+    by starting at the program's last output and stepping back through all
+    twenty in order, one rationale each; every hop passed, and the path said
+    nothing the target had not. What a backtrace is for is the step out of the
+    stage where the defect shows into the stage it comes from, so each stage
+    gets one hop inside it: the one that names the member to blame.
+    """
+    walked: dict[ReasoningStage, list[str]] = defaultdict(list)
+    for hop in finding.backtrace:
+        if hop.effect.stage == hop.cause.stage:
+            walked[hop.effect.stage].append(f"{hop.effect.name} -> {hop.cause.name}")
+
+    # Counted per stage, not over the path: a backtrace that crosses all three
+    # is entitled to its one naming hop in each of them.
+    overwalked = [
+        f"{stage} {len(steps)} times ({', '.join(steps)})"
+        for stage, steps in walked.items()
+        if len(steps) > 1
+    ]
+    if not overwalked:
+        return None
+    return (
+        f"{finding.name} steps between members of one stage more than once: "
+        f"{'; '.join(overwalked)}. Name the member the defect comes from in one "
+        "hop per stage and request the revision there; the operations it is "
+        "consumed by afterwards are not separate causes."
+    )
 
 
 def _causal_hop_error(

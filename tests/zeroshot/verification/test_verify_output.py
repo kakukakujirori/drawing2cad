@@ -121,6 +121,7 @@ def _create_verifier(
     artifact_presenter: ArtifactPresenter | None = None,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
+    show_intermediate_returns: bool = True,
 ) -> OutputVerifier:
     return OutputVerifier(
         executor,  # type: ignore[arg-type]
@@ -129,6 +130,7 @@ def _create_verifier(
         artifact_presenter=artifact_presenter,
         source_filename=source_filename,
         output_dirname=output_dirname,
+        show_intermediate_returns=show_intermediate_returns,
     )
 
 
@@ -355,6 +357,41 @@ def test_the_intermediate_returns_are_kept_beside_their_attempt(
     ]
 
 
+def test_the_returns_block_says_what_to_do_with_the_drawings_it_lists(
+    tmp_path: Path,
+) -> None:
+    """Measured: the coder read the census table and never opened the drawings.
+
+    The instruction rides with the block rather than in the coding prompt, so a
+    run that drew no returns cannot be told to go and read them.
+    """
+    executor = StubCadQueryExecutor(
+        _execution_report(), return_names=("ret_base", "ret_hole")
+    )
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+
+    report, _ = _create_verifier(executor, workdir).verify()
+
+    assert "load_image" in report.intermediate_returns
+    assert "what it was meant to" in report.intermediate_returns
+
+
+def test_a_run_with_the_returns_switched_off_says_nothing_about_them(
+    tmp_path: Path,
+) -> None:
+    executor = StubCadQueryExecutor(
+        _execution_report(), return_names=("ret_base", "ret_hole")
+    )
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verifier = _create_verifier(executor, workdir, show_intermediate_returns=False)
+
+    report, _ = verifier.verify()
+
+    assert report.intermediate_returns == ""
+
+
 def test_assigns_incrementing_verification_ids(tmp_path: Path) -> None:
     executor = StubCadQueryExecutor(_execution_report())
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
@@ -362,12 +399,48 @@ def test_assigns_incrementing_verification_ids(tmp_path: Path) -> None:
     verifier = _create_verifier(executor, workdir)
 
     first = verifier.feedback()
+    (tmp_path / "model.py").write_text(
+        VALID_SOURCE.replace("10, 20, 30", "10, 20, 40"), encoding="utf-8"
+    )
     second = verifier.feedback()
 
     assert _report_json(first)["verification_id"] == "000"
     assert _report_json(second)["verification_id"] == "001"
     assert (tmp_path / "attempts" / "000").is_dir()
     assert (tmp_path / "attempts" / "001").is_dir()
+
+
+def test_an_unchanged_program_is_not_built_twice(tmp_path: Path) -> None:
+    """Two verifications of one program: one build, one attempt directory."""
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verifier = _create_verifier(executor, workdir)
+
+    first, first_manifest = verifier.verify()
+    second, second_manifest = verifier.verify()
+
+    assert len(executor.calls) == 1
+    assert first == second
+    assert first_manifest == second_manifest
+    assert [path.name for path in (tmp_path / "attempts").iterdir()] == ["000"]
+
+
+def test_a_program_written_after_a_failed_verification_is_built(
+    tmp_path: Path,
+) -> None:
+    """Nothing on disk is nothing to reuse, so the program that arrives is built."""
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    verifier = _create_verifier(executor, workdir)
+
+    missing, _ = verifier.verify()
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    written, _ = verifier.verify()
+
+    assert missing.status is ExecutionStatus.REJECTED
+    assert written.status is ExecutionStatus.VERIFIED
+    assert len(executor.calls) == 1
 
 
 def test_rejects_missing_source_without_issuing_id(tmp_path: Path) -> None:

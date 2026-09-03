@@ -19,6 +19,7 @@ from zeroshot.pipeline.messages import (
     ArtifactPresenter,
     InputManifest,
     build_instruction,
+    instruction_section,
 )
 from zeroshot.pipeline.messages.contracts.audit import AuditReport
 from zeroshot.pipeline.messages.contracts.reconstruction import (
@@ -45,6 +46,7 @@ from zeroshot.pipeline.verification import (
     OutputVerifier,
     StepRenderer,
 )
+from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
@@ -469,6 +471,15 @@ def create_reconstruction_graph(
             PipelineStage.AUDIT,
             include_input=not previous,
             attempt_dir=attempt_dir,
+            # Asked of the build rather than of the config that enabled it:
+            # the report carries this only when returns were actually written,
+            # so the layout the auditor is given cannot name a directory the
+            # attempt does not have.
+            intermediate_returns=instruction_section(
+                "audit/intermediate_returns",
+                bool(verification.intermediate_returns),
+                returns_dir=INTERMEDIATE_RETURNS_DIR,
+            ),
         )
         result = audit_agent.invoke(
             {

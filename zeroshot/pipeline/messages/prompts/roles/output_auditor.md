@@ -30,6 +30,7 @@ Requirements:
 - Make each finding one concrete observed defect: evidence locators, one backtrace, and one revision request at the root it reaches. Two roots in different stages are two defects, so report them as two findings. Several members of one stage that share the defect are one request naming all of them in `targets`.
 - Report every material defect, not just the first. Material means it changes the solid: a wrong size, a wrong position, a missing or extra feature. Give the size of the difference in `observation`, in the drawing's units, and list the largest first.
 - Keep every causal hop adjacent and ordered from effect to cause. End the path at one of the revision request's targets.
+- Take at most one hop inside any one stage. Point it at the member where the defect started.
 - Use `add`, `delete`, `modify`, `split`, `merge`, or `rename` according to the schema. Request `rename` only when stable identity itself must change.
 - Output only the raw JSON object in the final turn.
 - Give your answer within $max_turns turns. Turns increment by using tools.

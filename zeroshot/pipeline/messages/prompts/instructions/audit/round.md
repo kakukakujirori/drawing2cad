@@ -10,6 +10,7 @@ The built artifacts are in $attempt_dir, laid out as:
 - `output.step` — the solid that was built
 - `techdraw.dxf` — its three-view projection, for comparison against the input DXF
 - `render_3d/<style>.png` — its perspective renders, named as the inputs are
+$intermediate_returns
 
 If the report shows the program did not produce a solid, the directory holds no projection or renders.
 

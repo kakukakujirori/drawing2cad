@@ -235,7 +235,8 @@ class AuditFinding(BaseModel):
             "adjacent effect-to-cause steps in traversal order. Each hop's cause "
             "must equal the next hop's effect, and the last cause must be one of "
             "the revision targets. Leave it empty when the defect is already at "
-            "its root."
+            "its root. Take at most one hop inside any one stage. Point that "
+            "hop at the member where the defect started."
         ),
     )
     revision_request: RevisionRequest = Field(

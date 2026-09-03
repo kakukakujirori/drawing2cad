@@ -40,6 +40,16 @@ def instruction_text(name: str, **context: str) -> str:
     return instruction.render(**context)
 
 
+def instruction_section(name: str, shown: bool, **context: str) -> str:
+    """Render one part of an instruction, for a `$slot` in the rest of it.
+
+    A part the run can leave out still says what it says in `prompts/`, beside
+    the instruction it drops into, rather than as a string built at the call
+    site: the caller decides whether the model is told, never what it is told.
+    """
+    return PromptTemplate(f"instructions/{name}").render(**context) if shown else ""
+
+
 def build_instruction(name: str, **context: str) -> HumanMessage:
     return HumanMessage(
         content_blocks=[create_text_block(instruction_text(name, **context))]

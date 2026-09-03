@@ -209,6 +209,14 @@ def _hop(
     )
 
 
+def _hop_from(effect: StageOutputRef, cause: StageOutputRef) -> CausalHop:
+    return CausalHop(
+        effect=effect,
+        cause=cause,
+        rationale="The named cause produces the named effect.",
+    )
+
+
 def _report(*hops: CausalHop, target: StageOutputRef | None = None) -> AuditReport:
     revision_target = target or hops[-1].cause
     return AuditReport(
@@ -263,6 +271,32 @@ def test_audit_cross_validation_rejects_unsupported_contract_links(
 ) -> None:
     with pytest.raises(SubmissionValidationError, match=message):
         validate_submission(_report(hop), _snapshot())
+
+
+def test_audit_cross_validation_rejects_a_walk_through_one_stage() -> None:
+    """Two steps inside coding restate the plan's dependencies and route nowhere."""
+    report = _report(
+        _hop_from(_ref("coding", None), _ref("coding", "ret_hole")),
+        _hop("coding", "ret_hole", "coding", "ret_base"),
+    )
+
+    with pytest.raises(
+        SubmissionValidationError,
+        match=r"more than once: coding 2 times",
+    ):
+        validate_submission(report, _snapshot())
+
+
+def test_audit_cross_validation_accepts_one_step_inside_each_stage() -> None:
+    """One naming hop in coding and one in operations, on one path."""
+    report = _report(
+        _hop_from(_ref("coding", None), _ref("coding", "ret_hole")),
+        _hop("coding", "ret_hole", "operations", "op_hole"),
+        _hop("operations", "op_hole", "operations", "op_base"),
+        _hop("operations", "op_base", "semantics", "sem_feature_1"),
+    )
+
+    validate_submission(report, _snapshot())
 
 
 def test_audit_cross_validation_rejects_a_missing_revision_target() -> None:
