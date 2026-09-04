@@ -237,34 +237,24 @@ def test_a_drawing_nobody_split_is_told_all_six_frames(tmp_path: Path) -> None:
         assert view.value.capitalize() in sentence
 
 
-def test_a_given_entry_must_state_the_numbers_the_input_gave_it() -> None:
-    """'given' says the input handed the numbers over, so an empty one is a
-    contradiction rather than an entry cited for what it proves."""
-    with pytest.raises(ValidationError, match="sourced 'given' but states none"):
+@pytest.mark.parametrize("source", list(ClaimSource))
+def test_an_entry_that_states_no_number_transcribes_nothing(
+    source: ClaimSource,
+) -> None:
+    """Every drawn entity takes numbers, so an empty entry is evidence of
+    nothing whatever it says about where its numbers came from."""
+    with pytest.raises(ValidationError, match="missing"):
         DrawingEvidence(
             name="ev_bore",
             view=View.FRONT,
             entity="circle",  # type: ignore[arg-type]
             edge_style="visible",  # type: ignore[arg-type]
-            source=ClaimSource.GIVEN,
+            source=source,
             parameters=[],
         )
 
 
-def test_an_entry_cited_for_what_it_proves_takes_no_numbers() -> None:
-    proof = DrawingEvidence(
-        name="ev_through",
-        view=View.TOP,
-        entity="line",  # type: ignore[arg-type]
-        edge_style="hidden",  # type: ignore[arg-type]
-        source=ClaimSource.DERIVED,
-        parameters=[],
-    )
-
-    assert proof.parameters == []
-
-
-def test_an_entry_states_every_number_its_entity_takes_or_none() -> None:
+def test_an_entry_states_every_number_its_entity_takes() -> None:
     with pytest.raises(ValidationError, match="radius"):
         DrawingEvidence(
             name="ev_bore",

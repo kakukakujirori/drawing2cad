@@ -282,11 +282,11 @@ class DrawingEvidence(BaseModel):
     parameters: list[Parameter] = Field(
         ...,
         description=(
-            "The entity's own numbers, in millimetres on the sheet. Give every "
-            "one the entity takes or give none at all: an entry cited for "
-            "what it proves rather than what it measures -- a hidden line pair "
-            "showing a bore runs through -- takes no parameters, and a "
-            "half-transcribed entity is not evidence. Do not report pixels."
+            "The entity's own numbers, in millimetres on the sheet. Give "
+            "every number the entity takes: a half-transcribed entity is not "
+            "evidence, and an entry stating none transcribes nothing. Where "
+            "the sheet does not state a number, measure it off the linework "
+            "and say so with 'derived'. Do not report pixels."
             "\n\n"
             "Reading an entity off a view:\n"
             f"{rows(_DRAWN_PARAMETERS)}"
@@ -296,17 +296,6 @@ class DrawingEvidence(BaseModel):
     @model_validator(mode="after")
     def require_the_parameters_the_entity_states(self) -> Self:
         require_name(self.name, "ev_", _EVIDENCE_NAME)
-        if not self.parameters:
-            # 'given' says the input handed the numbers over, so an empty one
-            # contradicts itself. Name the set: for a one-parameter entity
-            # that is the only way a half-transcribed entry shows up.
-            if self.source is ClaimSource.GIVEN:
-                raise ValueError(
-                    f"{self.name} is sourced 'given' but states none of "
-                    f"{list(_DRAWN_PARAMETERS[self.entity])}; give them, or say "
-                    "how the numbers were really obtained"
-                )
-            return self
         require_parameters(
             f"entity={self.entity.value!r}",
             _DRAWN_PARAMETERS[self.entity],
