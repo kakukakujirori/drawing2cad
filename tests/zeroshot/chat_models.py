@@ -24,9 +24,7 @@ class ScriptedChatModel(BaseChatModel):
     _response_index: int = PrivateAttr(default=0)
     _received_messages: list[list[BaseMessage]] = PrivateAttr(default_factory=list)
     _bound_tool_names: tuple[str, ...] = PrivateAttr(default=())
-    _bound_tool_name_history: list[tuple[str, ...]] = PrivateAttr(
-        default_factory=list
-    )
+    _bound_tool_name_history: list[tuple[str, ...]] = PrivateAttr(default_factory=list)
 
     @property
     def _llm_type(self) -> str:

@@ -127,6 +127,7 @@ def create_reconstruction_graph(
 
     # instantiate agents
     prompt_context = {
+        "view_frame": input_manifest.drawing.frame_sentence(),
         "output_path": str(sandbox_workdir.sandbox_bind_dir / output_filename),
         "verification_dir": str(
             sandbox_workdir.sandbox_bind_dir / verification_dirname

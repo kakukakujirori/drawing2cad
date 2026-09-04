@@ -13,11 +13,9 @@ from langchain_core.messages.content import (
 )
 
 from zeroshot.pipeline.messages.contracts import (
-    VIEW_FRAME,
     DrawingSheet,
     DrawingSource,
     View,
-    view_frame_sentence,
 )
 from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
 from zeroshot.pipeline.sandbox import SandboxWorkdir
@@ -142,10 +140,6 @@ class _Presented:
     def has_vector(self) -> bool:
         return any(not sheet.is_raster for sheet in self.sheets)
 
-    def framed(self) -> list[View]:
-        """The roles a coordinate can be lifted from, and no others."""
-        return [sheet.role for sheet in self.sheets if sheet.role in VIEW_FRAME]
-
 
 @dataclass(frozen=True)
 class ArtifactPresenter:
@@ -173,7 +167,7 @@ class ArtifactPresenter:
         lines = ["[Input drawing]", *presented.listing()]
         lines.append(
             "The coordinate system of the 2D drawing is as follows: "
-            f"{view_frame_sentence(presented.framed() or None)}."
+            f"{manifest.drawing.frame_sentence()}."
         )
         # What the format affords, said where the format is known. A stage's
         # guidelines describe the job; only this message knows whether the job

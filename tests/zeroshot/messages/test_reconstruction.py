@@ -420,6 +420,4 @@ def test_a_null_coding_edit_is_rejected_rather_than_crashing() -> None:
     responses = _responses("ticket_initial", "coding")
 
     with pytest.raises(ValidationError, match=r"edits has 1 entries"):
-        CodingSubmission(
-            edits=[None], deleted=[], rationale=None, responses=responses
-        )
+        CodingSubmission(edits=[None], deleted=[], rationale=None, responses=responses)

@@ -85,8 +85,10 @@ class SandboxWorkdir:
             sandbox_path = self.sandbox_bind_dir / sandbox_path
 
         if sandbox_path.is_relative_to(self.sandbox_tmp_dir):
-            sandbox_path = self.sandbox_bind_dir / self.tmp_subdir / (
-                sandbox_path.relative_to(self.sandbox_tmp_dir)
+            sandbox_path = (
+                self.sandbox_bind_dir
+                / self.tmp_subdir
+                / (sandbox_path.relative_to(self.sandbox_tmp_dir))
             )
 
         try:

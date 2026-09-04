@@ -219,8 +219,7 @@ def _image_message(images: list[dict[str, Any]]) -> dict[str, Any]:
             {
                 "type": "text",
                 "text": (
-                    f"{'Images' if len(images) > 1 else 'The image'} "
-                    "the tool loaded:"
+                    f"{'Images' if len(images) > 1 else 'The image'} the tool loaded:"
                 ),
             },
             *images,
@@ -258,9 +257,7 @@ def _drop_redundant_reasoning(message_dict: dict[str, Any]) -> None:
     details = message_dict.get("reasoning_details")
     if not reasoning or not isinstance(details, Sequence) or isinstance(details, str):
         return
-    if any(
-        isinstance(entry, dict) and entry.get("text") for entry in details
-    ):
+    if any(isinstance(entry, dict) and entry.get("text") for entry in details):
         message_dict.pop("reasoning", None)
 
 

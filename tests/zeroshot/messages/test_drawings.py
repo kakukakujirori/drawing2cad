@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from zeroshot.pipeline.messages.contracts.drawings import (
+    ORTHOGRAPHIC_VIEWS,
     VIEW_FRAME,
     ClaimSource,
     Dimension,
@@ -19,7 +20,6 @@ from zeroshot.pipeline.messages.contracts.drawings import (
     DrawingSource,
     Parameter,
     View,
-    view_frame_sentence,
 )
 
 
@@ -198,15 +198,43 @@ def test_a_sheet_is_a_file_until_something_analyses_it(tmp_path: Path) -> None:
     assert sheet.frame is not None
 
 
-def test_the_frame_sentence_names_only_the_views_it_is_asked_for() -> None:
-    both = view_frame_sentence([View.FRONT, View.TOP])
+def test_a_split_drawing_is_told_only_the_frames_it_holds(tmp_path: Path) -> None:
+    """Front and top, and no axis belonging to the four views it does not hold."""
+    image = _write(tmp_path / "sheet.png")
+    split = DrawingSource(
+        sheets=[
+            DrawingSheet(role=View.FRONT, file=image),
+            DrawingSheet(role=View.TOP, file=image),
+        ]
+    )
 
-    assert "Front" in both and "Top" in both
-    assert "Back" not in both and "Left" not in both
-    # A view with no frame cannot add one by being asked for.
-    assert view_frame_sentence([View.ISOMETRIC]) == ""
-    # The fallback names all six: an undivided sheet could carry any of them.
-    assert view_frame_sentence().count(";") == 5
+    sentence = split.frame_sentence()
+
+    assert "Front is right=+x, up=+y" in sentence
+    assert "Top is right=+x, up=-z" in sentence
+    assert "Back" not in sentence and "Left" not in sentence
+    assert sentence.count(";") == 1
+
+
+def test_a_drawing_nobody_split_is_told_all_six_frames(tmp_path: Path) -> None:
+    """A live run sent the semantics stage "The axes are not yours to choose.
+    ." -- no sheet was orthographic, and no wanted view rendered to nothing."""
+    unsplit = DrawingSource(
+        sheets=[
+            DrawingSheet(
+                role=View.UNKNOWN, label="drawing", file=_write(tmp_path / "d.dxf")
+            ),
+            DrawingSheet(
+                role=View.PERSPECTIVE, label="hlg", file=_write(tmp_path / "p.png")
+            ),
+        ]
+    )
+
+    sentence = unsplit.frame_sentence()
+
+    assert sentence.count(";") == 5
+    for view in ORTHOGRAPHIC_VIEWS:
+        assert view.value.capitalize() in sentence
 
 
 def test_a_given_entry_must_state_the_numbers_the_input_gave_it() -> None:

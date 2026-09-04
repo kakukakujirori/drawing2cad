@@ -9,11 +9,9 @@ from zeroshot.pipeline.messages import (
     system_prompt_text,
 )
 from zeroshot.pipeline.messages.contracts import (
-    VIEW_FRAME,
     DrawnEntity,
     GeometryKind,
     Operation,
-    view_frame_sentence,
 )
 from zeroshot.pipeline.messages.contracts.audit import AuditReport
 from zeroshot.pipeline.messages.contracts.operations import _REFERENCE
@@ -35,6 +33,7 @@ _RUN_PATHS = {
     "output_path": "/work/model.py",
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
+    "view_frame": "Front is right=+x, up=+y",
 }
 
 
@@ -44,15 +43,8 @@ def _round_context(**varying: str) -> dict[str, str]:
 
 
 def _guidelines(stage: str) -> str:
-    """A stage's guidelines rendered the way `instruction_text` renders them.
-
-    It injects `$view_frame` on top of the run's paths, so a test that renders
-    the file directly has to supply it too or it is not looking at the text the
-    stage was actually given.
-    """
-    return PromptTemplate(f"instructions/{stage}/guidelines").render(
-        **_RUN_PATHS, view_frame=view_frame_sentence()
-    )
+    """A stage's guidelines rendered the way `instruction_text` renders them."""
+    return PromptTemplate(f"instructions/{stage}/guidelines").render(**_RUN_PATHS)
 
 
 def test_a_packaged_prompt_is_addressed_by_name() -> None:
@@ -330,15 +322,35 @@ def test_every_stage_that_handles_a_coordinate_is_given_the_frame(name: str) -> 
     it reads them back. A stage left without the frame does not fail -- it
     guesses, and `top` sheet-up is model `-z`, so it guesses wrong in silence.
 
-    The sentence is rendered from `VIEW_FRAME`, so this asserts that it reaches
-    the stage rather than that a copy of it is still correct."""
-    rendered = instruction_text(
-        name,
+    What the sentence says is `DrawingSource.frame_sentence`'s; this is that
+    whichever sentence it renders reaches the stage."""
+    context = {
         **_round_context(current_round="0", attempt_dir="/work/a"),
-    )
+        "view_frame": "SENTINEL_FRAME",
+    }
 
-    for view, (right, up, _) in VIEW_FRAME.items():
-        assert f"{view.value.capitalize()} is right={right}, up={up}" in rendered
+    assert "SENTINEL_FRAME" in instruction_text(name, **context)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["semantics/round", "operations/round", "coding/round", "audit/round"],
+)
+def test_a_stage_is_refused_rather_than_given_a_frame_nobody_chose(
+    name: str,
+) -> None:
+    """The default that used to stand here was overridden on every real call,
+    and it is what let an empty frame reach a live run unnoticed."""
+    without = {
+        key: value
+        for key, value in _round_context(
+            current_round="0", attempt_dir="/work/a"
+        ).items()
+        if key != "view_frame"
+    }
+
+    with pytest.raises(KeyError, match="view_frame"):
+        instruction_text(name, **without)
 
 
 def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes() -> None:

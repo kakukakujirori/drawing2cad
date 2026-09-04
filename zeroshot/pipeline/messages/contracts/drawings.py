@@ -5,7 +5,7 @@ by reading it. `Parameter` lives here because both sides are measured with it.
 """
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self
@@ -47,21 +47,6 @@ VIEW_FRAME: Mapping[View, tuple[str, str, str]] = {
     View.LEFT: ("+z", "+y", "-x"),
 }
 ORTHOGRAPHIC_VIEWS: tuple[View, ...] = tuple(VIEW_FRAME.keys())
-
-
-def view_frame_sentence(views: Iterable[View] | None = None) -> str:
-    """How the given views' sheet coordinates sit in the model, as one sentence.
-
-    Rendered from `VIEW_FRAME` so no stage can carry a frame that fell behind.
-    `views` narrows it to the ones a run holds; the fallback names all six.
-    """
-    wanted = ORTHOGRAPHIC_VIEWS if views is None else tuple(views)
-    return "; ".join(
-        f"{view.value.capitalize()} is right={VIEW_FRAME[view][0]}, "
-        f"up={VIEW_FRAME[view][1]}"
-        for view in ORTHOGRAPHIC_VIEWS
-        if view in wanted
-    )
 
 
 class DrawnEntity(StrEnum):
@@ -286,7 +271,7 @@ class DrawingEvidence(BaseModel):
     source: ClaimSource = Field(
         ...,
         description=(
-            "How the numbers below were obtained. 'given' when the input "
+            "How the parameter values were obtained. 'given' when the input "
             "states them outright -- a printed dimension, or a curve "
             "definition in a vector sheet; 'derived' when you worked them out "
             "from what it states, whether by arithmetic or by measuring the "
@@ -491,6 +476,23 @@ class DrawingSource(BaseModel):
     def orthographic(self) -> list[DrawingSheet]:
         """The sheets a cross-view check may compare"""
         return [sheet for sheet in self.sheets if sheet.role in VIEW_FRAME]
+
+    def frame_sentence(self) -> str:
+        """The frame every stage reading this drawing works in, as one sentence.
+
+        Rendered from `VIEW_FRAME`, so no stage can carry a frame that fell
+        behind. A pictorial and an undivided sheet fix no axes of their own, so
+        a drawing with no orthographic sheet is told all six rather than none.
+        """
+        wanted = {sheet.role for sheet in self.orthographic()} or set(
+            ORTHOGRAPHIC_VIEWS
+        )
+        return "; ".join(
+            f"{view.value.capitalize()} is right={VIEW_FRAME[view][0]}, "
+            f"up={VIEW_FRAME[view][1]}"
+            for view in ORTHOGRAPHIC_VIEWS
+            if view in wanted
+        )
 
     def views(self) -> tuple[View, ...]:
         return tuple(sheet.role for sheet in self.sheets)

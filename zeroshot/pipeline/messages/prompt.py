@@ -7,7 +7,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.messages.content import create_text_block
 from pydantic import BaseModel
 
-from zeroshot.pipeline.messages.contracts import view_frame_sentence
 from zeroshot.pipeline.messages.prompts import PromptTemplate
 
 
@@ -25,14 +24,12 @@ def instruction_text(name: str, **context: str) -> str:
     in every instruction rather than the opening one so that a redo, which
     enters on its own, still carries them.
 
-    `$view_frame` is offered to every prompt because the frame belongs to the
+    `$view_frame` is asked of every caller because the frame belongs to the
     contract, not to a stage: semantics reports sheet coordinates tagged with a
-    view, and each stage after it has to read them back. A caller that knows
-    which views the sample actually holds may pass its own; the fallback names
-    all six, because a sheet nobody has split could carry any of them.
+    view, and each stage after it has to read them back. There is no default,
+    so a caller that forgets it is refused rather than given all six.
     """
     instruction = PromptTemplate(f"instructions/{name}")
-    context = {"view_frame": view_frame_sentence(), **context}
     guidelines = instruction.path.parent / "guidelines.md"
     if guidelines.is_file():
         context = {

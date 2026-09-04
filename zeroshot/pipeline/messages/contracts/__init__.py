@@ -24,7 +24,6 @@ from zeroshot.pipeline.messages.contracts.drawings import (
     ParameterName,
     View,
     edge_style_for_linetype,
-    view_frame_sentence,
 )
 from zeroshot.pipeline.messages.contracts.operations import (
     Operation,
@@ -79,5 +78,4 @@ __all__ = [
     "linearise",
     "next_stage",
     "resolve_reference",
-    "view_frame_sentence",
 ]
