@@ -168,10 +168,8 @@ class StubRenderer:
 
 def _artifact_presenter(feedback_render3d: str = "path") -> ArtifactPresenter:
     return ArtifactPresenter(
-        input_render3d_mode="none",
-        input_render3d_styles=(),
-        feedback_render3d_mode=feedback_render3d,  # type: ignore[arg-type]
-        feedback_render3d_styles=RENDER3D_STYLES,
+        input_mode="path",
+        feedback_mode=feedback_render3d,  # type: ignore[arg-type]
     )
 
 

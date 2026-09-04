@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from zeroshot.pipeline.messages import InputManifest
+from zeroshot.pipeline.messages import (
+    DrawingSheet,
+    DrawingSource,
+    InputManifest,
+    View,
+)
 
 PIPELINE_DIR = Path(__file__).resolve().parents[3] / "zeroshot" / "pipeline"
 
@@ -42,7 +47,14 @@ def test_input_manifest_rejects_a_target(tmp_path: Path) -> None:
     with pytest.raises(TypeError):
         InputManifest(  # type: ignore[call-arg]
             sample_id="sample-1",
-            dxf_path=dxf_path,
-            render3d_paths={},
+            drawing=DrawingSource(
+                sheets=[
+                    DrawingSheet(
+                        role=View.UNKNOWN,
+                        label="drawing",
+                        file=dxf_path,
+                    )
+                ]
+            ),
             target_step_path=tmp_path / "target.step",
         )

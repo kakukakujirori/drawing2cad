@@ -8,7 +8,13 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 from zeroshot import run_pipeline
-from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
+from zeroshot.pipeline.messages import (
+    ArtifactPresenter,
+    DrawingSheet,
+    DrawingSource,
+    InputManifest,
+    View,
+)
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import (
     ReconstructionState,
@@ -36,10 +42,8 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
         },
         "artifact_presenter": {
             "_target_": "zeroshot.pipeline.messages.ArtifactPresenter",
-            "input_render3d_mode": "none",
-            "input_render3d_styles": [],
-            "feedback_render3d_mode": "none",
-            "feedback_render3d_styles": [],
+            "input_mode": "path",
+            "feedback_mode": "none",
         },
         "models": {},
         "model": {
@@ -56,8 +60,15 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
         },
         "sample": {
             "sample_id": "sample-1",
-            "dxf_path": str(dxf_path),
-            "render3d_paths": {},
+            "drawing": {
+                "sheets": [
+                    {
+                        "role": "unknown",
+                        "label": "drawing",
+                        "file": str(dxf_path),
+                    }
+                ]
+            },
         },
     }
     values.update(overrides)
@@ -103,10 +114,8 @@ def test_run_composes_dependencies_and_manifest(
             "console": None,
             "artifact_presenter": {
                 "_target_": "zeroshot.pipeline.messages.ArtifactPresenter",
-                "input_render3d_mode": "none",
-                "input_render3d_styles": [],
-                "feedback_render3d_mode": "none",
-                "feedback_render3d_styles": [],
+                "input_mode": "path",
+                "feedback_mode": "none",
             },
             "models": {},
             "model": {
@@ -127,8 +136,15 @@ def test_run_composes_dependencies_and_manifest(
             },
             "sample": {
                 "sample_id": "sample-1",
-                "dxf_path": str(dxf_path),
-                "render3d_paths": {},
+                "drawing": {
+                    "sheets": [
+                        {
+                            "role": "unknown",
+                            "label": "drawing",
+                            "file": str(dxf_path),
+                        }
+                    ]
+                },
             },
         }
     )
@@ -157,8 +173,15 @@ def test_run_composes_dependencies_and_manifest(
     }
     assert captured["manifest"] == InputManifest(
         sample_id="sample-1",
-        dxf_path=dxf_path,
-        render3d_paths={},
+        drawing=DrawingSource(
+            sheets=[
+                DrawingSheet(
+                    role=View.UNKNOWN,
+                    label="drawing",
+                    file=dxf_path,
+                )
+            ]
+        ),
     )
     assert result is not None
     assert result == {}

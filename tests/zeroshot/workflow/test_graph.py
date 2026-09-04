@@ -13,7 +13,13 @@ from langchain_core.messages.content import ContentBlock
 
 from tests.zeroshot.chat_models import ScriptedChatModel
 from tests.zeroshot.contracts import hypothesis, replacing, unchanged
-from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
+from zeroshot.pipeline.messages import (
+    ArtifactPresenter,
+    DrawingSheet,
+    DrawingSource,
+    InputManifest,
+    View,
+)
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -186,10 +192,8 @@ def _agent(role: str, model: BaseChatModel, **overrides: Any) -> AgentBuilder:
 
 def _artifact_presenter() -> ArtifactPresenter:
     return ArtifactPresenter(
-        input_render3d_mode="none",
-        input_render3d_styles=(),
-        feedback_render3d_mode="none",
-        feedback_render3d_styles=(),
+        input_mode="path",
+        feedback_mode="none",
     )
 
 
@@ -228,8 +232,15 @@ def _graph(
         artifact_presenter=_artifact_presenter(),
         input_manifest=InputManifest(
             sample_id="test",
-            dxf_path=dxf_path,
-            render3d_paths={},
+            drawing=DrawingSource(
+                sheets=[
+                    DrawingSheet(
+                        role=View.UNKNOWN,
+                        label="drawing",
+                        file=dxf_path,
+                    )
+                ]
+            ),
         ),
         reconstruction_history_filename=history_filename,
         **overrides,

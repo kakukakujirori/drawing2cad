@@ -249,7 +249,7 @@ def test_an_operation_that_names_no_feature_says_so() -> None:
 def _torus_feature() -> SemanticHypothesis:
     """One feature whose size is stated, so a reference to it has an answer.
 
-    Full precision, as a reading off a DXF is. That is also what makes a copy
+    Full precision, as an entry off a DXF is. That is also what makes a copy
     of it recognisable: nobody arrives at fourteen decimal places by thinking.
     """
     return hypothesis(
@@ -318,33 +318,30 @@ def test_a_canonical_reference_names_one_geometry_even_when_kinds_repeat() -> No
     ).endswith("geo_right_end.radius (9.75)")
 
 
-def test_a_canonical_reference_names_one_evidence_reading_and_its_vector() -> None:
-    bore = feature(
-        "sem_main_bore",
+def test_a_canonical_reference_names_one_entry_and_its_vector() -> None:
+    """An entry is named on its own: it belongs to the hypothesis rather than
+    to any one feature, and two features may cite the same one."""
+    held = hypothesis(
         "main bore",
         evidence=[
-            evidence(
-                "circle",
-                name="ev_front_circle",
-                center=[1.0, 2.0],
-                radius=3.0,
-            ),
-            evidence(
-                "circle",
-                name="ev_right_circle",
-                center=[12.0, 13.0],
-                radius=5.0,
-            ),
+            evidence("circle", name="ev_front_circle", center=[1.0, 2.0], radius=3.0),
+            evidence("circle", name="ev_right_circle", center=[12.0, 13.0], radius=5.0),
+        ],
+        proposal=[
+            feature(
+                "sem_main_bore",
+                "main bore",
+                evidence=["ev_front_circle", "ev_right_circle"],
+            )
         ],
     )
-    held = hypothesis(proposal=[bore])
 
-    assert resolve_reference("at sem_main_bore.ev_right_circle.center", held) == (
-        "at sem_main_bore.ev_right_circle.center ([12.0 13.0])"
+    assert resolve_reference("at ev_right_circle.center", held) == (
+        "at ev_right_circle.center ([12.0 13.0])"
     )
-    assert resolve_reference(
-        "radius sem_main_bore.ev_front_circle.radius", held
-    ).endswith("sem_main_bore.ev_front_circle.radius (3.0)")
+    assert resolve_reference("radius ev_front_circle.radius", held).endswith(
+        "ev_front_circle.radius (3.0)"
+    )
 
 
 def test_a_reference_to_something_the_hypothesis_lacks_is_left_alone() -> None:
@@ -361,40 +358,43 @@ def test_a_reference_to_something_the_hypothesis_lacks_is_left_alone() -> None:
 
 def test_a_list_parameter_is_resolved_as_one_exactly_addressed_value() -> None:
     held = hypothesis(
-        proposal=[
-            feature(
-                "sem_blend_profile",
-                "blend",
-                evidence=[evidence("spline", name="ev_front_spline")],
-            )
-        ]
+        "blend",
+        evidence=[evidence("spline", name="ev_front_spline")],
+        proposal=[feature("sem_blend_profile", "blend", evidence=["ev_front_spline"])],
     )
 
     assert "([0.0 0.0 1.0 1.0 2.0 0.0])" in resolve_reference(
-        "follow sem_blend_profile.ev_front_spline.control_points", held
+        "follow ev_front_spline.control_points", held
     )
 
 
-def test_claim_and_evidence_parameters_are_separate_named_addresses() -> None:
-    bore = feature(
-        "sem_main_bore",
+def test_claim_and_entry_parameters_are_separate_named_addresses() -> None:
+    """`radius` means one thing on a claim and another on an entry, so the two
+    are addressed apart: through the feature that claims it, or on its own."""
+    held = hypothesis(
         "main bore",
-        geometry=[
-            geometry(
-                "cylinder",
-                name="geo_cylinder",
-                radius=3.40755883124,
-                height=16.5366825634,
-            )
-        ],
         evidence=[
             evidence("arc", name="ev_front_arc", radius=99.9),
             evidence("arc", name="ev_right_arc", radius=88.8),
         ],
+        proposal=[
+            feature(
+                "sem_main_bore",
+                "main bore",
+                geometry=[
+                    geometry(
+                        "cylinder",
+                        name="geo_cylinder",
+                        radius=3.40755883124,
+                        height=16.5366825634,
+                    )
+                ],
+                evidence=["ev_front_arc", "ev_right_arc"],
+            )
+        ],
     )
-    held = hypothesis(proposal=[bore])
 
     assert "(3.40755883124)" in resolve_reference(
         "sem_main_bore.geo_cylinder.radius", held
     )
-    assert "(99.9)" in resolve_reference("sem_main_bore.ev_front_arc.radius", held)
+    assert "(99.9)" in resolve_reference("ev_front_arc.radius", held)

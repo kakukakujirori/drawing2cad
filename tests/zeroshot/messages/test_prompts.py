@@ -16,6 +16,7 @@ from zeroshot.pipeline.messages.contracts import (
     view_frame_sentence,
 )
 from zeroshot.pipeline.messages.contracts.audit import AuditReport
+from zeroshot.pipeline.messages.contracts.operations import _REFERENCE
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     ReconstructionRun,
     ReconstructionSnapshot,
@@ -306,14 +307,13 @@ def test_the_semantics_guidelines_describe_how_the_views_are_actually_separated(
 ):
     """The guidelines used to claim the three views sit on their own DXF
     layers. They do not: across all twenty sample drawings every entity is on
-    layer `0`, and what does distinguish an edge is its linetype. The stage
-    spent turns rediscovering that on every run."""
+    layer `0`, and a raster sheet has no layers at all. What distinguishes an
+    edge is how it is drawn. The stage spent turns rediscovering that."""
     guidelines = _guidelines("semantics")
 
     assert "HIDDEN" in guidelines
     assert "linetype" in guidelines.lower()
-    assert "layer `0`" in guidelines
-    assert "not separated by layer" in guidelines
+    assert "not separated by layer or by file" in guidelines
 
 
 @pytest.mark.parametrize(
@@ -381,3 +381,36 @@ def test_a_stage_that_builds_in_3d_is_not_told_to_look_for_a_2d_entity() -> None
     for stage in ("operations", "coding"):
         quoted = set(re.findall(r"`([a-z_]+)`", _guidelines(stage)))
         assert not quoted & flat_only, stage
+
+
+_ADDRESS_LIKE = re.compile(r"\b(?:sem|ev)_[a-z0-9_<>]+(?:\.[a-z0-9_<>]+)+")
+_PLACEHOLDERS = {
+    "<feature>": "main_bore",
+    "<claim>": "cylinder",
+    "<evidence>": "front_circle",
+    "<parameter>": "radius",
+}
+# What a deletion names: a member, rather than one of its parameters.
+_MEMBER_ADDRESS = re.compile(r"sem_[a-z0-9_]+\.geo_[a-z0-9_]+")
+
+
+def test_every_address_the_prompts_teach_is_one_the_pipeline_reads() -> None:
+    """Every dotted sem_/ev_ address written in a prompt is either a parameter
+    citation `resolve_reference` resolves, or a member address a deletion takes.
+
+    An address taught but not read is filled in for nobody: the model cites it,
+    the resolver leaves it standing, and the coder is handed a name where a
+    number should be.
+    """
+    prompts = PromptTemplate("roles/semantic_hypothesizer").path.parent.parent
+    unread = []
+    for prompt in sorted(prompts.rglob("*.md")):
+        for token in _ADDRESS_LIKE.findall(prompt.read_text(encoding="utf-8")):
+            concrete = token
+            for placeholder, name in _PLACEHOLDERS.items():
+                concrete = concrete.replace(placeholder, name)
+            if _REFERENCE.fullmatch(concrete) or _MEMBER_ADDRESS.fullmatch(concrete):
+                continue
+            unread.append(f"{prompt.relative_to(prompts)}: {token}")
+
+    assert not unread

@@ -6,6 +6,7 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from zeroshot.pipeline.messages.contracts import (
+    DrawingEvidence,
     Operation,
     OperationPlan,
     SemanticFeature,
@@ -58,6 +59,7 @@ def merge_submission(
     try:
         if stage is PipelineStage.SEMANTICS:
             return SemanticHypothesis(
+                evidence=_merged_evidence(_previous_evidence(revised), submission),
                 proposal=_merged_features(_features(revised), submission),
                 rationale=rationale,
             )
@@ -100,6 +102,29 @@ def _features(previous: StageArtifact | None) -> Sequence[SemanticFeature]:
     return previous.proposal if isinstance(previous, SemanticHypothesis) else []
 
 
+def _previous_evidence(previous: StageArtifact | None) -> Sequence[DrawingEvidence]:
+    return previous.evidence if isinstance(previous, SemanticHypothesis) else []
+
+
+def _merged_evidence(
+    previous: Sequence[DrawingEvidence],
+    submission: StageSubmission,
+) -> list[DrawingEvidence]:
+    """Evidence has no members of its own, so a given entry replaces whole."""
+    given = _by_name(getattr(submission, "evidence", ()))
+    dropped = _dropped_entries(_addressing_evidence(submission), previous, "evidence")
+    return _merged_list(previous, given, dropped)
+
+
+def _addressing_evidence(submission: StageSubmission) -> list[str]:
+    """The deletions that name a piece of evidence, told apart by prefix.
+
+    The two collections are addressed in one list, and a bare name is enough to
+    tell them apart: `ev_` is evidence's, and a feature's begins `sem_`.
+    """
+    return [name for name in submission.deleted if name.startswith("ev_")]
+
+
 def _operations(previous: StageArtifact | None) -> Sequence[Operation]:
     return previous.proposal if isinstance(previous, OperationPlan) else []
 
@@ -121,7 +146,8 @@ def _merged_features(
     previous: Sequence[SemanticFeature],
     submission: StageSubmission,
 ) -> list[SemanticFeature]:
-    dropped = _dropped_entries(submission.deleted, previous, "feature")
+    addressed = set(submission.deleted) - set(_addressing_evidence(submission))
+    dropped = _dropped_entries(sorted(addressed), previous, "feature")
     dropped_members = _dropped_members(submission.deleted, previous)
 
     known = _by_name(previous)
@@ -155,7 +181,10 @@ def _revised_feature(
         description=edit.description,
         open_question=edit.open_question,
         geometry=_merged_list(base.geometry, _by_name(edit.geometry), dropped),
-        evidence=_merged_list(base.evidence, _by_name(edit.evidence), dropped),
+        # Evidence is cited by name rather than carried, so a feature that
+        # is given at all gives the whole list: there is no member to merge,
+        # and an omission means "cites nothing" rather than "unchanged".
+        evidence=list(edit.evidence),
     )
 
 
@@ -198,7 +227,7 @@ def _dropped_members(
     deleted: Sequence[str],
     previous: Sequence[SemanticFeature],
 ) -> dict[str, set[str]]:
-    """The geo_ and ev_ names dropped from each feature, checked against it."""
+    """The geo_ names dropped from each feature, checked against it."""
     known = _by_name(previous)
     dropped: dict[str, set[str]] = {}
     for address in deleted:
@@ -209,10 +238,10 @@ def _dropped_members(
         if feature is None or "." in member_name:
             raise SubmissionValidationError(
                 f"{address} is not an address in the current hypothesis: name a "
-                "whole feature as sem_main_bore, or one of its members as "
-                "sem_main_bore.geo_cylinder"
+                "whole feature as sem_main_bore, one of its claims as "
+                "sem_main_bore.geo_cylinder, or evidence as ev_front_circle"
             )
-        if member_name not in _by_name([*feature.geometry, *feature.evidence]):
+        if member_name not in _by_name(feature.geometry):
             raise SubmissionValidationError(
                 f"cannot delete {address}: {feature_name} has no member "
                 f"called {member_name}"

@@ -18,7 +18,13 @@ from tests.zeroshot.chat_models import ScriptedChatModel
 from tests.zeroshot.contracts import hypothesis, replacing, unchanged
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
-from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
+from zeroshot.pipeline.messages import (
+    ArtifactPresenter,
+    DrawingSheet,
+    DrawingSource,
+    InputManifest,
+    View,
+)
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -308,17 +314,22 @@ def _manifest_without_renders(tmp_path: Path, sample_id: str) -> InputManifest:
     dxf_path.write_text("DXF_FIXTURE", encoding="utf-8")
     return InputManifest(
         sample_id=sample_id,
-        dxf_path=dxf_path,
-        render3d_paths={},
+        drawing=DrawingSource(
+            sheets=[
+                DrawingSheet(
+                    role=View.UNKNOWN,
+                    label="drawing",
+                    file=dxf_path,
+                )
+            ]
+        ),
     )
 
 
 def _artifact_presenter_without_renders() -> ArtifactPresenter:
     return ArtifactPresenter(
-        input_render3d_mode="none",
-        input_render3d_styles=(),
-        feedback_render3d_mode="none",
-        feedback_render3d_styles=(),
+        input_mode="path",
+        feedback_mode="none",
     )
 
 
@@ -343,19 +354,26 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     selected_render_path.write_bytes(b"ALLOWED_RENDER")
     hidden_render_path.write_bytes(b"HIDDEN_RENDER")
 
+    # `hidden_render_path` exists on disk and is named by nothing: staging
+    # follows the manifest, not the directory it was read from.
     manifest = InputManifest(
         sample_id="sample-1",
-        dxf_path=dxf_path,
-        render3d_paths={
-            "style-a": selected_render_path,
-            "style-b": hidden_render_path,
-        },
+        drawing=DrawingSource(
+            sheets=[
+                DrawingSheet(role=View.UNKNOWN, label="drawing", file=dxf_path),
+                DrawingSheet(
+                    role=View.PERSPECTIVE,
+                    label="style-a",
+                    file=selected_render_path,
+                ),
+            ],
+        ),
     )
     inspect_inputs = cleandoc(
         """
         from pathlib import Path
 
-        dxf = Path('/work/inputs/techdraw.dxf')
+        dxf = Path('/work/inputs/drawing.dxf')
         assert dxf.read_text() == 'ORIGINAL_DXF'
         assert Path('/work/inputs/style-a.png').read_bytes() == b'ALLOWED_RENDER'
         assert not Path('/work/inputs/style-b.png').exists()
@@ -399,10 +417,8 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         )
     )
     artifact_presenter = ArtifactPresenter(
-        input_render3d_mode="path",
-        input_render3d_styles=("style-a",),
-        feedback_render3d_mode="none",
-        feedback_render3d_styles=(),
+        input_mode="path",
+        feedback_mode="none",
     )
     runner = PipelineRunner(
         # This test is about input staging and transcript contents, not budget
@@ -435,7 +451,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     initial_human_message = initial_messages[1]
     assert isinstance(initial_human_message, HumanMessage)
     initial_text = _message_text(initial_human_message)
-    assert "/work/inputs/techdraw.dxf" in initial_text
+    assert "/work/inputs/drawing.dxf" in initial_text
     assert "/work/inputs/style-a.png" in initial_text
     assert "style-b" not in initial_text
     assert str(dxf_path) not in initial_text
@@ -486,7 +502,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
 
     sample_artifact_root = tmp_path / "artifacts" / "sample-1"
     saved_workdir = sample_artifact_root / "workspace"
-    assert (saved_workdir / "inputs" / "techdraw.dxf").read_text(
+    assert (saved_workdir / "inputs" / "drawing.dxf").read_text(
         encoding="utf-8"
     ) == "ORIGINAL_DXF"
     assert (saved_workdir / "inputs" / "style-a.png").read_bytes() == b"ALLOWED_RENDER"
@@ -1109,7 +1125,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
     # not through a role that every stage of a shared thread would read.
     assert "/work/model.py" in instruction
     assert "/work/model.py" not in coder["system"]
-    assert "/work/inputs/techdraw.dxf" in instruction
+    assert "/work/inputs/drawing.dxf" in instruction
 
 
 def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:

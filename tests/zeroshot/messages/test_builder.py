@@ -1,4 +1,12 @@
+"""How the run's files are announced, on the way in and on the way back.
+
+Both sides are a `DrawingSource`, so one set of cases covers them: which files
+are named, which ride as images, and what the message says about the format it
+is handing over.  A sheet's bytes never appear unless the mode asked for them.
+"""
+
 import base64
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
@@ -6,9 +14,14 @@ import pytest
 
 from zeroshot.pipeline.messages import (
     ArtifactPresenter,
+    DrawingSheet,
+    DrawingSource,
     FeedbackManifest,
     InputManifest,
+    View,
 )
+from zeroshot.pipeline.messages.artifact import _MIME_TYPES, _SandboxSheet
+from zeroshot.pipeline.messages.contracts.drawings import DRAWING_SUFFIXES
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 
 STYLES = ("style-a", "style-b", "style-c")
@@ -20,20 +33,25 @@ def _write(path: Path, content: bytes) -> Path:
     return path
 
 
-def _input_manifest(tmp_path: Path) -> InputManifest:
+def _input_manifest(
+    tmp_path: Path,
+    drawing: DrawingSource | None = None,
+) -> InputManifest:
     return InputManifest(
         sample_id="sample-1",
-        dxf_path=_write(
-            tmp_path / "input.dxf",
-            b"RAW_DXF_MUST_NOT_BE_IN_PROMPT",
+        drawing=drawing
+        or DrawingSource(
+            sheets=[
+                DrawingSheet(
+                    role=View.UNKNOWN,
+                    label="drawing",
+                    file=_write(
+                        tmp_path / "input.dxf",
+                        b"RAW_DRAWING_MUST_NOT_BE_IN_PROMPT",
+                    ),
+                )
+            ]
         ),
-        render3d_paths={
-            style: _write(
-                tmp_path / f"input-{index}.png",
-                f"input-{style}".encode(),
-            )
-            for index, style in enumerate(STYLES)
-        },
     )
 
 
@@ -42,38 +60,43 @@ def _feedback_manifest(
     *,
     render_count: int = 0,
     include_dxf: bool = False,
-    dxf_error: str | None = None,
-    render3d_errors: dict[str, str] | None = None,
+    errors: dict[str, str] | None = None,
 ) -> FeedbackManifest:
-    return FeedbackManifest(
-        verification_id="verification-1",
-        dxf_path=(
-            _write(tmp_path / "feedback.dxf", b"FEEDBACK_DXF") if include_dxf else None
-        ),
-        dxf_error=dxf_error,
-        render3d_paths={
-            style: _write(
+    sheets = [
+        DrawingSheet(
+            role=View.PERSPECTIVE,
+            label=style,
+            file=_write(
                 tmp_path / f"feedback-{index}.png",
                 f"feedback-{style}".encode(),
-            )
-            for index, style in enumerate(STYLES[:render_count])
-        },
-        render3d_errors=render3d_errors or {},
+            ),
+        )
+        for index, style in enumerate(STYLES[:render_count])
+    ]
+    if include_dxf:
+        sheets.insert(
+            0,
+            DrawingSheet(
+                role=View.UNKNOWN,
+                label="drawing",
+                file=_write(tmp_path / "feedback.dxf", b"FEEDBACK_DXF"),
+            ),
+        )
+    return FeedbackManifest(
+        verification_id="verification-1",
+        drawing=DrawingSource(sheets=sheets) if sheets else None,
+        errors=errors or {},
     )
 
 
 def _presenter(
     *,
-    access_mode: str = "none",
-    access_styles: tuple[str, ...] = (),
+    input_mode: str = "path",
     feedback_mode: str = "none",
-    feedback_styles: tuple[str, ...] = (),
 ) -> ArtifactPresenter:
     return ArtifactPresenter(
-        input_render3d_mode=access_mode,  # type: ignore[arg-type]
-        input_render3d_styles=access_styles,
-        feedback_render3d_mode=feedback_mode,  # type: ignore[arg-type]
-        feedback_render3d_styles=feedback_styles,
+        input_mode=input_mode,  # type: ignore[arg-type]
+        feedback_mode=feedback_mode,  # type: ignore[arg-type]
     )
 
 
@@ -86,279 +109,283 @@ def _text(blocks: list[dict[str, Any]]) -> str:
     return "\n".join(block["text"] for block in blocks if block.get("type") == "text")
 
 
-@pytest.mark.parametrize("field", ["access", "feedback"])
-def test_rejects_unknown_mode(field: str) -> None:
-    kwargs = {f"{field}_mode": "unknown", f"{field}_styles": ("style-a",)}
-    with pytest.raises(ValueError):
-        _presenter(**kwargs)
+def test_rejects_an_unknown_input_mode() -> None:
+    with pytest.raises(ValueError, match="input_mode"):
+        _presenter(input_mode="none")
 
 
-@pytest.mark.parametrize("field", ["access", "feedback"])
-def test_rejects_duplicate_styles(field: str) -> None:
-    kwargs = {
-        f"{field}_mode": "image",
-        f"{field}_styles": ("style-a", "style-a"),
-    }
-    with pytest.raises(ValueError):
-        _presenter(**kwargs)
+def test_rejects_an_unknown_feedback_mode() -> None:
+    with pytest.raises(ValueError, match="feedback_mode"):
+        _presenter(feedback_mode="unknown")
 
 
-@pytest.mark.parametrize("field", ["access", "feedback"])
-@pytest.mark.parametrize("mode", ["path", "image"])
-def test_non_none_mode_requires_at_least_one_style(
-    field: str,
-    mode: str,
-) -> None:
-    with pytest.raises(ValueError):
-        _presenter(**{f"{field}_mode": mode, f"{field}_styles": ()})
-
-
-def test_initial_message_always_contains_dxf_path_but_not_raw_dxf(
+def test_initial_message_contains_the_drawing_path_but_not_the_drawing(
     tmp_path: Path,
     workdir: SandboxWorkdir,
 ) -> None:
-    manifest = _input_manifest(tmp_path)
-    blocks = _presenter().build_input_message_blocks(manifest, workdir)
+    blocks = _presenter().build_input_message_blocks(_input_manifest(tmp_path), workdir)
 
     text = _text(blocks)
-    assert str(workdir.host_to_sandbox_path(manifest.dxf_path)) in text
-    assert str(manifest.dxf_path) not in text
-    assert "RAW_DXF_MUST_NOT_BE_IN_PROMPT" not in text
+    assert "input.dxf" in text
+    assert "RAW_DRAWING_MUST_NOT_BE_IN_PROMPT" not in text
 
 
-def test_initial_none_has_no_sample_specific_render_information(
+def test_an_undivided_sheet_is_announced_as_one_carrying_every_view(
     tmp_path: Path,
     workdir: SandboxWorkdir,
 ) -> None:
-    manifest = _input_manifest(tmp_path)
-    blocks = _presenter().build_input_message_blocks(manifest, workdir)
+    """Nothing has split it, so the model is told to separate the views by
+    where they sit rather than by anything the file records."""
+    blocks = _presenter().build_input_message_blocks(_input_manifest(tmp_path), workdir)
+
     text = _text(blocks)
-
-    assert [block["type"] for block in blocks] == ["text"]
-    for style, path in manifest.render3d_paths.items():
-        assert style not in text
-        assert str(path) not in text
-        assert str(workdir.host_to_sandbox_path(path)) not in text
+    assert "carries every view at once" in text
+    assert "not separated by layer or by file" in text
 
 
-def test_initial_path_includes_only_selected_styles_in_order(
+def test_split_sheets_are_named_by_role_and_narrow_the_frame(
     tmp_path: Path,
     workdir: SandboxWorkdir,
 ) -> None:
-    manifest = _input_manifest(tmp_path)
-    selected = ("style-c", "style-a")
-    blocks = _presenter(
-        access_mode="path",
-        access_styles=selected,
-    ).build_input_message_blocks(manifest, workdir)
-    text = _text(blocks)
+    """The frame sentence is in front of the model every turn, so it names the
+    views the sample holds and no others."""
+    manifest = _input_manifest(
+        tmp_path,
+        DrawingSource(
+            sheets=[
+                DrawingSheet(
+                    role=View.FRONT, file=_write(tmp_path / "front.png", b"F")
+                ),
+                DrawingSheet(role=View.TOP, file=_write(tmp_path / "top.png", b"T")),
+            ]
+        ),
+    )
 
-    assert text.index("style-c") < text.index("style-a")
-    for style in selected:
-        host_path = manifest.render3d_paths[style]
-        assert str(workdir.host_to_sandbox_path(host_path)) in text
-        assert str(host_path) not in text
-    assert "style-b" not in text
-    assert not any(block["type"] == "image" for block in blocks)
+    text = _text(_presenter().build_input_message_blocks(manifest, workdir))
+
+    assert "- front:" in text and "- top:" in text
+    assert "Front is right=+x" in text and "Top is right=+x" in text
+    assert "Back is" not in text and "Left is" not in text
+    assert "carries every view at once" not in text
 
 
-def test_initial_image_interleaves_style_labels_and_images(
+def test_a_render_offered_beside_the_drawing_is_named_but_adds_no_frame(
     tmp_path: Path,
     workdir: SandboxWorkdir,
 ) -> None:
-    manifest = _input_manifest(tmp_path)
-    selected = ("style-b", "style-a")
-    blocks = _presenter(
-        access_mode="image",
-        access_styles=selected,
-    ).build_input_message_blocks(manifest, workdir)
+    """A pictorial is a sheet like any other, and `label` is what tells two of
+    them apart. Nothing is lifted from it, so it contributes no axes."""
+    manifest = _input_manifest(
+        tmp_path,
+        DrawingSource(
+            sheets=[
+                DrawingSheet(
+                    role=View.UNKNOWN,
+                    label="drawing",
+                    file=_write(tmp_path / "input.dxf", b"DXF"),
+                ),
+                DrawingSheet(
+                    role=View.PERSPECTIVE,
+                    label="hlg_perspective",
+                    file=_write(tmp_path / "hlg.png", b"P"),
+                ),
+            ],
+        ),
+    )
 
-    assert [block["type"] for block in blocks] == [
-        "text",
-        "text",
-        "text",
-        "image",
-        "text",
-        "image",
-    ]
-    for style, label_index, image_index in (
-        ("style-b", 2, 3),
-        ("style-a", 4, 5),
-    ):
-        sandbox_path = workdir.host_to_sandbox_path(manifest.render3d_paths[style])
-        assert blocks[label_index]["text"] == f"- {style}: {sandbox_path}"
-        assert base64.b64decode(blocks[image_index]["base64"]) == (
-            manifest.render3d_paths[style].read_bytes()
+    text = _text(_presenter().build_input_message_blocks(manifest, workdir))
+
+    assert "- hlg_perspective:" in text
+    # No orthographic sheet was split out, so the fallback names all six.
+    assert text.count(";") >= 5
+
+
+def test_a_raster_sheet_rides_in_the_message_when_asked_for(
+    tmp_path: Path,
+    workdir: SandboxWorkdir,
+) -> None:
+    sheet = _write(tmp_path / "sheet.png", b"PNG_BYTES")
+    manifest = _input_manifest(
+        tmp_path,
+        DrawingSource(
+            sheets=[
+                DrawingSheet(
+                    role=View.UNKNOWN,
+                    label="drawing",
+                    file=sheet,
+                )
+            ]
+        ),
+    )
+
+    blocks = _presenter(input_mode="image").build_input_message_blocks(
+        manifest, workdir
+    )
+
+    images = [block for block in blocks if block.get("type") == "image"]
+    assert len(images) == 1
+    assert base64.b64decode(images[0]["base64"]) == b"PNG_BYTES"
+
+
+def test_a_vector_sheet_is_never_attached_as_an_image(
+    tmp_path: Path,
+    workdir: SandboxWorkdir,
+) -> None:
+    """`image` is a request, not an instruction: a DXF has no pixels."""
+    blocks = _presenter(input_mode="image").build_input_message_blocks(
+        _input_manifest(tmp_path), workdir
+    )
+
+    assert not [block for block in blocks if block.get("type") == "image"]
+
+
+def test_the_message_says_how_the_format_given_is_read(
+    tmp_path: Path,
+    workdir: SandboxWorkdir,
+) -> None:
+    """A stage's guidelines describe the job; only this message knows whether
+    the job is done by reading a file or by measuring an image."""
+    vector = _text(
+        _presenter().build_input_message_blocks(_input_manifest(tmp_path), workdir)
+    )
+    raster = _text(
+        _presenter().build_input_message_blocks(
+            _input_manifest(
+                tmp_path,
+                DrawingSource(
+                    sheets=[
+                        DrawingSheet(
+                            role=View.UNKNOWN,
+                            label="drawing",
+                            file=_write(tmp_path / "sheet.png", b"P"),
+                        )
+                    ]
+                ),
+            ),
+            workdir,
         )
-        assert blocks[image_index]["mime_type"] == "image/png"
+    )
+
+    assert "ezdxf" in vector and "Measure" not in vector
+    assert "Measure" in raster and "ezdxf" not in raster
 
 
-def test_initial_rejects_access_style_missing_from_input_manifest(
+def test_feedback_none_presents_nothing(
     tmp_path: Path,
     workdir: SandboxWorkdir,
 ) -> None:
-    manifest = _input_manifest(tmp_path)
+    blocks = _presenter(feedback_mode="none").build_feedback_message_blocks(
+        _feedback_manifest(tmp_path, render_count=3, include_dxf=True), workdir
+    )
 
-    with pytest.raises(ValueError, match="Unknown styles"):
-        _presenter(
-            access_mode="image",
-            access_styles=("missing-style",),
-        ).build_input_message_blocks(manifest, workdir)
-
-
-def test_initial_rejects_feedback_style_missing_from_input_manifest(
-    tmp_path: Path,
-    workdir: SandboxWorkdir,
-) -> None:
-    manifest = _input_manifest(tmp_path)
-
-    with pytest.raises(ValueError, match="Unknown styles"):
-        _presenter(
-            feedback_mode="image",
-            feedback_styles=("missing-style",),
-        ).build_input_message_blocks(manifest, workdir)
+    assert blocks == []
 
 
 def test_feedback_without_artifacts_has_no_presentation_blocks(
     tmp_path: Path,
     workdir: SandboxWorkdir,
 ) -> None:
-    manifest = _feedback_manifest(tmp_path)
-
-    assert _presenter().build_feedback_message_blocks(manifest, workdir) == []
-
-
-def test_feedback_includes_projected_dxf_only_when_available(
-    tmp_path: Path,
-    workdir: SandboxWorkdir,
-) -> None:
-    without_dxf = _presenter().build_feedback_message_blocks(
+    blocks = _presenter(feedback_mode="path").build_feedback_message_blocks(
         _feedback_manifest(tmp_path), workdir
     )
-    assert "Projected DXF path" not in _text(without_dxf)
 
-    with_dxf_manifest = _feedback_manifest(tmp_path, include_dxf=True)
-    with_dxf = _presenter().build_feedback_message_blocks(with_dxf_manifest, workdir)
-    text = _text(with_dxf)
-    assert "Projected DXF path" in text
-    assert with_dxf_manifest.dxf_path is not None
-    assert str(workdir.host_to_sandbox_path(with_dxf_manifest.dxf_path)) in text
-    assert str(with_dxf_manifest.dxf_path) not in text
+    assert blocks == []
 
 
-@pytest.mark.parametrize("mode", ["path", "image"])
 @pytest.mark.parametrize("render_count", [0, 1, 2, 3])
-def test_feedback_includes_only_available_renders(
+def test_feedback_names_every_sheet_the_verification_drew(
     tmp_path: Path,
     workdir: SandboxWorkdir,
-    mode: str,
     render_count: int,
 ) -> None:
-    input_manifest = _input_manifest(tmp_path)
-    feedback_manifest = _feedback_manifest(
-        tmp_path,
-        render_count=render_count,
+    manifest = _feedback_manifest(tmp_path, render_count=render_count, include_dxf=True)
+
+    text = _text(
+        _presenter(feedback_mode="path").build_feedback_message_blocks(
+            manifest, workdir
+        )
     )
-    presenter = _presenter(
-        feedback_mode=mode,
-        feedback_styles=STYLES,
-    )
-    presenter.build_input_message_blocks(input_manifest, workdir)
 
-    blocks = presenter.build_feedback_message_blocks(feedback_manifest, workdir)
-    text = _text(blocks)
-
-    if render_count == 0:
-        assert "Projected perspective renders" not in text
-        assert "attached images" not in text
-    else:
-        assert "Projected perspective renders" in text
-
+    assert "feedback.dxf" in text
     for style in STYLES[:render_count]:
-        assert style in text
-        host_path = feedback_manifest.render3d_paths[style]
-        if mode == "path":
-            assert str(workdir.host_to_sandbox_path(host_path)) in text
-            assert str(host_path) not in text
+        assert f"- {style}:" in text
     for style in STYLES[render_count:]:
         assert style not in text
 
-    image_blocks = [block for block in blocks if block["type"] == "image"]
-    expected_image_count = render_count if mode == "image" else 0
-    assert len(image_blocks) == expected_image_count
 
-    if mode == "image":
-        assert [base64.b64decode(block["base64"]) for block in image_blocks] == [
-            feedback_manifest.render3d_paths[style].read_bytes()
-            for style in STYLES[:render_count]
-        ]
-
-
-def test_access_and_feedback_style_selections_do_not_mix(
+def test_feedback_explains_what_it_could_not_draw(
     tmp_path: Path,
     workdir: SandboxWorkdir,
 ) -> None:
-    input_manifest = _input_manifest(tmp_path)
-    feedback_manifest = _feedback_manifest(tmp_path, render_count=3)
-    presenter = _presenter(
-        access_mode="path",
-        access_styles=("style-a",),
-        feedback_mode="path",
-        feedback_styles=("style-c",),
-    )
-
-    initial_text = _text(presenter.build_input_message_blocks(input_manifest, workdir))
-    feedback_text = _text(
-        presenter.build_feedback_message_blocks(feedback_manifest, workdir)
-    )
-
-    assert "style-a" in initial_text
-    assert "style-c" not in initial_text
-    assert "style-c" in feedback_text
-    assert "style-a" not in feedback_text
-
-
-def test_feedback_explains_a_missing_dxf_where_its_path_would_have_been(
-    tmp_path: Path, workdir: SandboxWorkdir
-) -> None:
-    manifest = _feedback_manifest(tmp_path, dxf_error="DegenerateDrawingError: flat")
-    blocks = _presenter().build_feedback_message_blocks(manifest, workdir)
-
-    text = _text(blocks)
-    assert "[Projected DXF unavailable: DegenerateDrawingError: flat]" in text
-    assert "[Projected DXF path" not in text
-
-
-def test_feedback_explains_only_the_renders_it_would_have_shown(
-    tmp_path: Path, workdir: SandboxWorkdir
-) -> None:
-    """A style the run never offers cannot be acted on, so its failure is noise."""
+    """A sheet that was never produced cannot carry its own explanation, so the
+    reason is keyed by the label it would have had."""
     manifest = _feedback_manifest(
         tmp_path,
         render_count=1,
-        render3d_errors={"style-b": "shown style failed", "style-c": "never offered"},
+        errors={"style-b": "renderer failed"},
     )
-    presenter = _presenter(feedback_mode="path", feedback_styles=("style-a", "style-b"))
 
-    text = _text(presenter.build_feedback_message_blocks(manifest, workdir))
+    text = _text(
+        _presenter(feedback_mode="path").build_feedback_message_blocks(
+            manifest, workdir
+        )
+    )
 
-    assert "- style-a: " in text
-    assert "- style-b: unavailable (shown style failed)" in text
-    assert "style-c" not in text
+    assert "- style-a:" in text
+    assert "- style-b: unavailable (renderer failed)" in text
 
 
-def test_feedback_withholding_renders_also_withholds_their_reasons(
-    tmp_path: Path, workdir: SandboxWorkdir
+def test_feedback_attaches_its_renders_when_asked_for(
+    tmp_path: Path,
+    workdir: SandboxWorkdir,
 ) -> None:
-    """With feedback_render3d="none" no render is offered, so none is explained.
+    manifest = _feedback_manifest(tmp_path, render_count=2)
 
-    The styles are still listed, so this pins the mode and not an empty list.
-    """
-    manifest = _feedback_manifest(
-        tmp_path, render3d_errors={style: "boom" for style in STYLES}
+    blocks = _presenter(feedback_mode="image").build_feedback_message_blocks(
+        manifest, workdir
     )
-    presenter = _presenter(feedback_mode="none", feedback_styles=STYLES)
-    text = _text(presenter.build_feedback_message_blocks(manifest, workdir))
 
-    assert "boom" not in text
-    assert "[Projected perspective renders]" not in text
+    images = [block for block in blocks if block.get("type") == "image"]
+    assert [base64.b64decode(image["base64"]) for image in images] == [
+        b"feedback-style-a",
+        b"feedback-style-b",
+    ]
+
+
+def test_a_file_outside_the_workdir_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The sandbox namespace is what the model is given; a path outside it
+    could not be opened even if it were named."""
+    outside = _write(tmp_path / "outside" / "sheet.dxf", b"DXF")
+    (tmp_path / "inside").mkdir(parents=True, exist_ok=True)
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path / "inside")
+    manifest = InputManifest(
+        sample_id="sample-1",
+        drawing=DrawingSource(
+            sheets=[
+                DrawingSheet(
+                    role=View.UNKNOWN,
+                    label="drawing",
+                    file=outside,
+                )
+            ]
+        ),
+    )
+
+    with pytest.raises(ValueError, match="must be under"):
+        _presenter().build_input_message_blocks(manifest, workdir)
+
+
+def test_a_presented_sheet_carries_every_field_of_the_sheet_it_came_from() -> None:
+    """Only the file changes on the way into a message, and it changes type.
+    A field the sandbox copy leaves out is one a message can never say."""
+    assert {field.name for field in fields(_SandboxSheet)} == set(
+        DrawingSheet.model_fields
+    )
+
+
+def test_the_only_sheet_without_a_mime_type_is_a_vector_one() -> None:
+    """`images()` skips a sheet with no mime type rather than refusing it, and
+    that is exact only while the sheets it can skip are exactly the vectors."""
+    assert set(_MIME_TYPES) | {".dxf"} == set(DRAWING_SUFFIXES)

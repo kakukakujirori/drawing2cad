@@ -1,8 +1,21 @@
+"""What a sample is handed in as, and what a verification hands back.
+
+Both are a `DrawingSource`, so the cases below are the same cases twice: files
+that have to exist, an id that has to be safe to make a directory from, and --
+on the way back -- an artifact that is either drawn or explained, never both.
+"""
+
 from pathlib import Path
 
 import pytest
 
-from zeroshot.pipeline.messages import FeedbackManifest, InputManifest
+from zeroshot.pipeline.messages import (
+    DrawingSheet,
+    DrawingSource,
+    FeedbackManifest,
+    InputManifest,
+    View,
+)
 
 
 def _write(path: Path, content: bytes = b"data") -> Path:
@@ -14,42 +27,44 @@ def _write(path: Path, content: bytes = b"data") -> Path:
 def _sample_manifest(tmp_path: Path, **overrides: object) -> InputManifest:
     values: dict[str, object] = {
         "sample_id": "sample-1",
-        "dxf_path": _write(tmp_path / "input.dxf", b"DXF"),
-        "render3d_paths": {
-            "style-a": _write(tmp_path / "input-a.png", b"input-a"),
-            "future-style": _write(
-                tmp_path / "input-future.png",
-                b"input-future",
-            ),
-        },
+        "drawing": DrawingSource(
+            sheets=[
+                DrawingSheet(
+                    role=View.UNKNOWN,
+                    label="drawing",
+                    file=_write(tmp_path / "input.dxf", b"DXF"),
+                )
+            ]
+        ),
     }
     values.update(overrides)
     return InputManifest(**values)
 
 
 def _feedback_manifest(tmp_path: Path, **overrides: object) -> FeedbackManifest:
-    values: dict[str, object] = {
-        "verification_id": "verification-1",
-    }
+    values: dict[str, object] = {"verification_id": "verification-1"}
     values.update(overrides)
     return FeedbackManifest(**values)
 
 
-def test_sample_normalizes_id_and_string_paths(tmp_path: Path) -> None:
+def test_sample_normalizes_its_id(tmp_path: Path) -> None:
     dxf = _write(tmp_path / "input.dxf")
-    render = _write(tmp_path / "input.png")
 
     manifest = InputManifest(
         sample_id="  sample-1  ",
-        dxf_path=str(dxf),
-        render3d_paths={"arbitrary-future-style": str(render)},
+        drawing=DrawingSource(
+            sheets=[
+                DrawingSheet(
+                    role=View.UNKNOWN,
+                    label="drawing",
+                    file=str(dxf),
+                )
+            ]
+        ),
     )
 
     assert manifest.sample_id == "sample-1"
-    assert manifest.dxf_path == dxf
-    assert manifest.render3d_paths == {
-        "arbitrary-future-style": render,
-    }
+    assert manifest.drawing.paths() == [dxf]
 
 
 @pytest.mark.parametrize("sample_id", ["", "   ", ".", "..", "a/b", r"a\b"])
@@ -61,81 +76,105 @@ def test_sample_rejects_empty_or_unsafe_id(
         _sample_manifest(tmp_path, sample_id=sample_id)
 
 
-def test_sample_rejects_missing_dxf(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError):
-        _sample_manifest(tmp_path, dxf_path=tmp_path / "missing.dxf")
-
-
-def test_sample_rejects_non_dxf_path(tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
-        _sample_manifest(
-            tmp_path,
-            dxf_path=_write(tmp_path / "input.txt"),
-        )
-
-
-def test_sample_rejects_missing_render(tmp_path: Path) -> None:
+def test_sample_rejects_a_missing_drawing(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         _sample_manifest(
             tmp_path,
-            render3d_paths={"style-a": tmp_path / "missing.png"},
+            drawing=DrawingSource(
+                sheets=[
+                    DrawingSheet(
+                        role=View.UNKNOWN,
+                        label="drawing",
+                        file=tmp_path / "missing.dxf",
+                    )
+                ]
+            ),
         )
 
 
-def test_sample_rejects_none_as_render_value(tmp_path: Path) -> None:
-    with pytest.raises((TypeError, ValueError)):
+def test_sample_rejects_a_missing_sheet(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
         _sample_manifest(
             tmp_path,
-            render3d_paths={"style-a": None},
+            drawing=DrawingSource(
+                sheets=[DrawingSheet(role=View.FRONT, file=tmp_path / "gone.png")]
+            ),
         )
 
 
-def test_sample_render_mapping_is_immutable(tmp_path: Path) -> None:
-    manifest = _sample_manifest(tmp_path)
-
-    with pytest.raises(TypeError):
-        manifest.render3d_paths["new-style"] = tmp_path / "new.png"  # type: ignore[index]
-
-
-def test_sample_reads_selected_render_bytes_in_requested_order(
+def test_sample_takes_a_drawing_split_into_sheets_of_either_format(
     tmp_path: Path,
 ) -> None:
-    render_a = _write(tmp_path / "input-a.png", b"input-a")
-    render_b = _write(tmp_path / "input-b.png", b"input-b")
+    front = _write(tmp_path / "front.dxf", b"DXF")
+    top = _write(tmp_path / "top.png", b"PNG")
+
     manifest = _sample_manifest(
         tmp_path,
-        render3d_paths={"a": render_a, "b": render_b},
+        drawing=DrawingSource(
+            sheets=[
+                DrawingSheet(role=View.FRONT, file=front),
+                DrawingSheet(role=View.TOP, file=top),
+            ]
+        ),
     )
 
-    assert list(manifest.load_render3d(["b", "a"]).items()) == [
-        ("b", b"input-b"),
-        ("a", b"input-a"),
-    ]
+    assert manifest.drawing.paths() == [front, top]
+    assert manifest.drawing.views() == (View.FRONT, View.TOP)
 
 
-def test_feedback_accepts_a_verification_without_artifacts(
+def test_a_render_offered_with_the_drawing_is_a_sheet_like_any_other(
     tmp_path: Path,
 ) -> None:
+    """A perspective render has a role the vocabulary already names, so it
+    needs no container of its own; `label` says which rendering it is."""
+    render = _write(tmp_path / "hlg.png", b"PNG")
+
+    manifest = _sample_manifest(
+        tmp_path,
+        drawing=DrawingSource(
+            sheets=[
+                DrawingSheet(
+                    role=View.UNKNOWN,
+                    label="drawing",
+                    file=_write(tmp_path / "input.dxf", b"DXF"),
+                ),
+                DrawingSheet(
+                    role=View.PERSPECTIVE, label="hlg_perspective", file=render
+                ),
+            ],
+        ),
+    )
+
+    # A pictorial has no frame, so nothing is lifted from it.
+    assert manifest.drawing.orthographic() == []
+    assert render in manifest.drawing.paths()
+
+
+def test_feedback_accepts_a_verification_that_drew_nothing(tmp_path: Path) -> None:
     manifest = _feedback_manifest(tmp_path)
 
     assert manifest.verification_id == "verification-1"
-    assert manifest.dxf_path is None
-    assert manifest.render3d_paths == {}
+    assert manifest.drawing is None
+    assert manifest.errors == {}
 
 
-def test_feedback_normalizes_id_and_string_paths(tmp_path: Path) -> None:
+def test_feedback_normalizes_its_id(tmp_path: Path) -> None:
     dxf = _write(tmp_path / "feedback.dxf")
-    render = _write(tmp_path / "feedback.png")
 
     manifest = FeedbackManifest(
         verification_id="  verification-1  ",
-        dxf_path=str(dxf),
-        render3d_paths={"style-a": str(render)},
+        drawing=DrawingSource(
+            sheets=[
+                DrawingSheet(
+                    role=View.UNKNOWN,
+                    label="drawing",
+                    file=dxf,
+                )
+            ]
+        ),
     )
 
     assert manifest.verification_id == "verification-1"
-    assert manifest.dxf_path == dxf
-    assert manifest.render3d_paths == {"style-a": render}
 
 
 @pytest.mark.parametrize(
@@ -147,89 +186,50 @@ def test_feedback_rejects_empty_or_unsafe_verification_id(
     verification_id: str,
 ) -> None:
     with pytest.raises(ValueError):
-        _feedback_manifest(
-            tmp_path,
-            verification_id=verification_id,
-        )
+        _feedback_manifest(tmp_path, verification_id=verification_id)
 
 
-def test_feedback_rejects_missing_dxf(tmp_path: Path) -> None:
+def test_feedback_rejects_a_drawing_it_cannot_open(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         _feedback_manifest(
             tmp_path,
-            dxf_path=tmp_path / "missing.dxf",
+            drawing=DrawingSource(
+                sheets=[
+                    DrawingSheet(
+                        role=View.UNKNOWN,
+                        label="drawing",
+                        file=tmp_path / "missing.dxf",
+                    )
+                ]
+            ),
         )
 
 
-def test_feedback_rejects_non_dxf_path(tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
-        _feedback_manifest(
-            tmp_path,
-            dxf_path=_write(tmp_path / "feedback.txt"),
-        )
-
-
-def test_feedback_rejects_missing_render(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError):
-        _feedback_manifest(
-            tmp_path,
-            render3d_paths={"style-a": tmp_path / "missing.png"},
-        )
-
-
-def test_feedback_rejects_none_as_render_value(tmp_path: Path) -> None:
-    with pytest.raises((TypeError, ValueError)):
-        _feedback_manifest(
-            tmp_path,
-            render3d_paths={"style-a": None},
-        )
-
-
-def test_feedback_render_mapping_is_immutable(tmp_path: Path) -> None:
-    manifest = _feedback_manifest(
-        tmp_path,
-        render3d_paths={
-            "style-a": _write(tmp_path / "feedback-a.png"),
-        },
-    )
+def test_feedback_errors_are_immutable(tmp_path: Path) -> None:
+    manifest = _feedback_manifest(tmp_path, errors={"drawing": "renderer failed"})
 
     with pytest.raises(TypeError):
-        manifest.render3d_paths["new-style"] = tmp_path / "new.png"  # type: ignore[index]
+        manifest.errors["another"] = "boom"  # type: ignore[index]
 
 
-def test_feedback_reads_selected_render_bytes_in_requested_order(
-    tmp_path: Path,
-) -> None:
-    render_a = _write(tmp_path / "feedback-a.png", b"feedback-a")
-    render_b = _write(tmp_path / "feedback-b.png", b"feedback-b")
-    manifest = _feedback_manifest(
-        tmp_path,
-        render3d_paths={"a": render_a, "b": render_b},
+def test_a_sheet_is_either_drawn_or_explained_never_both(tmp_path: Path) -> None:
+    """A path and a reason are alternatives; holding both means a wiring bug."""
+    render = _write(tmp_path / "hlg.png", b"PNG")
+    drawn = DrawingSource(
+        sheets=[
+            DrawingSheet(role=View.PERSPECTIVE, label="hlg_perspective", file=render)
+        ]
     )
 
-    assert list(manifest.load_render3d(["b", "a"]).items()) == [
-        ("b", b"feedback-b"),
-        ("a", b"feedback-a"),
-    ]
-
-
-def test_feedback_manifest_rejects_an_artifact_that_is_both_present_and_failed(
-    tmp_path: Path,
-) -> None:
-    """A path and a reason are alternatives; holding both means a wiring bug."""
-    dxf = _write(tmp_path / "feedback.dxf", b"DXF")
-    png = _write(tmp_path / "feedback-a.png", b"PNG")
-
     # Either alone is a legitimate outcome.
-    assert _feedback_manifest(tmp_path, dxf_path=dxf).dxf_error is None
-    assert _feedback_manifest(tmp_path, dxf_error="renderer failed").dxf_path is None
+    assert _feedback_manifest(tmp_path, drawing=drawn).errors == {}
+    assert (
+        _feedback_manifest(tmp_path, errors={"hlg_perspective": "boom"}).drawing is None
+    )
 
-    with pytest.raises(ValueError, match="dxf_path and dxf_error are both set"):
-        _feedback_manifest(tmp_path, dxf_path=dxf, dxf_error="renderer failed")
-
-    with pytest.raises(ValueError, match="both rendered and failed"):
+    with pytest.raises(ValueError, match="both drawn and failed"):
         _feedback_manifest(
             tmp_path,
-            render3d_paths={"style-a": png},
-            render3d_errors={"style-a": "renderer failed"},
+            drawing=drawn,
+            errors={"hlg_perspective": "renderer failed"},
         )

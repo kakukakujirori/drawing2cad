@@ -1,94 +1,71 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from types import MappingProxyType
+
+from zeroshot.pipeline.messages.contracts import DrawingSource
+
+
+def _safe_identifier(name: str, field_name: str) -> str:
+    stripped = name.strip()
+    if not stripped:
+        raise ValueError(f"{field_name} must not be empty")
+    if stripped in {".", ".."} or "/" in stripped or "\\" in stripped:
+        raise ValueError(f"unsafe {field_name}: {name!r}")
+    return stripped
+
+
+def _present(drawing: DrawingSource) -> None:
+    for path in drawing.paths():
+        if not path.is_file():
+            raise FileNotFoundError(f"Not Found: {path}")
 
 
 @dataclass(frozen=True)
 class InputManifest:
+    """The drawings a sample is made of.
+
+    One `DrawingSource` rather than a path because a sample may arrive as one
+    sheet, as one file per view, as DXF, as PNG, or as a mixture, and every
+    stage after this one should be unable to tell which. A perspective render
+    offered alongside the drawing is a sheet like any other, with `label`
+    saying which rendering it is.
+    """
+
     sample_id: str
-    dxf_path: Path
-    render3d_paths: Mapping[str, Path]
+    drawing: DrawingSource
 
     def __post_init__(self) -> None:
-        sample_id = self.sample_id.strip()
-        if not sample_id:
-            raise ValueError("sample_id must not be empty")
-        if sample_id in {".", ".."} or "/" in sample_id or "\\" in sample_id:
-            raise ValueError(f"unsafe sample_id: {sample_id!r}")
-
-        # str -> Path
-        dxf_path = Path(self.dxf_path)
-        render3d_paths = MappingProxyType(
-            {style: Path(path) for style, path in self.render3d_paths.items()}
+        _present(self.drawing)
+        object.__setattr__(
+            self, "sample_id", _safe_identifier(self.sample_id, "sample_id")
         )
-
-        # sanity check
-        if not dxf_path.is_file():
-            raise FileNotFoundError(f"Not Found: {self.dxf_path}")
-        if dxf_path.suffix.lower() != ".dxf":
-            raise ValueError(f"DXF path must end in .dxf: {self.dxf_path}")
-        for path in render3d_paths.values():
-            if not path.is_file():
-                raise FileNotFoundError(f"Not Found: {path}")
-
-        object.__setattr__(self, "sample_id", sample_id)
-        object.__setattr__(self, "dxf_path", dxf_path)
-        object.__setattr__(self, "render3d_paths", render3d_paths)
-
-    def load_render3d(self, styles: list[str]) -> Mapping[str, bytes]:
-        return {style: self.render3d_paths[style].read_bytes() for style in styles}
 
 
 @dataclass(frozen=True)
 class FeedbackManifest:
+    """What a verification drew of the solid it built, and what it could not.
+
+    The same shape as the input, so one presenter announces both. `errors` is
+    keyed by the label the sheet would have carried, because a sheet that was
+    never produced cannot carry its own explanation.
+    """
+
     verification_id: str
-    dxf_path: Path | None = None
-    dxf_error: str | None = None
-    render3d_paths: Mapping[str, Path] = field(default_factory=dict)
-    render3d_errors: Mapping[str, str] = field(default_factory=dict)
+    drawing: DrawingSource | None = None
+    errors: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        verification_id = self.verification_id.strip()
-        if not verification_id:
-            raise ValueError("verification_id must not be empty")
-        if (
-            verification_id in {".", ".."}
-            or "/" in verification_id
-            or "\\" in verification_id
-        ):
-            raise ValueError(f"unsafe verification_id: {verification_id!r}")
+        errors = MappingProxyType(dict(self.errors))
+        if self.drawing is not None:
+            _present(self.drawing)
+            # An artifact is either present or explained, never both.
+            drawn = {sheet.label for sheet in self.drawing.sheets if sheet.label}
+            if both := sorted(drawn & set(errors)):
+                raise ValueError(f"sheets are both drawn and failed: {both}")
 
-        # str | None -> Path | None
-        dxf_path = Path(self.dxf_path) if self.dxf_path is not None else None
-        render3d_paths = MappingProxyType(
-            {style: Path(path) for style, path in self.render3d_paths.items()}
+        object.__setattr__(
+            self,
+            "verification_id",
+            _safe_identifier(self.verification_id, "verification_id"),
         )
-        render3d_errors = MappingProxyType(dict(self.render3d_errors))
-
-        # sanity check
-        if dxf_path is not None:
-            if not dxf_path.is_file():
-                raise FileNotFoundError(f"Not Found: {self.dxf_path}")
-            if dxf_path.suffix.lower() != ".dxf":
-                raise ValueError(f"DXF path must end in .dxf: {self.dxf_path}")
-        if render3d_paths:
-            for path in render3d_paths.values():
-                if not path.is_file():
-                    raise FileNotFoundError(f"Not Found: {path}")
-
-        # an artifact is either present or explained, never both
-        if dxf_path is not None and self.dxf_error is not None:
-            raise ValueError(f"dxf_path and dxf_error are both set: {self.dxf_error!r}")
-        both = sorted(set(render3d_paths) & set(render3d_errors))
-        if both:
-            raise ValueError(f"styles are both rendered and failed: {both}")
-
-        # re-register
-        object.__setattr__(self, "verification_id", verification_id)
-        object.__setattr__(self, "dxf_path", dxf_path)
-        object.__setattr__(self, "render3d_paths", render3d_paths)
-        object.__setattr__(self, "render3d_errors", render3d_errors)
-
-    def load_render3d(self, styles: list[str]) -> Mapping[str, bytes]:
-        return {style: self.render3d_paths[style].read_bytes() for style in styles}
+        object.__setattr__(self, "errors", errors)

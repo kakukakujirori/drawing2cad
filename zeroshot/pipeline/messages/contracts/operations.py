@@ -16,7 +16,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from zeroshot.pipeline.messages.contracts.semantics import (
     Parameter,
-    SemanticFeature,
     SemanticHypothesis,
     render_parameter_values,
 )
@@ -93,9 +92,9 @@ class Operation(BaseModel):
             "it acts on, the direction it goes in, and where on the part it "
             "lands. Cite a measurement the hypothesis states as "
             "sem_<feature>.geo_<claim>.<parameter> for a 3D claim or "
-            "sem_<feature>.ev_<reading>.<parameter> for a drawing reading -- "
+            "ev_<evidence>.<parameter> for something read off the drawing -- "
             "for example sem_main_bore.geo_cylinder.radius or "
-            "sem_base_profile.ev_front_left_edge.start. The citation is "
+            "ev_front_left_edge.start. The citation is "
             "resolved to the value before the coder reads it, so cite rather "
             "than copy. Write out plainly any number the hypothesis does not "
             "state: a depth or an offset you worked out yourself."
@@ -292,41 +291,45 @@ def linearise(plan: OperationPlan) -> list[Operation]:
     return order
 
 
-# Canonical addresses name the feature, the claim/reading within it, and the
-# parameter by its semantic name: `sem_main_bore.geo_cylinder.radius`,
-# `sem_base.ev_front_edge.start`. The parameter needs no identity of its own
-# because `_checked` makes its vocabulary name unique inside that member.
+# Two canonical addresses, because there are two things to address. A claim
+# belongs to a feature -- `sem_main_bore.geo_cylinder.radius` -- while a piece
+# of evidence stands on its own -- `ev_front_edge.start`. The parameter needs
+# no identity of its own because `require_parameters` makes its vocabulary
+# name unique inside the member that carries it.
 _REFERENCE = re.compile(
-    r"\b(sem_[a-z0-9_]+)\.((?:geo|ev)_[a-z0-9_]+)\.([a-z_]+)\b(?!\.)"
+    r"\b(?:(sem_[a-z0-9_]+)\.(geo_[a-z0-9_]+)|(ev_[a-z0-9_]+))\.([a-z_]+)\b(?!\.)"
 )
 
 
-def _parameters_of(
-    feature: SemanticFeature, member_name: str, parameter_name: str
+def _parameters_at(
+    hypothesis: SemanticHypothesis,
+    feature_name: str | None,
+    member_name: str,
+    parameter_name: str,
 ) -> list[Parameter]:
-    """The parameter a canonical member address means, or nothing.
+    """The parameter a canonical address means, or nothing.
 
     The explicit geo_/ev_ namespace makes choosing by list position, geometry
-    kind, or first match unnecessary. Member names are unique within their
-    respective group, and parameter names are unique within each member.
+    kind, or first match unnecessary. Member names are unique in their scope,
+    and parameter names are unique within each member.
     """
-    if member_name.startswith("geo_"):
-        return [
-            parameter
-            for claim in feature.geometry
-            if claim.name == member_name
-            for parameter in claim.parameters
-            if parameter.name.value == parameter_name
-        ]
     if member_name.startswith("ev_"):
         return [
             parameter
-            for reading in feature.evidence
-            if reading.name == member_name
-            for parameter in reading.parameters
+            for entry in hypothesis.evidence
+            if entry.name == member_name
+            for parameter in entry.parameters
             if parameter.name.value == parameter_name
         ]
-    return []
+    return [
+        parameter
+        for feature in hypothesis.proposal
+        if feature.name == feature_name
+        for claim in feature.geometry
+        if claim.name == member_name
+        for parameter in claim.parameters
+        if parameter.name.value == parameter_name
+    ]
 
 
 def resolve_reference(text: str, hypothesis: SemanticHypothesis) -> str:
@@ -339,19 +342,17 @@ def resolve_reference(text: str, hypothesis: SemanticHypothesis) -> str:
     token. A reference resolved here never passes through a model's output, so
     that failure cannot happen rather than being caught after it has.
 
-    A vector remains one parameter, so `sem_base.ev_front_edge.start` resolves
-    to its whole `[x y]` pair. Long lists are expanded too: a spline's exact poles are more
-    useful to the coder than an address it then has to search for elsewhere.
-    An absent reference is left standing; contextual validation refuses it
-    before coding.
+    A vector remains one parameter, so `ev_front_edge.start` resolves to its
+    whole `[x y]` pair. Long lists are expanded too: a spline's exact poles are
+    more useful to the coder than an address it then has to search for
+    elsewhere. An absent reference is left standing; contextual validation
+    refuses it before coding.
     """
-    by_name = {feature.name: feature for feature in hypothesis.proposal}
 
     def substitute(match: re.Match[str]) -> str:
-        feature = by_name.get(match[1])
-        if feature is None:
-            return match[0]
-        parameters = _parameters_of(feature, match[2], match[3])
+        parameters = _parameters_at(
+            hypothesis, match[1], match[2] or match[3], match[4]
+        )
         if len(parameters) != 1:
             return match[0]
         return f"{match[0]} ({render_parameter_values(parameters[0].values)})"

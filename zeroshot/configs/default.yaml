@@ -3,6 +3,7 @@
 defaults:
   - _self_
   - workflow: staged
+  - input: dxf
 
 artifact_root: outputs/zeroshot
 
@@ -32,18 +33,14 @@ console:
   _target_: zeroshot.pipeline.event_logging.ConsoleReporter
   muted_graph_nodes: []
 
+# How the run's files ride in a message: as a path the agent can open with
+# `load_image`, or as the image itself. A vector sheet is always a path.
+# Which files there are is the `input/` group's business on the way in, and
+# the renderer's on the way back.
 artifact_presenter:
   _target_: zeroshot.pipeline.messages.ArtifactPresenter
-  input_render3d_mode: "path"
-  input_render3d_styles:
-    - hlg_perspective
-    - hlg_translucent_faces_perspective
-    - transparent_shaded_edges_perspective
-  feedback_render3d_mode: "path"
-  feedback_render3d_styles:
-    - hlg_perspective
-    - hlg_translucent_faces_perspective
-    - transparent_shaded_edges_perspective
+  input_mode: "path"
+  feedback_mode: "path"
 
 renderer:
   _target_: zeroshot.pipeline.verification.StepRenderer
@@ -72,11 +69,8 @@ evaluation:
 
 # Every path derives from `sample_id`, so a sweep overrides that alone:
 #   python -m zeroshot.run_pipeline -m sample.sample_id=000364,000405,000775
+# Which drawing that id names is the `input/` group's business; the target is
+# the same whichever way the part was drawn.
 sample:
   sample_id: "000364"
-  dxf_path: data/test_vlm/techdraw/dxf/${sample.sample_id}.dxf
   target_step_path: data/test_vlm/target_step/${sample.sample_id}.step
-  render3d_paths:
-    hlg_perspective: data/test_vlm/render_3d/hlg_perspective/${sample.sample_id}.png
-    hlg_translucent_faces_perspective: data/test_vlm/render_3d/hlg_translucent_faces_perspective/${sample.sample_id}.png
-    transparent_shaded_edges_perspective: data/test_vlm/render_3d/transparent_shaded_edges_perspective/${sample.sample_id}.png

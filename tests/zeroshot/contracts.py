@@ -6,17 +6,19 @@ Tests *about* the contract build it explicitly -- see `messages/test_contracts.p
 
 from typing import Any
 
+from zeroshot.pipeline.messages.contracts.drawings import (
+    _DRAWN_PARAMETERS,
+    DrawingEvidence,
+    DrawnEntity,
+    Parameter,
+)
 from zeroshot.pipeline.messages.contracts.operations import OperationPlan
 from zeroshot.pipeline.messages.contracts.semantics import (
     _CLAIMED_PARAMETERS,
-    _DRAWN_PARAMETERS,
-    DrawnEntity,
     FeatureGeometry,
     GeometryKind,
-    Parameter,
     SemanticFeature,
     SemanticHypothesis,
-    ViewEvidence,
 )
 
 _A_SHEET_POINT = [0.0, 0.0]
@@ -47,18 +49,19 @@ _STAND_IN: dict[str, list[float]] = {
 
 def evidence(
     entity: str = "line", *, name: str | None = None, **values: float | list[float]
-) -> ViewEvidence:
-    """A reading of `entity` whose parameters are its own row."""
+) -> DrawingEvidence:
+    """An entry of `entity` whose parameters are its own row."""
     given = {
         name: values.pop(name, _STAND_IN.get(name, 5.0))
         for name in _DRAWN_PARAMETERS[DrawnEntity(entity)]
     }
     given |= values
-    return ViewEvidence(
+    return DrawingEvidence(
         name=name or f"ev_{entity}",
-        view="front",
+        view="front",  # type: ignore[arg-type]
         entity=entity,  # type: ignore[arg-type]
-        edge_style="visible",
+        edge_style="visible",  # type: ignore[arg-type]
+        source="given",  # type: ignore[arg-type]
         parameters=_named(given),
     )
 
@@ -78,7 +81,6 @@ def geometry(
     return FeatureGeometry(
         name=name or f"geo_{kind}",
         kind=kind,  # type: ignore[arg-type]
-        source="exact",
         axis=axis,  # type: ignore[arg-type]
         parameters=_named(given),
     )
@@ -93,7 +95,7 @@ def feature(
         ),
         "description": description,
         "geometry": [],
-        "evidence": [evidence()],
+        "evidence": ["ev_line"],
         "open_question": None,
         **overrides,
     }
@@ -101,8 +103,9 @@ def feature(
 
 
 def hypothesis(*descriptions: str, **overrides: object) -> SemanticHypothesis:
-    """One feature per description, numbered from 1."""
+    """One feature per description, numbered from 1, all citing one entry."""
     fields: dict[str, object] = {
+        "evidence": [evidence()],
         "proposal": [
             feature(index, description)
             for index, description in enumerate(descriptions, start=1)
@@ -115,11 +118,14 @@ def hypothesis(*descriptions: str, **overrides: object) -> SemanticHypothesis:
 
 def replacing(artifact: SemanticHypothesis | OperationPlan) -> dict[str, Any]:
     """The submission fields that build `artifact` from nothing, as round 0 does."""
-    return {
+    fields: dict[str, Any] = {
         "edits": list(artifact.proposal),
         "deleted": [],
         "rationale": artifact.rationale,
     }
+    if isinstance(artifact, SemanticHypothesis):
+        fields["evidence"] = list(artifact.evidence)
+    return fields
 
 
 def unchanged() -> dict[str, Any]:

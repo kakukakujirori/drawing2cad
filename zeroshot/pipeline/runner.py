@@ -285,21 +285,23 @@ class PipelineRunner:
         staged_input_dir = workdir.host_bind_dir / input_dirname
         staged_input_dir.mkdir(parents=True, exist_ok=False)
 
-        staged_dxf_path = staged_input_dir / "techdraw.dxf"
-        shutil.copyfile(manifest.dxf_path, staged_dxf_path)
+        def stage(source_path: Path, stem: str) -> Path:
+            staged_path = staged_input_dir / f"{stem}{source_path.suffix.lower()}"
+            shutil.copyfile(source_path, staged_path)
+            return staged_path
 
-        staged_render_paths: dict[str, Path] = {}
-
-        if self.artifact_presenter.input_render3d_mode != "none":
-            for style in self.artifact_presenter.input_render3d_styles:
-                source_path = manifest.render3d_paths[style]
-                suffix = source_path.suffix or ".png"
-                staged_path = staged_input_dir / f"{style}{suffix}"
-                shutil.copyfile(source_path, staged_path)
-                staged_render_paths[style] = staged_path
+        # The sandbox has one flat directory, so a sheet is staged under the
+        # name it is announced by.
+        staged_drawing = manifest.drawing.model_copy(
+            update={
+                "sheets": [
+                    sheet.model_copy(update={"file": stage(sheet.file, sheet.name)})
+                    for sheet in manifest.drawing.sheets
+                ],
+            }
+        )
 
         return InputManifest(
             sample_id=manifest.sample_id,
-            dxf_path=staged_dxf_path,
-            render3d_paths=staged_render_paths,
+            drawing=staged_drawing,
         )

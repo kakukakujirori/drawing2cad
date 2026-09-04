@@ -6,7 +6,13 @@ from typing import Self, cast
 
 from langchain_core.messages.content import ContentBlock, create_text_block
 
-from zeroshot.pipeline.messages import ArtifactPresenter, FeedbackManifest
+from zeroshot.pipeline.messages import (
+    ArtifactPresenter,
+    DrawingSheet,
+    DrawingSource,
+    FeedbackManifest,
+    View,
+)
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.render.constants import (
@@ -269,12 +275,31 @@ class OutputVerifier:
         # render the three-view DXF and the perspective PNGs
         render_report = self._render(output_step_path, host_verification_dir)
 
+        # The projected drawing is announced the same way the input was: the
+        # sheet it was drawn on, and a pictorial per rendering.
+        drawn = render_report.techdraw_paths.dxf
+        sheets = [
+            *(
+                [DrawingSheet(role=View.UNKNOWN, label="drawing", file=drawn)]
+                if drawn is not None
+                else []
+            ),
+            *(
+                DrawingSheet(role=View.PERSPECTIVE, label=style, file=path)
+                for style, path in render_report.render3d_paths.as_mapping().items()
+            ),
+        ]
         manifest = FeedbackManifest(
             verification_id=verification_id,
-            dxf_path=render_report.techdraw_paths.dxf,
-            dxf_error=render_report.techdraw_errors.get("dxf"),
-            render3d_paths=render_report.render3d_paths.as_mapping(),
-            render3d_errors=render_report.render3d_errors,
+            drawing=DrawingSource(sheets=sheets) if sheets else None,
+            errors={
+                **(
+                    {"drawing": why}
+                    if (why := render_report.techdraw_errors.get("dxf"))
+                    else {}
+                ),
+                **render_report.render3d_errors,
+            },
         )
         return report, manifest
 

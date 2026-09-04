@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from zeroshot.pipeline.messages.contracts.audit import AuditFinding
+from zeroshot.pipeline.messages.contracts.drawings import DrawingEvidence
 from zeroshot.pipeline.messages.contracts.operations import Operation, OperationPlan
 from zeroshot.pipeline.messages.contracts.semantics import (
     SemanticFeature,
@@ -236,22 +237,32 @@ class SemanticSubmission(StageSubmission[SemanticFeature]):
         description=(
             "Every feature you changed, each complete and under its stable "
             "sem_ name: a name the hypothesis already holds replaces that "
-            "feature, and a new name adds one. A feature is itself a list of "
-            "named geo_ and ev_ members, and the same rule holds within it -- "
-            "give the members you changed and leave the rest out, and the ones "
-            "you leave out keep what they had. `description` and "
-            "`open_question` carry no name of their own, so state them "
-            "whenever you give a feature."
+            "feature, and a new name adds one. A feature's geo_ claims follow "
+            "the same rule -- give the ones you changed and leave the rest "
+            "out, and the ones you leave out keep what they had. Its "
+            "`evidence` is not a member list but a citation, so give the whole "
+            "of it whenever you give the feature. `description` and "
+            "`open_question` carry no name of their own, so state them too."
+        ),
+    )
+    evidence: list[DrawingEvidence] = Field(
+        default_factory=list,
+        description=(
+            "Every entry you read or corrected, each under its stable ev_ "
+            "name: a name the hypothesis already holds replaces that entry, "
+            "and a new name adds one. Entries you do not give keep what they "
+            "had. They stand outside the features so that two features can "
+            "cite the same one."
         ),
     )
     deleted: list[str] = Field(
         ...,
         description=(
-            "Every feature or member you dropped: a whole feature as "
-            "sem_main_bore, and one member of a feature as "
-            "sem_main_bore.geo_cylinder or sem_main_bore.ev_front_circle. A "
-            "member may be dropped from a feature you are not otherwise "
-            "changing. A name given here must not also appear in `edits`."
+            "Every feature, claim or entry you dropped: a whole feature as "
+            "sem_main_bore, one of its claims as sem_main_bore.geo_cylinder, "
+            "and an entry as ev_front_circle. A claim may be dropped from a "
+            "feature you are not otherwise changing. A name given here must "
+            "not also appear in `edits` or `evidence`."
         ),
     )
 

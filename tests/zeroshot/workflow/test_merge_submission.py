@@ -97,12 +97,18 @@ def _bore() -> object:
         "sem_main_bore",
         "the bore through the plate",
         geometry=[geometry("cylinder", name="geo_cylinder")],
-        evidence=[evidence("circle", name="ev_front_circle")],
+        evidence=["ev_front_circle"],
     )
 
 
 def _hypothesis() -> SemanticHypothesis:
     return SemanticHypothesis(
+        evidence=[
+            evidence("line", name="ev_line"),
+            evidence("circle", name="ev_front_circle"),
+            # Cited by nothing, so it is the one a revision may drop.
+            evidence("arc", name="ev_spare"),
+        ],
         proposal=[feature("sem_base_plate", "the plate"), _bore()],  # type: ignore[list-item]
         rationale="the views agree",
     )
@@ -152,7 +158,7 @@ def test_an_untouched_member_survives_a_revision() -> None:
     assert merged.proposal[1] == _hypothesis().proposal[1]
 
 
-def test_an_edited_feature_keeps_the_geo_and_ev_members_it_leaves_out() -> None:
+def test_an_edited_feature_keeps_the_geo_members_it_leaves_out() -> None:
     wider = geometry("cylinder", name="geo_cylinder", radius=9.0)
     submission = _semantics().model_copy(
         update={
@@ -161,7 +167,7 @@ def test_an_edited_feature_keeps_the_geo_and_ev_members_it_leaves_out() -> None:
                     "sem_main_bore",
                     "the bore through the plate",
                     geometry=[wider],
-                    evidence=[],
+                    evidence=["ev_front_circle"],
                 )
             ]
         }
@@ -170,7 +176,53 @@ def test_an_edited_feature_keeps_the_geo_and_ev_members_it_leaves_out() -> None:
     revised = _merged_semantics(submission, _preceding()).proposal[1]
 
     assert revised.geometry == [wider]
-    assert [reading.name for reading in revised.evidence] == ["ev_front_circle"]
+
+
+def test_a_feature_that_is_given_at_all_gives_the_whole_of_its_citation() -> None:
+    """Evidence are cited rather than carried, so there is no member to merge:
+    an omission means "cites nothing", which the hypothesis then refuses."""
+    submission = _semantics().model_copy(
+        update={
+            "edits": [
+                feature(
+                    "sem_main_bore",
+                    "the bore through the plate",
+                    geometry=[geometry("cylinder", name="geo_cylinder")],
+                    evidence=[],
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(SubmissionValidationError, match="cites no evidence"):
+        merge_submission(submission, _preceding(), PipelineStage.SEMANTICS)
+
+
+def test_an_entry_the_revision_leaves_out_keeps_what_it_had() -> None:
+    corrected = evidence("circle", name="ev_front_circle", radius=9.0)
+    submission = _semantics().model_copy(update={"evidence": [corrected]})
+
+    merged = _merged_semantics(submission, _preceding())
+
+    assert [entry.name for entry in merged.evidence] == [
+        "ev_line",
+        "ev_front_circle",
+        "ev_spare",
+    ]
+    assert merged.evidence[1] == corrected
+
+
+def test_an_entry_is_deleted_by_its_own_name() -> None:
+    """A bare ev_ name addresses an entry, where a bare sem_ name addresses a
+    feature; the two collections share one `deleted` list."""
+    submission = _semantics().model_copy(update={"deleted": ["ev_spare"]})
+
+    merged = _merged_semantics(submission, _preceding())
+
+    assert [entry.name for entry in merged.evidence] == [
+        "ev_line",
+        "ev_front_circle",
+    ]
 
 
 def test_a_new_member_is_appended_and_an_edited_one_keeps_its_place() -> None:
@@ -201,7 +253,7 @@ def test_deleting_a_whole_feature_and_one_member_of_another() -> None:
 
     assert [f.name for f in merged.proposal] == ["sem_main_bore"]
     assert merged.proposal[0].geometry == []
-    assert [r.name for r in merged.proposal[0].evidence] == ["ev_front_circle"]
+    assert merged.proposal[0].evidence == ["ev_front_circle"]
 
 
 def test_a_null_rationale_keeps_the_preceding_one() -> None:
@@ -239,12 +291,11 @@ def test_an_operation_is_deleted_by_its_own_name_alone() -> None:
         merge_submission(submission, _preceding(), PipelineStage.OPERATIONS)
 
 
-def test_a_revision_that_leaves_a_feature_unsupported_is_rejected() -> None:
-    submission = _semantics().model_copy(
-        update={"deleted": ["sem_main_bore.ev_front_circle"]}
-    )
+def test_a_revision_that_deletes_a_cited_entry_is_rejected() -> None:
+    """Dropping an entry two features rest on is not a local edit."""
+    submission = _semantics().model_copy(update={"deleted": ["ev_front_circle"]})
 
-    with pytest.raises(SubmissionValidationError, match="cites no evidence"):
+    with pytest.raises(SubmissionValidationError, match="does not read"):
         merge_submission(submission, _preceding(), PipelineStage.SEMANTICS)
 
 

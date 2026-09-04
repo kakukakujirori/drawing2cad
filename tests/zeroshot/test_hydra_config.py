@@ -208,11 +208,10 @@ def test_a_sweep_only_has_to_override_the_sample_id() -> None:
         )
 
     assert config.sample.sample_id == "000405"
-    assert config.sample.dxf_path.endswith("/000405.dxf")
     assert config.sample.target_step_path.endswith("/000405.step")
-    assert all(
-        path.endswith("/000405.png") for path in config.sample.render3d_paths.values()
-    )
+    files = [sheet.file for sheet in config.sample.drawing.sheets]
+    assert files[0].endswith("/000405.dxf")
+    assert all(file.endswith("/000405.png") for file in files[1:])
 
 
 def test_the_sample_id_keeps_its_leading_zeros() -> None:

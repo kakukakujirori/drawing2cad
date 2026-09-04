@@ -1,0 +1,15 @@
+# @package _global_
+
+# The vector drawing alone. This is what `input/png_dimensioned.yaml` has to be
+# compared against: measured against `input/dxf.yaml` instead, the difference
+# would hold the change of drawing format and the loss of the perspective
+# renders at once, and neither could be attributed.
+sample:
+  drawing:
+    sheets:
+      - role: unknown
+        label: drawing
+        file: data/test_vlm/techdraw/dxf/${sample.sample_id}.dxf
+
+artifact_presenter:
+  input_mode: "path"

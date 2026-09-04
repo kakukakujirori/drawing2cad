@@ -4,11 +4,11 @@ The current workspace source is at:
 
 $output_path
 
-Numbers in semantic evidence are in the sheet coordinates of the view each reading names: $view_frame.
+Numbers in the hypothesis's evidence are in millimetres on the sheet, in the frame of the view each entry names: $view_frame.
 
 The built artifacts are in $attempt_dir, laid out as:
 - `output.step` — the solid that was built
-- `techdraw.dxf` — its three-view projection, for comparison against the input DXF
+- `techdraw.dxf` — its three-view projection, for comparison against the input drawing
 - `render_3d/<style>.png` — its perspective renders, named as the inputs are
 
 If the report shows the program did not produce a solid, the directory holds no projection or renders.

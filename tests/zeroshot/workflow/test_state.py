@@ -12,6 +12,8 @@ from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing, u
 from zeroshot.pipeline.messages.contracts import (
     Axis,
     ClaimSource,
+    Dimension,
+    DrawingEvidence,
     DrawnEntity,
     EdgeStyle,
     FeatureGeometry,
@@ -26,7 +28,6 @@ from zeroshot.pipeline.messages.contracts import (
     SemanticFeature,
     SemanticHypothesis,
     View,
-    ViewEvidence,
 )
 from zeroshot.pipeline.messages.contracts.audit import (
     AuditFinding,
@@ -67,7 +68,8 @@ from zeroshot.pipeline.workflow.state import (
         SemanticFeature,
         FeatureGeometry,
         Parameter,
-        ViewEvidence,
+        DrawingEvidence,
+        Dimension,
         Review,
     ],
 )
@@ -137,7 +139,7 @@ def test_a_review_allows_an_accept_without_rationale() -> None:
 
 
 # A plane is measured by nothing, so a hypothesis of bare planes never builds a
-# `Dimension` and the checkpoint check below would pass without covering it.
+# `Parameter` and the checkpoint check below would pass without covering it.
 _A_HYPOTHESIS = hypothesis(
     proposal=[
         feature(1, "flange"),
@@ -304,15 +306,15 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         Parameter,
         ParameterName,
         Axis,
-        ViewEvidence,
+        DrawingEvidence,
         # The contract's enums ride in state too. An enum missing from the
         # allowlist restores as a bare string, which still compares equal and
         # so fails nowhere until something asks it for `.value`.
         View,
+        ClaimSource,
         DrawnEntity,
         EdgeStyle,
         GeometryKind,
-        ClaimSource,
         ExecutionStatus,
         StopReason,
         VerifyOutputResult,

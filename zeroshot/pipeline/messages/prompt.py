@@ -27,10 +27,12 @@ def instruction_text(name: str, **context: str) -> str:
 
     `$view_frame` is offered to every prompt because the frame belongs to the
     contract, not to a stage: semantics reports sheet coordinates tagged with a
-    view, and each stage after it has to read them back.
+    view, and each stage after it has to read them back. A caller that knows
+    which views the sample actually holds may pass its own; the fallback names
+    all six, because a sheet nobody has split could carry any of them.
     """
     instruction = PromptTemplate(f"instructions/{name}")
-    context = {**context, "view_frame": view_frame_sentence()}
+    context = {"view_frame": view_frame_sentence(), **context}
     guidelines = instruction.path.parent / "guidelines.md"
     if guidelines.is_file():
         context = {

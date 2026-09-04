@@ -13,26 +13,28 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from tests.zeroshot.contracts import evidence, feature, geometry, hypothesis
-from zeroshot.pipeline.messages.contracts.semantics import (
+from zeroshot.pipeline.messages.contracts.drawings import (
     _ARITY,
-    _CLAIMED_PARAMETERS,
     _DRAWN_PARAMETERS,
-    _EXCLUDED_GEOMETRY,
+    ClaimSource,
+    DrawingEvidence,
     DrawnEntity,
+    Parameter,
+)
+from zeroshot.pipeline.messages.contracts.semantics import (
+    _CLAIMED_PARAMETERS,
+    _EXCLUDED_GEOMETRY,
     FeatureGeometry,
     GeometryKind,
-    Parameter,
     SemanticFeature,
     SemanticHypothesis,
-    ViewEvidence,
-    render_hypothesis,
 )
 
 CONTRACTS = [
     SemanticHypothesis,
     SemanticFeature,
     FeatureGeometry,
-    ViewEvidence,
+    DrawingEvidence,
     Parameter,
 ]
 
@@ -111,7 +113,6 @@ def test_every_kind_states_the_sizes_it_is_measured_by(kind: GeometryKind) -> No
             FeatureGeometry(
                 name=f"geo_{kind.value}",
                 kind=kind,
-                source="exact",
                 axis="z",
                 parameters=thinned,
             )
@@ -126,7 +127,6 @@ def test_no_kind_accepts_a_size_it_is_not_measured_by(kind: GeometryKind) -> Non
         FeatureGeometry(
             name=f"geo_{kind.value}",
             kind=kind,
-            source="exact",
             axis="z",
             parameters=[*geometry(kind).parameters, extra],
         )
@@ -159,51 +159,54 @@ def test_every_drawn_entity_states_the_parameters_it_carries(
     for name in required:
         thinned = [p for p in evidence(entity).parameters if p.name.value != name]
         with pytest.raises(ValidationError, match=name):
-            ViewEvidence(
+            DrawingEvidence(
                 name=f"ev_{entity.value}",
                 view="front",
                 entity=entity,
                 edge_style="visible",
+                source=ClaimSource.GIVEN,
                 parameters=thinned,
             )
 
 
-def test_a_reading_is_in_sheet_coordinates_not_model_coordinates() -> None:
-    """Two numbers, not three. A reading that carried a z has stopped being a
+def test_an_entry_is_in_sheet_coordinates_not_model_coordinates() -> None:
+    """Two numbers, not three. An entry that carried a z has stopped being a
     transcription of the drawing and become a claim about the solid."""
     evidence("circle")
     with pytest.raises(ValidationError, match="takes 2"):
         evidence("circle", center=[0.0, 0.0, 0.0])
 
 
-def test_a_spline_reading_must_carry_its_poles() -> None:
+def test_a_spline_entry_must_carry_its_poles() -> None:
     """The measured failure in one sentence: a spline nobody parameterised came
     back as a sampled polyline, right volume and wrong faces."""
     evidence("spline")
     with pytest.raises(ValidationError, match="control_points"):
-        ViewEvidence(
+        DrawingEvidence(
             name="ev_spline",
             view="front",
             entity="spline",
             edge_style="visible",
+            source=ClaimSource.GIVEN,
             parameters=[Parameter(name="degree", values=[3.0])],
         )
     with pytest.raises(ValidationError, match="x, y pairs"):
         evidence("spline", control_points=[0.0, 1.0, 2.0])
 
 
-def test_a_spline_reading_must_carry_its_knot_vector() -> None:
+def test_a_spline_entry_must_carry_its_knot_vector() -> None:
     """Control points and a degree do not determine a spline: 197 of the
     corpus's 287 have a non-uniform knot vector, and rebuilding those poles on
     a uniform one gives a different curve. Carrying the poles but not the knots
     is the polyline failure again, one step further along -- a curve that is
     smooth, exact-looking, and not the one on the drawing."""
     with pytest.raises(ValidationError, match="knots"):
-        ViewEvidence(
+        DrawingEvidence(
             name="ev_spline",
             view="front",
             entity="spline",
             edge_style="visible",
+            source=ClaimSource.GIVEN,
             parameters=[
                 Parameter(name="control_points", values=[0.0, 0.0, 1.0, 1.0]),
                 Parameter(name="degree", values=[3.0]),
@@ -215,9 +218,9 @@ def test_a_knot_vector_is_not_held_to_the_shape_of_a_point_list() -> None:
     """Its length is one per control point plus the degree plus one, so it is
     odd as often as it is even -- the `x, y` pairing the other lists are held
     to would reject half of them."""
-    reading = evidence("spline", knots=[0.0, 0.0, 0.0, 1.0, 1.0])
+    entry = evidence("spline", knots=[0.0, 0.0, 0.0, 1.0, 1.0])
 
-    assert len(reading.parameters[-1].values) == 5
+    assert len(entry.parameters[-1].values) == 5
 
     with pytest.raises(ValidationError, match="cannot be empty"):
         evidence("spline", knots=[])
@@ -234,7 +237,7 @@ def test_an_arc_is_its_own_kind() -> None:
 def test_an_arc_is_bounded_the_way_the_file_bounds_it() -> None:
     """A DXF arc stores `start_angle` and `end_angle`; `start_point` is
     something ezdxf computes from them. Asking for the point asked a reader to
-    derive a value and report it as a reading, and it answered with the angle
+    derive a value and report it as an entry, and it answered with the angle
     it had -- one number where a point takes two, which cost a retry on every
     drawing with an arc in it."""
     assert _ARITY["start_angle"] == 1
@@ -292,24 +295,57 @@ def test_feature_names_are_unique() -> None:
         )
 
 
-@pytest.mark.parametrize("member", ["geometry", "evidence"])
-def test_member_names_are_unique_within_their_own_group(member: str) -> None:
+def test_claim_names_are_unique_within_their_feature() -> None:
     """A member name is an address, not a label or list position, so one
-    address may not silently name two claims or two readings."""
-    overrides = {
-        member: [
-            geometry("sphere", name="geo_round_end"),
-            geometry("cylinder", name="geo_round_end"),
-        ]
-        if member == "geometry"
-        else [
-            evidence("circle", name="ev_front_edge"),
-            evidence("line", name="ev_front_edge"),
-        ]
-    }
+    address may not silently name two claims."""
+    with pytest.raises(ValidationError, match="duplicate geometry names"):
+        feature(
+            1,
+            "a boss",
+            geometry=[
+                geometry("sphere", name="geo_round_end"),
+                geometry("cylinder", name="geo_round_end"),
+            ],
+        )
 
-    with pytest.raises(ValidationError, match=rf"duplicate {member} names"):
-        feature(1, "a boss", **overrides)
+
+def test_evidence_names_are_unique_within_the_hypothesis() -> None:
+    """Evidence stands outside the features, so its scope is the whole
+    hypothesis and two features citing one name must mean one entry."""
+    with pytest.raises(ValidationError, match="evidence names ev_front_edge"):
+        hypothesis(
+            "a boss",
+            evidence=[
+                evidence("circle", name="ev_front_edge"),
+                evidence("line", name="ev_front_edge"),
+            ],
+        )
+
+
+def test_a_feature_may_not_cite_one_entry_twice() -> None:
+    with pytest.raises(ValidationError, match="cites ev_line more than once"):
+        feature(1, "a boss", evidence=["ev_line", "ev_line"])
+
+
+def test_a_feature_may_only_cite_evidence_the_hypothesis_took() -> None:
+    with pytest.raises(ValidationError, match="which this hypothesis does not read"):
+        hypothesis("a boss", proposal=[feature(1, "a boss", evidence=["ev_absent"])])
+
+
+def test_two_features_may_rest_on_one_entry() -> None:
+    """The reason evidence left the features: a circle in the top view can be
+    both the bore and the boss it is concentric with, and neither owns it."""
+    shared = hypothesis(
+        "a bore",
+        "a boss",
+        proposal=[
+            feature(1, "a bore", evidence=["ev_line"]),
+            feature(2, "a boss", evidence=["ev_line"]),
+        ],
+    )
+
+    assert len(shared.evidence) == 1
+    assert [f.evidence for f in shared.proposal] == [["ev_line"], ["ev_line"]]
 
 
 def test_geometry_and_evidence_names_mark_their_namespace() -> None:
@@ -355,10 +391,12 @@ def test_the_2d_evidence_and_the_3d_claim_may_disagree() -> None:
         1,
         "shoulder blend",
         geometry=[geometry("torus", major_radius=11.312, tube_radius=2.0)],
-        evidence=[evidence("spline")],
+        evidence=["ev_spline"],
     )
-    assert blend.geometry[0].kind == "torus"
-    assert blend.evidence[0].entity == "spline"
+    read = hypothesis("shoulder blend", evidence=[evidence("spline")], proposal=[blend])
+
+    assert read.proposal[0].geometry[0].kind == "torus"
+    assert read.evidence[0].entity == "spline"
 
 
 def test_the_rendered_hypothesis_drops_the_parameters_a_kind_does_not_use() -> None:
@@ -387,11 +425,13 @@ def test_a_hypothesis_feature_must_cite_evidence() -> None:
     partial = feature(1, "a boss", evidence=[])
 
     with pytest.raises(ValidationError, match="cites no evidence"):
-        SemanticHypothesis(proposal=[partial], rationale="the views agree")
+        SemanticHypothesis(
+            evidence=[evidence()], proposal=[partial], rationale="the views agree"
+        )
 
 
 def test_the_two_tables_agree_on_every_name_they_share() -> None:
-    """One arity table serves the reading and the claim, which is only sound
+    """One arity table serves the entry and the claim, which is only sound
     while a name they both use means the same shape on either side."""
     drawn = {name for row in _DRAWN_PARAMETERS.values() for name in row}
     claimed = {name for row in _CLAIMED_PARAMETERS.values() for name in row}
@@ -399,123 +439,3 @@ def test_the_two_tables_agree_on_every_name_they_share() -> None:
     assert (drawn | claimed) <= set(_ARITY)
     for name in drawn & claimed:
         assert _ARITY[name] == 1, f"{name} is shared, so it must be a plain size"
-
-
-def test_rendering_keeps_every_digit_the_stage_transcribed() -> None:
-    """The coder builds from these numbers, so the rendering may shorten the
-    layout but never the value. `f"{x:g}"` would take 33.0015507591 down to
-    six figures and move the part by a hundredth of a millimetre."""
-    reading = evidence(
-        "line", start=[33.0015507591, 40.031937346], end=[133.0, 40.031937346]
-    )
-    rendered = render_hypothesis(
-        hypothesis(proposal=[feature(1, "plate", evidence=[reading])])
-    )
-
-    for value in (33.0015507591, 40.031937346, 133.0):
-        assert repr(value) in rendered, value
-
-
-def test_rendering_leads_with_the_feature_and_hangs_its_readings_underneath() -> None:
-    """Shape, not only size. A planner orienting itself reads the name, the
-    description and the claim; the transcription it needs afterwards must not
-    sit between them."""
-    rendered = render_hypothesis(
-        hypothesis(
-            proposal=[
-                feature(1, "plate", geometry=[geometry("cylinder")]),
-                feature(2, "bore"),
-            ]
-        )
-    )
-    lines = rendered.splitlines()
-
-    assert lines[0] == "sem_feature_1"
-    assert lines[1].strip() == "plate"
-    assert lines[2].startswith("  geometry: geo_cylinder cylinder(")
-    assert lines[3].startswith("    ev_line front line visible")
-    assert any(line == "sem_feature_2" for line in lines)
-    assert lines[-1].startswith("rationale:")
-
-
-def test_rendering_exposes_stable_member_addresses() -> None:
-    held = feature(
-        "sem_bored_boss",
-        "bored boss",
-        geometry=[geometry("cylinder", name="geo_bore_cylinder")],
-        evidence=[evidence("circle", name="ev_front_bore_circle")],
-    )
-
-    rendered = render_hypothesis(hypothesis(proposal=[held]))
-
-    assert "geo_bore_cylinder cylinder(" in rendered
-    assert "ev_front_bore_circle front circle visible" in rendered
-
-
-def test_a_feature_claiming_nothing_says_so_rather_than_going_quiet() -> None:
-    """An empty `geometry` is a real answer -- nothing about the feature was
-    determined -- and a rendering that dropped the line would read as though
-    the field did not exist."""
-    rendered = render_hypothesis(hypothesis(proposal=[feature(1, "plate")]))
-
-    assert "geometry: (none stated)" in rendered
-
-
-def test_rendering_costs_a_fraction_of_the_json_it_replaces() -> None:
-    """Why this exists. Measured on a real run: 50,482 characters of
-    `model_dump_json(indent=2)` for seven features, of which 14k was braces,
-    key names and indentation. The bound is loose so that a later field cannot
-    silently undo it."""
-    many = hypothesis(
-        proposal=[
-            feature(
-                index,
-                "rounded base plate",
-                geometry=[geometry("cylinder")],
-                evidence=[
-                    evidence("spline", name=f"ev_spline_{identifier}")
-                    for identifier in range(1, 5)
-                ],
-            )
-            for index in range(1, 8)
-        ]
-    )
-
-    assert len(render_hypothesis(many)) < len(many.model_dump_json(indent=2)) / 2
-
-
-def test_rendering_survives_a_kind_that_has_no_axis() -> None:
-    """`axis` is null for a kind that has none, which the contract says in as
-    many words. The rendering dereferenced it anyway and took a run down at the
-    operations node, an hour in -- the fixtures had always passed an axis, so
-    nothing here exercised the branch the contract documents."""
-    rendered = render_hypothesis(
-        hypothesis(
-            proposal=[feature(1, "ball end", geometry=[geometry("sphere", axis=None)])]
-        )
-    )
-
-    assert "geo_sphere sphere(radius=5.0) exact" in rendered
-    assert "axis" not in rendered.split("geometry:")[1].splitlines()[0]
-
-
-def test_every_optional_field_of_the_contract_renders() -> None:
-    """The same class of hole, closed once rather than field by field: build a
-    feature with every nullable field null and every one filled, and render
-    both."""
-    bare = feature(
-        1, "bare", geometry=[geometry("sphere", axis=None)], open_question=None
-    )
-    full = feature(
-        2,
-        "full",
-        geometry=[geometry("cylinder", axis="z")],
-        open_question="is it blind?",
-    )
-
-    rendered = render_hypothesis(hypothesis(proposal=[bare, full]))
-
-    assert "sem_feature_1" in rendered
-    assert "sem_feature_2" in rendered
-    assert "open question: is it blind?" in rendered
-    assert "None" not in rendered

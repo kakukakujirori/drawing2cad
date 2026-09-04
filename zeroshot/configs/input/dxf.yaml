@@ -1,0 +1,28 @@
+# @package _global_
+
+# The vector drawing, as one sheet carrying all three views -- `unknown` is the
+# role of a sheet nobody has separated. One file rather than one per view
+# because that is how the dataset ships it, and the stage reading it separates
+# the views by position on the sheet either way.
+#
+# The perspective renders are sheets like any other: a pictorial has no frame,
+# so nothing lifts a coordinate from one. They are ours, rendered from the
+# target, so `input/dxf_no_context.yaml` leaves them out.
+sample:
+  drawing:
+    sheets:
+      - role: unknown
+        label: drawing
+        file: data/test_vlm/techdraw/dxf/${sample.sample_id}.dxf
+      - role: perspective
+        label: hlg_perspective
+        file: data/test_vlm/render_3d/hlg_perspective/${sample.sample_id}.png
+      - role: perspective
+        label: hlg_translucent_faces_perspective
+        file: data/test_vlm/render_3d/hlg_translucent_faces_perspective/${sample.sample_id}.png
+      - role: perspective
+        label: transparent_shaded_edges_perspective
+        file: data/test_vlm/render_3d/transparent_shaded_edges_perspective/${sample.sample_id}.png
+
+artifact_presenter:
+  input_mode: "path"

@@ -17,14 +17,17 @@ import ezdxf
 import pytest
 from ezdxf.tools import standards
 
-from zeroshot.pipeline.messages.contracts.semantics import (
-    _EXCLUDED_GEOMETRY,
+from zeroshot.pipeline.messages.contracts.drawings import (
+    ORTHOGRAPHIC_VIEWS,
     VIEW_FRAME,
     DrawnEntity,
     EdgeStyle,
-    GeometryKind,
     View,
     edge_style_for_linetype,
+)
+from zeroshot.pipeline.messages.contracts.semantics import (
+    _EXCLUDED_GEOMETRY,
+    GeometryKind,
 )
 
 _CORPUS = Path(__file__).parents[3] / "data" / "test_vlm"
@@ -193,9 +196,14 @@ def test_the_local_targets_hold_no_geometry_the_contract_cannot_name() -> None:
     )
 
 
-def test_every_view_the_contract_names_has_a_frame() -> None:
-    assert set(VIEW_FRAME) == set(View)
+def test_every_orthographic_view_has_a_frame_and_no_other_view_does() -> None:
+    assert set(VIEW_FRAME) == set(ORTHOGRAPHIC_VIEWS)
     axes = {axis for frame in VIEW_FRAME.values() for axis in frame}
     assert axes <= {"+x", "-x", "+y", "-y", "+z", "-z"}
     for view, frame in VIEW_FRAME.items():
         assert len({axis.lstrip("+-") for axis in frame}) == 3, view
+
+    # A section is at the parent's scale and a pictorial has no orthographic
+    # axes at all; either would have to be lifted by guessing.
+    for view in set(View) - set(ORTHOGRAPHIC_VIEWS):
+        assert view not in VIEW_FRAME, view

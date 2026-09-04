@@ -45,7 +45,7 @@ type Submission = (
     SemanticSubmission | OperationSubmission | CodingSubmission | AuditReport
 )
 
-_REFERENCE_LIKE = re.compile(r"\bsem_[a-z0-9_]+(?:\.[a-z0-9_]+)+\b")
+_REFERENCE_LIKE = re.compile(r"\b(?:sem|ev)_[a-z0-9_]+(?:\.[a-z0-9_]+)+\b")
 _COPIED_DECIMALS = 4
 _DECIMAL = re.compile(rf"\d+\.\d{{{_COPIED_DECIMALS},}}")
 _NAMED_AT_MOST = 3
@@ -225,7 +225,7 @@ def _operation_plan_errors(
         errors.append(
             f"{operation.name} writes out {named}, which the hypothesis already "
             "holds. Cite it as sem_<feature>.geo_<claim>.<parameter> or "
-            "sem_<feature>.ev_<reading>.<parameter> instead; the number is put "
+            "ev_<evidence>.<parameter> instead; the number is put "
             "in for you, and a number retyped is a number that can be mistyped."
         )
 
@@ -241,26 +241,33 @@ def _operation_plan_errors(
                 f"{operation.name} refers to {named}, which does not identify "
                 "exactly one parameter in the hypothesis. Use the member name "
                 "shown there, such as sem_main_bore.geo_cylinder.radius or "
-                "sem_main_bore.ev_front_circle.center."
+                "ev_front_circle.center."
             )
 
     return errors
 
 
 def _semantic_parameter_addresses(hypothesis: SemanticHypothesis) -> set[str]:
+    """Every address a plan may cite, in both of the shapes one takes."""
     return {
-        f"{feature.name}.{member.name}.{parameter.name.value}"
+        f"{feature.name}.{claim.name}.{parameter.name.value}"
         for feature in hypothesis.proposal
-        for member in (*feature.geometry, *feature.evidence)
-        for parameter in member.parameters
+        for claim in feature.geometry
+        for parameter in claim.parameters
+    } | {
+        f"{entry.name}.{parameter.name.value}"
+        for entry in hypothesis.evidence
+        for parameter in entry.parameters
     }
 
 
 def _hypothesis_numbers(hypothesis: SemanticHypothesis) -> list[float]:
     return [
         number
-        for feature in hypothesis.proposal
-        for member in (*feature.geometry, *feature.evidence)
+        for member in (
+            *(claim for feature in hypothesis.proposal for claim in feature.geometry),
+            *hypothesis.evidence,
+        )
         for parameter in member.parameters
         for number in parameter.values
     ]

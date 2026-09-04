@@ -9,10 +9,13 @@ function rather than one of its methods.
 
 from .artifact import ArtifactPresenter
 from .contracts import (
+    DrawingEvidence,
+    DrawingSheet,
+    DrawingSource,
     FeatureGeometry,
     SemanticFeature,
     SemanticHypothesis,
-    ViewEvidence,
+    View,
 )
 from .manifest import FeedbackManifest, InputManifest
 from .prompt import (
@@ -25,13 +28,16 @@ from .prompts import PromptTemplate
 
 __all__ = [
     "ArtifactPresenter",
+    "DrawingEvidence",
+    "DrawingSheet",
+    "DrawingSource",
     "FeatureGeometry",
     "FeedbackManifest",
     "InputManifest",
     "PromptTemplate",
     "SemanticFeature",
     "SemanticHypothesis",
-    "ViewEvidence",
+    "View",
     "build_instruction",
     "build_system_prompt",
     "instruction_text",

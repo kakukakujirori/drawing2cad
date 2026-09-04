@@ -1,15 +1,16 @@
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import hydra
 import rootutils
 from hydra.utils import instantiate, to_absolute_path
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from zeroshot.evaluation.run_scoring import score_run
-from zeroshot.pipeline.messages import InputManifest
+from zeroshot.pipeline.messages import DrawingSource, InputManifest
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import StepRenderer
@@ -46,14 +47,24 @@ def run(config: DictConfig) -> ReconstructionState | None:
 
     manifest = InputManifest(
         sample_id=config.sample.sample_id,
-        dxf_path=Path(to_absolute_path(config.sample.dxf_path)),
-        render3d_paths={
-            style: Path(to_absolute_path(path))
-            for style, path in config.sample.render3d_paths.items()
-        },
+        drawing=drawing_source(config.sample.drawing),
     )
 
     return runner.run_sample(manifest)
+
+
+def drawing_source(section: DictConfig) -> DrawingSource:
+    """The configured drawing, with its paths resolved against the project root.
+
+    Hydra runs from the sample's artifact directory, so a path written
+    relative to the repository has to be made absolute before anything
+    checks whether it exists.
+    """
+    data = cast(dict[str, Any], OmegaConf.to_container(section, resolve=True))
+    for sheet in data.get("sheets") or []:
+        if sheet.get("file"):
+            sheet["file"] = to_absolute_path(sheet["file"])
+    return DrawingSource.model_validate(data)
 
 
 def score(config: DictConfig) -> None:
