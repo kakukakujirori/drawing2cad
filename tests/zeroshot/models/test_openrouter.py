@@ -58,7 +58,9 @@ def _merged(model: Any) -> Any:
 
 
 def test_merged_stream_keeps_one_format(monkeypatch: pytest.MonkeyPatch) -> None:
-    model = _model(monkeypatch, [("a ", "unknown"), ("b ", "unknown"), ("c", "unknown")])
+    model = _model(
+        monkeypatch, [("a ", "unknown"), ("b ", "unknown"), ("c", "unknown")]
+    )
 
     merged = _merged(model)
 
@@ -169,9 +171,7 @@ def test_a_rejected_request_names_a_null_the_repairs_left_behind(
         },
     )
 
-    assert "messages[0].reasoning_details[0].extras.format" in _error_of(
-        model, message
-    )
+    assert "messages[0].reasoning_details[0].extras.format" in _error_of(model, message)
 
 
 def test_a_rejected_request_names_content_that_is_not_a_string(

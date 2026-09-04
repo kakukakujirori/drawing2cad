@@ -1,7 +1,7 @@
 """How many model turns an agent may spend, and what it is told about them."""
 
-from enum import Enum
 from collections.abc import Awaitable, Callable
+from enum import Enum
 from typing import Any, NotRequired, override
 
 from langchain.agents import AgentState as _AgentState

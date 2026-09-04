@@ -11,14 +11,13 @@ from collections.abc import Sequence
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from tests.zeroshot.contracts import evidence, feature, geometry, hypothesis
+from tests.zeroshot.contracts import feature, hypothesis
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
     SemanticHypothesis,
     linearise,
-    resolve_reference,
 )
 
 
@@ -208,157 +207,3 @@ def test_every_operation_is_placed_exactly_once() -> None:
 
     assert sorted(order) == ["op_a", "op_b", "op_c", "op_d"]
     assert len(order) == len(set(order))
-
-
-def _torus_feature() -> SemanticHypothesis:
-    """One feature whose size is stated, so a reference to it has an answer.
-
-    Full precision, as a reading off a DXF is. That is also what makes a copy
-    of it recognisable: nobody arrives at fourteen decimal places by thinking.
-    """
-    return hypothesis(
-        proposal=[
-            geometry_feature(),
-        ]
-    )
-
-
-def geometry_feature():
-    return feature(
-        "sem_shoulder_blend",
-        "shoulder blend",
-        geometry=[
-            geometry(
-                "torus",
-                name="geo_blend_torus",
-                major_radius=11.31245992416,
-                tube_radius=3.39440063713,
-            ),
-            geometry("plane", axis="x", name="geo_side_plane"),
-        ],
-    )
-
-
-def test_a_reference_is_filled_in_before_the_coder_reads_it() -> None:
-    """The whole of the arrangement. A planner made to retype a spline's
-    control points will eventually mistype one, and has: a reference resolved
-    on the way out never passes through a model's output, so that cannot
-    happen rather than being caught after it has."""
-    resolved = resolve_reference(
-        "Sweep a blend of sem_shoulder_blend.geo_blend_torus.major_radius",
-        _torus_feature(),
-    )
-
-    assert resolved.endswith(
-        "sem_shoulder_blend.geo_blend_torus.major_radius (11.31245992416)"
-    )
-
-
-def test_a_reference_says_which_geometry_when_a_feature_claims_several() -> None:
-    held = _torus_feature()
-
-    assert "(3.39440063713)" in resolve_reference(
-        "sem_shoulder_blend.geo_blend_torus.tube_radius", held
-    )
-    assert (
-        resolve_reference("sem_shoulder_blend.geo_side_plane.radius", held)
-        == "sem_shoulder_blend.geo_side_plane.radius"
-    )
-
-
-def test_a_canonical_reference_names_one_geometry_even_when_kinds_repeat() -> None:
-    repeated = feature(
-        "sem_two_spherical_ends",
-        "two spherical ends",
-        geometry=[
-            geometry("sphere", name="geo_left_end", radius=4.25),
-            geometry("sphere", name="geo_right_end", radius=9.75),
-        ],
-    )
-    held = hypothesis(proposal=[repeated])
-
-    assert resolve_reference(
-        "sem_two_spherical_ends.geo_right_end.radius", held
-    ).endswith("geo_right_end.radius (9.75)")
-
-
-def test_a_canonical_reference_names_one_evidence_reading_and_its_vector() -> None:
-    bore = feature(
-        "sem_main_bore",
-        "main bore",
-        evidence=[
-            evidence(
-                "circle",
-                name="ev_front_circle",
-                center=[1.0, 2.0],
-                radius=3.0,
-            ),
-            evidence(
-                "circle",
-                name="ev_right_circle",
-                center=[12.0, 13.0],
-                radius=5.0,
-            ),
-        ],
-    )
-    held = hypothesis(proposal=[bore])
-
-    assert resolve_reference("at sem_main_bore.ev_right_circle.center", held) == (
-        "at sem_main_bore.ev_right_circle.center ([12.0 13.0])"
-    )
-    assert resolve_reference(
-        "radius sem_main_bore.ev_front_circle.radius", held
-    ).endswith("sem_main_bore.ev_front_circle.radius (3.0)")
-
-
-def test_a_reference_to_something_the_hypothesis_lacks_is_left_alone() -> None:
-    """Rendering is not the place to fail; contextual validation owns that."""
-    assert (
-        resolve_reference("sem_shoulder_blend.geo_blend_torus.height", _torus_feature())
-        == "sem_shoulder_blend.geo_blend_torus.height"
-    )
-    assert (
-        resolve_reference("sem_missing.geo_sphere.radius", _torus_feature())
-        == "sem_missing.geo_sphere.radius"
-    )
-
-
-def test_a_list_parameter_is_resolved_as_one_exactly_addressed_value() -> None:
-    held = hypothesis(
-        proposal=[
-            feature(
-                "sem_blend_profile",
-                "blend",
-                evidence=[evidence("spline", name="ev_front_spline")],
-            )
-        ]
-    )
-
-    assert "([0.0 0.0 1.0 1.0 2.0 0.0])" in resolve_reference(
-        "follow sem_blend_profile.ev_front_spline.control_points", held
-    )
-
-
-def test_claim_and_evidence_parameters_are_separate_named_addresses() -> None:
-    bore = feature(
-        "sem_main_bore",
-        "main bore",
-        geometry=[
-            geometry(
-                "cylinder",
-                name="geo_cylinder",
-                radius=3.40755883124,
-                height=16.5366825634,
-            )
-        ],
-        evidence=[
-            evidence("arc", name="ev_front_arc", radius=99.9),
-            evidence("arc", name="ev_right_arc", radius=88.8),
-        ],
-    )
-    held = hypothesis(proposal=[bore])
-
-    assert "(3.40755883124)" in resolve_reference(
-        "sem_main_bore.geo_cylinder.radius", held
-    )
-    assert "(99.9)" in resolve_reference("sem_main_bore.ev_front_arc.radius", held)

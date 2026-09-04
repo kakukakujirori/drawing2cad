@@ -705,9 +705,9 @@ def test_async_dropped_stream_does_not_spend_a_correction() -> None:
     )
 
     async def invoke() -> Any:
-        return await _subgraph(
-            model, announce_turns=False, model_retries=1
-        ).ainvoke({"messages": [HumanMessage(content="go")]})
+        return await _subgraph(model, announce_turns=False, model_retries=1).ainvoke(
+            {"messages": [HumanMessage(content="go")]}
+        )
 
     result = asyncio.run(invoke())
 

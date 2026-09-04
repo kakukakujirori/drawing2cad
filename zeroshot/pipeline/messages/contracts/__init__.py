@@ -12,7 +12,6 @@ from zeroshot.pipeline.messages.contracts.operations import (
     OperationPlan,
     OperationVerb,
     linearise,
-    resolve_reference,
 )
 from zeroshot.pipeline.messages.contracts.semantics import (
     VIEW_FRAME,
@@ -63,6 +62,5 @@ __all__ = [
     "edge_style_for_linetype",
     "linearise",
     "next_stage",
-    "resolve_reference",
     "view_frame_sentence",
 ]

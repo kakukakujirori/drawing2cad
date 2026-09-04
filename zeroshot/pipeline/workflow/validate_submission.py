@@ -41,12 +41,15 @@ from zeroshot.pipeline.verification import (
     VerifyOutputResult,
     check_program,
 )
+from zeroshot.pipeline.workflow.resolve_submission import (
+    unresolved_references,
+    without_resolved_values,
+)
 
 type Submission = (
     SemanticSubmission | OperationSubmission | CodingSubmission | AuditReport
 )
 
-_REFERENCE_LIKE = re.compile(r"\bsem_[a-z0-9_]+(?:\.[a-z0-9_]+)+\b")
 _COPIED_DECIMALS = 4
 _DECIMAL = re.compile(rf"\d+\.\d{{{_COPIED_DECIMALS},}}")
 _NAMED_AT_MOST = 3
@@ -197,7 +200,6 @@ def _operation_plan_errors(
     built = {
         semantic for operation in plan.proposal for semantic in operation.semantics
     }
-    valid_references = _semantic_parameter_addresses(hypothesis)
     held_numbers = _hypothesis_numbers(hypothesis)
     errors: list[str] = []
 
@@ -217,7 +219,11 @@ def _operation_plan_errors(
         )
 
     for operation in sorted(plan.proposal, key=lambda item: item.name):
-        copied = _transcribed_numbers(operation.detail, held_numbers)
+        # Against what the planner wrote. A value this pipeline resolved into
+        # the detail of an earlier round is not a number anybody retyped.
+        copied = _transcribed_numbers(
+            without_resolved_values(operation.detail), held_numbers
+        )
         if not copied:
             continue
         named = ", ".join(copied[:_NAMED_AT_MOST])
@@ -231,30 +237,18 @@ def _operation_plan_errors(
         )
 
     for operation in sorted(plan.proposal, key=lambda item: item.name):
-        unresolved = [
-            match[0]
-            for match in _REFERENCE_LIKE.finditer(operation.detail)
-            if match[0] not in valid_references
-        ]
-        if unresolved:
+        if unresolved := unresolved_references(operation.detail, hypothesis):
             named = ", ".join(unresolved)
             errors.append(
                 f"{operation.name} refers to {named}, which does not identify "
-                "exactly one parameter in the hypothesis. Use the member name "
-                "shown there, such as sem_main_bore.geo_cylinder.radius or "
-                "sem_main_bore.ev_front_circle.center."
+                "anything in the hypothesis. Name a feature and a member it "
+                "holds, such as sem_main_bore.ev_front_circle, and add the "
+                "parameter you mean: sem_main_bore.geo_cylinder.radius. For "
+                "one number of a point, add .x or .y: "
+                "sem_main_bore.ev_front_circle.center.x."
             )
 
     return errors
-
-
-def _semantic_parameter_addresses(hypothesis: SemanticHypothesis) -> set[str]:
-    return {
-        f"{feature.name}.{member.name}.{parameter.name.value}"
-        for feature in hypothesis.proposal
-        for member in (*feature.geometry, *feature.evidence)
-        for parameter in member.parameters
-    }
 
 
 def _hypothesis_numbers(hypothesis: SemanticHypothesis) -> list[float]:

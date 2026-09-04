@@ -2,7 +2,12 @@
 
 import pytest
 
-from tests.zeroshot.contracts import feature, hypothesis, replacing
+from tests.zeroshot.contracts import (
+    feature,
+    geometry,
+    hypothesis,
+    replacing,
+)
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -400,6 +405,50 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     assert [ticket.responses[-1].summary for ticket in updated_tickets] == [
         f"Addressed {ticket_id}." for ticket_id in original_ticket_ids
     ]
+
+
+def test_integration_resolves_the_references_in_what_it_stores() -> None:
+    """Every later reader opens reconstruction.json rather than the prompt that
+    carried the plan, so the numbers have to be in it."""
+    completed = _completed_run()
+    run = open_next_round(
+        completed,
+        AuditReport(
+            accepted=False,
+            findings=[_report(target=_ref("semantics", "sem_feature_1")).findings[0]],
+        ),
+    )
+    current = run.snapshots[-1]
+    held = hypothesis(
+        "the base",
+        proposal=[
+            feature(
+                1,
+                "the base",
+                geometry=[geometry("sphere", name="geo_ball", radius=4.25)],
+            )
+        ],
+    )
+
+    advanced = advance_reconstruction(
+        run,
+        SemanticSubmission(
+            **replacing(held),
+            responses=[
+                TicketResponse(
+                    ticket_id=ticket.ticket_id,
+                    stage="semantics",  # type: ignore[arg-type]
+                    summary="Restated sem_feature_1.geo_ball.radius.",
+                )
+                for ticket in current.open_tickets
+            ],
+        ),
+    )
+
+    stored = advanced.snapshots[-1]
+    assert stored.open_tickets[0].responses[-1].summary == (
+        "Restated sem_feature_1.geo_ball.radius (= 4.25)."
+    )
 
 
 def test_snapshot_commit_rejects_a_skipped_stage() -> None:

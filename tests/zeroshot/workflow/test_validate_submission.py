@@ -1,11 +1,18 @@
 """Contextual validation shared by all reconstruction stages."""
 
+import re
 from collections.abc import Sequence
 from typing import cast
 
 import pytest
 
-from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing
+from tests.zeroshot.contracts import (
+    evidence,
+    feature,
+    geometry,
+    hypothesis,
+    replacing,
+)
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -395,6 +402,92 @@ def test_operation_validation_rejects_a_nonexistent_parameter_address() -> None:
             ),
             _measured_blend(),
         )
+
+
+def test_operation_validation_accepts_one_coordinate_of_a_point() -> None:
+    held = hypothesis(
+        proposal=[
+            feature(
+                "sem_main_bore",
+                "main bore",
+                evidence=[
+                    evidence(
+                        "circle",
+                        name="ev_front_circle",
+                        center=[1.5, 2.5],
+                        radius=3.0,
+                    )
+                ],
+            )
+        ]
+    )
+
+    _validate_plan(
+        _plan_for(
+            ["sem_main_bore"],
+            detail=(
+                "Cut from sem_main_bore.ev_front_circle.center.x up to "
+                "sem_main_bore.ev_front_circle.center.y."
+            ),
+        ),
+        held,
+    )
+
+
+def test_operation_validation_rejects_a_coordinate_of_a_single_number() -> None:
+    """`.x` names one of two numbers, and a radius holds one."""
+    address = "sem_shoulder_blend.geo_blend_torus.major_radius.x"
+
+    with pytest.raises(SubmissionValidationError, match=re.escape(address)):
+        _validate_plan(
+            _plan_for(["sem_shoulder_blend"], detail=f"Sweep {address} along +z."),
+            _measured_blend(),
+        )
+
+
+def test_operation_validation_accepts_an_address_that_stops_at_the_member() -> None:
+    """An operation names a reading as often to say which one it works from as
+    to ask for a number out of it."""
+    held = hypothesis(
+        proposal=[
+            feature(
+                "sem_main_bore",
+                "main bore",
+                evidence=[
+                    evidence(
+                        "line",
+                        name="ev_top_edge",
+                        start=[33.0, 146.4],
+                        end=[133.0, 146.4],
+                    )
+                ],
+            )
+        ]
+    )
+
+    _validate_plan(
+        _plan_for(
+            ["sem_main_bore"],
+            detail="Extrude the profile bounded by sem_main_bore.ev_top_edge.",
+        ),
+        held,
+    )
+
+
+def test_a_resolved_value_is_not_read_back_as_a_copied_number() -> None:
+    """The planner reads the resolved snapshot, so a value this pipeline wrote
+    returns in the next round's plan. Rejecting it would make the rule punish
+    its own output."""
+    _validate_plan(
+        _plan_for(
+            ["sem_shoulder_blend"],
+            detail=(
+                "Sweep a blend of "
+                "sem_shoulder_blend.geo_blend_torus.major_radius (= 11.31245992416)."
+            ),
+        ),
+        _measured_blend(),
+    )
 
 
 def test_many_copied_numbers_produce_one_bounded_validation_message() -> None:

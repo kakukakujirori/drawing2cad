@@ -28,6 +28,7 @@ from zeroshot.pipeline.messages.contracts.stages import (
 )
 from zeroshot.pipeline.verification import VerifyOutputResult
 from zeroshot.pipeline.workflow.merge_submission import merge_submission
+from zeroshot.pipeline.workflow.resolve_submission import resolve_references
 from zeroshot.pipeline.workflow.validate_submission import validate_submission
 
 type ReasoningSubmission = SemanticSubmission | OperationSubmission | CodingSubmission
@@ -76,6 +77,11 @@ def open_next_round(
 
     if report.accepted:
         raise ValueError("an accepted audit does not open another round")
+
+    # As for a reasoning stage: the tickets this opens carry the finding's own
+    # words into the next round, so the addresses in them are resolved here.
+    if current.semantics is not None:
+        report = resolve_references(report, current.semantics)
 
     next_round = current.round + 1
     tickets = [_ticket_from_finding(next_round, finding) for finding in report.findings]
@@ -137,6 +143,18 @@ def advance_reconstruction(
         deliverable=deliverable,
         verification=verification,
     )
+
+    # After validation, which judges the addresses the model wrote rather than
+    # the values this puts beside them.
+    cited_hypothesis = (
+        deliverable
+        if isinstance(deliverable, SemanticHypothesis)
+        else current.semantics
+    )
+    if cited_hypothesis is not None:
+        if deliverable is not None:
+            deliverable = resolve_references(deliverable, cited_hypothesis)
+        submission = resolve_references(submission, cited_hypothesis)
 
     responses_by_ticket = {
         response.ticket_id: response for response in submission.responses
