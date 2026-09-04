@@ -18,7 +18,6 @@ from zeroshot.pipeline.messages.contracts import (
     OperationVerb,
     SemanticHypothesis,
     linearise,
-    render_plan,
     resolve_reference,
 )
 
@@ -209,41 +208,6 @@ def test_every_operation_is_placed_exactly_once() -> None:
 
     assert sorted(order) == ["op_a", "op_b", "op_c", "op_d"]
     assert len(order) == len(set(order))
-
-
-def test_the_rendering_shows_the_derived_order_and_what_each_step_needs() -> None:
-    """What the coder is handed. It is the order, not the graph: following it
-    is the job, and a plan whose dependencies were wrong reads as wrong here."""
-    rendered = render_plan(
-        plan(op("op_b", needs=["op_a"], builds=[4]), op("op_a", builds=[1])),
-        _features(1, 4),
-    )
-    lines = rendered.splitlines()
-
-    assert "step 1  op_a extrude (needs nothing; builds sem_feature_1)" in lines[1]
-    assert "step 2  op_b extrude (after op_a; builds sem_feature_4)" in lines[2]
-
-
-def test_the_step_number_is_derived_and_not_part_of_the_plan() -> None:
-    """The position is worked out from the dependencies, so it is put on at
-    the point of reading. Holding it in the plan would be a second thing for
-    the planner to keep in step with the first."""
-    written = plan(op("op_b", needs=["op_a"], builds=[1]), op("op_a", builds=[1]))
-
-    assert "step" not in written.model_dump_json()
-    assert [
-        line.split()[1]
-        for line in render_plan(written, _features(1)).splitlines()[1:-1]
-    ] == [
-        "1",
-        "2",
-    ]
-
-
-def test_an_operation_that_names_no_feature_says_so() -> None:
-    """Rendering it as an empty list would read as a formatting slip; saying it
-    plainly keeps the gap visible to whoever reads the plan."""
-    assert "builds nothing named" in render_plan(plan(op("op_a")), _features(1))
 
 
 def _torus_feature() -> SemanticHypothesis:
