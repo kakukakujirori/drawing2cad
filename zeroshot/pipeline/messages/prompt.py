@@ -7,7 +7,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.messages.content import create_text_block
 from pydantic import BaseModel
 
-from zeroshot.pipeline.messages.contracts import view_frame_sentence
 from zeroshot.pipeline.messages.prompts import PromptTemplate
 
 
@@ -26,11 +25,11 @@ def instruction_text(name: str, **context: str) -> str:
     enters on its own, still carries them.
 
     `$view_frame` is offered to every prompt because the frame belongs to the
-    contract, not to a stage: semantics reports sheet coordinates tagged with a
-    view, and each stage after it has to read them back.
+    drawing, not to a stage: the drawing reports sheet coordinates tagged with
+    a view, and each stage after it has to read them back. The caller renders
+    it from the drawing it was given and passes it in `context`.
     """
     instruction = PromptTemplate(f"instructions/{name}")
-    context = {**context, "view_frame": view_frame_sentence()}
     guidelines = instruction.path.parent / "guidelines.md"
     if guidelines.is_file():
         context = {

@@ -24,7 +24,7 @@ def entry(name, entity=DrawnEntity.LINE, **parameters):
         name=name,
         entity=entity,
         edge_style="visible",
-        source="given",
+        source=[],
         parameters=[
             Parameter(name=key, values=values) for key, values in parameters.items()
         ],

@@ -12,7 +12,6 @@ from .contracts import (
     FeatureGeometry,
     SemanticFeature,
     SemanticHypothesis,
-    ViewEvidence,
 )
 from .manifest import FeedbackManifest, InputManifest
 from .prompt import (
@@ -32,7 +31,6 @@ __all__ = [
     "PromptTemplate",
     "SemanticFeature",
     "SemanticHypothesis",
-    "ViewEvidence",
     "build_instruction",
     "build_system_prompt",
     "instruction_section",

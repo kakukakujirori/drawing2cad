@@ -15,17 +15,16 @@ from zeroshot.pipeline.messages.contracts.drawings import (
     EdgeStyle,
     drawing_paths,
     edge_style_for_linetype,
-    frame_sentence,
     sheet_name,
 )
 
 
-def evidence(name="ev_edge", entity="line", **parameters):
+def evidence(name="ev_edge", entity="line", source=(), **parameters):
     return {
         "name": name,
         "entity": entity,
         "edge_style": "visible",
-        "source": "given",
+        "source": list(source),
         "parameters": [
             {"name": key, "values": values}
             for key, values in (
@@ -57,7 +56,6 @@ def dimension(**fields):
         "nominal": 10,
         "quantity": 1,
         "note": None,
-        "targets": ["ev_edge"],
         **fields,
     }
 
@@ -118,7 +116,7 @@ def test_source_round_trip_includes_crop_ancestry_and_dimension_references():
                 derived_from="sheet_page",
                 file="/work/crop.png",
                 origin=[33, 40],
-                evidence=[evidence()],
+                evidence=[evidence(source=["dim_length"])],
                 dimensions=[dimension()],
             ),
         ],
@@ -126,7 +124,7 @@ def test_source_round_trip_includes_crop_ancestry_and_dimension_references():
     }
     new = DrawingSource.model_validate(value)
     assert DrawingSource.model_validate_json(new.model_dump_json()) == new
-    assert new.cited_names() == {"ev_edge", "dim_length"}
+    assert new.cited_names() == {"ev_edge"}
 
 
 @pytest.mark.parametrize(
@@ -193,10 +191,10 @@ def test_a_rotated_full_ellipse_holds_its_endpoint_tolerance(offset, accepted):
     [
         "no_source",
         "bad_file",
+        "absent_figure",
         "bad_name",
         "self_parent",
         "duplicate_evidence",
-        "missing_target",
         "missing_origin",
         "bad_origin",
         "pictorial_origin",
@@ -206,11 +204,11 @@ def test_a_sheet_that_cannot_be_placed_or_read_is_refused(case):
     value = sheet()
     changes = {
         "no_source": {"file": None},
+        "absent_figure": {"evidence": [evidence(source=["dim_length"])]},
         "bad_file": {"file": "/work/model.step"},
         "bad_name": {"name": "sheet_BAD"},
         "self_parent": {"derived_from": "sheet_page"},
         "duplicate_evidence": {"evidence": [evidence(), evidence()]},
-        "missing_target": {"dimensions": [dimension()]},
         "missing_origin": {"role": "front", "evidence": [evidence()]},
         "bad_origin": {"role": "front", "evidence": [evidence()], "origin": [0]},
         "pictorial_origin": {"role": "perspective", "origin": [0, 0]},
@@ -225,9 +223,9 @@ def test_a_sheet_that_cannot_be_placed_or_read_is_refused(case):
     [
         "empty",
         "duplicate_sheet",
+        "duplicate_dimension",
         "duplicate_role",
         "duplicate_evidence",
-        "duplicate_dimension",
         "missing_ancestor",
         "cycle",
     ],
@@ -236,15 +234,12 @@ def test_a_drawing_whose_names_or_ancestry_break_is_refused(case):
     a, b = sheet("sheet_a"), sheet("sheet_b")
     if case == "duplicate_sheet":
         b["name"] = a["name"]
+    elif case == "duplicate_dimension":
+        a["dimensions"], b["dimensions"] = [dimension()], [dimension()]
     elif case == "duplicate_role":
         a["role"] = b["role"] = "front"
     elif case == "duplicate_evidence":
         a["evidence"], b["evidence"] = [evidence()], [evidence()]
-    elif case == "duplicate_dimension":
-        a["dimensions"], b["dimensions"] = (
-            [dimension(targets=[])],
-            [dimension(targets=[])],
-        )
     elif case == "missing_ancestor":
         b["derived_from"] = "sheet_missing"
     elif case == "cycle":
@@ -323,8 +318,8 @@ def test_staging_and_prompt_helpers_name_input_files_and_frames():
         Path("/work/perspective.png"),
     ]
     # No view is settled yet, so every frame a later stage might need is offered.
-    assert frame_sentence(both).count(";") == len(ORTHOGRAPHIC_VIEWS) - 1
+    assert both.frame_sentence().count(";") == len(ORTHOGRAPHIC_VIEWS) - 1
 
     front = DrawingSource.model_validate({"sheets": [sheet("sheet_front", "front")]})
-    assert frame_sentence(front) == "Front is right=+x, up=+y"
+    assert front.frame_sentence() == "Front is right=+x, up=+y"
     assert sheet_name("style-a") == "sheet_style_a"

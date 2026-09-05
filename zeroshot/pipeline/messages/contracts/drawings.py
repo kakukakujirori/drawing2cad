@@ -2,8 +2,7 @@
 
 import math
 import re
-from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from enum import StrEnum
 from pathlib import Path, PurePath
 from typing import Self
@@ -12,8 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from zeroshot.pipeline.messages.contracts.parameters import (
     Parameter,
+    describe_parameters,
+    require_name,
     require_parameters,
-    rows,
+    require_unique,
 )
 
 # --- Vocabulary and projection frames ---
@@ -73,27 +74,53 @@ class DimensionKind(StrEnum):
     ANGULAR = "angular"
 
 
-class ClaimSource(StrEnum):
-    GIVEN = "given"
-    DERIVED = "derived"
-    ASSUMED = "assumed"
-
-
 # --- Identifier validation ---
 
 
-def _require_name(name: str, prefix: str) -> None:
-    if not re.fullmatch(rf"{prefix}[a-z0-9_]+", name):
-        raise ValueError(f"{name!r} must start with {prefix} and use lower_snake_case")
+# --- Printed dimensions and primitive evidence ---
 
 
-def _require_unique(names: Iterable[str], subject: str) -> None:
-    duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
-    if duplicates:
-        raise ValueError(f"duplicate names in {subject}: {', '.join(duplicates)}")
+# A printed figure is what turns a pixel measurement into millimetres.
+# One figure may govern several entities (e.g., 4X R10) so each is
+# written once here and named by every entity it measures.
+class Dimension(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
+    name: str = Field(
+        ...,
+        description="Stable dim_ name in lower_snake_case, unique across the drawing.",
+    )
+    kind: DimensionKind = Field(..., description="The kind of printed dimension.")
+    text: str = Field(
+        ...,
+        description=(
+            "The callout exactly as printed, symbols and all: 4X \u230012 THRU, "
+            "M12x1.75-6H, R10. Split a callout that states two measurements, "
+            "such as \u230012 THRU 15 DEEP, into one figure each."
+        ),
+    )
+    nominal: float = Field(
+        ...,
+        description="Degrees for angle, millimetres for length.",
+    )
+    quantity: int = Field(
+        ...,
+        description="Feature count: 4 for '4X 12 THRU', or 1 if no count is printed.",
+    )
+    note: str | None = Field(
+        ...,
+        description=(
+            "A remark printed beside the callout in words rather than symbols, "
+            "such as AFTER PLATING or SEE DETAIL B; null if absent."
+        ),
+    )
 
-# --- Primitive evidence and printed dimensions ---
+    @model_validator(mode="after")
+    def validate_dimension(self) -> Self:
+        require_name(self.name, "dim_")
+        if self.quantity < 1:
+            raise ValueError("dimension quantity must be at least 1")
+        return self
 
 
 _DRAWN_PARAMETERS = {
@@ -123,30 +150,33 @@ class DrawingEvidence(BaseModel):
     edge_style: EdgeStyle = Field(
         ..., description="Visible, hidden, centerline, phantom, or other linework."
     )
-    source: ClaimSource = Field(
-        ...,
-        description=(
-            "given: stated by a dimension or vector curve definition; derived: "
-            "computed or measured using the drawing's scale; assumed: unsupported."
-        ),
-    )
     parameters: list[Parameter] = Field(
         ...,
         description=(
             "Supply all parameters listed below. Points use the root page's "
             "coordinates in millimetres, including when reading a crop; never "
             "report pixels. Mark measured values as derived.\n"
-            f"{rows(_DRAWN_PARAMETERS)}\n"
+            f"{describe_parameters(_DRAWN_PARAMETERS)}\n"
             "ARC and ELLIPSE sweep counterclockwise from start to end, both "
             "points lying on the curve; equal endpoints mean a full turn. An "
             "ELLIPSE gives major_axis as the vector from center to the "
             "major-axis endpoint, whose length is the semi-major radius."
         ),
     )
+    source: list[str] = Field(
+        ...,
+        description=(
+            "dim_ names of the printed figures this reading rests on, from the "
+            "same sheet: the diameter beside a circle, the length between two "
+            "edges. Empty when nothing is printed and the numbers were "
+            "measured or taken from a vector definition."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_entity(self) -> Self:
-        _require_name(self.name, "ev_")
+        require_name(self.name, "ev_")
+        require_unique(self.source, f"{self.name} sources")
         values = require_parameters(
             f"{self.name} ({self.entity.value})",
             _DRAWN_PARAMETERS[self.entity],
@@ -185,50 +215,6 @@ def _require_endpoints_on_curve(
                 f"{name} is off the {entity.value} (relative radius {reach:.2f}); "
                 "give the endpoint in page coordinates"
             )
-
-
-# Auxiliary to DrawingEvidence: a printed figure is what turns a pixel
-# measurement into millimetres, and it is kept only for the auditor to check.
-class Dimension(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(
-        ...,
-        description="Stable dim_ name in lower_snake_case, unique across the drawing.",
-    )
-    kind: DimensionKind = Field(..., description="The kind of printed dimension.")
-    text: str = Field(
-        ..., description="The annotation exactly as printed, including symbols."
-    )
-    nominal: float = Field(
-        ...,
-        description="Unmultiplied size: degrees for angular dimensions, millimetres otherwise.",
-    )
-    quantity: int = Field(
-        ...,
-        description="Feature count: 4 for '4X 12 THRU', or 1 if no count is printed.",
-    )
-    note: str | None = Field(
-        ...,
-        description=(
-            "Additional annotation such as THRU, 15 DEEP, CBORE, or M12x1.75-6H; "
-            "null if absent. Keep kind and quantity in their own fields."
-        ),
-    )
-    targets: list[str] = Field(
-        ...,
-        description=(
-            "ev_ names measured by this dimension, from the same sheet: e.g. "
-            "one circle for a diameter or two edges for a length. Empty if unknown."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def validate_dimension(self) -> Self:
-        _require_name(self.name, "dim_")
-        if self.quantity < 1:
-            raise ValueError("dimension quantity must be at least 1")
-        return self
 
 
 class DrawingSheet(BaseModel):
@@ -280,7 +266,7 @@ class DrawingSheet(BaseModel):
         ),
     )
     dimensions: list[Dimension] = Field(
-        ..., description="Printed dimensions; empty if none."
+        ..., description="Printed figures on this sheet; empty if none."
     )
 
     @field_validator("file", mode="before")
@@ -290,7 +276,7 @@ class DrawingSheet(BaseModel):
 
     @model_validator(mode="after")
     def validate_sheet(self) -> Self:
-        _require_name(self.name, "sheet_")
+        require_name(self.name, "sheet_")
         if self.file is None and self.derived_from is None:
             raise ValueError(f"{self.name} needs a file or a parent sheet")
         if (
@@ -300,16 +286,13 @@ class DrawingSheet(BaseModel):
             raise ValueError(f"unsupported drawing file: {self.file}")
         if self.derived_from == self.name:
             raise ValueError(f"{self.name} cannot derive from itself")
-        names = [entry.name for entry in self.evidence]
-        _require_unique(
-            [*names, *(figure.name for figure in self.dimensions)], self.name
-        )
-        known = set(names)
-        for figure in self.dimensions:
-            missing = sorted(set(figure.targets) - known)
+        printed = [figure.name for figure in self.dimensions]
+        require_unique([*(entry.name for entry in self.evidence), *printed], self.name)
+        for entry in self.evidence:
+            missing = sorted(set(entry.source) - set(printed))
             if missing:
                 raise ValueError(
-                    f"{figure.name} targets absent from {self.name}: {missing}"
+                    f"{entry.name} cites figures absent from {self.name}: {missing}"
                 )
         if self.role not in VIEW_FRAME:
             if self.origin is not None:
@@ -338,11 +321,11 @@ class DrawingSource(BaseModel):
     def validate_drawing(self) -> Self:
         if not self.sheets:
             raise ValueError("a drawing source needs at least one sheet")
-        _require_unique(
+        require_unique(
             (sheet.role.value for sheet in self.sheets if sheet.role in VIEW_FRAME),
             "orthographic views",
         )
-        _require_unique(
+        require_unique(
             [sheet.name for sheet in self.sheets]
             + [entry.name for entry in self.evidence()]
             + [figure.name for figure in self.dimensions()],
@@ -373,9 +356,20 @@ class DrawingSource(BaseModel):
         return [figure for sheet in self.sheets for figure in sheet.dimensions]
 
     def cited_names(self) -> set[str]:
-        ev_names = {entry.name for entry in self.evidence()}
-        dim_names = {figure.name for figure in self.dimensions()}
-        return ev_names | dim_names
+        """The entities a later stage may cite. A printed figure is not one."""
+        return {entry.name for entry in self.evidence()}
+
+    def frame_sentence(self) -> str:
+        """Describe the known orthographic frames, or all six before view assignment."""
+        wanted = {sheet.role for sheet in self.orthographic()} or set(
+            ORTHOGRAPHIC_VIEWS
+        )
+        return "; ".join(
+            f"{view.value.capitalize()} is right={VIEW_FRAME[view][0]}, "
+            f"up={VIEW_FRAME[view][1]}"
+            for view in ORTHOGRAPHIC_VIEWS
+            if view in wanted
+        )
 
 
 # --- DXF line-type conversion ---
@@ -410,17 +404,3 @@ def sheet_name(label: str) -> str:
 
 def drawing_paths(drawing: DrawingSource) -> list[Path]:
     return [Path(sheet.file) for sheet in drawing.sheets if sheet.file is not None]
-
-
-# --- Prompt text ---
-
-
-def frame_sentence(drawing: DrawingSource) -> str:
-    """Describe the known orthographic frames, or all six before view assignment."""
-    wanted = {sheet.role for sheet in drawing.orthographic()} or set(ORTHOGRAPHIC_VIEWS)
-    return "; ".join(
-        f"{view.value.capitalize()} is right={VIEW_FRAME[view][0]}, "
-        f"up={VIEW_FRAME[view][1]}"
-        for view in ORTHOGRAPHIC_VIEWS
-        if view in wanted
-    )

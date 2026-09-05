@@ -13,25 +13,26 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from tests.zeroshot.contracts import evidence, feature, geometry, hypothesis
-from zeroshot.pipeline.messages.contracts.semantics import (
-    _ARITY,
-    _CLAIMED_PARAMETERS,
+from zeroshot.pipeline.messages.contracts.drawings import (
     _DRAWN_PARAMETERS,
-    _EXCLUDED_GEOMETRY,
+    DrawingEvidence,
     DrawnEntity,
+)
+from zeroshot.pipeline.messages.contracts.parameters import _ARITY, Parameter
+from zeroshot.pipeline.messages.contracts.semantics import (
+    _EXCLUDED_GEOMETRY,
+    _GEOMETRY_PARAMETERS,
     FeatureGeometry,
     GeometryKind,
-    Parameter,
     SemanticFeature,
     SemanticHypothesis,
-    ViewEvidence,
 )
 
 CONTRACTS = [
     SemanticHypothesis,
     SemanticFeature,
     FeatureGeometry,
-    ViewEvidence,
+    DrawingEvidence,
     Parameter,
 ]
 
@@ -104,7 +105,7 @@ def test_every_kind_states_the_sizes_it_is_measured_by(kind: GeometryKind) -> No
     """Dropping a size the kind is measured by has to fail, or a claim can be
     made as a bare label -- which is the prose this replaces."""
     geometry(kind)
-    for name in _CLAIMED_PARAMETERS[kind]:
+    for name in _GEOMETRY_PARAMETERS[kind]:
         thinned = [p for p in geometry(kind).parameters if p.name.value != name]
         with pytest.raises(ValidationError, match=name):
             FeatureGeometry(
@@ -119,7 +120,7 @@ def test_every_kind_states_the_sizes_it_is_measured_by(kind: GeometryKind) -> No
 @pytest.mark.parametrize("kind", list(GeometryKind))
 def test_no_kind_accepts_a_size_it_is_not_measured_by(kind: GeometryKind) -> None:
     extra = Parameter(name="tube_radius", values=[1.0])
-    if extra.name.value in _CLAIMED_PARAMETERS[kind]:
+    if extra.name.value in _GEOMETRY_PARAMETERS[kind]:
         pytest.skip(f"{kind} is measured by {extra.name.value}")
     with pytest.raises(ValidationError, match="unknown"):
         FeatureGeometry(
@@ -137,7 +138,7 @@ def test_a_3d_claim_carries_no_position() -> None:
     of the task -- and a wrong one is inherited in silence by every stage after
     it, where a wrong radius shows up in the next render."""
     positional = {"center", "start", "end", "point", "base_center", "origin"}
-    claimed = {name for row in _CLAIMED_PARAMETERS.values() for name in row}
+    claimed = {name for row in _GEOMETRY_PARAMETERS.values() for name in row}
     assert not positional & claimed
     # The names live in one table now, so the split is only real while the
     # claim side never reaches for a positional one.
@@ -158,7 +159,7 @@ def test_every_drawn_entity_states_the_parameters_it_carries(
     for name in required:
         thinned = [p for p in evidence(entity).parameters if p.name.value != name]
         with pytest.raises(ValidationError, match=name):
-            ViewEvidence(
+            DrawingEvidence(
                 name=f"ev_{entity.value}",
                 view="front",
                 entity=entity,
@@ -180,7 +181,7 @@ def test_a_spline_reading_must_carry_its_poles() -> None:
     back as a sampled polyline, right volume and wrong faces."""
     evidence("spline")
     with pytest.raises(ValidationError, match="control_points"):
-        ViewEvidence(
+        DrawingEvidence(
             name="ev_spline",
             view="front",
             entity="spline",
@@ -198,7 +199,7 @@ def test_a_spline_reading_must_carry_its_knot_vector() -> None:
     is the polyline failure again, one step further along -- a curve that is
     smooth, exact-looking, and not the one on the drawing."""
     with pytest.raises(ValidationError, match="knots"):
-        ViewEvidence(
+        DrawingEvidence(
             name="ev_spline",
             view="front",
             entity="spline",
@@ -225,7 +226,7 @@ def test_a_knot_vector_is_not_held_to_the_shape_of_a_point_list() -> None:
 def test_an_arc_is_its_own_kind() -> None:
     """OCC stores an arc as a bounded circle, but the contract is what the
     model reasons in, and the two read differently off a drawing."""
-    assert GeometryKind.ARC in _CLAIMED_PARAMETERS
+    assert GeometryKind.ARC in _GEOMETRY_PARAMETERS
     assert "start_angle" in _DRAWN_PARAMETERS[DrawnEntity.ARC]
     assert "start_angle" not in _DRAWN_PARAMETERS[DrawnEntity.CIRCLE]
 
@@ -255,7 +256,7 @@ def test_the_kinds_with_no_size_carry_their_claim_in_the_axis(
     """A line and a plane have no size. They are named anyway, because the
     field says what must be present in the built solid and both are: `axis` --
     the direction it runs or the normal it faces -- is the whole claim."""
-    assert not _CLAIMED_PARAMETERS[kind]
+    assert not _GEOMETRY_PARAMETERS[kind]
     claim = geometry(kind)
     assert claim.parameters == []
     assert claim.axis is not None
@@ -307,7 +308,7 @@ def test_member_names_are_unique_within_their_own_group(member: str) -> None:
         ]
     }
 
-    with pytest.raises(ValidationError, match=rf"duplicate {member} names"):
+    with pytest.raises(ValidationError, match=rf"duplicate names in .* {member}"):
         feature(1, "a boss", **overrides)
 
 
@@ -393,7 +394,7 @@ def test_the_two_tables_agree_on_every_name_they_share() -> None:
     """One arity table serves the reading and the claim, which is only sound
     while a name they both use means the same shape on either side."""
     drawn = {name for row in _DRAWN_PARAMETERS.values() for name in row}
-    claimed = {name for row in _CLAIMED_PARAMETERS.values() for name in row}
+    claimed = {name for row in _GEOMETRY_PARAMETERS.values() for name in row}
     assert drawn & claimed, "the tables share nothing, so they need not be unified"
     assert (drawn | claimed) <= set(_ARITY)
     for name in drawn & claimed:

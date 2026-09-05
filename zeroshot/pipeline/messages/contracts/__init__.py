@@ -7,28 +7,29 @@ The names are re-exported here so a caller need not know which stage a contract
 belongs to.
 """
 
+from zeroshot.pipeline.messages.contracts.drawings import (
+    VIEW_FRAME,
+    DrawingEvidence,
+    DrawingSheet,
+    DrawingSource,
+    DrawnEntity,
+    EdgeStyle,
+    View,
+    edge_style_for_linetype,
+)
 from zeroshot.pipeline.messages.contracts.operations import (
     Operation,
     OperationPlan,
     OperationVerb,
     linearise,
 )
+from zeroshot.pipeline.messages.contracts.parameters import Parameter, ParameterName
 from zeroshot.pipeline.messages.contracts.semantics import (
-    VIEW_FRAME,
     Axis,
-    ClaimSource,
-    DrawnEntity,
-    EdgeStyle,
     FeatureGeometry,
     GeometryKind,
-    Parameter,
-    ParameterName,
     SemanticFeature,
     SemanticHypothesis,
-    View,
-    ViewEvidence,
-    edge_style_for_linetype,
-    view_frame_sentence,
 )
 from zeroshot.pipeline.messages.contracts.stages import (
     PIPELINE_STAGES,
@@ -43,7 +44,9 @@ __all__ = [
     "REASONING_STAGES",
     "VIEW_FRAME",
     "Axis",
-    "ClaimSource",
+    "DrawingEvidence",
+    "DrawingSheet",
+    "DrawingSource",
     "DrawnEntity",
     "EdgeStyle",
     "FeatureGeometry",
@@ -58,9 +61,7 @@ __all__ = [
     "SemanticFeature",
     "SemanticHypothesis",
     "View",
-    "ViewEvidence",
     "edge_style_for_linetype",
     "linearise",
     "next_stage",
-    "view_frame_sentence",
 ]

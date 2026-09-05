@@ -11,7 +11,7 @@ from pydantic import BaseModel, ValidationError
 from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing
 from zeroshot.pipeline.messages.contracts import (
     Axis,
-    ClaimSource,
+    DrawingEvidence,
     DrawnEntity,
     EdgeStyle,
     FeatureGeometry,
@@ -26,7 +26,6 @@ from zeroshot.pipeline.messages.contracts import (
     SemanticFeature,
     SemanticHypothesis,
     View,
-    ViewEvidence,
 )
 from zeroshot.pipeline.messages.contracts.audit import (
     AuditFinding,
@@ -67,7 +66,7 @@ from zeroshot.pipeline.workflow.state import (
         SemanticFeature,
         FeatureGeometry,
         Parameter,
-        ViewEvidence,
+        DrawingEvidence,
         Review,
     ],
 )
@@ -303,7 +302,7 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         Parameter,
         ParameterName,
         Axis,
-        ViewEvidence,
+        DrawingEvidence,
         # The contract's enums ride in state too. An enum missing from the
         # allowlist restores as a bare string, which still compares equal and
         # so fails nowhere until something asks it for `.value`.
@@ -311,7 +310,6 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         DrawnEntity,
         EdgeStyle,
         GeometryKind,
-        ClaimSource,
         ExecutionStatus,
         StopReason,
         VerifyOutputResult,

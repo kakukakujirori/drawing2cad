@@ -15,7 +15,6 @@ from ezdxf.document import Drawing as DxfDocument
 from ezdxf.layouts import Modelspace
 
 from zeroshot.pipeline.messages.contracts.drawings import (
-    ClaimSource,
     DrawingEvidence,
     DrawingSheet,
     DrawingSource,
@@ -182,7 +181,7 @@ def _entry(document: DxfDocument, entity: Any) -> DrawingEvidence:
         name=f"ev_{entity.dxf.handle.lower()}",
         entity=kind,
         edge_style=edge_style_for_linetype(_resolved_linetype(document, entity)),
-        source=ClaimSource.GIVEN,
+        source=[],
         parameters=[Parameter(name=name, values=values) for name, values in parameters],
     )
 

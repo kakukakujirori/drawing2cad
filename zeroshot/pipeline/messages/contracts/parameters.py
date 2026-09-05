@@ -1,6 +1,8 @@
-"""Numeric parameters shared by 2D drawing entities and 3D shape claims."""
+"""Parameters and member names shared by 2D drawing entities and 3D shape claims."""
 
-from collections.abc import Mapping, Sequence
+import re
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -49,7 +51,7 @@ class Parameter(BaseModel):
     )
 
 
-def rows[K: StrEnum](table: Mapping[K, tuple[str, ...]]) -> str:
+def describe_parameters[K: StrEnum](table: Mapping[K, tuple[str, ...]]) -> str:
     """Render the parameter sets enforced by the validator."""
     return "\n".join(
         f"  {kind.value} takes {', '.join(names) or 'nothing'}"
@@ -83,3 +85,20 @@ def require_parameters(
         if name in _VECTORS and not any(values):
             raise ValueError(f"{name} must be a non-zero vector")
     return given
+
+
+def require_name(name: str, prefix: str) -> None:
+    if re.fullmatch(rf"{prefix}[a-z0-9_]+", name):
+        return
+    stray = dict.fromkeys(re.findall(r"[^a-z0-9_]", name.removeprefix(prefix)))
+    raise ValueError(
+        f"{name!r} is not a usable {prefix.removesuffix('_')} name. "
+        f"Begin with {prefix} and carry on in lower_snake_case."
+        + (f" Remove {', '.join(map(repr, stray))}." if stray else "")
+    )
+
+
+def require_unique(names: Iterable[str], subject: str) -> None:
+    duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
+    if duplicates:
+        raise ValueError(f"duplicate names in {subject}: {', '.join(duplicates)}")

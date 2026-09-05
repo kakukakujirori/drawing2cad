@@ -17,14 +17,16 @@ import ezdxf
 import pytest
 from ezdxf.tools import standards
 
-from zeroshot.pipeline.messages.contracts.semantics import (
-    _EXCLUDED_GEOMETRY,
+from zeroshot.pipeline.messages.contracts.drawings import (
     VIEW_FRAME,
     DrawnEntity,
     EdgeStyle,
-    GeometryKind,
     View,
     edge_style_for_linetype,
+)
+from zeroshot.pipeline.messages.contracts.semantics import (
+    _EXCLUDED_GEOMETRY,
+    GeometryKind,
 )
 
 _CORPUS = Path(__file__).parents[3] / "data" / "test_vlm"

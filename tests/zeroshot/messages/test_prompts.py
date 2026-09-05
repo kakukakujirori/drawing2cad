@@ -11,10 +11,11 @@ from zeroshot.pipeline.messages import (
 )
 from zeroshot.pipeline.messages.contracts import (
     VIEW_FRAME,
+    DrawingSheet,
+    DrawingSource,
     DrawnEntity,
     GeometryKind,
     Operation,
-    view_frame_sentence,
 )
 from zeroshot.pipeline.messages.contracts.audit import AuditReport
 from zeroshot.pipeline.messages.contracts.reconstruction import (
@@ -39,12 +40,29 @@ _RUN_PATHS = {
 }
 
 
+_AN_UNREAD_PAGE = DrawingSource(
+    sheets=[
+        DrawingSheet(
+            name="sheet_page",
+            role="unknown",
+            label=None,
+            derived_from=None,
+            file="/work/inputs/drawing.dxf",
+            origin=None,
+            evidence=[],
+            dimensions=[],
+        )
+    ]
+)
+
+
 def _round_context(**varying: str) -> dict[str, str]:
     """What the graph gives every round instruction, plus what a test varies."""
     return {
         **_RUN_PATHS,
         "assigned_tickets": "ticket_initial",
         "intermediate_returns": "",
+        "view_frame": _AN_UNREAD_PAGE.frame_sentence(),
         **varying,
     }
 
@@ -52,12 +70,12 @@ def _round_context(**varying: str) -> dict[str, str]:
 def _guidelines(stage: str) -> str:
     """A stage's guidelines rendered the way `instruction_text` renders them.
 
-    It injects `$view_frame` on top of the run's paths, so a test that renders
-    the file directly has to supply it too or it is not looking at the text the
-    stage was actually given.
+    The graph supplies `$view_frame` on top of the run's paths, so a test that
+    renders the file directly has to supply it too or it is not looking at the
+    text the stage was actually given.
     """
     return PromptTemplate(f"instructions/{stage}/guidelines").render(
-        **_RUN_PATHS, view_frame=view_frame_sentence()
+        **_RUN_PATHS, view_frame=_AN_UNREAD_PAGE.frame_sentence()
     )
 
 

@@ -6,17 +6,19 @@ Tests *about* the contract build it explicitly -- see `messages/test_contracts.p
 
 from typing import Any
 
-from zeroshot.pipeline.messages.contracts.operations import OperationPlan
-from zeroshot.pipeline.messages.contracts.semantics import (
-    _CLAIMED_PARAMETERS,
+from zeroshot.pipeline.messages.contracts.drawings import (
     _DRAWN_PARAMETERS,
+    DrawingEvidence,
     DrawnEntity,
+)
+from zeroshot.pipeline.messages.contracts.operations import OperationPlan
+from zeroshot.pipeline.messages.contracts.parameters import Parameter
+from zeroshot.pipeline.messages.contracts.semantics import (
+    _GEOMETRY_PARAMETERS,
     FeatureGeometry,
     GeometryKind,
-    Parameter,
     SemanticFeature,
     SemanticHypothesis,
-    ViewEvidence,
 )
 
 _A_SHEET_POINT = [0.0, 0.0]
@@ -44,21 +46,34 @@ _STAND_IN: dict[str, list[float]] = {
     "knots": [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
 }
 
+# Endpoints have to lie on the curve they bound, so these two carry a whole row.
+_ON_CURVE: dict[DrawnEntity, dict[str, float | list[float]]] = {
+    DrawnEntity.ARC: {"radius": 5.0, "start": [5.0, 0.0], "end": [0.0, 5.0]},
+    DrawnEntity.ELLIPSE: {
+        "major_axis": [5.0, 0.0],
+        "minor_radius": 2.0,
+        "start": [5.0, 0.0],
+        "end": [0.0, 2.0],
+    },
+}
+
 
 def evidence(
     entity: str = "line", *, name: str | None = None, **values: float | list[float]
-) -> ViewEvidence:
+) -> DrawingEvidence:
     """A reading of `entity` whose parameters are its own row."""
+    drawn = DrawnEntity(entity)
+    stand_in = _STAND_IN | _ON_CURVE.get(drawn, {})
     given = {
-        name: values.pop(name, _STAND_IN.get(name, 5.0))
-        for name in _DRAWN_PARAMETERS[DrawnEntity(entity)]
+        name: values.pop(name, stand_in.get(name, 5.0))
+        for name in _DRAWN_PARAMETERS[drawn]
     }
     given |= values
-    return ViewEvidence(
+    return DrawingEvidence(
         name=name or f"ev_{entity}",
-        view="front",
         entity=entity,  # type: ignore[arg-type]
         edge_style="visible",
+        source=[],
         parameters=_named(given),
     )
 
@@ -72,13 +87,12 @@ def geometry(
 ) -> FeatureGeometry:
     """A claim of `kind` measured by its own row, overridden by name."""
     given: dict[str, float | list[float]] = {
-        name: sizes.pop(name, 5.0) for name in _CLAIMED_PARAMETERS[GeometryKind(kind)]
+        name: sizes.pop(name, 5.0) for name in _GEOMETRY_PARAMETERS[GeometryKind(kind)]
     }
     given |= sizes
     return FeatureGeometry(
         name=name or f"geo_{kind}",
         kind=kind,  # type: ignore[arg-type]
-        source="exact",
         axis=axis,  # type: ignore[arg-type]
         parameters=_named(given),
     )
@@ -93,7 +107,7 @@ def feature(
         ),
         "description": description,
         "geometry": [],
-        "evidence": [evidence()],
+        "evidence": ["ev_line"],
         "open_question": None,
         **overrides,
     }
