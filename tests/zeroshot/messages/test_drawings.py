@@ -13,9 +13,7 @@ from zeroshot.pipeline.messages.contracts.drawings import (
     DrawingSheet,
     DrawingSource,
     EdgeStyle,
-    drawing_paths,
     edge_style_for_linetype,
-    sheet_name,
 )
 
 
@@ -34,18 +32,22 @@ def evidence(name="ev_edge", entity="line", source=(), **parameters):
     }
 
 
-def sheet(name="sheet_page", role="unknown", **fields):
+def sheet(name="sheet_page", role="full_page", **fields):
     return {
         "name": name,
         "role": role,
         "label": None,
-        "derived_from": None,
+        "crop_of": None,
+        "scale": 1.0,
         "file": "/work/inputs/drawing.png",
-        "origin": None,
         "evidence": [],
         "dimensions": [],
         **fields,
     }
+
+
+def crop(sheet="sheet_page", box=(0.0, 0.0, 50.0, 50.0)):
+    return {"sheet": sheet, "box": list(box)}
 
 
 def dimension(**fields):
@@ -113,9 +115,8 @@ def test_source_round_trip_includes_crop_ancestry_and_dimension_references():
             sheet(
                 "sheet_front",
                 "front",
-                derived_from="sheet_page",
+                crop_of=crop(),
                 file="/work/crop.png",
-                origin=[33, 40],
                 evidence=[evidence(source=["dim_length"])],
                 dimensions=[dimension()],
             ),
@@ -193,11 +194,9 @@ def test_a_rotated_full_ellipse_holds_its_endpoint_tolerance(offset, accepted):
         "bad_file",
         "absent_figure",
         "bad_name",
-        "self_parent",
         "duplicate_evidence",
-        "missing_origin",
-        "bad_origin",
-        "pictorial_origin",
+        "self_cut",
+        "backwards_box",
     ],
 )
 def test_a_sheet_that_cannot_be_placed_or_read_is_refused(case):
@@ -207,11 +206,9 @@ def test_a_sheet_that_cannot_be_placed_or_read_is_refused(case):
         "absent_figure": {"evidence": [evidence(source=["dim_length"])]},
         "bad_file": {"file": "/work/model.step"},
         "bad_name": {"name": "sheet_BAD"},
-        "self_parent": {"derived_from": "sheet_page"},
+        "self_cut": {"crop_of": crop("sheet_page")},
         "duplicate_evidence": {"evidence": [evidence(), evidence()]},
-        "missing_origin": {"role": "front", "evidence": [evidence()]},
-        "bad_origin": {"role": "front", "evidence": [evidence()], "origin": [0]},
-        "pictorial_origin": {"role": "perspective", "origin": [0, 0]},
+        "backwards_box": {"crop_of": crop("sheet_other", (9.0, 0.0, 1.0, 5.0))},
     }
     value.update(changes[case])
     with pytest.raises(ValidationError):
@@ -241,9 +238,9 @@ def test_a_drawing_whose_names_or_ancestry_break_is_refused(case):
     elif case == "duplicate_evidence":
         a["evidence"], b["evidence"] = [evidence()], [evidence()]
     elif case == "missing_ancestor":
-        b["derived_from"] = "sheet_missing"
+        b["crop_of"] = crop("sheet_missing")
     elif case == "cycle":
-        a["derived_from"], b["derived_from"] = "sheet_b", "sheet_a"
+        a["crop_of"], b["crop_of"] = crop("sheet_b"), crop("sheet_a")
     value = {"sheets": [] if case == "empty" else [a, b]}
     with pytest.raises(ValidationError):
         DrawingSource.model_validate(value)
@@ -269,17 +266,15 @@ def test_a_spline_control_polygon_does_not_reject_a_separate_view():
             sheet(
                 "sheet_front",
                 "front",
-                derived_from="sheet_page",
-                file=None,
-                origin=[0, 0],
+                crop_of=crop(box=(0.0, 0.0, 20.0, 20.0)),
+                file="/work/front.png",
                 evidence=[spline],
             ),
             sheet(
                 "sheet_top",
                 "top",
-                derived_from="sheet_page",
-                file=None,
-                origin=[0, 18],
+                crop_of=crop(box=(0.0, 30.0, 20.0, 50.0)),
+                file="/work/top.png",
                 evidence=[evidence("ev_top", start=[2, 18], end=[8, 19])],
             ),
         ]
@@ -304,7 +299,7 @@ def test_a_linetype_maps_to_one_edge_style(linetype, expected):
     assert edge_style_for_linetype(linetype) is expected
 
 
-def test_staging_and_prompt_helpers_name_input_files_and_frames():
+def test_a_drawing_lists_its_files_and_describes_the_frames_it_settled():
     value = {
         "sheets": [
             sheet(file=Path("/work/drawing.png")),
@@ -313,7 +308,7 @@ def test_staging_and_prompt_helpers_name_input_files_and_frames():
     }
 
     both = DrawingSource.model_validate(value)
-    assert drawing_paths(both) == [
+    assert both.paths() == [
         Path("/work/drawing.png"),
         Path("/work/perspective.png"),
     ]
@@ -322,4 +317,3 @@ def test_staging_and_prompt_helpers_name_input_files_and_frames():
 
     front = DrawingSource.model_validate({"sheets": [sheet("sheet_front", "front")]})
     assert front.frame_sentence() == "Front is right=+x, up=+y"
-    assert sheet_name("style-a") == "sheet_style_a"

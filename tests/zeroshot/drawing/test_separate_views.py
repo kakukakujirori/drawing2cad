@@ -50,11 +50,11 @@ def page(entries):
         sheets=[
             DrawingSheet(
                 name="sheet_page",
-                role=View.UNKNOWN,
-                label="drawing",
-                derived_from=None,
+                role=View.FULL_PAGE,
+                label=None,
+                crop_of=None,
+                scale=1.0,
                 file="page.dxf",
-                origin=None,
                 evidence=entries,
                 dimensions=[],
             )
@@ -73,66 +73,80 @@ def three_views(extra=()):
     )
 
 
-def test_a_three_view_page_separates_into_the_three_views():
-    placement = place_views(three_views())
+def test_a_three_view_page_separates_into_the_three_views(tmp_path):
+    placement = place_views(three_views(), tmp_path)
 
     by_role = {sheet.role: sheet for sheet in placement.drawing.sheets}
-    assert set(by_role) == {View.UNKNOWN, View.FRONT, View.TOP, View.RIGHT}
+    assert set(by_role) == {View.FULL_PAGE, View.FRONT, View.TOP, View.RIGHT}
     assert placement.alignment_error == pytest.approx(0.0)
-    assert by_role[View.UNKNOWN].evidence == []
+    assert by_role[View.FULL_PAGE].evidence == []
     for role in (View.FRONT, View.TOP, View.RIGHT):
         assert len(by_role[role].evidence) == 4
-        assert by_role[role].derived_from == "sheet_page"
-        assert by_role[role].file is None
+        assert by_role[role].crop_of is not None
+        assert by_role[role].crop_of.sheet == "sheet_page"
+        assert by_role[role].file == str(tmp_path / f"sheet_{role.value}.dxf")
 
 
-def test_every_view_places_the_part_s_least_corner_by_its_own_frame():
-    placement = place_views(three_views())
+def test_every_view_says_which_region_of_the_page_it_covers(tmp_path):
+    placement = place_views(three_views(), tmp_path)
 
-    origins = {sheet.role: sheet.origin for sheet in placement.drawing.sheets[1:]}
-    # +z runs down the top view and leftward across the right one, so the
-    # corner holding the least z sits at the top of one and the right of other.
-    assert origins[View.FRONT] == [FRONT[0], FRONT[1]]
-    assert origins[View.TOP] == [TOP[0], TOP[3]]
-    assert origins[View.RIGHT] == [RIGHT[2], RIGHT[1]]
+    cuts = {sheet.role: sheet.crop_of for sheet in placement.drawing.sheets[1:]}
+    for role, box in ((View.FRONT, FRONT), (View.TOP, TOP), (View.RIGHT, RIGHT)):
+        assert cuts[role] is not None
+        assert cuts[role].box == pytest.approx(list(box))
 
 
-def test_the_views_that_share_an_extent_are_checked_against_each_other():
+def test_a_view_is_read_from_its_own_corner_rather_than_the_page_s(tmp_path):
+    """A crop is measured in its own frame, so the page offset is taken off."""
+    placement = place_views(three_views(), tmp_path)
+
+    by_role = {sheet.role: sheet for sheet in placement.drawing.sheets}
+    starts = [
+        parameter.values
+        for entry in by_role[View.TOP].evidence
+        for parameter in entry.parameters
+        if parameter.name.value == "start"
+    ]
+    assert min(value[0] for value in starts) == pytest.approx(0.0)
+    assert min(value[1] for value in starts) == pytest.approx(0.0)
+
+
+def test_the_views_that_share_an_extent_are_checked_against_each_other(tmp_path):
     shifted = (2.0, 50.0, 42.0, 80.0)
     misaligned = page(
         [*outline("front", FRONT), *outline("top", shifted), *outline("right", RIGHT)]
     )
 
     with pytest.raises(ViewSplitError, match="shared extents"):
-        place_views(misaligned)
+        place_views(misaligned, tmp_path)
 
 
-def test_a_page_whose_views_are_not_separated_is_refused():
+def test_a_page_whose_views_are_not_separated_is_refused(tmp_path):
     touching = page(
         [*outline("front", FRONT), *outline("top", (0.0, 30.0, 40.0, 60.0))]
     )
 
     with pytest.raises(ViewSplitError, match="gap of at least"):
-        place_views(touching)
+        place_views(touching, tmp_path)
 
 
-def test_a_page_with_a_fourth_populated_quadrant_is_refused():
+def test_a_page_with_a_fourth_populated_quadrant_is_refused(tmp_path):
     crowded = three_views(outline("fourth", (60.0, 50.0, 90.0, 80.0)))
 
     with pytest.raises(ViewSplitError):
-        place_views(crowded)
+        place_views(crowded, tmp_path)
 
 
-def test_an_entity_reaching_across_two_views_closes_the_gap_between_them():
+def test_an_entity_reaching_across_two_views_closes_the_gap_between_them(tmp_path):
     """Nothing is filed under a guess: the page stops being a three-view page."""
     spanning = three_views([entry("ev_spanning", start=[10.0, 10.0], end=[70.0, 10.0])])
 
     with pytest.raises(ViewSplitError, match="gap of at least"):
-        place_views(spanning)
+        place_views(spanning, tmp_path)
 
 
-def test_the_page_keeps_its_file_and_gives_up_its_linework():
-    placement = place_views(three_views())
+def test_the_page_keeps_its_file_and_gives_up_its_linework(tmp_path):
+    placement = place_views(three_views(), tmp_path)
 
     page_sheet = placement.drawing.sheets[0]
     assert page_sheet.name == "sheet_page"
@@ -140,9 +154,9 @@ def test_the_page_keeps_its_file_and_gives_up_its_linework():
     assert page_sheet.evidence == []
 
 
-def test_a_page_this_drawing_does_not_hold_is_refused():
+def test_a_page_this_drawing_does_not_hold_is_refused(tmp_path):
     with pytest.raises(ViewSplitError, match="not a sheet"):
-        place_views(three_views(), page="sheet_missing")
+        place_views(three_views(), tmp_path, page="sheet_missing")
 
 
 def test_a_circle_reaches_a_radius_past_its_centre():
@@ -175,7 +189,7 @@ def test_an_arc_reaches_its_ends_and_any_quarter_it_sweeps_past(start, end, box)
     assert reach == pytest.approx(box, abs=1e-9)
 
 
-def test_a_view_of_concentric_circles_still_occupies_its_area():
+def test_a_view_of_concentric_circles_still_occupies_its_area(tmp_path):
     """The case a centre-only reach collapsed to a point."""
     rings = [
         entry(
@@ -192,7 +206,8 @@ def test_a_view_of_concentric_circles_still_occupies_its_area():
                 *rings,
                 *outline("right", RIGHT),
             ]
-        )
+        ),
+        tmp_path,
     )
 
     front = next(s for s in placement.drawing.sheets if s.role is View.FRONT)

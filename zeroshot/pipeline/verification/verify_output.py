@@ -7,7 +7,13 @@ from typing import Self, cast
 
 from langchain_core.messages.content import ContentBlock, create_text_block
 
-from zeroshot.pipeline.messages import ArtifactPresenter, FeedbackManifest
+from zeroshot.pipeline.messages import (
+    ArtifactPresenter,
+    DrawingSource,
+    FeedbackManifest,
+    View,
+    unread_sheet,
+)
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.render.constants import (
@@ -322,12 +328,33 @@ class OutputVerifier:
             return report, None
 
         render_report = results[-1]
+        # The projected drawing is announced the way the input was: the sheet
+        # it was drawn on, and a pictorial per rendering.
+        # TODO: the renderer composes front, top and right onto one page, so
+        # the sheet it writes is unseparated. Render per view instead and this
+        # becomes one sheet per role, with no composed page at all.
+        drawn = render_report.techdraw_paths.dxf
+        sheets = [
+            *([unread_sheet("sheet_drawing", View.FULL_PAGE, drawn)] if drawn else []),
+            *(
+                unread_sheet(f"sheet_{style}", View.PERSPECTIVE, path)
+                for style, path in render_report.render3d_paths.as_mapping().items()
+            ),
+        ]
         manifest = FeedbackManifest(
             verification_id=verification_id,
-            dxf_path=render_report.techdraw_paths.dxf,
-            dxf_error=render_report.techdraw_errors.get("dxf"),
-            render3d_paths=render_report.render3d_paths.as_mapping(),
-            render3d_errors=render_report.render3d_errors,
+            drawing=DrawingSource(sheets=sheets) if sheets else None,
+            errors={
+                **(
+                    {"sheet_drawing": why}
+                    if (why := render_report.techdraw_errors.get("dxf"))
+                    else {}
+                ),
+                **{
+                    f"sheet_{style}": why
+                    for style, why in render_report.render3d_errors.items()
+                },
+            },
         )
         return report, manifest
 

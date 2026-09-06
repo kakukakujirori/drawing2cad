@@ -57,9 +57,9 @@ def test_every_drawing_is_transcribed_but_for_its_centre_marks():
     assert all(label.startswith("INSERT SW_CENTERMARK") for label in skipped)
 
 
-def test_every_drawing_separates_into_three_aligned_views():
+def test_every_drawing_separates_into_three_aligned_views(tmp_path):
     for path in drawings():
-        placement = place_views(read_drawing(path).drawing)
+        placement = place_views(read_drawing(path).drawing, tmp_path)
 
         roles = [sheet.role.value for sheet in placement.drawing.sheets[1:]]
         assert sorted(roles) == ["front", "right", "top"], path.stem
@@ -71,7 +71,7 @@ def test_every_drawing_separates_into_three_aligned_views():
 
 def test_a_separated_drawing_survives_being_written_out_and_read_back(tmp_path):
     for path in drawings():
-        placed = place_views(read_drawing(path).drawing).drawing
+        placed = place_views(read_drawing(path).drawing, tmp_path).drawing
 
         written = export_drawing(placed, tmp_path / f"{path.stem}.dxf")
 

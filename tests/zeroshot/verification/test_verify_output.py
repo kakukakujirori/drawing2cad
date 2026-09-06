@@ -185,10 +185,8 @@ class StubRenderer:
 
 def _artifact_presenter(feedback_render3d: str = "path") -> ArtifactPresenter:
     return ArtifactPresenter(
-        input_render3d_mode="none",
-        input_render3d_styles=(),
-        feedback_render3d_mode=feedback_render3d,  # type: ignore[arg-type]
-        feedback_render3d_styles=RENDER3D_STYLES,
+        input_mode="path",
+        feedback_mode=feedback_render3d,  # type: ignore[arg-type]
     )
 
 
@@ -655,7 +653,7 @@ def test_partial_render_offers_only_existing_styles_and_explains_the_rest(
     # The reason belongs where the render would have been, not in the report.
     assert "render_errors" not in _report_json(result)
     assert (
-        "- transparent_shaded_edges_perspective: unavailable "
+        "- sheet_transparent_shaded_edges_perspective: unavailable "
         "(RuntimeError: transparent_shaded_edges_perspective failed)"
     ) in text
 

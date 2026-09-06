@@ -186,9 +186,7 @@ def _entry(document: DxfDocument, entity: Any) -> DrawingEvidence:
     )
 
 
-def read_drawing(
-    path: Path | str, name: str = "sheet_page", label: str | None = "drawing"
-) -> DrawingReading:
+def read_drawing(path: Path | str, name: str = "sheet_page") -> DrawingReading:
     """The page a DXF draws, transcribed entity for entity and left unsplit."""
     document = ezdxf.readfile(str(path))
     entries: list[DrawingEvidence] = []
@@ -203,11 +201,11 @@ def read_drawing(
 
     sheet = DrawingSheet(
         name=name,
-        role=View.UNKNOWN,
-        label=label,
-        derived_from=None,
+        role=View.FULL_PAGE,
+        label=None,
+        crop_of=None,
+        scale=1.0,
         file=str(path),
-        origin=None,
         evidence=entries,
         dimensions=[],
     )

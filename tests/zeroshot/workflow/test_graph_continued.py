@@ -18,7 +18,13 @@ from tests.zeroshot.workflow.test_graph import (
     _stub_verification,
     _verified,
 )
-from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
+from zeroshot.pipeline.messages import (
+    ArtifactPresenter,
+    DrawingSource,
+    InputManifest,
+    View,
+    unread_sheet,
+)
 from zeroshot.pipeline.messages.contracts import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.verification import StepRenderer
@@ -92,16 +98,12 @@ def _continued_graph(
         ),
         sandbox_workdir=workdir,
         renderer=StepRenderer(timeout_s=60.0),
-        artifact_presenter=ArtifactPresenter(
-            input_render3d_mode="none",
-            input_render3d_styles=(),
-            feedback_render3d_mode="none",
-            feedback_render3d_styles=(),
-        ),
+        artifact_presenter=ArtifactPresenter(input_mode="path", feedback_mode="none"),
         input_manifest=InputManifest(
             sample_id="test",
-            dxf_path=dxf_path,
-            render3d_paths={},
+            drawing=DrawingSource(
+                sheets=[unread_sheet("sheet_drawing", View.FULL_PAGE, dxf_path)]
+            ),
         ),
         share_thread=share_thread,
         **overrides,

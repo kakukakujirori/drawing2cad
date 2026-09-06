@@ -1,7 +1,6 @@
 """Drawing observations, their contracts, and supporting conversions."""
 
 import math
-import re
 from collections.abc import Mapping
 from enum import StrEnum
 from pathlib import Path, PurePath
@@ -33,6 +32,8 @@ class View(StrEnum):
     DETAIL = "detail"
     ISOMETRIC = "isometric"
     PERSPECTIVE = "perspective"
+    # A whole page carrying every view, before anything separates them.
+    FULL_PAGE = "full_page"
     UNKNOWN = "unknown"
 
 
@@ -153,9 +154,10 @@ class DrawingEvidence(BaseModel):
     parameters: list[Parameter] = Field(
         ...,
         description=(
-            "Supply all parameters listed below. Points use the root page's "
-            "coordinates in millimetres, including when reading a crop; never "
-            "report pixels. Mark measured values as derived.\n"
+            "Supply exactly the parameters listed below for your entity, and "
+            "no others. Points are in this sheet's own coordinates in "
+            "millimetres: u rightward and v upward from its bottom-left "
+            "corner. Never report pixels.\n"
             f"{describe_parameters(_DRAWN_PARAMETERS)}\n"
             "ARC and ELLIPSE sweep counterclockwise from start to end, both "
             "points lying on the curve; equal endpoints mean a full turn. An "
@@ -217,6 +219,31 @@ def _require_endpoints_on_curve(
             )
 
 
+class CropOf(BaseModel):
+    """Where a sheet sits on the one it was taken from."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sheet: str = Field(..., description="The parent sheet_ name.")
+    box: list[float] = Field(
+        ...,
+        description=(
+            "u0, v0, u1, v1: the region this sheet covers, in the parent's own "
+            "coordinates, u rightward and v upward from its bottom-left corner."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_crop(self) -> Self:
+        require_name(self.sheet, "sheet_")
+        if len(self.box) != 4:
+            raise ValueError(f"{self.sheet} crop box takes u0, v0, u1, v1")
+        u0, v0, u1, v1 = self.box
+        if u1 <= u0 or v1 <= v0:
+            raise ValueError(f"{self.sheet} crop box must have u0 < u1 and v0 < v1")
+        return self
+
+
 class DrawingSheet(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -232,37 +259,34 @@ class DrawingSheet(BaseModel):
         ...,
         description="Printed caption such as SECTION A-A or DETAIL B; null if absent.",
     )
-    derived_from: str | None = Field(
+    crop_of: CropOf | None = Field(
         ...,
         description=(
-            "Parent sheet_ name for a separated view, section, or detail; null "
-            "for an input page. Follow these links to the root page whose "
-            "coordinates all derived sheets use: bottom-left origin, "
-            "rightward x, upward y."
+            "Where this sheet was taken from, when it was taken from another; "
+            "null for a page the run was handed."
         ),
     )
-    file: str | None = Field(
+    scale: float = Field(
         ...,
         description=(
-            "Drawing file, or null if this sheet is read within its parent. "
-            "A crop file is allowed but does not change the coordinate frame: "
-            "convert crop measurements to the root page's coordinates."
+            "Millimetres per unit on this sheet: the factor you converted by, "
+            "or 1.0 if you measured millimetres already. "
+            "Coordinates are reported in millimetres either way."
         ),
     )
-    origin: list[float] | None = Field(
+    file: str = Field(
         ...,
         description=(
-            "The shared model origin projected onto this view, as x, y in the "
-            "root page's millimetres (rightward x, upward y). Every orthographic "
-            "view places the same model point. Null for pictorial, section, "
-            "detail, or unknown views; may be null before a view is read."
+            "Path to this sheet's own drawing. A view you cut out of another "
+            "sheet must be saved to a file of its own and named here."
         ),
     )
     evidence: list[DrawingEvidence] = Field(
         ...,
         description=(
-            "Entities read from this sheet. Empty before reading. Entries are "
-            "independent of 3D features and may support several features."
+            "Entities read from this sheet, in this sheet's own coordinates. "
+            "Empty before reading. Entries are independent of 3D features and "
+            "may support several features."
         ),
     )
     dimensions: list[Dimension] = Field(
@@ -277,15 +301,12 @@ class DrawingSheet(BaseModel):
     @model_validator(mode="after")
     def validate_sheet(self) -> Self:
         require_name(self.name, "sheet_")
-        if self.file is None and self.derived_from is None:
-            raise ValueError(f"{self.name} needs a file or a parent sheet")
-        if (
-            self.file is not None
-            and Path(self.file).suffix.lower() not in DRAWING_SUFFIXES
-        ):
+        if self.scale <= 0:
+            raise ValueError(f"{self.name} scale must be positive")
+        if Path(self.file).suffix.lower() not in DRAWING_SUFFIXES:
             raise ValueError(f"unsupported drawing file: {self.file}")
-        if self.derived_from == self.name:
-            raise ValueError(f"{self.name} cannot derive from itself")
+        if self.crop_of is not None and self.crop_of.sheet == self.name:
+            raise ValueError(f"{self.name} cannot be cut from itself")
         printed = [figure.name for figure in self.dimensions]
         require_unique([*(entry.name for entry in self.evidence), *printed], self.name)
         for entry in self.evidence:
@@ -294,13 +315,6 @@ class DrawingSheet(BaseModel):
                 raise ValueError(
                     f"{entry.name} cites figures absent from {self.name}: {missing}"
                 )
-        if self.role not in VIEW_FRAME:
-            if self.origin is not None:
-                raise ValueError(
-                    f"{self.role.value} has no fixed axes; origin must be null"
-                )
-        elif self.evidence and (self.origin is None or len(self.origin) != 2):
-            raise ValueError(f"{self.name} needs an x, y origin")
         return self
 
     @property
@@ -314,7 +328,10 @@ class DrawingSource(BaseModel):
     sheets: list[DrawingSheet] = Field(default_factory=list)
     rationale: str | None = Field(
         None,
-        description="View assignments and choice of model origin; null before analysis.",
+        description=(
+            "How the sheets were told apart and what each was taken to "
+            "show; null before analysis."
+        ),
     )
 
     @model_validator(mode="after")
@@ -334,16 +351,18 @@ class DrawingSource(BaseModel):
         by_name = {sheet.name: sheet for sheet in self.sheets}
         for sheet in self.sheets:
             seen = {sheet.name}
-            parent = sheet.derived_from
-            while parent is not None:
-                if parent not in by_name:
-                    raise ValueError(f"{sheet.name} has a missing ancestor: {parent}")
-                if parent in seen:
+            cut = sheet.crop_of
+            while cut is not None:
+                if cut.sheet not in by_name:
                     raise ValueError(
-                        f"{sheet.name} has an ancestry cycle through {parent}"
+                        f"{sheet.name} has a missing ancestor: {cut.sheet}"
                     )
-                seen.add(parent)
-                parent = by_name[parent].derived_from
+                if cut.sheet in seen:
+                    raise ValueError(
+                        f"{sheet.name} has an ancestry cycle through {cut.sheet}"
+                    )
+                seen.add(cut.sheet)
+                cut = by_name[cut.sheet].crop_of
         return self
 
     def orthographic(self) -> list[DrawingSheet]:
@@ -358,6 +377,10 @@ class DrawingSource(BaseModel):
     def cited_names(self) -> set[str]:
         """The entities a later stage may cite. A printed figure is not one."""
         return {entry.name for entry in self.evidence()}
+
+    def paths(self) -> list[Path]:
+        """Every file this drawing is made of."""
+        return [Path(sheet.file) for sheet in self.sheets]
 
     def frame_sentence(self) -> str:
         """Describe the known orthographic frames, or all six before view assignment."""
@@ -396,11 +419,15 @@ def edge_style_for_linetype(linetype: str) -> EdgeStyle:
 # --- Input names and files ---
 
 
-def sheet_name(label: str) -> str:
-    """Convert a pipeline-supplied label into a sheet identifier."""
-    stem = re.sub(r"[^a-z0-9_]+", "_", label.casefold()).strip("_")
-    return f"sheet_{stem}"
-
-
-def drawing_paths(drawing: DrawingSource) -> list[Path]:
-    return [Path(sheet.file) for sheet in drawing.sheets if sheet.file is not None]
+def unread_sheet(name: str, role: View, file: str | PurePath) -> DrawingSheet:
+    """A sheet the run holds and nothing has read: a page in, or a render out."""
+    return DrawingSheet(
+        name=name,
+        role=role,
+        label=None,
+        crop_of=None,
+        scale=1.0,
+        file=str(file),
+        evidence=[],
+        dimensions=[],
+    )

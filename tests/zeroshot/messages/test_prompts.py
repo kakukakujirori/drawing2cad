@@ -33,27 +33,30 @@ def _write(path: Path, body: str) -> Path:
 
 
 # What the graph supplies to every instruction, whichever stage asked for it.
-_RUN_PATHS = {
-    "output_path": "/work/model.py",
-    "verification_dir": "/work/attempts",
-    "reconstruction_path": "/work/reconstruction.json",
-}
-
-
 _AN_UNREAD_PAGE = DrawingSource(
     sheets=[
         DrawingSheet(
             name="sheet_page",
-            role="unknown",
+            role="full_page",
             label=None,
-            derived_from=None,
+            crop_of=None,
+            scale=1.0,
             file="/work/inputs/drawing.dxf",
-            origin=None,
             evidence=[],
             dimensions=[],
         )
     ]
 )
+
+
+# What the graph hands every instruction: the run's paths, and the frame it
+# renders from the round's drawing.
+_RUN_PATHS = {
+    "output_path": "/work/model.py",
+    "verification_dir": "/work/attempts",
+    "reconstruction_path": "/work/reconstruction.json",
+    "view_frame": _AN_UNREAD_PAGE.frame_sentence(),
+}
 
 
 def _round_context(**varying: str) -> dict[str, str]:
@@ -62,7 +65,6 @@ def _round_context(**varying: str) -> dict[str, str]:
         **_RUN_PATHS,
         "assigned_tickets": "ticket_initial",
         "intermediate_returns": "",
-        "view_frame": _AN_UNREAD_PAGE.frame_sentence(),
         **varying,
     }
 
@@ -74,9 +76,7 @@ def _guidelines(stage: str) -> str:
     renders the file directly has to supply it too or it is not looking at the
     text the stage was actually given.
     """
-    return PromptTemplate(f"instructions/{stage}/guidelines").render(
-        **_RUN_PATHS, view_frame=_AN_UNREAD_PAGE.frame_sentence()
-    )
+    return PromptTemplate(f"instructions/{stage}/guidelines").render(**_RUN_PATHS)
 
 
 def test_a_packaged_prompt_is_addressed_by_name() -> None:

@@ -21,6 +21,7 @@ from zeroshot.pipeline.event_logging import (
     has_run_completed,
 )
 from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
+from zeroshot.pipeline.messages.contracts import DrawingSheet, DrawingSource
 from zeroshot.pipeline.messages.contracts.reconstruction import ReconstructionRun
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.verification import StepRenderer
@@ -285,21 +286,18 @@ class PipelineRunner:
         staged_input_dir = workdir.host_bind_dir / input_dirname
         staged_input_dir.mkdir(parents=True, exist_ok=False)
 
-        staged_dxf_path = staged_input_dir / "techdraw.dxf"
-        shutil.copyfile(manifest.dxf_path, staged_dxf_path)
-
-        staged_render_paths: dict[str, Path] = {}
-
-        if self.artifact_presenter.input_render3d_mode != "none":
-            for style in self.artifact_presenter.input_render3d_styles:
-                source_path = manifest.render3d_paths[style]
-                suffix = source_path.suffix or ".png"
-                staged_path = staged_input_dir / f"{style}{suffix}"
-                shutil.copyfile(source_path, staged_path)
-                staged_render_paths[style] = staged_path
+        # Every sheet the manifest declares is staged, so what the run offers
+        # is decided by the input config alone rather than by the presenter.
+        def staged(sheet: DrawingSheet) -> DrawingSheet:
+            source_path = Path(sheet.file)
+            copy = staged_input_dir / f"{sheet.name}{source_path.suffix.lower()}"
+            shutil.copyfile(source_path, copy)
+            return sheet.model_copy(update={"file": str(copy)})
 
         return InputManifest(
             sample_id=manifest.sample_id,
-            dxf_path=staged_dxf_path,
-            render3d_paths=staged_render_paths,
+            drawing=DrawingSource(
+                sheets=[staged(sheet) for sheet in manifest.drawing.sheets],
+                rationale=manifest.drawing.rationale,
+            ),
         )

@@ -9,7 +9,7 @@ from omegaconf import DictConfig
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from zeroshot.evaluation.run_scoring import score_run
-from zeroshot.pipeline.messages import InputManifest
+from zeroshot.pipeline.messages import DrawingSource, InputManifest, unread_sheet
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import StepRenderer
@@ -46,11 +46,16 @@ def run(config: DictConfig) -> ReconstructionState | None:
 
     manifest = InputManifest(
         sample_id=config.sample.sample_id,
-        dxf_path=Path(to_absolute_path(config.sample.dxf_path)),
-        render3d_paths={
-            style: Path(to_absolute_path(path))
-            for style, path in config.sample.render3d_paths.items()
-        },
+        drawing=DrawingSource(
+            sheets=[
+                unread_sheet(
+                    name=sheet.name,
+                    role=sheet.role,
+                    file=to_absolute_path(sheet.file),
+                )
+                for sheet in config.sample.drawing.sheets
+            ]
+        )
     )
 
     return runner.run_sample(manifest)

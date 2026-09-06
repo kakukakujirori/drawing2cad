@@ -1,0 +1,19 @@
+# @package _global_
+
+# One dimensioned raster sheet and nothing else. The perspective renders are
+# left out on purpose, so the comparison that means anything is against
+# `input/dxf_no_context.yaml`: against `input/dxf.yaml` the difference would
+# hold the change of drawing format and the loss of the 3D views at once.
+#
+# Every file listed here reaches the sandbox, so the arm is defined by this
+# list alone -- adding the DXF back would let the model read it whatever the
+# presenter shows.
+sample:
+  drawing:
+    sheets:
+      - name: sheet_drawing
+        role: full_page
+        file: data/test_vlm/techdraw_dimensioned/${sample.sample_id}_dim.png
+
+artifact_presenter:
+  input_mode: "image"

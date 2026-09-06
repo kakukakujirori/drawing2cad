@@ -9,6 +9,7 @@ belongs to.
 
 from zeroshot.pipeline.messages.contracts.drawings import (
     VIEW_FRAME,
+    CropOf,
     DrawingEvidence,
     DrawingSheet,
     DrawingSource,
@@ -16,6 +17,7 @@ from zeroshot.pipeline.messages.contracts.drawings import (
     EdgeStyle,
     View,
     edge_style_for_linetype,
+    unread_sheet,
 )
 from zeroshot.pipeline.messages.contracts.operations import (
     Operation,
@@ -44,6 +46,7 @@ __all__ = [
     "REASONING_STAGES",
     "VIEW_FRAME",
     "Axis",
+    "CropOf",
     "DrawingEvidence",
     "DrawingSheet",
     "DrawingSource",
@@ -64,4 +67,5 @@ __all__ = [
     "edge_style_for_linetype",
     "linearise",
     "next_stage",
+    "unread_sheet",
 ]

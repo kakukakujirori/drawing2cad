@@ -40,9 +40,8 @@ def test_a_page_is_read_as_one_unsplit_sheet(tmp_path):
     reading = read_drawing(path)
 
     assert len(reading.drawing.sheets) == 1
-    assert reading.sheet.role is View.UNKNOWN
-    assert reading.sheet.origin is None
-    assert reading.sheet.derived_from is None
+    assert reading.sheet.role is View.FULL_PAGE
+    assert reading.sheet.crop_of is None
     assert reading.sheet.file == str(path)
     assert reading.sheet.dimensions == []
 
@@ -261,14 +260,7 @@ def test_writing_a_sheet_out_and_reading_it_back_changes_no_number(tmp_path):
 
 def test_a_written_drawing_puts_each_sheet_on_a_layer_of_its_own(tmp_path):
     reading = read_drawing(written(tmp_path, _every_entity))
-    front = reading.sheet.model_copy(
-        update={
-            "name": "sheet_front",
-            "role": View.FRONT,
-            "derived_from": None,
-            "origin": [0.0, 0.0],
-        }
-    )
+    front = reading.sheet.model_copy(update={"name": "sheet_front", "role": View.FRONT})
 
     path = export_drawing(
         reading.drawing.model_copy(update={"sheets": [front]}), tmp_path / "d.dxf"

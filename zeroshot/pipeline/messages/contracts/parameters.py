@@ -59,6 +59,18 @@ def describe_parameters[K: StrEnum](table: Mapping[K, tuple[str, ...]]) -> str:
     )
 
 
+def translated(parameter: Parameter, du: float, dv: float) -> Parameter:
+    """The same parameter read in a frame offset by du, dv. A vector does not move."""
+    name = parameter.name.value
+    if name in _VECTORS or not (_ARITY[name] == 2 or name in _POINT_LISTS):
+        return parameter
+    moved = [
+        value + (du if index % 2 == 0 else dv)
+        for index, value in enumerate(parameter.values)
+    ]
+    return parameter.model_copy(update={"values": moved})
+
+
 def require_parameters(
     subject: str, expected: tuple[str, ...], parameters: Sequence[Parameter]
 ) -> dict[str, list[float]]:

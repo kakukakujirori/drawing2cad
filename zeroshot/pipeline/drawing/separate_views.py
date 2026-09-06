@@ -6,14 +6,18 @@ Only for three views in an L with clear space between them.
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
+from zeroshot.pipeline.drawing.dxf import export_sheet
 from zeroshot.pipeline.messages.contracts.drawings import (
+    CropOf,
     DrawingEvidence,
     DrawingSheet,
     DrawingSource,
     DrawnEntity,
     View,
 )
+from zeroshot.pipeline.messages.contracts.parameters import translated
 
 # Narrower than any inter-view spacing and wider than any drawing detail: the
 # gaps a slot or a counterbore leaves are millimetres, the gap between views
@@ -215,24 +219,26 @@ def _split(reach: Mapping[str, Box]) -> tuple[dict[View, list[str]], float]:
     )
 
 
-def _origin_on(view: View, box: Box) -> list[float]:
-    """The part's least corner in x, y and z, placed by each view's own frame.
+def _read_within(entry: DrawingEvidence, box: Box) -> DrawingEvidence:
+    """The same entity read from the box's own bottom-left corner."""
+    u0, v0, _, _ = box
+    return entry.model_copy(
+        update={
+            "parameters": [
+                translated(parameter, -u0, -v0) for parameter in entry.parameters
+            ]
+        }
+    )
 
-    Front reads right=+x up=+y, top right=+x up=-z, and right right=-z up=+y,
-    so +z runs down the top view and leftward across the right one. The three
-    views share the extents that carry x and y, so the corner they each place
-    is the same physical point.
+
+def place_views(
+    drawing: DrawingSource, out_dir: Path, page: str = "sheet_page"
+) -> ViewPlacement:
+    """Separate one unsplit page into front, top and right views.
+
+    Each view is written under `out_dir` as a drawing of its own, because a
+    sheet is only readable where its own linework can be opened.
     """
-    x0, y0, x1, y1 = box
-    return {
-        View.FRONT: [x0, y0],
-        View.TOP: [x0, y1],
-        View.RIGHT: [x1, y0],
-    }[view]
-
-
-def place_views(drawing: DrawingSource, page: str = "sheet_page") -> ViewPlacement:
-    """Separate one unsplit page into front, top and right views."""
     held = {sheet.name: sheet for sheet in drawing.sheets}
     if page not in held:
         raise ViewSplitError(f"{page} is not a sheet of this drawing")
@@ -245,21 +251,26 @@ def place_views(drawing: DrawingSource, page: str = "sheet_page") -> ViewPlaceme
         for view, names in filed.items()
     }
 
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def cut(view: View, names: Sequence[str]) -> DrawingSheet:
+        path = out_dir / f"sheet_{view.value}.dxf"
+        sheet = DrawingSheet(
+            name=f"sheet_{view.value}",
+            role=view,
+            label=None,
+            crop_of=CropOf(sheet=page, box=list(boxes[view])),
+            scale=held[page].scale,
+            file=str(path),
+            evidence=[_read_within(held_entries[name], boxes[view]) for name in names],
+            dimensions=[],
+        )
+        export_sheet(sheet, path)
+        return sheet
+
     sheets = [
         held[page].model_copy(update={"evidence": []}),
-        *(
-            DrawingSheet(
-                name=f"sheet_{view.value}",
-                role=view,
-                label=None,
-                derived_from=page,
-                file=None,
-                origin=_origin_on(view, boxes[view]),
-                evidence=[held_entries[name] for name in names],
-                dimensions=[],
-            )
-            for view, names in filed.items()
-        ),
+        *(cut(view, names) for view, names in filed.items()),
     ]
     return ViewPlacement(
         drawing=DrawingSource(
