@@ -3,6 +3,7 @@
 import pytest
 
 from tests.zeroshot.contracts import (
+    drawing,
     feature,
     geometry,
     hypothesis,
@@ -23,6 +24,7 @@ from zeroshot.pipeline.messages.contracts.audit import (
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     BootstrapWork,
     CodingSubmission,
+    DrawingSubmission,
     OperationSubmission,
     ReconstructionRun,
     ReconstructionSnapshot,
@@ -81,7 +83,7 @@ def _snapshot(source: str | None = _SOURCE) -> ReconstructionSnapshot:
             stage=stage,  # type: ignore[arg-type]
             summary=f"Reviewed the ticket during {stage}.",
         )
-        for stage in ("semantics", "operations", "coding")
+        for stage in ("drawings", "semantics", "operations", "coding")
     ]
     verification = VerifyOutputResult(
         status=(
@@ -95,12 +97,13 @@ def _snapshot(source: str | None = _SOURCE) -> ReconstructionSnapshot:
             Ticket(
                 ticket_id=ticket_id,
                 subject=BootstrapWork(instruction="Reconstruct the part."),
-                assigned_stages=["semantics", "operations", "coding"],
+                assigned_stages=["drawings", "semantics", "operations", "coding"],
                 responses=responses,
             )
         ],
         round=0,
         last_completed_stage="coding",
+        drawings=drawing(),
         semantics=hypothesis("the base", "the hole"),
         operations=_operations(),
         program_source=source,
@@ -132,6 +135,7 @@ def _advance_snapshot(
         open_tickets=tickets,
         round=current.round,
         last_completed_stage=stage,  # type: ignore[arg-type]
+        drawings=drawing() if stage == "drawings" else current.drawings,
         semantics=(
             hypothesis("the base", "the hole")
             if stage == "semantics"
@@ -170,7 +174,15 @@ def _completed_run(
     run: ReconstructionRun | None = None,
     verification: VerifyOutputResult | None = None,
 ) -> ReconstructionRun:
-    run = run or start_reconstruction("run_example", "Reconstruct the part.")
+    run = run or start_reconstruction("run_example", "Reconstruct the part.", drawing())
+    run = advance_reconstruction(
+        run,
+        DrawingSubmission(
+            edits=list(drawing().sheets),
+            deleted=[],
+            responses=_stage_responses(run, "drawings"),
+        ),
+    )
     run = advance_reconstruction(
         run,
         SemanticSubmission(
@@ -322,7 +334,7 @@ def test_named_code_references_require_parseable_source() -> None:
 def test_advance_reconstruction_integrates_each_stage_without_mutating_the_run() -> (
     None
 ):
-    initial = start_reconstruction("run_example", "Reconstruct the part.")
+    initial = start_reconstruction("run_example", "Reconstruct the part.", drawing())
     original_json = initial.model_dump_json()
 
     completed = _completed_run(initial)
@@ -352,14 +364,14 @@ def test_coding_stores_the_program_once_and_clips_long_logs() -> None:
 
 
 def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
-    run = start_reconstruction("run_example", "Reconstruct the part.")
+    run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
     original_json = run.model_dump_json()
     wrong_stage = OperationSubmission(
         **replacing(_operations()),
-        responses=_stage_responses(run, "semantics"),
+        responses=_stage_responses(run, "drawings"),
     )
 
-    with pytest.raises(SubmissionValidationError, match="SemanticSubmission"):
+    with pytest.raises(SubmissionValidationError, match="DrawingSubmission"):
         advance_reconstruction(run, wrong_stage)
 
     assert run.model_dump_json() == original_json
@@ -452,14 +464,17 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
 
 
 def test_snapshot_commit_rejects_a_skipped_stage() -> None:
-    run = start_reconstruction("run_example", "Reconstruct the part.")
+    run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
 
     with pytest.raises(ValueError, match="must advance"):
         reconstruction_module._commit_snapshot(run, _snapshot())
 
 
 def test_snapshot_commit_preserves_ticket_subjects() -> None:
-    run = start_reconstruction("run_example", "Reconstruct the part.")
+    run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
+    run = reconstruction_module._commit_snapshot(
+        run, _advance_snapshot(run.snapshots[-1], "drawings")
+    )
     semantics = _advance_snapshot(run.snapshots[-1], "semantics")
     original_ticket = semantics.open_tickets[0]
     changed_ticket = Ticket(
@@ -475,7 +490,10 @@ def test_snapshot_commit_preserves_ticket_subjects() -> None:
 
 
 def test_snapshot_commit_preserves_prior_responses() -> None:
-    run = start_reconstruction("run_example", "Reconstruct the part.")
+    run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
+    run = reconstruction_module._commit_snapshot(
+        run, _advance_snapshot(run.snapshots[-1], "drawings")
+    )
     semantics = _advance_snapshot(run.snapshots[-1], "semantics")
     run = reconstruction_module._commit_snapshot(run, semantics)
     operations = _advance_snapshot(run.snapshots[-1], "operations")
@@ -498,7 +516,10 @@ def test_snapshot_commit_preserves_prior_responses() -> None:
 
 
 def test_snapshot_commit_preserves_artifacts_owned_by_other_stages() -> None:
-    run = start_reconstruction("run_example", "Reconstruct the part.")
+    run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
+    run = reconstruction_module._commit_snapshot(
+        run, _advance_snapshot(run.snapshots[-1], "drawings")
+    )
     semantics = _advance_snapshot(run.snapshots[-1], "semantics")
     run = reconstruction_module._commit_snapshot(run, semantics)
     operations = _advance_snapshot(run.snapshots[-1], "operations")
@@ -609,6 +630,7 @@ def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
     assert len(updated.snapshots) == 2
     assert current.round == 1
     assert current.last_completed_stage is None
+    assert current.drawings is None
     assert current.semantics is None
     assert current.operations is None
     assert current.program_source is None
@@ -634,7 +656,7 @@ def test_accepted_or_invalid_audit_does_not_open_a_round() -> None:
 
 def test_reconstruction_save_round_trips_the_validated_run(tmp_path) -> None:
     path = tmp_path / "nested" / "reconstruction.json"
-    run = start_reconstruction("run_example", "Reconstruct the part.")
+    run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
 
     save_reconstruction(path, run)
 
@@ -647,8 +669,10 @@ def test_failed_atomic_save_preserves_the_previous_file(
     monkeypatch,
 ) -> None:
     path = tmp_path / "reconstruction.json"
-    original = start_reconstruction("run_original", "Original task.")
-    replacement = start_reconstruction("run_replacement", "Replacement task.")
+    original = start_reconstruction("run_original", "Original task.", drawing())
+    replacement = start_reconstruction(
+        "run_replacement", "Replacement task.", drawing()
+    )
     save_reconstruction(path, original)
     original_bytes = path.read_bytes()
 

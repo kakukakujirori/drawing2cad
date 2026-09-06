@@ -2,12 +2,13 @@
 
 `manifest` inventories the files a turn may show; `artifact` turns an inventory
 into content blocks. The split exists because a manifest holds *host* paths and
-`ArtifactPresenter` is the only thing allowed to translate them into something the
-model receives. `build_instruction` needs neither, which is why it is a
-function rather than one of its methods.
+`artifact` is the only thing allowed to translate them into something the model
+receives, and nothing translates back: what the model is shown it also answers
+in, and the run keeps that. `build_instruction` needs neither, which is why it
+is a function rather than one of its methods.
 """
 
-from .artifact import ArtifactPresenter
+from .artifact import ArtifactPresenter, drawing_for_model
 from .contracts import (
     DrawingSource,
     FeatureGeometry,
@@ -38,6 +39,7 @@ __all__ = [
     "View",
     "build_instruction",
     "build_system_prompt",
+    "drawing_for_model",
     "instruction_section",
     "instruction_text",
     "system_prompt_text",

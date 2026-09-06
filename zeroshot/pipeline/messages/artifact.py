@@ -31,6 +31,24 @@ _MIME_TYPES: Mapping[str, str] = {
 }
 
 
+def drawing_for_model(drawing: DrawingSource, workdir: SandboxWorkdir) -> DrawingSource:
+    """The same drawing with every file addressed where the model can open it.
+
+    A drawing the model then reads, answers about, and hands back stays in
+    those addresses, so nothing carries a host path into a message by mistake.
+    """
+    return drawing.model_copy(
+        update={
+            "sheets": [
+                sheet.model_copy(
+                    update={"file": str(workdir.host_to_sandbox_path(sheet.file))}
+                )
+                for sheet in drawing.sheets
+            ]
+        }
+    )
+
+
 @dataclass(frozen=True)
 class _SandboxSheet:
     """A `DrawingSheet` whose file is addressed where the model can open it.
@@ -176,9 +194,10 @@ class ArtifactPresenter:
         if presented.has_raster():
             lines.append(
                 "Sheets given as images carry no curve definitions. Measure "
-                "them with OpenCV or numpy rather than by eye, and "
-                "convert what you measure into the drawing's own units before "
-                "reporting it."
+                "them in pixels with OpenCV or numpy rather than by eye, then "
+                "pass the printed dimensions and the pixel lengths you matched "
+                "them to `calculate_drawing_scale`, and report what it returns "
+                "as the sheet's `scale`. Every coordinate is in millimetres."
             )
         if presented.has_vector():
             lines.append(

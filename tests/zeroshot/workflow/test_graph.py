@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.messages.content import ContentBlock
 
 from tests.zeroshot.chat_models import ScriptedChatModel
-from tests.zeroshot.contracts import hypothesis, replacing
+from tests.zeroshot.contracts import drawing, hypothesis, replacing
 from zeroshot.pipeline.messages import (
     ArtifactPresenter,
     DrawingSource,
@@ -34,6 +34,7 @@ from zeroshot.pipeline.messages.contracts.audit import (
 )
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     CodingSubmission,
+    DrawingSubmission,
     OperationSubmission,
     ReconstructionRun,
     SemanticSubmission,
@@ -72,6 +73,18 @@ def _response(ticket_id: str, stage: PipelineStage) -> TicketResponse:
 
 def _responses(ticket_id: str | None, stage: PipelineStage) -> list[TicketResponse]:
     return [_response(ticket_id, stage)] if ticket_id is not None else []
+
+
+def _drawing_submission(
+    ticket_id: str | None = _ROUND_ZERO_TICKET,
+) -> AIMessage:
+    return _message(
+        DrawingSubmission(
+            edits=list(drawing().sheets),
+            deleted=[],
+            responses=_responses(ticket_id, PipelineStage.DRAWINGS),
+        )
+    )
 
 
 def _semantic_submission(
@@ -197,6 +210,7 @@ def _graph(
     workdir: SandboxWorkdir,
     *,
     head: ScriptedChatModel,
+    drawer: ScriptedChatModel | None = None,
     planner: ScriptedChatModel,
     coder: ScriptedChatModel,
     auditor: ScriptedChatModel,
@@ -211,6 +225,12 @@ def _graph(
         "checkpointer": False,
     }
     return create_reconstruction_graph(
+        drawings_agent_builder=_agent(
+            "drawing_analyzer",
+            drawer or ScriptedChatModel(responses=(_drawing_submission(),)),
+            max_turns=5,
+            **common,
+        ),
         semantics_agent_builder=_agent(
             "semantic_hypothesizer", head, max_turns=5, **common
         ),
@@ -287,9 +307,20 @@ def _last_instruction(messages: list[BaseMessage]) -> str:
     )
 
 
+def _drawing_seed() -> ReconstructionRun:
+    return advance_reconstruction(
+        start_reconstruction("run_test", "Reconstruct the drawing.", drawing()),
+        DrawingSubmission(
+            edits=list(drawing().sheets),
+            deleted=[],
+            responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.DRAWINGS)],
+        ),
+    )
+
+
 def _semantics_seed() -> ReconstructionRun:
     return advance_reconstruction(
-        start_reconstruction("run_test", "Reconstruct the drawing."),
+        _drawing_seed(),
         SemanticSubmission(
             **replacing(hypothesis("a plate")),
             responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.SEMANTICS)],

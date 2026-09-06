@@ -297,7 +297,6 @@ class PipelineRunner:
         return InputManifest(
             sample_id=manifest.sample_id,
             drawing=DrawingSource(
-                sheets=[staged(sheet) for sheet in manifest.drawing.sheets],
-                rationale=manifest.drawing.rationale,
+                sheets=[staged(sheet) for sheet in manifest.drawing.sheets]
             ),
         )

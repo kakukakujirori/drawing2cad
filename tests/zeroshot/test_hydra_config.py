@@ -293,6 +293,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     # answers, on which model, for how long, and leaves the tools and the
     # contracts to the code.
     assert set(graph_factory.keywords) == {
+        "drawings_agent_builder",
         "semantics_agent_builder",
         "operations_agent_builder",
         "coding_agent_builder",

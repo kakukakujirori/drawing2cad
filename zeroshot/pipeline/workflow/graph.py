@@ -19,12 +19,15 @@ from zeroshot.pipeline.messages import (
     ArtifactPresenter,
     InputManifest,
     build_instruction,
+    drawing_for_model,
     instruction_section,
 )
 from zeroshot.pipeline.messages.contracts.audit import AuditReport
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     CodingSubmission,
+    DrawingSubmission,
     OperationSubmission,
+    ReconstructionRun,
     ReconstructionSnapshot,
     SemanticSubmission,
     TicketAnswers,
@@ -38,6 +41,7 @@ from zeroshot.pipeline.messages.contracts.stages import (
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools import (
+    create_calculate_drawing_scale_tool,
     create_load_image_tool,
     create_run_shell_tool,
 )
@@ -81,6 +85,7 @@ class AgentBuilder(Protocol):
 
 
 def create_reconstruction_graph(
+    drawings_agent_builder: AgentBuilder,
     semantics_agent_builder: AgentBuilder,
     operations_agent_builder: AgentBuilder,
     coding_agent_builder: AgentBuilder,
@@ -122,9 +127,6 @@ def create_reconstruction_graph(
         workdir=sandbox_workdir,
         renderer=renderer,
         artifact_presenter=artifact_presenter,
-        # Redraw the solid in the drawing's own views.
-        # TODO: decide views during runtime, after drawing analyzer splits views.
-        views=[sheet.role for sheet in input_manifest.drawing.orthographic()],
         source_filename=output_filename,
         output_dirname=verification_dirname,
         show_intermediate_returns=show_intermediate_returns,
@@ -132,7 +134,6 @@ def create_reconstruction_graph(
 
     # instantiate agents
     prompt_context = {
-        "view_frame": input_manifest.drawing.frame_sentence(),
         "output_path": str(sandbox_workdir.sandbox_bind_dir / output_filename),
         "verification_dir": str(
             sandbox_workdir.sandbox_bind_dir / verification_dirname
@@ -143,6 +144,12 @@ def create_reconstruction_graph(
         ),
     }
 
+    drawings_agent = drawings_agent_builder(
+        # Only this stage measures a raster, so only it is offered the fit.
+        tools=[*basic_tools, create_calculate_drawing_scale_tool()],
+        prompt_context=prompt_context,
+        output_schema=DrawingSubmission,
+    )
     semantics_agent = semantics_agent_builder(
         tools=basic_tools,
         prompt_context=prompt_context,
@@ -174,6 +181,11 @@ def create_reconstruction_graph(
             )
         )
 
+    def save_history(run: ReconstructionRun) -> None:
+        save_reconstruction(
+            sandbox_workdir.host_bind_dir / reconstruction_history_filename, run
+        )
+
     def current_snapshot(state: ReconstructionState) -> ReconstructionSnapshot:
         reconstruction = state.get("reconstruction")
         if reconstruction is None:
@@ -194,11 +206,11 @@ def create_reconstruction_graph(
             run = start_reconstruction(
                 run_id=f"run_{run_suffix or 'sample'}",
                 instruction="Reconstruct the input drawing as a CadQuery model.",
+                # Addressed the way the model will read them, because the model
+                # is what reads and revises this history from here on.
+                drawings=drawing_for_model(input_manifest.drawing, sandbox_workdir),
             )
-        save_reconstruction(
-            sandbox_workdir.host_bind_dir / reconstruction_history_filename,
-            run,
-        )
+        save_history(run)
         return {
             "reconstruction": run,
             "stage_submission": None,
@@ -256,6 +268,7 @@ def create_reconstruction_graph(
         instruction = build_instruction(
             f"{stage.value}/round",
             **prompt_context,
+            view_frame=snapshot.drawings.frame_sentence(),
             current_round=str(snapshot.round),
             assigned_tickets=assigned_ticket_ids(snapshot, stage),
             **extra_context,
@@ -272,8 +285,37 @@ def create_reconstruction_graph(
     # Reasoning-stage inference
     # ------------------------------------------------------------------
 
+    def run_drawings(state: ReconstructionState, config: RunnableConfig):
+        snapshot = current_snapshot(state)
+        if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.DRAWINGS):
+            return {"stage_submission": DrawingSubmission.unchanged()}
+
+        previous = state.get("drawings_state") or {}
+        messages = [
+            *list(previous.get("messages") or []),
+            build_stage_instruction(
+                state,
+                PipelineStage.DRAWINGS,
+                include_input=(not previous or compact_between_stages is not None),
+            ),
+        ]
+        result = drawings_agent.invoke(
+            {
+                **previous,
+                "messages": messages,
+            },
+            config=_child_graph_config(config),
+        )
+        return {
+            "drawings_state": result,
+            "stage_submission": result.get("structured_response"),
+        }
+
     def run_semantics(state: ReconstructionState, config: RunnableConfig):
         snapshot = current_snapshot(state)
+        if snapshot.last_completed_stage is not PipelineStage.DRAWINGS:
+            raise RuntimeError("semantics requires an integrated drawing")
+
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.SEMANTICS):
             return {"stage_submission": SemanticSubmission.unchanged()}
 
@@ -331,6 +373,11 @@ def create_reconstruction_graph(
         snapshot = current_snapshot(state)
         if snapshot.last_completed_stage is not PipelineStage.OPERATIONS:
             raise RuntimeError("coding requires integrated operations")
+
+        # The verifier redraws the solid in the views the drawing names, and
+        # guesses none. Set here because both the build inside the agent and
+        # the one at integration belong to this stage of this round.
+        verifier.views = [sheet.role for sheet in snapshot.drawings.orthographic()]
 
         previous = state.get("coding_state") or {}
         messages = [
@@ -410,10 +457,7 @@ def create_reconstruction_graph(
         except SubmissionValidationError as error:
             return _rejected_stage_submission(state, str(error))
 
-        save_reconstruction(
-            sandbox_workdir.host_bind_dir / reconstruction_history_filename,
-            updated,
-        )
+        save_history(updated)
         return {
             "reconstruction": updated,
             "stage_submission": None,
@@ -521,10 +565,7 @@ def create_reconstruction_graph(
             if reconstruction is None:
                 raise RuntimeError("audit integration requires reconstruction")
             updated = open_next_round(reconstruction, report)
-            save_reconstruction(
-                sandbox_workdir.host_bind_dir / reconstruction_history_filename,
-                updated,
-            )
+            save_history(updated)
             return {
                 "reconstruction": updated,
                 "stage_submission": None,
@@ -548,7 +589,7 @@ def create_reconstruction_graph(
             return "__end__"
 
         if current_snapshot(state).last_completed_stage is None:
-            return PipelineStage.SEMANTICS.value
+            return PipelineStage.DRAWINGS.value
         return "__end__"
 
     # ------------------------------------------------------------------
@@ -572,6 +613,7 @@ def create_reconstruction_graph(
     # Construct a graph
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
     workflow.add_node("initialize", initialize)
+    workflow.add_node(PipelineStage.DRAWINGS.value, run_drawings)
     workflow.add_node(PipelineStage.SEMANTICS.value, run_semantics)
     workflow.add_node(PipelineStage.OPERATIONS.value, run_operations)
     workflow.add_node(PipelineStage.CODING.value, run_coding)

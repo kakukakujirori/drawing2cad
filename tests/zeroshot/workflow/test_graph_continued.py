@@ -13,6 +13,7 @@ from tests.zeroshot.chat_models import ScriptedChatModel
 from tests.zeroshot.workflow.test_graph import (
     _accepted_audit,
     _coding_submission,
+    _drawing_submission,
     _operation_submission,
     _semantic_submission,
     _stub_verification,
@@ -40,6 +41,7 @@ _INPUT_MARKER = "[Input DXF path:"
 
 
 class _Models(TypedDict):
+    drawer: ScriptedChatModel
     lead: ScriptedChatModel
     planner: ScriptedChatModel
     coder: ScriptedChatModel
@@ -49,6 +51,7 @@ class _Models(TypedDict):
 def _continued_graph(
     workdir: SandboxWorkdir,
     *,
+    drawer: ScriptedChatModel,
     lead: ScriptedChatModel,
     planner: ScriptedChatModel,
     coder: ScriptedChatModel,
@@ -64,6 +67,13 @@ def _continued_graph(
     dxf_path = workdir.host_bind_dir / "drawing.dxf"
     dxf_path.write_text("0\nSECTION\n0\nEOF\n", encoding="utf-8")
     return create_reconstruction_graph(
+        drawings_agent_builder=partial(
+            create_agent,
+            role=_ROLE,
+            model=drawer,
+            max_turns=5,
+            **common,
+        ),
         semantics_agent_builder=partial(
             create_agent,
             role=_ROLE,
@@ -114,6 +124,7 @@ def _continued_graph(
 def models() -> _Models:
     semantic = _semantic_submission()
     return {
+        "drawer": ScriptedChatModel(responses=(_drawing_submission(),)),
         "lead": ScriptedChatModel(responses=(semantic,)),
         "planner": ScriptedChatModel(responses=(_operation_submission(),)),
         "coder": ScriptedChatModel(responses=(_coding_submission(),)),
@@ -132,6 +143,8 @@ def _system_prompt(model: ScriptedChatModel) -> str:
 
 
 def _lead_thread(result: dict[str, Any], stage: PipelineStage) -> list[BaseMessage]:
+    if stage is PipelineStage.DRAWINGS:
+        return list(result["drawings_state"]["messages"])
     if stage is PipelineStage.SEMANTICS:
         return list(result["semantics_state"]["messages"])
     if stage is PipelineStage.OPERATIONS:

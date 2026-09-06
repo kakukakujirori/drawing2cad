@@ -326,13 +326,6 @@ class DrawingSource(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sheets: list[DrawingSheet] = Field(default_factory=list)
-    rationale: str | None = Field(
-        None,
-        description=(
-            "How the sheets were told apart and what each was taken to "
-            "show; null before analysis."
-        ),
-    )
 
     @model_validator(mode="after")
     def validate_drawing(self) -> Self:

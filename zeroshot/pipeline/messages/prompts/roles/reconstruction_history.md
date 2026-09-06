@@ -2,8 +2,9 @@
 
 This reconstruction runs as one repeated pipeline:
 
-`semantics -> operations -> coding + verification -> audit`
+`drawings -> semantics -> operations -> coding + verification -> audit`
 
+- Drawings reads the sheets the run was handed into a complete `DrawingSource`.
 - Semantics produces a complete `SemanticHypothesis`.
 - Operations turns it into a complete dependency-aware `OperationPlan`.
 - Coding writes `model.py`; verification executes it and records a `VerifyOutputResult`.
@@ -30,6 +31,10 @@ ReconstructionRun
    │     └─ `summary`
    ├─ `round`
    ├─ `last_completed_stage`
+   ├─ `drawings`: DrawingSource
+   │  └─ `sheets[]`: `name`, `role`, `label`, `crop_of`, `scale`, `file`, `evidence[]`, `dimensions[]`
+   │     ├─ evidence: `name`, `entity`, `edge_style`, `parameters[]`, `source[]`
+   │     └─ dimensions: `name`, `kind`, `text`, `nominal`, `quantity`, `note`
    ├─ `semantics`: SemanticHypothesis | null
    │  ├─ `proposal[]`: `name`, `description`, `geometry[]`, `evidence[]`, `open_question`
    │  │  ├─ geometry: `name`, `kind`, `source`, `axis`, `parameters[]`
@@ -53,6 +58,7 @@ jq -c '.snapshots[-1] | {round, last_completed_stage, tickets: [.open_tickets[] 
 jq -c '.snapshots[-1].open_tickets[] | select(.ticket_id == "ticket_001_wrong_bore") | .subject.revision_request' '$reconstruction_path'
 
 # An index of names. Read this before any artifact body.
+jq -c '[.snapshots[-1].drawings.sheets[] | {name, role, ev: [.evidence[].name], dim: [.dimensions[].name]}]' '$reconstruction_path'
 jq -c '[.snapshots[-1].semantics.proposal[] | {name, geo: [.geometry[].name], ev: [.evidence[].name]}]' '$reconstruction_path'
 jq -c '[.snapshots[-1].operations.proposal[] | {name, verb, depends_on, semantics}]' '$reconstruction_path'
 
@@ -69,7 +75,8 @@ jq -r '.snapshots[-1].program_source' '$reconstruction_path' | grep -n 'ret_main
 
 Use `.snapshots[-2]` only when at least two snapshots exist, and compare only the upstream artifact your stage reads. A later stage's artifact is still null in the current round, and iterating over it fails.
 
-- Semantics: your tickets, and the preceding semantics when revising.
+- Drawings: your tickets, and the preceding reading when revising.
+- Semantics: the current drawings, and the preceding semantics when revising.
 - Operations: the preceding semantics against the current one.
 - Coding: the preceding operations against the current ones.
 - Audit: compare rounds only to decide whether a defect persisted or regressed.

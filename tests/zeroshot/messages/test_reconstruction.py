@@ -1,7 +1,7 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from tests.zeroshot.contracts import hypothesis, replacing
+from tests.zeroshot.contracts import drawing, hypothesis, replacing
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -109,6 +109,7 @@ def _snapshot(
         open_tickets=[ticket or _ticket()],
         round=round,
         last_completed_stage=last_completed_stage,  # type: ignore[arg-type]
+        drawings=drawing(),
         semantics=semantics,
         operations=operations,
         program_source=verification.source if verification is not None else None,
@@ -369,6 +370,7 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
         ],
         round=1,
         last_completed_stage=None,
+        drawings=drawing(),
         semantics=None,
         operations=None,
         program_source=None,

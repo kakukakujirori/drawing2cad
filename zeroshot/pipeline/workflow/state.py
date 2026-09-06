@@ -14,6 +14,7 @@ from typing_extensions import is_typeddict
 from zeroshot.pipeline.messages.contracts.audit import AuditReport
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     CodingSubmission,
+    DrawingSubmission,
     OperationSubmission,
     ReconstructionRun,
     SemanticSubmission,
@@ -26,6 +27,7 @@ from zeroshot.pipeline.workflow.components.agent import AgentState
 
 
 class ReconstructionState(TypedDict):
+    drawings_state: NotRequired[AgentState]
     semantics_state: NotRequired[AgentState]
     operations_state: NotRequired[AgentState]
     coding_state: NotRequired[AgentState]
@@ -35,7 +37,11 @@ class ReconstructionState(TypedDict):
     # Keep the concrete models inline: checkpoint type discovery walks this
     # annotation and must see every runtime submission class.
     stage_submission: NotRequired[
-        SemanticSubmission | OperationSubmission | CodingSubmission | None
+        DrawingSubmission
+        | SemanticSubmission
+        | OperationSubmission
+        | CodingSubmission
+        | None
     ]
     stage_validation_error: NotRequired[str | None]
     stage_validation_failure_count: NotRequired[int]
@@ -45,6 +51,7 @@ class ReconstructionState(TypedDict):
 # Where each reasoning stage keeps the transcript of the agent that carried
 # the thread. The one place that knows which channel belongs to which stage.
 _LEAD_TRANSCRIPT: Mapping[ReasoningStage, str] = {
+    PipelineStage.DRAWINGS: "drawings_state",
     PipelineStage.SEMANTICS: "semantics_state",
     PipelineStage.OPERATIONS: "operations_state",
     PipelineStage.CODING: "coding_state",

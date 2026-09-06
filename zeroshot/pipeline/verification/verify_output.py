@@ -163,7 +163,7 @@ class OutputVerifier:
         workdir: SandboxWorkdir,
         renderer: StepRenderer,
         artifact_presenter: ArtifactPresenter | None,
-        views: Sequence[View],
+        views: Sequence[View] = (),
         source_filename: str = "model.py",
         output_dirname: PurePosixPath = PurePosixPath("attempts"),
         show_intermediate_returns: bool = True,
@@ -186,7 +186,10 @@ class OutputVerifier:
         self.workdir = workdir
         self.renderer = renderer
         self.artifact_presenter = artifact_presenter
-        self.views = tuple(views)
+        # The orthographic views to redraw the solid in. A caller that reads a
+        # drawing sets this per round; nothing is drawn until one does, because
+        # a guessed view has nothing to be compared against.
+        self.views: Sequence[View] = tuple(views)
         self.source_filename = source_filename
         self.output_dirname = output_dirname
         self.show_intermediate_returns = show_intermediate_returns

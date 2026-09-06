@@ -12,6 +12,7 @@ from zeroshot.pipeline.messages.contracts import (
 
 def test_the_pipeline_order_has_one_canonical_definition() -> None:
     assert PIPELINE_STAGES == (
+        PipelineStage.DRAWINGS,
         PipelineStage.SEMANTICS,
         PipelineStage.OPERATIONS,
         PipelineStage.CODING,
@@ -23,7 +24,8 @@ def test_the_pipeline_order_has_one_canonical_definition() -> None:
 @pytest.mark.parametrize(
     ("completed", "following"),
     [
-        (None, PipelineStage.SEMANTICS),
+        (None, PipelineStage.DRAWINGS),
+        (PipelineStage.DRAWINGS, PipelineStage.SEMANTICS),
         (PipelineStage.SEMANTICS, PipelineStage.OPERATIONS),
         (PipelineStage.OPERATIONS, PipelineStage.CODING),
         (PipelineStage.CODING, PipelineStage.AUDIT),
@@ -39,6 +41,7 @@ def test_next_stage_follows_that_order(
 
 def test_stage_values_remain_stable_json_strings() -> None:
     assert [stage.value for stage in PIPELINE_STAGES] == [
+        "drawings",
         "semantics",
         "operations",
         "coding",

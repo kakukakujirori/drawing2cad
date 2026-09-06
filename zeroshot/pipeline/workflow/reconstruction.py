@@ -6,7 +6,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
-from zeroshot.pipeline.messages.contracts import OperationPlan, SemanticHypothesis
+from zeroshot.pipeline.messages.contracts import (
+    DrawingSource,
+    OperationPlan,
+    SemanticHypothesis,
+)
 from zeroshot.pipeline.messages.contracts.audit import (
     AuditFinding,
     AuditReport,
@@ -14,6 +18,7 @@ from zeroshot.pipeline.messages.contracts.audit import (
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     BootstrapWork,
     CodingSubmission,
+    DrawingSubmission,
     OperationSubmission,
     ReconstructionRun,
     ReconstructionSnapshot,
@@ -31,7 +36,9 @@ from zeroshot.pipeline.workflow.merge_submission import merge_submission
 from zeroshot.pipeline.workflow.resolve_submission import resolve_references
 from zeroshot.pipeline.workflow.validate_submission import validate_submission
 
-type ReasoningSubmission = SemanticSubmission | OperationSubmission | CodingSubmission
+type ReasoningSubmission = (
+    DrawingSubmission | SemanticSubmission | OperationSubmission | CodingSubmission
+)
 
 _LOG_LIMIT = 4000
 
@@ -43,7 +50,9 @@ _LOG_LIMIT = 4000
 def start_reconstruction(
     run_id: str,
     instruction: str,
+    drawings: DrawingSource,
 ) -> ReconstructionRun:
+    """The run's first round, holding the drawing it was handed and no more."""
     snapshot = ReconstructionSnapshot(
         open_tickets=[
             Ticket(
@@ -55,6 +64,7 @@ def start_reconstruction(
         ],
         round=0,
         last_completed_stage=None,
+        drawings=drawings,
         semantics=None,
         operations=None,
         program_source=None,
@@ -89,6 +99,9 @@ def open_next_round(
         open_tickets=tickets,
         round=next_round,
         last_completed_stage=None,
+        # NOTE: current.drawings includes the input drawings,
+        #       so drawings=None invalidates access to them.
+        drawings=current.drawings,
         semantics=None,
         operations=None,
         program_source=None,
@@ -135,7 +148,9 @@ def advance_reconstruction(
     if stage not in REASONING_STAGES:
         raise ValueError("a completed coding snapshot cannot advance again")
 
-    preceding = run.snapshots[-2] if len(run.snapshots) > 1 else None
+    # A first round revises the snapshot it started from, whose artifacts are
+    # all null but the drawing the run was handed.
+    preceding = run.snapshots[-2] if len(run.snapshots) > 1 else current
     deliverable = merge_submission(submission, preceding, stage)
     validate_submission(
         submission,
@@ -176,11 +191,14 @@ def advance_reconstruction(
         for ticket in current.open_tickets
     ]
 
+    drawings = current.drawings
     semantics = current.semantics
     operations = current.operations
     program_source = current.program_source
     integrated_verification = current.verification
     match stage:
+        case PipelineStage.DRAWINGS:
+            drawings = cast(DrawingSource, deliverable)
         case PipelineStage.SEMANTICS:
             semantics = cast(SemanticHypothesis, deliverable)
         case PipelineStage.OPERATIONS:
@@ -194,6 +212,7 @@ def advance_reconstruction(
         open_tickets=tickets,
         round=current.round,
         last_completed_stage=stage,
+        drawings=drawings,
         semantics=semantics,
         operations=operations,
         program_source=program_source,
@@ -298,11 +317,12 @@ def _require_only_stage_artifact_changed(
 ) -> None:
     """A stage may replace its own artifact but not an upstream/downstream one."""
     owned_artifact = {
+        PipelineStage.DRAWINGS: "drawings",
         PipelineStage.SEMANTICS: "semantics",
         PipelineStage.OPERATIONS: "operations",
         PipelineStage.CODING: "program_source",
     }[stage]
-    for artifact in ("semantics", "operations", "program_source"):
+    for artifact in ("drawings", "semantics", "operations", "program_source"):
         if artifact == owned_artifact:
             continue
         if getattr(replacement, artifact) != getattr(current, artifact):

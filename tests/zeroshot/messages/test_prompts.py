@@ -127,7 +127,10 @@ def test_the_shared_role_explains_selective_history_navigation() -> None:
     guide = PromptTemplate("roles/reconstruction_history").render(**_RUN_PATHS)
 
     assert guide in rendered
-    assert "semantics -> operations -> coding + verification -> audit" in rendered
+    assert (
+        "drawings -> semantics -> operations -> coding + verification -> audit"
+        in rendered
+    )
     assert "ReconstructionRun" in rendered
     assert "Do not print the whole history file" in rendered
     assert "never `cat` it" in rendered
@@ -385,14 +388,13 @@ def test_the_digest_follows_the_file(tmp_path: Path) -> None:
     assert prompt.sha256 != before
 
 
-def test_the_semantics_guidelines_describe_how_the_views_are_actually_separated() -> (
-    None
-):
+def test_the_drawing_guidelines_describe_how_the_views_are_actually_separated() -> None:
     """The guidelines used to claim the three views sit on their own DXF
     layers. They do not: across all twenty sample drawings every entity is on
     layer `0`, and what does distinguish an edge is its linetype. The stage
-    spent turns rediscovering that on every run."""
-    guidelines = _guidelines("semantics")
+    spent turns rediscovering that on every run, and separating the views is
+    the drawing stage's job now."""
+    guidelines = _guidelines("drawings")
 
     assert "HIDDEN" in guidelines
     assert "linetype" in guidelines.lower()

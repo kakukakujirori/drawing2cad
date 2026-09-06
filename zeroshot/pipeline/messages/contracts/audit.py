@@ -30,13 +30,17 @@ type RevisionAction = Literal[
 
 
 _FINDING_NAME = re.compile(r"^finding_[a-z0-9_]+$")
+_SHEET_NAME = re.compile(r"^sheet_[a-z0-9_]+$")
 _SEMANTIC_NAME = re.compile(r"^sem_[a-z0-9_]+$")
 _OPERATION_NAME = re.compile(r"^op_[a-z0-9_]+$")
 _CODE_NAME = re.compile(r"^ret_[a-z0-9_]+$")
 
 
 def _valid_member_name(stage: ReasoningStage, name: str) -> bool:
+    # The member a stage can be asked to revise is the one it edits: a sheet
+    # is given whole, as a feature and an operation are.
     pattern = {
+        PipelineStage.DRAWINGS: _SHEET_NAME,
         PipelineStage.SEMANTICS: _SEMANTIC_NAME,
         PipelineStage.OPERATIONS: _OPERATION_NAME,
         PipelineStage.CODING: _CODE_NAME,
@@ -56,10 +60,10 @@ class StageOutputRef(BaseModel):
     name: str | None = Field(
         ...,
         description=(
-            "The stable member name: sem_... for semantics, op_... for "
-            "operations, and ret_... for coding. The terminal result variable "
-            "is not a causal member; use null to refer to the stage's complete "
-            "output."
+            "The stable member name: sheet_... for drawings, sem_... for "
+            "semantics, op_... for operations, and ret_... for coding. The "
+            "terminal result variable is not a causal member; use null to "
+            "refer to the stage's complete output."
         ),
     )
 

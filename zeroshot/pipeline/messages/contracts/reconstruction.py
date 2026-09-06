@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from zeroshot.pipeline.messages.contracts.audit import AuditFinding
+from zeroshot.pipeline.messages.contracts.drawings import DrawingSheet, DrawingSource
 from zeroshot.pipeline.messages.contracts.operations import Operation, OperationPlan
 from zeroshot.pipeline.messages.contracts.semantics import (
     SemanticFeature,
@@ -27,7 +28,9 @@ from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 
 _TICKET_ID = re.compile(r"^ticket_[a-z0-9][a-z0-9_]*$")
 _RUN_ID = re.compile(r"^run_[a-z0-9][a-z0-9_]*$")
-_ARTIFACT_BY_STAGE = {
+# The artifact that stays null until its stage fills it. The drawing is absent
+# because the run is handed one before any stage runs, so it is never null.
+_NULL_UNTIL_STAGE = {
     PipelineStage.SEMANTICS: "semantics",
     PipelineStage.OPERATIONS: "operations",
     PipelineStage.CODING: "program_source",
@@ -176,12 +179,13 @@ class TicketAnswers(BaseModel):
     )
 
 
-class StageSubmission[M: SemanticFeature | Operation](TicketAnswers):
+class StageSubmission[M: DrawingSheet | SemanticFeature | Operation](TicketAnswers):
     """One stage's revision of its artifact, and its answers to its tickets.
 
     A model reads the concrete subclass, never this: pydantic takes a schema
     description from the class it is asked for, so the wording that names
-    sem_, op_ or the workspace program belongs to the subclass that means it.
+    sheet_, sem_, op_ or the workspace program belongs to the subclass that
+    means it.
     """
 
     edits: list[M] = Field(
@@ -200,19 +204,11 @@ class StageSubmission[M: SemanticFeature | Operation](TicketAnswers):
             "them under. A name given here must not also appear in `edits`."
         ),
     )
-    rationale: str | None = Field(
-        ...,
-        description=(
-            "The artifact's rationale, rewritten when this revision changed "
-            "the reasoning behind it, or null to keep the one it already has. "
-            "The first round has none to keep, so it must be stated there."
-        ),
-    )
 
     @classmethod
     def unchanged(cls) -> Self:
         """A revision that leaves the preceding round's artifact as it is."""
-        return cls(edits=[], deleted=[], rationale=None, responses=[])
+        return cls(edits=[], deleted=[], responses=[])
 
     @model_validator(mode="after")
     def require_distinct_edited_and_deleted_names(self) -> Self:
@@ -228,7 +224,57 @@ class StageSubmission[M: SemanticFeature | Operation](TicketAnswers):
         return self
 
 
-class SemanticSubmission(StageSubmission[SemanticFeature]):
+class ProposalSubmission[M: SemanticFeature | Operation](StageSubmission[M]):
+    """A revision whose artifact argues for itself, and so carries a rationale.
+
+    The drawing does not: it transcribes a sheet rather than proposing a part.
+    """
+
+    rationale: str | None = Field(
+        ...,
+        description=(
+            "The artifact's rationale, rewritten when this revision changed "
+            "the reasoning behind it, or null to keep the one it already has. "
+            "The first round has none to keep, so it must be stated there."
+        ),
+    )
+
+    @classmethod
+    def unchanged(cls) -> Self:
+        """A revision that leaves the preceding round's artifact as it is."""
+        return cls(edits=[], deleted=[], rationale=None, responses=[])
+
+
+class DrawingSubmission(StageSubmission[DrawingSheet]):
+    """Your reading of the drawing, and your ticket responses.
+
+    This ends the drawing stage: give it once, after the analysis behind it is
+    complete.
+    """
+
+    edits: list[DrawingSheet] = Field(
+        ...,
+        description=(
+            "Every sheet you read or re-read, each complete and under its "
+            "stable sheet_ name: a name the drawing already holds replaces "
+            "that sheet, and a new name adds one. A sheet is given whole -- "
+            "its `evidence` and `dimensions` are everything it draws, not the "
+            "part of it you changed -- so a sheet you leave out keeps what it "
+            "had."
+        ),
+    )
+    deleted: list[str] = Field(
+        ...,
+        description=(
+            "Every sheet you dropped, by its own sheet_ name. An entry or a "
+            "figure is dropped by giving its sheet again without it, so "
+            "nothing finer can be addressed here. A name given here must not "
+            "also appear in `edits`."
+        ),
+    )
+
+
+class SemanticSubmission(ProposalSubmission[SemanticFeature]):
     """Your revision of the semantic hypothesis, and your ticket responses.
 
     This ends the semantics stage: give it once, after the analysis
@@ -260,7 +306,7 @@ class SemanticSubmission(StageSubmission[SemanticFeature]):
     )
 
 
-class OperationSubmission(StageSubmission[Operation]):
+class OperationSubmission(ProposalSubmission[Operation]):
     """Your revision of the operation plan, and your ticket responses.
 
     This ends the operations stage: give it once, after the analysis
@@ -322,8 +368,16 @@ class ReconstructionSnapshot(BaseModel):
         ...,
         description=(
             "The last reasoning stage atomically integrated into this "
-            "snapshot, or null before semantics completes. Coding includes "
+            "snapshot, or null before the drawing is read. Coding includes "
             "a completed verification attempt, whether it succeeded or failed."
+        ),
+    )
+    drawings: DrawingSource = Field(
+        ...,
+        description=(
+            "The input drawing when a round starts. Before the drawing "
+            "stage completes it is what the run was handed, and afterwards "
+            "what that stage made of it."
         ),
     )
     semantics: SemanticHypothesis | None = Field(
@@ -392,9 +446,9 @@ class ReconstructionSnapshot(BaseModel):
         # Previous-round artifacts remain in ReconstructionRun and must not
         # fill a stage that has not completed in this round.
         premature = [
-            _ARTIFACT_BY_STAGE[stage]
-            for stage in REASONING_STAGES[completed_count:]
-            if getattr(self, _ARTIFACT_BY_STAGE[stage]) is not None
+            artifact
+            for stage, artifact in _NULL_UNTIL_STAGE.items()
+            if stage not in completed_stages and getattr(self, artifact) is not None
         ]
         if premature:
             raise ValueError(

@@ -8,10 +8,15 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
-from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing
+from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing, sheet
 from zeroshot.pipeline.messages.contracts import (
     Axis,
+    CropOf,
+    Dimension,
+    DimensionKind,
     DrawingEvidence,
+    DrawingSheet,
+    DrawingSource,
     DrawnEntity,
     EdgeStyle,
     FeatureGeometry,
@@ -37,6 +42,7 @@ from zeroshot.pipeline.messages.contracts.audit import (
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     BootstrapWork,
     CodingSubmission,
+    DrawingSubmission,
     OperationSubmission,
     ReconstructionRun,
     ReconstructionSnapshot,
@@ -192,6 +198,27 @@ _AUDIT_REPORT = AuditReport(
     ],
 )
 
+# A page and the view cut from it, so a crop and a printed figure are both in
+# the state this checkpoints.
+_A_DRAWING = DrawingSource(
+    sheets=[
+        sheet("full_page", name="sheet_page", file="inputs/page.png", evidence=[]),
+        sheet(
+            "front",
+            crop_of=CropOf(sheet="sheet_page", box=[0.0, 0.0, 10.0, 10.0]),
+            dimensions=[
+                Dimension(
+                    name="dim_width",
+                    kind=DimensionKind.LINEAR,
+                    text="10",
+                    nominal=10.0,
+                    quantity=1,
+                    note=None,
+                )
+            ],
+        ),
+    ]
+)
 _RECONSTRUCTION = ReconstructionRun(
     schema_version=1,
     run_id="run_test",
@@ -201,8 +228,18 @@ _RECONSTRUCTION = ReconstructionRun(
                 Ticket(
                     ticket_id="ticket_initial",
                     subject=BootstrapWork(instruction="reconstruct the drawing"),
-                    assigned_stages=["semantics", "operations", "coding"],
+                    assigned_stages=[
+                        "drawings",
+                        "semantics",
+                        "operations",
+                        "coding",
+                    ],
                     responses=[
+                        TicketResponse(
+                            ticket_id="ticket_initial",
+                            stage=PipelineStage.DRAWINGS,
+                            summary="read sheet_front",
+                        ),
                         TicketResponse(
                             ticket_id="ticket_initial",
                             stage=PipelineStage.SEMANTICS,
@@ -223,6 +260,7 @@ _RECONSTRUCTION = ReconstructionRun(
             ],
             round=0,
             last_completed_stage=PipelineStage.CODING,
+            drawings=_A_DRAWING,
             semantics=_A_HYPOTHESIS,
             operations=_A_PLAN,
             program_source=_VERIFICATION.source,
@@ -231,6 +269,17 @@ _RECONSTRUCTION = ReconstructionRun(
     ],
 )
 
+_DRAWING_SUBMISSION = DrawingSubmission(
+    edits=list(_A_DRAWING.sheets),
+    deleted=[],
+    responses=[
+        TicketResponse(
+            ticket_id="ticket_initial",
+            stage=PipelineStage.DRAWINGS,
+            summary="read sheet_front",
+        )
+    ],
+)
 _SEMANTIC_SUBMISSION = SemanticSubmission(
     **replacing(_A_HYPOTHESIS),
     responses=[
@@ -262,6 +311,13 @@ _CODING_SUBMISSION = CodingSubmission(
 )
 
 _ARTIFACTS: dict[str, object] = {
+    "drawings_state": {
+        "messages": [HumanMessage(content="read the drawing")],
+        "structured_response": _DRAWING_SUBMISSION,
+        "current_turn": 1,
+        "total_turns": 1,
+        "stop_reason": StopReason.COMPLETED,
+    },
     "semantics_state": {
         "messages": [HumanMessage(content="propose semantics")],
         "structured_response": _SEMANTIC_SUBMISSION,
@@ -303,12 +359,17 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         ParameterName,
         Axis,
         DrawingEvidence,
+        DrawingSheet,
+        DrawingSource,
+        CropOf,
+        Dimension,
         # The contract's enums ride in state too. An enum missing from the
         # allowlist restores as a bare string, which still compares equal and
         # so fails nowhere until something asks it for `.value`.
         View,
         DrawnEntity,
         EdgeStyle,
+        DimensionKind,
         GeometryKind,
         ExecutionStatus,
         StopReason,
@@ -324,6 +385,7 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         Ticket,
         TicketResponse,
         PipelineStage,
+        DrawingSubmission,
         SemanticSubmission,
         OperationSubmission,
         CodingSubmission,
@@ -424,7 +486,12 @@ def test_the_thread_reaches_every_reasoning_stage_but_not_the_audit() -> None:
 
     update = carry_thread(state, lead_transcript(state, PipelineStage.CODING))
 
-    assert set(update) == {"semantics_state", "operations_state", "coding_state"}
+    assert set(update) == {
+        "drawings_state",
+        "semantics_state",
+        "operations_state",
+        "coding_state",
+    }
     assert update["semantics_state"]["messages"] == ["wrote the model"]
     assert update["operations_state"]["messages"] == ["wrote the model"]
 

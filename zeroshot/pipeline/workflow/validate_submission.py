@@ -10,6 +10,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from zeroshot.pipeline.messages.contracts import (
+    DrawingSource,
     Operation,
     OperationPlan,
     SemanticHypothesis,
@@ -22,6 +23,7 @@ from zeroshot.pipeline.messages.contracts.audit import (
 )
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     CodingSubmission,
+    DrawingSubmission,
     OperationSubmission,
     ReconstructionSnapshot,
     SemanticSubmission,
@@ -47,7 +49,11 @@ from zeroshot.pipeline.workflow.resolve_submission import (
 )
 
 type Submission = (
-    SemanticSubmission | OperationSubmission | CodingSubmission | AuditReport
+    DrawingSubmission
+    | SemanticSubmission
+    | OperationSubmission
+    | CodingSubmission
+    | AuditReport
 )
 
 _COPIED_DECIMALS = 4
@@ -63,7 +69,7 @@ def validate_submission(
     submission: Submission,
     snapshot: ReconstructionSnapshot,
     *,
-    deliverable: SemanticHypothesis | OperationPlan | None = None,
+    deliverable: DrawingSource | SemanticHypothesis | OperationPlan | None = None,
     verification: VerifyOutputResult | None = None,
 ) -> None:
     """Reject a submission that contradicts the round it belongs to.
@@ -91,6 +97,9 @@ def validate_submission(
         raise SubmissionValidationError(f"{stage} must not submit verification")
 
     match stage:
+        case PipelineStage.DRAWINGS:
+            if not isinstance(deliverable, DrawingSource):
+                raise SubmissionValidationError("drawing must revise a DrawingSource")
         case PipelineStage.SEMANTICS:
             if not isinstance(deliverable, SemanticHypothesis):
                 raise SubmissionValidationError(

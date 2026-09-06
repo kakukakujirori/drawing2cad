@@ -11,6 +11,19 @@ workflow:
   _target_: zeroshot.pipeline.workflow.graph.create_reconstruction_graph
   _partial_: true
 
+  drawings_agent_builder:
+    _target_: zeroshot.pipeline.workflow.create_agent
+    _partial_: true
+    role: drawing_analyzer
+    model: ${model}
+
+    response_format_strategy: ${response_format_strategy}
+    max_turns: 20
+    announce_turns: true
+    reset_turns_when_reentrant: true
+    model_retries: 5
+    checkpointer: false
+
   semantics_agent_builder:
     _target_: zeroshot.pipeline.workflow.create_agent
     _partial_: true

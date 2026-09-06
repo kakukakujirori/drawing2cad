@@ -9,7 +9,10 @@ from typing import Any
 from zeroshot.pipeline.messages.contracts.drawings import (
     _DRAWN_PARAMETERS,
     DrawingEvidence,
+    DrawingSheet,
+    DrawingSource,
     DrawnEntity,
+    View,
 )
 from zeroshot.pipeline.messages.contracts.operations import OperationPlan
 from zeroshot.pipeline.messages.contracts.parameters import Parameter
@@ -76,6 +79,34 @@ def evidence(
         source=[],
         parameters=_named(given),
     )
+
+
+def sheet(role: str = "front", **overrides: object) -> DrawingSheet:
+    """A sheet named after the view it shows, carrying one reading.
+
+    Its file is relative, so it reads the same from either side of a sandbox.
+    """
+    fields: dict[str, object] = {
+        "name": f"sheet_{role}",
+        "role": View(role),
+        "label": None,
+        "crop_of": None,
+        "scale": 1.0,
+        "file": f"inputs/{role}.dxf",
+        "evidence": [evidence(name=f"ev_{role}_line")],
+        "dimensions": [],
+        **overrides,
+    }
+    return DrawingSheet(**fields)  # type: ignore[arg-type]
+
+
+def drawing(*roles: str, **overrides: object) -> DrawingSource:
+    """One sheet per view, front alone by default."""
+    fields: dict[str, object] = {
+        "sheets": [sheet(role) for role in roles or ("front",)],
+        **overrides,
+    }
+    return DrawingSource(**fields)  # type: ignore[arg-type]
 
 
 def geometry(

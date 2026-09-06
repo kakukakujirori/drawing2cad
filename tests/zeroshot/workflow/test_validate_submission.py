@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 
 from tests.zeroshot.contracts import (
+    drawing,
     evidence,
     feature,
     geometry,
@@ -105,7 +106,11 @@ def _snapshot(
     semantics: SemanticHypothesis | None = None,
 ) -> ReconstructionSnapshot:
     current_semantics = None
-    if completed_stage is not None:
+    if completed_stage in {
+        PipelineStage.SEMANTICS,
+        PipelineStage.OPERATIONS,
+        PipelineStage.CODING,
+    }:
         current_semantics = semantics if semantics is not None else _semantics()
     operations = (
         _operations()
@@ -125,12 +130,18 @@ def _snapshot(
         tuple[ReasoningStage, ...],
         {
             None: (),
-            PipelineStage.SEMANTICS: (PipelineStage.SEMANTICS,),
+            PipelineStage.DRAWINGS: (PipelineStage.DRAWINGS,),
+            PipelineStage.SEMANTICS: (
+                PipelineStage.DRAWINGS,
+                PipelineStage.SEMANTICS,
+            ),
             PipelineStage.OPERATIONS: (
+                PipelineStage.DRAWINGS,
                 PipelineStage.SEMANTICS,
                 PipelineStage.OPERATIONS,
             ),
             PipelineStage.CODING: (
+                PipelineStage.DRAWINGS,
                 PipelineStage.SEMANTICS,
                 PipelineStage.OPERATIONS,
                 PipelineStage.CODING,
@@ -141,6 +152,7 @@ def _snapshot(
         open_tickets=tickets or [_ticket("ticket_initial", *completed_stages)],
         round=0,
         last_completed_stage=completed_stage,
+        drawings=drawing(),
         semantics=current_semantics,
         operations=operations,
         program_source=verification.source if verification is not None else None,
@@ -156,8 +168,8 @@ def _merge_and_validate(
 ) -> None:
     """Merge the revision and validate the result, as the pipeline does.
 
-    Every snapshot here belongs to a first round, so there is no preceding
-    artifact for the edits to apply to.
+    Every snapshot here belongs to a first round, so the edits apply to the
+    snapshot the round started from: the drawing, and nothing else yet.
     """
     stage = next_stage(snapshot.last_completed_stage)
     if stage not in REASONING_STAGES:
@@ -166,7 +178,7 @@ def _merge_and_validate(
     validate_submission(
         output,
         snapshot,
-        deliverable=merge_submission(output, None, stage),
+        deliverable=merge_submission(output, snapshot, stage),
         verification=verification,
     )
 
@@ -177,7 +189,7 @@ def test_every_reasoning_stage_accepts_its_expected_deliverable() -> None:
             **replacing(_semantics()),
             responses=[_response("ticket_initial", PipelineStage.SEMANTICS)],
         ),
-        _snapshot(None),
+        _snapshot(PipelineStage.DRAWINGS),
     )
     _merge_and_validate(
         OperationSubmission(
@@ -230,8 +242,11 @@ def test_ticket_responses_must_cover_the_current_snapshot_exactly_once(
     message: str,
 ) -> None:
     snapshot = _snapshot(
-        None,
-        tickets=[_ticket("ticket_one"), _ticket("ticket_two")],
+        PipelineStage.DRAWINGS,
+        tickets=[
+            _ticket("ticket_one", PipelineStage.DRAWINGS),
+            _ticket("ticket_two", PipelineStage.DRAWINGS),
+        ],
     )
     submission = SemanticSubmission(
         **replacing(_semantics()),
@@ -244,9 +259,9 @@ def test_ticket_responses_must_cover_the_current_snapshot_exactly_once(
 
 def test_a_stage_answers_its_assigned_tickets_and_only_those() -> None:
     snapshot = _snapshot(
-        None,
+        PipelineStage.DRAWINGS,
         tickets=[
-            _ticket("ticket_one"),
+            _ticket("ticket_one", PipelineStage.DRAWINGS),
             _ticket("ticket_two", assigned=(PipelineStage.CODING,)),
         ],
     )
@@ -274,7 +289,7 @@ def test_a_stage_answers_its_assigned_tickets_and_only_those() -> None:
 
 def test_a_stage_assigned_nothing_answers_nothing() -> None:
     snapshot = _snapshot(
-        None,
+        PipelineStage.DRAWINGS,
         tickets=[_ticket("ticket_one", assigned=(PipelineStage.CODING,))],
     )
 
@@ -291,7 +306,7 @@ def test_the_current_snapshot_decides_which_deliverable_type_is_valid() -> None:
     )
 
     with pytest.raises(SubmissionValidationError, match="SemanticSubmission"):
-        _merge_and_validate(operations, _snapshot(None))
+        _merge_and_validate(operations, _snapshot(PipelineStage.DRAWINGS))
 
 
 def test_operations_must_cover_only_current_semantic_features() -> None:
@@ -534,7 +549,7 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
     with pytest.raises(SubmissionValidationError, match="must not submit"):
         _merge_and_validate(
             semantic_submission,
-            _snapshot(None),
+            _snapshot(PipelineStage.DRAWINGS),
             verification=VerifyOutputResult(status=ExecutionStatus.REJECTED),
         )
     with pytest.raises(SubmissionValidationError, match="requires"):

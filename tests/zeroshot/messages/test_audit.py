@@ -61,6 +61,8 @@ def finding(
 @pytest.mark.parametrize(
     ("stage", "name"),
     [
+        ("drawings", "sem_bore"),
+        ("semantics", "sheet_front"),
         ("semantics", "op_bore"),
         ("operations", "sem_bore"),
         ("coding", "op_bore"),

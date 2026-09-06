@@ -10,6 +10,8 @@ belongs to.
 from zeroshot.pipeline.messages.contracts.drawings import (
     VIEW_FRAME,
     CropOf,
+    Dimension,
+    DimensionKind,
     DrawingEvidence,
     DrawingSheet,
     DrawingSource,
@@ -47,6 +49,8 @@ __all__ = [
     "VIEW_FRAME",
     "Axis",
     "CropOf",
+    "Dimension",
+    "DimensionKind",
     "DrawingEvidence",
     "DrawingSheet",
     "DrawingSource",

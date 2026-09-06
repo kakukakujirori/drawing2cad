@@ -273,9 +273,7 @@ def place_views(
         *(cut(view, names) for view, names in filed.items()),
     ]
     return ViewPlacement(
-        drawing=DrawingSource(
-            sheets=sheets, rationale="Views separated by position on the page."
-        ),
+        drawing=DrawingSource(sheets=sheets),
         boxes=boxes,
         alignment_error=residual,
     )

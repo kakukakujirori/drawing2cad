@@ -6,6 +6,8 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from zeroshot.pipeline.messages.contracts import (
+    DrawingSheet,
+    DrawingSource,
     Operation,
     OperationPlan,
     SemanticFeature,
@@ -13,7 +15,9 @@ from zeroshot.pipeline.messages.contracts import (
 )
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     CodingSubmission,
+    DrawingSubmission,
     OperationSubmission,
+    ProposalSubmission,
     ReconstructionSnapshot,
     SemanticSubmission,
     StageSubmission,
@@ -22,16 +26,17 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
 from zeroshot.pipeline.messages.contracts.stages import PipelineStage, ReasoningStage
 from zeroshot.pipeline.workflow.validate_submission import SubmissionValidationError
 
-type StageArtifact = SemanticHypothesis | OperationPlan
+type StageArtifact = DrawingSource | SemanticHypothesis | OperationPlan
 
 
 class _Named(Protocol):
     name: str
 
 
-# Only the two stages that revise an artifact; coding is settled before this
-# is read, which is what leaves the rest of the merge a `StageSubmission`.
+# Only the three stages that revise an artifact; coding is settled before
+# this is read, which is what leaves the rest of the merge a `StageSubmission`.
 _REVISION_BY_STAGE: Mapping[ReasoningStage, type[StageSubmission]] = {
+    PipelineStage.DRAWINGS: DrawingSubmission,
     PipelineStage.SEMANTICS: SemanticSubmission,
     PipelineStage.OPERATIONS: OperationSubmission,
 }
@@ -39,15 +44,15 @@ _REVISION_BY_STAGE: Mapping[ReasoningStage, type[StageSubmission]] = {
 
 def merge_submission(
     submission: TicketAnswers,
-    previous: ReconstructionSnapshot | None,
+    previous: ReconstructionSnapshot,
     stage: ReasoningStage,
 ) -> StageArtifact | None:
     """The complete artifact this stage's edits and deletions produce.
 
     `previous` is the snapshot this round revises, which is the preceding
-    round's; a first round has none. Coding revises `model.py` in the
-    workspace, so it merges to nothing and the program is captured through
-    verification instead.
+    round's, or the snapshot a first round started from. Coding revises
+    `model.py` in the workspace, so it merges to nothing and the program is
+    captured through verification instead.
     """
     if stage is PipelineStage.CODING:
         if not isinstance(submission, CodingSubmission):
@@ -58,39 +63,35 @@ def merge_submission(
     if not isinstance(submission, expected):
         raise SubmissionValidationError(f"{stage} must submit a {expected.__name__}")
 
-    revised = _revised_artifact(previous, stage)
-    rationale = _rationale(submission, revised)
+    # Branched on the submission rather than the stage: the check above ties
+    # the two together, and only the type says which artifact is being built.
     try:
-        if stage is PipelineStage.SEMANTICS:
-            return SemanticHypothesis(
-                proposal=_merged_features(_features(revised), submission),
-                rationale=rationale,
+        if isinstance(submission, DrawingSubmission):
+            return DrawingSource(
+                sheets=_merged_sheets(previous.drawings.sheets, submission)
             )
-        return OperationPlan(
-            proposal=_merged_operations(_operations(revised), submission),
-            rationale=rationale,
-        )
+        if isinstance(submission, SemanticSubmission):
+            return SemanticHypothesis(
+                proposal=_merged_features(_features(previous.semantics), submission),
+                rationale=_rationale(submission, previous.semantics),
+            )
+        if isinstance(submission, OperationSubmission):
+            return OperationPlan(
+                proposal=_merged_operations(
+                    _operations(previous.operations), submission
+                ),
+                rationale=_rationale(submission, previous.operations),
+            )
+        raise NotImplementedError(f"no merge for {type(submission).__name__}")
     except ValidationError as error:
         raise SubmissionValidationError(
             f"the revised artifact is not valid: {error}"
         ) from error
 
 
-def _revised_artifact(
-    previous: ReconstructionSnapshot | None,
-    stage: ReasoningStage,
-) -> StageArtifact | None:
-    """The artifact this stage's edits apply to."""
-    if previous is None:
-        return None
-    return (
-        previous.semantics if stage is PipelineStage.SEMANTICS else previous.operations
-    )
-
-
 def _rationale(
-    submission: StageSubmission,
-    previous: StageArtifact | None,
+    submission: ProposalSubmission,
+    previous: SemanticHypothesis | OperationPlan | None,
 ) -> str:
     if submission.rationale is not None:
         return submission.rationale
@@ -101,12 +102,27 @@ def _rationale(
     return previous.rationale
 
 
-def _features(previous: StageArtifact | None) -> Sequence[SemanticFeature]:
-    return previous.proposal if isinstance(previous, SemanticHypothesis) else []
+def _features(previous: SemanticHypothesis | None) -> Sequence[SemanticFeature]:
+    return previous.proposal if previous is not None else []
 
 
-def _operations(previous: StageArtifact | None) -> Sequence[Operation]:
-    return previous.proposal if isinstance(previous, OperationPlan) else []
+def _operations(previous: OperationPlan | None) -> Sequence[Operation]:
+    return previous.proposal if previous is not None else []
+
+
+def _merged_sheets(
+    previous: Sequence[DrawingSheet],
+    submission: StageSubmission,
+) -> list[DrawingSheet]:
+    """A sheet is read whole, so a sheet given again replaces the whole of it."""
+    if addressed := sorted(a for a in submission.deleted if "." in a):
+        raise SubmissionValidationError(
+            f"{', '.join(addressed)} is not an address in the current drawing: "
+            "give a sheet again without an entry to drop it, and delete a "
+            "whole sheet by its own sheet_ name"
+        )
+    dropped = _dropped_entries(submission.deleted, previous, "sheet")
+    return _merged_list(previous, _by_name(submission.edits), dropped)
 
 
 def _merged_operations(

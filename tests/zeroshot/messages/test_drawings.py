@@ -121,7 +121,6 @@ def test_source_round_trip_includes_crop_ancestry_and_dimension_references():
                 dimensions=[dimension()],
             ),
         ],
-        "rationale": "The front view was read from the page.",
     }
     new = DrawingSource.model_validate(value)
     assert DrawingSource.model_validate_json(new.model_dump_json()) == new

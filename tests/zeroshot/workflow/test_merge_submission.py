@@ -2,7 +2,7 @@
 
 import pytest
 
-from tests.zeroshot.contracts import evidence, feature, geometry, replacing
+from tests.zeroshot.contracts import drawing, evidence, feature, geometry, replacing
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -20,7 +20,7 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     TicketAnswers,
     TicketResponse,
 )
-from zeroshot.pipeline.messages.contracts.stages import ReasoningStage
+from zeroshot.pipeline.messages.contracts.stages import REASONING_STAGES, ReasoningStage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow.merge_submission import merge_submission
 from zeroshot.pipeline.workflow.validate_submission import SubmissionValidationError
@@ -78,6 +78,7 @@ def _preceding(
         ],
         round=0,
         last_completed_stage=PipelineStage.CODING,  # type: ignore[arg-type]
+        drawings=drawing(),
         semantics=semantics if semantics is not None else _hypothesis(),
         operations=operations if operations is not None else _plan(),
         program_source="result = None\n",
@@ -85,9 +86,30 @@ def _preceding(
     )
 
 
+def _first_round() -> ReconstructionSnapshot:
+    """What a run starts from: its drawing, and no artifact yet."""
+    return ReconstructionSnapshot(
+        open_tickets=[
+            Ticket(
+                ticket_id="ticket_initial",
+                subject=BootstrapWork(instruction="Reconstruct the part."),
+                assigned_stages=list(REASONING_STAGES),
+                responses=[],
+            )
+        ],
+        round=0,
+        last_completed_stage=None,
+        drawings=drawing(),
+        semantics=None,
+        operations=None,
+        program_source=None,
+        verification=None,
+    )
+
+
 def _merged_semantics(
     submission: SemanticSubmission,
-    previous: ReconstructionSnapshot | None,
+    previous: ReconstructionSnapshot,
 ) -> SemanticHypothesis:
     merged = merge_submission(submission, previous, PipelineStage.SEMANTICS)
     assert isinstance(merged, SemanticHypothesis)
@@ -212,7 +234,7 @@ def test_a_null_rationale_keeps_the_preceding_one() -> None:
 
 def test_a_first_round_must_state_a_rationale() -> None:
     with pytest.raises(SubmissionValidationError, match="no rationale to keep"):
-        merge_submission(_semantics(), None, PipelineStage.SEMANTICS)
+        merge_submission(_semantics(), _first_round(), PipelineStage.SEMANTICS)
 
 
 @pytest.mark.parametrize(
@@ -252,7 +274,11 @@ def test_a_revision_that_leaves_a_feature_unsupported_is_rejected() -> None:
 
 def test_a_stage_must_submit_its_own_kind_of_revision() -> None:
     with pytest.raises(SubmissionValidationError, match="SemanticSubmission"):
-        merge_submission(_operations(), _preceding(), PipelineStage.SEMANTICS)
+        merge_submission(
+            _operations(),
+            _preceding(),
+            PipelineStage.SEMANTICS,
+        )
 
 
 def test_operations_replace_by_name_and_keep_their_place() -> None:
@@ -301,4 +327,4 @@ def test_a_stage_is_given_the_submission_type_it_merges(
 ) -> None:
     """Coding merges to nothing, so its check is the one the early return skips."""
     with pytest.raises(SubmissionValidationError, match=message):
-        merge_submission(submission, None, stage)
+        merge_submission(submission, _first_round(), stage)

@@ -15,7 +15,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from rich.console import Console
 
 from tests.zeroshot.chat_models import ScriptedChatModel
-from tests.zeroshot.contracts import hypothesis, replacing
+from tests.zeroshot.contracts import drawing, hypothesis, replacing
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages import (
@@ -32,6 +32,7 @@ from zeroshot.pipeline.messages.contracts import (
 )
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     CodingSubmission,
+    DrawingSubmission,
     OperationSubmission,
     SemanticSubmission,
     TicketResponse,
@@ -81,6 +82,24 @@ _A_BOX = AIMessage(
         responses=[_ticket_response("semantics", "Established sem_feature_1.")],
     ).model_dump_json()
 )
+
+
+_A_READING = AIMessage(
+    content=DrawingSubmission(
+        edits=list(drawing().sheets),
+        deleted=[],
+        responses=[_ticket_response("drawings", "Read sheet_front.")],
+    ).model_dump_json()
+)
+
+
+def _drawing_stage():
+    return partial(
+        create_agent,
+        role="drawing_analyzer",
+        model=ScriptedChatModel(responses=(_A_READING,)),
+        announce_turns=False,
+    )
 
 
 def _semantic_stage():
@@ -153,6 +172,7 @@ def _graph_factory(
     so a run's config -- or a test -- binds it before the runner ever sees it."""
     return partial(
         create_reconstruction_graph,
+        drawings_agent_builder=_drawing_stage(),
         semantics_agent_builder=_semantic_stage(),
         operations_agent_builder=_operations_stage(),
         coding_agent_builder=_agent("coder", model, **agent_overrides),
@@ -174,7 +194,15 @@ result = ret_base
 
 
 def _verified_resume_run():
-    run = start_reconstruction("run_sample", "Reconstruct the drawing.")
+    run = start_reconstruction("run_sample", "Reconstruct the drawing.", drawing())
+    run = advance_reconstruction(
+        run,
+        DrawingSubmission(
+            edits=list(drawing().sheets),
+            deleted=[],
+            responses=[_ticket_response("drawings", "Read sheet_front.")],
+        ),
+    )
     run = advance_reconstruction(
         run,
         SemanticSubmission(
@@ -867,6 +895,7 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
         # A cast is a graph's own setting, so a real factory arrives with one
         # already bound; only what the runner adds is under test here.
         return create_reconstruction_graph(
+            drawings_agent_builder=_drawing_stage(),
             semantics_agent_builder=_semantic_stage(),
             operations_agent_builder=_operations_stage(),
             coding_agent_builder=_agent(

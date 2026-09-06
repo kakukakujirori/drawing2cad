@@ -3,6 +3,7 @@ from typing import Literal, cast
 
 
 class PipelineStage(StrEnum):
+    DRAWINGS = "drawings"
     SEMANTICS = "semantics"
     OPERATIONS = "operations"
     CODING = "coding"
@@ -10,6 +11,7 @@ class PipelineStage(StrEnum):
 
 
 type ReasoningStage = Literal[
+    PipelineStage.DRAWINGS,
     PipelineStage.SEMANTICS,
     PipelineStage.OPERATIONS,
     PipelineStage.CODING,
