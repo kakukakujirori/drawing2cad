@@ -10,10 +10,20 @@ would make top's screen +Y == -Z indistinguishable from +Z.
 import cadquery as cq
 import pytest
 
+from zeroshot.pipeline.messages.contracts.drawings import VIEW_FRAME, View
+from zeroshot.pipeline.verification.render._hlr import (
+    Circle,
+    ProjectedEdges,
+    Segment,
+    ViewProjection,
+)
 from zeroshot.pipeline.verification.render.project import (
+    DegenerateDrawingError,
     bbox_diagonal,
+    frame_of,
     load_shape,
     project_views,
+    to_own_corner,
 )
 
 BOX_X, BOX_Y, BOX_Z = 30.0, 20.0, 10.0
@@ -30,7 +40,7 @@ def box_step(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def box_views(box_step):
-    return project_views(load_shape(box_step))
+    return project_views(load_shape(box_step), VIEW_FRAME)
 
 
 def _extents(projection):
@@ -55,10 +65,38 @@ def test_bbox_diagonal_matches_the_box(box_step):
     assert bbox_diagonal(load_shape(box_step)) == pytest.approx(expected, rel=1e-6)
 
 
-def test_all_three_views_are_projected(box_views):
-    for name in ("front", "top", "right"):
-        projection = getattr(box_views, name)
-        assert projection.visible.count() > 0, f"{name} has no visible edges"
+def test_every_view_the_contract_names_can_be_projected(box_views):
+    assert set(box_views) == set(VIEW_FRAME)
+    for view, projection in box_views.items():
+        assert projection.visible.count() > 0, f"{view} has no visible edges"
+
+
+def test_only_the_views_asked_for_are_projected(box_step):
+    """A drawing is redrawn view for view, so a run pays for no more than it."""
+    projections = project_views(load_shape(box_step), (View.LEFT, View.BOTTOM))
+
+    assert set(projections) == {View.LEFT, View.BOTTOM}
+
+
+def test_a_frame_puts_screen_x_where_the_contract_says(view=None):
+    """screen +X is up x eye, and the contract states it as the frame's first
+    axis; a frame derived any other way would disagree with `$view_frame`."""
+    axis = {
+        (1.0, 0.0, 0.0): "+x",
+        (-1.0, 0.0, 0.0): "-x",
+        (0.0, 1.0, 0.0): "+y",
+        (0.0, -1.0, 0.0): "-y",
+        (0.0, 0.0, 1.0): "+z",
+        (0.0, 0.0, -1.0): "-z",
+    }
+    for named, (right, _, _) in VIEW_FRAME.items():
+        eye, up = frame_of(named)
+        screen_x = (
+            up[1] * eye[2] - up[2] * eye[1],
+            up[2] * eye[0] - up[0] * eye[2],
+            up[0] * eye[1] - up[1] * eye[0],
+        )
+        assert axis[screen_x] == right, named
 
 
 def _model_range(size, center=0.0):
@@ -70,23 +108,21 @@ Y_LO, Y_HI = _model_range(BOX_Y)
 Z_LO, Z_HI = _model_range(BOX_Z, BOX_Z_CENTER)
 
 
-def test_front_maps_to_screen_x_y(box_views):
-    """front: (x, y, z) -> screen (x, y)."""
-    assert box_views.front.bbox() == pytest.approx((X_LO, Y_LO, X_HI, Y_HI))
-
-
-def test_top_maps_to_screen_x_minus_z(box_views):
-    """top: (x, y, z) -> screen (x, -z).
-
-    Screen +Y is -Z, not +Z: moving up the top view means moving away from the
-    front view's viewer, and +Z faces that viewer.
-    """
-    assert box_views.top.bbox() == pytest.approx((X_LO, -Z_HI, X_HI, -Z_LO))
-
-
-def test_right_maps_to_screen_minus_z_y(box_views):
-    """right: (x, y, z) -> screen (-z, y)."""
-    assert box_views.right.bbox() == pytest.approx((-Z_HI, Y_LO, -Z_LO, Y_HI))
+@pytest.mark.parametrize(
+    ("view", "box"),
+    [
+        # Top's screen +Y is -Z, not +Z: moving up the top view means moving
+        # away from the front view's viewer, and +Z faces that viewer.
+        (View.FRONT, (X_LO, Y_LO, X_HI, Y_HI)),
+        (View.BACK, (-X_HI, Y_LO, -X_LO, Y_HI)),
+        (View.TOP, (X_LO, -Z_HI, X_HI, -Z_LO)),
+        (View.BOTTOM, (X_LO, Z_LO, X_HI, Z_HI)),
+        (View.RIGHT, (-Z_HI, Y_LO, -Z_LO, Y_HI)),
+        (View.LEFT, (Z_LO, Y_LO, Z_HI, Y_HI)),
+    ],
+)
+def test_a_view_lands_where_its_frame_says(box_views, view, box):
+    assert box_views[view].bbox() == pytest.approx(box)
 
 
 def test_eye_direction_is_toward_the_viewer_not_along_the_gaze(tmp_path):
@@ -105,15 +141,15 @@ def test_eye_direction_is_toward_the_viewer_not_along_the_gaze(tmp_path):
         .hole(6.0, BOX_Z / 2)
     )
     cq.exporters.export(solid, str(path))
-    front = project_views(load_shape(path)).front
+    front = project_views(load_shape(path))[View.FRONT]
     assert len(front.visible.circles) == 1
     assert len(front.hidden.circles) == 0
 
 
 def test_top_and_right_agree_on_depth(box_views):
-    """Both show the model's Z extent; arrange() relies on that to pick a scale."""
-    _, top_depth = _extents(box_views.top)
-    right_depth, _ = _extents(box_views.right)
+    """Both show the model's Z extent, which is what lines the two views up."""
+    _, top_depth = _extents(box_views[View.TOP])
+    right_depth, _ = _extents(box_views[View.RIGHT])
     assert top_depth == pytest.approx(right_depth, rel=1e-6)
 
 
@@ -121,9 +157,47 @@ def test_projection_is_reproducible(box_step):
     """Same input, same primitives -- the golden comparisons depend on this."""
     first = project_views(load_shape(box_step))
     second = project_views(load_shape(box_step))
-    for name in ("front", "top", "right"):
-        a = getattr(first, name)
-        b = getattr(second, name)
+    for name in first:
+        a, b = first[name], second[name]
         assert a.bbox() == b.bbox()
         assert a.visible.count() == b.visible.count()
         assert a.hidden.count() == b.hidden.count()
+
+
+def test_a_view_is_moved_onto_its_own_corner_without_being_resized(box_views):
+    """The contract measures a sheet from its bottom-left; a size must survive."""
+    before = box_views[View.FRONT].bbox(include_hidden=True)
+
+    after = to_own_corner(box_views[View.FRONT], "front").bbox(include_hidden=True)
+
+    assert after[:2] == pytest.approx((0.0, 0.0))
+    assert after[2] - after[0] == pytest.approx(before[2] - before[0])
+    assert after[3] - after[1] == pytest.approx(before[3] - before[1])
+
+
+def test_a_circle_keeps_its_radius_and_follows_its_centre():
+    projection = ViewProjection(
+        visible=ProjectedEdges(circles=[Circle((15.0, 25.0), 4.0)]),
+        hidden=ProjectedEdges(),
+    )
+
+    (circle,) = to_own_corner(projection, "front").visible.circles
+
+    assert circle.radius == pytest.approx(4.0)
+    assert circle.center == pytest.approx((4.0, 4.0))
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [
+        ViewProjection(visible=ProjectedEdges(), hidden=ProjectedEdges()),
+        ViewProjection(
+            visible=ProjectedEdges(segments=[Segment((0.0, 0.0), (10.0, 0.0))]),
+            hidden=ProjectedEdges(),
+        ),
+    ],
+    ids=["empty", "knife_edge"],
+)
+def test_a_view_with_no_area_is_refused_by_name(projection):
+    with pytest.raises(DegenerateDrawingError, match="right"):
+        to_own_corner(projection, "right")

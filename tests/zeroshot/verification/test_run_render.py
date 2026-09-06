@@ -8,11 +8,11 @@ import pytest
 from PIL import Image
 
 from zeroshot.pipeline.verification import run_render
-from zeroshot.pipeline.verification.render.arrange import DegenerateDrawingError
 from zeroshot.pipeline.verification.render.constants import (
+    ProjectionPaths,
     Render3dPaths,
-    TechdrawPaths,
 )
+from zeroshot.pipeline.verification.render.project import DegenerateDrawingError
 from zeroshot.pipeline.verification.run_render import RenderStatus, StepRenderer
 
 
@@ -24,20 +24,27 @@ def _paths(base: Path) -> Render3dPaths:
     )
 
 
-def _techdraw_paths(base: Path) -> TechdrawPaths:
-    return TechdrawPaths(dxf=base / "custom.dxf")
+def _projection_paths(base: Path) -> ProjectionPaths:
+    return ProjectionPaths(
+        front=base / "custom-front.dxf",
+        top=base / "custom-top.dxf",
+        right=base / "custom-right.dxf",
+    )
 
 
-def _write_techdraw(
+def _write_projections(
     _step_path: Path,
-    paths: TechdrawPaths,
-) -> tuple[TechdrawPaths, dict[str, str]]:
-    assert paths.dxf is not None
-    paths.dxf.write_text("DXF", encoding="utf-8")
+    paths: ProjectionPaths,
+) -> tuple[ProjectionPaths, dict[str, str]]:
+    for path in paths.as_mapping().values():
+        path.write_text("DXF", encoding="utf-8")
     return paths, {}
 
 
-def _present_paths(paths: TechdrawPaths | Render3dPaths) -> set[Path]:
+_EVERY_VIEW = ("front", "top", "right")
+
+
+def _present_paths(paths: ProjectionPaths | Render3dPaths) -> set[Path]:
     return {
         path
         for path_field in fields(paths)
@@ -46,7 +53,7 @@ def _present_paths(paths: TechdrawPaths | Render3dPaths) -> set[Path]:
 
 
 def test_partial_render_reports_only_successful_paths(tmp_path, monkeypatch):
-    techdraw_paths = _techdraw_paths(tmp_path)
+    projection_paths = _projection_paths(tmp_path)
     paths = _paths(tmp_path)
 
     def render3d(_step_path, output_paths):
@@ -64,50 +71,50 @@ def test_partial_render_reports_only_successful_paths(tmp_path, monkeypatch):
             },
         }
 
-    monkeypatch.setattr(run_render, "_render_techdraw", _write_techdraw)
+    monkeypatch.setattr(run_render, "_render_projections", _write_projections)
     monkeypatch.setattr(run_render, "generate_render3d", render3d)
 
     report = run_render._render_once(
         tmp_path / "input.step",
-        techdraw_paths,
+        projection_paths,
         paths,
     )
 
     assert report.status is RenderStatus.PARTIAL
-    assert report.techdraw_paths == techdraw_paths
+    assert report.projection_paths == projection_paths
     assert report.render3d_paths == Render3dPaths(
         hlg_perspective=paths.hlg_perspective,
         hlg_translucent_faces_perspective=(paths.hlg_translucent_faces_perspective),
     )
-    assert report.techdraw_errors == {}
+    assert report.projection_errors == {}
     assert report.render3d_errors == {
         "transparent_shaded_edges_perspective": "RuntimeError: shaded pass failed"
     }
     assert not paths.transparent_shaded_edges_perspective.exists()
 
 
-def test_degenerate_techdraw_keeps_the_reason(tmp_path, monkeypatch):
-    def reject_projection(_step_path, _techdraw_paths):
+def test_degenerate_projection_keeps_the_reason(tmp_path, monkeypatch):
+    def reject_projection(_step_path, _paths):
         raise DegenerateDrawingError("right view has near-zero extent")
 
     def reject_render3d(_step_path, _paths):
         raise RuntimeError("perspective rendering failed")
 
-    monkeypatch.setattr(run_render, "_render_techdraw", reject_projection)
+    monkeypatch.setattr(run_render, "_render_projections", reject_projection)
     monkeypatch.setattr(run_render, "_render_3d", reject_render3d)
 
     report = run_render._render_once(
         tmp_path / "input.step",
-        _techdraw_paths(tmp_path),
+        _projection_paths(tmp_path),
         _paths(tmp_path),
     )
 
     assert report.status is RenderStatus.FAILED
-    assert report.techdraw_paths == TechdrawPaths()
+    assert report.projection_paths == ProjectionPaths()
     assert report.render3d_paths == Render3dPaths()
-    techdraw_error = "DegenerateDrawingError: right view has near-zero extent"
+    projection_error = "DegenerateDrawingError: right view has near-zero extent"
     render3d_error = "RuntimeError: perspective rendering failed"
-    assert report.techdraw_errors == {"dxf": techdraw_error}
+    assert report.projection_errors == dict.fromkeys(_EVERY_VIEW, projection_error)
     assert report.render3d_errors == {
         "hlg_perspective": render3d_error,
         "transparent_shaded_edges_perspective": render3d_error,
@@ -165,20 +172,20 @@ class _HangingContext:
 def test_timeout_is_distinct_and_kills_a_stuck_process(tmp_path, monkeypatch):
     context = _HangingContext()
     monkeypatch.setattr(run_render.mp, "get_context", lambda method: context)
-    techdraw_paths = _techdraw_paths(tmp_path)
+    projection_paths = _projection_paths(tmp_path)
     paths = _paths(tmp_path)
 
     report = StepRenderer(timeout_s=0.1).render(
         tmp_path / "input.step",
-        techdraw_paths,
+        projection_paths,
         paths,
     )
 
     assert report.status is RenderStatus.TIMEOUT
-    assert report.techdraw_paths == TechdrawPaths()
+    assert report.projection_paths == ProjectionPaths()
     assert report.render3d_paths == Render3dPaths()
     message = "render timed out after 0.1s"
-    assert report.techdraw_errors == {"dxf": message}
+    assert report.projection_errors == dict.fromkeys(_EVERY_VIEW, message)
     assert report.render3d_errors == {
         "hlg_perspective": message,
         "transparent_shaded_edges_perspective": message,
@@ -197,22 +204,25 @@ def test_real_box_renders_to_caller_assigned_paths(tmp_path):
     )
     output_dir = tmp_path / "assigned"
     output_dir.mkdir()
-    techdraw_paths = TechdrawPaths(dxf=output_dir / "drawing-from-caller.dxf")
+    projection_paths = _projection_paths(output_dir)
     paths = _paths(output_dir)
 
     report = StepRenderer(timeout_s=60.0).render(
         step_path,
-        techdraw_paths,
+        projection_paths,
         paths,
     )
 
     assert report.status is RenderStatus.OK
-    assert report.techdraw_paths == techdraw_paths
+    assert report.projection_paths == projection_paths
     assert report.render3d_paths == paths
-    assert report.techdraw_errors == {}
+    assert report.projection_errors == {}
     assert report.render3d_errors == {}
+    # Each view is written twice: the DXF a reader measures, and a picture of
+    # it beside itself.
     assert set(output_dir.iterdir()) == {
-        *_present_paths(report.techdraw_paths),
+        *_present_paths(report.projection_paths),
+        *(path.with_suffix(".png") for path in _present_paths(report.projection_paths)),
         *_present_paths(report.render3d_paths),
     }
     for path in _present_paths(report.render3d_paths):
@@ -224,21 +234,21 @@ def test_real_box_renders_to_caller_assigned_paths(tmp_path):
 def test_every_error_key_names_a_field_of_its_paths_dto(tmp_path, monkeypatch):
     """The two error maps live in different namespaces; a key that matches no
     field would describe an artifact no consumer can pair with a path."""
-    techdraw_fields = {f.name for f in fields(TechdrawPaths)}
+    projection_fields = {f.name for f in fields(ProjectionPaths)}
     render3d_fields = {f.name for f in fields(Render3dPaths)}
 
     def reject(_step_path, _paths):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(run_render, "_render_techdraw", reject)
+    monkeypatch.setattr(run_render, "_render_projections", reject)
     monkeypatch.setattr(run_render, "_render_3d", reject)
     report = run_render._render_once(
-        tmp_path / "input.step", _techdraw_paths(tmp_path), _paths(tmp_path)
+        tmp_path / "input.step", _projection_paths(tmp_path), _paths(tmp_path)
     )
 
-    assert set(report.techdraw_errors) <= techdraw_fields
+    assert set(report.projection_errors) <= projection_fields
     assert set(report.render3d_errors) <= render3d_fields
-    assert report.techdraw_errors and report.render3d_errors
+    assert report.projection_errors and report.render3d_errors
 
 
 def test_batch_renders_every_request_in_order_within_the_worker_limit(tmp_path):
@@ -253,7 +263,7 @@ def test_batch_renders_every_request_in_order_within_the_worker_limit(tmp_path):
         requests.append(
             run_render.RenderRequest(
                 step_path,
-                TechdrawPaths(dxf=directory / "drawing.dxf"),
+                _projection_paths(directory),
                 _paths(directory),
             )
         )
@@ -263,7 +273,7 @@ def test_batch_renders_every_request_in_order_within_the_worker_limit(tmp_path):
     assert len(reports) == len(requests)
     for request, report in zip(requests, reports, strict=True):
         assert report.status is RenderStatus.OK
-        assert report.techdraw_paths == request.techdraw_paths
+        assert report.projection_paths == request.projection_paths
         assert report.render3d_paths == request.render3d_paths
         for path in _present_paths(report.render3d_paths):
             assert path.is_file()
@@ -328,7 +338,7 @@ def test_a_batch_that_cannot_start_ends_the_renders_it_already_started(
     requests = [
         run_render.RenderRequest(
             tmp_path / f"shape{index}.step",
-            _techdraw_paths(tmp_path),
+            _projection_paths(tmp_path),
             _paths(tmp_path),
         )
         for index in range(3)

@@ -18,7 +18,7 @@ Requirements:
 - Assign every planned operation's completed result to its corresponding `ret_<operation name without op_>` variable. Helper functions and variables such as `part` are allowed, but the completed result of each planned operation must still be assigned to its corresponding ret_ variable.
 - Build an operation from the `ret_` results of the operations it depends on. Keep the data flow consistent with the plan rather than rebuilding an unrelated solid inside a later operation.
 - Store the final completed CadQuery solid in `result`. Normally `result` is the final operation's `ret_` variable, not a fresh reconstruction that bypasses the planned operations.
-- The script must be self-contained and must not load the input DXF or other external files at runtime.
+- The script must be self-contained and must not load the input drawing or other external files at runtime.
 - The generated geometry must be valid and exportable to STEP format.
 - DO NOT use try-except blocks in $output_path. Resolve operation failures instead of hiding them.
 - Do not silently omit a planned operation. If one cannot be made to work, leave the program in its best executable state and report exactly what remains incomplete in your final answer.

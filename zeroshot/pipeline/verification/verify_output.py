@@ -17,8 +17,8 @@ from zeroshot.pipeline.messages import (
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.render.constants import (
+    ProjectionPaths,
     Render3dPaths,
-    TechdrawPaths,
 )
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
@@ -38,6 +38,12 @@ VerifyOutputValue: type = str | int | None
 # Build outcomes a second attempt at the same bytes could come out of
 # differently, because they turn on how loaded the machine was.
 _TRANSIENT_OUTCOMES = frozenset({ExecutionStatus.TIMEOUT, ExecutionStatus.INFRA_ERROR})
+
+# The renderer draws three styles of the one perspective, and only this one is
+# offered: it is the line art of `hlg_perspective` over a faint copy of the
+# shaded pass, so it says which side is material as well as where the edges
+# are. Three pictures of one camera would spend a message saying it three times.
+FEEDBACK_PICTORIAL = "hlg_translucent_faces_perspective"
 
 
 def _census_table(returns: Sequence[IntermediateReturn]) -> str:
@@ -85,7 +91,7 @@ def _describe_returns(
         f"{name}: {reason}"
         for name, report in intermediate_renders.items()
         for reason in (
-            *report.techdraw_errors.values(),
+            *report.projection_errors.values(),
             *report.render3d_errors.values(),
         )
     ]
@@ -100,8 +106,9 @@ def _describe_returns(
             "",
             (
                 f"Each is written to {sandbox_returns_dir}/<name>/ as output.step, "
-                "techdraw.dxf and render_3d/<style>.png. Open them with `run_shell` "
-                "and `load_image` to see whether an operation built what it was "
+                "projection/<view>.dxf with a .png of it alongside, and "
+                "render_3d/<style>.png. Open them with `run_shell` and "
+                "`load_image` to see whether an operation built what it was "
                 "meant to."
             ),
             *(["", "Views that could not be drawn:", *failures] if failures else []),
@@ -156,6 +163,7 @@ class OutputVerifier:
         workdir: SandboxWorkdir,
         renderer: StepRenderer,
         artifact_presenter: ArtifactPresenter | None,
+        views: Sequence[View],
         source_filename: str = "model.py",
         output_dirname: PurePosixPath = PurePosixPath("attempts"),
         show_intermediate_returns: bool = True,
@@ -178,6 +186,7 @@ class OutputVerifier:
         self.workdir = workdir
         self.renderer = renderer
         self.artifact_presenter = artifact_presenter
+        self.views = tuple(views)
         self.source_filename = source_filename
         self.output_dirname = output_dirname
         self.show_intermediate_returns = show_intermediate_returns
@@ -328,50 +337,51 @@ class OutputVerifier:
             return report, None
 
         render_report = results[-1]
-        # The projected drawing is announced the way the input was: the sheet
-        # it was drawn on, and a pictorial per rendering.
-        # TODO: the renderer composes front, top and right onto one page, so
-        # the sheet it writes is unseparated. Render per view instead and this
-        # becomes one sheet per role, with no composed page at all.
-        drawn = render_report.techdraw_paths.dxf
+        # The projected drawing is announced the way the input was: one sheet
+        # per view, and one pictorial. A view is named by its role, which is
+        # also the field the renderer wrote it under.
+        pictorial = render_report.render3d_paths.as_mapping().get(FEEDBACK_PICTORIAL)
         sheets = [
-            *([unread_sheet("sheet_drawing", View.FULL_PAGE, drawn)] if drawn else []),
             *(
-                unread_sheet(f"sheet_{style}", View.PERSPECTIVE, path)
-                for style, path in render_report.render3d_paths.as_mapping().items()
+                unread_sheet(f"sheet_{view}", View(view), path)
+                for view, path in render_report.projection_paths.as_mapping().items()
+            ),
+            *(
+                [
+                    unread_sheet(
+                        f"sheet_{FEEDBACK_PICTORIAL}", View.PERSPECTIVE, pictorial
+                    )
+                ]
+                if pictorial
+                else []
             ),
         ]
+        failed = dict(render_report.projection_errors)
+        if why := render_report.render3d_errors.get(FEEDBACK_PICTORIAL):
+            failed[FEEDBACK_PICTORIAL] = why
         manifest = FeedbackManifest(
             verification_id=verification_id,
             drawing=DrawingSource(sheets=sheets) if sheets else None,
-            errors={
-                **(
-                    {"sheet_drawing": why}
-                    if (why := render_report.techdraw_errors.get("dxf"))
-                    else {}
-                ),
-                **{
-                    f"sheet_{style}": why
-                    for style, why in render_report.render3d_errors.items()
-                },
-            },
+            errors={f"sheet_{name}": why for name, why in failed.items()},
         )
         return report, manifest
 
     def _request(self, step_path: Path, verification_dir: Path) -> RenderRequest:
         """Name the feedback artifacts one STEP is to be drawn into."""
-        # Flat: an attempt holds one drawing and one set of renders, and the
-        # model has already been shown the inputs under the same convention.
-        techdraw_paths = TechdrawPaths.flat(verification_dir / "techdraw")
+        # Flat: one file per view and per style, named as the inputs are, so
+        # the model does not have to guess a second convention.
+        projection_paths = ProjectionPaths.flat(
+            verification_dir / "projection", self.views
+        )
         render3d_paths = Render3dPaths.flat(verification_dir / "render_3d")
         # The renderer leaves directory layout to its caller.
         for path in (
-            *techdraw_paths.as_mapping().values(),
+            *projection_paths.as_mapping().values(),
             *render3d_paths.as_mapping().values(),
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
 
-        return RenderRequest(step_path, techdraw_paths, render3d_paths)
+        return RenderRequest(step_path, projection_paths, render3d_paths)
 
     @property
     def confirmed_a_solid(self) -> bool:

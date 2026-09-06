@@ -1,7 +1,7 @@
 Guidelines:
 
 Reading the input
-- Analyse the input DXF drawing using python libraries such as `ezdxf`. You can render DXF views to PNG using `ezdxf draw <DXF_PATH> -o <OUTPUT_PNG>` via `run_shell`, and inspect them with `load_image`.
+- Analyse the input drawing with `run_shell`, and inspect any image with `load_image`. The input message says which libraries the sheets you were given call for.
 - The views are not separated by layer: effectively all geometry sits on layer `0`. Separate Front, Top and Right by clustering the entities by position on the sheet.
 - Linetype is what tells you whether an edge is visible. `Continuous` linework is an edge seen from that direction, `HIDDEN` linework an edge behind material — which is how depth is read, such as whether a hole is through or blind.
 - Read the curve definitions, not the picture. Every curve entity carries the numbers that define it; extract them and carry them into your answer unchanged.

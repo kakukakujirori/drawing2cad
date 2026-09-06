@@ -122,6 +122,9 @@ def create_reconstruction_graph(
         workdir=sandbox_workdir,
         renderer=renderer,
         artifact_presenter=artifact_presenter,
+        # Redraw the solid in the drawing's own views.
+        # TODO: decide views during runtime, after drawing analyzer splits views.
+        views=[sheet.role for sheet in input_manifest.drawing.orthographic()],
         source_filename=output_filename,
         output_dirname=verification_dirname,
         show_intermediate_returns=show_intermediate_returns,

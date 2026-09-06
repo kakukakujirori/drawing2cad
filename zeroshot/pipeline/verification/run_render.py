@@ -1,5 +1,8 @@
 """Render verified STEPs to explicitly assigned DXF and PNG paths.
 
+Each orthographic view is drawn to a DXF of its own, at 1:1 and read from its
+own corner: nothing is composed onto a sheet.
+
 OCC HLR and VTK can hang in native code, so every render runs in a fresh
 ``spawn`` process.  The caller owns artifact naming and directory layout; this
 module only runs the render stages and supervises those processes.
@@ -21,14 +24,18 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
+from zeroshot.pipeline.messages.contracts.drawings import View
 from zeroshot.pipeline.verification.render._render3d import generate_render3d
-from zeroshot.pipeline.verification.render.arrange import arrange
 from zeroshot.pipeline.verification.render.constants import (
+    ProjectionPaths,
     Render3dPaths,
-    TechdrawPaths,
 )
-from zeroshot.pipeline.verification.render.export_dxf import export_dxf
-from zeroshot.pipeline.verification.render.project import load_shape, project_views
+from zeroshot.pipeline.verification.render.export_dxf import export_to_png, export_view
+from zeroshot.pipeline.verification.render.project import (
+    load_shape,
+    project_views,
+    to_own_corner,
+)
 
 
 class RenderStatus(Enum):
@@ -43,9 +50,9 @@ class RenderReport:
     """What each requested output became: a path on success, a reason on failure."""
 
     status: RenderStatus
-    techdraw_paths: TechdrawPaths
+    projection_paths: ProjectionPaths
     render3d_paths: Render3dPaths
-    techdraw_errors: Mapping[str, str] = field(default_factory=dict)
+    projection_errors: Mapping[str, str] = field(default_factory=dict)
     render3d_errors: Mapping[str, str] = field(default_factory=dict)
 
 
@@ -54,29 +61,30 @@ class RenderRequest:
     """One STEP and the paths its views are to be written to."""
 
     step_path: Path
-    techdraw_paths: TechdrawPaths
+    projection_paths: ProjectionPaths
     render3d_paths: Render3dPaths
 
 
-def _render_techdraw(
+def _render_projections(
     step_path: Path,
-    techdraw_paths: TechdrawPaths,
-) -> tuple[TechdrawPaths, dict[str, str]]:
-    """Render the three orthographic views to DXF."""
+    projection_paths: ProjectionPaths,
+) -> tuple[ProjectionPaths, dict[str, str]]:
+    """Draw each requested orthographic view into a DXF of its own."""
     errors: dict[str, str] = {}
+    requested = projection_paths.as_mapping()
+    if requested:
+        wanted = [View(name) for name in requested]
+        projections = project_views(load_shape(step_path), wanted)
+        for view in wanted:
+            path = requested[view.value]
+            export_view(path, to_own_corner(projections[view], view.value), view.value)
+            export_to_png(path)
 
-    # TODO: currently only DXF is supported
-    if techdraw_paths.svg is not None or techdraw_paths.pdf is not None:
-        raise NotImplementedError(
-            "techdraw_paths.svg and techdraw_paths.pdf must be None"
-        )
-    if techdraw_paths.dxf is not None:
-        export_dxf(techdraw_paths.dxf, arrange(project_views(load_shape(step_path))))
-
-    if techdraw_paths.dxf and not techdraw_paths.dxf.is_file():
-        techdraw_paths = replace(techdraw_paths, dxf=None)
-        errors["dxf"] = "techdraw renderer did not create a DXF file"
-    return techdraw_paths, errors
+    for view, path in requested.items():
+        if not path.is_file():
+            projection_paths = replace(projection_paths, **{view: None})
+            errors[view] = f"projection renderer did not create {view}.dxf"
+    return projection_paths, errors
 
 
 def _render_3d(
@@ -112,7 +120,7 @@ def _error_text(error: BaseException) -> str:
     return f"{type(error).__name__}: {error}"
 
 
-def _get_render_num(paths: TechdrawPaths | Render3dPaths) -> int:
+def _get_render_num(paths: ProjectionPaths | Render3dPaths) -> int:
     return sum(
         getattr(paths, path_field.name) is not None for path_field in fields(paths)
     )
@@ -120,30 +128,30 @@ def _get_render_num(paths: TechdrawPaths | Render3dPaths) -> int:
 
 def _render_once(
     input_step_path: Path,
-    output_techdraw_paths: TechdrawPaths,
+    output_projection_paths: ProjectionPaths,
     output_render3d_paths: Render3dPaths,
 ) -> RenderReport:
     """Run each component once and retain paths for successful outputs only."""
-    requested_render_num = _get_render_num(output_techdraw_paths) + _get_render_num(
+    requested_render_num = _get_render_num(output_projection_paths) + _get_render_num(
         output_render3d_paths
     )
 
-    # techdraw
+    # projections
     try:
-        output_techdraw_paths, techdraw_errors = _render_techdraw(
-            input_step_path, output_techdraw_paths
+        output_projection_paths, projection_errors = _render_projections(
+            input_step_path, output_projection_paths
         )
     except Exception as error:  # noqa: BLE001
-        for path_field in fields(output_techdraw_paths):
-            path = getattr(output_techdraw_paths, path_field.name)
+        for path_field in fields(output_projection_paths):
+            path = getattr(output_projection_paths, path_field.name)
             if path is not None:
                 path.unlink(missing_ok=True)  # delete a possibly broken DXF file
-        techdraw_errors = {
+        projection_errors = {
             path_field.name: _error_text(error)
-            for path_field in fields(TechdrawPaths)
-            if getattr(output_techdraw_paths, path_field.name) is not None
+            for path_field in fields(ProjectionPaths)
+            if getattr(output_projection_paths, path_field.name) is not None
         }
-        output_techdraw_paths = TechdrawPaths()
+        output_projection_paths = ProjectionPaths()
 
     # render3d
     try:
@@ -163,7 +171,7 @@ def _render_once(
         output_render3d_paths = Render3dPaths()
 
     # summary
-    completed_render_num = _get_render_num(output_techdraw_paths) + _get_render_num(
+    completed_render_num = _get_render_num(output_projection_paths) + _get_render_num(
         output_render3d_paths
     )
 
@@ -176,16 +184,16 @@ def _render_once(
 
     return RenderReport(
         status=status,
-        techdraw_paths=output_techdraw_paths,
+        projection_paths=output_projection_paths,
         render3d_paths=output_render3d_paths,
-        techdraw_errors=techdraw_errors,
+        projection_errors=projection_errors,
         render3d_errors=render3d_errors,
     )
 
 
 def _worker(
     input_step_path: Path,
-    output_techdraw_paths: TechdrawPaths,
+    output_projection_paths: ProjectionPaths,
     output_render3d_paths: Render3dPaths,
     connection: Connection,
 ) -> None:
@@ -193,7 +201,7 @@ def _worker(
         connection.send(
             _render_once(
                 input_step_path,
-                output_techdraw_paths,
+                output_projection_paths,
                 output_render3d_paths,
             )
         )
@@ -230,7 +238,7 @@ class StepRenderer:
     def render(
         self,
         input_step_path: Path,
-        output_techdraw_paths: TechdrawPaths,
+        output_projection_paths: ProjectionPaths,
         output_render3d_paths: Render3dPaths,
     ) -> RenderReport:
         """Render one STEP while supervising native-code hangs."""
@@ -238,7 +246,7 @@ class StepRenderer:
             [
                 RenderRequest(
                     input_step_path,
-                    output_techdraw_paths,
+                    output_projection_paths,
                     output_render3d_paths,
                 )
             ]
@@ -307,7 +315,7 @@ class StepRenderer:
             target=_worker,
             args=(
                 request.step_path,
-                request.techdraw_paths,
+                request.projection_paths,
                 request.render3d_paths,
                 sender,
             ),
@@ -370,13 +378,13 @@ def _failure_report(
     message: str,
 ) -> RenderReport:
     """Discard whatever a failed render left behind, and name it as the reason."""
-    for paths in (request.techdraw_paths, request.render3d_paths):
+    for paths in (request.projection_paths, request.render3d_paths):
         for path in paths.as_mapping().values():
             path.unlink(missing_ok=True)
     return RenderReport(
         status=status,
-        techdraw_paths=TechdrawPaths(),
+        projection_paths=ProjectionPaths(),
         render3d_paths=Render3dPaths(),
-        techdraw_errors=dict.fromkeys(request.techdraw_paths.as_mapping(), message),
+        projection_errors=dict.fromkeys(request.projection_paths.as_mapping(), message),
         render3d_errors=dict.fromkeys(request.render3d_paths.as_mapping(), message),
     )

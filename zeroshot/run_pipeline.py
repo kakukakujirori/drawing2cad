@@ -55,7 +55,7 @@ def run(config: DictConfig) -> ReconstructionState | None:
                 )
                 for sheet in config.sample.drawing.sheets
             ]
-        )
+        ),
     )
 
     return runner.run_sample(manifest)

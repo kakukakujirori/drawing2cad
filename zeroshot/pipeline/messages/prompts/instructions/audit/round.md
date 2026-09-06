@@ -8,7 +8,7 @@ Numbers in semantic evidence are in the sheet coordinates of the view each readi
 
 The built artifacts are in $attempt_dir, laid out as:
 - `output.step` — the solid that was built
-- `techdraw.dxf` — its three-view projection, for comparison against the input DXF
+- `projection/<view>.dxf` — the solid drawn in each view the input drawing names, with a `.png` of the same view beside it to look at. A drawing that names no view is not redrawn
 - `render_3d/<style>.png` — its perspective renders, named as the inputs are
 $intermediate_returns
 

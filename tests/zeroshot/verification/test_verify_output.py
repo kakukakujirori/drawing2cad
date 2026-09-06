@@ -6,13 +6,14 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from zeroshot.pipeline.messages import ArtifactPresenter
+from zeroshot.pipeline.messages import ArtifactPresenter, View
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
 from zeroshot.pipeline.verification.render.constants import (
+    ProjectionPaths,
     Render3dPaths,
-    TechdrawPaths,
 )
+from zeroshot.pipeline.verification.render.project import THIRD_ANGLE
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     ExecutionStatus,
@@ -25,6 +26,7 @@ from zeroshot.pipeline.verification.run_render import (
 )
 from zeroshot.pipeline.verification.shape_census import ShapeCensus
 from zeroshot.pipeline.verification.verify_output import (
+    FEEDBACK_PICTORIAL,
     OutputVerifier,
     VerifyOutputResult,
     _census_table,
@@ -35,6 +37,8 @@ RENDER3D_STYLES = (
     "transparent_shaded_edges_perspective",
     "hlg_translucent_faces_perspective",
 )
+
+VIEWS = ("front", "top", "right")
 
 VALID_SOURCE = """\
 import cadquery as cq
@@ -119,6 +123,7 @@ def _create_verifier(
     *,
     renderer: object | None = None,  # defaults to a StubRenderer
     artifact_presenter: ArtifactPresenter | None = None,
+    views: Sequence[View] = THIRD_ANGLE,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
     show_intermediate_returns: bool = True,
@@ -128,6 +133,7 @@ def _create_verifier(
         workdir,
         renderer=renderer or StubRenderer(),  # type: ignore[arg-type]
         artifact_presenter=artifact_presenter,
+        views=views,
         source_filename=source_filename,
         output_dirname=output_dirname,
         show_intermediate_returns=show_intermediate_returns,
@@ -143,13 +149,13 @@ class StubRenderer:
 
     def __init__(self, *, skip_styles: tuple[str, ...] = ()) -> None:
         self.skip_styles = skip_styles
-        self.calls: list[tuple[Path, TechdrawPaths, Render3dPaths]] = []
+        self.calls: list[tuple[Path, ProjectionPaths, Render3dPaths]] = []
 
     def render_many(self, requests: Sequence[RenderRequest]) -> list[RenderReport]:
         return [
             self.render(
                 request.step_path,
-                request.techdraw_paths,
+                request.projection_paths,
                 request.render3d_paths,
             )
             for request in requests
@@ -158,14 +164,14 @@ class StubRenderer:
     def render(
         self,
         input_step_path: Path,
-        output_techdraw_paths: TechdrawPaths,
+        output_projection_paths: ProjectionPaths,
         output_render3d_paths: Render3dPaths,
     ) -> RenderReport:
         self.calls.append(
-            (input_step_path, output_techdraw_paths, output_render3d_paths)
+            (input_step_path, output_projection_paths, output_render3d_paths)
         )
-        assert output_techdraw_paths.dxf is not None
-        output_techdraw_paths.dxf.write_text("0\nEOF\n", encoding="utf-8")
+        for path in output_projection_paths.as_mapping().values():
+            path.write_text("0\nEOF\n", encoding="utf-8")
 
         errors: dict[str, str] = {}
         for style in self.skip_styles:
@@ -177,7 +183,7 @@ class StubRenderer:
 
         return RenderReport(
             status=RenderStatus.OK if not errors else RenderStatus.PARTIAL,
-            techdraw_paths=output_techdraw_paths,
+            projection_paths=output_projection_paths,
             render3d_paths=output_render3d_paths,
             render3d_errors=errors,
         )
@@ -245,6 +251,7 @@ def test_the_tool_takes_no_arguments_and_names_the_file_it_builds(
         workdir,
         renderer=StubRenderer(),  # type: ignore[arg-type]
         artifact_presenter=None,
+        views=THIRD_ANGLE,
         source_filename="candidate.py",
     )
 
@@ -263,6 +270,7 @@ def test_the_tool_result_is_what_the_model_reads(tmp_path: Path) -> None:
         workdir,
         renderer=StubRenderer(),  # type: ignore[arg-type]
         artifact_presenter=_artifact_presenter(),
+        views=THIRD_ANGLE,
     )
 
     result = verify_output.invoke({})
@@ -270,7 +278,7 @@ def test_the_tool_result_is_what_the_model_reads(tmp_path: Path) -> None:
     assert _report_json(result)["status"] == "VERIFIED"
     # The source stays in the report the workflow keeps, never in the context.
     assert "source" not in _report_json(result)
-    assert "techdraw.dxf" in _text(result)
+    assert "projection/front.dxf" in _text(result)
 
 
 def test_delegates_paths_and_returns_json_safe_mapping(tmp_path: Path) -> None:
@@ -575,9 +583,13 @@ def test_verified_output_is_rendered_and_offered_to_the_model(tmp_path: Path) ->
     (rendered_step, _, _) = renderer.calls[0]
     assert rendered_step == verification_dir / "output.step"
     sandbox_dir = f"{workdir.sandbox_bind_dir}/attempts/000"
-    assert f"{sandbox_dir}/techdraw.dxf" in text
+    for view in VIEWS:
+        assert f"{sandbox_dir}/projection/{view}.dxf" in text
+    # One pictorial of the one camera, whatever the renderer wrote.
+    assert f"{sandbox_dir}/render_3d/{FEEDBACK_PICTORIAL}.png" in text
     for style in RENDER3D_STYLES:
-        assert f"{sandbox_dir}/render_3d/{style}.png" in text
+        if style != FEEDBACK_PICTORIAL:
+            assert style not in text
 
 
 def test_rendered_artifacts_stay_inside_the_verification_directory(
@@ -602,7 +614,7 @@ def test_rendered_artifacts_stay_inside_the_verification_directory(
         tmp_path / "model.py",
         verification_dir / "model.py",
         verification_dir / "output.step",
-        verification_dir / "techdraw.dxf",
+        *(verification_dir / "projection" / f"{view}.dxf" for view in VIEWS),
         *(verification_dir / "render_3d" / f"{style}.png" for style in RENDER3D_STYLES),
     }
 
@@ -628,12 +640,40 @@ def test_failed_verification_renders_nothing_and_reports_only_the_error(
 
     assert renderer.calls == []
     assert _report_json(result)["status"] == "FAILED"
-    assert "techdraw.dxf" not in _text(result)
+    assert "projection/front.dxf" not in _text(result)
 
 
-def test_partial_render_offers_only_existing_styles_and_explains_the_rest(
+def test_a_pictorial_that_failed_is_explained_where_it_would_have_been(
     tmp_path: Path,
 ) -> None:
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    renderer = StubRenderer(skip_styles=(FEEDBACK_PICTORIAL,))
+    verifier = _create_verifier(
+        executor,
+        workdir,
+        renderer=renderer,
+        artifact_presenter=_artifact_presenter(),
+    )
+
+    result = verifier.feedback()
+    text = _text(result)
+
+    assert f"{FEEDBACK_PICTORIAL}.png" not in text
+    # The reason belongs where the render would have been, not in the report.
+    assert "render_errors" not in _report_json(result)
+    assert (
+        f"- sheet_{FEEDBACK_PICTORIAL}: unavailable "
+        f"(RuntimeError: {FEEDBACK_PICTORIAL} failed)"
+    ) in text
+
+
+def test_a_style_that_is_not_offered_is_neither_named_nor_explained(
+    tmp_path: Path,
+) -> None:
+    """The renderer draws three; a message that named all three would spend
+    itself saying the same camera three times."""
     executor = StubCadQueryExecutor(_execution_report())
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
@@ -645,17 +685,10 @@ def test_partial_render_offers_only_existing_styles_and_explains_the_rest(
         artifact_presenter=_artifact_presenter(),
     )
 
-    result = verifier.feedback()
-    text = _text(result)
+    text = _text(verifier.feedback())
 
-    assert "transparent_shaded_edges_perspective.png" not in text
-    assert "hlg_perspective.png" in text
-    # The reason belongs where the render would have been, not in the report.
-    assert "render_errors" not in _report_json(result)
-    assert (
-        "- sheet_transparent_shaded_edges_perspective: unavailable "
-        "(RuntimeError: transparent_shaded_edges_perspective failed)"
-    ) in text
+    assert "transparent_shaded_edges_perspective" not in text
+    assert f"{FEEDBACK_PICTORIAL}.png" in text
 
 
 def test_result_carries_paths_but_never_the_drawing_itself(
@@ -674,10 +707,10 @@ def test_result_carries_paths_but_never_the_drawing_itself(
 
     text = _text(verifier.feedback())
 
-    dxf_body = (tmp_path / "attempts" / "000" / "techdraw.dxf").read_text(
+    dxf_body = (tmp_path / "attempts" / "000" / "projection" / "front.dxf").read_text(
         encoding="utf-8"
     )
-    assert "techdraw.dxf" in text
+    assert "projection/front.dxf" in text
     assert dxf_body not in text
 
 
@@ -716,8 +749,8 @@ def test_without_an_artifact_presenter_the_model_sees_only_the_report(
     result = verifier.feedback()
 
     assert _report_json(result)["status"] == "VERIFIED"
-    assert "techdraw.dxf" not in _text(result)
-    assert (tmp_path / "attempts" / "000" / "techdraw.dxf").is_file()
+    assert "projection/front.dxf" not in _text(result)
+    assert (tmp_path / "attempts" / "000" / "projection" / "front.dxf").is_file()
 
 
 def test_the_table_states_each_return_and_its_change() -> None:
@@ -798,7 +831,8 @@ def test_every_kept_return_is_drawn_beside_its_step(tmp_path: Path) -> None:
     )
     for name in ("ret_base", "ret_hole"):
         assert (returns_dir / name / "output.step").is_file()
-        assert (returns_dir / name / "techdraw.dxf").is_file()
+        for view in VIEWS:
+            assert (returns_dir / name / "projection" / f"{view}.dxf").is_file()
         for style in RENDER3D_STYLES:
             assert (returns_dir / name / "render_3d" / f"{style}.png").is_file()
 
@@ -864,6 +898,7 @@ def test_the_returns_are_neither_kept_nor_drawn_when_switched_off(
         workdir,
         renderer=renderer,  # type: ignore[arg-type]
         artifact_presenter=None,
+        views=THIRD_ANGLE,
         show_intermediate_returns=False,
     )
 
@@ -895,9 +930,9 @@ def test_a_result_that_fails_still_reports_what_the_returns_built(
     assert "ret_base  volume 100.0" in text
     assert "ret_hole  volume 200.0 (+100.0)" in text
     returns_dir = tmp_path / "attempts" / "000" / "intermediate_returns"
-    assert (returns_dir / "ret_base" / "techdraw.dxf").is_file()
+    assert (returns_dir / "ret_base" / "projection" / "front.dxf").is_file()
     # No STEP of its own, so the attempt's own views are absent.
-    assert "attempts/000/techdraw.dxf" not in text
+    assert "attempts/000/projection/front.dxf" not in text
 
 
 def test_a_part_that_broke_apart_says_how_many_pieces() -> None:
@@ -952,3 +987,28 @@ def test_a_build_the_program_broke_is_not_attempted_again(tmp_path: Path) -> Non
     verifier.verify()
 
     assert len(executor.calls) == 1
+
+
+def test_the_verifier_asks_for_exactly_the_views_it_was_given(
+    tmp_path: Path,
+) -> None:
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    renderer = StubRenderer()
+    verifier = _create_verifier(
+        executor,
+        workdir,
+        renderer=renderer,
+        views=(View.LEFT, View.BOTTOM),
+        artifact_presenter=_artifact_presenter(),
+    )
+
+    text = _text(verifier.feedback())
+
+    (_, projection_paths, _) = renderer.calls[0]
+    assert set(projection_paths.as_mapping()) == {"left", "bottom"}
+    sandbox_dir = f"{workdir.sandbox_bind_dir}/attempts/000"
+    assert f"{sandbox_dir}/projection/left.dxf" in text
+    assert "sheet_left (left)" in text
+    assert "front.dxf" not in text

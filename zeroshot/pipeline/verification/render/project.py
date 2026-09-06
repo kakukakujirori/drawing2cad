@@ -1,14 +1,19 @@
-"""STEP -> the three orthographic projections of a third-angle drawing.
+"""STEP -> the orthographic projections a drawing asks for.
 
 Reads the solid, runs hidden-line removal once per view frame, and returns the
-projected 2D primitives in model units, centred on the projection origin.
-arrange.py turns them into sheet-mm positions.
+projected 2D primitives in model units. `to_own_corner` then reads each view
+from its own bottom-left corner, which is where the drawing contract measures a
+sheet from.
+
+The frames are the contract's own `VIEW_FRAME`, not a second copy of it: the
+model is told those axes as `$view_frame`, and a projection drawn on any other
+convention would be compared against a drawing that does not share it.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from OCC.Core.Bnd import Bnd_Box
@@ -16,19 +21,48 @@ from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Core.TopoDS import TopoDS_Shape
 
-from zeroshot.pipeline.verification.render._hlr import ViewProjection, project
+from zeroshot.pipeline.messages.contracts.drawings import VIEW_FRAME, View
+from zeroshot.pipeline.verification.render._hlr import (
+    Arc,
+    Circle,
+    Ellipse,
+    Polyline,
+    ProjectedEdges,
+    Segment,
+    ViewProjection,
+    project,
+)
 
-# Third-angle view frames, verified against GT by raster-IoU.  Each entry is
-# (eye_dir, up_dir).  eye_dir points from the model *toward the viewer* -- it is
-# the projection plane's outward normal, so the gaze runs the other way; up_dir
-# becomes screen +Y, and screen +X is then up_dir x eye_dir.
-#
-# The last column is where a model point (x, y, z) lands in screen coordinates.
-# top's screen +Y is -Z because in third-angle projection moving up the top view
-# means moving *away* from the front view's viewer, and +Z faces that viewer.
-FRONT = ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0))  # eye +Z, up +Y  -> screen ( X,  Y)
-TOP = ((0.0, 1.0, 0.0), (0.0, 0.0, -1.0))  # eye +Y, up -Z  -> screen ( X, -Z)
-RIGHT = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))  # eye +X, up +Y  -> screen (-Z,  Y)
+type _Direction = tuple[float, float, float]
+
+_AXES: Mapping[str, _Direction] = {
+    "+x": (1.0, 0.0, 0.0),
+    "-x": (-1.0, 0.0, 0.0),
+    "+y": (0.0, 1.0, 0.0),
+    "-y": (0.0, -1.0, 0.0),
+    "+z": (0.0, 0.0, 1.0),
+    "-z": (0.0, 0.0, -1.0),
+}
+
+# What a third-angle drawing shows, and what this module draws when a caller
+# does not say. Verified against GT by raster-IoU.
+THIRD_ANGLE: tuple[View, ...] = (View.FRONT, View.TOP, View.RIGHT)
+
+
+def frame_of(view: View) -> tuple[_Direction, _Direction]:
+    """The (eye_dir, up_dir) the contract fixes for `view`.
+
+    A frame's `out` axis is the projection plane's outward normal, so it points
+    from the model toward the viewer and the gaze runs the other way. `up`
+    becomes screen +Y, and screen +X is then up x eye, which is the frame's
+    `right`. Top's up is -z because moving up the top view means moving away
+    from the front view's viewer.
+    """
+    if view not in VIEW_FRAME:
+        raise ValueError(f"{view.value} is not an orthographic view")
+    _, up, out = VIEW_FRAME[view]
+    return _AXES[out], _AXES[up]
+
 
 # Curve discretisation and edge-merge tolerance, expressed as fractions of the
 # model's bounding-box diagonal so the renderer is unit-agnostic.
@@ -43,14 +77,14 @@ MERGE_TOL_FRAC = 5e-4
 # view that would otherwise be empty, so good views are bit-for-bit unchanged.
 _TILT_EPS = (1e-3, 3e-3, 1e-2)
 
+# A view narrower than this on either axis carries no recoverable shape. It
+# only fires on pathological inputs: an empty projection, or a knife-edge view
+# of a near-zero-thickness plate that collapses to a single line.
+MIN_VIEW_EXTENT_MM = 0.05
 
-@dataclass(frozen=True)
-class ViewProjections:
-    """The three projections of one part.  Field name == view name == DXF layer."""
 
-    front: ViewProjection
-    top: ViewProjection
-    right: ViewProjection
+class DegenerateDrawingError(RuntimeError):
+    """A projection holds nothing a drawing could be made of."""
 
 
 def load_shape(step_path: Path) -> TopoDS_Shape:
@@ -99,8 +133,12 @@ def _project_nonempty(
     return projection
 
 
-def project_views(shape: TopoDS_Shape, include_smooth: bool = False) -> ViewProjections:
-    """Project ``shape`` for the front, top and right frames.
+def project_views(
+    shape: TopoDS_Shape,
+    views: Iterable[View] = THIRD_ANGLE,
+    include_smooth: bool = False,
+) -> dict[View, ViewProjection]:
+    """Project ``shape`` for each of ``views``.
 
     ``include_smooth`` adds tangent (Rg1) edges, which GT suppresses.
     """
@@ -110,8 +148,43 @@ def project_views(shape: TopoDS_Shape, include_smooth: bool = False) -> ViewProj
         "include_smooth": include_smooth,
         "merge_tol": MERGE_TOL_FRAC * diagonal,
     }
-    return ViewProjections(
-        front=_project_nonempty(shape, FRONT, **kwargs),
-        top=_project_nonempty(shape, TOP, **kwargs),
-        right=_project_nonempty(shape, RIGHT, **kwargs),
+    return {view: _project_nonempty(shape, frame_of(view), **kwargs) for view in views}
+
+
+def _translated(edges: ProjectedEdges, dx: float, dy: float) -> ProjectedEdges:
+    """Move every primitive. No scale or rotation, so angles carry over."""
+
+    def point(p: tuple[float, float]) -> tuple[float, float]:
+        return (p[0] + dx, p[1] + dy)
+
+    return ProjectedEdges(
+        segments=[Segment(point(e.p0), point(e.p1)) for e in edges.segments],
+        arcs=[Arc(point(e.center), e.radius, e.a0, e.a1, e.ccw) for e in edges.arcs],
+        circles=[Circle(point(e.center), e.radius) for e in edges.circles],
+        ellipses=[
+            Ellipse(point(e.center), e.rmaj, e.rmin, e.rot, e.a0, e.a1)
+            for e in edges.ellipses
+        ],
+        polylines=[Polyline([point(p) for p in e.pts]) for e in edges.polylines],
+    )
+
+
+def to_own_corner(projection: ViewProjection, name: str) -> ViewProjection:
+    """The same view read from its own bottom-left corner, at 1:1.
+
+    `name` only exists to say which view was refused.
+    """
+    x_min, y_min, x_max, y_max = projection.bbox(include_hidden=True)
+    if not all(math.isfinite(c) for c in (x_min, y_min, x_max, y_max)):
+        raise DegenerateDrawingError(
+            f"view {name!r} bbox is not finite: {(x_min, y_min, x_max, y_max)}"
+        )
+    width, height = x_max - x_min, y_max - y_min
+    if width < MIN_VIEW_EXTENT_MM or height < MIN_VIEW_EXTENT_MM:
+        raise DegenerateDrawingError(
+            f"view {name!r} has near-zero extent (w={width:.4f}, h={height:.4f} mm)"
+        )
+    return ViewProjection(
+        visible=_translated(projection.visible, -x_min, -y_min),
+        hidden=_translated(projection.hidden, -x_min, -y_min),
     )
