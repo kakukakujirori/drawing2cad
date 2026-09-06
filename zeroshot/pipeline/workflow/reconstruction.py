@@ -90,8 +90,7 @@ def open_next_round(
 
     # As for a reasoning stage: the tickets this opens carry the finding's own
     # words into the next round, so the addresses in them are resolved here.
-    if current.semantics is not None:
-        report = resolve_references(report, current.semantics)
+    report = resolve_references(report, current.semantics, current.drawings)
 
     next_round = current.round + 1
     tickets = [_ticket_from_finding(next_round, finding) for finding in report.findings]
@@ -160,16 +159,19 @@ def advance_reconstruction(
     )
 
     # After validation, which judges the addresses the model wrote rather than
-    # the values this puts beside them.
+    # the values this puts beside them. Both artifacts are read as this stage
+    # leaves them, so a stage that revised one is cited against its own answer.
     cited_hypothesis = (
         deliverable
         if isinstance(deliverable, SemanticHypothesis)
         else current.semantics
     )
-    if cited_hypothesis is not None:
-        if deliverable is not None:
-            deliverable = resolve_references(deliverable, cited_hypothesis)
-        submission = resolve_references(submission, cited_hypothesis)
+    cited_drawing = (
+        deliverable if isinstance(deliverable, DrawingSource) else current.drawings
+    )
+    if deliverable is not None:
+        deliverable = resolve_references(deliverable, cited_hypothesis, cited_drawing)
+    submission = resolve_references(submission, cited_hypothesis, cited_drawing)
 
     responses_by_ticket = {
         response.ticket_id: response for response in submission.responses

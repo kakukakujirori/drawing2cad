@@ -4,7 +4,7 @@ The current workspace source is at:
 
 $output_path
 
-Numbers in semantic evidence are in the sheet coordinates of the view each reading names: $view_frame.
+A feature's `evidence` names entries of the drawing rather than restating them. Those entries hold the numbers, in the coordinates of the view each one belongs to: $view_frame.
 
 The built artifacts are in $attempt_dir, laid out as:
 - `output.step` — the solid that was built

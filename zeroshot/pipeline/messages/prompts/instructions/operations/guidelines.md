@@ -1,9 +1,9 @@
 Guidelines:
 - Every entry is one modelling operation that turns the part so far into the part after it. Say which one in `verb`. A profile is not an operation -- it belongs to the entry that extrudes, revolves or sweeps it.
-- The hypothesis's `geometry` gives each feature's shape and size but never where it sits. Placing the features on the part is this stage's work, done by matching the evidence across views.
-- Its `evidence` holds numbers read straight off the drawing, in the sheet coordinates of the view each reading names: $view_frame.
+- The hypothesis's `geometry` gives each feature's shape and size but never where it sits. Placing the features on the part is this stage's work, done by matching what its features cite across views.
+- A feature's `evidence` names entries of the drawing rather than restating them. Those entries hold the numbers read off the sheet, in the coordinates of the view each one belongs to: $view_frame.
 - Place an operation against the features around it, not against a coordinate system of your own: on the face of a feature, on the axis of one, through the width of one. The plan is about the solid, and where the sheet sits relative to the model is the coder's to settle once.
-- Do not copy a number out of the hypothesis. Cite it as `sem_<feature>.geo_<claim>.<parameter>` or `sem_<feature>.ev_<reading>.<parameter>` -- `sem_main_bore.geo_cylinder.radius` -- and the value is filled in for you. Add `.x` or `.y` for one number of a point. Stop at the member, `sem_base_profile.ev_front_left_edge`, to name a whole reading: which readings bound a profile, or an extent taken across one. Write out only what the hypothesis does not hold: a depth you chose, an offset you worked out, a clearance.
+- Do not copy a number out of the hypothesis or the drawing. Cite it and the value is filled in for you. A 3D claim is `sem_<feature>.geo_<claim>.<parameter>`, as in `sem_main_bore.geo_cylinder.radius`. An entry or a printed figure of the drawing stands alone, because its name is unique across the drawing, and must name its parameter: `ev_front_left_edge.start`, `dim_bore_diameter.nominal`. Add `.x` or `.y` for one number of a point. A claim's address may stop at the claim, `sem_base_profile.geo_plane`, to mean everything it states. Write out only what neither artifact holds: a depth you chose, an offset you worked out, a clearance.
 - Keep the plan, which is what your edits merge into and not what you write out, to at most 25 entries.
 - Name each operation in `name`, beginning `op_` and carrying on in lower_snake_case, for what the step does: `op_base_plate`, `op_bore_through`, `op_fillet_top_edges`. The `op_` marks it as a step the way `sem_` marks a hypothesis feature, so a step named after the feature it builds still reads as the step. The name is how every later stage cites it, and it carries no position -- the order is worked out separately.
 - Say what each operation waits on, in `depends_on`, and which hypothesis features it helps build, in `semantics`. Both hold stable names: a step waiting on `op_base_plate` and building `sem_main_bore` has `depends_on: ["op_base_plate"]` and `semantics: ["sem_main_bore"]`; an empty list says there are none. A feature may take several operations, and an operation may serve several. An operation may only wait on others in the same plan, and the waiting must not come round in a circle.
@@ -18,10 +18,10 @@ Guidelines:
 
 A `detail` reads like these. The name, the verb, the dependencies and the features the step builds go in their own fields, so none of them is written into the sentence:
 - "Extrude the front-view outline 25 mm along +z to form the base plate."
-- "Cut a hole of sem_main_bore.geo_cylinder.radius through the plate at sem_main_bore.ev_front_circle.center, entering the +y face."
+- "Cut a hole of sem_main_bore.geo_cylinder.radius through the plate at ev_front_circle.center, entering the +y face."
 
-Plain numbers in them are allowed if they are not present in the semantic hypothesis. Anything it holds should be cited instead, like `sem_main_bore.geo_cylinder.radius` or `sem_main_bore.ev_front_circle.center`.
+Plain numbers in them are allowed if neither the hypothesis nor the drawing holds them. Anything either one holds should be cited instead, like `sem_main_bore.geo_cylinder.radius` or `ev_front_circle.center`.
 
-Cite a parameter under the name the feature states it by -- the ones you can see in its `geometry` and `evidence` above.
+Cite a parameter under the name its own artifact states it by -- the ones you can see in a feature's `geometry`, and in the drawing's entries and printed figures.
 
 Stop calling tools when you answer, and write nothing around the answer itself.

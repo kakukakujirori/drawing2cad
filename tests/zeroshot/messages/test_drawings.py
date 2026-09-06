@@ -124,7 +124,7 @@ def test_source_round_trip_includes_crop_ancestry_and_dimension_references():
     }
     new = DrawingSource.model_validate(value)
     assert DrawingSource.model_validate_json(new.model_dump_json()) == new
-    assert new.cited_names() == {"ev_edge"}
+    assert new.cited_names() == {"ev_edge", "dim_length"}
 
 
 @pytest.mark.parametrize(

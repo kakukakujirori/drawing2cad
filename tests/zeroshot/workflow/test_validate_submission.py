@@ -13,8 +13,10 @@ from tests.zeroshot.contracts import (
     geometry,
     hypothesis,
     replacing,
+    sheet,
 )
 from zeroshot.pipeline.messages.contracts import (
+    DrawingSource,
     Operation,
     OperationPlan,
     OperationVerb,
@@ -104,6 +106,7 @@ def _snapshot(
     *,
     tickets: list[Ticket] | None = None,
     semantics: SemanticHypothesis | None = None,
+    drawings: DrawingSource | None = None,
 ) -> ReconstructionSnapshot:
     current_semantics = None
     if completed_stage in {
@@ -152,7 +155,7 @@ def _snapshot(
         open_tickets=tickets or [_ticket("ticket_initial", *completed_stages)],
         round=0,
         last_completed_stage=completed_stage,
-        drawings=drawing(),
+        drawings=drawings or drawing(),
         semantics=current_semantics,
         operations=operations,
         program_source=verification.source if verification is not None else None,
@@ -322,13 +325,14 @@ def test_operations_must_cover_only_current_semantic_features() -> None:
 def _validate_plan(
     plan: OperationPlan,
     semantics: SemanticHypothesis,
+    drawings: DrawingSource | None = None,
 ) -> None:
     _merge_and_validate(
         OperationSubmission(
             **replacing(plan),
             responses=[_response("ticket_initial", PipelineStage.OPERATIONS)],
         ),
-        _snapshot(PipelineStage.SEMANTICS, semantics=semantics),
+        _snapshot(PipelineStage.SEMANTICS, semantics=semantics, drawings=drawings),
     )
 
 
@@ -420,11 +424,10 @@ def test_operation_validation_rejects_a_nonexistent_parameter_address() -> None:
 
 
 def test_operation_validation_accepts_one_coordinate_of_a_point() -> None:
-    held = hypothesis(
-        proposal=[
-            feature(
-                "sem_main_bore",
-                "main bore",
+    drawn = drawing(
+        sheets=[
+            sheet(
+                "front",
                 evidence=[
                     evidence(
                         "circle",
@@ -436,16 +439,19 @@ def test_operation_validation_accepts_one_coordinate_of_a_point() -> None:
             )
         ]
     )
+    held = hypothesis(
+        proposal=[feature("sem_main_bore", "main bore", evidence=["ev_front_circle"])]
+    )
 
     _validate_plan(
         _plan_for(
             ["sem_main_bore"],
             detail=(
-                "Cut from sem_main_bore.ev_front_circle.center.x up to "
-                "sem_main_bore.ev_front_circle.center.y."
+                "Cut from ev_front_circle.center.x up to ev_front_circle.center.y."
             ),
         ),
         held,
+        drawn,
     )
 
 
@@ -460,14 +466,13 @@ def test_operation_validation_rejects_a_coordinate_of_a_single_number() -> None:
         )
 
 
-def test_operation_validation_accepts_an_address_that_stops_at_the_member() -> None:
-    """An operation names a reading as often to say which one it works from as
+def test_operation_validation_accepts_a_whole_entry_of_the_drawing() -> None:
+    """An operation names an entry as often to say which one it works from as
     to ask for a number out of it."""
-    held = hypothesis(
-        proposal=[
-            feature(
-                "sem_main_bore",
-                "main bore",
+    drawn = drawing(
+        sheets=[
+            sheet(
+                "front",
                 evidence=[
                     evidence(
                         "line",
@@ -479,13 +484,17 @@ def test_operation_validation_accepts_an_address_that_stops_at_the_member() -> N
             )
         ]
     )
+    held = hypothesis(
+        proposal=[feature("sem_main_bore", "main bore", evidence=["ev_top_edge"])]
+    )
 
     _validate_plan(
         _plan_for(
             ["sem_main_bore"],
-            detail="Extrude the profile bounded by sem_main_bore.ev_top_edge.",
+            detail="Extrude the profile bounded by ev_top_edge.start.",
         ),
         held,
+        drawn,
     )
 
 

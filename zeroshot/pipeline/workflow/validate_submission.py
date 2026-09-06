@@ -105,6 +105,7 @@ def validate_submission(
                 raise SubmissionValidationError(
                     "semantics must revise a SemanticHypothesis"
                 )
+            _validate_semantics(deliverable, snapshot)
         case PipelineStage.OPERATIONS:
             if not isinstance(deliverable, OperationPlan):
                 raise SubmissionValidationError(
@@ -184,6 +185,29 @@ def _validate_ticket_responses(
 ################################################################
 
 
+def _validate_semantics(
+    hypothesis: SemanticHypothesis,
+    snapshot: ReconstructionSnapshot,
+) -> None:
+    """That every feature rests on something the drawing actually holds.
+
+    The hypothesis cannot check this itself: since the drawing became a stage
+    of its own, the entries a feature cites live in another artifact.
+    """
+    known = snapshot.drawings.cited_names()
+    errors = [
+        f"{feature.name} cites {', '.join(missing)}, which the drawing does not hold"
+        for feature in hypothesis.proposal
+        if (missing := sorted(set(feature.evidence) - known))
+    ]
+    if errors:
+        raise SubmissionValidationError(
+            "\n".join(errors)
+            + "\nCite an entry by the name the drawing gives it, and report a "
+            "reading you needed and could not find in `open_question`."
+        )
+
+
 def _validate_operations(
     operations: OperationPlan,
     snapshot: ReconstructionSnapshot,
@@ -194,8 +218,8 @@ def _validate_operations(
         )
 
     # The submitted plan is the operations candidate; the snapshot contains
-    # the semantics already integrated earlier in this same round.
-    errors = _operation_plan_errors(operations, snapshot.semantics)
+    # the drawing and the semantics already integrated earlier in this round.
+    errors = _operation_plan_errors(operations, snapshot.semantics, snapshot.drawings)
     if errors:
         raise SubmissionValidationError(" ".join(errors))
 
@@ -203,6 +227,7 @@ def _validate_operations(
 def _operation_plan_errors(
     plan: OperationPlan,
     hypothesis: SemanticHypothesis,
+    drawing: DrawingSource,
 ) -> list[str]:
     """Cross-stage contradictions that neither artifact can check alone."""
     established = {feature.name for feature in hypothesis.proposal}
@@ -240,21 +265,21 @@ def _operation_plan_errors(
             named += f" and {len(copied) - _NAMED_AT_MOST} more"
         errors.append(
             f"{operation.name} writes out {named}, which the hypothesis already "
-            "holds. Cite it as sem_<feature>.geo_<claim>.<parameter> or "
-            "sem_<feature>.ev_<reading>.<parameter> instead; the number is put "
-            "in for you, and a number retyped is a number that can be mistyped."
+            "holds. Cite it as sem_<feature>.geo_<claim>.<parameter> instead; "
+            "the number is put in for you, and a number retyped is a number "
+            "that can be mistyped."
         )
 
     for operation in sorted(plan.proposal, key=lambda item: item.name):
-        if unresolved := unresolved_references(operation.detail, hypothesis):
+        if unresolved := unresolved_references(operation.detail, hypothesis, drawing):
             named = ", ".join(unresolved)
             errors.append(
-                f"{operation.name} refers to {named}, which does not identify "
-                "anything in the hypothesis. Name a feature and a member it "
-                "holds, such as sem_main_bore.ev_front_circle, and add the "
-                "parameter you mean: sem_main_bore.geo_cylinder.radius. For "
-                "one number of a point, add .x or .y: "
-                "sem_main_bore.ev_front_circle.center.x."
+                f"{operation.name} refers to {named}, which names nothing the "
+                "round holds. A claim of a feature is sem_main_bore.geo_cylinder"
+                ".radius; an entry or a figure of the drawing stands alone and "
+                "must name its parameter, as ev_front_circle.center and "
+                "dim_bore_diameter.nominal do. For one number of a point, add "
+                ".x or .y: ev_front_circle.center.x."
             )
 
     return errors
@@ -264,8 +289,8 @@ def _hypothesis_numbers(hypothesis: SemanticHypothesis) -> list[float]:
     return [
         number
         for feature in hypothesis.proposal
-        for member in (*feature.geometry, *feature.evidence)
-        for parameter in member.parameters
+        for claim in feature.geometry
+        for parameter in claim.parameters
         for number in parameter.values
     ]
 

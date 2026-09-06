@@ -37,7 +37,7 @@ from zeroshot.pipeline.workflow.components.compact import (
 from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
 
 _ROLE = "cad_reconstructor"
-_INPUT_MARKER = "[Input DXF path:"
+_INPUT_MARKER = "[Input drawing]"
 
 
 class _Models(TypedDict):

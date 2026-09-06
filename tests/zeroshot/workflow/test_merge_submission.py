@@ -2,7 +2,7 @@
 
 import pytest
 
-from tests.zeroshot.contracts import drawing, evidence, feature, geometry, replacing
+from tests.zeroshot.contracts import drawing, feature, geometry, replacing
 from zeroshot.pipeline.messages.contracts import (
     Operation,
     OperationPlan,
@@ -121,7 +121,7 @@ def _bore() -> object:
         "sem_main_bore",
         "the bore through the plate",
         geometry=[geometry("cylinder", name="geo_cylinder")],
-        evidence=[evidence("circle", name="ev_front_circle")],
+        evidence=["ev_front_circle"],
     )
 
 
@@ -161,7 +161,7 @@ def test_a_first_round_builds_the_whole_artifact_from_its_edits() -> None:
         responses=_responses(PipelineStage.SEMANTICS),
     )
 
-    assert _merged_semantics(submission, None) == previous
+    assert _merged_semantics(submission, _first_round()) == previous
 
 
 def test_an_untouched_member_survives_a_revision() -> None:
@@ -185,7 +185,7 @@ def test_an_edited_feature_keeps_the_geo_and_ev_members_it_leaves_out() -> None:
                     "sem_main_bore",
                     "the bore through the plate",
                     geometry=[wider],
-                    evidence=[],
+                    evidence=["ev_front_circle"],
                 )
             ]
         }
@@ -194,7 +194,7 @@ def test_an_edited_feature_keeps_the_geo_and_ev_members_it_leaves_out() -> None:
     revised = _merged_semantics(submission, _preceding()).proposal[1]
 
     assert revised.geometry == [wider]
-    assert [reading.name for reading in revised.evidence] == ["ev_front_circle"]
+    assert revised.evidence == ["ev_front_circle"]
 
 
 def test_a_new_member_is_appended_and_an_edited_one_keeps_its_place() -> None:
@@ -225,7 +225,7 @@ def test_deleting_a_whole_feature_and_one_member_of_another() -> None:
 
     assert [f.name for f in merged.proposal] == ["sem_main_bore"]
     assert merged.proposal[0].geometry == []
-    assert [r.name for r in merged.proposal[0].evidence] == ["ev_front_circle"]
+    assert merged.proposal[0].evidence == ["ev_front_circle"]
 
 
 def test_a_null_rationale_keeps_the_preceding_one() -> None:
@@ -241,7 +241,7 @@ def test_a_first_round_must_state_a_rationale() -> None:
     ("deleted", "message"),
     [
         (["sem_absent"], "no such feature"),
-        (["sem_main_bore.geo_absent"], "has no member"),
+        (["sem_main_bore.geo_absent"], "has no claim"),
         (["sem_absent.geo_cylinder"], "not an address"),
         (["sem_main_bore.geo_cylinder.radius"], "not an address"),
     ],
@@ -264,11 +264,31 @@ def test_an_operation_is_deleted_by_its_own_name_alone() -> None:
 
 
 def test_a_revision_that_leaves_a_feature_unsupported_is_rejected() -> None:
+    """A citation is dropped by giving the feature again without it, so the
+    revision that empties one is a whole feature rather than an address."""
+    submission = _semantics().model_copy(
+        update={
+            "edits": [
+                feature(
+                    "sem_main_bore",
+                    "the bore through the plate",
+                    geometry=[geometry("cylinder", name="geo_cylinder")],
+                    evidence=[],
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(SubmissionValidationError, match="cites no evidence"):
+        merge_submission(submission, _preceding(), PipelineStage.SEMANTICS)
+
+
+def test_a_citation_has_no_address_of_its_own() -> None:
     submission = _semantics().model_copy(
         update={"deleted": ["sem_main_bore.ev_front_circle"]}
     )
 
-    with pytest.raises(SubmissionValidationError, match="cites no evidence"):
+    with pytest.raises(SubmissionValidationError, match="has no claim called"):
         merge_submission(submission, _preceding(), PipelineStage.SEMANTICS)
 
 

@@ -176,7 +176,9 @@ def _revised_feature(
         description=edit.description,
         open_question=edit.open_question,
         geometry=_merged_list(base.geometry, _by_name(edit.geometry), dropped),
-        evidence=_merged_list(base.evidence, _by_name(edit.evidence), dropped),
+        # Not merged: `evidence` is a citation list rather than named members,
+        # so a feature given again says what it now rests on, whole.
+        evidence=list(edit.evidence),
     )
 
 
@@ -219,7 +221,7 @@ def _dropped_members(
     deleted: Sequence[str],
     previous: Sequence[SemanticFeature],
 ) -> dict[str, set[str]]:
-    """The geo_ and ev_ names dropped from each feature, checked against it."""
+    """The geo_ claims dropped from each feature, checked against it."""
     known = _by_name(previous)
     dropped: dict[str, set[str]] = {}
     for address in deleted:
@@ -230,12 +232,13 @@ def _dropped_members(
         if feature is None or "." in member_name:
             raise SubmissionValidationError(
                 f"{address} is not an address in the current hypothesis: name a "
-                "whole feature as sem_main_bore, or one of its members as "
-                "sem_main_bore.geo_cylinder"
+                "whole feature as sem_main_bore, or one of its claims as "
+                "sem_main_bore.geo_cylinder. A citation is dropped by giving "
+                "the feature again without it."
             )
-        if member_name not in _by_name([*feature.geometry, *feature.evidence]):
+        if member_name not in _by_name(feature.geometry):
             raise SubmissionValidationError(
-                f"cannot delete {address}: {feature_name} has no member "
+                f"cannot delete {address}: {feature_name} has no claim "
                 f"called {member_name}"
             )
         dropped.setdefault(feature_name, set()).add(member_name)

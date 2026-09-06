@@ -138,7 +138,9 @@ def feature(
         ),
         "description": description,
         "geometry": [],
-        "evidence": ["ev_line"],
+        # What `drawing()` holds, so a hypothesis and a drawing built by these
+        # helpers agree about what the features rest on.
+        "evidence": ["ev_front_line"],
         "open_question": None,
         **overrides,
     }

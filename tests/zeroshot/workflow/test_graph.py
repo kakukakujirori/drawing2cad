@@ -368,6 +368,7 @@ def test_an_accepted_round_is_integrated_and_persisted(
     assert snapshot.operations == _plan()
     assert snapshot.program_source == _PROGRAM
     assert [response.stage for response in snapshot.open_tickets[0].responses] == [
+        PipelineStage.DRAWINGS,
         PipelineStage.SEMANTICS,
         PipelineStage.OPERATIONS,
         PipelineStage.CODING,

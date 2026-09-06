@@ -368,8 +368,10 @@ class DrawingSource(BaseModel):
         return [figure for sheet in self.sheets for figure in sheet.dimensions]
 
     def cited_names(self) -> set[str]:
-        """The entities a later stage may cite. A printed figure is not one."""
-        return {entry.name for entry in self.evidence()}
+        """Every name a later stage may cite, entries and printed figures alike."""
+        return {entry.name for entry in self.evidence()} | {
+            figure.name for figure in self.dimensions()
+        }
 
     def paths(self) -> list[Path]:
         """Every file this drawing is made of."""

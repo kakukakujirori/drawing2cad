@@ -37,8 +37,8 @@ ReconstructionRun
    │     └─ dimensions: `name`, `kind`, `text`, `nominal`, `quantity`, `note`
    ├─ `semantics`: SemanticHypothesis | null
    │  ├─ `proposal[]`: `name`, `description`, `geometry[]`, `evidence[]`, `open_question`
-   │  │  ├─ geometry: `name`, `kind`, `source`, `axis`, `parameters[]`
-   │  │  └─ evidence: `name`, `view`, `entity`, `edge_style`, `parameters[]`
+   │  │  ├─ geometry: `name`, `kind`, `axis`, `parameters[]`
+   │  │  └─ evidence: the `ev_` names of the entries this feature rests on
    │  └─ `rationale`
    ├─ `operations`: OperationPlan | null
    │  ├─ `proposal[]`: `name`, `verb`, `detail`, `depends_on`, `semantics`
@@ -59,7 +59,7 @@ jq -c '.snapshots[-1].open_tickets[] | select(.ticket_id == "ticket_001_wrong_bo
 
 # An index of names. Read this before any artifact body.
 jq -c '[.snapshots[-1].drawings.sheets[] | {name, role, ev: [.evidence[].name], dim: [.dimensions[].name]}]' '$reconstruction_path'
-jq -c '[.snapshots[-1].semantics.proposal[] | {name, geo: [.geometry[].name], ev: [.evidence[].name]}]' '$reconstruction_path'
+jq -c '[.snapshots[-1].semantics.proposal[] | {name, geo: [.geometry[].name], ev: .evidence}]' '$reconstruction_path'
 jq -c '[.snapshots[-1].operations.proposal[] | {name, verb, depends_on, semantics}]' '$reconstruction_path'
 
 # What each stage reported, including any doubt it raised about the stage above it.

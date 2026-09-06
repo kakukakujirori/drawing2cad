@@ -286,22 +286,22 @@ class SemanticSubmission(ProposalSubmission[SemanticFeature]):
         description=(
             "Every feature you changed, each complete and under its stable "
             "sem_ name: a name the hypothesis already holds replaces that "
-            "feature, and a new name adds one. A feature is itself a list of "
-            "named geo_ and ev_ members, and the same rule holds within it -- "
-            "give the members you changed and leave the rest out, and the ones "
-            "you leave out keep what they had. `description` and "
-            "`open_question` carry no name of their own, so state them "
-            "whenever you give a feature."
+            "feature, and a new name adds one. Its geo_ claims follow the same "
+            "rule -- give the ones you changed and leave the rest out, and the "
+            "ones you leave out keep what they had. `evidence` is a citation "
+            "list rather than named members, so give the whole of it whenever "
+            "you give the feature, and state `description` and `open_question` "
+            "then too, since they carry no name of their own."
         ),
     )
     deleted: list[str] = Field(
         ...,
         description=(
-            "Every feature or member you dropped: a whole feature as "
-            "sem_main_bore, and one member of a feature as "
-            "sem_main_bore.geo_cylinder or sem_main_bore.ev_front_circle. A "
-            "member may be dropped from a feature you are not otherwise "
-            "changing. A name given here must not also appear in `edits`."
+            "Every feature or claim you dropped: a whole feature as "
+            "sem_main_bore, and one of its claims as sem_main_bore.geo_cylinder. "
+            "A claim may be dropped from a feature you are not otherwise "
+            "changing, and a citation is dropped by giving the feature again "
+            "without it. A name given here must not also appear in `edits`."
         ),
     )
 

@@ -111,7 +111,6 @@ def test_every_kind_states_the_sizes_it_is_measured_by(kind: GeometryKind) -> No
             FeatureGeometry(
                 name=f"geo_{kind.value}",
                 kind=kind,
-                source="exact",
                 axis="z",
                 parameters=thinned,
             )
@@ -126,7 +125,6 @@ def test_no_kind_accepts_a_size_it_is_not_measured_by(kind: GeometryKind) -> Non
         FeatureGeometry(
             name=f"geo_{kind.value}",
             kind=kind,
-            source="exact",
             axis="z",
             parameters=[*geometry(kind).parameters, extra],
         )
@@ -161,9 +159,9 @@ def test_every_drawn_entity_states_the_parameters_it_carries(
         with pytest.raises(ValidationError, match=name):
             DrawingEvidence(
                 name=f"ev_{entity.value}",
-                view="front",
                 entity=entity,
                 edge_style="visible",
+                source=[],
                 parameters=thinned,
             )
 
@@ -183,9 +181,9 @@ def test_a_spline_reading_must_carry_its_poles() -> None:
     with pytest.raises(ValidationError, match="control_points"):
         DrawingEvidence(
             name="ev_spline",
-            view="front",
             entity="spline",
             edge_style="visible",
+            source=[],
             parameters=[Parameter(name="degree", values=[3.0])],
         )
     with pytest.raises(ValidationError, match="x, y pairs"):
@@ -201,9 +199,9 @@ def test_a_spline_reading_must_carry_its_knot_vector() -> None:
     with pytest.raises(ValidationError, match="knots"):
         DrawingEvidence(
             name="ev_spline",
-            view="front",
             entity="spline",
             edge_style="visible",
+            source=[],
             parameters=[
                 Parameter(name="control_points", values=[0.0, 0.0, 1.0, 1.0]),
                 Parameter(name="degree", values=[3.0]),
@@ -292,24 +290,25 @@ def test_feature_names_are_unique() -> None:
         )
 
 
-@pytest.mark.parametrize("member", ["geometry", "evidence"])
-def test_member_names_are_unique_within_their_own_group(member: str) -> None:
-    """A member name is an address, not a label or list position, so one
-    address may not silently name two claims or two readings."""
-    overrides = {
-        member: [
-            geometry("sphere", name="geo_round_end"),
-            geometry("cylinder", name="geo_round_end"),
-        ]
-        if member == "geometry"
-        else [
-            evidence("circle", name="ev_front_edge"),
-            evidence("line", name="ev_front_edge"),
-        ]
-    }
+def test_claim_names_are_unique_within_their_feature() -> None:
+    """A claim name is an address, not a label or list position, so one
+    address may not silently name two claims."""
+    with pytest.raises(ValidationError, match="duplicate names in .* geometry"):
+        feature(
+            1,
+            "a boss",
+            geometry=[
+                geometry("sphere", name="geo_round_end"),
+                geometry("cylinder", name="geo_round_end"),
+            ],
+        )
 
-    with pytest.raises(ValidationError, match=rf"duplicate names in .* {member}"):
-        feature(1, "a boss", **overrides)
+
+def test_a_feature_cites_each_entry_once() -> None:
+    """The citation list is a set of addresses, so naming one twice says
+    nothing the first naming did not."""
+    with pytest.raises(ValidationError, match="duplicate names in .* evidence"):
+        feature(1, "a boss", evidence=["ev_front_edge", "ev_front_edge"])
 
 
 def test_geometry_and_evidence_names_mark_their_namespace() -> None:
@@ -351,14 +350,16 @@ def test_the_2d_evidence_and_the_3d_claim_may_disagree() -> None:
     """A spline in a view is usually the silhouette of a blend, not a spline
     surface. Recording the drawing's entity and the claimed face separately is
     what keeps the stage from building a swept spline where a torus belongs."""
+    read = evidence("spline", name="ev_front_spline")
     blend = feature(
         1,
         "shoulder blend",
         geometry=[geometry("torus", major_radius=11.312, tube_radius=2.0)],
-        evidence=[evidence("spline")],
+        evidence=[read.name],
     )
     assert blend.geometry[0].kind == "torus"
-    assert blend.evidence[0].entity == "spline"
+    assert blend.evidence == ["ev_front_spline"]
+    assert read.entity == "spline"
 
 
 def test_the_rendered_hypothesis_drops_the_parameters_a_kind_does_not_use() -> None:

@@ -170,6 +170,16 @@ def _stage_responses(
     ]
 
 
+def _reread(run: ReconstructionRun) -> ReconstructionRun:
+    """The stage every round opens with, whether or not a ticket asks for it."""
+    return advance_reconstruction(
+        run,
+        DrawingSubmission(
+            edits=[], deleted=[], responses=_stage_responses(run, "drawings")
+        ),
+    )
+
+
 def _completed_run(
     run: ReconstructionRun | None = None,
     verification: VerifyOutputResult | None = None,
@@ -383,12 +393,11 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     second_finding = first_finding.model_copy(
         update={"name": "finding_second_mismatch"}
     )
-    run = open_next_round(
-        completed,
-        AuditReport(
-            accepted=False,
-            findings=[first_finding, second_finding],
-        ),
+    run = _reread(
+        open_next_round(
+            completed,
+            AuditReport(accepted=False, findings=[first_finding, second_finding]),
+        )
     )
     current = run.snapshots[-1]
     original_ticket_ids = [ticket.ticket_id for ticket in current.open_tickets]
@@ -423,12 +432,16 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     """Every later reader opens reconstruction.json rather than the prompt that
     carried the plan, so the numbers have to be in it."""
     completed = _completed_run()
-    run = open_next_round(
-        completed,
-        AuditReport(
-            accepted=False,
-            findings=[_report(target=_ref("semantics", "sem_feature_1")).findings[0]],
-        ),
+    run = _reread(
+        open_next_round(
+            completed,
+            AuditReport(
+                accepted=False,
+                findings=[
+                    _report(target=_ref("semantics", "sem_feature_1")).findings[0]
+                ],
+            ),
+        )
     )
     current = run.snapshots[-1]
     held = hypothesis(
@@ -571,7 +584,9 @@ def test_one_request_over_several_members_assigns_their_shared_stage() -> None:
 
 
 def test_an_unassigned_stage_leaves_the_ticket_untouched() -> None:
-    run = open_next_round(_completed_run(), _report(target=_ref("coding", "ret_hole")))
+    run = _reread(
+        open_next_round(_completed_run(), _report(target=_ref("coding", "ret_hole")))
+    )
 
     run = advance_reconstruction(
         run,
@@ -587,9 +602,10 @@ def test_an_unassigned_stage_leaves_the_ticket_untouched() -> None:
 
 
 def test_a_revision_round_carries_the_untouched_hypothesis_forward() -> None:
-    run = open_next_round(
-        _completed_run(),
-        _report(target=_ref("semantics", "sem_feature_2")),
+    run = _reread(
+        open_next_round(
+            _completed_run(), _report(target=_ref("semantics", "sem_feature_2"))
+        )
     )
     previous = run.snapshots[-2].semantics
     assert previous is not None
@@ -630,7 +646,9 @@ def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
     assert len(updated.snapshots) == 2
     assert current.round == 1
     assert current.last_completed_stage is None
-    assert current.drawings is None
+    # Carried rather than cleared: the run was handed a drawing before any
+    # stage ran, and a round that is not told to re-read it keeps the reading.
+    assert current.drawings == run.snapshots[-1].drawings
     assert current.semantics is None
     assert current.operations is None
     assert current.program_source is None

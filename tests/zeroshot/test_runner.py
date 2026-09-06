@@ -462,7 +462,10 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert "/work/inputs/sheet_drawing.dxf" in initial_text
     assert "/work/inputs/sheet_style_a.png" in initial_text
     # A sheet the input config does not declare never reaches the run at all.
-    assert "hidden" not in initial_text
+    # By its name rather than the bare word, which the format advice uses of a
+    # hidden edge.
+    assert "sheet_hidden" not in initial_text
+    assert "hidden.png" not in initial_text
     assert str(dxf_path) not in initial_text
     assert str(selected_render_path) not in initial_text
     assert str(hidden_render_path) not in initial_text
@@ -1118,6 +1121,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
     # One per ask, not one per model call: the report is what an agent was
     # asked when it was asked, and a retry re-asks nothing new.
     assert [prompt["role"] for prompt in prompts] == [
+        "drawing_analyzer",
         "semantic_hypothesizer",
         "operation_planner",
         "coder",
@@ -1186,6 +1190,7 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             if event["event"] == "stop_reason"
         ]
         expected_reasons = {
+            "drawing_analyzer": "COMPLETED",
             "semantic_hypothesizer": "COMPLETED",
             "operation_planner": "COMPLETED",
             "coder": expected,

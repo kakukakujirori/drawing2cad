@@ -84,18 +84,10 @@ class Operation(BaseModel):
         description=(
             "What this step does, in a sentence or two: the profile or edges "
             "it acts on, the direction it goes in, and where on the part it "
-            "lands. Cite a measurement the hypothesis states as "
-            "sem_<feature>.geo_<claim>.<parameter> for a 3D claim or "
-            "sem_<feature>.ev_<reading>.<parameter> for a drawing reading -- "
-            "for example sem_main_bore.geo_cylinder.radius or "
-            "sem_base_profile.ev_front_left_edge. A parameter holding a "
-            "point takes .x or .y for one of its two numbers, as in "
-            "sem_base_profile.ev_front_left_edge.start.x, and an address "
-            "may stop at the member to mean the whole reading. Each "
-            "citation is resolved to its value before the next stage reads "
-            "it, so cite rather than copy. Write out plainly any number the "
-            "hypothesis does not state: a depth or an offset you worked out "
-            "yourself."
+            "lands. Cite any number the hypothesis or the drawing already "
+            "holds -- sem_main_bore.geo_cylinder.radius, ev_front_edge.start, "
+            "dim_bore_diameter.nominal -- and it is filled in before the next "
+            "stage reads it. Write out only what neither of them states."
         ),
     )
     depends_on: list[str] = Field(
