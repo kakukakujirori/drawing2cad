@@ -18,6 +18,7 @@ import pytest
 from ezdxf.tools import standards
 
 from zeroshot.pipeline.messages.contracts.drawings import (
+    ORTHOGRAPHIC_VIEWS,
     VIEW_FRAME,
     DrawnEntity,
     EdgeStyle,
@@ -195,8 +196,10 @@ def test_the_local_targets_hold_no_geometry_the_contract_cannot_name() -> None:
     )
 
 
-def test_every_view_the_contract_names_has_a_frame() -> None:
-    assert set(VIEW_FRAME) == set(View)
+def test_every_orthographic_view_has_a_frame() -> None:
+    """Sections, details, pictorials, and an unsplit page establish no global axes."""
+    assert set(VIEW_FRAME) == set(ORTHOGRAPHIC_VIEWS)
+    assert set(VIEW_FRAME) < set(View)
     axes = {axis for frame in VIEW_FRAME.values() for axis in frame}
     assert axes <= {"+x", "-x", "+y", "-y", "+z", "-z"}
     for view, frame in VIEW_FRAME.items():

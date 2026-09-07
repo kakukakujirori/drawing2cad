@@ -38,7 +38,7 @@ ReconstructionRun
    ├─ `semantics`: SemanticHypothesis | null
    │  ├─ `proposal[]`: `name`, `description`, `geometry[]`, `evidence[]`, `open_question`
    │  │  ├─ geometry: `name`, `kind`, `axis`, `parameters[]`
-   │  │  └─ evidence: the `ev_` names of the entries this feature rests on
+   │  │  └─ evidence: the `ev_` and `dim_` names of the entries and figures this feature rests on
    │  └─ `rationale`
    ├─ `operations`: OperationPlan | null
    │  ├─ `proposal[]`: `name`, `verb`, `detail`, `depends_on`, `semantics`

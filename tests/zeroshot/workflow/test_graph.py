@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.messages.content import ContentBlock
 
 from tests.zeroshot.chat_models import ScriptedChatModel
-from tests.zeroshot.contracts import drawing, hypothesis, replacing
+from tests.zeroshot.contracts import drawing, evidence, hypothesis, replacing, sheet
 from zeroshot.pipeline.messages import (
     ArtifactPresenter,
     DrawingSource,
@@ -77,12 +77,25 @@ def _responses(ticket_id: str | None, stage: PipelineStage) -> list[TicketRespon
 
 def _drawing_submission(
     ticket_id: str | None = _ROUND_ZERO_TICKET,
+    *,
+    artifact: DrawingSource | None = None,
 ) -> AIMessage:
+    artifact = artifact or drawing()
     return _message(
         DrawingSubmission(
-            edits=list(drawing().sheets),
+            edits=list(artifact.sheets),
             deleted=[],
             responses=_responses(ticket_id, PipelineStage.DRAWINGS),
+        )
+    )
+
+
+def _invalid_drawing_submission() -> AIMessage:
+    return _message(
+        DrawingSubmission(
+            edits=[],
+            deleted=["sheet_absent"],
+            responses=_responses(_ROUND_ZERO_TICKET, PipelineStage.DRAWINGS),
         )
     )
 
@@ -163,6 +176,33 @@ def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
                             )
                         ],
                         instruction="Implement the missing hole.",
+                        proposed_names=[],
+                    ),
+                )
+            ],
+        )
+    )
+
+
+def _drawing_rejected_audit() -> AIMessage:
+    return _message(
+        AuditReport(
+            accepted=False,
+            findings=[
+                AuditFinding(
+                    name="finding_wrong_edge",
+                    observation="The front edge starts at the wrong coordinate.",
+                    evidence=["sheet_front", "ev_front_line.start"],
+                    backtrace=[],
+                    revision_request=RevisionRequest(
+                        action="modify",
+                        targets=[
+                            StageOutputRef(
+                                stage=PipelineStage.DRAWINGS,
+                                name="sheet_front",
+                            )
+                        ],
+                        instruction="Correct the front sheet's edge reading.",
                         proposed_names=[],
                     ),
                 )
@@ -463,6 +503,35 @@ def test_every_stage_reads_the_same_history_path_and_current_round(
         assert "round 0" in prompt
 
 
+def test_only_the_drawing_stage_receives_the_scale_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_verification(monkeypatch, _verified())
+    drawer = ScriptedChatModel(responses=(_drawing_submission(),))
+    head = ScriptedChatModel(responses=(_semantic_submission(),))
+    planner = ScriptedChatModel(responses=(_operation_submission(),))
+    coder = ScriptedChatModel(responses=(_coding_submission(),))
+    auditor = ScriptedChatModel(responses=(_accepted_audit(),))
+
+    with SandboxWorkdir() as workdir:
+        _graph(
+            workdir,
+            drawer=drawer,
+            head=head,
+            planner=planner,
+            coder=coder,
+            auditor=auditor,
+        ).invoke({})
+
+    assert drawer.bound_tool_names == (
+        "run_shell",
+        "load_image",
+        "calculate_drawing_scale",
+    )
+    for model in (head, planner, coder, auditor):
+        assert model.bound_tool_names == ("run_shell", "load_image")
+
+
 def test_invalid_operations_retry_without_reaching_coding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -511,6 +580,52 @@ def test_invalid_operations_retry_without_reaching_coding(
     assert result["stage_validation_failure_count"] == 0
 
 
+@pytest.mark.parametrize("recovers", [True, False])
+def test_invalid_drawings_retry_or_exhaust_before_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    recovers: bool,
+) -> None:
+    _stub_verification(monkeypatch, *([_verified()] if recovers else []))
+    drawer = ScriptedChatModel(
+        responses=(
+            _invalid_drawing_submission(),
+            _drawing_submission() if recovers else _invalid_drawing_submission(),
+        )
+    )
+    head = ScriptedChatModel(responses=(_semantic_submission(),) if recovers else ())
+    planner = ScriptedChatModel(
+        responses=(_operation_submission(),) if recovers else ()
+    )
+    coder = ScriptedChatModel(responses=(_coding_submission(),) if recovers else ())
+    auditor = ScriptedChatModel(responses=(_accepted_audit(),) if recovers else ())
+
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            drawer=drawer,
+            head=head,
+            planner=planner,
+            coder=coder,
+            auditor=auditor,
+            max_stage_validation_retries=1,
+        ).invoke({})
+
+    assert len(drawer.received_messages) == 2
+    retry = _last_instruction(drawer.received_messages[1])
+    assert "Drawings Validation Error" in retry
+    assert "sheet_absent" in retry
+    snapshot = result["reconstruction"].snapshots[0]
+    if recovers:
+        assert snapshot.last_completed_stage is PipelineStage.CODING
+        assert len(head.received_messages) == 1
+        assert result["stage_validation_error"] is None
+    else:
+        assert snapshot.last_completed_stage is None
+        assert head.received_messages == []
+        assert result["stage_validation_failure_count"] == 2
+        assert "sheet_absent" in result["stage_validation_error"]
+
+
 def test_stage_validation_retry_limit_stops_before_downstream_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -541,6 +656,46 @@ def test_stage_validation_retry_limit_stops_before_downstream_work(
     assert snapshot.operations is None
     assert result["stage_validation_failure_count"] == 2
     assert "sem_absent" in result["stage_validation_error"]
+
+
+def test_a_persisted_drawing_checkpoint_can_restart_the_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_verification(monkeypatch, _verified())
+
+    with SandboxWorkdir() as workdir:
+        stopped = _graph(
+            workdir,
+            drawer=ScriptedChatModel(
+                responses=(_invalid_drawing_submission(), _invalid_drawing_submission())
+            ),
+            head=ScriptedChatModel(responses=()),
+            planner=ScriptedChatModel(responses=()),
+            coder=ScriptedChatModel(responses=()),
+            auditor=ScriptedChatModel(responses=()),
+            max_stage_validation_retries=1,
+        ).invoke({})
+        history_path = workdir.host_bind_dir / "reconstruction.json"
+        checkpoint = ReconstructionRun.model_validate_json(
+            history_path.read_text(encoding="utf-8")
+        )
+        resumed = _graph(
+            workdir,
+            drawer=ScriptedChatModel(responses=(_drawing_submission(),)),
+            head=ScriptedChatModel(responses=(_semantic_submission(),)),
+            planner=ScriptedChatModel(responses=(_operation_submission(),)),
+            coder=ScriptedChatModel(responses=(_coding_submission(),)),
+            auditor=ScriptedChatModel(responses=(_accepted_audit(),)),
+        ).invoke({"reconstruction": checkpoint})
+        persisted = ReconstructionRun.model_validate_json(
+            history_path.read_text(encoding="utf-8")
+        )
+
+    assert stopped["reconstruction"] == checkpoint
+    assert checkpoint.snapshots[0].last_completed_stage is None
+    assert resumed["reconstruction"] == persisted
+    assert persisted.run_id == checkpoint.run_id
+    assert persisted.snapshots[0].last_completed_stage is PipelineStage.CODING
 
 
 def test_an_invalid_audit_is_retried_against_the_same_snapshot(
@@ -627,6 +782,88 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(
     assert len(coder.received_messages) == 2
     assert len(auditor.received_messages) == 1
     assert "round 1" in _last_instruction(planner.received_messages[1])
+
+
+def test_a_drawing_rooted_revision_refreshes_values_and_preserves_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision_ticket = "ticket_001_wrong_edge"
+    old_drawing = drawing(
+        sheets=[
+            sheet(
+                "front",
+                evidence=[evidence(name="ev_front_line", start=[1.0, 0.0])],
+            )
+        ]
+    )
+    revised_drawing = drawing(
+        sheets=[
+            sheet(
+                "front",
+                evidence=[evidence(name="ev_front_line", start=[2.5, 0.0])],
+            )
+        ]
+    )
+    first_semantics = _semantic_submission()
+    unchanged_semantics = _message(
+        SemanticSubmission(
+            edits=[],
+            deleted=[],
+            rationale=None,
+            responses=_responses(revision_ticket, PipelineStage.SEMANTICS),
+        )
+    )
+    first_operations = _operation_submission(detail="start at ev_front_line.start.x")
+    unchanged_operations = _message(
+        OperationSubmission(
+            edits=[],
+            deleted=[],
+            rationale=None,
+            responses=_responses(revision_ticket, PipelineStage.OPERATIONS),
+        )
+    )
+    calls = _stub_verification(monkeypatch, _verified("000"), _verified("001"))
+
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            drawer=ScriptedChatModel(
+                responses=(
+                    _drawing_submission(artifact=old_drawing),
+                    _drawing_submission(revision_ticket, artifact=revised_drawing),
+                )
+            ),
+            head=ScriptedChatModel(responses=(first_semantics, unchanged_semantics)),
+            planner=ScriptedChatModel(
+                responses=(first_operations, unchanged_operations)
+            ),
+            coder=ScriptedChatModel(
+                responses=(
+                    _coding_submission(),
+                    _coding_submission(revision_ticket),
+                )
+            ),
+            auditor=ScriptedChatModel(responses=(_drawing_rejected_audit(),)),
+            max_audit_reject_count=1,
+        ).invoke({})
+        persisted = ReconstructionRun.model_validate_json(
+            (workdir.host_bind_dir / "reconstruction.json").read_text(encoding="utf-8")
+        )
+
+    assert calls == ["verify", "verify"]
+    assert persisted == result["reconstruction"]
+    first, second = persisted.snapshots
+    assert first.drawings.evidence()[0].parameters[0].values == [1.0, 0.0]
+    assert second.drawings.evidence()[0].parameters[0].values == [2.5, 0.0]
+    assert first.operations is not None and second.operations is not None
+    assert first.operations.proposal[0].detail.endswith("(= 1.0)")
+    assert second.operations.proposal[0].detail.endswith("(= 2.5)")
+    assert [response.stage for response in second.open_tickets[0].responses] == [
+        PipelineStage.DRAWINGS,
+        PipelineStage.SEMANTICS,
+        PipelineStage.OPERATIONS,
+        PipelineStage.CODING,
+    ]
 
 
 def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(

@@ -49,6 +49,35 @@ def _latest_program_source(reconstruction: ReconstructionRun) -> str | None:
     )
 
 
+def _derived_drawing_paths(
+    reconstruction: ReconstructionRun,
+    source_workdir: SandboxWorkdir,
+) -> set[PurePosixPath]:
+    """Workspace-relative drawing files created while reading the input.
+
+    Files below ``inputs`` come from the manifest and are staged afresh. The
+    rest, such as view crops, exist only in the workspace being resumed.
+    """
+    derived: set[PurePosixPath] = set()
+    for snapshot in reconstruction.snapshots:
+        for file in snapshot.drawings.paths():
+            path = PurePosixPath(str(file))
+            # Reuse the sandbox's path rules: relative names live below /work,
+            # /tmp maps to work/tmp, and an escaping or foreign absolute path
+            # is an invalid durable workspace reference.
+            source = source_workdir.sandbox_to_host_path(path)
+            if not source.resolve().is_relative_to(
+                source_workdir.host_bind_dir.resolve()
+            ):
+                raise ValueError(f"resume drawing file escapes the workspace: {path}")
+            relative = source.relative_to(source_workdir.host_bind_dir)
+            # `_stage_inputs` copies these again from the current manifest.
+            if relative.parts and relative.parts[0] == "inputs":
+                continue
+            derived.add(PurePosixPath(relative.as_posix()))
+    return derived
+
+
 def _clear_incomplete_run(sample_artifact_root: Path) -> None:
     """Remove what the runner writes, keeping what Hydra wrote for this job.
 
@@ -124,17 +153,50 @@ class PipelineRunner:
         if attempt is not None and not attempt.is_dir():
             raise FileNotFoundError(f"resume attempt is missing: {attempt}")
 
+        source_workdir = (
+            SandboxWorkdir(host_bind_dir=self.resume_from.parent)
+            if self.resume_from is not None
+            else None
+        )
+        drawing_files = (
+            {
+                relative: source_workdir.host_bind_dir / relative
+                for relative in _derived_drawing_paths(reconstruction, source_workdir)
+            }
+            if reconstruction is not None and source_workdir is not None
+            else {}
+        )
+        if missing := sorted(
+            str(source) for source in drawing_files.values() if not source.is_file()
+        ):
+            raise FileNotFoundError(
+                f"resume drawing file is missing: {', '.join(missing)}"
+            )
+
         temporary: tempfile.TemporaryDirectory[str] | None = None
         try:
-            if (
-                self.on_existing == "retry"
-                and attempt is not None
-                and attempt.resolve().is_relative_to(sample_artifact_root.resolve())
-            ):
+            sources_inside_destination = self.on_existing == "retry" and any(
+                source.resolve().is_relative_to(sample_artifact_root.resolve())
+                for source in [
+                    *drawing_files.values(),
+                    *([attempt] if attempt is not None else []),
+                ]
+            )
+            if sources_inside_destination:
                 temporary = tempfile.TemporaryDirectory(prefix="drawing2cad-resume-")
-                staged = Path(temporary.name) / attempt.name
-                shutil.copytree(attempt, staged)
-                attempt = staged
+                staging_root = Path(temporary.name)
+                if attempt is not None:
+                    staged = staging_root / "attempt" / attempt.name
+                    staged.parent.mkdir()
+                    shutil.copytree(attempt, staged)
+                    attempt = staged
+                staged_drawings: dict[PurePosixPath, Path] = {}
+                for relative, source in drawing_files.items():
+                    staged = staging_root / "drawings" / relative
+                    staged.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, staged)
+                    staged_drawings[relative] = staged
+                drawing_files = staged_drawings
 
             if self.on_existing == "retry":
                 _clear_incomplete_run(sample_artifact_root)
@@ -155,6 +217,10 @@ class PipelineRunner:
                 destination = workspace / self.verification_dirname / attempt.name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(attempt, destination)
+            for relative, drawing_file in drawing_files.items():
+                destination = workspace / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(drawing_file, destination)
 
             return workspace
         finally:

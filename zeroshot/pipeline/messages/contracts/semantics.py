@@ -88,7 +88,7 @@ _GEOMETRY_PARAMETERS: Mapping[GeometryKind, tuple[str, ...]] = {
     GeometryKind.BSPLINE_SURFACE: ("degree",),
 }
 
-_DRAWN_ENTITY_NAME = re.compile(r"^ev_[a-z0-9_]+$")
+_DRAWING_SUPPORT_NAME = re.compile(r"^(?:ev|dim)_[a-z0-9_]+$")
 
 
 class FeatureGeometry(BaseModel):
@@ -161,7 +161,8 @@ class SemanticFeature(BaseModel):
         ...,
         description=(
             "What the feature is and where it sits on the part, in one or two "
-            "sentences. Numbers belong in `geometry` and `evidence`, not here."
+            "sentences. Numbers belong in `geometry` or the cited drawing "
+            "entry or printed figure, not here."
         ),
     )
     geometry: list[FeatureGeometry] = Field(
@@ -178,9 +179,10 @@ class SemanticFeature(BaseModel):
     evidence: list[str] = Field(
         ...,
         description=(
-            "The entities read off the drawing that support this feature, by "
-            "name: ev_front_circle. Named rather than restated, so two "
-            "features may rest on the same one and neither owns it."
+            "The entries and printed figures in the drawing that support this "
+            "feature, by name: ev_front_circle and dim_bore_diameter. Named "
+            "rather than restated, so two features may rest on the same one "
+            "and neither owns it."
         ),
     )
     open_question: str | None = Field(
@@ -195,21 +197,21 @@ class SemanticFeature(BaseModel):
     def require_usable_names(self) -> Self:
         """Check the feature's own name, and how it cites.
 
-        Not that it cites anything at all: a feature also travels as a revision
-        carrying only the members that changed, where an empty list means
-        "unchanged" rather than "unsupported". `SemanticHypothesis` checks that
-        of the whole artifact instead.
+        `SemanticHypothesis` checks that the complete artifact cites something;
+        this model is also used for a revision, where merge applies its complete
+        citation list before that check.
         """
         require_name(self.name, "sem_")
         require_unique((claim.name for claim in self.geometry), f"{self.name} geometry")
         require_unique(self.evidence, f"{self.name} evidence")
         stray = [
-            name for name in self.evidence if not _DRAWN_ENTITY_NAME.fullmatch(name)
+            name for name in self.evidence if not _DRAWING_SUPPORT_NAME.fullmatch(name)
         ]
         if stray:
             raise ValueError(
                 f"feature {self.name} cites {', '.join(stray)}, which names "
-                "nothing in the drawing; cite an entity as ev_front_circle"
+                "nothing in the drawing; cite an entry as ev_front_circle or "
+                "a printed figure as dim_bore_diameter"
             )
         return self
 
@@ -248,8 +250,8 @@ class SemanticHypothesis(BaseModel):
         if unsupported:
             raise ValueError(
                 f"{', '.join(unsupported)} cites no evidence; a feature nothing "
-                "in the drawing supports is a guess, and the exact numbers a "
-                "later stage builds from live in the evidence"
+                "in the drawing supports is a guess; cite the entries or "
+                "printed figures that support it"
             )
         return self
 

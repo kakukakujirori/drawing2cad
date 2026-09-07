@@ -203,7 +203,8 @@ def _validate_semantics(
     if errors:
         raise SubmissionValidationError(
             "\n".join(errors)
-            + "\nCite an entry by the name the drawing gives it, and report a "
+            + "\nCite an entry or printed figure by the name the drawing gives it, "
+            "and report a "
             "reading you needed and could not find in `open_question`."
         )
 
@@ -363,11 +364,22 @@ def _validate_audit_report(
     )
 
     known_members = {
+        PipelineStage.DRAWINGS: {sheet.name for sheet in snapshot.drawings.sheets},
         PipelineStage.SEMANTICS: semantic_names,
         PipelineStage.OPERATIONS: set(operations_by_name),
         PipelineStage.CODING: coding_names,
     }
     errors = [coding_error] if coding_error is not None else []
+    cited_sheets = {
+        feature.name: {
+            sheet.name
+            for sheet in snapshot.drawings.sheets
+            if set(feature.evidence).intersection(
+                entry.name for entry in [*sheet.evidence, *sheet.dimensions]
+            )
+        }
+        for feature in (snapshot.semantics.proposal if snapshot.semantics else [])
+    }
     errors.extend(_missing_reference_errors(references, known_members))
     for finding in report.findings:
         error = _within_stage_walk_error(finding)
@@ -378,6 +390,7 @@ def _validate_audit_report(
             hop,
             known_members=known_members,
             operations_by_name=operations_by_name,
+            cited_sheets=cited_sheets,
         )
         if error is not None:
             errors.append(error)
@@ -485,7 +498,7 @@ def _within_stage_walk_error(finding: AuditFinding) -> str | None:
         if hop.effect.stage == hop.cause.stage:
             walked[hop.effect.stage].append(f"{hop.effect.name} -> {hop.cause.name}")
 
-    # Counted per stage, not over the path: a backtrace that crosses all three
+    # Counted per stage, not over the path: a backtrace that crosses all stages
     # is entitled to its one naming hop in each of them.
     overwalked = [
         f"{stage} {len(steps)} times ({', '.join(steps)})"
@@ -507,10 +520,21 @@ def _causal_hop_error(
     *,
     known_members: Mapping[PipelineStage, set[str]],
     operations_by_name: Mapping[str, Operation],
+    cited_sheets: Mapping[str, set[str]],
 ) -> str | None:
     """Validate only causal relations represented by an explicit contract."""
     effect = hop.effect
     cause = hop.cause
+
+    distance = REASONING_STAGES.index(effect.stage) - REASONING_STAGES.index(
+        cause.stage
+    )
+    if distance not in (0, 1):
+        return (
+            f"{effect.stage}-to-{cause.stage} hop must stay within one stage "
+            "or move to the adjacent upstream stage: coding -> operations -> "
+            "semantics -> drawings"
+        )
 
     # A whole-stage reference has no member identity with which to prove a
     # direct relation. Its existence was already checked above.
@@ -550,6 +574,18 @@ def _causal_hop_error(
             return (
                 f"operations-to-semantics hop {effect.name!r} -> "
                 f"{cause.name!r} is not supported by {effect.name}.semantics"
+            )
+
+    elif (
+        effect.stage is PipelineStage.SEMANTICS
+        and cause.stage is PipelineStage.DRAWINGS
+    ):
+        if cause.name not in cited_sheets[effect.name]:
+            return (
+                f"semantics-to-drawings hop {effect.name!r} -> {cause.name!r} "
+                f"is not supported by {effect.name}.evidence: name the sheet "
+                "owning a cited ev_ or dim_ entry. For an omission with no "
+                "existing citation, report the defect directly at its root."
             )
 
     # No machine-readable relation currently exists for coding-internal or

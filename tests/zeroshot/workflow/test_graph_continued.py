@@ -14,6 +14,7 @@ from tests.zeroshot.workflow.test_graph import (
     _accepted_audit,
     _coding_submission,
     _drawing_submission,
+    _invalid_drawing_submission,
     _operation_submission,
     _semantic_submission,
     _stub_verification,
@@ -193,6 +194,35 @@ def test_each_reasoning_stage_continues_the_preceding_transcript(
 
     assert semantic_text in operation_text
     assert operation_text in coding_text
+
+
+def test_shared_thread_retries_drawings_before_handing_over(
+    monkeypatch: pytest.MonkeyPatch,
+    models: _Models,
+) -> None:
+    _stub_verification(monkeypatch, _verified())
+    drawer = ScriptedChatModel(
+        responses=(_invalid_drawing_submission(), _drawing_submission())
+    )
+    models["drawer"] = drawer
+
+    with SandboxWorkdir() as workdir:
+        result = _continued_graph(
+            workdir,
+            max_stage_validation_retries=1,
+            **models,
+        ).invoke({})
+
+    assert len(drawer.received_messages) == 2
+    retry_text = "\n".join(_texts(drawer.received_messages[1]))
+    assert "Drawings Validation Error" in retry_text
+    assert "sheet_absent" in retry_text
+    semantic_text = "\n".join(_texts(models["lead"].received_messages[0]))
+    assert "Drawings Validation Error" in semantic_text
+    assert (
+        result["reconstruction"].snapshots[0].last_completed_stage
+        is PipelineStage.CODING
+    )
 
 
 def test_reasoning_states_end_with_the_same_latest_thread(

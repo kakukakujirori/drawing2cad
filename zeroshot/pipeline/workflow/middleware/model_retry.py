@@ -18,6 +18,7 @@ from langchain.agents.structured_output import (
 )
 from langchain_core.messages import AIMessage, HumanMessage
 from openai import APIConnectionError, APIError, APIStatusError, LengthFinishReasonError
+from openrouter.errors import OpenRouterError
 
 
 class UnansweredModelCall(Exception):
@@ -90,6 +91,8 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             "retrying": retrying,
             "request_adjusted": adjusted,
         }
+        if isinstance(error, (APIStatusError, OpenRouterError)):
+            details["status_code"] = error.status_code
         if isinstance(error, StructuredOutputError):
             # The retry request carries this response only in memory. Preserve
             # the rejected raw output so a contract failure is reproducible.
@@ -511,7 +514,7 @@ def _is_retryable_model_error(exception: Exception) -> bool:
         return True
     if isinstance(exception, APIConnectionError):
         return True
-    if isinstance(exception, APIStatusError):
+    if isinstance(exception, (APIStatusError, OpenRouterError)):
         return exception.status_code == 429 or exception.status_code >= 500
     return isinstance(
         exception,

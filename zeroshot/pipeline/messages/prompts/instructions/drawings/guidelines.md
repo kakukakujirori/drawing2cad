@@ -2,6 +2,7 @@ Guidelines:
 
 Reading the input
 - The input message names each sheet you were given and says what it is. Analyse them with `run_shell` and `load_image` before you answer.
+- Keep supplied perspective sheets with their original name, role and file for qualitative comparison downstream. A perspective render has no uniform orthographic scale: do not calibrate it or invent millimetre primitives or printed dimensions for it. Its `evidence` and `dimensions` may remain empty.
 - Where a sheet arrives undivided, separate the views yourself by where the linework sits: they are not separated by layer or by file. Every entity in the DXF sheets seen so far is on layer `0`, so the layer name tells you nothing.
 - Measure with code, never by eye. `run_shell` gives you the same tools for a raster sheet that `ezdxf` gives you for a vector one: read the image with OpenCV or numpy, find the linework, and compute the numbers. A coordinate guessed off a picture is worse than one you admit you do not have.
 
@@ -29,7 +30,7 @@ Transcribing the linework
 Transcribing the annotations
 - `dimensions` is every figure printed on the sheet: the text exactly as printed, the size as a number, how many features it covers, and whatever it says in words beyond the size. What `kind` and `quantity` can carry belongs there rather than in `note`.
 - A figure you could read but could not tie to any linework is still worth having. Record it, and cite it from nothing.
-- **A printed figure gives a size, never a place.** A diameter or a radius names the entity's own radius, so take it as printed. A length between two features says nothing about where either one sits: leave those points where you measured them. Moving a point until the printed number comes out makes "the figure equals the distance I measured" true by construction, and that identity is the only thing that tells a wrong scale from a wrong target from a misreading.
+- **A printed figure gives a size, never a place.** Keep the printed nominal in `Dimension`; for an entity's radius, use a printed radius directly or divide a printed diameter by two. In scale calibration, pair a printed diameter with a measured pixel diameter, never a pixel radius. A length between two features says nothing about where either one sits: leave those points where you measured them. Moving a point until the printed number comes out makes "the figure equals the distance I measured" true by construction, and that identity is the only thing that tells a wrong scale from a wrong target from a misreading.
 
 Naming
 - Give every sheet a stable `name` beginning `sheet_`, every entry one beginning `ev_`, and every figure one beginning `dim_`, all in lower_snake_case and all unique across the whole drawing: `sheet_front`, `ev_front_outer_circle`, `dim_bore_diameter`. Later stages cite `ev_front_outer_circle.center`, and the audit names a whole sheet as `sheet_front`.

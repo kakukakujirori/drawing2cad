@@ -87,7 +87,11 @@ class Operation(BaseModel):
             "lands. Cite any number the hypothesis or the drawing already "
             "holds -- sem_main_bore.geo_cylinder.radius, ev_front_edge.start, "
             "dim_bore_diameter.nominal -- and it is filled in before the next "
-            "stage reads it. Write out only what neither of them states."
+            "stage reads it. A point takes .x or .y when you need one of its "
+            "two coordinates, as in ev_front_edge.start.x. A geo_ address may "
+            "stop at the claim to name all of its parameters. Drawing entry "
+            "and dimension addresses must name a parameter. Write out only "
+            "what neither artifact states."
         ),
     )
     depends_on: list[str] = Field(

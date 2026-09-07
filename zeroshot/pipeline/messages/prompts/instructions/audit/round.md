@@ -14,6 +14,8 @@ $intermediate_returns
 
 If the report shows the program did not produce a solid, the directory holds no projection or renders.
 
-If a feature visible in the input drawing has no corresponding `sem_...` member, there is no existing causal chain to traverse. Do not invent evidence-free hops through unrelated outputs. For the missing feature, leave the `backtrace` empty and return an `add` revision request targeting the whole semantics stage (`name: null`), and propose one or more stable `sem_...` names.
+If a feature visible in the input drawing has no corresponding `sem_...` member, inspect the drawing reading first. If the reading contains the needed linework, leave the `backtrace` empty and return an `add` revision request targeting the whole semantics stage (`name: null`), and propose one or more stable `sem_...` names. If the linework or its view is missing or misread, request a drawings revision first: `modify` the existing `sheet_...`, or `add` on the whole drawings stage with proposed `sheet_...` names for missing sheets. Do not invent evidence-free hops through unrelated outputs.
+
+To trace an existing feature back to drawings, locate the `ev_...` or `dim_...` entries in its `evidence` and name their owning sheet in the causal hop. A drawings target is a whole `sheet_...`, never an `ev_...` or `dim_...`; name the affected entries and the discrepancy in the evidence and instruction. The resulting ticket reopens drawings and all downstream reasoning stages.
 
 Do not edit the reconstruction history, source program, or generated artifacts. Return one `AuditReport`; the pipeline will validate every named reference and causal link against the immutable snapshot.

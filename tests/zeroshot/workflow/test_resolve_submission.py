@@ -264,6 +264,24 @@ def test_an_annotation_that_no_longer_holds_is_replaced() -> None:
     )
 
 
+def test_a_drawing_revision_refreshes_an_old_annotation() -> None:
+    old = read(evidence("circle", name="ev_front_circle", radius=3.0))
+    revised = read(evidence("circle", name="ev_front_circle", radius=4.5))
+    annotated = resolved("ev_front_circle.radius", _ball(), old)
+
+    assert resolved(annotated, _ball(), revised) == ("ev_front_circle.radius (= 4.5)")
+
+
+def test_deleting_drawing_evidence_removes_its_old_annotation() -> None:
+    old = read(evidence("circle", name="ev_front_circle", radius=3.0))
+    annotated = resolved("ev_front_circle.radius", _ball(), old)
+
+    assert resolved(annotated, _ball(), read()) == "ev_front_circle.radius"
+    assert unresolved_references(annotated, _ball(), read()) == [
+        "ev_front_circle.radius"
+    ]
+
+
 def test_a_parenthesis_of_the_models_own_is_left_alone() -> None:
     """`= ` is what tells this file's annotation from the planner's aside."""
     assert resolved(

@@ -225,19 +225,18 @@ def test_an_arc_is_its_own_kind() -> None:
     """OCC stores an arc as a bounded circle, but the contract is what the
     model reasons in, and the two read differently off a drawing."""
     assert GeometryKind.ARC in _GEOMETRY_PARAMETERS
-    assert "start_angle" in _DRAWN_PARAMETERS[DrawnEntity.ARC]
-    assert "start_angle" not in _DRAWN_PARAMETERS[DrawnEntity.CIRCLE]
+    assert "start" in _DRAWN_PARAMETERS[DrawnEntity.ARC]
+    assert "start" not in _DRAWN_PARAMETERS[DrawnEntity.CIRCLE]
 
 
 def test_an_arc_is_bounded_the_way_the_file_bounds_it() -> None:
-    """A DXF arc stores `start_angle` and `end_angle`; `start_point` is
-    something ezdxf computes from them. Asking for the point asked a reader to
-    derive a value and report it as a reading, and it answered with the angle
-    it had -- one number where a point takes two, which cost a retry on every
-    drawing with an arc in it."""
-    assert _ARITY["start_angle"] == 1
-    assert _ARITY["end_angle"] == 1
-    assert "start" not in _DRAWN_PARAMETERS[DrawnEntity.ARC]
+    """The drawing contract is format-independent page geometry. Its DXF
+    reader converts native angles to endpoints, and its writer converts the
+    endpoints back, so downstream stages use the same coordinates as every
+    other drawn entity."""
+    assert _ARITY["start"] == 2
+    assert _ARITY["end"] == 2
+    assert "start_angle" not in _DRAWN_PARAMETERS[DrawnEntity.ARC]
 
 
 def test_a_feature_may_declare_no_geometry() -> None:
@@ -309,6 +308,12 @@ def test_a_feature_cites_each_entry_once() -> None:
     nothing the first naming did not."""
     with pytest.raises(ValidationError, match="duplicate names in .* evidence"):
         feature(1, "a boss", evidence=["ev_front_edge", "ev_front_edge"])
+
+
+def test_a_feature_can_cite_a_printed_figure_directly() -> None:
+    supported = feature(1, "a dimensioned boss", evidence=["dim_boss_diameter"])
+
+    assert supported.evidence == ["dim_boss_diameter"]
 
 
 def test_geometry_and_evidence_names_mark_their_namespace() -> None:

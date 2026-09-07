@@ -113,7 +113,9 @@ class RevisionRequest(BaseModel):
             "one or more names, split requires at least two, and merge and "
             "rename require exactly one. Modify and delete require an empty "
             "list. Every proposed name must follow the naming convention of "
-            "the target stage."
+            "the target stage: sheet_... for drawings, sem_... for semantics, "
+            "op_... for operations, ret_... for coding. Request a sheet edit "
+            "to correct its ev_ or dim_ members; those are not stage targets."
         ),
     )
 
@@ -227,7 +229,8 @@ class AuditFinding(BaseModel):
         ...,
         description=(
             "Exact locators for the evidence supporting the observation, such as "
-            "an artifact path, canonical semantic reference, operation name or "
+            "an original artifact path, sheet_ name and its ev_ or dim_ entry, "
+            "canonical semantic reference, operation name or "
             "field, code result variable, or verification-report field. These are "
             "references only, not explanations."
         ),
@@ -237,6 +240,10 @@ class AuditFinding(BaseModel):
         description=(
             "The causal path from the observed effect to the revision root, as "
             "adjacent effect-to-cause steps in traversal order. Each hop's cause "
+            "moves within a stage or one step upstream along coding -> "
+            "operations -> semantics -> drawings. A semantics-to-drawings "
+            "hop names the sheet owning an entry cited by feature.evidence. "
+            "Each hop's cause "
             "must equal the next hop's effect, and the last cause must be one of "
             "the revision targets. Leave it empty when the defect is already at "
             "its root. Take at most one hop inside any one stage. Point that "

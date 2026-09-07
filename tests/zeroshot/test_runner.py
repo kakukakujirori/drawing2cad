@@ -30,6 +30,7 @@ from zeroshot.pipeline.messages.contracts import (
     OperationPlan,
     OperationVerb,
 )
+from zeroshot.pipeline.messages.contracts.drawings import CropOf
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     CodingSubmission,
     DrawingSubmission,
@@ -311,6 +312,118 @@ def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     assert not (prepared / "stale.txt").exists()
     assert (prepared / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE
     assert (prepared / "attempts" / "007" / "output.step").read_bytes() == b"STEP"
+
+
+@pytest.mark.parametrize("same_workspace", [False, True])
+@pytest.mark.parametrize("file_state", ["present", "missing", "outside_symlink"])
+def test_resume_restores_drawing_stage_crops(
+    tmp_path: Path,
+    same_workspace: bool,
+    file_state: str,
+) -> None:
+    artifact_root = tmp_path / "destination"
+    sample_root = artifact_root / "sample"
+    source_workspace = (
+        sample_root / "workspace"
+        if same_workspace
+        else tmp_path / "source" / "workspace"
+    )
+    source_workspace.mkdir(parents=True)
+    raw = unread_sheet(
+        "sheet_drawing", View.FULL_PAGE, "/work/inputs/sheet_drawing.dxf"
+    )
+    crop = (
+        drawing()
+        .sheets[0]
+        .model_copy(
+            update={
+                "crop_of": CropOf(sheet="sheet_drawing", box=[0.0, 0.0, 20.0, 10.0]),
+                "file": "/work/derived/sheet_front.dxf",
+            }
+        )
+    )
+    relative_crop = crop.model_copy(
+        update={
+            "name": "sheet_detail",
+            "role": View.DETAIL,
+            "file": "views/sheet_detail.png",
+            "evidence": [],
+        }
+    )
+    temporary_crop = crop.model_copy(
+        update={
+            "name": "sheet_section",
+            "role": View.SECTION,
+            "file": "/tmp/sheet_section.png",
+            "evidence": [],
+        }
+    )
+    run = start_reconstruction(
+        "run_sample",
+        "Reconstruct the drawing.",
+        DrawingSource(sheets=[raw]),
+    )
+    run = advance_reconstruction(
+        run,
+        DrawingSubmission(
+            edits=[crop, relative_crop, temporary_crop],
+            deleted=[],
+            responses=[_ticket_response("drawings", "Read sheet_front.")],
+        ),
+    )
+    derived = source_workspace / "derived" / "sheet_front.dxf"
+    derived.parent.mkdir()
+    derived.write_bytes(b"DERIVED DXF")
+    relative = source_workspace / "views" / "sheet_detail.png"
+    relative.parent.mkdir()
+    relative.write_bytes(b"DETAIL PNG")
+    temporary = source_workspace / "tmp" / "sheet_section.png"
+    temporary.parent.mkdir()
+    temporary.write_bytes(b"SECTION PNG")
+    resume_path = source_workspace / "reconstruction.json"
+    save_reconstruction(resume_path, run)
+    runner = _runner_for_rerun(
+        artifact_root,
+        "retry",
+        resume_from=resume_path,
+    )
+
+    if file_state != "present":
+        temporary.unlink()
+        if file_state == "outside_symlink":
+            outside = tmp_path / "outside.png"
+            outside.write_bytes(b"outside the resumed workspace")
+            temporary.symlink_to(outside)
+            error_type, message = ValueError, "escapes the workspace"
+        else:
+            error_type, message = FileNotFoundError, "resume drawing file is missing"
+        with pytest.raises(error_type, match=message):
+            runner._prepare_workspace(sample_root, sample_root / "events.jsonl", run)
+        # A bad resume must not clear the source before it reports the error.
+        assert resume_path.is_file()
+        assert derived.read_bytes() == b"DERIVED DXF"
+        assert relative.read_bytes() == b"DETAIL PNG"
+        return
+
+    prepared = runner._prepare_workspace(
+        sample_root,
+        sample_root / "events.jsonl",
+        run,
+    )
+
+    restored = prepared / "derived" / "sheet_front.dxf"
+    assert restored.read_bytes() == b"DERIVED DXF"
+    assert (prepared / "views" / "sheet_detail.png").read_bytes() == b"DETAIL PNG"
+    assert (prepared / "tmp" / "sheet_section.png").read_bytes() == b"SECTION PNG"
+    assert (
+        next(
+            sheet.file
+            for sheet in run.snapshots[-1].drawings.sheets
+            if sheet.name == "sheet_front"
+        )
+        == "/work/derived/sheet_front.dxf"
+    )
+    assert derived.is_file()
 
 
 def _final_verification(result: Mapping[str, Any]) -> VerifyOutputResult | None:

@@ -608,6 +608,23 @@ def test_agent_retries_a_transient_api_status_error(status_code: int) -> None:
     assert result["stop_reason"] is StopReason.COMPLETED
 
 
+@pytest.mark.parametrize("status", [400, 401, 429, 500, 503])
+def test_openrouter_http_failures_use_the_transport_retry_policy(status: int) -> None:
+    from openrouter.errors import OpenRouterError
+
+    error = OpenRouterError("provider error", httpx.Response(status))
+    model = _FlakyChatModel(responses=(AIMessage(content="done"),), errors=(error,))
+    graph = _subgraph(model, announce_turns=False, model_retries=1)
+    if status == 429 or status >= 500:
+        result = graph.invoke({"messages": [HumanMessage(content="go")]})
+        assert result["stop_reason"] is StopReason.COMPLETED
+        assert model.attempts == 2
+    else:
+        with pytest.raises(OpenRouterError):
+            graph.invoke({"messages": [HumanMessage(content="go")]})
+        assert model.attempts == 1
+
+
 def test_agent_does_not_retry_an_api_status_error() -> None:
     request = httpx.Request("POST", "https://example.invalid/responses")
     response = httpx.Response(400, request=request)
