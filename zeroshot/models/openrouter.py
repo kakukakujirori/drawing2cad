@@ -68,6 +68,38 @@ class ChatOpenRouterSingleReasoning(ChatOpenRouter):
     """Send each turn's reasoning once, and its constant fields once."""
 
     @override
+    def _build_client(self) -> Any:
+        """Disable the SDK's hidden retry so timeouts reach the pipeline.
+
+        When ``max_retries`` is 0, ``langchain_openrouter`` passes no
+        ``retry_config`` to the SDK.  The SDK then applies its own default --
+        exponential backoff for up to **one hour** with
+        ``retry_connection_errors=True`` -- silently retrying
+        ``httpx.TimeoutException`` without the pipeline ever seeing it.
+
+        This override always passes a no-retry config so that a timeout or
+        connection failure propagates immediately to
+        ``ModelCallRetryMiddleware``, where it is logged and retried with
+        visibility.
+        """
+        from openrouter.utils import BackoffStrategy, RetryConfig  # noqa: PLC0415
+
+        client = super()._build_client()
+        if self.max_retries <= 0:
+            # A strategy with zero budget means "try once, never retry".
+            client.sdk_configuration.retry_config = RetryConfig(
+                strategy="backoff",
+                backoff=BackoffStrategy(
+                    initial_interval=0,
+                    max_interval=0,
+                    exponent=1,
+                    max_elapsed_time=0,
+                ),
+                retry_connection_errors=False,
+            )
+        return client
+
+    @override
     def _stream(
         self,
         messages: list[BaseMessage],

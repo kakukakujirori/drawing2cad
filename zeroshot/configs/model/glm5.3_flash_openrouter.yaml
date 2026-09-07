@@ -28,7 +28,7 @@ model:
   # output. Pin the ones that carry the whole contract: tool_choice
   # required/function, structured outputs, and the full context window.
   openrouter_provider:
-    order: [Cloudflare, Fireworks, DeepInfra]
+    order: [Together, Fireworks, DeepInfra, Cloudflare]
     allow_fallbacks: false
 
   # Small enough that the effort share binds, and split from what the runs
@@ -41,5 +41,5 @@ model:
   # with `finish_reason: tool_calls` and no call in it.
   max_tokens: 60000
 
-  timeout: 600000  # milliseconds
+  timeout: 60000  # milliseconds
   max_retries: 0

@@ -154,7 +154,7 @@ def test_glm5_3_flash_openrouter_config_instantiates_chat_openrouter(
 
     assert isinstance(model, ChatOpenRouter)
     assert model.model_name == "z-ai/glm-5.3-flash"
-    assert model.request_timeout == 600000
+    assert model.request_timeout == 60000
     assert model.max_retries == 0
 
 
@@ -205,6 +205,21 @@ def test_a_sweep_only_has_to_override_the_sample_id() -> None:
         config = compose(
             config_name="default",
             overrides=["sample.sample_id=000405"],
+        )
+
+    assert config.sample.sample_id == "000405"
+    assert config.sample.drawing.sheets[0].file.endswith("/000405_dim.png")
+    assert config.sample.target_step_path.endswith("/000405.step")
+
+
+def test_a_sweep_overriding_sample_id_with_dxf_input() -> None:
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(
+            config_name="default",
+            overrides=["input=dxf", "sample.sample_id=000405"],
         )
 
     assert config.sample.sample_id == "000405"
