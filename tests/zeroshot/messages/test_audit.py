@@ -44,7 +44,7 @@ def backtrace() -> list[CausalHop]:
 
 
 def finding(
-    name: str = "finding_wrong_bore",
+    name: str = "find_wrong_bore",
     *,
     hops: list[CausalHop] | None = None,
     revision_request: RevisionRequest | None = None,
@@ -192,6 +192,16 @@ def test_an_empty_backtrace_is_valid_when_the_finding_is_already_at_its_root() -
     finding(hops=[], revision_request=request(targets=[ref("coding", None)]))
 
 
+@pytest.mark.parametrize("invalid_name", ["finding_legacy_bore", "issue_wrong_bore"])
+def test_find_names_are_canonical_and_other_prefixes_are_rejected(
+    invalid_name: str,
+) -> None:
+    assert finding().name == "find_wrong_bore"
+
+    with pytest.raises(ValidationError, match="find_\\.\\.\\."):
+        finding(name=invalid_name)
+
+
 @pytest.mark.parametrize(
     ("evidence", "message"),
     [
@@ -205,7 +215,7 @@ def test_a_finding_requires_distinct_evidence_locators(
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         AuditFinding(
-            name="finding_wrong_bore",
+            name="find_wrong_bore",
             observation="The bore is wrong.",
             evidence=evidence,
             backtrace=backtrace(),

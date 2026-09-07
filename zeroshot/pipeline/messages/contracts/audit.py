@@ -29,7 +29,7 @@ type RevisionAction = Literal[
 ]
 
 
-_FINDING_NAME = re.compile(r"^finding_[a-z0-9_]+$")
+_FIND_NAME = re.compile(r"^find_[a-z0-9_]+$")
 _SHEET_NAME = re.compile(r"^sheet_[a-z0-9_]+$")
 _SEMANTIC_NAME = re.compile(r"^sem_[a-z0-9_]+$")
 _OPERATION_NAME = re.compile(r"^op_[a-z0-9_]+$")
@@ -216,7 +216,10 @@ class AuditFinding(BaseModel):
 
     name: str = Field(
         ...,
-        description=("A finding_... lower_snake_case name unique within this report."),
+        description=(
+            "A find_... lower_snake_case name unique within this report. "
+            "Use find_ for every new audit output."
+        ),
     )
     observation: str = Field(
         ...,
@@ -259,8 +262,8 @@ class AuditFinding(BaseModel):
 
     @model_validator(mode="after")
     def require_evidence_and_a_revision_path(self) -> Self:
-        if _FINDING_NAME.fullmatch(self.name) is None:
-            raise ValueError("name must be a finding_... lower_snake_case name")
+        if _FIND_NAME.fullmatch(self.name) is None:
+            raise ValueError("name must be a find_... lower_snake_case name")
         if not self.observation.strip():
             raise ValueError("observation must not be blank")
         if not self.evidence:

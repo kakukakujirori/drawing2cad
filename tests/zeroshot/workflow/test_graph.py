@@ -162,7 +162,7 @@ def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
             accepted=False,
             findings=[
                 AuditFinding(
-                    name="finding_missing_hole",
+                    name="find_missing_hole",
                     observation="The drawing contains a hole that the model omits.",
                     evidence=["render_3d/hlg_front.png"],
                     backtrace=[],
@@ -190,7 +190,7 @@ def _drawing_rejected_audit() -> AIMessage:
             accepted=False,
             findings=[
                 AuditFinding(
-                    name="finding_wrong_edge",
+                    name="find_wrong_edge",
                     observation="The front edge starts at the wrong coordinate.",
                     evidence=["sheet_front", "ev_front_line.start"],
                     backtrace=[],
@@ -217,7 +217,7 @@ def _invalid_audit() -> AIMessage:
             accepted=False,
             findings=[
                 AuditFinding(
-                    name="finding_unknown_operation",
+                    name="find_unknown_operation",
                     observation="The model is incorrect.",
                     evidence=["verification.status"],
                     backtrace=[],

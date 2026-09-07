@@ -2,9 +2,8 @@
 
 The frames decide which model axis becomes which screen axis in every view, and
 with what sign; a silent change there would still produce a plausible-looking
-drawing.  The probe box has three distinct edge lengths *and* sits off-centre in
-Z, so both the axis mapping and its sign are observable -- a Z-symmetric box
-would make top's screen +Y == -Z indistinguishable from +Z.
+drawing. The probe box has three distinct edge lengths and sits off-centre on
+all axes, so both the axis mapping and its sign are observable.
 """
 
 import cadquery as cq
@@ -27,13 +26,13 @@ from zeroshot.pipeline.verification.render.project import (
 )
 
 BOX_X, BOX_Y, BOX_Z = 30.0, 20.0, 10.0
-BOX_Z_CENTER = 6.0  # model z spans [1, 11]: no sign ambiguity
+BOX_CENTER = (4.0, -3.0, 6.0)
 
 
 @pytest.fixture(scope="module")
 def box_step(tmp_path_factory):
     path = tmp_path_factory.mktemp("step") / "box.step"
-    solid = cq.Workplane("XY").box(BOX_X, BOX_Y, BOX_Z).translate((0, 0, BOX_Z_CENTER))
+    solid = cq.Workplane("XY").box(BOX_X, BOX_Y, BOX_Z).translate(BOX_CENTER)
     cq.exporters.export(solid, str(path))
     return path
 
@@ -103,22 +102,20 @@ def _model_range(size, center=0.0):
     return center - size / 2, center + size / 2
 
 
-X_LO, X_HI = _model_range(BOX_X)
-Y_LO, Y_HI = _model_range(BOX_Y)
-Z_LO, Z_HI = _model_range(BOX_Z, BOX_Z_CENTER)
+X_LO, X_HI = _model_range(BOX_X, BOX_CENTER[0])
+Y_LO, Y_HI = _model_range(BOX_Y, BOX_CENTER[1])
+Z_LO, Z_HI = _model_range(BOX_Z, BOX_CENTER[2])
 
 
 @pytest.mark.parametrize(
     ("view", "box"),
     [
-        # Top's screen +Y is -Z, not +Z: moving up the top view means moving
-        # away from the front view's viewer, and +Z faces that viewer.
-        (View.FRONT, (X_LO, Y_LO, X_HI, Y_HI)),
-        (View.BACK, (-X_HI, Y_LO, -X_LO, Y_HI)),
-        (View.TOP, (X_LO, -Z_HI, X_HI, -Z_LO)),
-        (View.BOTTOM, (X_LO, Z_LO, X_HI, Z_HI)),
-        (View.RIGHT, (-Z_HI, Y_LO, -Z_LO, Y_HI)),
-        (View.LEFT, (Z_LO, Y_LO, Z_HI, Y_HI)),
+        (View.FRONT, (X_LO, Z_LO, X_HI, Z_HI)),
+        (View.BACK, (-X_HI, Z_LO, -X_LO, Z_HI)),
+        (View.TOP, (X_LO, Y_LO, X_HI, Y_HI)),
+        (View.BOTTOM, (X_LO, -Y_HI, X_HI, -Y_LO)),
+        (View.RIGHT, (Y_LO, Z_LO, Y_HI, Z_HI)),
+        (View.LEFT, (-Y_HI, Z_LO, -Y_LO, Z_HI)),
     ],
 )
 def test_a_view_lands_where_its_frame_says(box_views, view, box):
@@ -126,19 +123,19 @@ def test_a_view_lands_where_its_frame_says(box_views, view, box):
 
 
 def test_eye_direction_is_toward_the_viewer_not_along_the_gaze(tmp_path):
-    """FRONT's first vector is +Z, and the eye really does sit on the +Z side.
+    """FRONT's eye is on -Y, not on the opposite side of the part.
 
-    A blind hole opening on the +Z face projects as a *visible* circle in the
+    A blind hole opening on the -Y face projects as a *visible* circle in the
     front view; if the frame meant the gaze direction instead, the eye would be
-    at -Z and the same circle would come back hidden.
+    at +Y and the same circle would come back hidden.
     """
     path = tmp_path / "blind_hole.step"
     solid = (
         cq.Workplane("XY")
         .box(BOX_X, BOX_Y, BOX_Z)
-        .faces(">Z")
+        .faces("<Y")
         .workplane()
-        .hole(6.0, BOX_Z / 2)
+        .hole(6.0, BOX_Y / 2)
     )
     cq.exporters.export(solid, str(path))
     front = project_views(load_shape(path))[View.FRONT]
@@ -147,7 +144,7 @@ def test_eye_direction_is_toward_the_viewer_not_along_the_gaze(tmp_path):
 
 
 def test_top_and_right_agree_on_depth(box_views):
-    """Both show the model's Z extent, which is what lines the two views up."""
+    """Both show model Y depth, vertically in top and horizontally in right."""
     _, top_depth = _extents(box_views[View.TOP])
     right_depth, _ = _extents(box_views[View.RIGHT])
     assert top_depth == pytest.approx(right_depth, rel=1e-6)

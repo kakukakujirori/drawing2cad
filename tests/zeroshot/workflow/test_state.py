@@ -174,7 +174,7 @@ _AUDIT_REPORT = AuditReport(
     accepted=False,
     findings=[
         AuditFinding(
-            name="finding_missing_boss",
+            name="find_missing_boss",
             observation="the boss is missing",
             evidence=["attempts/v1/techdraw.dxf"],
             backtrace=[

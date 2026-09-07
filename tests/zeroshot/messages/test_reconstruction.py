@@ -51,7 +51,7 @@ def _finding() -> AuditFinding:
         name="sem_feature_1",
     )
     return AuditFinding(
-        name="finding_wrong_base",
+        name="find_wrong_base",
         observation="The reconstructed base is too wide.",
         evidence=["render_3d/hlg_front.png"],
         backtrace=[],

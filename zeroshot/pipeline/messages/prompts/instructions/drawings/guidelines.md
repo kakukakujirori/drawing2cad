@@ -14,8 +14,9 @@ What a sheet is
 - `role` is what the view shows. Give a page you have not separated `full_page`, and a view you could not identify `unknown`. Two sheets must not claim the same orthographic role.
 
 Each sheet's own coordinates
-- **Every sheet is measured from its own bottom-left corner**: u runs right, v runs up, both in millimetres. A view you cut out is measured from its own corner, not the page's. Pixels belong nowhere in your answer.
-- An image counts its rows downward, so row `r` of an image `h` rows tall is at `v = (h - r) * millimetres_per_pixel`.
+- **Every sheet keeps its own UV coordinates**: u runs right and v runs up, both in millimetres. A view you cut out is measured in its own UV frame, not the page's. Keep this 2D UV frame even when its axes happen to coincide with model XYZ; left and bottom views have different signed projections. Pixels belong nowhere in your answer.
+- For a raster, put `(u, v) = (0, 0)` at the **lower-left corner of the bottom-left pixel**, not at that pixel's centre. Before applying scale, an image `w` columns by `h` rows therefore spans `0 <= u <= w` and `0 <= v <= h`.
+- OpenCV/numpy index pixels from the top-left. The lower-left corner of zero-based pixel `(row=r, column=c)` is `(u_px, v_px) = (c, h - r - 1)`, and its centre is `(c + 0.5, h - r - 0.5)`. Multiply either pixel position by `millimetres_per_pixel` after choosing the corner or centre that the measured line location represents.
 - `scale` is how many millimetres one unit of what you measured is worth: the factor you converted by, or 1.0 when you were already measuring millimetres. A vector sheet is already in the drawing's units.
 - On a raster sheet, pair each printed dimension with the pixel length of the linework it measures and give those pairs to `calculate_drawing_scale`. It fits one factor and names the pairs that disagree with it. Take its answer as `scale`, and do not average the ratios by hand.
 - The tool refuses to choose when the pairs do not agree. A refusal means a misread figure, a mismatched pair, or two views at different scales -- fix that rather than picking one of the alternatives it lists.

@@ -15,6 +15,13 @@ def _paths(base: Path) -> Render3dPaths:
     )
 
 
+def test_default_camera_is_rotated_into_the_z_up_model_frame():
+    config = _render3d.Render3dConfig()
+
+    assert config.eye_dir == (1.0, -1.0, 1.0)
+    assert config.world_up == (0.0, 0.0, 1.0)
+
+
 def test_generate_render3d_explains_each_unsuccessful_style(tmp_path, monkeypatch):
     paths = _paths(tmp_path)
 

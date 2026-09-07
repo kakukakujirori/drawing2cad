@@ -55,8 +55,8 @@ def frame_of(view: View) -> tuple[_Direction, _Direction]:
     A frame's `out` axis is the projection plane's outward normal, so it points
     from the model toward the viewer and the gaze runs the other way. `up`
     becomes screen +Y, and screen +X is then up x eye, which is the frame's
-    `right`. Top's up is -z because moving up the top view means moving away
-    from the front view's viewer.
+    `right`. Model XY is horizontal and +Z is vertical; in particular, top
+    reads (+X, +Y), front reads (+X, +Z), and right reads (+Y, +Z).
     """
     if view not in VIEW_FRAME:
         raise ValueError(f"{view.value} is not an orthographic view")

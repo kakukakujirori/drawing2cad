@@ -315,4 +315,8 @@ def test_a_drawing_lists_its_files_and_describes_the_frames_it_settled():
     assert both.frame_sentence().count(";") == len(ORTHOGRAPHIC_VIEWS) - 1
 
     front = DrawingSource.model_validate({"sheets": [sheet("sheet_front", "front")]})
-    assert front.frame_sentence() == "Front is right=+x, up=+y"
+    assert front.frame_sentence() == (
+        "Model XY is the horizontal plane and +z is up. Every sheet keeps its "
+        "own UV coordinates, with u=right and v=up: Front is right=+x, up=+z, "
+        "toward viewer=-y"
+    )

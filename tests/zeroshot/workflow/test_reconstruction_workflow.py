@@ -249,7 +249,7 @@ def _report(*hops: CausalHop, target: StageOutputRef | None = None) -> AuditRepo
         accepted=False,
         findings=[
             AuditFinding(
-                name="finding_shape_mismatch",
+                name="find_shape_mismatch",
                 observation="The rendered shape differs from the drawing.",
                 evidence=["render_3d/hlg_front.png"],
                 backtrace=list(hops),
@@ -391,7 +391,7 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     completed = _completed_run()
     first_finding = _report(target=_ref("semantics", "sem_feature_1")).findings[0]
     second_finding = first_finding.model_copy(
-        update={"name": "finding_second_mismatch"}
+        update={"name": "find_second_mismatch"}
     )
     run = _reread(
         open_next_round(

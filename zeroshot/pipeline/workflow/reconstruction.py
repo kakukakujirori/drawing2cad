@@ -117,7 +117,7 @@ def _ticket_from_finding(
     round_number: int,
     finding: AuditFinding,
 ) -> Ticket:
-    suffix = finding.name.removeprefix("finding_")
+    suffix = finding.name.removeprefix("find_")
     return Ticket(
         ticket_id=f"ticket_{round_number:03d}_{suffix}",
         subject=finding,

@@ -17,10 +17,10 @@ Guidelines:
 - Your turn budget is announced in the transcript as `[turn n/N]`. Turns increment by using tools.
 
 A `detail` reads like these. The name, the verb, the dependencies and the features the step builds go in their own fields, so none of them is written into the sentence:
-- "Extrude the front-view outline 25 mm along +z to form the base plate."
-- "Cut a hole of sem_main_bore.geo_cylinder.radius through the plate at ev_front_circle.center, entering the +y face."
+- "Extrude the top-view outline 25 mm along +z to form the base plate."
+- "Cut a hole of sem_main_bore.geo_cylinder.radius through the plate at ev_top_circle.center, entering the +z face."
 
-Plain numbers in them are allowed if neither the hypothesis nor the drawing holds them. Anything either one holds should be cited instead, like `sem_main_bore.geo_cylinder.radius` or `ev_front_circle.center`.
+Plain numbers in them are allowed if neither the hypothesis nor the drawing holds them. Anything either one holds should be cited instead, like `sem_main_bore.geo_cylinder.radius` or `ev_top_circle.center`.
 
 Cite a parameter under the name its own artifact states it by -- the ones you can see in a feature's `geometry`, and in the drawing's entries and printed figures.
 

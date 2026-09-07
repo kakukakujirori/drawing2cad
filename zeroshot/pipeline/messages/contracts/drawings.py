@@ -37,14 +37,16 @@ class View(StrEnum):
     UNKNOWN = "unknown"
 
 
-# Sheet-right, sheet-up, and toward the viewer, in model axes.
+# Sheet-right, sheet-up, and toward the viewer, in model axes.  Model XY is
+# the horizontal plane and +Z is vertical.  The signs make every tuple a
+# right-handed screen frame: right = up x out.
 VIEW_FRAME: Mapping[View, tuple[str, str, str]] = {
-    View.FRONT: ("+x", "+y", "+z"),
-    View.BACK: ("-x", "+y", "-z"),
-    View.TOP: ("+x", "-z", "+y"),
-    View.BOTTOM: ("+x", "+z", "-y"),
-    View.RIGHT: ("-z", "+y", "+x"),
-    View.LEFT: ("+z", "+y", "-x"),
+    View.FRONT: ("+x", "+z", "-y"),
+    View.BACK: ("-x", "+z", "+y"),
+    View.TOP: ("+x", "+y", "+z"),
+    View.BOTTOM: ("+x", "-y", "-z"),
+    View.RIGHT: ("+y", "+z", "+x"),
+    View.LEFT: ("-y", "+z", "-x"),
 }
 ORTHOGRAPHIC_VIEWS = tuple(VIEW_FRAME)
 
@@ -73,9 +75,6 @@ class DimensionKind(StrEnum):
     DIAMETER = "diameter"
     RADIUS = "radius"
     ANGULAR = "angular"
-
-
-# --- Identifier validation ---
 
 
 # --- Printed dimensions and primitive evidence ---
@@ -157,7 +156,8 @@ class DrawingEvidence(BaseModel):
             "Supply exactly the parameters listed below for your entity, and "
             "no others. Points are in this sheet's own coordinates in "
             "millimetres: u rightward and v upward from its bottom-left "
-            "corner. Never report pixels.\n"
+            "corner. For a raster, that origin is the lower-left corner of "
+            "its bottom-left pixel, not the pixel centre. Never report pixels.\n"
             f"{describe_parameters(_DRAWN_PARAMETERS)}\n"
             "ARC and ELLIPSE sweep counterclockwise from start to end, both "
             "points lying on the curve; equal endpoints mean a full turn. An "
@@ -229,7 +229,9 @@ class CropOf(BaseModel):
         ...,
         description=(
             "u0, v0, u1, v1: the region this sheet covers, in the parent's own "
-            "coordinates, u rightward and v upward from its bottom-left corner."
+            "coordinates, u rightward and v upward from its bottom-left corner. "
+            "For a raster parent, the origin is the lower-left corner of its "
+            "bottom-left pixel, not the pixel centre."
         ),
     )
 
@@ -382,11 +384,15 @@ class DrawingSource(BaseModel):
         wanted = {sheet.role for sheet in self.orthographic()} or set(
             ORTHOGRAPHIC_VIEWS
         )
-        return "; ".join(
+        views = "; ".join(
             f"{view.value.capitalize()} is right={VIEW_FRAME[view][0]}, "
-            f"up={VIEW_FRAME[view][1]}"
+            f"up={VIEW_FRAME[view][1]}, toward viewer={VIEW_FRAME[view][2]}"
             for view in ORTHOGRAPHIC_VIEWS
             if view in wanted
+        )
+        return (
+            "Model XY is the horizontal plane and +z is up. Every sheet keeps "
+            f"its own UV coordinates, with u=right and v=up: {views}"
         )
 
 

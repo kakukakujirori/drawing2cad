@@ -402,9 +402,19 @@ def test_the_drawing_guidelines_describe_how_the_views_are_actually_separated() 
     assert "not separated by layer" in guidelines
 
 
+def test_the_drawing_guidelines_fix_the_raster_uv_origin_at_a_pixel_corner() -> None:
+    guidelines = _guidelines("drawings")
+
+    assert "lower-left corner of the bottom-left pixel" in guidelines
+    assert "not at that pixel's centre" in guidelines
+    assert "(c, h - r - 1)" in guidelines
+    assert "(c + 0.5, h - r - 0.5)" in guidelines
+
+
 @pytest.mark.parametrize(
     "name",
     [
+        "drawings/round",
         "semantics/round",
         "operations/round",
         "coding/round",
@@ -414,7 +424,7 @@ def test_the_drawing_guidelines_describe_how_the_views_are_actually_separated() 
 def test_every_stage_that_handles_a_coordinate_is_given_the_frame(name: str) -> None:
     """Semantics reports sheet coordinates tagged with a view; every stage after
     it reads them back. A stage left without the frame does not fail -- it
-    guesses, and `top` sheet-up is model `-z`, so it guesses wrong in silence.
+    guesses, and can silently confuse a view's UV axes with model XYZ.
 
     The sentence is rendered from `VIEW_FRAME`, so this asserts that it reaches
     the stage rather than that a copy of it is still correct."""
@@ -425,6 +435,8 @@ def test_every_stage_that_handles_a_coordinate_is_given_the_frame(name: str) -> 
 
     for view, (right, up, _) in VIEW_FRAME.items():
         assert f"{view.value.capitalize()} is right={right}, up={up}" in rendered
+    assert "Model XY is the horizontal plane and +z is up" in rendered
+    assert "u=right and v=up" in rendered
 
 
 def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes() -> None:

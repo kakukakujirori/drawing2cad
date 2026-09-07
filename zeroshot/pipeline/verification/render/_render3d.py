@@ -1,8 +1,4 @@
-"""Fork of src/data/render/render3d.py @ e23cc7f -- do not edit beyond adapting it
-to this package (imports, Render3dPaths field names, lint); any change must still
-reproduce the baseline in outputs/render_golden.
-
-render3d.py: STEP -> three ECCV-style perspective PNGs.
+"""STEP -> three ECCV-style perspective PNGs.
 
 Public entry point::
 
@@ -20,9 +16,9 @@ Styles (data/eccv2026-cad-challenge-data/train/render_3d/<style>/NNNNNN.png):
     very faint translucent face fill (same camera, pixel-aligned).
 
 Camera (calibrated on data/eccv2026-cad-challenge-data/train, see
-calibrate_render3d.py): world up is +Y (matches src/data/render/techdraw.py's
-IoU-verified FRONT/TOP/RIGHT frames: FRONT looks -Z with up +Y). The 3D
-renders use a single fixed SolidWorks-style trimetric/isometric direction
+calibrate_render3d.py): model XY is horizontal and world up is +Z (matching
+the reconstruction contract: TOP is X/Y and FRONT is X/Z). The 3D renders use
+a single fixed SolidWorks-style trimetric/isometric direction
 (same relative camera for every part, auto-framed to each part's bounding
 box) with a mild perspective (see Render3dConfig defaults below).
 
@@ -78,18 +74,18 @@ from zeroshot.pipeline.verification.render.constants import (
 )
 
 # ---------------------------------------------------------------------------
-# Calibrated defaults (see calibrate_render3d.py; world up is +Y).
+# Calibrated defaults, rotated into the reconstruction frame where +Z is up.
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class Render3dConfig:
     # camera direction: unit vector from the model centre TOWARD the eye,
-    # expressed in the model's own (X, Y, Z) with +Y "up" (matches techdraw.py).
-    # Calibrated on GT (visual octant selection on the chiral part 000123 after
-    # fixing the horizontal-mirror bug): SolidWorks standard Isometric (1,1,1).
-    eye_dir: tuple[float, float, float] = (1.0, 1.0, 1.0)
-    world_up: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    # expressed in model (X, Y, Z), where XY is horizontal and +Z is up.
+    # These are the former GT-calibrated (1,1,1), up=+Y camera rotated by the
+    # same old->new frame change as reconstructed solids: (x,y,z)->(x,-z,y).
+    eye_dir: tuple[float, float, float] = (1.0, -1.0, 1.0)
+    world_up: tuple[float, float, float] = (0.0, 0.0, 1.0)
     roll_deg: float = 0.0  # rotation of the image plane about the view axis
     dist_factor: float = 8.0  # eye distance = bbox_diagonal * dist_factor
     focus_factor: float = 0.15  # focal-plane distance = eye_distance * focus_factor
