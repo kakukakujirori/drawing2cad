@@ -51,7 +51,13 @@ def make_run_dir(tmp_path: Path):
 
     def build(attempts: dict[str, Path | None]) -> Path:
         run_dir = tmp_path / "run"
-        attempts_dir = run_dir / PipelineRunner.WORKSPACE_DIRNAME / "attempts"
+        attempts_dir = (
+            run_dir
+            / PipelineRunner.WORKSPACE_DIRNAME
+            / "attempts"
+            / "round_000"
+            / "coding"
+        )
         attempts_dir.mkdir(parents=True)
         for name, step in attempts.items():
             attempt = attempts_dir / name

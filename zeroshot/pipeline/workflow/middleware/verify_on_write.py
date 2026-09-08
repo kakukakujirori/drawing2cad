@@ -1,4 +1,4 @@
-"""Report what a turn's writes built, and refuse an answer that does not build."""
+"""Report what a turn's writes produced, and gate unverified answers."""
 
 from hashlib import sha256
 from pathlib import Path
@@ -11,13 +11,14 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 from langgraph.runtime import Runtime
 
 _SUBMISSION_REFUSED = (
-    "This program does not build, so it is not ready to submit. Submitting ends "
-    "the stage and hands this program on as the answer. Fix it and build it "
-    "again; answer only once the build reports a solid."
+    "This artifact has not passed verification, so it is not ready to submit. "
+    "Submitting ends the stage and hands the current artifact on as the answer. "
+    "Correct it and trigger verification again; answer only once the current "
+    "artifact is confirmed."
 )
 
 
-class ProgramVerifier(Protocol):
+class ArtifactVerifier(Protocol):
     """The file to watch and the verification to run after it changes.
 
     Structural so this module never imports a CAD kernel, and a test can answer
@@ -28,13 +29,13 @@ class ProgramVerifier(Protocol):
     def source_path(self) -> Path: ...
 
     @property
-    def confirmed_a_solid(self) -> bool: ...
+    def confirmed(self) -> bool: ...
 
     def feedback(self) -> list[ContentBlock]: ...
 
 
 class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
-    """Build the program whenever a turn changed it, and report back for free.
+    """Verify a watched artifact whenever a turn changed it.
 
     Placed on the path from the tools node back to the model, so a turn that
     rewrote the file four times in parallel is built once, on the state it
@@ -43,18 +44,32 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     It also gates the stage's answer. A model whose answer schema is bound as a
     tool can call it the way it calls any other tool, part-way through the work;
     only a build standing between that call and the end of the stage stops a
-    broken program becoming the stage's result.
+    unverified artifact becoming the stage's result.
     """
 
-    def __init__(self, verifier: ProgramVerifier) -> None:
+    def __init__(
+        self,
+        verifier: ArtifactVerifier,
+        *,
+        refusal: str = _SUBMISSION_REFUSED,
+        require_feedback_before_submit: bool = False,
+    ) -> None:
         super().__init__()
         self.verifier = verifier
+        self.refusal = refusal
+        self.require_feedback_before_submit = require_feedback_before_submit
         # What was on disk at construction is not this agent's work, so
         # `before_model` stays quiet about it. The gate keeps its own mark,
         # because a program nobody built must never pass for one that builds.
         self._last_seen = self._digest()
         self._last_built: str | None = None
         self._last_report: list[ContentBlock] = []
+
+    def reset(self) -> None:
+        """Accept the current source as a machine-provided, unbuilt baseline."""
+        self._last_seen = self._digest()
+        self._last_built = None
+        self._last_report = []
 
     def _digest(self) -> str | None:
         # By content, not timestamp: the agent reads the program far more often
@@ -90,19 +105,20 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         # build standing: an answer may arrive in the same turn as a write.
         # Either way the refusal repeats the build's own output, so what failed
         # is stated with the refusal rather than a turn behind it.
-        if self._digest() == self._last_built:
+        built_before_call = self._digest() == self._last_built
+        if built_before_call:
             blocks = self._last_report
         else:
             blocks = self._build()
-        if self.verifier.confirmed_a_solid:
+        if self.verifier.confirmed and (
+            built_before_call or not self.require_feedback_before_submit
+        ):
             return response
 
         return ModelResponse(
             result=[
                 *response.result,
-                HumanMessage(
-                    content_blocks=[*blocks, create_text_block(_SUBMISSION_REFUSED)]
-                ),
+                HumanMessage(content_blocks=[*blocks, create_text_block(self.refusal)]),
             ],
             structured_response=None,
         )

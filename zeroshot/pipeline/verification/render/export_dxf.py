@@ -12,9 +12,9 @@ import math
 from pathlib import Path
 
 import ezdxf
-from ezdxf.addons.drawing.matplotlib import qsave
 from ezdxf.layouts import Modelspace
 
+from zeroshot.pipeline.drawing.dxf import rasterize_dxf
 from zeroshot.pipeline.verification.render._hlr import ProjectedEdges, ViewProjection
 
 _TEMPLATE = Path(__file__).with_name("techdraw_template.dxf")
@@ -91,13 +91,4 @@ def export_view(dxf_path: Path, projection: ViewProjection, layer: str) -> None:
 
 def export_to_png(dxf_path: Path) -> Path:
     """Rasterise a written view beside itself, black on white."""
-    image_path = Path(dxf_path).with_suffix(".png")
-    qsave(
-        ezdxf.readfile(dxf_path).modelspace(),
-        image_path,
-        bg="#FFFFFF",
-        fg="#000000",
-        dpi=_PNG_DPI,
-        backend="agg",
-    )
-    return image_path
+    return rasterize_dxf(dxf_path, dpi=_PNG_DPI)

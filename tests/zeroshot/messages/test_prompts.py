@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -52,7 +53,9 @@ _AN_UNREAD_PAGE = DrawingSource(
 # What the graph hands every instruction: the run's paths, and the frame it
 # renders from the round's drawing.
 _RUN_PATHS = {
-    "output_path": "/work/model.py",
+    "coding_output_path": "/work/model.py",
+    "drawing_output_path": "/work/drawing.json",
+    "drawing_schema": json.dumps(DrawingSource.model_json_schema(), indent=2),
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
     "view_frame": _AN_UNREAD_PAGE.frame_sentence(),
@@ -91,6 +94,10 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
 @pytest.mark.parametrize(
     ("name", "context"),
     [
+        (
+            "drawings/round",
+            {"current_round": "0", "assigned_tickets": "t_a"},
+        ),
         ("semantics/round", {"current_round": "0", "assigned_tickets": "t_a"}),
         ("operations/round", {"current_round": "0", "assigned_tickets": "t_a"}),
         ("coding/round", {"current_round": "0", "assigned_tickets": "t_a"}),
@@ -111,7 +118,8 @@ def test_stage_instruction_prompts_match_the_invocation_reasons(
     rendered = instruction_text(name, **{**_RUN_PATHS, **context})
 
     assert rendered
-    assert "$" not in rendered
+    for placeholder in {*_RUN_PATHS, *context, "guidelines"}:
+        assert f"${placeholder}" not in rendered
 
 
 def test_reconstruction_guide_tracks_the_durable_contract() -> None:
@@ -220,7 +228,7 @@ def test_placeholders_are_filled_from_the_context() -> None:
 
     assert "/work/model.py" in rendered
     assert "/work/attempts" in rendered
-    assert "$output_path" not in rendered
+    assert "$coding_output_path" not in rendered
     assert "$verification_dir" not in rendered
 
 
@@ -278,7 +286,17 @@ def test_the_coding_round_asks_only_for_ticket_responses() -> None:
     assert "ticket responses and nothing else" in rendered
 
 
-@pytest.mark.parametrize("stage", ["semantics", "operations", "coding"])
+def test_the_drawing_round_uses_json_for_the_artifact_and_answer_for_tickets() -> None:
+    rendered = instruction_text("drawings/round", **_round_context(current_round="0"))
+
+    assert "/work/drawing.json" in rendered
+    assert "entire updated `DrawingSource`" in rendered
+    assert "do not put sheets in the structured submission" in rendered
+    assert "automatic visual feedback" in rendered
+    assert "do not submit in that turn" in rendered
+
+
+@pytest.mark.parametrize("stage", ["drawings", "semantics", "operations", "coding"])
 def test_every_reasoning_round_carries_that_stage_s_guidelines(stage: str) -> None:
     guidelines = _guidelines(stage)
 
@@ -314,17 +332,20 @@ def test_the_merged_role_renders_the_same_text_for_every_stage_that_shares_it() 
     assert "$max_turns" not in body
 
     stage_contexts = [
-        {"output_path": "/work/model.py", "verification_dir": "/work/attempts"},
+        {
+            "coding_output_path": "/work/model.py",
+            "verification_dir": "/work/attempts",
+        },
         # What `create_agent` adds for a stage that answers structurally, and
         # what it adds for the coder, which does not.
         {
-            "output_path": "/work/model.py",
+            "coding_output_path": "/work/model.py",
             "verification_dir": "/work/attempts",
             "output_schema": "SENTINEL_SCHEMA",
             "max_turns": "20",
         },
         {
-            "output_path": "/work/model.py",
+            "coding_output_path": "/work/model.py",
             "verification_dir": "/work/attempts",
             "max_turns": "10",
         },
@@ -351,7 +372,7 @@ def test_an_unused_value_is_ignored(tmp_path: Path) -> None:
     """One context serves every stage, so a prompt may use none of it."""
     prompt = PromptTemplate(str(_write(tmp_path / "p.md", "no placeholders")))
 
-    assert prompt.render(output_path="/work/model.py") == "no placeholders"
+    assert prompt.render(coding_output_path="/work/model.py") == "no placeholders"
 
 
 def test_braces_survive_rendering(tmp_path: Path) -> None:

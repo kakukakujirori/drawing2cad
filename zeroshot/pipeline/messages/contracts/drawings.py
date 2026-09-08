@@ -345,6 +345,15 @@ class DrawingSource(BaseModel):
         )
         by_name = {sheet.name: sheet for sheet in self.sheets}
         for sheet in self.sheets:
+            if (
+                sheet.crop_of is not None
+                and sheet.crop_of.sheet in by_name
+                and sheet.file == by_name[sheet.crop_of.sheet].file
+            ):
+                raise ValueError(
+                    f"{sheet.name}: a cropped view must use its own file, not "
+                    f"{sheet.crop_of.sheet}'s file"
+                )
             seen = {sheet.name}
             cut = sheet.crop_of
             while cut is not None:

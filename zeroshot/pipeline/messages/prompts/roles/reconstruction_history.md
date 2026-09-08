@@ -10,12 +10,12 @@ This reconstruction runs as one repeated pipeline:
 - Coding writes `model.py`; verification executes it and records a `VerifyOutputResult`.
 - Audit checks the completed, immutable round. An accepted report ends the run; findings become the open tickets of a new round.
 
-The pipeline, not an agent, owns `$reconstruction_path`. It stores one `ReconstructionRun`. During a round the pipeline replaces the final snapshot after each completed reasoning stage. A new round starts with null deliverables, while every earlier snapshot remains available for comparison.
+The pipeline, not an agent, owns `$reconstruction_path`. It stores one `ReconstructionRun`. `input_drawings` is the immutable material handed to the run. During a round the pipeline replaces the final snapshot after each completed reasoning stage. A new round starts with null deliverables, including `drawings`, while every earlier snapshot remains available for comparison.
 
 ```text
 ReconstructionRun
-├─ `schema_version`
 ├─ `run_id`
+├─ `input_drawings`: DrawingSource
 └─ `snapshots`: ReconstructionSnapshot[]
    ├─ `open_tickets`: Ticket[]
    │  ├─ `ticket_id`
@@ -31,7 +31,7 @@ ReconstructionRun
    │     └─ `summary`
    ├─ `round`
    ├─ `last_completed_stage`
-   ├─ `drawings`: DrawingSource
+   ├─ `drawings`: DrawingSource | null
    │  └─ `sheets[]`: `name`, `role`, `label`, `crop_of`, `scale`, `file`, `evidence[]`, `dimensions[]`
    │     ├─ evidence: `name`, `entity`, `edge_style`, `parameters[]`, `source[]`
    │     └─ dimensions: `name`, `kind`, `text`, `nominal`, `quantity`, `note`
@@ -58,7 +58,7 @@ jq -c '.snapshots[-1] | {round, last_completed_stage, tickets: [.open_tickets[] 
 jq -c '.snapshots[-1].open_tickets[] | select(.ticket_id == "ticket_001_wrong_bore") | .subject.revision_request' '$reconstruction_path'
 
 # An index of names. Read this before any artifact body.
-jq -c '[.snapshots[-1].drawings.sheets[] | {name, role, ev: [.evidence[].name], dim: [.dimensions[].name]}]' '$reconstruction_path'
+jq -c '[(.snapshots[-1].drawings // .input_drawings).sheets[] | {name, role, ev: [.evidence[].name], dim: [.dimensions[].name]}]' '$reconstruction_path'
 jq -c '[.snapshots[-1].semantics.proposal[] | {name, geo: [.geometry[].name], ev: .evidence}]' '$reconstruction_path'
 jq -c '[.snapshots[-1].operations.proposal[] | {name, verb, depends_on, semantics}]' '$reconstruction_path'
 
@@ -75,7 +75,7 @@ jq -r '.snapshots[-1].program_source' '$reconstruction_path' | grep -n 'ret_main
 
 Use `.snapshots[-2]` only when at least two snapshots exist, and compare only the upstream artifact your stage reads. A later stage's artifact is still null in the current round, and iterating over it fails.
 
-- Drawings: your tickets, and the preceding reading when revising.
+- Drawings: your tickets and `$drawing_output_path`, which is seeded from the input or the preceding accepted reading.
 - Semantics: the current drawings, and the preceding semantics when revising.
 - Operations: the preceding semantics against the current one.
 - Coding: the preceding operations against the current ones.

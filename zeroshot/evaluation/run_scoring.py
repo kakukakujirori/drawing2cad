@@ -267,8 +267,8 @@ def latest_verified_step(
 ) -> Path | None:
     """Return the STEP to score, or ``None`` when the run offers none.
 
-    Attempts are numbered upwards and the workflow-driven final verification
-    runs last, so the largest numbered directory is the run's submission.
+    Rounds and coding attempts are numbered upwards. The largest coding attempt
+    in the latest round is therefore the run's submission.
     """
 
     # Imported here rather than at module scope: `PipelineRunner` pulls in
@@ -279,18 +279,37 @@ def latest_verified_step(
     attempts_dir = run_dir / PipelineRunner.WORKSPACE_DIRNAME / verification_dirname
     if not attempts_dir.is_dir():
         return None
-    # Mirrors how `tools/verify_output.py` issues these names.
-    attempt_ids = sorted(
-        (path.name for path in attempts_dir.iterdir() if path.name.isdigit()),
-        key=int,
+    round_dirs = sorted(
+        (
+            path
+            for path in attempts_dir.iterdir()
+            if path.is_dir()
+            and path.name.startswith("round_")
+            and path.name.removeprefix("round_").isdigit()
+        ),
+        key=lambda path: int(path.name.removeprefix("round_")),
         reverse=True,
     )
-    for attempt_id in attempt_ids:
-        step_path = attempts_dir / attempt_id / "output.step"
-        if step_path.is_file():
-            return step_path
-        if last_only:
-            return None
+    for round_dir in round_dirs:
+        coding_dir = round_dir / "coding"
+        if not coding_dir.is_dir():
+            continue
+        attempt_dirs = sorted(
+            (
+                path
+                for path in coding_dir.iterdir()
+                if path.is_dir() and path.name.isdigit()
+            ),
+            key=lambda path: int(path.name),
+            reverse=True,
+        )
+        for attempt_dir in attempt_dirs:
+            step_path = attempt_dir / "output.step"
+            if step_path.is_file():
+                return step_path
+            if last_only:
+                return None
+
     return None
 
 

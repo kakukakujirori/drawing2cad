@@ -16,6 +16,7 @@ from zeroshot.pipeline.messages.contracts.audit import (
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     BootstrapWork,
     CodingSubmission,
+    DrawingSubmission,
     OperationSubmission,
     ReconstructionRun,
     ReconstructionSnapshot,
@@ -105,11 +106,12 @@ def _snapshot(
     operations = (
         _operations() if last_completed_stage in {"operations", "coding"} else None
     )
+    drawings = drawing() if last_completed_stage is not None else None
     return ReconstructionSnapshot(
         open_tickets=[ticket or _ticket()],
         round=round,
         last_completed_stage=last_completed_stage,  # type: ignore[arg-type]
-        drawings=drawing(),
+        drawings=drawings,
         semantics=semantics,
         operations=operations,
         program_source=verification.source if verification is not None else None,
@@ -151,6 +153,15 @@ def test_coding_carries_its_ticket_answers_and_nothing_else() -> None:
             )
 
 
+def test_drawing_carries_ticket_answers_while_json_carries_the_artifact() -> None:
+    responses = _responses("ticket_bootstrap", "drawings")
+
+    submission = DrawingSubmission(responses=responses)
+
+    assert submission.responses == responses
+    assert set(DrawingSubmission.model_fields) == {"responses"}
+
+
 def test_a_stage_submission_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         SemanticSubmission.model_validate(
@@ -165,6 +176,7 @@ def test_a_stage_submission_rejects_extra_fields() -> None:
 def test_each_stage_submission_exposes_its_concrete_json_schema() -> None:
     semantic_schema = SemanticSubmission.model_json_schema()
     operation_schema = OperationSubmission.model_json_schema()
+    drawing_schema = DrawingSubmission.model_json_schema()
     coding_schema = CodingSubmission.model_json_schema()
 
     assert semantic_schema["properties"]["edits"]["items"]["$ref"].endswith(
@@ -173,6 +185,7 @@ def test_each_stage_submission_exposes_its_concrete_json_schema() -> None:
     assert operation_schema["properties"]["edits"]["items"]["$ref"].endswith(
         "/Operation"
     )
+    assert set(drawing_schema["properties"]) == {"responses"}
     assert set(coding_schema["properties"]) == {"responses"}
 
 
@@ -303,8 +316,8 @@ def test_round_zero_requires_exactly_one_bootstrap_ticket() -> None:
 
     with pytest.raises(ValidationError, match="exactly one bootstrap"):
         ReconstructionRun(
-            schema_version=1,
             run_id="run_example",
+            input_drawings=drawing(),
             snapshots=[invalid_first],
         )
 
@@ -316,8 +329,8 @@ def test_round_zero_rejects_a_finding_in_place_of_bootstrap_work() -> None:
 
     with pytest.raises(ValidationError, match="exactly one bootstrap"):
         ReconstructionRun(
-            schema_version=1,
             run_id="run_example",
+            input_drawings=drawing(),
             snapshots=[first],
         )
 
@@ -335,8 +348,8 @@ def test_later_rounds_reject_bootstrap_tickets() -> None:
 
     with pytest.raises(ValidationError, match="only in round 0"):
         ReconstructionRun(
-            schema_version=1,
             run_id="run_example",
+            input_drawings=drawing(),
             snapshots=[first, second],
         )
 
@@ -344,8 +357,8 @@ def test_later_rounds_reject_bootstrap_tickets() -> None:
 def test_round_numbers_follow_snapshot_order() -> None:
     with pytest.raises(ValidationError, match="snapshot rounds"):
         ReconstructionRun(
-            schema_version=1,
             run_id="run_example",
+            input_drawings=drawing(),
             snapshots=[_snapshot(round=1)],
         )
 
@@ -370,15 +383,15 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
         ],
         round=1,
         last_completed_stage=None,
-        drawings=drawing(),
+        drawings=None,
         semantics=None,
         operations=None,
         program_source=None,
         verification=None,
     )
     run = ReconstructionRun(
-        schema_version=1,
         run_id="run_example",
+        input_drawings=drawing(),
         snapshots=[first, second],
     )
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import ezdxf
+from ezdxf.addons.drawing.matplotlib import qsave
 from ezdxf.document import Drawing as DxfDocument
 from ezdxf.layouts import Modelspace
 
@@ -362,3 +363,18 @@ def export_drawing(drawing: DrawingSource, path: Path | str) -> Path:
         _draw(space, sheet, sheet.name)
     document.saveas(str(path))
     return Path(path)
+
+
+def rasterize_dxf(path: Path | str, *, dpi: int = 100) -> Path:
+    """Rasterise a DXF beside itself, black on white."""
+    dxf_path = Path(path)
+    image_path = dxf_path.with_suffix(".png")
+    qsave(
+        ezdxf.readfile(dxf_path).modelspace(),
+        image_path,
+        bg="#FFFFFF",
+        fg="#000000",
+        dpi=dpi,
+        backend="agg",
+    )
+    return image_path

@@ -87,7 +87,7 @@ def _preceding(
 
 
 def _first_round() -> ReconstructionSnapshot:
-    """What a run starts from: its drawing, and no artifact yet."""
+    """What a run starts from, before any stage has produced an artifact."""
     return ReconstructionSnapshot(
         open_tickets=[
             Ticket(
@@ -99,7 +99,7 @@ def _first_round() -> ReconstructionSnapshot:
         ],
         round=0,
         last_completed_stage=None,
-        drawings=drawing(),
+        drawings=None,
         semantics=None,
         operations=None,
         program_source=None,
@@ -319,20 +319,17 @@ def test_operations_replace_by_name_and_keep_their_place() -> None:
     assert merged.rationale == "the bore follows the plate"
 
 
-def test_coding_merges_to_nothing() -> None:
-    coding = CodingSubmission(responses=_responses(PipelineStage.CODING))
+@pytest.mark.parametrize("stage", [PipelineStage.DRAWINGS, PipelineStage.CODING])
+def test_workspace_outputs_are_not_merged(stage: ReasoningStage) -> None:
+    submission = CodingSubmission(responses=_responses(stage))
 
-    assert merge_submission(coding, _preceding(), PipelineStage.CODING) is None
+    with pytest.raises(SubmissionValidationError, match="workspace output"):
+        merge_submission(submission, _preceding(), stage)
 
 
 @pytest.mark.parametrize(
     ("stage", "submission", "message"),
     [
-        (
-            PipelineStage.CODING,
-            _semantics(),
-            "coding must submit a CodingSubmission",
-        ),
         (
             PipelineStage.SEMANTICS,
             CodingSubmission(responses=_responses(PipelineStage.SEMANTICS)),
@@ -345,6 +342,5 @@ def test_a_stage_is_given_the_submission_type_it_merges(
     submission: TicketAnswers,
     message: str,
 ) -> None:
-    """Coding merges to nothing, so its check is the one the early return skips."""
     with pytest.raises(SubmissionValidationError, match=message):
         merge_submission(submission, _first_round(), stage)

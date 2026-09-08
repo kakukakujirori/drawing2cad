@@ -167,7 +167,7 @@ def _merge_and_validate(
     output: SemanticSubmission | OperationSubmission | CodingSubmission,
     snapshot: ReconstructionSnapshot,
     *,
-    verification: VerifyOutputResult | None = None,
+    workspace_output: VerifyOutputResult | None = None,
 ) -> None:
     """Merge the revision and validate the result, as the pipeline does.
 
@@ -176,13 +176,18 @@ def _merge_and_validate(
     """
     stage = next_stage(snapshot.last_completed_stage)
     if stage not in REASONING_STAGES:
-        validate_submission(output, snapshot, verification=verification)
+        validate_submission(output, snapshot, deliverable=workspace_output)
         return
+    deliverable = workspace_output
+    if deliverable is None and stage in {
+        PipelineStage.SEMANTICS,
+        PipelineStage.OPERATIONS,
+    }:
+        deliverable = merge_submission(output, snapshot, stage)
     validate_submission(
         output,
         snapshot,
-        deliverable=merge_submission(output, snapshot, stage),
-        verification=verification,
+        deliverable=deliverable,
     )
 
 
@@ -206,7 +211,7 @@ def test_every_reasoning_stage_accepts_its_expected_deliverable() -> None:
             responses=[_response("ticket_initial", PipelineStage.CODING)],
         ),
         _snapshot(PipelineStage.OPERATIONS),
-        verification=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+        workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
     )
 
 
@@ -555,11 +560,11 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
-    with pytest.raises(SubmissionValidationError, match="must not submit"):
+    with pytest.raises(SubmissionValidationError, match="SemanticHypothesis"):
         _merge_and_validate(
             semantic_submission,
             _snapshot(PipelineStage.DRAWINGS),
-            verification=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+            workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
         )
     with pytest.raises(SubmissionValidationError, match="requires"):
         _merge_and_validate(coding_submission, _snapshot(PipelineStage.OPERATIONS))
@@ -567,7 +572,7 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
         _merge_and_validate(
             coding_submission,
             _snapshot(PipelineStage.OPERATIONS),
-            verification=VerifyOutputResult(),
+            workspace_output=VerifyOutputResult(),
         )
 
 
@@ -580,7 +585,7 @@ def test_coding_checks_the_submitted_program_against_current_round_operations() 
         _merge_and_validate(
             submission,
             _snapshot(PipelineStage.OPERATIONS),
-            verification=VerifyOutputResult(
+            workspace_output=VerifyOutputResult(
                 status=ExecutionStatus.REJECTED,
                 source="ret_other = object()\nresult = ret_other\n",
             ),
@@ -595,7 +600,7 @@ def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
     _merge_and_validate(
         submission,
         _snapshot(PipelineStage.OPERATIONS),
-        verification=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+        workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
     )
 
 
@@ -608,5 +613,5 @@ def test_completed_coding_accepts_only_an_audit_report() -> None:
         _merge_and_validate(
             submission,
             _snapshot(PipelineStage.CODING),
-            verification=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+            workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
         )

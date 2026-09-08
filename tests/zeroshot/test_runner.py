@@ -87,18 +87,50 @@ _A_BOX = AIMessage(
 
 _A_READING = AIMessage(
     content=DrawingSubmission(
-        edits=list(drawing().sheets),
-        deleted=[],
         responses=[_ticket_response("drawings", "Read sheet_front.")],
     ).model_dump_json()
 )
+
+
+def _writing_drawing() -> AIMessage:
+    """Add one transcribed front view to the middleware-seeded drawing."""
+    view = drawing().sheets[0].model_dump(mode="json")
+    script = cleandoc(
+        f"""
+        import json
+        import shutil
+        from pathlib import Path
+
+        path = Path('/work/drawing.json')
+        source = json.loads(path.read_text())
+        page = next(sheet for sheet in source['sheets'] if sheet['role'] == 'full_page')
+        view = {view!r}
+        view['crop_of'] = {{'sheet': page['name'], 'box': [0.0, 0.0, 10.0, 10.0]}}
+        suffix = Path(page['file']).suffix
+        view['file'] = '/work/sheet_front' + suffix
+        shutil.copyfile(page['file'], view['file'])
+        source['sheets'].append(view)
+        path.write_text(json.dumps(source), encoding='utf-8')
+        """
+    )
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "run_shell",
+                "args": {"command": f"python -c {shlex.quote(script)}"},
+                "id": "call-write-drawing",
+                "type": "tool_call",
+            }
+        ],
+    )
 
 
 def _drawing_stage():
     return partial(
         create_agent,
         role="drawing_analyzer",
-        model=ScriptedChatModel(responses=(_A_READING,)),
+        model=ScriptedChatModel(responses=(_writing_drawing(), _A_READING)),
         announce_turns=False,
     )
 
@@ -199,10 +231,9 @@ def _verified_resume_run():
     run = advance_reconstruction(
         run,
         DrawingSubmission(
-            edits=list(drawing().sheets),
-            deleted=[],
             responses=[_ticket_response("drawings", "Read sheet_front.")],
         ),
+        workspace_output=drawing(),
     )
     run = advance_reconstruction(
         run,
@@ -236,7 +267,7 @@ def _verified_resume_run():
         CodingSubmission(
             responses=[_ticket_response("coding", "Implemented ret_base and result.")],
         ),
-        verification=VerifyOutputResult(
+        workspace_output=VerifyOutputResult(
             verification_id="007",
             status=ExecutionStatus.VERIFIED,
             source=VALID_BOX_SOURCE,
@@ -253,7 +284,7 @@ def test_resume_copies_an_external_attempt_directly(
     run = _verified_resume_run()
 
     source_workspace = tmp_path / "source" / "workspace"
-    attempt = source_workspace / "attempts" / "007"
+    attempt = source_workspace / "attempts" / "round_000" / "coding" / "007"
     attempt.mkdir(parents=True)
     (attempt / "output.step").write_bytes(b"STEP")
     resume_path = source_workspace / "reconstruction.json"
@@ -282,7 +313,9 @@ def test_resume_copies_an_external_attempt_directly(
 
     assert _latest_program_source(run) == VALID_BOX_SOURCE
     assert (workspace / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE
-    assert (workspace / "attempts" / "007" / "output.step").read_bytes() == b"STEP"
+    assert (
+        workspace / "attempts" / "round_000" / "coding" / "007" / "output.step"
+    ).read_bytes() == b"STEP"
     assert (attempt / "output.step").is_file()
 
 
@@ -293,7 +326,7 @@ def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     artifact_root = tmp_path / "artifacts"
     sample_root = artifact_root / "sample"
     workspace = sample_root / "workspace"
-    attempt = workspace / "attempts" / "007"
+    attempt = workspace / "attempts" / "round_000" / "coding" / "007"
     attempt.mkdir(parents=True)
     (attempt / "output.step").write_bytes(b"STEP")
     (workspace / "stale.txt").write_text("stale", encoding="utf-8")
@@ -311,7 +344,9 @@ def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
 
     assert not (prepared / "stale.txt").exists()
     assert (prepared / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE
-    assert (prepared / "attempts" / "007" / "output.step").read_bytes() == b"STEP"
+    assert (
+        prepared / "attempts" / "round_000" / "coding" / "007" / "output.step"
+    ).read_bytes() == b"STEP"
 
 
 @pytest.mark.parametrize("same_workspace", [False, True])
@@ -366,9 +401,10 @@ def test_resume_restores_drawing_stage_crops(
     run = advance_reconstruction(
         run,
         DrawingSubmission(
-            edits=[crop, relative_crop, temporary_crop],
-            deleted=[],
             responses=[_ticket_response("drawings", "Read sheet_front.")],
+        ),
+        workspace_output=DrawingSource(
+            sheets=[raw, crop, relative_crop, temporary_crop]
         ),
     )
     derived = source_workspace / "derived" / "sheet_front.dxf"
@@ -415,12 +451,10 @@ def test_resume_restores_drawing_stage_crops(
     assert restored.read_bytes() == b"DERIVED DXF"
     assert (prepared / "views" / "sheet_detail.png").read_bytes() == b"DETAIL PNG"
     assert (prepared / "tmp" / "sheet_section.png").read_bytes() == b"SECTION PNG"
+    accepted = run.snapshots[-1].drawings
+    assert accepted is not None
     assert (
-        next(
-            sheet.file
-            for sheet in run.snapshots[-1].drawings.sheets
-            if sheet.name == "sheet_front"
-        )
+        next(sheet.file for sheet in accepted.sheets if sheet.name == "sheet_front")
         == "/work/derived/sheet_front.dxf"
     )
     assert derived.is_file()
@@ -800,8 +834,13 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     assert "run completed" in rendered_console
 
     attempts = artifact_root / "valid-box" / "workspace" / "attempts"
-    assert [path.name for path in attempts.iterdir()] == ["000"]
-    final_attempt = attempts / "000"
+    assert [path.name for path in attempts.iterdir()] == ["round_000"]
+    round_attempts = attempts / "round_000"
+    assert sorted(path.name for path in round_attempts.iterdir()) == [
+        "coding",
+        "drawing",
+    ]
+    final_attempt = round_attempts / "coding" / "000"
     assert (final_attempt / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE
     CadQueryExecutor.verify_step(final_attempt / "output.step")
 
@@ -887,7 +926,9 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
 
     # One attempt per program: the broken one, then the repair the workflow's
     # own verification found already built.
-    attempts = artifact_root / "repair-box" / "workspace" / "attempts"
+    attempts = (
+        artifact_root / "repair-box" / "workspace" / "attempts" / "round_000" / "coding"
+    )
     assert sorted(path.name for path in attempts.iterdir()) == ["000", "001"]
     assert (attempts / "000" / "model.py").read_text(encoding="utf-8") == "result = ("
     assert not (attempts / "000" / "output.step").exists()

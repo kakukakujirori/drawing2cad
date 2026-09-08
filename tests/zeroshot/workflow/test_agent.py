@@ -37,7 +37,7 @@ from zeroshot.pipeline.workflow.components.agent import create_agent
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
 PROMPT_CONTEXT = {
-    "output_path": "/work/model.py",
+    "coding_output_path": "/work/model.py",
     "verification_dir": "/work/attempts",
 }
 
@@ -912,7 +912,7 @@ class _CountingVerifier:
         self._sound = False
 
     @property
-    def confirmed_a_solid(self) -> bool:
+    def confirmed(self) -> bool:
         return self._sound
 
     def feedback(self) -> list[ContentBlock]:
@@ -935,13 +935,19 @@ def _verifying_agent(
     model: ScriptedChatModel,
     path: Path,
     builds: Sequence[bool] = (),
+    require_feedback_before_submit: bool = False,
     **agent_options: Any,
 ) -> tuple[Any, _CountingVerifier]:
     verifier = _CountingVerifier(path, builds)
     graph = _subgraph(
         model,
         tools=(_writing_tool(path), echo),
-        extra_middleware=[VerifyOnWriteMiddleware(verifier)],
+        extra_middleware=[
+            VerifyOnWriteMiddleware(
+                verifier,
+                require_feedback_before_submit=require_feedback_before_submit,
+            )
+        ],
         **agent_options,
     )
     return graph, verifier
@@ -1150,7 +1156,7 @@ def test_an_answer_is_refused_while_the_program_does_not_build(
     refusal = next(
         message.text
         for message in result["messages"]
-        if "does not build" in message.text
+        if "has not passed verification" in message.text
     )
     assert "not ready to submit" in refusal
     assert verifier.seen == ["result = broken", "result = 1"]
@@ -1170,7 +1176,34 @@ def test_an_answer_stands_when_the_program_builds(tmp_path: Path) -> None:
     result = graph.invoke({"messages": [HumanMessage(content="go")]})
 
     assert result["structured_response"] == _Answer(done=True)
-    assert not any("does not build" in m.text for m in result["messages"])
+    assert not any("has not passed verification" in m.text for m in result["messages"])
+
+
+def test_an_answer_waits_until_the_model_has_seen_required_feedback(
+    tmp_path: Path,
+) -> None:
+    """A visual artifact may validate on submission but still needs one model
+    turn after the render, so the model can inspect and repair it."""
+    path = tmp_path / "drawing.json"
+    path.write_text('{"sheets": []}', encoding="utf-8")
+    model = ScriptedChatModel(
+        responses=(_answer_call("call-1"), _answer_call("call-2"))
+    )
+    graph, verifier = _verifying_agent(
+        model,
+        path,
+        announce_turns=False,
+        output_schema=_Answer,
+        response_format_strategy="tool",
+        require_feedback_before_submit=True,
+    )
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["structured_response"] == _Answer(done=True)
+    assert len(model.received_messages) == 2
+    assert verifier.seen == ['{"sheets": []}']
+    assert any("not ready to submit" in message.text for message in result["messages"])
 
 
 def test_a_refusal_repeats_what_the_build_reported(tmp_path: Path) -> None:
@@ -1199,7 +1232,7 @@ def test_a_refusal_repeats_what_the_build_reported(tmp_path: Path) -> None:
     refusal = next(
         message.text
         for message in result["messages"]
-        if "does not build" in message.text
+        if "has not passed verification" in message.text
     )
     # The answer came in a turn that wrote nothing, so no build ran for it;
     # the refusal still carries the report from the build that did.

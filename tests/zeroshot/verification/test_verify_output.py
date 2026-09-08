@@ -9,6 +9,7 @@ import pytest
 from zeroshot.pipeline.messages import ArtifactPresenter, View
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
+from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
@@ -126,6 +127,7 @@ def _create_verifier(
     views: Sequence[View] = THIRD_ANGLE,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
+    attempt_store: AttemptStore | None = None,
     show_intermediate_returns: bool = True,
 ) -> OutputVerifier:
     return OutputVerifier(
@@ -133,11 +135,24 @@ def _create_verifier(
         workdir,
         renderer=renderer or StubRenderer(),  # type: ignore[arg-type]
         artifact_presenter=artifact_presenter,
+        attempt_store=attempt_store
+        or AttemptStore(
+            workdir,
+            round_source=lambda: 0,
+            root_dirname=output_dirname,
+        ),
         views=views,
         source_filename=source_filename,
-        output_dirname=output_dirname,
         show_intermediate_returns=show_intermediate_returns,
     )
+
+
+def _coding_attempt(
+    workdir: Path,
+    attempt_id: str = "000",
+    round_number: int = 0,
+) -> Path:
+    return workdir / "attempts" / f"round_{round_number:03d}" / "coding" / attempt_id
 
 
 class StubRenderer:
@@ -298,7 +313,7 @@ def test_delegates_paths_and_returns_json_safe_mapping(tmp_path: Path) -> None:
     assert executor.calls == [
         (
             tmp_path / "model.py",
-            tmp_path / "attempts" / "000" / "output.step",
+            _coding_attempt(tmp_path) / "output.step",
         )
     ]
     assert _report_json(result) == {
@@ -313,7 +328,7 @@ def test_delegates_paths_and_returns_json_safe_mapping(tmp_path: Path) -> None:
     report = _report_json(result)
     assert isinstance(report["returncode"], int)
     assert "source" not in report
-    assert (tmp_path / "attempts" / "000" / "model.py").read_text(
+    assert (_coding_attempt(tmp_path) / "model.py").read_text(
         encoding="utf-8"
     ) == VALID_SOURCE
 
@@ -343,7 +358,7 @@ def test_preserves_failed_attempt_and_execution_report(tmp_path: Path) -> None:
         "executor_error": "output.step was not generated",
         "shape": "",
     }
-    attempt_dir = tmp_path / "attempts" / "000"
+    attempt_dir = _coding_attempt(tmp_path)
     assert (attempt_dir / "model.py").read_text(encoding="utf-8") == VALID_SOURCE
     assert not (attempt_dir / "output.step").exists()
 
@@ -358,8 +373,9 @@ def test_the_intermediate_returns_are_kept_beside_their_attempt(
 
     report, _ = verifier.verify()
 
+    assert report.verification_id is not None
     assert executor.intermediate_returns_dirs == [
-        tmp_path / "attempts" / report.verification_id / "intermediate_returns"
+        _coding_attempt(tmp_path, report.verification_id) / "intermediate_returns"
     ]
 
 
@@ -412,8 +428,28 @@ def test_assigns_incrementing_verification_ids(tmp_path: Path) -> None:
 
     assert _report_json(first)["verification_id"] == "000"
     assert _report_json(second)["verification_id"] == "001"
-    assert (tmp_path / "attempts" / "000").is_dir()
-    assert (tmp_path / "attempts" / "001").is_dir()
+    assert _coding_attempt(tmp_path, "000").is_dir()
+    assert _coding_attempt(tmp_path, "001").is_dir()
+
+
+def test_a_new_round_restarts_coding_attempt_ids_without_overwriting_history(
+    tmp_path: Path,
+) -> None:
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    current_round = [0]
+    store = AttemptStore(workdir, round_source=lambda: current_round[0])
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verifier = _create_verifier(executor, workdir, attempt_store=store)
+    first, _ = verifier.verify()
+
+    current_round[0] = 1
+    verifier.reset()
+    second, _ = verifier.verify()
+
+    assert first.verification_id == second.verification_id == "000"
+    assert _coding_attempt(tmp_path, round_number=0).is_dir()
+    assert _coding_attempt(tmp_path, round_number=1).is_dir()
 
 
 def test_an_unchanged_program_is_not_built_twice(tmp_path: Path) -> None:
@@ -429,7 +465,8 @@ def test_an_unchanged_program_is_not_built_twice(tmp_path: Path) -> None:
     assert len(executor.calls) == 1
     assert first == second
     assert first_manifest == second_manifest
-    assert [path.name for path in (tmp_path / "attempts").iterdir()] == ["000"]
+    assert [path.name for path in (tmp_path / "attempts").iterdir()] == ["round_000"]
+    assert [path.name for path in _coding_attempt(tmp_path).parent.iterdir()] == ["000"]
 
 
 def test_a_program_written_after_a_failed_verification_is_built(
@@ -508,7 +545,7 @@ def test_preserves_executor_rejection_without_source_snapshot(
     assert _report_json(result)["verification_id"] == "000"
     assert _report_json(result)["status"] == "REJECTED"
     assert _report_json(result)["executor_error"] == "model.py must be valid UTF-8"
-    assert not (tmp_path / "attempts" / "000" / "model.py").exists()
+    assert not (_coding_attempt(tmp_path) / "model.py").exists()
     assert len(executor.calls) == 1
 
 
@@ -548,7 +585,7 @@ def test_rejects_output_dirname_outside_workdir_root(
     executor = StubCadQueryExecutor(_execution_report())
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
 
-    with pytest.raises(ValueError, match="output_dirname must be a directory basename"):
+    with pytest.raises(ValueError, match="attempt root must be a directory basename"):
         _create_verifier(executor, workdir, output_dirname=output_dirname)
 
 
@@ -559,7 +596,7 @@ def test_rejects_symlink_output_directory(tmp_path: Path) -> None:
     executor = StubCadQueryExecutor(_execution_report())
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
 
-    with pytest.raises(ValueError, match="output directory must not be a symlink"):
+    with pytest.raises(ValueError, match="attempt root must not be a symlink"):
         _create_verifier(executor, workdir)
 
 
@@ -579,10 +616,10 @@ def test_verified_output_is_rendered_and_offered_to_the_model(tmp_path: Path) ->
 
     text = _text(verifier.feedback())
 
-    verification_dir = tmp_path / "attempts" / "000"
+    verification_dir = _coding_attempt(tmp_path)
     (rendered_step, _, _) = renderer.calls[0]
     assert rendered_step == verification_dir / "output.step"
-    sandbox_dir = f"{workdir.sandbox_bind_dir}/attempts/000"
+    sandbox_dir = f"{workdir.sandbox_bind_dir}/attempts/round_000/coding/000"
     for view in VIEWS:
         assert f"{sandbox_dir}/projection/{view}.dxf" in text
     # One pictorial of the one camera, whatever the renderer wrote.
@@ -608,7 +645,7 @@ def test_rendered_artifacts_stay_inside_the_verification_directory(
 
     verifier.feedback()
 
-    verification_dir = tmp_path / "attempts" / "000"
+    verification_dir = _coding_attempt(tmp_path)
     written = {p for p in tmp_path.rglob("*") if p.is_file()}
     assert written == {
         tmp_path / "model.py",
@@ -707,7 +744,7 @@ def test_result_carries_paths_but_never_the_drawing_itself(
 
     text = _text(verifier.feedback())
 
-    dxf_body = (tmp_path / "attempts" / "000" / "projection" / "front.dxf").read_text(
+    dxf_body = (_coding_attempt(tmp_path) / "projection" / "front.dxf").read_text(
         encoding="utf-8"
     )
     assert "projection/front.dxf" in text
@@ -750,7 +787,7 @@ def test_without_an_artifact_presenter_the_model_sees_only_the_report(
 
     assert _report_json(result)["status"] == "VERIFIED"
     assert "projection/front.dxf" not in _text(result)
-    assert (tmp_path / "attempts" / "000" / "projection" / "front.dxf").is_file()
+    assert (_coding_attempt(tmp_path) / "projection" / "front.dxf").is_file()
 
 
 def test_the_table_states_each_return_and_its_change() -> None:
@@ -827,7 +864,7 @@ def test_every_kept_return_is_drawn_beside_its_step(tmp_path: Path) -> None:
 
     assert report.verification_id is not None
     returns_dir = (
-        tmp_path / "attempts" / report.verification_id / "intermediate_returns"
+        _coding_attempt(tmp_path, report.verification_id) / "intermediate_returns"
     )
     for name in ("ret_base", "ret_hole"):
         assert (returns_dir / name / "output.step").is_file()
@@ -852,7 +889,7 @@ def test_the_feedback_states_the_returns_and_where_they_were_drawn(
     assert "ret_base  volume 100.0; faces 6 (Plane 6); edges 12 (Line 12)" in text
     assert "ret_hole  volume 200.0 (+100.0); faces 6 (+0); edges 12 (+0)" in text
     # Sandbox paths, and one sentence for a layout every return shares.
-    assert "/work/attempts/000/intermediate_returns/<name>/" in text
+    assert "/work/attempts/round_000/coding/000/intermediate_returns/<name>/" in text
     # The table is a block of its own, not a JSON string full of escapes.
     assert "intermediate_returns" not in _report_json(verifier.feedback())
 
@@ -898,6 +935,7 @@ def test_the_returns_are_neither_kept_nor_drawn_when_switched_off(
         workdir,
         renderer=renderer,  # type: ignore[arg-type]
         artifact_presenter=None,
+        attempt_store=AttemptStore(workdir, round_source=lambda: 0),
         views=THIRD_ANGLE,
         show_intermediate_returns=False,
     )
@@ -906,7 +944,7 @@ def test_the_returns_are_neither_kept_nor_drawn_when_switched_off(
 
     # The executor is never asked for them, so nothing downstream can run.
     assert executor.intermediate_returns_dirs == [None]
-    assert not (tmp_path / "attempts" / "000" / "intermediate_returns").exists()
+    assert not (_coding_attempt(tmp_path) / "intermediate_returns").exists()
     assert "Intermediate returns" not in text
     # One render, for the attempt itself.
     assert len(renderer.calls) == 1
@@ -929,10 +967,10 @@ def test_a_result_that_fails_still_reports_what_the_returns_built(
     # one valid solid.
     assert "ret_base  volume 100.0" in text
     assert "ret_hole  volume 200.0 (+100.0)" in text
-    returns_dir = tmp_path / "attempts" / "000" / "intermediate_returns"
+    returns_dir = _coding_attempt(tmp_path) / "intermediate_returns"
     assert (returns_dir / "ret_base" / "projection" / "front.dxf").is_file()
     # No STEP of its own, so the attempt's own views are absent.
-    assert "attempts/000/projection/front.dxf" not in text
+    assert "attempts/round_000/coding/000/projection/front.dxf" not in text
 
 
 def test_a_part_that_broke_apart_says_how_many_pieces() -> None:
@@ -1008,7 +1046,7 @@ def test_the_verifier_asks_for_exactly_the_views_it_was_given(
 
     (_, projection_paths, _) = renderer.calls[0]
     assert set(projection_paths.as_mapping()) == {"left", "bottom"}
-    sandbox_dir = f"{workdir.sandbox_bind_dir}/attempts/000"
+    sandbox_dir = f"{workdir.sandbox_bind_dir}/attempts/round_000/coding/000"
     assert f"{sandbox_dir}/projection/left.dxf" in text
     assert "sheet_left (left)" in text
     assert "front.dxf" not in text

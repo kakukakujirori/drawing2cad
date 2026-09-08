@@ -8,6 +8,7 @@ is measured against the snapshot is the artifact that revision merges to.
 import re
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from typing import cast
 
 from zeroshot.pipeline.messages.contracts import (
     DrawingSource,
@@ -55,6 +56,9 @@ type Submission = (
     | CodingSubmission
     | AuditReport
 )
+type StageDeliverable = (
+    DrawingSource | SemanticHypothesis | OperationPlan | VerifyOutputResult
+)
 
 _COPIED_DECIMALS = 4
 _DECIMAL = re.compile(rf"\d+\.\d{{{_COPIED_DECIMALS},}}")
@@ -69,18 +73,16 @@ def validate_submission(
     submission: Submission,
     snapshot: ReconstructionSnapshot,
     *,
-    deliverable: DrawingSource | SemanticHypothesis | OperationPlan | None = None,
-    verification: VerifyOutputResult | None = None,
+    deliverable: StageDeliverable | None = None,
 ) -> None:
     """Reject a submission that contradicts the round it belongs to.
 
-    `deliverable` is what this submission merges to; an audit report has none.
+    `deliverable` is the complete stage output: merged for proposal stages and
+    obtained from workspace verification for drawing and coding. An audit has none.
     """
     if isinstance(submission, AuditReport):
-        if verification is not None:
-            raise SubmissionValidationError(
-                "audit does not accept a separate verification"
-            )
+        if deliverable is not None:
+            raise SubmissionValidationError("audit does not accept a deliverable")
         _validate_audit_report(submission, snapshot)
         return
 
@@ -88,14 +90,21 @@ def validate_submission(
         raise TypeError(f"unsupported submission type: {type(submission).__name__}")
 
     stage = _next_reasoning_stage(snapshot.last_completed_stage)
+    expected_submission = {
+        PipelineStage.DRAWINGS: DrawingSubmission,
+        PipelineStage.SEMANTICS: SemanticSubmission,
+        PipelineStage.OPERATIONS: OperationSubmission,
+        PipelineStage.CODING: CodingSubmission,
+    }[stage]
+    if not isinstance(submission, expected_submission):
+        raise SubmissionValidationError(
+            f"{stage} must submit a {expected_submission.__name__}"
+        )
     _validate_ticket_responses(
         submission.responses,
         snapshot.open_tickets,
         expected_stage=stage,
     )
-    if stage is not PipelineStage.CODING and verification is not None:
-        raise SubmissionValidationError(f"{stage} must not submit verification")
-
     match stage:
         case PipelineStage.DRAWINGS:
             if not isinstance(deliverable, DrawingSource):
@@ -113,11 +122,11 @@ def validate_submission(
                 )
             _validate_operations(deliverable, snapshot)
         case PipelineStage.CODING:
-            if deliverable is not None:
+            if not isinstance(deliverable, VerifyOutputResult):
                 raise SubmissionValidationError(
-                    "coding revises model.py through the workspace"
+                    "coding requires a terminal verification result"
                 )
-            _validate_coding(snapshot, verification)
+            _validate_coding(snapshot, deliverable)
         case _:
             raise SubmissionValidationError(f"unexpected reasoning stage: {stage}")
 
@@ -194,7 +203,8 @@ def _validate_semantics(
     The hypothesis cannot check this itself: since the drawing became a stage
     of its own, the entries a feature cites live in another artifact.
     """
-    known = snapshot.drawings.cited_names()
+    drawing = cast(DrawingSource, snapshot.drawings)
+    known = drawing.cited_names()
     errors = [
         f"{feature.name} cites {', '.join(missing)}, which the drawing does not hold"
         for feature in hypothesis.proposal
@@ -217,10 +227,11 @@ def _validate_operations(
         raise SubmissionValidationError(
             "operations requires an integrated SemanticHypothesis"
         )
+    drawing = cast(DrawingSource, snapshot.drawings)
 
     # The submitted plan is the operations candidate; the snapshot contains
     # the drawing and the semantics already integrated earlier in this round.
-    errors = _operation_plan_errors(operations, snapshot.semantics, snapshot.drawings)
+    errors = _operation_plan_errors(operations, snapshot.semantics, drawing)
     if errors:
         raise SubmissionValidationError(" ".join(errors))
 
@@ -311,12 +322,8 @@ def _transcribed_numbers(detail: str, held_numbers: Sequence[float]) -> list[str
 
 def _validate_coding(
     snapshot: ReconstructionSnapshot,
-    verification: VerifyOutputResult | None,
+    verification: VerifyOutputResult,
 ) -> None:
-    if verification is None:
-        raise SubmissionValidationError(
-            "coding requires a terminal verification result"
-        )
     if verification.status is ExecutionStatus.UNINITIALIZED:
         raise SubmissionValidationError("coding verification must be terminal")
     if snapshot.operations is None:
@@ -345,6 +352,7 @@ def _validate_audit_report(
     """Reject an audit report that contradicts the audited stage outputs."""
     if snapshot.last_completed_stage is not PipelineStage.CODING:
         raise SubmissionValidationError("audit requires a completed coding snapshot")
+    drawing = cast(DrawingSource, snapshot.drawings)
 
     references = tuple(_iter_references(report.findings))
     semantic_names = (
@@ -364,7 +372,7 @@ def _validate_audit_report(
     )
 
     known_members = {
-        PipelineStage.DRAWINGS: {sheet.name for sheet in snapshot.drawings.sheets},
+        PipelineStage.DRAWINGS: {sheet.name for sheet in drawing.sheets},
         PipelineStage.SEMANTICS: semantic_names,
         PipelineStage.OPERATIONS: set(operations_by_name),
         PipelineStage.CODING: coding_names,
@@ -373,7 +381,7 @@ def _validate_audit_report(
     cited_sheets = {
         feature.name: {
             sheet.name
-            for sheet in snapshot.drawings.sheets
+            for sheet in drawing.sheets
             if set(feature.evidence).intersection(
                 entry.name for entry in [*sheet.evidence, *sheet.dimensions]
             )

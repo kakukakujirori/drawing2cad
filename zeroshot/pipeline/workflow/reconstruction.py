@@ -34,11 +34,15 @@ from zeroshot.pipeline.messages.contracts.stages import (
 from zeroshot.pipeline.verification import VerifyOutputResult
 from zeroshot.pipeline.workflow.merge_submission import merge_submission
 from zeroshot.pipeline.workflow.resolve_submission import resolve_references
-from zeroshot.pipeline.workflow.validate_submission import validate_submission
+from zeroshot.pipeline.workflow.validate_submission import (
+    SubmissionValidationError,
+    validate_submission,
+)
 
 type ReasoningSubmission = (
     DrawingSubmission | SemanticSubmission | OperationSubmission | CodingSubmission
 )
+type WorkspaceOutput = DrawingSource | VerifyOutputResult
 
 _LOG_LIMIT = 4000
 
@@ -52,7 +56,7 @@ def start_reconstruction(
     instruction: str,
     drawings: DrawingSource,
 ) -> ReconstructionRun:
-    """The run's first round, holding the drawing it was handed and no more."""
+    """Start a run whose first round has not produced a drawing reading yet."""
     snapshot = ReconstructionSnapshot(
         open_tickets=[
             Ticket(
@@ -64,15 +68,15 @@ def start_reconstruction(
         ],
         round=0,
         last_completed_stage=None,
-        drawings=drawings,
+        drawings=None,
         semantics=None,
         operations=None,
         program_source=None,
         verification=None,
     )
     return ReconstructionRun(
-        schema_version=1,
         run_id=run_id,
+        input_drawings=drawings,
         snapshots=[snapshot],
     )
 
@@ -90,7 +94,11 @@ def open_next_round(
 
     # As for a reasoning stage: the tickets this opens carry the finding's own
     # words into the next round, so the addresses in them are resolved here.
-    report = resolve_references(report, current.semantics, current.drawings)
+    report = resolve_references(
+        report,
+        current.semantics,
+        cast(DrawingSource, current.drawings),
+    )
 
     next_round = current.round + 1
     tickets = [_ticket_from_finding(next_round, finding) for finding in report.findings]
@@ -98,19 +106,25 @@ def open_next_round(
         open_tickets=tickets,
         round=next_round,
         last_completed_stage=None,
-        # NOTE: current.drawings includes the input drawings,
-        #       so drawings=None invalidates access to them.
-        drawings=current.drawings,
+        drawings=None,
         semantics=None,
         operations=None,
         program_source=None,
         verification=None,
     )
     return ReconstructionRun(
-        schema_version=run.schema_version,
         run_id=run.run_id,
+        input_drawings=run.input_drawings,
         snapshots=[*run.snapshots, snapshot],
     )
+
+
+def drawing_baseline(run: ReconstructionRun) -> DrawingSource:
+    """The accepted drawing from which the unfinished current round starts."""
+    current = run.snapshots[-1]
+    if current.round == 0:
+        return run.input_drawings
+    return cast(DrawingSource, run.snapshots[-2].drawings)
 
 
 def _ticket_from_finding(
@@ -139,23 +153,31 @@ def advance_reconstruction(
     run: ReconstructionRun,
     submission: ReasoningSubmission,
     *,
-    verification: VerifyOutputResult | None = None,
+    workspace_output: WorkspaceOutput | None = None,
 ) -> ReconstructionRun:
-    """Validate and atomically integrate one reasoning-stage submission."""
+    """Validate and atomically integrate one reasoning-stage result.
+
+    Drawing and coding receive their output from workspace verification;
+    semantics and operations derive theirs from the submitted structured diff.
+    """
     current = run.snapshots[-1]
     stage = next_stage(current.last_completed_stage)
     if stage not in REASONING_STAGES:
         raise ValueError("a completed coding snapshot cannot advance again")
 
-    # A first round revises the snapshot it started from, whose artifacts are
-    # all null but the drawing the run was handed.
-    preceding = run.snapshots[-2] if len(run.snapshots) > 1 else current
-    deliverable = merge_submission(submission, preceding, stage)
+    if stage in {PipelineStage.DRAWINGS, PipelineStage.CODING}:
+        deliverable = workspace_output
+    else:
+        if workspace_output is not None:
+            raise SubmissionValidationError(
+                f"{stage} does not accept a workspace output"
+            )
+        preceding = run.snapshots[-2] if len(run.snapshots) > 1 else current
+        deliverable = merge_submission(submission, preceding, stage)
     validate_submission(
         submission,
         current,
         deliverable=deliverable,
-        verification=verification,
     )
 
     # After validation, which judges the addresses the model wrote rather than
@@ -166,10 +188,11 @@ def advance_reconstruction(
         if isinstance(deliverable, SemanticHypothesis)
         else current.semantics
     )
-    cited_drawing = (
-        deliverable if isinstance(deliverable, DrawingSource) else current.drawings
+    cited_drawing = cast(
+        DrawingSource,
+        deliverable if isinstance(deliverable, DrawingSource) else current.drawings,
     )
-    if deliverable is not None:
+    if isinstance(deliverable, (DrawingSource, SemanticHypothesis, OperationPlan)):
         deliverable = resolve_references(deliverable, cited_hypothesis, cited_drawing)
     submission = resolve_references(submission, cited_hypothesis, cited_drawing)
 
@@ -206,7 +229,7 @@ def advance_reconstruction(
         case PipelineStage.OPERATIONS:
             operations = cast(OperationPlan, deliverable)
         case PipelineStage.CODING:
-            terminal = cast(VerifyOutputResult, verification)
+            terminal = cast(VerifyOutputResult, deliverable)
             integrated_verification = _durable_verification(terminal)
             program_source = terminal.source
 
@@ -266,8 +289,8 @@ def _commit_snapshot(
     _require_only_stage_artifact_changed(current, snapshot, expected_stage)
 
     return ReconstructionRun(
-        schema_version=run.schema_version,
         run_id=run.run_id,
+        input_drawings=run.input_drawings,
         snapshots=[*run.snapshots[:-1], snapshot],
     )
 

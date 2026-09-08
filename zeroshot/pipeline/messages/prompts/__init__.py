@@ -44,7 +44,7 @@ class PromptTemplate:
 
         `$` rather than `{}` so a prompt can hold code without escaping, and
         `substitute` rather than `safe_substitute` so a value we forgot to pass
-        raises here instead of reaching the model as the literal `$output_path`.
+        raises here instead of reaching the model as a literal placeholder.
         Surrounding whitespace is dropped so that whether the file ends in a
         newline -- an editor's decision -- cannot change what the model is sent.
         """

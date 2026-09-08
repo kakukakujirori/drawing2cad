@@ -57,6 +57,7 @@ def test_audit_rejects_an_existing_sheet_not_cited_by_the_feature() -> None:
 
 def test_a_dimension_citation_supports_the_hop_to_its_sheet() -> None:
     snapshot = _snapshot()
+    assert snapshot.drawings is not None
     snapshot.drawings.sheets[0].dimensions.append(
         Dimension(
             name="dim_width",

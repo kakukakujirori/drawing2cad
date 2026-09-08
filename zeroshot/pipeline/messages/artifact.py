@@ -216,8 +216,10 @@ class ArtifactPresenter:
         self,
         manifest: FeedbackManifest,
         workdir: SandboxWorkdir,
+        *,
+        heading: str = "[Projected drawing]",
     ) -> list[ContentBlock]:
-        """What a verification drew of the solid it built.
+        """Present the views produced by an artifact verification.
 
         Blocks rather than a message, so the caller decides what carries them.
         A verification never becomes a turn anyone spoke.
@@ -236,7 +238,7 @@ class ArtifactPresenter:
         if not presented.sheets and not failed:
             return []
 
-        lines = ["[Projected drawing]", *presented.listing(), *failed, ""]
+        lines = [heading, *presented.listing(), *failed, ""]
         blocks: list[ContentBlock] = [create_text_block("\n".join(lines))]
         if self.feedback_mode == "image":
             blocks.extend(presented.images())

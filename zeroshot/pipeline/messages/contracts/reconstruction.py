@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import Sequence
-from typing import Literal, Self
+from typing import Self
 
 from pydantic import (
     BaseModel,
@@ -13,7 +13,7 @@ from pydantic import (
 )
 
 from zeroshot.pipeline.messages.contracts.audit import AuditFinding
-from zeroshot.pipeline.messages.contracts.drawings import DrawingSheet, DrawingSource
+from zeroshot.pipeline.messages.contracts.drawings import DrawingSource
 from zeroshot.pipeline.messages.contracts.operations import Operation, OperationPlan
 from zeroshot.pipeline.messages.contracts.semantics import (
     SemanticFeature,
@@ -28,9 +28,9 @@ from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 
 _TICKET_ID = re.compile(r"^ticket_[a-z0-9][a-z0-9_]*$")
 _RUN_ID = re.compile(r"^run_[a-z0-9][a-z0-9_]*$")
-# The artifact that stays null until its stage fills it. The drawing is absent
-# because the run is handed one before any stage runs, so it is never null.
+# The artifact that stays null until its stage fills it in the current round.
 _NULL_UNTIL_STAGE = {
+    PipelineStage.DRAWINGS: "drawings",
     PipelineStage.SEMANTICS: "semantics",
     PipelineStage.OPERATIONS: "operations",
     PipelineStage.CODING: "program_source",
@@ -53,8 +53,8 @@ class TicketResponse(BaseModel):
         description=(
             "What this stage changed, or why no change was needed, for this "
             "ticket. Cite the concrete stable names examined or changed: "
-            "sem_... in semantics, op_... in operations, and ret_... or "
-            "result in coding."
+            "sheet_... in drawings, sem_... in semantics, op_... in "
+            "operations, and ret_... or result in coding."
         ),
     )
 
@@ -179,7 +179,7 @@ class TicketAnswers(BaseModel):
     )
 
 
-class StageSubmission[M: DrawingSheet | SemanticFeature | Operation](TicketAnswers):
+class StageSubmission[M: SemanticFeature | Operation](TicketAnswers):
     """One stage's revision of its artifact, and its answers to its tickets.
 
     A model reads the concrete subclass, never this: pydantic takes a schema
@@ -245,33 +245,13 @@ class ProposalSubmission[M: SemanticFeature | Operation](StageSubmission[M]):
         return cls(edits=[], deleted=[], rationale=None, responses=[])
 
 
-class DrawingSubmission(StageSubmission[DrawingSheet]):
-    """Your reading of the drawing, and your ticket responses.
+class DrawingSubmission(TicketAnswers):
+    """Ticket responses for the DrawingSource written to ``drawing.json``."""
 
-    This ends the drawing stage: give it once, after the analysis behind it is
-    complete.
-    """
-
-    edits: list[DrawingSheet] = Field(
-        ...,
-        description=(
-            "Every sheet you read or re-read, each complete and under its "
-            "stable sheet_ name: a name the drawing already holds replaces "
-            "that sheet, and a new name adds one. A sheet is given whole -- "
-            "its `evidence` and `dimensions` are everything it draws, not the "
-            "part of it you changed -- so a sheet you leave out keeps what it "
-            "had."
-        ),
-    )
-    deleted: list[str] = Field(
-        ...,
-        description=(
-            "Every sheet you dropped, by its own sheet_ name. An entry or a "
-            "figure is dropped by giving its sheet again without it, so "
-            "nothing finer can be addressed here. A name given here must not "
-            "also appear in `edits`."
-        ),
-    )
+    @classmethod
+    def unchanged(cls) -> Self:
+        """The answer when this round assigned no ticket to drawings."""
+        return cls(responses=[])
 
 
 class SemanticSubmission(ProposalSubmission[SemanticFeature]):
@@ -372,12 +352,12 @@ class ReconstructionSnapshot(BaseModel):
             "a completed verification attempt, whether it succeeded or failed."
         ),
     )
-    drawings: DrawingSource = Field(
+    drawings: DrawingSource | None = Field(
         ...,
         description=(
-            "The input drawing when a round starts. Before the drawing "
-            "stage completes it is what the run was handed, and afterwards "
-            "what that stage made of it."
+            "The complete DrawingSource produced in this round, or null until "
+            "this round's drawing stage completes. Earlier readings remain "
+            "available in preceding snapshots."
         ),
     )
     semantics: SemanticHypothesis | None = Field(
@@ -457,6 +437,9 @@ class ReconstructionSnapshot(BaseModel):
             )
 
         # Stage integrity checks
+        if PipelineStage.DRAWINGS in completed_stages and self.drawings is None:
+            raise ValueError("drawings must exist after drawings")
+
         if PipelineStage.SEMANTICS in completed_stages and self.semantics is None:
             raise ValueError("semantics must exist after semantics")
 
@@ -479,15 +462,18 @@ class ReconstructionRun(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = Field(
-        ...,
-        description="The reconstruction.json schema version.",
-    )
     run_id: str = Field(
         ...,
         description=(
             "The pipeline-assigned run_... identifier shared by every "
             "snapshot in this reconstruction."
+        ),
+    )
+    input_drawings: DrawingSource = Field(
+        ...,
+        description=(
+            "The immutable drawing supplied to the run, before the drawing "
+            "stage separates or transcribes it."
         ),
     )
     snapshots: list[ReconstructionSnapshot] = Field(

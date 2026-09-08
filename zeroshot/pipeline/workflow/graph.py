@@ -1,3 +1,4 @@
+import json
 import re
 from collections.abc import Mapping, Sequence
 from functools import partial
@@ -17,6 +18,7 @@ from pydantic import BaseModel
 
 from zeroshot.pipeline.messages import (
     ArtifactPresenter,
+    DrawingSource,
     InputManifest,
     build_instruction,
     drawing_for_model,
@@ -46,7 +48,9 @@ from zeroshot.pipeline.tools import (
     create_run_shell_tool,
 )
 from zeroshot.pipeline.verification import (
+    AttemptStore,
     CadQueryExecutor,
+    DrawingVerifier,
     OutputVerifier,
     StepRenderer,
 )
@@ -56,6 +60,8 @@ from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 from zeroshot.pipeline.workflow.reconstruction import (
     advance_reconstruction,
+    drawing_baseline,
+    load_reconstruction,
     open_next_round,
     save_reconstruction,
     start_reconstruction,
@@ -96,6 +102,7 @@ def create_reconstruction_graph(
     artifact_presenter: ArtifactPresenter,
     input_manifest: InputManifest,
     output_filename: str = "model.py",
+    drawing_filename: str = "drawing.json",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     reconstruction_history_filename: str = "reconstruction.json",
     max_audit_reject_count: int = 3,
@@ -121,20 +128,49 @@ def create_reconstruction_graph(
         create_run_shell_tool(sandbox_runner, sandbox_workdir),
         create_load_image_tool(sandbox_workdir),
     ]
+    history_path = sandbox_workdir.host_bind_dir / reconstruction_history_filename
+
+    def current_round() -> int:
+        """Read the round committed before an agent can issue an attempt."""
+        return len(load_reconstruction(history_path).snapshots) - 1
+
+    attempt_store = AttemptStore(
+        sandbox_workdir,
+        round_source=current_round,
+        root_dirname=verification_dirname,
+    )
     executor = CadQueryExecutor(sandbox_runner=sandbox_runner)
-    verifier = OutputVerifier(
+    drawing_verifier = DrawingVerifier(
+        workdir=sandbox_workdir,
+        attempt_store=attempt_store,
+        artifact_presenter=artifact_presenter,
+        source_filename=drawing_filename,
+    )
+    drawing_middleware = VerifyOnWriteMiddleware(
+        drawing_verifier,
+        refusal=(
+            "The drawing artifact is not ready to submit. Inspect the rendered "
+            "views, correct drawing.json if needed, and submit only after the "
+            "current version has been shown back to you and validates."
+        ),
+        require_feedback_before_submit=True,
+    )
+    coding_verifier = OutputVerifier(
         executor=executor,
         workdir=sandbox_workdir,
         renderer=renderer,
         artifact_presenter=artifact_presenter,
+        attempt_store=attempt_store,
         source_filename=output_filename,
-        output_dirname=verification_dirname,
         show_intermediate_returns=show_intermediate_returns,
     )
+    coding_middleware = VerifyOnWriteMiddleware(coding_verifier)
 
     # instantiate agents
     prompt_context = {
-        "output_path": str(sandbox_workdir.sandbox_bind_dir / output_filename),
+        "coding_output_path": str(sandbox_workdir.sandbox_bind_dir / output_filename),
+        "drawing_output_path": str(sandbox_workdir.sandbox_bind_dir / drawing_filename),
+        "drawing_schema": json.dumps(DrawingSource.model_json_schema(), indent=2),
         "verification_dir": str(
             sandbox_workdir.sandbox_bind_dir / verification_dirname
         ),
@@ -149,6 +185,7 @@ def create_reconstruction_graph(
         tools=[*basic_tools, create_calculate_drawing_scale_tool()],
         prompt_context=prompt_context,
         output_schema=DrawingSubmission,
+        extra_middleware=[drawing_middleware],
     )
     semantics_agent = semantics_agent_builder(
         tools=basic_tools,
@@ -164,7 +201,7 @@ def create_reconstruction_graph(
         tools=basic_tools,
         prompt_context=prompt_context,
         output_schema=CodingSubmission,
-        extra_middleware=[VerifyOnWriteMiddleware(verifier)],
+        extra_middleware=[coding_middleware],
     )
     audit_agent = audit_agent_builder(
         tools=basic_tools,
@@ -182,9 +219,7 @@ def create_reconstruction_graph(
         )
 
     def save_history(run: ReconstructionRun) -> None:
-        save_reconstruction(
-            sandbox_workdir.host_bind_dir / reconstruction_history_filename, run
-        )
+        save_reconstruction(history_path, run)
 
     def current_snapshot(state: ReconstructionState) -> ReconstructionSnapshot:
         reconstruction = state.get("reconstruction")
@@ -265,10 +300,11 @@ def create_reconstruction_graph(
             )
 
         snapshot = current_snapshot(state)
+        drawing = snapshot.drawings or drawing_baseline(state["reconstruction"])
         instruction = build_instruction(
             f"{stage.value}/round",
             **prompt_context,
-            view_frame=snapshot.drawings.frame_sentence(),
+            view_frame=drawing.frame_sentence(),
             current_round=str(snapshot.round),
             assigned_tickets=assigned_ticket_ids(snapshot, stage),
             **extra_context,
@@ -287,6 +323,9 @@ def create_reconstruction_graph(
 
     def run_drawings(state: ReconstructionState, config: RunnableConfig):
         snapshot = current_snapshot(state)
+        if state.get("stage_validation_error") is None:
+            drawing_verifier.reset(drawing_baseline(state["reconstruction"]))
+            drawing_middleware.reset()
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.DRAWINGS):
             return {"stage_submission": DrawingSubmission.unchanged()}
 
@@ -373,11 +412,15 @@ def create_reconstruction_graph(
         snapshot = current_snapshot(state)
         if snapshot.last_completed_stage is not PipelineStage.OPERATIONS:
             raise RuntimeError("coding requires integrated operations")
+        drawing = cast(DrawingSource, snapshot.drawings)
 
         # The verifier redraws the solid in the views the drawing names, and
         # guesses none. Set here because both the build inside the agent and
         # the one at integration belong to this stage of this round.
-        verifier.views = [sheet.role for sheet in snapshot.drawings.orthographic()]
+        if state.get("stage_validation_error") is None:
+            coding_verifier.reset()
+            coding_middleware.reset()
+        coding_verifier.views = [sheet.role for sheet in drawing.orthographic()]
 
         previous = state.get("coding_state") or {}
         messages = [
@@ -439,20 +482,27 @@ def create_reconstruction_graph(
         if reconstruction is None:
             raise RuntimeError("stage integration requires reconstruction")
 
-        verification = None
-        if current_snapshot(state).last_completed_stage is PipelineStage.OPERATIONS:
-            if not isinstance(submission, CodingSubmission):
-                return _rejected_stage_submission(
-                    state,
-                    "coding did not return a CodingSubmission",
-                )
-            verification, _ = verifier.verify()
+        snapshot = current_snapshot(state)
+        stage = next_stage(snapshot.last_completed_stage)
+        workspace_output = None
+        if stage is PipelineStage.DRAWINGS:
+            if tickets_assigned_to(snapshot.open_tickets, PipelineStage.DRAWINGS):
+                workspace_output = drawing_verifier.accepted_drawing
+                if workspace_output is None:
+                    return _rejected_stage_submission(
+                        state,
+                        "drawing.json has not passed visual verification",
+                    )
+            else:
+                workspace_output = drawing_baseline(reconstruction)
+        elif stage is PipelineStage.CODING:
+            workspace_output, _ = coding_verifier.verify()
 
         try:
             updated = advance_reconstruction(
                 reconstruction,
                 submission,
-                verification=verification,
+                workspace_output=workspace_output,
             )
         except SubmissionValidationError as error:
             return _rejected_stage_submission(state, str(error))
@@ -507,11 +557,12 @@ def create_reconstruction_graph(
         if verification is None:
             raise RuntimeError("audit requires verification")
 
-        attempts_dir = sandbox_workdir.sandbox_bind_dir / verification_dirname
         attempt_dir = str(
-            attempts_dir / verification.verification_id
+            attempt_store.sandbox_attempt_dir(
+                snapshot.round, "coding", verification.verification_id
+            )
             if verification.verification_id is not None
-            else attempts_dir
+            else attempt_store.sandbox_root
         )
         previous = state.get("audit_state") or {}
         instruction = build_stage_instruction(

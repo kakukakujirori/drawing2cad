@@ -1,5 +1,6 @@
 """C4 workflow wiring: submissions, integration, retries, and audit rounds."""
 
+import base64
 import sys
 from collections.abc import Sequence
 from functools import partial
@@ -11,7 +12,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.messages.content import ContentBlock
 
-from tests.zeroshot.chat_models import ScriptedChatModel
+from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.contracts import drawing, evidence, hypothesis, replacing, sheet
 from zeroshot.pipeline.messages import (
     ArtifactPresenter,
@@ -21,6 +22,7 @@ from zeroshot.pipeline.messages import (
     unread_sheet,
 )
 from zeroshot.pipeline.messages.contracts import (
+    CropOf,
     Operation,
     OperationPlan,
     OperationVerb,
@@ -77,14 +79,9 @@ def _responses(ticket_id: str | None, stage: PipelineStage) -> list[TicketRespon
 
 def _drawing_submission(
     ticket_id: str | None = _ROUND_ZERO_TICKET,
-    *,
-    artifact: DrawingSource | None = None,
 ) -> AIMessage:
-    artifact = artifact or drawing()
     return _message(
         DrawingSubmission(
-            edits=list(artifact.sheets),
-            deleted=[],
             responses=_responses(ticket_id, PipelineStage.DRAWINGS),
         )
     )
@@ -93,11 +90,47 @@ def _drawing_submission(
 def _invalid_drawing_submission() -> AIMessage:
     return _message(
         DrawingSubmission(
-            edits=[],
-            deleted=["sheet_absent"],
-            responses=_responses(_ROUND_ZERO_TICKET, PipelineStage.DRAWINGS),
+            responses=_responses("ticket_absent", PipelineStage.DRAWINGS),
         )
     )
+
+
+def _drawing_candidate(artifact: DrawingSource | None = None) -> DrawingSource:
+    """A complete reading that retains the graph fixture's handed sheet."""
+    artifact = artifact or drawing()
+    handed = unread_sheet("sheet_drawing", View.FULL_PAGE, "/work/drawing.dxf")
+    views = [
+        item.model_copy(
+            update={
+                "crop_of": CropOf(sheet="sheet_drawing", box=[0.0, 0.0, 10.0, 10.0]),
+                "file": f"/work/{item.name}.dxf",
+            }
+        )
+        for item in artifact.sheets
+    ]
+    return DrawingSource(sheets=[handed, *views])
+
+
+def _write_drawing(
+    artifact: DrawingSource | None = None, call_id: str = "draw"
+) -> AIMessage:
+    payload = base64.b64encode(
+        (_drawing_candidate(artifact).model_dump_json(indent=2) + "\n").encode()
+    ).decode()
+    command = (
+        'python -c "import base64;'
+        "open('/work/drawing.json','wb').write(base64.b64decode('" + payload + "'))\""
+    )
+    return tool_call("run_shell", {"command": command}, call_id)
+
+
+def _drawing_script(
+    ticket_id: str | None = _ROUND_ZERO_TICKET,
+    *,
+    artifact: DrawingSource | None = None,
+    call_id: str = "draw",
+) -> tuple[AIMessage, AIMessage]:
+    return _write_drawing(artifact, call_id), _drawing_submission(ticket_id)
 
 
 def _semantic_submission(
@@ -259,6 +292,9 @@ def _graph(
 ):
     dxf_path = workdir.host_bind_dir / "drawing.dxf"
     dxf_path.write_text("0\nSECTION\n0\nEOF\n", encoding="utf-8")
+    (workdir.host_bind_dir / "sheet_front.dxf").write_text(
+        "0\nSECTION\n0\nEOF\n", encoding="utf-8"
+    )
     common = {
         "announce_turns": False,
         "model_retries": 0,
@@ -267,7 +303,7 @@ def _graph(
     return create_reconstruction_graph(
         drawings_agent_builder=_agent(
             "drawing_analyzer",
-            drawer or ScriptedChatModel(responses=(_drawing_submission(),)),
+            drawer or ScriptedChatModel(responses=_drawing_script()),
             max_turns=5,
             **common,
         ),
@@ -309,8 +345,11 @@ def _stub_verification(
             self.source_path = workdir.host_bind_dir / source_filename
 
         @property
-        def confirmed_a_solid(self) -> bool:
+        def confirmed(self) -> bool:
             return True
+
+        def reset(self) -> None:
+            pass
 
         def verify(self) -> tuple[VerifyOutputResult, None]:
             calls.append("verify")
@@ -351,10 +390,9 @@ def _drawing_seed() -> ReconstructionRun:
     return advance_reconstruction(
         start_reconstruction("run_test", "Reconstruct the drawing.", drawing()),
         DrawingSubmission(
-            edits=list(drawing().sheets),
-            deleted=[],
             responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.DRAWINGS)],
         ),
+        workspace_output=drawing(),
     )
 
 
@@ -399,6 +437,19 @@ def test_an_accepted_round_is_integrated_and_persisted(
         persisted = ReconstructionRun.model_validate_json(
             (workdir.host_bind_dir / "reconstruction.json").read_text(encoding="utf-8")
         )
+        working_drawing = DrawingSource.model_validate_json(
+            (workdir.host_bind_dir / "drawing.json").read_text(encoding="utf-8")
+        )
+        attempted_drawing = DrawingSource.model_validate_json(
+            (
+                workdir.host_bind_dir
+                / "attempts"
+                / "round_000"
+                / "drawing"
+                / "000"
+                / "drawing.json"
+            ).read_text(encoding="utf-8")
+        )
 
     assert calls == ["verify"]
     assert persisted == result["reconstruction"]
@@ -406,6 +457,7 @@ def test_an_accepted_round_is_integrated_and_persisted(
     assert snapshot.last_completed_stage is PipelineStage.CODING
     assert snapshot.semantics == hypothesis("a plate")
     assert snapshot.operations == _plan()
+    assert snapshot.drawings == working_drawing == attempted_drawing
     assert snapshot.program_source == _PROGRAM
     assert [response.stage for response in snapshot.open_tickets[0].responses] == [
         PipelineStage.DRAWINGS,
@@ -416,6 +468,9 @@ def test_an_accepted_round_is_integrated_and_persisted(
     assert result["audit_report"].accepted is True
     assert result["stage_submission"] is None
     assert result["stage_validation_error"] is None
+    assert "/work/attempts/round_000/coding/000" in _last_instruction(
+        auditor.received_messages[0]
+    )
 
 
 def test_a_semantics_seed_starts_at_operations_without_calling_semantics(
@@ -507,7 +562,7 @@ def test_only_the_drawing_stage_receives_the_scale_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_verification(monkeypatch, _verified())
-    drawer = ScriptedChatModel(responses=(_drawing_submission(),))
+    drawer = ScriptedChatModel(responses=_drawing_script())
     head = ScriptedChatModel(responses=(_semantic_submission(),))
     planner = ScriptedChatModel(responses=(_operation_submission(),))
     coder = ScriptedChatModel(responses=(_coding_submission(),))
@@ -588,6 +643,7 @@ def test_invalid_drawings_retry_or_exhaust_before_semantics(
     _stub_verification(monkeypatch, *([_verified()] if recovers else []))
     drawer = ScriptedChatModel(
         responses=(
+            _write_drawing(),
             _invalid_drawing_submission(),
             _drawing_submission() if recovers else _invalid_drawing_submission(),
         )
@@ -610,10 +666,10 @@ def test_invalid_drawings_retry_or_exhaust_before_semantics(
             max_stage_validation_retries=1,
         ).invoke({})
 
-    assert len(drawer.received_messages) == 2
-    retry = _last_instruction(drawer.received_messages[1])
+    assert len(drawer.received_messages) == 3
+    retry = _last_instruction(drawer.received_messages[2])
     assert "Drawings Validation Error" in retry
-    assert "sheet_absent" in retry
+    assert "ticket_absent" in retry
     snapshot = result["reconstruction"].snapshots[0]
     if recovers:
         assert snapshot.last_completed_stage is PipelineStage.CODING
@@ -623,7 +679,7 @@ def test_invalid_drawings_retry_or_exhaust_before_semantics(
         assert snapshot.last_completed_stage is None
         assert head.received_messages == []
         assert result["stage_validation_failure_count"] == 2
-        assert "sheet_absent" in result["stage_validation_error"]
+        assert "ticket_absent" in result["stage_validation_error"]
 
 
 def test_stage_validation_retry_limit_stops_before_downstream_work(
@@ -667,7 +723,11 @@ def test_a_persisted_drawing_checkpoint_can_restart_the_graph(
         stopped = _graph(
             workdir,
             drawer=ScriptedChatModel(
-                responses=(_invalid_drawing_submission(), _invalid_drawing_submission())
+                responses=(
+                    _write_drawing(),
+                    _invalid_drawing_submission(),
+                    _invalid_drawing_submission(),
+                )
             ),
             head=ScriptedChatModel(responses=()),
             planner=ScriptedChatModel(responses=()),
@@ -681,7 +741,7 @@ def test_a_persisted_drawing_checkpoint_can_restart_the_graph(
         )
         resumed = _graph(
             workdir,
-            drawer=ScriptedChatModel(responses=(_drawing_submission(),)),
+            drawer=ScriptedChatModel(responses=_drawing_script(call_id="resume_draw")),
             head=ScriptedChatModel(responses=(_semantic_submission(),)),
             planner=ScriptedChatModel(responses=(_operation_submission(),)),
             coder=ScriptedChatModel(responses=(_coding_submission(),)),
@@ -786,6 +846,7 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(
 
 def test_a_drawing_rooted_revision_refreshes_values_and_preserves_history(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     revision_ticket = "ticket_001_wrong_edge"
     old_drawing = drawing(
@@ -824,13 +885,17 @@ def test_a_drawing_rooted_revision_refreshes_values_and_preserves_history(
     )
     calls = _stub_verification(monkeypatch, _verified("000"), _verified("001"))
 
-    with SandboxWorkdir() as workdir:
+    with SandboxWorkdir(host_bind_dir=tmp_path) as workdir:
         result = _graph(
             workdir,
             drawer=ScriptedChatModel(
                 responses=(
-                    _drawing_submission(artifact=old_drawing),
-                    _drawing_submission(revision_ticket, artifact=revised_drawing),
+                    *_drawing_script(artifact=old_drawing, call_id="draw_old"),
+                    *_drawing_script(
+                        revision_ticket,
+                        artifact=revised_drawing,
+                        call_id="draw_revised",
+                    ),
                 )
             ),
             head=ScriptedChatModel(responses=(first_semantics, unchanged_semantics)),
@@ -853,6 +918,7 @@ def test_a_drawing_rooted_revision_refreshes_values_and_preserves_history(
     assert calls == ["verify", "verify"]
     assert persisted == result["reconstruction"]
     first, second = persisted.snapshots
+    assert first.drawings is not None and second.drawings is not None
     assert first.drawings.evidence()[0].parameters[0].values == [1.0, 0.0]
     assert second.drawings.evidence()[0].parameters[0].values == [2.5, 0.0]
     assert first.operations is not None and second.operations is not None
@@ -864,10 +930,13 @@ def test_a_drawing_rooted_revision_refreshes_values_and_preserves_history(
         PipelineStage.OPERATIONS,
         PipelineStage.CODING,
     ]
+    assert (tmp_path / "attempts" / "round_000" / "drawing" / "000").is_dir()
+    assert (tmp_path / "attempts" / "round_001" / "drawing" / "000").is_dir()
 
 
 def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     _stub_verification(monkeypatch, _verified("000"), _verified("001"))
     first_semantics = _semantic_submission()
@@ -878,7 +947,7 @@ def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(
     )
     auditor = ScriptedChatModel(responses=(_rejected_audit(),))
 
-    with SandboxWorkdir() as workdir:
+    with SandboxWorkdir(host_bind_dir=tmp_path) as workdir:
         result = _graph(
             workdir,
             head=head,
@@ -899,6 +968,8 @@ def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(
     assert len(coder.received_messages) == 2
     assert second.semantics == first.semantics
     assert second.operations == first.operations
+    assert second.drawings == first.drawings
+    assert not (tmp_path / "attempts" / "round_001" / "drawing").exists()
 
 
 def test_rejection_at_the_round_limit_finishes_without_opening_another_round(

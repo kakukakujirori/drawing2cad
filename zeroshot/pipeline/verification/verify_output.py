@@ -16,6 +16,7 @@ from zeroshot.pipeline.messages import (
 )
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
+from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
@@ -163,9 +164,9 @@ class OutputVerifier:
         workdir: SandboxWorkdir,
         renderer: StepRenderer,
         artifact_presenter: ArtifactPresenter | None,
+        attempt_store: AttemptStore,
         views: Sequence[View] = (),
         source_filename: str = "model.py",
-        output_dirname: PurePosixPath = PurePosixPath("attempts"),
         show_intermediate_returns: bool = True,
     ) -> None:
         source_path = PurePosixPath(source_filename)
@@ -175,13 +176,6 @@ class OutputVerifier:
             or source_path.suffix != ".py"
         ):
             raise ValueError("source_filename must be a Python file basename")
-        if (
-            output_dirname.is_absolute()
-            or len(output_dirname.parts) != 1
-            or output_dirname.name in {"", ".", ".."}
-        ):
-            raise ValueError("output_dirname must be a directory basename")
-
         self.executor = executor
         self.workdir = workdir
         self.renderer = renderer
@@ -191,17 +185,8 @@ class OutputVerifier:
         # a guessed view has nothing to be compared against.
         self.views: Sequence[View] = tuple(views)
         self.source_filename = source_filename
-        self.output_dirname = output_dirname
+        self.attempt_store = attempt_store
         self.show_intermediate_returns = show_intermediate_returns
-
-        host_outdir = workdir.host_bind_dir / output_dirname
-        if host_outdir.is_symlink():
-            raise ValueError("output directory must not be a symlink")
-        host_outdir.mkdir(parents=True, exist_ok=True)
-
-        # set output_dirname read-only
-        if output_dirname not in workdir.read_only_subdirs:
-            workdir.read_only_subdirs.append(output_dirname)
 
         self._last_feedback_report: VerifyOutputResult | None = None
         # What the last build returned, and the digest of the program it ran
@@ -215,22 +200,18 @@ class OutputVerifier:
         """The program this verifier builds, on the host side of the sandbox."""
         return self.workdir.host_bind_dir / self.source_filename
 
-    def _issue_verification_id_and_dir(self) -> tuple[str, Path]:
-        host_outdir = self.workdir.host_bind_dir / self.output_dirname
-        # issue an id
-        existing = [int(p.name) for p in host_outdir.iterdir() if p.name.isdigit()]
-        verification_id = f"{(max(existing, default=-1) + 1):03d}"
-        # create dir
-        host_verification_dir = host_outdir / verification_id
-        host_verification_dir.mkdir(parents=True, exist_ok=False)
-        return verification_id, host_verification_dir
-
     def _source_digest(self) -> str | None:
         """What the program is right now, or nothing when there is no program."""
         path = self.source_path
         if path.is_symlink() or not path.is_file():
             return None
         return sha256(path.read_bytes()).hexdigest()
+
+    def reset(self) -> None:
+        """Forget build state before a new coding-stage invocation."""
+        self._built = None
+        self._built_from_digest = None
+        self._last_feedback_report = None
 
     def verify(self) -> tuple[VerifyOutputResult, FeedbackManifest | None]:
         """Verify the program and, when it yields a solid, render its views.
@@ -274,7 +255,9 @@ class OutputVerifier:
             return report, None
 
         # prepare artifact save dir and report
-        verification_id, host_verification_dir = self._issue_verification_id_and_dir()
+        verification_id, host_verification_dir, sandbox_verification_dir = (
+            self.attempt_store.issue("coding")
+        )
         report = VerifyOutputResult(verification_id=verification_id)
         output_model_path = host_verification_dir / self.source_filename
         output_step_path = host_verification_dir / "output.step"
@@ -328,10 +311,7 @@ class OutputVerifier:
             intermediate_returns=_describe_returns(
                 cq_report.intermediate_returns,
                 renders,
-                self.workdir.sandbox_bind_dir
-                / self.output_dirname
-                / verification_id
-                / INTERMEDIATE_RETURNS_DIR,
+                sandbox_verification_dir / INTERMEDIATE_RETURNS_DIR,
             ),
         )
 
@@ -387,7 +367,7 @@ class OutputVerifier:
         return RenderRequest(step_path, projection_paths, render3d_paths)
 
     @property
-    def confirmed_a_solid(self) -> bool:
+    def confirmed(self) -> bool:
         """Whether the most recent `feedback` build yielded a usable STEP.
 
         False before the first build, so a program never built cannot pass for

@@ -14,7 +14,10 @@ from zeroshot.pipeline.workflow.components.proposer_reviewer import (
     create_proposer_reviewer_loop,
 )
 
-PROMPT_CONTEXT = {"output_path": "/work/model.py", "verification_dir": "/work/attempts"}
+PROMPT_CONTEXT = {
+    "coding_output_path": "/work/model.py",
+    "verification_dir": "/work/attempts",
+}
 
 
 @tool("echo")

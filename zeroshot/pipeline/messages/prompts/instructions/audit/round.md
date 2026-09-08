@@ -2,7 +2,7 @@ Coding and verification for reconstruction round $current_round are complete. Au
 
 The current workspace source is at:
 
-$output_path
+$coding_output_path
 
 A feature's `evidence` names entries of the drawing rather than restating them. Those entries hold the numbers, in the coordinates of the view each one belongs to: $view_frame.
 

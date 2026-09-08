@@ -13,12 +13,14 @@ from tests.zeroshot.chat_models import ScriptedChatModel
 from tests.zeroshot.workflow.test_graph import (
     _accepted_audit,
     _coding_submission,
+    _drawing_script,
     _drawing_submission,
     _invalid_drawing_submission,
     _operation_submission,
     _semantic_submission,
     _stub_verification,
     _verified,
+    _write_drawing,
 )
 from zeroshot.pipeline.messages import (
     ArtifactPresenter,
@@ -67,6 +69,9 @@ def _continued_graph(
     }
     dxf_path = workdir.host_bind_dir / "drawing.dxf"
     dxf_path.write_text("0\nSECTION\n0\nEOF\n", encoding="utf-8")
+    (workdir.host_bind_dir / "sheet_front.dxf").write_text(
+        "0\nSECTION\n0\nEOF\n", encoding="utf-8"
+    )
     return create_reconstruction_graph(
         drawings_agent_builder=partial(
             create_agent,
@@ -125,7 +130,7 @@ def _continued_graph(
 def models() -> _Models:
     semantic = _semantic_submission()
     return {
-        "drawer": ScriptedChatModel(responses=(_drawing_submission(),)),
+        "drawer": ScriptedChatModel(responses=_drawing_script()),
         "lead": ScriptedChatModel(responses=(semantic,)),
         "planner": ScriptedChatModel(responses=(_operation_submission(),)),
         "coder": ScriptedChatModel(responses=(_coding_submission(),)),
@@ -202,7 +207,11 @@ def test_shared_thread_retries_drawings_before_handing_over(
 ) -> None:
     _stub_verification(monkeypatch, _verified())
     drawer = ScriptedChatModel(
-        responses=(_invalid_drawing_submission(), _drawing_submission())
+        responses=(
+            _write_drawing(),
+            _invalid_drawing_submission(),
+            _drawing_submission(),
+        )
     )
     models["drawer"] = drawer
 
@@ -213,10 +222,10 @@ def test_shared_thread_retries_drawings_before_handing_over(
             **models,
         ).invoke({})
 
-    assert len(drawer.received_messages) == 2
-    retry_text = "\n".join(_texts(drawer.received_messages[1]))
+    assert len(drawer.received_messages) == 3
+    retry_text = "\n".join(_texts(drawer.received_messages[2]))
     assert "Drawings Validation Error" in retry_text
-    assert "sheet_absent" in retry_text
+    assert "ticket_absent" in retry_text
     semantic_text = "\n".join(_texts(models["lead"].received_messages[0]))
     assert "Drawings Validation Error" in semantic_text
     assert (

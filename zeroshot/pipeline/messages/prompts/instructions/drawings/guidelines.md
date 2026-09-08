@@ -1,13 +1,13 @@
 Guidelines:
 
 Reading the input
-- The input message names each sheet you were given and says what it is. Analyse them with `run_shell` and `load_image` before you answer.
+- The input message names each sheet you were given and says what it is; those sheets are the source of truth for the transcription.
 - Keep supplied perspective sheets with their original name, role and file for qualitative comparison downstream. A perspective render has no uniform orthographic scale: do not calibrate it or invent millimetre primitives or printed dimensions for it. Its `evidence` and `dimensions` may remain empty.
 - Where a sheet arrives undivided, separate the views yourself by where the linework sits: they are not separated by layer or by file. Every entity in the DXF sheets seen so far is on layer `0`, so the layer name tells you nothing.
 - Measure with code, never by eye. `run_shell` gives you the same tools for a raster sheet that `ezdxf` gives you for a vector one: read the image with OpenCV or numpy, find the linework, and compute the numbers. A coordinate guessed off a picture is worse than one you admit you do not have.
 
 What a sheet is
-- A sheet is a page you were handed or a view you cut out of one, and both go in `edits`. A page carrying three views gives you four sheets: the page as it arrived, and three views taken from it.
+- A sheet is a page you were handed or a view you cut out of one, and both remain in the complete `sheets` list in $drawing_output_path. A page carrying three views gives you four sheets: the page as it arrived, and three views taken from it.
 - A view you cut out names the sheet it came from in `crop_of`, with the region it covers in that sheet's own coordinates. The input message announces each sheet as `name: path`, so the name is what stands before the colon and never the file.
 - Write every view you cut out to a file of its own and name that file in `file`. A sheet you were handed keeps the file it arrived as.
 - `label` is the caption printed on the view -- `SECTION A-A`, `FRONT SIDE VIEW` -- or null when it carries none. Read it rather than guess `role` around it.
@@ -39,6 +39,9 @@ Naming
 
 Working
 - If feedback from a review or audit step is present in the transcript, address every point it raises.
+- $drawing_output_path is the complete, authoritative working `DrawingSource`. Edit it with code so it always remains valid JSON; do not edit `$reconstruction_path`.
+- After any tool-using turn that changes the file, it is validated and its evidence is exported as DXF and PNG under `$verification_dir/round_NNN/drawing/NNN/`. The automatic visual feedback is then returned. Open the rendered views with `load_image` and compare them with the input before deciding the reading is correct.
+- A submission is accepted only after the current file has been rendered and that feedback has appeared in the transcript. If your inspection identifies any remaining defect or edit, do not submit in that turn: revise the JSON and inspect the next rendering first. The highest-numbered drawing attempt in this round is the version that is submitted.
 - Your turn budget is announced in the transcript as `[turn n/N]`. Turns increment by using tools.
 
-Analyse the drawing with `run_shell` and `load_image` before you answer. Submit your answer only once the analysis is complete, and write nothing around the answer itself.
+When the latest rendered views are correct, stop calling tools and return only the structured `DrawingSubmission`.

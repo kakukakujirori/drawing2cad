@@ -7,6 +7,7 @@ from langchain_core.tools import BaseTool, tool
 
 from zeroshot.pipeline.messages import ArtifactPresenter, View
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutor
 from zeroshot.pipeline.verification.run_render import StepRenderer
 from zeroshot.pipeline.verification.verify_output import OutputVerifier
@@ -33,9 +34,13 @@ def create_verify_output_tool(
         workdir,
         renderer=renderer,
         artifact_presenter=artifact_presenter,
+        attempt_store=AttemptStore(
+            workdir,
+            round_source=lambda: 0,
+            root_dirname=output_dirname,
+        ),
         views=views,
         source_filename=source_filename,
-        output_dirname=output_dirname,
         show_intermediate_returns=show_intermediate_returns,
     )
     description = cleandoc(
@@ -51,7 +56,7 @@ def create_verify_output_tool(
 
         The result reports the execution status, return code, stdout, stderr, and
         any executor error. Generated STEP and its rendered views are saved in
-        {workdir.sandbox_bind_dir}/{output_dirname}/<verification_id>/.
+        {workdir.sandbox_bind_dir}/{output_dirname}/round_000/coding/<verification_id>/.
         """
     )
 

@@ -2,9 +2,15 @@ Read the input drawing for reconstruction round $current_round.
 
 Tickets assigned to the drawing stage this round: $assigned_tickets
 
-In the initial round nothing has been read, so separate every page you were given into views and transcribe each one. In a later round the reading the preceding round settled stands as it is, and you change what your assigned tickets require: give those sheets again in full, and leave every other sheet out so that it keeps what it had. A ticket that is not assigned to you was traced to a defect downstream of the drawing; leave it to the stage that owns it and change nothing on its account.
+The pipeline has seeded the complete working `DrawingSource` at $drawing_output_path. In the initial round it contains only what the run was handed; separate every page into views and transcribe them. In a later assigned round it contains the accepted reading from the preceding round; change only what your assigned tickets require. A ticket that is not assigned to you was traced to a defect downstream of the drawing, so change nothing on its account.
 
-Return one `DrawingSubmission`: the sheets you read in `edits`, whatever you dropped in `deleted`, and exactly one drawing-stage response for each assigned ticket and none for any other. Each response must name the concrete `sheet_...` entries you established, changed, or examined.
+Write the entire updated `DrawingSource` back to $drawing_output_path. Then return one `DrawingSubmission` containing exactly one drawing-stage response for each assigned ticket and none for any other. Each response must name the concrete `sheet_...` entries you established, changed, or examined. The JSON file is the drawing deliverable; do not put sheets in the structured submission.
+
+The file must validate against this `DrawingSource` schema:
+
+```json
+$drawing_schema
+```
 
 
 $guidelines

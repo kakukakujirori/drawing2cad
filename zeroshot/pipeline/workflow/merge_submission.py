@@ -6,16 +6,12 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from zeroshot.pipeline.messages.contracts import (
-    DrawingSheet,
-    DrawingSource,
     Operation,
     OperationPlan,
     SemanticFeature,
     SemanticHypothesis,
 )
 from zeroshot.pipeline.messages.contracts.reconstruction import (
-    CodingSubmission,
-    DrawingSubmission,
     OperationSubmission,
     ProposalSubmission,
     ReconstructionSnapshot,
@@ -26,17 +22,16 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
 from zeroshot.pipeline.messages.contracts.stages import PipelineStage, ReasoningStage
 from zeroshot.pipeline.workflow.validate_submission import SubmissionValidationError
 
-type StageArtifact = DrawingSource | SemanticHypothesis | OperationPlan
+type StageArtifact = SemanticHypothesis | OperationPlan
 
 
 class _Named(Protocol):
     name: str
 
 
-# Only the three stages that revise an artifact; coding is settled before
-# this is read, which is what leaves the rest of the merge a `StageSubmission`.
+# Only proposal stages revise through structured diffs. Drawing and coding are
+# captured from workspace files before this function is called.
 _REVISION_BY_STAGE: Mapping[ReasoningStage, type[StageSubmission]] = {
-    PipelineStage.DRAWINGS: DrawingSubmission,
     PipelineStage.SEMANTICS: SemanticSubmission,
     PipelineStage.OPERATIONS: OperationSubmission,
 }
@@ -46,18 +41,17 @@ def merge_submission(
     submission: TicketAnswers,
     previous: ReconstructionSnapshot,
     stage: ReasoningStage,
-) -> StageArtifact | None:
+) -> StageArtifact:
     """The complete artifact this stage's edits and deletions produce.
 
     `previous` is the snapshot this round revises, which is the preceding
-    round's, or the snapshot a first round started from. Coding revises
-    `model.py` in the workspace, so it merges to nothing and the program is
-    captured through verification instead.
+    round's, or the snapshot a first round started from. Drawing and coding
+    outputs come from workspace verification and do not pass through here.
     """
-    if stage is PipelineStage.CODING:
-        if not isinstance(submission, CodingSubmission):
-            raise SubmissionValidationError("coding must submit a CodingSubmission")
-        return None
+    if stage not in _REVISION_BY_STAGE:
+        raise SubmissionValidationError(
+            f"{stage} uses a workspace output, not a structured revision"
+        )
 
     expected = _REVISION_BY_STAGE[stage]
     if not isinstance(submission, expected):
@@ -66,10 +60,6 @@ def merge_submission(
     # Branched on the submission rather than the stage: the check above ties
     # the two together, and only the type says which artifact is being built.
     try:
-        if isinstance(submission, DrawingSubmission):
-            return DrawingSource(
-                sheets=_merged_sheets(previous.drawings.sheets, submission)
-            )
         if isinstance(submission, SemanticSubmission):
             return SemanticHypothesis(
                 proposal=_merged_features(_features(previous.semantics), submission),
@@ -108,21 +98,6 @@ def _features(previous: SemanticHypothesis | None) -> Sequence[SemanticFeature]:
 
 def _operations(previous: OperationPlan | None) -> Sequence[Operation]:
     return previous.proposal if previous is not None else []
-
-
-def _merged_sheets(
-    previous: Sequence[DrawingSheet],
-    submission: StageSubmission,
-) -> list[DrawingSheet]:
-    """A sheet is read whole, so a sheet given again replaces the whole of it."""
-    if addressed := sorted(a for a in submission.deleted if "." in a):
-        raise SubmissionValidationError(
-            f"{', '.join(addressed)} is not an address in the current drawing: "
-            "give a sheet again without an entry to drop it, and delete a "
-            "whole sheet by its own sheet_ name"
-        )
-    dropped = _dropped_entries(submission.deleted, previous, "sheet")
-    return _merged_list(previous, _by_name(submission.edits), dropped)
 
 
 def _merged_operations(

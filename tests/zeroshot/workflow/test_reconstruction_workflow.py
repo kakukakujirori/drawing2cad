@@ -36,6 +36,7 @@ from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow import reconstruction as reconstruction_module
 from zeroshot.pipeline.workflow.reconstruction import (
     advance_reconstruction,
+    drawing_baseline,
     load_reconstruction,
     open_next_round,
     save_reconstruction,
@@ -174,9 +175,8 @@ def _reread(run: ReconstructionRun) -> ReconstructionRun:
     """The stage every round opens with, whether or not a ticket asks for it."""
     return advance_reconstruction(
         run,
-        DrawingSubmission(
-            edits=[], deleted=[], responses=_stage_responses(run, "drawings")
-        ),
+        DrawingSubmission(responses=_stage_responses(run, "drawings")),
+        workspace_output=drawing_baseline(run),
     )
 
 
@@ -187,11 +187,8 @@ def _completed_run(
     run = run or start_reconstruction("run_example", "Reconstruct the part.", drawing())
     run = advance_reconstruction(
         run,
-        DrawingSubmission(
-            edits=list(drawing().sheets),
-            deleted=[],
-            responses=_stage_responses(run, "drawings"),
-        ),
+        DrawingSubmission(responses=_stage_responses(run, "drawings")),
+        workspace_output=drawing(),
     )
     run = advance_reconstruction(
         run,
@@ -217,7 +214,7 @@ def _completed_run(
         CodingSubmission(
             responses=_stage_responses(run, "coding"),
         ),
-        verification=verification,
+        workspace_output=verification,
     )
     return run
 
@@ -390,9 +387,7 @@ def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
 def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     completed = _completed_run()
     first_finding = _report(target=_ref("semantics", "sem_feature_1")).findings[0]
-    second_finding = first_finding.model_copy(
-        update={"name": "find_second_mismatch"}
-    )
+    second_finding = first_finding.model_copy(update={"name": "find_second_mismatch"})
     run = _reread(
         open_next_round(
             completed,
@@ -646,9 +641,9 @@ def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
     assert len(updated.snapshots) == 2
     assert current.round == 1
     assert current.last_completed_stage is None
-    # Carried rather than cleared: the run was handed a drawing before any
-    # stage ran, and a round that is not told to re-read it keeps the reading.
-    assert current.drawings == run.snapshots[-1].drawings
+    # The accepted reading remains in the preceding immutable snapshot; the
+    # new round has not completed its drawing stage yet.
+    assert current.drawings is None
     assert current.semantics is None
     assert current.operations is None
     assert current.program_source is None

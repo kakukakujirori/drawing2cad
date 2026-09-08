@@ -252,6 +252,23 @@ def test_ignores_non_numeric_attempt_names(
     assert found is not None and found.parent.name == "000"
 
 
+def test_picks_the_latest_round_before_its_latest_coding_attempt(
+    tmp_path: Path,
+    solids: dict[str, Path],
+) -> None:
+    root = tmp_path / "run" / "workspace" / "attempts"
+    old = root / "round_000" / "coding" / "009"
+    new = root / "round_001" / "coding" / "000"
+    old.mkdir(parents=True)
+    new.mkdir(parents=True)
+    old.joinpath("output.step").write_bytes(solids["box"].read_bytes())
+    new.joinpath("output.step").write_bytes(solids["sphere"].read_bytes())
+
+    found = latest_verified_step(tmp_path / "run")
+
+    assert found == new / "output.step"
+
+
 def test_score_run_records_what_produced_the_numbers(
     make_run_dir, solids: dict[str, Path]
 ) -> None:

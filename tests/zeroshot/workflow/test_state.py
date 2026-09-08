@@ -220,8 +220,8 @@ _A_DRAWING = DrawingSource(
     ]
 )
 _RECONSTRUCTION = ReconstructionRun(
-    schema_version=1,
     run_id="run_test",
+    input_drawings=_A_DRAWING,
     snapshots=[
         ReconstructionSnapshot(
             open_tickets=[
@@ -270,8 +270,6 @@ _RECONSTRUCTION = ReconstructionRun(
 )
 
 _DRAWING_SUBMISSION = DrawingSubmission(
-    edits=list(_A_DRAWING.sheets),
-    deleted=[],
     responses=[
         TicketResponse(
             ticket_id="ticket_initial",
