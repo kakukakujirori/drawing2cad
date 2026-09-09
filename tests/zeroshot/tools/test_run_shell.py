@@ -138,3 +138,31 @@ def test_tool_returns_sandbox_result_as_mapping(
 
         assert actual == expected
         assert stub_runner.calls == [("test command", workdir)]
+
+
+@pytest.mark.parametrize("status", [SandboxStatus.COMPLETED, SandboxStatus.TIMEOUT])
+def test_large_output_is_bounded_and_recoverable(
+    tmp_path: Path, status: SandboxStatus
+) -> None:
+    stdout = "BEGIN\n" + "寸法 123\n" * 20_000 + "END\n"
+    stderr = "Traceback\n" + "diagnostic\n" * 20_000 + "ValueError: bad shape\n"
+    stub_runner = StubSandboxRunner(SandboxResult(status, 7, stdout, stderr))
+    with SandboxWorkdir(host_bind_dir=tmp_path) as workdir:
+        run_shell = create_run_shell_tool(stub_runner, workdir)  # type: ignore[arg-type]
+        first = run_shell.invoke({"command": "verbose command"})
+        second = run_shell.invoke({"command": "verbose command again"})
+
+        assert first["status"] == status.value
+        assert first["returncode"] == 7
+        for stream, original in [("stdout", stdout), ("stderr", stderr)]:
+            assert len(first[stream]) < 17_000
+            assert first[stream].startswith(original[:100])
+            assert first[stream].endswith(original[-100:])
+            assert "Omitted" in first[stream]
+            saved = list((tmp_path / "tmp").glob(f"shell_{stream}_*.txt"))
+            assert len(saved) == 2
+            assert all(p.read_text(encoding="utf-8") == original for p in saved)
+            paths = [str(workdir.host_to_sandbox_path(p)) for p in saved]
+            assert sum(path in first[stream] for path in paths) == 1
+            assert sum(path in second[stream] for path in paths) == 1
+            assert first[stream] != second[stream]

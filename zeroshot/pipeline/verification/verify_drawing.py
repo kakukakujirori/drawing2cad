@@ -18,8 +18,17 @@ from zeroshot.pipeline.messages import (
     View,
     unread_sheet,
 )
+from zeroshot.pipeline.messages.contracts import DrawingSheet, DrawnEntity
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification.attempts import AttemptStore
+
+_BOUNDED_PARAMETERS = {
+    DrawnEntity.LINE: ("start", "end"),
+    DrawnEntity.ARC: ("start", "end"),
+    DrawnEntity.CIRCLE: ("center",),
+    DrawnEntity.ELLIPSE: ("start", "end"),
+    DrawnEntity.POLYLINE: ("vertices",),
+}
 
 
 @dataclass(frozen=True)
@@ -33,6 +42,7 @@ class DrawingVerificationResult:
 
     @property
     def confirmed(self) -> bool:
+        """Whether parsing, structural checks, and rendering all succeeded."""
         return self.drawing is not None and not self.errors
 
 
@@ -119,6 +129,38 @@ class DrawingVerifier:
         return errors
 
     @staticmethod
+    def _validate_sheet_bounds(sheet: DrawingSheet) -> list[str]:
+        """Keep a cropped view's drawn coordinates inside its physical extent.
+
+        Curve centres and spline controls may legitimately lie outside a
+        clipped view, so only coordinates that locate drawn points are checked.
+        """
+        if sheet.crop_of is None:
+            return []
+
+        u0, v0, u1, v1 = sheet.crop_of.box
+        width, height = u1 - u0, v1 - v0
+        errors: list[str] = []
+
+        for entry in sheet.evidence:
+            parameters = {item.name.value: item.values for item in entry.parameters}
+            for name in _BOUNDED_PARAMETERS.get(entry.entity, ()):
+                values = parameters[name]
+                for index, (u, v) in enumerate(
+                    zip(values[0::2], values[1::2], strict=True)
+                ):
+                    if not (-1e-3 <= u <= width + 1e-3) or not (
+                        -1e-3 <= v <= height + 1e-3
+                    ):
+                        member = name if len(values) == 2 else f"{name}[{index}]"
+                        errors.append(
+                            f"{sheet.name}: {entry.name}.{member} ({u:g}, {v:g}) "
+                            f"is outside this cropped view's {width:g} x "
+                            f"{height:g} mm local bounds"
+                        )
+        return errors
+
+    @staticmethod
     def _view_filename(sheet_name: str, role: View) -> str:
         if role in {
             View.FRONT,
@@ -168,6 +210,7 @@ class DrawingVerifier:
             errors.extend(self._validate_against_baseline(drawing))
             errors.extend(self._validate_files(drawing))
             for sheet in drawing.sheets:
+                errors.extend(self._validate_sheet_bounds(sheet))
                 if not sheet.evidence:
                     continue
                 name = self._view_filename(sheet.name, sheet.role)
@@ -214,7 +257,7 @@ class DrawingVerifier:
         blocks: list[ContentBlock] = [
             create_text_block(
                 f"{self.workdir.sandbox_bind_dir / self.source_filename} was "
-                f"checked in {result.attempt_dir}."
+                f"structurally checked in {result.attempt_dir}."
             )
         ]
         if result.errors:

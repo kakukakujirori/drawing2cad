@@ -1027,6 +1027,77 @@ def test_a_build_the_program_broke_is_not_attempted_again(tmp_path: Path) -> Non
     assert len(executor.calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("status", "source", "ready"),
+    [
+        (ExecutionStatus.VERIFIED, VALID_SOURCE, True),
+        (ExecutionStatus.FAILED, VALID_SOURCE, False),
+        (ExecutionStatus.REJECTED, "broken syntax (", False),
+        (ExecutionStatus.REJECTED, None, False),
+        (ExecutionStatus.TIMEOUT, VALID_SOURCE, False),
+        (ExecutionStatus.INFRA_ERROR, VALID_SOURCE, False),
+    ],
+)
+def test_only_verified_program_outcomes_are_confirmed(
+    tmp_path: Path, status: ExecutionStatus, source: str | None, ready: bool
+) -> None:
+    executor = StubCadQueryExecutor(_execution_report(status=status, source=source))
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verifier = _create_verifier(executor, workdir)
+    assert not verifier.confirmed
+    verifier.feedback()
+    assert verifier.confirmed is ready
+    assert verifier.verify()[0].status is status
+    verifier.reset()
+    assert not verifier.confirmed
+
+
+def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> None:
+    from langchain_core.messages import HumanMessage
+
+    from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
+    from tests.zeroshot.workflow.test_agent import _subgraph
+    from zeroshot.pipeline.messages.contracts.reconstruction import CodingSubmission
+    from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
+
+    executor = StubCadQueryExecutor(
+        _execution_report(status=ExecutionStatus.FAILED, returncode=1)
+    )
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verifier = _create_verifier(executor, workdir)
+    answer = {
+        "responses": [{
+            "ticket_id": "ticket_initial",
+            "stage": "coding",
+            "summary": "The program still fails; audit must diagnose the operation.",
+        }]
+    }
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("CodingSubmission", answer, "first"),
+            tool_call("CodingSubmission", answer, "after-feedback"),
+        )
+    )
+    agent = _subgraph(
+        model,
+        tools=(),
+        output_schema=CodingSubmission,
+        response_format_strategy="tool",
+        max_turns=2,
+        extra_middleware=[
+            VerifyOnWriteMiddleware(verifier, require_feedback_before_submit=True)
+        ],
+    )
+    result = agent.invoke({"messages": [HumanMessage(content="Submit the program.")]})
+    assert result.get("structured_response") is None
+    assert len(model.received_messages) == 2
+    assert any("FAILED" in m.text for m in model.received_messages[1])
+    assert verifier.verify()[0].status is ExecutionStatus.FAILED
+    assert len(executor.calls) == 1
+
+
 def test_the_verifier_asks_for_exactly_the_views_it_was_given(
     tmp_path: Path,
 ) -> None:

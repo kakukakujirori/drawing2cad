@@ -2,7 +2,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from tests.zeroshot.contracts import drawing
+from tests.zeroshot.contracts import drawing, evidence
 from zeroshot.pipeline.messages import (
     ArtifactPresenter,
     DrawingSource,
@@ -90,7 +90,7 @@ def test_a_distinct_json_is_frozen_rendered_and_accepted_after_feedback(
     assert "/work/attempts/round_000/drawing/000/front.png" in text
 
 
-def test_invalid_json_is_preserved_as_a_failed_visual_attempt(tmp_path: Path) -> None:
+def test_invalid_json_is_preserved_as_a_failed_render_attempt(tmp_path: Path) -> None:
     verifier = _verifier(tmp_path)
     verifier.reset(_baseline())
     verifier.source_path.write_text("{", encoding="utf-8")
@@ -121,6 +121,28 @@ def test_a_crop_must_retain_its_own_source_file(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "reading",
+    [
+        evidence("line", start=[-2.0, 1.0], end=[5.0, 1.0]),
+        evidence(
+            "polyline",
+            vertices=[1.0, 1.0, 12.0, 1.0, 12.0, 2.0],
+        ),
+        evidence("circle", center=[12.0, 5.0], radius=3.0),
+    ],
+)
+def test_a_cropped_view_rejects_drawn_geometry_outside_its_local_bounds(
+    reading,
+) -> None:
+    candidate = _candidate()
+    candidate.sheets[-1].evidence = [reading]
+
+    assert "outside this cropped view's 10 x 10 mm local bounds" in "\n".join(
+        DrawingVerifier._validate_sheet_bounds(candidate.sheets[-1])
+    )
+
+
 def test_attempts_are_numbered_independently_by_round_and_stage(
     tmp_path: Path,
 ) -> None:
@@ -135,6 +157,12 @@ def test_attempts_are_numbered_independently_by_round_and_stage(
     assert store.issue("drawing")[0] == "000"
     assert store.sandbox_attempt_dir(1, "coding", "007") == PurePosixPath(
         "/work/attempts/round_001/coding/007"
+    )
+    assert store.latest_sandbox_attempt_dir("drawing", 1) == PurePosixPath(
+        "/work/attempts/round_001/drawing/000"
+    )
+    assert store.latest_sandbox_attempt_dir("coding", 1) == PurePosixPath(
+        "/work/attempts/round_000/coding/000"
     )
 
 

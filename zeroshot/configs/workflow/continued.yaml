@@ -14,10 +14,9 @@ workflow:
   share_thread: true
 
   # The model that writes the notes a stage's working turns are traded for at
-  # each handover, or null to hand the turns on whole. The same model the
-  # stages themselves use: the notes are written by whoever holds the context,
-  # not by a reader of it.
-  compact_between_stages: null
+  # each handover. A shared transcript must be compacted: otherwise drawings
+  # and their tool results consume the context needed by downstream stages.
+  compact_between_stages: ${model}
 
   # One role for all four stages, so the transcript is never re-read under a
   # persona that did not produce it. `roles/cad_reconstructor.md` takes neither

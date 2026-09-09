@@ -103,27 +103,24 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         countdown = f"[turn {turn}/{self.max_turns}]"
         if turn >= self.max_turns:
             return (
-                f"{countdown} Final turn: a tool call made now still runs, but "
-                "nothing comes back to you and no answer follows it. Answer "
-                "from what you have, and say in the answer what remains "
-                "uncertain."
+                f"{countdown} Final turn: ordinary tools are unavailable; only "
+                "the required answer or structured submission remains. Return "
+                "it alone. A response cannot substitute for work missing from "
+                "a required file or artifact."
             )
         if turn == self.max_turns - 1:
             return (
-                f"{countdown} One turn remains after this one, and you will not "
-                "see what its tool calls return. Run or write now whatever your "
-                "answer still depends on."
+                f"{countdown} This is the last ordinary-tool-capable turn. Run "
+                "or write now whatever your answer still depends on; the next "
+                "and final turn is answer-only."
             )
         return countdown
 
     def _answer_only(self, request: ModelRequest[None]) -> ModelRequest[None]:
         """Take the tools away on the final turn, leaving the answer.
 
-        The announcement already says a tool call made now returns nothing.
-        Left bound, the tools make that a request the model may decline -- and
-        one that declines spends its last turn on a result it never sees, then
-        ends the stage with no answer at all. The answer contract is bound
-        separately from the tools, so it survives.
+        The announcement states the same boundary. The answer contract is
+        bound separately from the ordinary tools, so it survives.
         """
         if request.state.get("current_turn", 0) < self.max_turns - 1:
             return request

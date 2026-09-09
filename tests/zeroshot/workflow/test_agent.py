@@ -292,11 +292,7 @@ def test_a_prompt_report_skips_a_transcript_the_agent_was_handed() -> None:
 
 
 def test_agent_is_asked_to_land_before_its_budget_runs_out() -> None:
-    """The last two turns say what running out costs, one turn apart.
-
-    The warning has to reach the agent while a turn whose results it can still
-    read remains, because the final turn's tool call returns to nobody.
-    """
+    """The notices agree with the tool boundary the middleware enforces."""
     model = ScriptedChatModel(
         responses=tuple(
             tool_call("echo", {"value": "looking"}, f"call-{turn}")
@@ -314,9 +310,12 @@ def test_agent_is_asked_to_land_before_its_budget_runs_out() -> None:
         _notices(result["messages"])[3],
     )
     assert plain == "[turn 2/4]"
-    assert penultimate.startswith("[turn 3/4] One turn remains after this one")
+    assert penultimate.startswith(
+        "[turn 3/4] This is the last ordinary-tool-capable turn"
+    )
     assert final.startswith("[turn 4/4] Final turn")
-    assert "will not see" in penultimate and "nothing comes back" in final
+    assert "cannot substitute for work missing" in final
+    assert "answer-only" in penultimate and "tools are unavailable" in final
     assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
 
 

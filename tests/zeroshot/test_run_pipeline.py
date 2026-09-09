@@ -22,10 +22,6 @@ from zeroshot.pipeline.workflow import (
 )
 
 
-def _unreachable_runner(**kwargs: Any) -> Any:
-    raise AssertionError("the run must fail before a PipelineRunner is built")
-
-
 def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
     values: dict[str, Any] = {
         "artifact_root": str(tmp_path / "artifacts"),
@@ -196,6 +192,26 @@ def test_module_help_uses_hydra_entrypoint() -> None:
     assert completed.returncode == 0, completed.stderr
     assert "run_pipeline is powered by Hydra" in completed.stdout
     assert "artifact_root:" in completed.stdout
+
+
+@pytest.mark.parametrize("compaction", [None, False])
+def test_a_shared_workflow_requires_configured_compaction(
+    compaction: object,
+) -> None:
+    config = OmegaConf.create(
+        {
+            "workflow": {
+                "share_thread": True,
+                "compact_between_stages": compaction,
+            }
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="share_thread=true requires.*compact_between_stages",
+    ):
+        run_pipeline._validate_workflow_config(config)
 
 
 def test_shipped_config_actually_builds_a_renderer() -> None:

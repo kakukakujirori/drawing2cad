@@ -215,7 +215,7 @@ def _require_endpoints_on_curve(
         if abs(reach - 1) > tolerance:
             raise ValueError(
                 f"{name} is off the {entity.value} (relative radius {reach:.2f}); "
-                "give the endpoint in page coordinates"
+                "give the endpoint in sheet coordinates"
             )
 
 

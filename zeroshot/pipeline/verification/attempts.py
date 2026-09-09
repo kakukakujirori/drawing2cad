@@ -75,8 +75,7 @@ class AttemptStore:
         return (
             attempt_id,
             attempt_dir,
-            self.sandbox_root
-            / attempt_relative_path(round_number, stage, attempt_id),
+            self.sandbox_root / attempt_relative_path(round_number, stage, attempt_id),
         )
 
     def sandbox_attempt_dir(
@@ -88,3 +87,30 @@ class AttemptStore:
         return self.sandbox_root / attempt_relative_path(
             round_number, stage, attempt_id
         )
+
+    def latest_sandbox_attempt_dir(
+        self,
+        stage: AttemptStage,
+        through_round: int,
+    ) -> PurePosixPath | None:
+        """Find the latest issued attempt at or before ``through_round``.
+
+        A stage that was not assigned in a revision round has no directory in
+        that round; walking backwards makes that absence mean carry-forward.
+        """
+        for round_number in range(through_round, -1, -1):
+            stage_dir = self.host_root / f"round_{round_number:03d}" / stage
+            if not stage_dir.is_dir():
+                continue
+            latest = max(
+                (
+                    path
+                    for path in stage_dir.iterdir()
+                    if path.name.isdigit() and path.is_dir()
+                ),
+                key=lambda path: int(path.name),
+                default=None,
+            )
+            if latest is not None:
+                return self.sandbox_root / latest.relative_to(self.host_root)
+        return None

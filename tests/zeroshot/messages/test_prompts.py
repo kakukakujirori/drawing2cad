@@ -19,12 +19,7 @@ from zeroshot.pipeline.messages.contracts import (
     Operation,
 )
 from zeroshot.pipeline.messages.contracts.audit import AuditReport
-from zeroshot.pipeline.messages.contracts.reconstruction import (
-    ReconstructionRun,
-    ReconstructionSnapshot,
-    Ticket,
-    TicketResponse,
-)
+from zeroshot.pipeline.messages.contracts.drawings import DrawingEvidence
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 
 
@@ -55,7 +50,6 @@ _AN_UNREAD_PAGE = DrawingSource(
 _RUN_PATHS = {
     "coding_output_path": "/work/model.py",
     "drawing_output_path": "/work/drawing.json",
-    "drawing_schema": json.dumps(DrawingSource.model_json_schema(), indent=2),
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
     "view_frame": _AN_UNREAD_PAGE.frame_sentence(),
@@ -68,6 +62,8 @@ def _round_context(**varying: str) -> dict[str, str]:
         **_RUN_PATHS,
         "assigned_tickets": "ticket_initial",
         "intermediate_returns": "",
+        "drawing_attempt_dir": "/work/attempts/round_000/drawing/000",
+        "ticket_responses": "[]",
         **varying,
     }
 
@@ -91,6 +87,15 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
     assert prompt.path.is_file()
 
 
+def test_drawing_prompt_evidence_example_matches_the_runtime_contract() -> None:
+    prompt = instruction_text("drawings/round", **_round_context(current_round="0"))
+    examples = re.findall(r"```json\n(.*?)\n```", prompt, re.DOTALL)
+    assert len(examples) == 1
+    evidence = DrawingEvidence.model_validate(json.loads(examples[0]))
+    assert evidence.entity is DrawnEntity.LINE
+    assert [p.name for p in evidence.parameters] == ["start", "end"]
+
+
 @pytest.mark.parametrize(
     ("name", "context"),
     [
@@ -107,6 +112,8 @@ def test_a_packaged_prompt_is_addressed_by_name() -> None:
                 "current_round": "0",
                 "attempt_dir": "/work/attempts/000",
                 "intermediate_returns": "",
+                "drawing_attempt_dir": "/work/attempts/round_000/drawing/000",
+                "ticket_responses": "[]",
             },
         ),
     ],
@@ -122,12 +129,23 @@ def test_stage_instruction_prompts_match_the_invocation_reasons(
         assert f"${placeholder}" not in rendered
 
 
-def test_reconstruction_guide_tracks_the_durable_contract() -> None:
+def test_reconstruction_guide_keeps_only_the_working_contract() -> None:
     guide = PromptTemplate("roles/reconstruction_history").render(**_RUN_PATHS)
 
-    for contract in (ReconstructionRun, ReconstructionSnapshot, Ticket, TicketResponse):
-        for field in contract.model_fields:
-            assert f"`{field}`" in guide
+    for field in (
+        "input_drawings",
+        "snapshots",
+        "open_tickets",
+        "drawings",
+        "semantics",
+        "operations",
+        "program_source",
+        "verification",
+        "responses",
+    ):
+        assert field in guide
+    assert "structured submission by itself" in guide
+    assert len(guide.split()) < 220
 
 
 def test_the_shared_role_explains_selective_history_navigation() -> None:
@@ -139,18 +157,12 @@ def test_the_shared_role_explains_selective_history_navigation() -> None:
         "drawings -> semantics -> operations -> coding + verification -> audit"
         in rendered
     )
-    assert "ReconstructionRun" in rendered
-    assert "Do not print the whole history file" in rendered
-    assert "never `cat` it" in rendered
+    assert "never edit or print the whole file" in rendered
     assert ".snapshots[-2]" in rendered
-    assert "diff -u" in rendered
 
-    # Index of names first, then one member by name: no recipe dumps an artifact.
     assert "jq -c" in rendered
-    assert "[.geometry[].name]" in rendered
-    assert 'select(.name == "sem_main_bore")' in rendered
-    assert "'.snapshots[-1].semantics'" not in rendered
-    assert "'.snapshots[-1].operations'" not in rendered
+    assert "members by name" in rendered
+    assert len(rendered.split()) < 350
 
 
 def test_round_instructions_do_not_repeat_the_reconstruction_guide() -> None:
@@ -167,6 +179,8 @@ def test_audit_explains_how_to_report_a_missing_semantic_feature() -> None:
         current_round="1",
         attempt_dir="/work/attempts/001",
         intermediate_returns="",
+        drawing_attempt_dir="/work/attempts/round_000/drawing/003",
+        ticket_responses="[]",
     )
 
     assert "leave the `backtrace` empty" in rendered
@@ -205,9 +219,12 @@ def test_the_audit_reads_the_attempt_directory_the_build_actually_wrote() -> Non
         current_round="1",
         attempt_dir="/work/attempts/001",
         intermediate_returns=section,
+        drawing_attempt_dir="/work/attempts/round_000/drawing/003",
+        ticket_responses="[]",
     )
 
     assert "/work/attempts/001" in rendered
+    assert "/work/attempts/round_000/drawing/003" in rendered
     assert section in rendered
 
 
@@ -290,10 +307,10 @@ def test_the_drawing_round_uses_json_for_the_artifact_and_answer_for_tickets() -
     rendered = instruction_text("drawings/round", **_round_context(current_round="0"))
 
     assert "/work/drawing.json" in rendered
-    assert "entire updated `DrawingSource`" in rendered
-    assert "do not put sheets in the structured submission" in rendered
-    assert "automatic visual feedback" in rendered
-    assert "do not submit in that turn" in rendered
+    assert "schema-valid working draft" in rendered
+    assert "inspect the generated" in rendered
+    assert "latest verified file" in rendered
+    assert "substitute transport" in rendered
 
 
 @pytest.mark.parametrize("stage", ["drawings", "semantics", "operations", "coding"])
@@ -417,10 +434,21 @@ def test_the_drawing_guidelines_describe_how_the_views_are_actually_separated() 
     the drawing stage's job now."""
     guidelines = _guidelines("drawings")
 
-    assert "HIDDEN" in guidelines
+    assert "hidden" in guidelines.lower()
     assert "linetype" in guidelines.lower()
     assert "layer `0`" in guidelines
-    assert "not separated by layer" in guidelines
+    assert "does not separate views" in guidelines
+
+
+def test_the_drawing_round_prioritises_an_early_verified_file() -> None:
+    rendered = instruction_text(
+        "drawings/round", **_round_context(current_round="0")
+    )
+
+    assert "Before half the turn budget" in rendered
+    assert "never a substitute transport" in rendered
+    assert '"$defs"' not in rendered
+    assert len(rendered.split()) < 500
 
 
 def test_the_drawing_guidelines_fix_the_raster_uv_origin_at_a_pixel_corner() -> None:

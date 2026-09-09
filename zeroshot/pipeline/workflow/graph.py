@@ -164,13 +164,21 @@ def create_reconstruction_graph(
         source_filename=output_filename,
         show_intermediate_returns=show_intermediate_returns,
     )
-    coding_middleware = VerifyOnWriteMiddleware(coding_verifier)
+    coding_middleware = VerifyOnWriteMiddleware(
+        coding_verifier,
+        refusal=(
+            "The current program must produce a verified solid and its "
+            "verification feedback must be shown before submission. Read the "
+            "feedback, correct model.py, and submit only after verification "
+            "succeeds."
+        ),
+        require_feedback_before_submit=True,
+    )
 
     # instantiate agents
     prompt_context = {
         "coding_output_path": str(sandbox_workdir.sandbox_bind_dir / output_filename),
         "drawing_output_path": str(sandbox_workdir.sandbox_bind_dir / drawing_filename),
-        "drawing_schema": json.dumps(DrawingSource.model_json_schema(), indent=2),
         "verification_dir": str(
             sandbox_workdir.sandbox_bind_dir / verification_dirname
         ),
@@ -491,7 +499,8 @@ def create_reconstruction_graph(
                 if workspace_output is None:
                     return _rejected_stage_submission(
                         state,
-                        "drawing.json has not passed visual verification",
+                        "drawing.json has not been structurally validated and "
+                        "rendered for this submission",
                     )
             else:
                 workspace_output = drawing_baseline(reconstruction)
@@ -564,12 +573,28 @@ def create_reconstruction_graph(
             if verification.verification_id is not None
             else attempt_store.sandbox_root
         )
+        drawing_attempt = attempt_store.latest_sandbox_attempt_dir(
+            "drawing", snapshot.round
+        )
         previous = state.get("audit_state") or {}
         instruction = build_stage_instruction(
             state,
             PipelineStage.AUDIT,
             include_input=not previous,
             attempt_dir=attempt_dir,
+            drawing_attempt_dir=(
+                str(drawing_attempt)
+                if drawing_attempt is not None
+                else "unavailable in this workspace"
+            ),
+            ticket_responses=json.dumps(
+                [
+                    response.model_dump(mode="json")
+                    for ticket in snapshot.open_tickets
+                    for response in ticket.responses
+                ],
+                indent=2,
+            ),
             # Asked of the build rather than of the config that enabled it:
             # the report carries this only when returns were actually written,
             # so the layout the auditor is given cannot name a directory the

@@ -14,6 +14,16 @@ $intermediate_returns
 
 If the report shows the program did not produce a solid, the directory holds no projection or renders.
 
+Latest drawing attempt at or before this snapshot: $drawing_attempt_dir. When available, it contains the accepted `drawing.json` and each transcribed view as same-stem `.dxf` and `.png` files. A missing directory means the run was resumed without its earlier attempt artifacts; use the snapshot's `drawings` and their source files instead.
+
+The stages recorded these ticket responses while producing this snapshot:
+
+```json
+$ticket_responses
+```
+
+Treat them as hand-off claims and unresolved doubts to check, not as proof that the named artifact is correct.
+
 If a feature visible in the input drawing has no corresponding `sem_...` member, inspect the drawing reading first. If the reading contains the needed linework, leave the `backtrace` empty and return an `add` revision request targeting the whole semantics stage (`name: null`), and propose one or more stable `sem_...` names. If the linework or its view is missing or misread, request a drawings revision first: `modify` the existing `sheet_...`, or `add` on the whole drawings stage with proposed `sheet_...` names for missing sheets. Do not invent evidence-free hops through unrelated outputs.
 
 To trace an existing feature back to drawings, locate the `ev_...` or `dim_...` entries in its `evidence` and name their owning sheet in the causal hop. A drawings target is a whole `sheet_...`, never an `ev_...` or `dim_...`; name the affected entries and the discrepancy in the evidence and instruction. The resulting ticket reopens drawings and all downstream reasoning stages.

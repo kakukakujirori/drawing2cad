@@ -348,8 +348,8 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
 
 def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None:
     """The variant is the staged graph with the thread shared, so it has to
-    inherit staged's settings rather than restate them, and it has to give the
-    three stages that share the thread one role."""
+    inherit staged's settings rather than restate them, and it has to give all
+    four reasoning stages one role."""
     with initialize_config_dir(
         config_dir=str(CONFIG_DIR.resolve()),
         version_base="1.3",
@@ -360,8 +360,10 @@ def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None
 
     assert graph_factory.func is create_reconstruction_graph
     assert graph_factory.keywords["share_thread"] is True
+    assert graph_factory.keywords["compact_between_stages"] is not None
 
     roles = {
+        graph_factory.keywords["drawings_agent_builder"].keywords["role"],
         graph_factory.keywords["semantics_agent_builder"].keywords["role"],
         graph_factory.keywords["operations_agent_builder"].keywords["role"],
         graph_factory.keywords["coding_agent_builder"].keywords["role"],

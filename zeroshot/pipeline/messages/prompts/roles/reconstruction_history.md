@@ -1,90 +1,9 @@
-## Reconstruction history
-
-This reconstruction runs as one repeated pipeline:
-
-`drawings -> semantics -> operations -> coding + verification -> audit`
-
-- Drawings reads the sheets the run was handed into a complete `DrawingSource`.
-- Semantics produces a complete `SemanticHypothesis`.
-- Operations turns it into a complete dependency-aware `OperationPlan`.
-- Coding writes `model.py`; verification executes it and records a `VerifyOutputResult`.
-- Audit checks the completed, immutable round. An accepted report ends the run; findings become the open tickets of a new round.
-
-The pipeline, not an agent, owns `$reconstruction_path`. It stores one `ReconstructionRun`. `input_drawings` is the immutable material handed to the run. During a round the pipeline replaces the final snapshot after each completed reasoning stage. A new round starts with null deliverables, including `drawings`, while every earlier snapshot remains available for comparison.
-
-```text
-ReconstructionRun
-├─ `run_id`
-├─ `input_drawings`: DrawingSource
-└─ `snapshots`: ReconstructionSnapshot[]
-   ├─ `open_tickets`: Ticket[]
-   │  ├─ `ticket_id`
-   │  ├─ `subject`: BootstrapWork | AuditFinding
-   │  │  ├─ BootstrapWork: `instruction`
-   │  │  └─ AuditFinding: `name`, `observation`, `evidence`, `backtrace[]`, `revision_request`
-   │  │     ├─ hop: `effect`, `cause`, `rationale`
-   │  │     └─ request: `action`, `targets`, `instruction`, `proposed_names`
-   │  ├─ `assigned_stages`: ReasoningStage[]
-   │  └─ `responses`: TicketResponse[]
-   │     ├─ `ticket_id`
-   │     ├─ `stage`
-   │     └─ `summary`
-   ├─ `round`
-   ├─ `last_completed_stage`
-   ├─ `drawings`: DrawingSource | null
-   │  └─ `sheets[]`: `name`, `role`, `label`, `crop_of`, `scale`, `file`, `evidence[]`, `dimensions[]`
-   │     ├─ evidence: `name`, `entity`, `edge_style`, `parameters[]`, `source[]`
-   │     └─ dimensions: `name`, `kind`, `text`, `nominal`, `quantity`, `note`
-   ├─ `semantics`: SemanticHypothesis | null
-   │  ├─ `proposal[]`: `name`, `description`, `geometry[]`, `evidence[]`, `open_question`
-   │  │  ├─ geometry: `name`, `kind`, `axis`, `parameters[]`
-   │  │  └─ evidence: the `ev_` and `dim_` names of the entries and figures this feature rests on
-   │  └─ `rationale`
-   ├─ `operations`: OperationPlan | null
-   │  ├─ `proposal[]`: `name`, `verb`, `detail`, `depends_on`, `semantics`
-   │  └─ `rationale`
-   ├─ `program_source`: str | null
-   └─ `verification`: VerifyOutputResult | null
-      └─ `verification_id`, `status`, `returncode`, `stdout`, `stderr`, `executor_error`, `shape`
-```
-
-Inspect only what the current task needs. Do not print the whole history file, and never `cat` it: one round's hypothesis alone runs to tens of thousands of tokens, and the file holds every round. Read an index of stable names first, then fetch by name the one member you need. `jq -c` keeps a record to a line.
-
-```bash
-# Where the round stands, and who owns each ticket.
-jq -c '.snapshots[-1] | {round, last_completed_stage, tickets: [.open_tickets[] | {ticket_id, assigned_stages}]}' '$reconstruction_path'
-
-# What one ticket asks, by the id your instruction gave you.
-jq -c '.snapshots[-1].open_tickets[] | select(.ticket_id == "ticket_001_wrong_bore") | .subject.revision_request' '$reconstruction_path'
-
-# An index of names. Read this before any artifact body.
-jq -c '[(.snapshots[-1].drawings // .input_drawings).sheets[] | {name, role, ev: [.evidence[].name], dim: [.dimensions[].name]}]' '$reconstruction_path'
-jq -c '[.snapshots[-1].semantics.proposal[] | {name, geo: [.geometry[].name], ev: .evidence}]' '$reconstruction_path'
-jq -c '[.snapshots[-1].operations.proposal[] | {name, verb, depends_on, semantics}]' '$reconstruction_path'
-
-# What each stage reported, including any doubt it raised about the stage above it.
-jq -c '[.snapshots[-1].open_tickets[].responses[] | {ticket_id, stage, summary}]' '$reconstruction_path'
-
-# Then one member in full, by a name the index gave you.
-jq -c '.snapshots[-1].semantics.proposal[] | select(.name == "sem_main_bore")' '$reconstruction_path'
-jq -c '.snapshots[-1].operations.proposal[] | select(.semantics | index("sem_main_bore"))' '$reconstruction_path'
-
-# The program by the operation it implements, not the whole file.
-jq -r '.snapshots[-1].program_source' '$reconstruction_path' | grep -n 'ret_main_bore'
-```
-
-Use `.snapshots[-2]` only when at least two snapshots exist, and compare only the upstream artifact your stage reads. A later stage's artifact is still null in the current round, and iterating over it fails.
-
-- Drawings: your tickets and `$drawing_output_path`, which is seeded from the input or the preceding accepted reading.
-- Semantics: the current drawings, and the preceding semantics when revising.
-- Operations: the preceding semantics against the current one.
-- Coding: the preceding operations against the current ones.
-- Audit: compare rounds only to decide whether a defect persisted or regressed.
-
-Diff the index rather than the bodies, sorted so that the diff is about content and not about order:
-
-```bash
-diff -u <(jq -S '[.snapshots[-2].operations.proposal[] | {name, verb, detail}] | sort_by(.name)' '$reconstruction_path') <(jq -S '[.snapshots[-1].operations.proposal[] | {name, verb, detail}] | sort_by(.name)' '$reconstruction_path')
-```
-
-A bootstrap subject describes the initial build; an audit-finding subject describes an observed defect and traces it to the requested revision. The pipeline sets `assigned_stages` from that revision root and runs it through coding, because a corrected artifact has to be carried down into the program. Your instruction names the tickets assigned to you: answer each of those, and leave every other ticket to the stage that owns it. Earlier responses on a ticket explain what upstream stages already changed. Do not edit the history file yourself.
+## Reconstruction record
+The pipeline repeats `drawings -> semantics -> operations -> coding + verification -> audit`.
+The pipeline owns `$reconstruction_path`; never edit or print the whole file. `.input_drawings` is immutable.
+`.snapshots[-1]` is the current round: it holds `round`, `last_completed_stage`, `open_tickets`, `drawings`, `semantics`, `operations`, `program_source`, and `verification`.
+Inside a snapshot: `.drawings.sheets[]` holds sheets with `name,role,file,evidence,dimensions`; each sheet's `.evidence[]` holds `ev_` entries and `.dimensions[]` holds `dim_` entries. Features are in `.semantics.proposal[]`, operations in `.operations.proposal[]`, and code is the `.program_source` string.
+An artifact that is `null` has not been committed in this round. In a revision, read that stage's baseline from `.snapshots[-2]`; null does not mean the previous proposal was empty. Upstream artifacts already committed in the current round take precedence.
+Your instruction names your assigned tickets. Read those tickets, their earlier `responses`, and only the artifact this stage needs with filtered `jq -c` queries.
+Fetch individual `sheet_...`, `sem_...`, `op_...`, or `ret_...` members by name; do not dump the whole history.
+Finish tool work first, then return one structured submission by itself with exactly one response per assigned ticket and none for other tickets.

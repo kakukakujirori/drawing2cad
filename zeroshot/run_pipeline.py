@@ -17,7 +17,20 @@ from zeroshot.pipeline.workflow import ReconstructionState
 from zeroshot.provenance import record_run
 
 
+def _validate_workflow_config(config: DictConfig) -> None:
+    """Reject a shared transcript that would grow unchecked between stages."""
+    workflow = config.workflow
+    if workflow.get("share_thread", False) and not workflow.get(
+        "compact_between_stages"
+    ):
+        raise ValueError(
+            "workflow.share_thread=true requires "
+            "workflow.compact_between_stages to be configured"
+        )
+
+
 def run(config: DictConfig) -> ReconstructionState | None:
+    _validate_workflow_config(config)
 
     sandbox_runner = SandboxRunner(
         python_executable=Path(

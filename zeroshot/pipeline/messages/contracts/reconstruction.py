@@ -51,8 +51,10 @@ class TicketResponse(BaseModel):
     summary: str = Field(
         ...,
         description=(
-            "What this stage changed, or why no change was needed, for this "
-            "ticket. Cite the concrete stable names examined or changed: "
+            "A concise account of what this stage changed, why no change was "
+            "needed, or what remains doubtful upstream. Do not restate the "
+            "artifact's geometry or measurements: it remains authoritative. "
+            "Cite the concrete stable names examined or changed: "
             "sheet_... in drawings, sem_... in semantics, op_... in "
             "operations, and ret_... or result in coding."
         ),

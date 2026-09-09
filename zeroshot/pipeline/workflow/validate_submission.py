@@ -352,6 +352,15 @@ def _validate_audit_report(
     """Reject an audit report that contradicts the audited stage outputs."""
     if snapshot.last_completed_stage is not PipelineStage.CODING:
         raise SubmissionValidationError("audit requires a completed coding snapshot")
+    if report.accepted and (
+        snapshot.verification is None
+        or snapshot.verification.status is not ExecutionStatus.VERIFIED
+        or snapshot.verification.returncode != 0
+    ):
+        raise SubmissionValidationError(
+            "audit cannot accept a reconstruction without a verified solid; "
+            "report the verification failure and the root that must change"
+        )
     drawing = cast(DrawingSource, snapshot.drawings)
 
     references = tuple(_iter_references(report.findings))

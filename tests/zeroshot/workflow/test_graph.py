@@ -468,9 +468,10 @@ def test_an_accepted_round_is_integrated_and_persisted(
     assert result["audit_report"].accepted is True
     assert result["stage_submission"] is None
     assert result["stage_validation_error"] is None
-    assert "/work/attempts/round_000/coding/000" in _last_instruction(
-        auditor.received_messages[0]
-    )
+    audit_instruction = _last_instruction(auditor.received_messages[0])
+    assert "/work/attempts/round_000/coding/000" in audit_instruction
+    assert "/work/attempts/round_000/drawing/000" in audit_instruction
+    assert "Addressed ticket_initial in coding." in audit_instruction
 
 
 def test_a_semantics_seed_starts_at_operations_without_calling_semantics(
