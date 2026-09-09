@@ -9,11 +9,13 @@ from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.codex import _ChatOpenAICodex
 from langchain_openrouter import ChatOpenRouter
 
+from tests.zeroshot.prompt_paths import ROLE_PATHS
 from zeroshot.pipeline.event_logging import ConsoleReporter
-from zeroshot.pipeline.messages import ArtifactPresenter, PromptTemplate
+from zeroshot.pipeline.messages import ArtifactPresenter
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
-from zeroshot.pipeline.workflow import create_agent, create_reconstruction_graph
+from zeroshot.pipeline.workflow import create_agent
+from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
 
 CONFIG_DIR = Path(__file__).parents[2] / "zeroshot" / "configs"
 
@@ -273,7 +275,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     coder = graph_factory.keywords["coding_agent_builder"]
     assert coder.func is create_agent
     assert coder.keywords["role"] == "coder"
-    assert PromptTemplate(f"roles/{coder.keywords['role']}").path.is_file()
+    assert ROLE_PATHS[coder.keywords["role"]].is_file()
     assert coder.keywords["max_turns"] == 5
     assert coder.keywords["announce_turns"] is True
     assert coder.keywords["model_retries"] == 1
@@ -286,14 +288,14 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     stage = graph_factory.keywords["semantics_agent_builder"]
     assert stage.func is create_agent
     assert stage.keywords["role"] == "semantic_hypothesizer"
-    assert PromptTemplate("roles/semantic_hypothesizer").path.is_file()
+    assert ROLE_PATHS["semantic_hypothesizer"].is_file()
     assert stage.keywords["response_format_strategy"] == "provider"
     assert stage.keywords["model"].model_name == "gemma4:e2b"
 
     operations = graph_factory.keywords["operations_agent_builder"]
     assert operations.func is create_agent
     assert operations.keywords["role"] == "operation_planner"
-    assert PromptTemplate("roles/operation_planner").path.is_file()
+    assert ROLE_PATHS["operation_planner"].is_file()
     assert "output_schema" not in stage.keywords
     assert "agent" not in config
 
@@ -321,7 +323,7 @@ def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None
         graph_factory.keywords["coding_agent_builder"].keywords["role"],
     }
     assert roles == {"cad_reconstructor"}
-    assert PromptTemplate("roles/cad_reconstructor").path.is_file()
+    assert ROLE_PATHS["cad_reconstructor"].is_file()
 
     # Hydra partials accept unknown keywords and otherwise defer this failure
     # until the first sample builds its graph. Check every configured builder

@@ -18,8 +18,8 @@ from zeroshot.pipeline.messages import (
 from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import (
     ReconstructionState,
-    create_reconstruction_graph,
 )
+from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
 
 
 def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:

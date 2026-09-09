@@ -78,8 +78,7 @@ def test_only_the_views_asked_for_are_projected(box_step):
 
 
 def test_a_frame_puts_screen_x_where_the_contract_says(view=None):
-    """screen +X is up x eye, and the contract states it as the frame's first
-    axis; a frame derived any other way would disagree with `$view_frame`."""
+    """screen +X is up x eye, and the contract states it as the frame's first axis."""
     axis = {
         (1.0, 0.0, 0.0): "+x",
         (-1.0, 0.0, 0.0): "-x",

@@ -28,7 +28,7 @@ Every turn you edit $coding_output_path, it is automatically executed and the fi
 
 Guidelines:
 - The operation plan is a DAG. Read each entry's `depends_on` and implement dependencies before the operations that consume them; the JSON list order is not the build order. Each entry also names the semantic features it implements by their stable `sem_` names.
-- Take positions from the plan and shapes and sizes from the hypothesis. A number the plan cites as `ev_...` or `dim_...` was read off the drawing, in the coordinates of the view that entry belongs to: $view_frame. Where the model's origin sits is yours to choose; choose it once and keep it consistent.
+- Take positions from the plan and shapes and sizes from the hypothesis. A number the plan cites as `ev_...` or `dim_...` was read off the drawing, in the coordinates of the view. Where the model's origin sits is yours to choose; choose it once and keep it consistent.
 - Build curves as curves. An arc is one edge, not a chain of segments; a round hole is one cylindrical face, not a ring of narrow flat ones. Sampling a curve into points and joining them with straight segments is an approximation, and sampling more finely does not make it an exact curve.
 - A fillet replaces a corner with a smooth transition tangent to the adjoining faces. Matching its radius alone is insufficient: attached sectors or ribs with sharp joins do not implement the fillet. An alternative construction must preserve the intended silhouette and tangency, not merely produce a valid solid.
 - Read the geometry census in verification feedback. A part whose faces are all one kind, or whose edge count runs into the hundreds, may contain an unintended approximation.

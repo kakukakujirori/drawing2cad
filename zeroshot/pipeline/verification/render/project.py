@@ -4,10 +4,6 @@ Reads the solid, runs hidden-line removal once per view frame, and returns the
 projected 2D primitives in model units. `to_own_corner` then reads each view
 from its own bottom-left corner, which is where the drawing contract measures a
 sheet from.
-
-The frames are the contract's own `VIEW_FRAME`, not a second copy of it: the
-model is told those axes as `$view_frame`, and a projection drawn on any other
-convention would be compared against a drawing that does not share it.
 """
 
 from __future__ import annotations

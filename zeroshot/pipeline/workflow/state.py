@@ -17,6 +17,7 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     DrawingSubmission,
     OperationSubmission,
     ReconstructionRun,
+    ReconstructionSnapshot,
     SemanticSubmission,
 )
 from zeroshot.pipeline.messages.contracts.stages import (
@@ -56,6 +57,13 @@ _LEAD_TRANSCRIPT: Mapping[ReasoningStage, str] = {
     PipelineStage.OPERATIONS: "operations_state",
     PipelineStage.CODING: "coding_state",
 }
+
+
+def current_snapshot(state: ReconstructionState) -> ReconstructionSnapshot:
+    reconstruction = state.get("reconstruction")
+    if reconstruction is None:
+        raise RuntimeError("reconstruction has not been initialized")
+    return reconstruction.snapshots[-1]
 
 
 def lead_transcript(

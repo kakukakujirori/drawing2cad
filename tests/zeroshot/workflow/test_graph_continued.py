@@ -10,6 +10,7 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 
 from tests.zeroshot.chat_models import ScriptedChatModel
+from tests.zeroshot.prompt_paths import ROLE_PATHS
 from tests.zeroshot.workflow.test_graph import (
     _accepted_audit,
     _coding_submission,
@@ -166,8 +167,14 @@ def test_reasoning_stages_share_one_system_prompt(
     with SandboxWorkdir() as workdir:
         _continued_graph(workdir, **models).invoke({})
 
-    prompts = {_system_prompt(models[name]) for name in ("lead", "planner", "coder")}
+    prompts = {
+        _system_prompt(models[name])
+        for name in ("drawer", "lead", "planner", "coder")
+    }
     assert len(prompts) == 1
+    (shared_prompt,) = prompts
+    assert ROLE_PATHS["cad_reconstructor"].read_text().strip() in shared_prompt
+    assert _system_prompt(models["auditor"]) != shared_prompt
 
 
 def test_handover_nodes_follow_successful_integration(

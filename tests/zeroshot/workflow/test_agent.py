@@ -23,23 +23,26 @@ from openai import (
     LengthFinishReasonError,
 )
 from openai.types.chat import ChatCompletion
-from pydantic import BaseModel, PrivateAttr
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from tests.zeroshot.chat_models import (
     ScriptedChatModel,
     tool_call,
     unanswered_tool_calls,
 )
-from zeroshot.pipeline.messages import PromptTemplate
 from zeroshot.pipeline.tools import ToolFeedbackError
-from zeroshot.pipeline.workflow import Proposal, StopReason
+from zeroshot.pipeline.workflow import StopReason
 from zeroshot.pipeline.workflow.components.agent import create_agent
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
+from zeroshot.pipeline.workflow.state import carry_thread
 
-PROMPT_CONTEXT = {
-    "coding_output_path": "/work/model.py",
-    "verification_dir": "/work/attempts",
-}
+_SYSTEM_PROMPT = SystemMessage(content="Use the echo tool to complete the task.")
+
+
+class ExampleProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    proposal: list[str]
+    rationale: str
 
 
 @tool("echo")
@@ -81,7 +84,7 @@ def _subgraph(
         role="coder",
         model=model,
         tools=tools,
-        prompt_context=PROMPT_CONTEXT,
+        system_prompt=agent_options.pop("system_prompt", _SYSTEM_PROMPT),
         # These agents are invoked on their own rather than from inside a graph,
         # and `checkpointer=True` -- what a stage builds them with -- means
         # "inherit the parent's", which a root graph has none of.
@@ -138,11 +141,7 @@ def test_agent_returns_its_complete_tool_transcript() -> None:
     seen = model.received_messages
     assert [len(model_input) for model_input in seen] == [2, 4]
     assert all(isinstance(model_input[0], SystemMessage) for model_input in seen)
-    # `max_turns` is the agent's own setting rather than the caller's, so the
-    # role renders with it added to what the workflow supplied.
-    assert seen[0][0].text == PromptTemplate("roles/coder").render(
-        max_turns="30", **PROMPT_CONTEXT
-    )
+    assert seen[0][0].text == _SYSTEM_PROMPT.text
     assert seen[1][-1].text == tool_result.text
     assert model.bound_tool_names == ("echo",)
 
@@ -395,16 +394,44 @@ def test_agent_rejects_a_budget_below_one() -> None:
         _subgraph(model, max_turns=0)
 
 
-def test_agent_rejects_a_role_without_a_prompt() -> None:
+def test_agent_name_does_not_need_a_packaged_role_prompt() -> None:
     model = ScriptedChatModel(responses=(AIMessage(content="done"),))
 
-    with pytest.raises(ValueError, match="prompt not found"):
-        create_agent(
-            role="nobody",
-            model=model,
-            tools=(echo,),
-            prompt_context=PROMPT_CONTEXT,
-        )
+    create_agent(
+        role="nobody",
+        model=model,
+        tools=(echo,),
+        system_prompt="A caller-supplied role.",
+        announce_turns=False,
+    ).invoke({"messages": [HumanMessage(content="go")]})
+
+    assert model.received_messages[0][0].text == "A caller-supplied role."
+
+
+def test_handed_over_history_uses_the_receiving_agents_system_prompt() -> None:
+    first_model = ScriptedChatModel(responses=(AIMessage(content="first answer"),))
+    first = _subgraph(
+        first_model, system_prompt="FIRST SYSTEM", announce_turns=False
+    ).invoke({"messages": [HumanMessage(content="first task")]})
+    carried = carry_thread({}, first["messages"])
+    second_model = ScriptedChatModel(responses=(AIMessage(content="second answer"),))
+    second = _subgraph(
+        second_model, system_prompt="SECOND SYSTEM", announce_turns=False
+    ).invoke(
+        {
+            **carried["semantics_state"],
+            "messages": [
+                *carried["semantics_state"]["messages"],
+                HumanMessage(content="next task"),
+            ],
+        }
+    )
+
+    seen = second_model.received_messages[0]
+    assert [m.text for m in seen if isinstance(m, SystemMessage)] == ["SECOND SYSTEM"]
+    assert [m.text for m in seen[1:]] == ["first task", "first answer", "next task"]
+    assert not any(isinstance(m, SystemMessage) for m in first["messages"])
+    assert not any(isinstance(m, SystemMessage) for m in second["messages"])
 
 
 _ANSWER = '{"proposal": ["a boss", "a through hole"], "rationale": "both are turned"}'
@@ -416,10 +443,10 @@ def test_agent_reports_the_typed_answer_its_role_owes() -> None:
     result = _subgraph(
         model,
         announce_turns=False,
-        output_schema=Proposal,
+        output_schema=ExampleProposal,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
-    assert result["structured_response"] == Proposal(
+    assert result["structured_response"] == ExampleProposal(
         proposal=["a boss", "a through hole"], rationale="both are turned"
     )
     # The message the answer came from stays in the transcript for the next role.
@@ -432,7 +459,7 @@ def test_agent_refuses_an_answer_that_breaks_its_output_contract() -> None:
     result = _subgraph(
         model,
         announce_turns=False,
-        output_schema=Proposal,
+        output_schema=ExampleProposal,
         model_retries=0,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
@@ -448,16 +475,16 @@ def test_agent_retries_an_empty_structured_output() -> None:
     result = _subgraph(
         model,
         announce_turns=False,
-        output_schema=Proposal,
+        output_schema=ExampleProposal,
         model_retries=1,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
-    assert result["structured_response"] == Proposal(
+    assert result["structured_response"] == ExampleProposal(
         proposal=["a boss", "a through hole"], rationale="both are turned"
     )
     assert len(model.received_messages) == 2
     retry_instruction = model.received_messages[1][-1].text
-    assert "Proposal structured output" in retry_instruction
+    assert "ExampleProposal structured output" in retry_instruction
     assert "Validation error" in retry_instruction
     assert "raw JSON" in retry_instruction
     assert (result["current_turn"], result["total_turns"]) == (1, 1)
@@ -472,14 +499,14 @@ def test_agent_returns_invalid_structured_output_to_the_model_for_correction() -
     result = _subgraph(
         model,
         announce_turns=False,
-        output_schema=Proposal,
+        output_schema=ExampleProposal,
         model_retries=1,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
     retry_messages = model.received_messages[1]
     assert retry_messages[-2].text == invalid_answer
     assert "validation error" in retry_messages[-1].text.lower()
-    assert result["structured_response"] == Proposal(
+    assert result["structured_response"] == ExampleProposal(
         proposal=["a boss", "a through hole"], rationale="both are turned"
     )
 
@@ -494,7 +521,7 @@ def test_a_rejected_structured_response_is_preserved_in_the_retry_event() -> Non
     for chunk in _subgraph(
         model,
         announce_turns=False,
-        output_schema=Proposal,
+        output_schema=ExampleProposal,
         model_retries=1,
     ).stream({"messages": [HumanMessage(content="go")]}, stream_mode="custom"):
         if "model_retry" in chunk:
@@ -513,13 +540,13 @@ def test_agent_bounds_invalid_structured_output_retries() -> None:
     result = _subgraph(
         model,
         announce_turns=False,
-        output_schema=Proposal,
+        output_schema=ExampleProposal,
         model_retries=1,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
     assert len(model.received_messages) == 2
     assert result.get("structured_response") is None
-    assert "Proposal" in result["messages"][-1].text
+    assert "ExampleProposal" in result["messages"][-1].text
 
 
 def test_async_agent_retries_invalid_structured_output() -> None:
@@ -531,14 +558,14 @@ def test_async_agent_retries_invalid_structured_output() -> None:
         return await _subgraph(
             model,
             announce_turns=False,
-            output_schema=Proposal,
+            output_schema=ExampleProposal,
             model_retries=1,
         ).ainvoke({"messages": [HumanMessage(content="go")]})
 
     result = asyncio.run(invoke())
 
     assert len(model.received_messages) == 2
-    assert result["structured_response"] == Proposal(
+    assert result["structured_response"] == ExampleProposal(
         proposal=["a boss", "a through hole"], rationale="both are turned"
     )
     assert (result["current_turn"], result["total_turns"]) == (1, 1)
@@ -1249,13 +1276,13 @@ def test_agent_offers_only_the_answer_on_its_final_turn() -> None:
     result = _subgraph(
         model,
         max_turns=2,
-        output_schema=Proposal,
+        output_schema=ExampleProposal,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
     working_turn, final_turn = model.bound_tool_name_history
     assert "echo" in working_turn
     assert "echo" not in final_turn
-    assert result["structured_response"] == Proposal(
+    assert result["structured_response"] == ExampleProposal(
         proposal=["a boss", "a through hole"], rationale="both are turned"
     )
 

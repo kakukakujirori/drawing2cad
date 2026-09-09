@@ -13,11 +13,11 @@ from langchain.agents.middleware import (
 )
 from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.types import Checkpointer
 from pydantic import BaseModel
 
-from zeroshot.pipeline.messages import system_prompt_text
 from zeroshot.pipeline.tools import ToolFeedbackError
 from zeroshot.pipeline.workflow.middleware import (
     ModelCallRetryMiddleware,
@@ -79,7 +79,7 @@ def create_agent(
     role: str,
     model: BaseChatModel,
     tools: Sequence[BaseTool],
-    prompt_context: Mapping[str, str] = MappingProxyType({}),
+    system_prompt: SystemMessage | str | None = None,
     output_schema: type[BaseModel] | None = None,
     response_format_strategy: Literal["provider", "tool"] = "provider",
     max_turns: int = 30,
@@ -111,13 +111,10 @@ def create_agent(
         ],
     )
 
-    # Inform max_turns
-    prompt_context = {"max_turns": str(max_turns), **prompt_context}
-
     agent = _create_agent(
         model=model,
         tools=list(tools),
-        system_prompt=system_prompt_text(role, prompt_context, output_schema),
+        system_prompt=system_prompt,
         response_format=_build_response_format(output_schema, response_format_strategy),
         state_schema=AgentState,
         middleware=middleware,

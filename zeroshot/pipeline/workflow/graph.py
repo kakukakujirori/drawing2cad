@@ -2,13 +2,12 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from functools import partial
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, cast
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, merge_message_runs
-from langchain_core.messages.content import create_text_block
+from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -20,9 +19,7 @@ from zeroshot.pipeline.messages import (
     ArtifactPresenter,
     DrawingSource,
     InputManifest,
-    build_instruction,
     drawing_for_model,
-    instruction_section,
 )
 from zeroshot.pipeline.messages.contracts.audit import AuditReport
 from zeroshot.pipeline.messages.contracts.reconstruction import (
@@ -30,7 +27,6 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     DrawingSubmission,
     OperationSubmission,
     ReconstructionRun,
-    ReconstructionSnapshot,
     SemanticSubmission,
     TicketAnswers,
     tickets_assigned_to,
@@ -42,6 +38,7 @@ from zeroshot.pipeline.messages.contracts.stages import (
     next_stage,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages._base.prompt import PromptTemplate, StageInstructions, build_system_prompt
 from zeroshot.pipeline.tools import (
     create_calculate_drawing_scale_tool,
     create_load_image_tool,
@@ -69,6 +66,7 @@ from zeroshot.pipeline.workflow.reconstruction import (
 from zeroshot.pipeline.workflow.state import (
     ReconstructionState,
     carry_thread,
+    current_snapshot,
     lead_transcript,
 )
 from zeroshot.pipeline.workflow.validate_submission import (
@@ -76,18 +74,8 @@ from zeroshot.pipeline.workflow.validate_submission import (
     validate_submission,
 )
 
+type AgentBuilder = partial[CompiledGraph]
 type CompiledGraph = Pregel[Any, Any, Any, Any]
-
-
-class AgentBuilder(Protocol):
-    def __call__(
-        self,
-        *,
-        tools: Sequence[BaseTool],
-        prompt_context: Mapping[str, str],
-        output_schema: type[BaseModel] | None = None,
-        extra_middleware: Sequence[AgentMiddleware[Any, None, Any]] = (),
-    ) -> CompiledGraph: ...
 
 
 def create_reconstruction_graph(
@@ -187,53 +175,67 @@ def create_reconstruction_graph(
             sandbox_workdir.sandbox_bind_dir / reconstruction_history_filename
         ),
     }
+    stage_instructions = StageInstructions(
+        prompt_context=prompt_context,
+        artifact_presenter=artifact_presenter,
+        input_manifest=input_manifest,
+        workdir=sandbox_workdir,
+    )
+
+    share_thread_system_prompt = Path(__file__).resolve().parents[1] / "stages/_base/prompts/cad_reconstructor.md"
 
     drawings_agent = drawings_agent_builder(
         # Only this stage measures a raster, so only it is offered the fit.
         tools=[*basic_tools, create_calculate_drawing_scale_tool()],
-        prompt_context=prompt_context,
+        system_prompt=build_system_prompt(
+            share_thread_system_prompt if share_thread else Path(__file__).resolve().parents[1] / "stages/drawings/prompts/role.md",
+            prompt_context | {"max_turns": drawings_agent_builder.keywords["max_turns"]},
+            DrawingSubmission,
+        ),
         output_schema=DrawingSubmission,
         extra_middleware=[drawing_middleware],
     )
     semantics_agent = semantics_agent_builder(
         tools=basic_tools,
-        prompt_context=prompt_context,
+        system_prompt=build_system_prompt(
+            share_thread_system_prompt if share_thread else Path(__file__).resolve().parents[1] / "stages/semantics/prompts/role.md",
+            prompt_context | {"max_turns": semantics_agent_builder.keywords["max_turns"]},
+            SemanticSubmission,
+        ),
         output_schema=SemanticSubmission,
     )
     operations_agent = operations_agent_builder(
         tools=basic_tools,
-        prompt_context=prompt_context,
+        system_prompt=build_system_prompt(
+            share_thread_system_prompt if share_thread else Path(__file__).resolve().parents[1] / "stages/operations/prompts/role.md",
+            prompt_context | {"max_turns": operations_agent_builder.keywords["max_turns"]},
+            OperationSubmission
+        ),
         output_schema=OperationSubmission,
     )
     coding_agent = coding_agent_builder(
         tools=basic_tools,
-        prompt_context=prompt_context,
+        system_prompt=build_system_prompt(
+            share_thread_system_prompt if share_thread else Path(__file__).resolve().parents[1] / "stages/coding/prompts/role.md",
+            prompt_context | {"max_turns": coding_agent_builder.keywords["max_turns"]},
+            CodingSubmission,
+        ),
         output_schema=CodingSubmission,
         extra_middleware=[coding_middleware],
     )
     audit_agent = audit_agent_builder(
         tools=basic_tools,
-        prompt_context=prompt_context,
+        system_prompt=build_system_prompt(
+            Path(__file__).resolve().parents[1] / "stages/audit/prompts/role.md",
+            prompt_context | {"max_turns": audit_agent_builder.keywords["max_turns"]},
+            AuditReport
+        ),
         output_schema=AuditReport,
     )
 
-    # prepare inputs (by calling it on-the-fly, prevent message_id duplication)
-    def _prepare_input_message():
-        return HumanMessage(
-            content_blocks=artifact_presenter.build_input_message_blocks(
-                manifest=input_manifest,
-                workdir=sandbox_workdir,
-            )
-        )
 
     def save_history(run: ReconstructionRun) -> None:
         save_reconstruction(history_path, run)
-
-    def current_snapshot(state: ReconstructionState) -> ReconstructionSnapshot:
-        reconstruction = state.get("reconstruction")
-        if reconstruction is None:
-            raise RuntimeError("reconstruction has not been initialized")
-        return reconstruction.snapshots[-1]
 
     # ------------------------------------------------------------------
     # Round initialization and common stage input
@@ -275,56 +277,6 @@ def create_reconstruction_graph(
             raise RuntimeError("the initial reconstruction has no unfinished stage")
         return following.value
 
-    def assigned_ticket_ids(
-        snapshot: ReconstructionSnapshot,
-        stage: PipelineStage,
-    ) -> str:
-        """Name the tickets this stage owns, so it never has to go looking."""
-        if stage not in REASONING_STAGES:
-            return "none"
-        assigned = tickets_assigned_to(snapshot.open_tickets, stage)
-        return ", ".join(ticket.ticket_id for ticket in assigned) or "none"
-
-    def build_stage_instruction(
-        state: ReconstructionState,
-        stage: PipelineStage,
-        *,
-        include_input: bool,
-        **extra_context: str,
-    ) -> HumanMessage:
-        """Build the same round/ticket view for every reasoning stage."""
-        if validation_error := state.get("stage_validation_error"):
-            # A re-ask, so the round's terms and guidelines already stand in
-            # the transcript and only the rejection is new.
-            return HumanMessage(
-                content_blocks=[
-                    create_text_block(
-                        f"[{stage.value.title()} Validation Error]\n"
-                        f"Your previous {stage.value} stage output was rejected. "
-                        "Return the corrected complete output using this feedback:\n\n"
-                        f"{validation_error}"
-                    )
-                ]
-            )
-
-        snapshot = current_snapshot(state)
-        drawing = snapshot.drawings or drawing_baseline(state["reconstruction"])
-        instruction = build_instruction(
-            f"{stage.value}/round",
-            **prompt_context,
-            view_frame=drawing.frame_sentence(),
-            current_round=str(snapshot.round),
-            assigned_tickets=assigned_ticket_ids(snapshot, stage),
-            **extra_context,
-        )
-
-        if include_input:
-            (instruction,) = cast(
-                list[HumanMessage],
-                merge_message_runs([instruction, _prepare_input_message()]),
-            )
-        return instruction
-
     # ------------------------------------------------------------------
     # Reasoning-stage inference
     # ------------------------------------------------------------------
@@ -340,7 +292,7 @@ def create_reconstruction_graph(
         previous = state.get("drawings_state") or {}
         messages = [
             *list(previous.get("messages") or []),
-            build_stage_instruction(
+            stage_instructions.build(
                 state,
                 PipelineStage.DRAWINGS,
                 include_input=(not previous or compact_between_stages is not None),
@@ -369,7 +321,7 @@ def create_reconstruction_graph(
         previous = state.get("semantics_state") or {}
         messages = [
             *list(previous.get("messages") or []),
-            build_stage_instruction(
+            stage_instructions.build(
                 state,
                 PipelineStage.SEMANTICS,
                 include_input=(not previous or compact_between_stages is not None),
@@ -398,7 +350,7 @@ def create_reconstruction_graph(
         previous = state.get("operations_state") or {}
         messages = [
             *list(previous.get("messages") or []),
-            build_stage_instruction(
+            stage_instructions.build(
                 state,
                 PipelineStage.OPERATIONS,
                 include_input=(not previous or compact_between_stages is not None),
@@ -433,7 +385,7 @@ def create_reconstruction_graph(
         previous = state.get("coding_state") or {}
         messages = [
             *list(previous.get("messages") or []),
-            build_stage_instruction(
+            stage_instructions.build(
                 state,
                 PipelineStage.CODING,
                 include_input=(not previous or compact_between_stages is not None),
@@ -577,7 +529,7 @@ def create_reconstruction_graph(
             "drawing", snapshot.round
         )
         previous = state.get("audit_state") or {}
-        instruction = build_stage_instruction(
+        instruction = stage_instructions.build(
             state,
             PipelineStage.AUDIT,
             include_input=not previous,
@@ -599,11 +551,9 @@ def create_reconstruction_graph(
             # the report carries this only when returns were actually written,
             # so the layout the auditor is given cannot name a directory the
             # attempt does not have.
-            intermediate_returns=instruction_section(
-                "audit/intermediate_returns",
-                bool(verification.intermediate_returns),
-                returns_dir=INTERMEDIATE_RETURNS_DIR,
-            ),
+            intermediate_returns=PromptTemplate(
+                Path(__file__).resolve().parents[1] / "stages/audit/prompts/intermediate_returns.md"
+            ).render(returns_dir=INTERMEDIATE_RETURNS_DIR) if bool(verification.intermediate_returns) else ""
         )
         result = audit_agent.invoke(
             {

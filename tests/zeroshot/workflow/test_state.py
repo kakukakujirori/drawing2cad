@@ -6,7 +6,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing, sheet
 from zeroshot.pipeline.messages.contracts import (
@@ -53,10 +53,8 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow import (
     CUSTOM_STATE_TYPES,
-    Proposal,
 )
 from zeroshot.pipeline.workflow.components.agent import StopReason
-from zeroshot.pipeline.workflow.components.proposer_reviewer import Review
 from zeroshot.pipeline.workflow.state import (
     ReconstructionState,
     carry_thread,
@@ -67,13 +65,11 @@ from zeroshot.pipeline.workflow.state import (
 @pytest.mark.parametrize(
     "contract",
     [
-        Proposal,
         SemanticHypothesis,
         SemanticFeature,
         FeatureGeometry,
         Parameter,
         DrawingEvidence,
-        Review,
     ],
 )
 def test_a_contract_carries_no_prose_beyond_its_field_descriptions(
@@ -87,58 +83,6 @@ def test_a_contract_carries_no_prose_beyond_its_field_descriptions(
 
     assert "description" not in schema
     assert set(schema["properties"]) == set(contract.model_fields)
-
-
-def test_a_proposal_validates_json() -> None:
-    proposal = Proposal.model_validate_json(
-        '{"proposal":["cylindrical boss","through hole"],"rationale":"both are turned"}'
-    )
-
-    assert proposal.proposal == ["cylindrical boss", "through hole"]
-    assert proposal.rationale == "both are turned"
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {},
-        {"proposal": ["hole"]},
-        {"rationale": "visible in the front view"},
-        {
-            "proposal": ["hole"],
-            "rationale": "visible in the front view",
-            "evidence": "front view",
-        },
-    ],
-)
-def test_a_proposal_rejects_schema_violations(payload: dict[str, object]) -> None:
-    with pytest.raises(ValidationError):
-        Proposal.model_validate(payload)
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"accept": False},
-        {"rationale": "wrong feature"},
-        {"accept": True, "rationale": "correct", "confidence": 0.9},
-    ],
-)
-def test_a_review_rejects_schema_violations(payload: dict[str, object]) -> None:
-    with pytest.raises(ValidationError):
-        Review.model_validate(payload)
-
-
-@pytest.mark.parametrize("rationale", ["", "   "])
-def test_a_review_requires_rationale_for_revision(rationale: str) -> None:
-    with pytest.raises(ValidationError, match="rationale"):
-        Review(accept=False, rationale=rationale)
-
-
-def test_a_review_allows_an_accept_without_rationale() -> None:
-    review = Review(accept=True, rationale="")
-
-    assert review.accept is True
 
 
 # A plane is measured by nothing, so a hypothesis of bare planes never builds a
@@ -229,10 +173,10 @@ _RECONSTRUCTION = ReconstructionRun(
                     ticket_id="ticket_initial",
                     subject=BootstrapWork(instruction="reconstruct the drawing"),
                     assigned_stages=[
-                        "drawings",
-                        "semantics",
-                        "operations",
-                        "coding",
+                        PipelineStage.DRAWINGS,
+                        PipelineStage.SEMANTICS,
+                        PipelineStage.OPERATIONS,
+                        PipelineStage.CODING,
                     ],
                     responses=[
                         TicketResponse(

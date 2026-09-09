@@ -19,5 +19,3 @@ One complete evidence entry:
 ```
 
 `DrawingSubmission.responses` may summarize only sheets in the latest verified file; it is never a substitute transport for unwritten transcription. Return exactly one `DrawingSubmission`, alone, after all tool work.
-
-$guidelines

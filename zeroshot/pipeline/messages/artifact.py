@@ -186,7 +186,7 @@ class ArtifactPresenter:
     ) -> list[ContentBlock]:
         presented = _Presented.of(manifest.drawing, workdir)
         # The frame is not said here: it belongs to the round rather than to
-        # the files, and each stage is given it as `$view_frame`.
+        # the files.
         lines = ["[Input drawing]", *presented.listing()]
         # What the format affords, said where the format is known. A stage's
         # guidelines describe the job; only this message knows whether the job

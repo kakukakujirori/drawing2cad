@@ -134,7 +134,7 @@ def test_a_full_page_says_its_views_are_told_apart_by_position(
 def test_the_frame_is_not_said_here_because_it_belongs_to_the_round(
     tmp_path: Path, workdir: SandboxWorkdir
 ) -> None:
-    """Each stage is handed it as `$view_frame`, which the round can revise."""
+    """StageInstructions supplies the shared coordinate convention separately."""
     manifest = _input_manifest(tmp_path)
 
     text = _text(_presenter().build_input_message_blocks(manifest, workdir))

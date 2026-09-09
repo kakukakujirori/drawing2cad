@@ -3,6 +3,7 @@
 import base64
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -416,10 +417,17 @@ def _operations_resume() -> ReconstructionRun:
     )
 
 
+@pytest.mark.parametrize("has_returns", [False, True])
 def test_an_accepted_round_is_integrated_and_persisted(
     monkeypatch: pytest.MonkeyPatch,
+    has_returns: bool,
 ) -> None:
-    calls = _stub_verification(monkeypatch, _verified())
+    calls = _stub_verification(
+        monkeypatch,
+        replace(
+            _verified(), intermediate_returns="ret_step1: solid" if has_returns else ""
+        ),
+    )
     semantic = _semantic_submission()
     head = ScriptedChatModel(responses=(semantic,))
     planner = ScriptedChatModel(responses=(_operation_submission(),))
@@ -468,10 +476,13 @@ def test_an_accepted_round_is_integrated_and_persisted(
     assert result["audit_report"].accepted is True
     assert result["stage_submission"] is None
     assert result["stage_validation_error"] is None
+    assert "within 5 turns" in auditor.received_messages[0][0].text
     audit_instruction = _last_instruction(auditor.received_messages[0])
     assert "/work/attempts/round_000/coding/000" in audit_instruction
     assert "/work/attempts/round_000/drawing/000" in audit_instruction
     assert "Addressed ticket_initial in coding." in audit_instruction
+    assert ("intermediate_returns/<ret_name>/" in audit_instruction) is has_returns
+    assert ("what the plan meant it to" in audit_instruction) is has_returns
 
 
 def test_a_semantics_seed_starts_at_operations_without_calling_semantics(

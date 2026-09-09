@@ -53,8 +53,8 @@ from zeroshot.pipeline.verification import (
 from zeroshot.pipeline.workflow import (
     StopReason,
     create_agent,
-    create_reconstruction_graph,
 )
+from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
 from zeroshot.pipeline.workflow.reconstruction import (
     advance_reconstruction,
     save_reconstruction,
@@ -62,8 +62,10 @@ from zeroshot.pipeline.workflow.reconstruction import (
 )
 
 
-def _agent(role: str, model: BaseChatModel, **overrides: Any):
-    return partial(create_agent, role=role, model=model, **overrides)
+def _agent(role: str, model: BaseChatModel, *, max_turns: int = 30, **overrides: Any):
+    return partial(
+        create_agent, role=role, model=model, max_turns=max_turns, **overrides
+    )
 
 
 _ACCEPTED_AUDIT = AIMessage(content='{"accepted": true, "findings": []}')
@@ -127,19 +129,17 @@ def _writing_drawing() -> AIMessage:
 
 
 def _drawing_stage():
-    return partial(
-        create_agent,
-        role="drawing_analyzer",
-        model=ScriptedChatModel(responses=(_writing_drawing(), _A_READING)),
+    return _agent(
+        "drawing_analyzer",
+        ScriptedChatModel(responses=(_writing_drawing(), _A_READING)),
         announce_turns=False,
     )
 
 
 def _semantic_stage():
-    return partial(
-        create_agent,
-        role="semantic_hypothesizer",
-        model=ScriptedChatModel(responses=(_A_BOX,)),
+    return _agent(
+        "semantic_hypothesizer",
+        ScriptedChatModel(responses=(_A_BOX,)),
         announce_turns=False,
     )
 
