@@ -5,7 +5,7 @@
 response_format_strategy: tool
 
 model:
-  _target_: zeroshot.models.ChatOpenRouterSingleReasoning
+  _target_: zeroshot.pipeline.models.ChatOpenRouterSingleReasoning
 
   model: z-ai/glm-5.3-flash
   # `summary` is not part of OpenRouter's reasoning contract -- that is the

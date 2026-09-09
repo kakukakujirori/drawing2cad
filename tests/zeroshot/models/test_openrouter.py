@@ -13,7 +13,7 @@ from langchain_core.messages.content import (
 )
 from langchain_core.outputs import ChatGenerationChunk
 
-from zeroshot.models import ChatOpenRouterSingleReasoning
+from zeroshot.pipeline.models.openrouter import ChatOpenRouterSingleReasoning
 
 
 def _delta(text: str, fmt: str | None = "unknown") -> ChatGenerationChunk:
