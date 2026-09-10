@@ -16,19 +16,13 @@ from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
+    STAGE_ARTIFACT_FIELDS,
     PipelineStage,
     ReasoningStage,
 )
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 
 _RUN_ID = re.compile(r"^run_[a-z0-9][a-z0-9_]*$")
-# The artifact that stays null until its stage fills it in the current round.
-_NULL_UNTIL_STAGE = {
-    PipelineStage.DRAWINGS: "drawings",
-    PipelineStage.SEMANTICS: "semantics",
-    PipelineStage.OPERATIONS: "operations",
-    PipelineStage.CODING: "program_source",
-}
 
 
 class ReconstructionSnapshot(BaseModel):
@@ -133,8 +127,10 @@ class ReconstructionSnapshot(BaseModel):
         # fill a stage that has not completed in this round.
         premature = [
             artifact
-            for stage, artifact in _NULL_UNTIL_STAGE.items()
-            if stage not in completed_stages and getattr(self, artifact) is not None
+            for stage, artifacts in STAGE_ARTIFACT_FIELDS.items()
+            if stage not in completed_stages
+            for artifact in artifacts
+            if getattr(self, artifact) is not None
         ]
         if premature:
             raise ValueError(
@@ -157,9 +153,6 @@ class ReconstructionSnapshot(BaseModel):
                 raise ValueError("verification must exist after coding")
             if self.verification.status is ExecutionStatus.UNINITIALIZED:
                 raise ValueError("verification must be completed after coding")
-        elif self.verification is not None:
-            raise ValueError("verification must be null until coding completes")
-
         return self
 
 

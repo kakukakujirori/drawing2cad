@@ -356,6 +356,11 @@ def test_an_uninitialized_verification_does_not_complete_coding() -> None:
         (None, "semantics", _semantics()),
         ("semantics", "operations", _operations()),
         ("operations", "program_source", "result = object()\n"),
+        (
+            "operations",
+            "verification",
+            VerifyOutputResult(status=ExecutionStatus.REJECTED),
+        ),
     ],
 )
 def test_snapshot_rejects_an_artifact_from_an_unfinished_stage(

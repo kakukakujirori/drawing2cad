@@ -27,7 +27,7 @@ from zeroshot.pipeline.stages.contracts import ReconstructionRun
 from zeroshot.pipeline.stages.drawings.contracts import DrawingSheet, DrawingSource
 from zeroshot.pipeline.verification import attempt_relative_path
 from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, ReconstructionState
-from zeroshot.pipeline.workflow.reconstruction import load_reconstruction
+from zeroshot.pipeline.workflow.lifecycle import load_reconstruction
 
 # What the runner hands a graph: the run environment and the artifact contract.
 # A graph's own settings are bound into the factory before it gets here, so

@@ -19,7 +19,7 @@ from zeroshot.pipeline.stages.validate import (
     SubmissionValidationError,
     validate_submission,
 )
-from zeroshot.pipeline.workflow.reconstruction import open_next_round
+from zeroshot.pipeline.workflow.lifecycle import open_next_round
 
 
 def test_audit_traces_the_solid_to_the_sheet_owning_its_reading() -> None:

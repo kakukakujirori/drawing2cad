@@ -49,7 +49,7 @@ from zeroshot.pipeline.verification import (
 )
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.graph import AgentBuilder, create_reconstruction_graph
-from zeroshot.pipeline.workflow.reconstruction import (
+from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
     start_reconstruction,
 )

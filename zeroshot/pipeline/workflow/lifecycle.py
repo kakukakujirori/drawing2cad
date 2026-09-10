@@ -2,41 +2,30 @@
 
 import os
 import tempfile
-from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
 from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket
-from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
 )
-from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
 from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
-from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
-from zeroshot.pipeline.stages.merge import merge_submission
-from zeroshot.pipeline.stages.operations.contracts import OperationPlan
-from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
-from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
-from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
+from zeroshot.pipeline.stages.snapshot_update import (
+    ReasoningSubmission,
+    WorkspaceOutput,
+    build_snapshot_update,
+)
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
+    STAGE_ARTIFACT_FIELDS,
     PipelineStage,
     ReasoningStage,
     next_stage,
 )
 from zeroshot.pipeline.stages.validate import validate_submission
-from zeroshot.pipeline.verification import VerifyOutputResult
-
-type ReasoningSubmission = (
-    DrawingSubmission | SemanticSubmission | OperationSubmission | CodingSubmission
-)
-type WorkspaceOutput = DrawingSource | VerifyOutputResult
-
-_LOG_LIMIT = 4000
 
 # ---------------------------------------------------------------------------
 # Pure lifecycle transitions
@@ -157,39 +146,16 @@ def advance_reconstruction(
     if stage not in REASONING_STAGES:
         raise ValueError("a completed coding snapshot cannot advance again")
 
-    if stage in {PipelineStage.DRAWINGS, PipelineStage.CODING}:
-        deliverable = workspace_output
-    else:
-        if workspace_output is not None:
-            raise SubmissionValidationError(
-                f"{stage} does not accept a workspace output"
-            )
-        preceding = run.snapshots[-2] if len(run.snapshots) > 1 else current
-        deliverable = merge_submission(submission, preceding, stage)
-    validate_submission(
+    previous = run.snapshots[-2] if len(run.snapshots) > 1 else current
+    update = build_snapshot_update(
         submission,
         current,
-        deliverable=deliverable,
+        previous,
+        stage,
+        workspace_output=workspace_output,
     )
-
-    # After validation, which judges the addresses the model wrote rather than
-    # the values this puts beside them. Both artifacts are read as this stage
-    # leaves them, so a stage that revised one is cited against its own answer.
-    cited_hypothesis = (
-        deliverable
-        if isinstance(deliverable, SemanticHypothesis)
-        else current.semantics
-    )
-    cited_drawing = cast(
-        DrawingSource,
-        deliverable if isinstance(deliverable, DrawingSource) else current.drawings,
-    )
-    if isinstance(deliverable, (DrawingSource, SemanticHypothesis, OperationPlan)):
-        deliverable = resolve_references(deliverable, cited_hypothesis, cited_drawing)
-    submission = resolve_references(submission, cited_hypothesis, cited_drawing)
-
     responses_by_ticket = {
-        response.ticket_id: response for response in submission.responses
+        response.ticket_id: response for response in update.responses
     }
     tickets = [
         (
@@ -208,52 +174,17 @@ def advance_reconstruction(
         for ticket in current.open_tickets
     ]
 
-    drawings = current.drawings
-    semantics = current.semantics
-    operations = current.operations
-    program_source = current.program_source
-    integrated_verification = current.verification
-    match stage:
-        case PipelineStage.DRAWINGS:
-            drawings = cast(DrawingSource, deliverable)
-        case PipelineStage.SEMANTICS:
-            semantics = cast(SemanticHypothesis, deliverable)
-        case PipelineStage.OPERATIONS:
-            operations = cast(OperationPlan, deliverable)
-        case PipelineStage.CODING:
-            terminal = cast(VerifyOutputResult, deliverable)
-            integrated_verification = _durable_verification(terminal)
-            program_source = terminal.source
-
-    candidate = ReconstructionSnapshot(
-        open_tickets=tickets,
-        round=current.round,
-        last_completed_stage=stage,
-        drawings=drawings,
-        semantics=semantics,
-        operations=operations,
-        program_source=program_source,
-        verification=integrated_verification,
+    # Preserve the model instances and validate the new snapshot. model_copy
+    # alone would bypass the checkpoint's structural invariants.
+    candidate = ReconstructionSnapshot.model_validate(
+        {
+            **dict(current),
+            **update.artifacts,
+            "open_tickets": tickets,
+            "last_completed_stage": stage,
+        }
     )
     return _commit_snapshot(run, candidate)
-
-
-def _clip_log(log: str) -> str:
-    if len(log) <= _LOG_LIMIT:
-        return log
-    half = _LOG_LIMIT // 2
-    omitted = len(log) - 2 * half
-    return f"{log[:half]}\n...[{omitted} characters omitted]...\n{log[-half:]}"
-
-
-def _durable_verification(verification: VerifyOutputResult) -> VerifyOutputResult:
-    """Strip what the snapshot already keeps, and what it need not keep whole."""
-    return replace(
-        verification,
-        source=None,  # logged in `program_source` already
-        stdout=_clip_log(verification.stdout),
-        stderr=_clip_log(verification.stderr),
-    )
 
 
 def _commit_snapshot(
@@ -333,17 +264,15 @@ def _require_only_stage_artifact_changed(
     stage: ReasoningStage,
 ) -> None:
     """A stage may replace its own artifact but not an upstream/downstream one."""
-    owned_artifact = {
-        PipelineStage.DRAWINGS: "drawings",
-        PipelineStage.SEMANTICS: "semantics",
-        PipelineStage.OPERATIONS: "operations",
-        PipelineStage.CODING: "program_source",
-    }[stage]
-    for artifact in ("drawings", "semantics", "operations", "program_source"):
-        if artifact == owned_artifact:
-            continue
-        if getattr(replacement, artifact) != getattr(current, artifact):
-            raise ValueError(f"{stage} must preserve the current {artifact} artifact")
+    owned_artifacts = STAGE_ARTIFACT_FIELDS[stage]
+    for artifacts in STAGE_ARTIFACT_FIELDS.values():
+        for artifact in artifacts:
+            if artifact in owned_artifacts:
+                continue
+            if getattr(replacement, artifact) != getattr(current, artifact):
+                raise ValueError(
+                    f"{stage} must preserve the current {artifact} artifact"
+                )
 
 
 # ---------------------------------------------------------------------------

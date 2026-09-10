@@ -112,11 +112,14 @@ class QwenIntegrationTest(unittest.TestCase):
         pixel_values = torch.randn(16, 24)
         image_grid_thw = torch.tensor([[1, 4, 4]])
 
-        with mock.patch.object(
-            self.model.model,
-            "get_image_features",
-            wraps=self.model.model.get_image_features,
-        ) as image_features, torch.no_grad():
+        with (
+            mock.patch.object(
+                self.model.model,
+                "get_image_features",
+                wraps=self.model.model.get_image_features,
+            ) as image_features,
+            torch.no_grad(),
+        ):
             output = self.model(
                 input_ids=input_ids,
                 attention_mask=torch.ones_like(input_ids),
@@ -162,11 +165,14 @@ class QwenIntegrationTest(unittest.TestCase):
         self.assertIsNotNone(output.past_key_values)
 
     def test_greedy_generation_encodes_primitives_once(self) -> None:
-        with mock.patch.object(
-            self.model.primitive_encoder,
-            "forward",
-            wraps=self.model.primitive_encoder.forward,
-        ) as encode, torch.no_grad():
+        with (
+            mock.patch.object(
+                self.model.primitive_encoder,
+                "forward",
+                wraps=self.model.primitive_encoder.forward,
+            ) as encode,
+            torch.no_grad(),
+        ):
             generated = self.model.generate(
                 input_ids=self.input_ids,
                 attention_mask=self.attention_mask,

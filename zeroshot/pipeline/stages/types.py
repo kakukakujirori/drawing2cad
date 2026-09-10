@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Literal, cast
 
@@ -19,6 +22,19 @@ type ReasoningStage = Literal[
 
 PIPELINE_STAGES = tuple(PipelineStage)
 REASONING_STAGES = cast(tuple[ReasoningStage, ...], PIPELINE_STAGES[:-1])
+
+
+# Fields a stage may update, not fields that must be non-null at completion.
+# In particular, a failed coding attempt may have no readable program source.
+STAGE_ARTIFACT_FIELDS: Mapping[ReasoningStage, tuple[ArtifactField, ...]] = {
+    PipelineStage.DRAWINGS: ("drawings",),
+    PipelineStage.SEMANTICS: ("semantics",),
+    PipelineStage.OPERATIONS: ("operations",),
+    PipelineStage.CODING: ("program_source", "verification"),
+}
+type ArtifactField = Literal[
+    "drawings", "semantics", "operations", "program_source", "verification"
+]
 
 
 def next_stage(completed: PipelineStage | None) -> PipelineStage | None:

@@ -29,7 +29,7 @@ from zeroshot.pipeline.stages.operations.contracts import Operation
 from zeroshot.pipeline.stages.semantics.contracts import GeometryKind
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
-from zeroshot.pipeline.workflow.reconstruction import (
+from zeroshot.pipeline.workflow.lifecycle import (
     open_next_round,
     start_reconstruction,
 )

@@ -33,8 +33,8 @@ from zeroshot.pipeline.stages.validate import (
     validate_submission,
 )
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
-from zeroshot.pipeline.workflow import reconstruction as reconstruction_module
-from zeroshot.pipeline.workflow.reconstruction import (
+from zeroshot.pipeline.workflow import lifecycle as lifecycle_module
+from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
     drawing_baseline,
     load_reconstruction,
@@ -400,6 +400,27 @@ def test_coding_stores_the_program_once_and_clips_long_logs() -> None:
     assert "characters omitted" in snapshot.verification.stdout
     assert len(snapshot.verification.stdout) < len(noisy.stdout)
     assert snapshot.verification.stderr == "short"
+    assert noisy.source == _SOURCE
+    assert noisy.stdout == "x" * 10_000
+
+
+def test_coding_without_readable_source_still_completes_the_round() -> None:
+    failed = VerifyOutputResult(
+        status=ExecutionStatus.REJECTED,
+        source=None,
+        stderr="model.py is missing",
+    )
+
+    run = _completed_run(verification=failed)
+    snapshot = run.snapshots[-1]
+
+    assert snapshot.last_completed_stage is PipelineStage.CODING
+    assert snapshot.program_source is None
+    assert snapshot.verification is not None
+    assert snapshot.verification.status is ExecutionStatus.REJECTED
+    assert snapshot.verification.stderr == failed.stderr
+    assert snapshot.open_tickets[0].responses[-1].stage is PipelineStage.CODING
+    assert ReconstructionRun.model_validate_json(run.model_dump_json()) == run
 
 
 def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
@@ -507,12 +528,12 @@ def test_snapshot_commit_rejects_a_skipped_stage() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
 
     with pytest.raises(ValueError, match="must advance"):
-        reconstruction_module._commit_snapshot(run, _snapshot())
+        lifecycle_module._commit_snapshot(run, _snapshot())
 
 
 def test_snapshot_commit_preserves_ticket_subjects() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
-    run = reconstruction_module._commit_snapshot(
+    run = lifecycle_module._commit_snapshot(
         run, _advance_snapshot(run.snapshots[-1], "drawings")
     )
     semantics = _advance_snapshot(run.snapshots[-1], "semantics")
@@ -526,16 +547,16 @@ def test_snapshot_commit_preserves_ticket_subjects() -> None:
     semantics = semantics.model_copy(update={"open_tickets": [changed_ticket]})
 
     with pytest.raises(ValueError, match="subject must not change"):
-        reconstruction_module._commit_snapshot(run, semantics)
+        lifecycle_module._commit_snapshot(run, semantics)
 
 
 def test_snapshot_commit_preserves_prior_responses() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
-    run = reconstruction_module._commit_snapshot(
+    run = lifecycle_module._commit_snapshot(
         run, _advance_snapshot(run.snapshots[-1], "drawings")
     )
     semantics = _advance_snapshot(run.snapshots[-1], "semantics")
-    run = reconstruction_module._commit_snapshot(run, semantics)
+    run = lifecycle_module._commit_snapshot(run, semantics)
     operations = _advance_snapshot(run.snapshots[-1], "operations")
     ticket = operations.open_tickets[0]
     rewritten = TicketResponse(
@@ -552,23 +573,30 @@ def test_snapshot_commit_preserves_prior_responses() -> None:
     operations = operations.model_copy(update={"open_tickets": [changed_ticket]})
 
     with pytest.raises(ValueError, match="without rewriting prior responses"):
-        reconstruction_module._commit_snapshot(run, operations)
+        lifecycle_module._commit_snapshot(run, operations)
 
 
-def test_snapshot_commit_preserves_artifacts_owned_by_other_stages() -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("semantics", hypothesis("a replacement from the wrong stage")),
+        ("verification", VerifyOutputResult(status=ExecutionStatus.REJECTED)),
+    ],
+)
+def test_snapshot_commit_preserves_artifacts_owned_by_other_stages(
+    field: str, value: object
+) -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
-    run = reconstruction_module._commit_snapshot(
+    run = lifecycle_module._commit_snapshot(
         run, _advance_snapshot(run.snapshots[-1], "drawings")
     )
     semantics = _advance_snapshot(run.snapshots[-1], "semantics")
-    run = reconstruction_module._commit_snapshot(run, semantics)
+    run = lifecycle_module._commit_snapshot(run, semantics)
     operations = _advance_snapshot(run.snapshots[-1], "operations")
-    operations = operations.model_copy(
-        update={"semantics": hypothesis("a replacement from the wrong stage")}
-    )
+    operations = operations.model_copy(update={field: value})
 
-    with pytest.raises(ValueError, match="must preserve the current semantics"):
-        reconstruction_module._commit_snapshot(run, operations)
+    with pytest.raises(ValueError, match=f"must preserve the current {field}"):
+        lifecycle_module._commit_snapshot(run, operations)
 
 
 @pytest.mark.parametrize(
@@ -724,7 +752,7 @@ def test_failed_atomic_save_preserves_the_previous_file(
     def fail_replace(source, destination) -> None:
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr(reconstruction_module.os, "replace", fail_replace)
+    monkeypatch.setattr(lifecycle_module.os, "replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated replace failure"):
         save_reconstruction(path, replacement)

@@ -31,7 +31,7 @@ from zeroshot.pipeline.tools import (
 )
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.workflow.components import compact_transcript
-from zeroshot.pipeline.workflow.reconstruction import (
+from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
     drawing_baseline,
     load_reconstruction,
