@@ -136,6 +136,79 @@ def test_semantics_and_operations_edit_their_own_member_types() -> None:
     assert operation_submission.edits == operations.proposal
 
 
+@pytest.mark.parametrize(
+    ("submission_type", "name"),
+    [
+        (SemanticSubmission, "sem_future_feature"),
+        (OperationSubmission, "op_future_operation"),
+    ],
+)
+def test_deletion_names_are_validated_without_requiring_a_snapshot(
+    submission_type: type[SemanticSubmission] | type[OperationSubmission],
+    name: str,
+) -> None:
+    submission = submission_type(edits=[], deleted=[name], rationale=None, responses=[])
+    assert submission.deleted == [name]
+
+
+@pytest.mark.parametrize(
+    ("submission_type", "name"),
+    [
+        (SemanticSubmission, "sem_bore.geo_cylinder"),
+        (SemanticSubmission, "sem_bore.evidence"),
+        (SemanticSubmission, "op_bore"),
+        (SemanticSubmission, "sem_Bore"),
+        (SemanticSubmission, ""),
+        (OperationSubmission, "op_bore.detail"),
+        (OperationSubmission, "op_bore.depends_on"),
+        (OperationSubmission, "sem_bore"),
+        (OperationSubmission, "op_Bore"),
+        (OperationSubmission, ""),
+    ],
+)
+def test_deletions_require_whole_member_names_of_the_owning_stage(
+    submission_type: type[SemanticSubmission] | type[OperationSubmission],
+    name: str,
+) -> None:
+    with pytest.raises(ValidationError, match="not a usable"):
+        submission_type(edits=[], deleted=[name], rationale=None, responses=[])
+
+
+@pytest.mark.parametrize("submission_type", [SemanticSubmission, OperationSubmission])
+def test_a_submission_cannot_edit_and_delete_the_same_member(
+    submission_type: type[SemanticSubmission] | type[OperationSubmission],
+) -> None:
+    artifact = _semantics() if submission_type is SemanticSubmission else _operations()
+    member = artifact.proposal[0]
+    with pytest.raises(ValidationError, match="both edited and deleted"):
+        submission_type.model_validate(
+            {
+                "edits": [member],
+                "deleted": [member.name],
+                "rationale": None,
+                "responses": [],
+            }
+        )
+
+
+@pytest.mark.parametrize("submission_type", [SemanticSubmission, OperationSubmission])
+@pytest.mark.parametrize("field", ["edits", "deleted"])
+def test_a_submission_rejects_duplicate_member_names(
+    submission_type: type[SemanticSubmission] | type[OperationSubmission],
+    field: str,
+) -> None:
+    artifact = _semantics() if submission_type is SemanticSubmission else _operations()
+    member = artifact.proposal[0]
+    payload = {
+        "edits": [member, member] if field == "edits" else [],
+        "deleted": [member.name, member.name] if field == "deleted" else [],
+        "rationale": None,
+        "responses": [],
+    }
+    with pytest.raises(ValidationError, match="more than once|same address twice"):
+        submission_type.model_validate(payload)
+
+
 def test_coding_carries_its_ticket_answers_and_nothing_else() -> None:
     """A field coding must leave empty is a field it can get wrong: four of ten
     GLM runs died sending `rationale` a string against a validator that refused
@@ -245,7 +318,11 @@ def test_a_ticket_rejects_a_response_for_another_ticket() -> None:
         Ticket(
             ticket_id="ticket_one",
             subject=BootstrapWork(instruction="Reconstruct the part."),
-            assigned_stages=["semantics", "operations", "coding"],
+            assigned_stages=[
+                PipelineStage.SEMANTICS,
+                PipelineStage.OPERATIONS,
+                PipelineStage.CODING,
+            ],
             responses=_responses("ticket_other", "semantics"),
         )
 

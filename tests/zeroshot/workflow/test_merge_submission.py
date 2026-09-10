@@ -1,6 +1,7 @@
 """Merging a stage's revision onto the artifact of the preceding round."""
 
 import pytest
+from pydantic import ValidationError
 
 from tests.zeroshot.contracts import drawing, feature, geometry, replacing
 from zeroshot.pipeline.messages.contracts import (
@@ -8,6 +9,7 @@ from zeroshot.pipeline.messages.contracts import (
     OperationPlan,
     OperationVerb,
     PipelineStage,
+    SemanticFeature,
     SemanticHypothesis,
 )
 from zeroshot.pipeline.messages.contracts.reconstruction import (
@@ -20,10 +22,11 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     TicketAnswers,
     TicketResponse,
 )
+from zeroshot.pipeline.stages._base.merge import merge_lists
+from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.merge import merge_submission
 from zeroshot.pipeline.stages.types import REASONING_STAGES, ReasoningStage
-from zeroshot.pipeline.stages.validate import SubmissionValidationError
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
-from zeroshot.pipeline.workflow.merge_submission import merge_submission
 
 
 def _responses(stage: PipelineStage) -> list[TicketResponse]:
@@ -116,7 +119,7 @@ def _merged_semantics(
     return merged
 
 
-def _bore() -> object:
+def _bore() -> SemanticFeature:
     return feature(
         "sem_main_bore",
         "the bore through the plate",
@@ -127,7 +130,7 @@ def _bore() -> object:
 
 def _hypothesis() -> SemanticHypothesis:
     return SemanticHypothesis(
-        proposal=[feature("sem_base_plate", "the plate"), _bore()],  # type: ignore[list-item]
+        proposal=[feature("sem_base_plate", "the plate"), _bore()],
         rationale="the views agree",
     )
 
@@ -176,7 +179,12 @@ def test_an_untouched_member_survives_a_revision() -> None:
     assert merged.proposal[1] == _hypothesis().proposal[1]
 
 
-def test_an_edited_feature_keeps_the_geo_and_ev_members_it_leaves_out() -> None:
+def test_an_edited_feature_replaces_all_its_geometry_and_evidence() -> None:
+    previous = _preceding()
+    assert previous.semantics is not None
+    previous.semantics.proposal[1].geometry.append(geometry("plane", name="geo_plane"))
+    previous.semantics.proposal[1].evidence.append("ev_top_circle")
+    original = previous.model_dump_json()
     wider = geometry("cylinder", name="geo_cylinder", radius=9.0)
     submission = _semantics().model_copy(
         update={
@@ -191,10 +199,11 @@ def test_an_edited_feature_keeps_the_geo_and_ev_members_it_leaves_out() -> None:
         }
     )
 
-    revised = _merged_semantics(submission, _preceding()).proposal[1]
+    revised = _merged_semantics(submission, previous).proposal[1]
 
     assert revised.geometry == [wider]
     assert revised.evidence == ["ev_front_circle"]
+    assert previous.model_dump_json() == original
 
 
 def test_a_new_member_is_appended_and_an_edited_one_keeps_its_place() -> None:
@@ -216,9 +225,16 @@ def test_a_new_member_is_appended_and_an_edited_one_keeps_its_place() -> None:
     ]
 
 
-def test_deleting_a_whole_feature_and_one_member_of_another() -> None:
-    submission = _semantics().model_copy(
-        update={"deleted": ["sem_base_plate", "sem_main_bore.geo_cylinder"]}
+def test_deleting_a_feature_and_removing_a_claim_by_replacing_its_feature() -> None:
+    submission = SemanticSubmission(
+        edits=[
+            feature(
+                "sem_main_bore", "the bore", geometry=[], evidence=["ev_front_circle"]
+            )
+        ],
+        deleted=["sem_base_plate"],
+        rationale=None,
+        responses=_responses(PipelineStage.SEMANTICS),
     )
 
     merged = _merged_semantics(submission, _preceding())
@@ -238,29 +254,22 @@ def test_a_first_round_must_state_a_rationale() -> None:
 
 
 @pytest.mark.parametrize(
-    ("deleted", "message"),
+    ("stage", "submission_type", "name"),
     [
-        (["sem_absent"], "no such feature"),
-        (["sem_main_bore.geo_absent"], "has no claim"),
-        (["sem_absent.geo_cylinder"], "not an address"),
-        (["sem_main_bore.geo_cylinder.radius"], "not an address"),
+        (PipelineStage.SEMANTICS, SemanticSubmission, "sem_absent"),
+        (PipelineStage.OPERATIONS, OperationSubmission, "op_absent"),
     ],
 )
-def test_a_deletion_must_address_something_the_artifact_holds(
-    deleted: list[str],
-    message: str,
+def test_a_deletion_must_name_an_existing_member(
+    stage: ReasoningStage,
+    submission_type: type[SemanticSubmission] | type[OperationSubmission],
+    name: str,
 ) -> None:
-    submission = _semantics().model_copy(update={"deleted": deleted})
-
-    with pytest.raises(SubmissionValidationError, match=message):
-        merge_submission(submission, _preceding(), PipelineStage.SEMANTICS)
-
-
-def test_an_operation_is_deleted_by_its_own_name_alone() -> None:
-    submission = _operations().model_copy(update={"deleted": ["op_main_bore.detail"]})
-
-    with pytest.raises(SubmissionValidationError, match="delete it by its own op_"):
-        merge_submission(submission, _preceding(), PipelineStage.OPERATIONS)
+    submission = submission_type(
+        edits=[], deleted=[name], rationale=None, responses=_responses(stage)
+    )
+    with pytest.raises(SubmissionValidationError, match=f"absent.*{name}"):
+        merge_submission(submission, _preceding(), stage)
 
 
 def test_a_revision_that_leaves_a_feature_unsupported_is_rejected() -> None:
@@ -280,15 +289,6 @@ def test_a_revision_that_leaves_a_feature_unsupported_is_rejected() -> None:
     )
 
     with pytest.raises(SubmissionValidationError, match="cites no evidence"):
-        merge_submission(submission, _preceding(), PipelineStage.SEMANTICS)
-
-
-def test_a_citation_has_no_address_of_its_own() -> None:
-    submission = _semantics().model_copy(
-        update={"deleted": ["sem_main_bore.ev_front_circle"]}
-    )
-
-    with pytest.raises(SubmissionValidationError, match="has no claim called"):
         merge_submission(submission, _preceding(), PipelineStage.SEMANTICS)
 
 
@@ -317,6 +317,53 @@ def test_operations_replace_by_name_and_keep_their_place() -> None:
     assert merged.proposal[0] == revised
     assert merged.proposal[1] == _plan().proposal[1]
     assert merged.rationale == "the bore follows the plate"
+
+
+@pytest.mark.parametrize(
+    ("stage", "submission_type", "deleted", "message"),
+    [
+        (
+            PipelineStage.SEMANTICS,
+            SemanticSubmission,
+            ["sem_base_plate", "sem_main_bore"],
+            "at least one feature",
+        ),
+        (
+            PipelineStage.OPERATIONS,
+            OperationSubmission,
+            ["op_base_plate"],
+            "depends on op_base_plate",
+        ),
+    ],
+)
+def test_invalid_merged_artifacts_raise_a_retryable_error_without_mutation(
+    stage: ReasoningStage,
+    submission_type: type[SemanticSubmission] | type[OperationSubmission],
+    deleted: list[str],
+    message: str,
+) -> None:
+    previous = _preceding()
+    original = previous.model_dump_json()
+    submission = submission_type(
+        edits=[], deleted=deleted, rationale=None, responses=_responses(stage)
+    )
+    with pytest.raises(SubmissionValidationError, match=message) as caught:
+        merge_submission(submission, previous, stage)
+    assert isinstance(caught.value.__cause__, ValidationError)
+    assert previous.model_dump_json() == original
+
+
+def test_merge_lists_accepts_iterators_and_preserves_replacement_order() -> None:
+    old = _hypothesis().proposal
+    edited = feature("sem_main_bore", "revised bore")
+    added = feature("sem_fillet", "fillet")
+    assert merge_lists(iter(old), iter([added, edited])) == [old[0], edited, added]
+
+
+def test_merge_lists_asserts_on_internal_edit_delete_conflicts() -> None:
+    edited = feature("sem_bore", "bore")
+    with pytest.raises(AssertionError, match="cannot edit and delete"):
+        merge_lists([], iter([edited]), [edited.name])
 
 
 @pytest.mark.parametrize("stage", [PipelineStage.DRAWINGS, PipelineStage.CODING])

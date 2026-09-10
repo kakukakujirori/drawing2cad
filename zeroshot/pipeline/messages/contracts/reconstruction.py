@@ -15,6 +15,7 @@ from pydantic import (
 from zeroshot.pipeline.messages.contracts.audit import AuditFinding
 from zeroshot.pipeline.messages.contracts.drawings import DrawingSource
 from zeroshot.pipeline.messages.contracts.operations import Operation, OperationPlan
+from zeroshot.pipeline.messages.contracts.parameters import require_name
 from zeroshot.pipeline.messages.contracts.semantics import (
     SemanticFeature,
     SemanticHypothesis,
@@ -267,25 +268,30 @@ class SemanticSubmission(ProposalSubmission[SemanticFeature]):
         ...,
         description=(
             "Every feature you changed, each complete and under its stable "
-            "sem_ name: a name the hypothesis already holds replaces that "
-            "feature, and a new name adds one. Its geo_ claims follow the same "
-            "rule -- give the ones you changed and leave the rest out, and the "
-            "ones you leave out keep what they had. `evidence` is a citation "
-            "list rather than named members, so give the whole of it whenever "
-            "you give the feature, and state `description` and `open_question` "
-            "then too, since they carry no name of their own."
+            "sem_ name. A name the hypothesis already holds replaces that "
+            "entire feature, and a new name adds one. Include its complete "
+            "geometry and evidence lists, description, and open_question. "
+            "To remove a claim or citation, submit the complete feature "
+            "without it. A feature omitted from edits keeps what it had."
         ),
     )
     deleted: list[str] = Field(
         ...,
         description=(
-            "Every feature or claim you dropped: a whole feature as "
-            "sem_main_bore, and one of its claims as sem_main_bore.geo_cylinder. "
-            "A claim may be dropped from a feature you are not otherwise "
-            "changing, and a citation is dropped by giving the feature again "
-            "without it. A name given here must not also appear in `edits`."
+            "Whole features to delete, by their existing sem_ names, such as "
+            "sem_main_bore. Nested addresses such as "
+            "sem_main_bore.geo_cylinder are not allowed here; remove a claim "
+            "by submitting the complete feature without it in edits. A name "
+            "given here must not also appear in edits."
         ),
     )
+
+    @field_validator("deleted")
+    @classmethod
+    def require_feature_names(cls, names: list[str]) -> list[str]:
+        for name in names:
+            require_name(name, "sem_")
+        return names
 
 
 class OperationSubmission(ProposalSubmission[Operation]):
@@ -307,11 +313,19 @@ class OperationSubmission(ProposalSubmission[Operation]):
     deleted: list[str] = Field(
         ...,
         description=(
-            "Every operation you dropped, by its own op_ name. An operation "
-            "holds no named members, so nothing finer can be addressed here. A "
-            "name given here must not also appear in `edits`."
+            "Whole operations to delete, by their existing op_ names. Nested "
+            "addresses such as op_bore.detail are not allowed here; change "
+            "fields by submitting the complete operation in edits. A name "
+            "given here must not also appear in edits."
         ),
     )
+
+    @field_validator("deleted")
+    @classmethod
+    def require_operation_names(cls, names: list[str]) -> list[str]:
+        for name in names:
+            require_name(name, "op_")
+        return names
 
 
 class CodingSubmission(TicketAnswers):

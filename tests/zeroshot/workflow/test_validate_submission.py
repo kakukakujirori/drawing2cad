@@ -33,13 +33,13 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     Ticket,
     TicketResponse,
 )
+from zeroshot.pipeline.stages.merge import merge_submission
 from zeroshot.pipeline.stages.types import REASONING_STAGES, next_stage
 from zeroshot.pipeline.stages.validate import (
     SubmissionValidationError,
     validate_submission,
 )
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
-from zeroshot.pipeline.workflow.merge_submission import merge_submission
 
 
 def _semantics() -> SemanticHypothesis:
