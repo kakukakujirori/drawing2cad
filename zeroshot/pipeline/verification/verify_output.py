@@ -3,17 +3,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
-from typing import Self, cast
+from typing import Literal, Self, cast
 
 from langchain_core.messages.content import ContentBlock, create_text_block
 
 from zeroshot.pipeline.messages import (
-    ArtifactPresenter,
     DrawingSource,
     FeedbackManifest,
     View,
     unread_sheet,
 )
+from zeroshot.pipeline.messages.artifact import build_feedback_message_blocks
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.attempts import AttemptStore
@@ -163,7 +163,7 @@ class OutputVerifier:
         executor: CadQueryExecutor,
         workdir: SandboxWorkdir,
         renderer: StepRenderer,
-        artifact_presenter: ArtifactPresenter | None,
+        feedback_presentation_mode: Literal["none", "path", "image"],
         attempt_store: AttemptStore,
         views: Sequence[View] = (),
         source_filename: str = "model.py",
@@ -179,7 +179,7 @@ class OutputVerifier:
         self.executor = executor
         self.workdir = workdir
         self.renderer = renderer
-        self.artifact_presenter = artifact_presenter
+        self.feedback_presentation_mode = feedback_presentation_mode
         # The orthographic views to redraw the solid in. A caller that reads a
         # drawing sets this per round; nothing is drawn until one does, because
         # a guessed view has nothing to be compared against.
@@ -392,10 +392,13 @@ class OutputVerifier:
         ]
         if report.intermediate_returns:
             blocks.append(create_text_block(report.intermediate_returns))
-        if manifest and self.artifact_presenter:
+        if manifest:
             blocks.extend(
-                self.artifact_presenter.build_feedback_message_blocks(
-                    manifest, self.workdir
+                build_feedback_message_blocks(
+                    manifest,
+                    self.workdir,
+                    mode=self.feedback_presentation_mode,
+                    heading="[Projected drawing]",
                 )
             )
         return blocks

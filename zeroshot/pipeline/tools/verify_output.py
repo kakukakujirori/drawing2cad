@@ -1,11 +1,12 @@
 from collections.abc import Sequence
 from inspect import cleandoc
 from pathlib import PurePosixPath
+from typing import Literal
 
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, tool
 
-from zeroshot.pipeline.messages import ArtifactPresenter, View
+from zeroshot.pipeline.messages import View
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutor
@@ -17,7 +18,7 @@ def create_verify_output_tool(
     executor: CadQueryExecutor,
     workdir: SandboxWorkdir,
     renderer: StepRenderer,
-    artifact_presenter: ArtifactPresenter | None,
+    feedback_presentation_mode: Literal["none", "path", "image"],
     views: Sequence[View],
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
@@ -33,7 +34,7 @@ def create_verify_output_tool(
         executor,
         workdir,
         renderer=renderer,
-        artifact_presenter=artifact_presenter,
+        feedback_presentation_mode=feedback_presentation_mode,
         attempt_store=AttemptStore(
             workdir,
             round_source=lambda: 0,

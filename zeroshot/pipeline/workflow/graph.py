@@ -40,7 +40,6 @@ from zeroshot.pipeline.messages.contracts.stages import (
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import PromptTemplate, StageInstructions, build_system_prompt
 from zeroshot.pipeline.tools import (
-    create_calculate_drawing_scale_tool,
     create_load_image_tool,
     create_run_shell_tool,
 )
@@ -74,8 +73,8 @@ from zeroshot.pipeline.workflow.validate_submission import (
     validate_submission,
 )
 
-type AgentBuilder = partial[CompiledGraph]
 type CompiledGraph = Pregel[Any, Any, Any, Any]
+type AgentBuilder = partial[CompiledGraph]
 
 
 def create_reconstruction_graph(
@@ -128,26 +127,11 @@ def create_reconstruction_graph(
         root_dirname=verification_dirname,
     )
     executor = CadQueryExecutor(sandbox_runner=sandbox_runner)
-    drawing_verifier = DrawingVerifier(
-        workdir=sandbox_workdir,
-        attempt_store=attempt_store,
-        artifact_presenter=artifact_presenter,
-        source_filename=drawing_filename,
-    )
-    drawing_middleware = VerifyOnWriteMiddleware(
-        drawing_verifier,
-        refusal=(
-            "The drawing artifact is not ready to submit. Inspect the rendered "
-            "views, correct drawing.json if needed, and submit only after the "
-            "current version has been shown back to you and validates."
-        ),
-        require_feedback_before_submit=True,
-    )
     coding_verifier = OutputVerifier(
         executor=executor,
         workdir=sandbox_workdir,
         renderer=renderer,
-        artifact_presenter=artifact_presenter,
+        feedback_presentation_mode=artifact_presenter.feedback_mode,
         attempt_store=attempt_store,
         source_filename=output_filename,
         show_intermediate_returns=show_intermediate_returns,
@@ -177,60 +161,55 @@ def create_reconstruction_graph(
     }
     stage_instructions = StageInstructions(
         prompt_context=prompt_context,
-        artifact_presenter=artifact_presenter,
-        input_manifest=input_manifest,
+        input_artifact=input_manifest.drawing,
+        input_presentation_mode=artifact_presenter.input_mode,
         workdir=sandbox_workdir,
     )
 
     share_thread_system_prompt = Path(__file__).resolve().parents[1] / "stages/_base/prompts/cad_reconstructor.md"
 
-    drawings_agent = drawings_agent_builder(
-        # Only this stage measures a raster, so only it is offered the fit.
-        tools=[*basic_tools, create_calculate_drawing_scale_tool()],
-        system_prompt=build_system_prompt(
-            share_thread_system_prompt if share_thread else Path(__file__).resolve().parents[1] / "stages/drawings/prompts/role.md",
-            prompt_context | {"max_turns": drawings_agent_builder.keywords["max_turns"]},
-            DrawingSubmission,
-        ),
-        output_schema=DrawingSubmission,
-        extra_middleware=[drawing_middleware],
-    )
-    semantics_agent = semantics_agent_builder(
+    drawing_stage = create_drawing_stage(
+        drawings_agent_builder,
         tools=basic_tools,
-        system_prompt=build_system_prompt(
-            share_thread_system_prompt if share_thread else Path(__file__).resolve().parents[1] / "stages/semantics/prompts/role.md",
-            prompt_context | {"max_turns": semantics_agent_builder.keywords["max_turns"]},
-            SemanticSubmission,
-        ),
-        output_schema=SemanticSubmission,
+        system_prompt_path=share_thread_system_prompt if share_thread else None,
+        instructions=stage_instructions,
+        prompt_context=prompt_context,
+        attempt_store=attempt_store,
+        feedback_presentation_mode=artifact_presenter.feedback_mode,
+        drawing_filename=drawing_filename,
+        input_after_compaction=compact_between_stages is not None,
     )
-    operations_agent = operations_agent_builder(
+    semantic_stage = create_semantic_stage(
+        semantics_agent_builder,
         tools=basic_tools,
-        system_prompt=build_system_prompt(
-            share_thread_system_prompt if share_thread else Path(__file__).resolve().parents[1] / "stages/operations/prompts/role.md",
-            prompt_context | {"max_turns": operations_agent_builder.keywords["max_turns"]},
-            OperationSubmission
-        ),
-        output_schema=OperationSubmission,
+        system_prompt_path=share_thread_system_prompt if share_thread else None,
+        instructions=stage_instructions,
+        prompt_context=prompt_context,
+        input_after_compaction=compact_between_stages is not None,
     )
-    coding_agent = coding_agent_builder(
+    operations_stage = create_operations_stage(
+        operations_agent_builder,
         tools=basic_tools,
-        system_prompt=build_system_prompt(
-            share_thread_system_prompt if share_thread else Path(__file__).resolve().parents[1] / "stages/coding/prompts/role.md",
-            prompt_context | {"max_turns": coding_agent_builder.keywords["max_turns"]},
-            CodingSubmission,
-        ),
-        output_schema=CodingSubmission,
-        extra_middleware=[coding_middleware],
+        system_prompt_path=share_thread_system_prompt if share_thread else None,
+        instructions=stage_instructions,
+        prompt_context=prompt_context,
+        input_after_compaction=compact_between_stages is not None,
     )
-    audit_agent = audit_agent_builder(
+    coding_stage = create_coding_stage(
+        coding_agent_builder,
         tools=basic_tools,
-        system_prompt=build_system_prompt(
-            Path(__file__).resolve().parents[1] / "stages/audit/prompts/role.md",
-            prompt_context | {"max_turns": audit_agent_builder.keywords["max_turns"]},
-            AuditReport
-        ),
-        output_schema=AuditReport,
+        system_prompt_path=share_thread_system_prompt if share_thread else None,
+        instructions=stage_instructions,
+        prompt_context=prompt_context,
+        input_after_compaction=compact_between_stages is not None,
+    )
+    audit_stage = create_audit_stage(
+        audit_agent_builder,
+        tools=basic_tools,
+        system_prompt_path=None,
+        instructions=stage_instructions,
+        prompt_context=prompt_context,
+        input_after_compaction=compact_between_stages is not None,
     )
 
 
@@ -281,127 +260,6 @@ def create_reconstruction_graph(
     # Reasoning-stage inference
     # ------------------------------------------------------------------
 
-    def run_drawings(state: ReconstructionState, config: RunnableConfig):
-        snapshot = current_snapshot(state)
-        if state.get("stage_validation_error") is None:
-            drawing_verifier.reset(drawing_baseline(state["reconstruction"]))
-            drawing_middleware.reset()
-        if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.DRAWINGS):
-            return {"stage_submission": DrawingSubmission.unchanged()}
-
-        previous = state.get("drawings_state") or {}
-        messages = [
-            *list(previous.get("messages") or []),
-            stage_instructions.build(
-                state,
-                PipelineStage.DRAWINGS,
-                include_input=(not previous or compact_between_stages is not None),
-            ),
-        ]
-        result = drawings_agent.invoke(
-            {
-                **previous,
-                "messages": messages,
-            },
-            config=_child_graph_config(config),
-        )
-        return {
-            "drawings_state": result,
-            "stage_submission": result.get("structured_response"),
-        }
-
-    def run_semantics(state: ReconstructionState, config: RunnableConfig):
-        snapshot = current_snapshot(state)
-        if snapshot.last_completed_stage is not PipelineStage.DRAWINGS:
-            raise RuntimeError("semantics requires an integrated drawing")
-
-        if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.SEMANTICS):
-            return {"stage_submission": SemanticSubmission.unchanged()}
-
-        previous = state.get("semantics_state") or {}
-        messages = [
-            *list(previous.get("messages") or []),
-            stage_instructions.build(
-                state,
-                PipelineStage.SEMANTICS,
-                include_input=(not previous or compact_between_stages is not None),
-            ),
-        ]
-        result = semantics_agent.invoke(
-            {
-                **previous,
-                "messages": messages,
-            },
-            config=_child_graph_config(config),
-        )
-        return {
-            "semantics_state": result,
-            "stage_submission": result.get("structured_response"),
-        }
-
-    def run_operations(state: ReconstructionState, config: RunnableConfig):
-        snapshot = current_snapshot(state)
-        if snapshot.last_completed_stage is not PipelineStage.SEMANTICS:
-            raise RuntimeError("operations requires integrated semantics")
-
-        if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.OPERATIONS):
-            return {"stage_submission": OperationSubmission.unchanged()}
-
-        previous = state.get("operations_state") or {}
-        messages = [
-            *list(previous.get("messages") or []),
-            stage_instructions.build(
-                state,
-                PipelineStage.OPERATIONS,
-                include_input=(not previous or compact_between_stages is not None),
-            ),
-        ]
-        result = operations_agent.invoke(
-            {
-                **previous,
-                "messages": messages,
-            },
-            config=_child_graph_config(config),
-        )
-        return {
-            "operations_state": result,
-            "stage_submission": result.get("structured_response"),
-        }
-
-    def run_coding(state: ReconstructionState, config: RunnableConfig):
-        snapshot = current_snapshot(state)
-        if snapshot.last_completed_stage is not PipelineStage.OPERATIONS:
-            raise RuntimeError("coding requires integrated operations")
-        drawing = cast(DrawingSource, snapshot.drawings)
-
-        # The verifier redraws the solid in the views the drawing names, and
-        # guesses none. Set here because both the build inside the agent and
-        # the one at integration belong to this stage of this round.
-        if state.get("stage_validation_error") is None:
-            coding_verifier.reset()
-            coding_middleware.reset()
-        coding_verifier.views = [sheet.role for sheet in drawing.orthographic()]
-
-        previous = state.get("coding_state") or {}
-        messages = [
-            *list(previous.get("messages") or []),
-            stage_instructions.build(
-                state,
-                PipelineStage.CODING,
-                include_input=(not previous or compact_between_stages is not None),
-            ),
-        ]
-        result = coding_agent.invoke(
-            {
-                **previous,
-                "messages": messages,
-            },
-            config=_child_graph_config(config),
-        )
-        return {
-            "coding_state": result,
-            "stage_submission": result.get("structured_response"),
-        }
 
     # ------------------------------------------------------------------
     # Reasoning-stage validation, integration, and routing
@@ -447,7 +305,7 @@ def create_reconstruction_graph(
         workspace_output = None
         if stage is PipelineStage.DRAWINGS:
             if tickets_assigned_to(snapshot.open_tickets, PipelineStage.DRAWINGS):
-                workspace_output = drawing_verifier.accepted_drawing
+                workspace_output = drawing_stage.verifier.accepted_drawing
                 if workspace_output is None:
                     return _rejected_stage_submission(
                         state,
@@ -510,65 +368,6 @@ def create_reconstruction_graph(
     # Audit validation and round transition
     # ------------------------------------------------------------------
 
-    def run_audit(state: ReconstructionState, config: RunnableConfig):
-        snapshot = current_snapshot(state)
-        if snapshot.last_completed_stage is not PipelineStage.CODING:
-            raise RuntimeError("audit requires a completed coding snapshot")
-        verification = snapshot.verification
-        if verification is None:
-            raise RuntimeError("audit requires verification")
-
-        attempt_dir = str(
-            attempt_store.sandbox_attempt_dir(
-                snapshot.round, "coding", verification.verification_id
-            )
-            if verification.verification_id is not None
-            else attempt_store.sandbox_root
-        )
-        drawing_attempt = attempt_store.latest_sandbox_attempt_dir(
-            "drawing", snapshot.round
-        )
-        previous = state.get("audit_state") or {}
-        instruction = stage_instructions.build(
-            state,
-            PipelineStage.AUDIT,
-            include_input=not previous,
-            attempt_dir=attempt_dir,
-            drawing_attempt_dir=(
-                str(drawing_attempt)
-                if drawing_attempt is not None
-                else "unavailable in this workspace"
-            ),
-            ticket_responses=json.dumps(
-                [
-                    response.model_dump(mode="json")
-                    for ticket in snapshot.open_tickets
-                    for response in ticket.responses
-                ],
-                indent=2,
-            ),
-            # Asked of the build rather than of the config that enabled it:
-            # the report carries this only when returns were actually written,
-            # so the layout the auditor is given cannot name a directory the
-            # attempt does not have.
-            intermediate_returns=PromptTemplate(
-                Path(__file__).resolve().parents[1] / "stages/audit/prompts/intermediate_returns.md"
-            ).render(returns_dir=INTERMEDIATE_RETURNS_DIR) if bool(verification.intermediate_returns) else ""
-        )
-        result = audit_agent.invoke(
-            {
-                **previous,
-                "messages": [
-                    *list(previous.get("messages") or []),
-                    instruction,
-                ],
-            },
-            config=_child_graph_config(config),
-        )
-        return {
-            "audit_state": result,
-            "audit_report": result.get("structured_response"),
-        }
 
     def integrate_audit_report(state: ReconstructionState) -> dict[str, Any]:
         """Validate an audit and atomically open its requested next round."""
@@ -639,11 +438,11 @@ def create_reconstruction_graph(
     # Construct a graph
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
     workflow.add_node("initialize", initialize)
-    workflow.add_node(PipelineStage.DRAWINGS.value, run_drawings)
-    workflow.add_node(PipelineStage.SEMANTICS.value, run_semantics)
-    workflow.add_node(PipelineStage.OPERATIONS.value, run_operations)
-    workflow.add_node(PipelineStage.CODING.value, run_coding)
-    workflow.add_node(PipelineStage.AUDIT.value, run_audit)
+    workflow.add_node(PipelineStage.DRAWINGS.value, drawing_stage.run)
+    workflow.add_node(PipelineStage.SEMANTICS.value, semantic_stage.run)
+    workflow.add_node(PipelineStage.OPERATIONS.value, operations_stage.run)
+    workflow.add_node(PipelineStage.CODING.value, coding_stage.run)
+    workflow.add_node(PipelineStage.AUDIT.value, audit_stage.run)
     workflow.add_node("integrate_stage_submission", integrate_stage_submission)
     workflow.add_node("integrate_audit_report", integrate_audit_report)
 

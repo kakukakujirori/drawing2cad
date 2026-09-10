@@ -1,146 +1,84 @@
-# """Own the two existing interpretation agents before combining their execution.
+from collections.abc import Sequence
+from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
+from typing import Any
 
-# The workflow adapts its state channels to these methods and commits their
-# submissions. This module owns tools, schemas, drawing feedback and inference.
-# """
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool
+from langgraph.pregel import Pregel
 
-# from collections.abc import Mapping, Sequence
-# from dataclasses import dataclass
-# from typing import Any
+from zeroshot.pipeline.messages.contracts.reconstruction import (
+    SemanticSubmission,
+    tickets_assigned_to,
+)
+from zeroshot.pipeline.messages.contracts.stages import PipelineStage
+from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
+from zeroshot.pipeline.workflow._config import _child_graph_config
+from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
-# from langchain_core.runnables import RunnableConfig
-# from langchain_core.tools import BaseTool
-
-# from zeroshot.pipeline.messages import DrawingSource
-# from zeroshot.pipeline.messages.contracts.reconstruction import (
-#     DrawingSubmission,
-#     ReconstructionSnapshot,
-#     SemanticSubmission,
-#     tickets_assigned_to,
-# )
-# from zeroshot.pipeline.messages.contracts.stages import PipelineStage
-# from zeroshot.pipeline.stages._base.prompt import RoundInstructions
-# from zeroshot.pipeline.tools import create_calculate_drawing_scale_tool
-# from zeroshot.pipeline.verification import AttemptStore, DrawingVerifier
-# from zeroshot.pipeline.workflow.components.agent import (
-#     AgentBuilder,
-#     CompiledGraph,
-#     invoke_agent,
-# )
-# from zeroshot.pipeline.workflow.middleware.verify_on_write import (
-#     VerifyOnWriteMiddleware,
-# )
+type CompiledGraph = Pregel[Any, Any, Any, Any]
+type AgentBuilder = partial[CompiledGraph]
 
 
-# @dataclass(frozen=True)
-# class SemanticStages:
-#     drawings_agent: CompiledGraph
-#     semantics_agent: CompiledGraph
-#     drawing_verifier: DrawingVerifier
-#     drawing_middleware: VerifyOnWriteMiddleware
-#     instructions: RoundInstructions
-#     input_after_compaction: bool
+@dataclass(frozen=True)
+class SemanticStage:
+    agent: CompiledGraph
+    instructions: StageInstructions
+    input_after_compaction: bool
 
-#     def run_drawings(
-#         self,
-#         *,
-#         snapshot: ReconstructionSnapshot,
-#         baseline: DrawingSource,
-#         previous: Mapping[str, Any],
-#         validation_error: str | None,
-#         config: RunnableConfig,
-#     ) -> dict[str, Any]:
-#         if validation_error is None:
-#             self.drawing_verifier.reset(baseline)
-#             self.drawing_middleware.reset()
-#         assigned = tickets_assigned_to(snapshot.open_tickets, PipelineStage.DRAWINGS)
-#         if not assigned:
-#             return {"stage_submission": DrawingSubmission.unchanged()}
+    def run(self, state: ReconstructionState, config: RunnableConfig) -> dict[str, Any]:
+        snapshot = current_snapshot(state)
+        if snapshot.last_completed_stage is not PipelineStage.DRAWINGS:
+            raise RuntimeError("semantics requires an integrated drawing")
 
-#         instruction = self.instructions.build(
-#             "drawings",
-#             drawing=snapshot.drawings or baseline,
-#             current_round=snapshot.round,
-#             assigned_tickets=", ".join(ticket.ticket_id for ticket in assigned),
-#             validation_error=validation_error,
-#             include_input=(not previous or self.input_after_compaction),
-#         )
-#         result = invoke_agent(self.drawings_agent, previous, instruction, config)
-#         return {
-#             "drawings_state": result,
-#             "stage_submission": result.get("structured_response"),
-#         }
+        if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.SEMANTICS):
+            return {"stage_submission": SemanticSubmission.unchanged()}
 
-#     def run_semantics(
-#         self,
-#         *,
-#         snapshot: ReconstructionSnapshot,
-#         previous: Mapping[str, Any],
-#         validation_error: str | None,
-#         config: RunnableConfig,
-#     ) -> dict[str, Any]:
-#         if snapshot.last_completed_stage is not PipelineStage.DRAWINGS:
-#             raise RuntimeError("semantics requires an integrated drawing")
-
-#         assigned = tickets_assigned_to(snapshot.open_tickets, PipelineStage.SEMANTICS)
-#         if not assigned:
-#             return {"stage_submission": SemanticSubmission.unchanged()}
-
-#         assert snapshot.drawings is not None  # Guaranteed by the snapshot contract.
-#         instruction = self.instructions.build(
-#             "semantics",
-#             drawing=snapshot.drawings,
-#             current_round=snapshot.round,
-#             assigned_tickets=", ".join(ticket.ticket_id for ticket in assigned),
-#             validation_error=validation_error,
-#             include_input=(not previous or self.input_after_compaction),
-#         )
-#         result = invoke_agent(self.semantics_agent, previous, instruction, config)
-#         return {
-#             "semantics_state": result,
-#             "stage_submission": result.get("structured_response"),
-#         }
+        previous = state.get("semantics_state") or {}
+        instruction = self.instructions.build(
+            state,
+            PipelineStage.SEMANTICS,
+            include_artifact=(not previous or self.input_after_compaction),
+        )
+        result = self.agent.invoke(
+            {
+                **previous,
+                "messages": [
+                    *list(previous.get("messages") or []),
+                    instruction,
+                ],
+            },
+            config=_child_graph_config(config),
+        )
+        return {
+            "semantics_state": result,
+            "stage_submission": result.get("structured_response"),
+        }
 
 
-# def create_semantic_stages(
-#     *,
-#     drawings_agent_builder: AgentBuilder,
-#     semantics_agent_builder: AgentBuilder,
-#     tools: Sequence[BaseTool],
-#     instructions: RoundInstructions,
-#     attempt_store: AttemptStore,
-#     drawing_filename: str,
-#     input_after_compaction: bool,
-# ) -> SemanticStages:
-#     verifier = DrawingVerifier(
-#         workdir=instructions.workdir,
-#         attempt_store=attempt_store,
-#         artifact_presenter=instructions.artifact_presenter,
-#         source_filename=drawing_filename,
-#     )
-#     middleware = VerifyOnWriteMiddleware(
-#         verifier,
-#         refusal=(
-#             "The drawing artifact is not ready to submit. Inspect the rendered "
-#             "views, correct drawing.json if needed, and submit only after the "
-#             "current version has been shown back to you and validates."
-#         ),
-#         require_feedback_before_submit=True,
-#     )
-#     return SemanticStages(
-#         drawings_agent=drawings_agent_builder(
-#             tools=[*tools, create_calculate_drawing_scale_tool()],
-#             prompt_context=instructions.prompt_context,
-#             output_schema=DrawingSubmission,
-#             extra_middleware=[middleware],
-#         ),
-#         semantics_agent=semantics_agent_builder(
-#             tools=tools,
-#             prompt_context=instructions.prompt_context,
-#             output_schema=SemanticSubmission,
-#         ),
-#         drawing_verifier=verifier,
-#         drawing_middleware=middleware,
-#         instructions=instructions,
-#         input_after_compaction=input_after_compaction,
-#     )
+def create_semantic_stage(
+    semantics_agent_builder: AgentBuilder,
+    tools: Sequence[BaseTool],
+    system_prompt_path: Path | None,
+    instructions: StageInstructions,
+    prompt_context: dict[str, str],
+    input_after_compaction: bool,
+) -> SemanticStage:
+    if system_prompt_path is None:
+        system_prompt_path = Path(__file__).parent / "prompts" / "role.md"
+
+    agent = semantics_agent_builder(
+        tools=tools,
+        system_prompt=build_system_prompt(
+            system_prompt_path,
+            prompt_context | {"max_turns": semantics_agent_builder.keywords["max_turns"]},
+            SemanticSubmission,
+        ),
+        output_schema=SemanticSubmission,
+    )
+    return SemanticStage(
+        agent=agent,
+        instructions=instructions,
+        input_after_compaction=input_after_compaction,
+    )

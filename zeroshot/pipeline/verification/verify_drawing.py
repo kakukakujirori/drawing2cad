@@ -6,18 +6,19 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import ValidationError
 
 from zeroshot.pipeline.drawing.dxf import export_sheet, rasterize_dxf
 from zeroshot.pipeline.messages import (
-    ArtifactPresenter,
     DrawingSource,
     FeedbackManifest,
     View,
     unread_sheet,
 )
+from zeroshot.pipeline.messages.artifact import build_feedback_message_blocks
 from zeroshot.pipeline.messages.contracts import DrawingSheet, DrawnEntity
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification.attempts import AttemptStore
@@ -53,7 +54,7 @@ class DrawingVerifier:
         self,
         workdir: SandboxWorkdir,
         attempt_store: AttemptStore,
-        artifact_presenter: ArtifactPresenter | None,
+        feedback_presentation_mode: Literal["none", "path", "image"],
         source_filename: str = "drawing.json",
     ) -> None:
         source = PurePosixPath(source_filename)
@@ -61,7 +62,7 @@ class DrawingVerifier:
             raise ValueError("source_filename must be a JSON file basename")
         self.workdir = workdir
         self.attempt_store = attempt_store
-        self.artifact_presenter = artifact_presenter
+        self.feedback_presentation_mode = feedback_presentation_mode
         self.source_filename = source_filename
         self._baseline: DrawingSource | None = None
         self._built: tuple[DrawingVerificationResult, FeedbackManifest] | None = None
@@ -264,12 +265,13 @@ class DrawingVerifier:
             blocks.append(
                 create_text_block(json.dumps({"errors": result.errors}, indent=2))
             )
-        if self.artifact_presenter is not None:
-            blocks.extend(
-                self.artifact_presenter.build_feedback_message_blocks(
-                    manifest,
-                    self.workdir,
-                    heading="[Transcribed drawing]",
-                )
+
+        blocks.extend(
+            build_feedback_message_blocks(
+                manifest,
+                self.workdir,
+                mode=self.feedback_presentation_mode,
+                heading="[Transcribed drawing]",
             )
+        )
         return blocks

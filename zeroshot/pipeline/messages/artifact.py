@@ -4,7 +4,7 @@ import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, Self
 
 from langchain_core.messages.content import (
     ContentBlock,
@@ -93,14 +93,14 @@ def _check_reachable(path: Path, workdir: SandboxWorkdir, key: str) -> None:
 
 
 @dataclass(frozen=True)
-class _Presented:
+class SandboxedArtifact:
     """A drawing as a message will show it: the files, named and addressed."""
 
     sheets: list[_SandboxSheet]
     workdir: SandboxWorkdir
 
     @classmethod
-    def of(cls, drawing: DrawingSource, workdir: SandboxWorkdir) -> _Presented:
+    def of(cls, drawing: DrawingSource, workdir: SandboxWorkdir) -> Self:
         """Every sheet the drawing holds, not only the ones a stage reads.
 
         The audit is offered the unsplit sheet whatever the reasoning stages
@@ -118,11 +118,6 @@ class _Presented:
         return [sheet for sheet in self.sheets if sheet.role not in _PICTORIAL]
 
     def listing(self) -> list[str]:
-        """One line per file, plus what an unsplit sheet needs saying about it.
-
-        Keyed on the role, so a drawing that was separated into views and one
-        that was not are announced the same way.
-        """
         described = [
             f"- {sheet.name} ({sheet.role.value}): {sheet.file}"
             for sheet in self.sheets
@@ -179,67 +174,38 @@ class ArtifactPresenter:
         if self.feedback_mode not in {"none", "path", "image"}:
             raise ValueError(f"invalid feedback_mode: {self.feedback_mode!r}")
 
-    def build_input_message_blocks(
-        self,
-        manifest: InputManifest,
-        workdir: SandboxWorkdir,
-    ) -> list[ContentBlock]:
-        presented = _Presented.of(manifest.drawing, workdir)
-        # The frame is not said here: it belongs to the round rather than to
-        # the files.
-        lines = ["[Input drawing]", *presented.listing()]
-        # What the format affords, said where the format is known. A stage's
-        # guidelines describe the job; only this message knows whether the job
-        # is done by reading a file or by measuring an image.
-        if presented.has_raster():
-            lines.append(
-                "Sheets given as images carry no curve definitions. Measure "
-                "them in pixels with OpenCV or numpy rather than by eye, then "
-                "pass the printed dimensions and the pixel lengths you matched "
-                "them to `calculate_drawing_scale`, and report what it returns "
-                "as the sheet's `scale`. Every coordinate is in millimetres."
-            )
-        if presented.has_vector():
-            lines.append(
-                "Sheets given as DXF state every curve outright. Read the "
-                "definitions with `ezdxf` and carry the numbers across unchanged; "
-                "linetype is what tells you whether an edge is visible or hidden."
-            )
-        lines.append("")
 
-        blocks: list[ContentBlock] = [create_text_block("\n".join(lines))]
-        if self.input_mode == "image":
-            blocks.extend(presented.images())
-        return blocks
+def build_feedback_message_blocks(
+    manifest: FeedbackManifest,
+    workdir: SandboxWorkdir,
+    *,
+    mode: Literal["none", "path", "image"],
+    heading: str = "[Projected drawing]",
+) -> list[ContentBlock]:
+    """Present the views produced by an artifact verification.
 
-    def build_feedback_message_blocks(
-        self,
-        manifest: FeedbackManifest,
-        workdir: SandboxWorkdir,
-        *,
-        heading: str = "[Projected drawing]",
-    ) -> list[ContentBlock]:
-        """Present the views produced by an artifact verification.
+    Blocks rather than a message, so the caller decides what carries them.
+    A verification never becomes a turn anyone spoke.
+    """
+    if mode not in {"none", "path", "image"}:
+        raise ValueError(f"invalid feedback mode: {mode!r}")
 
-        Blocks rather than a message, so the caller decides what carries them.
-        A verification never becomes a turn anyone spoke.
-        """
-        if self.feedback_mode == "none":
-            return []
+    if mode == "none":
+        return []
 
-        presented = (
-            _Presented.of(manifest.drawing, workdir)
-            if manifest.drawing is not None
-            else _Presented([], workdir)
-        )
-        failed = [
-            f"- {name}: unavailable ({why})" for name, why in manifest.errors.items()
-        ]
-        if not presented.sheets and not failed:
-            return []
+    presented = (
+        SandboxedArtifact.of(manifest.drawing, workdir)
+        if manifest.drawing is not None
+        else SandboxedArtifact([], workdir)
+    )
+    failed = [
+        f"- {name}: unavailable ({why})" for name, why in manifest.errors.items()
+    ]
+    if not presented.sheets and not failed:
+        return []
 
-        lines = [heading, *presented.listing(), *failed, ""]
-        blocks: list[ContentBlock] = [create_text_block("\n".join(lines))]
-        if self.feedback_mode == "image":
-            blocks.extend(presented.images())
-        return blocks
+    lines = [heading, *presented.listing(), *failed, ""]
+    blocks: list[ContentBlock] = [create_text_block("\n".join(lines))]
+    if mode == "image":
+        blocks.extend(presented.images())
+    return blocks
