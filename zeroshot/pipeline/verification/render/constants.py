@@ -16,7 +16,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-from zeroshot.pipeline.messages.contracts.drawings import View
+from zeroshot.pipeline.stages.drawings.contracts import View
 
 # render_3d target raster size (GT PNGs are 1400x1000 RGB, white background).
 RENDER3D_SIZE = (1400, 1000)

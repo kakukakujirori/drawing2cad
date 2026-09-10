@@ -23,15 +23,15 @@ from tests.zeroshot.workflow.test_graph import (
     _verified,
     _write_drawing,
 )
-from zeroshot.pipeline.messages import (
-    ArtifactPresenter,
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
+from zeroshot.pipeline.messages.manifest import InputManifest
+from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
-    InputManifest,
     View,
     unread_sheet,
 )
-from zeroshot.pipeline.messages.contracts import REASONING_STAGES, PipelineStage
-from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.components.compact import (
     COMPACTION_INSTRUCTION,

@@ -9,8 +9,18 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
 from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing, sheet
-from zeroshot.pipeline.messages.contracts import (
-    Axis,
+from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
+from zeroshot.pipeline.stages._base.parameters import Parameter, ParameterName
+from zeroshot.pipeline.stages.audit.contracts import (
+    AuditFinding,
+    AuditReport,
+    CausalHop,
+    RevisionRequest,
+    StageOutputRef,
+)
+from zeroshot.pipeline.stages.coding.submission import CodingSubmission
+from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
+from zeroshot.pipeline.stages.drawings.contracts import (
     CropOf,
     Dimension,
     DimensionKind,
@@ -19,37 +29,24 @@ from zeroshot.pipeline.messages.contracts import (
     DrawingSource,
     DrawnEntity,
     EdgeStyle,
-    FeatureGeometry,
-    GeometryKind,
+    View,
+)
+from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
-    Parameter,
-    ParameterName,
-    PipelineStage,
-    ReasoningStage,
+)
+from zeroshot.pipeline.stages.operations.submission import OperationSubmission
+from zeroshot.pipeline.stages.semantics.contracts import (
+    Axis,
+    FeatureGeometry,
+    GeometryKind,
     SemanticFeature,
     SemanticHypothesis,
-    View,
 )
-from zeroshot.pipeline.messages.contracts.audit import (
-    AuditFinding,
-    AuditReport,
-    CausalHop,
-    RevisionRequest,
-    StageOutputRef,
-)
-from zeroshot.pipeline.messages.contracts.reconstruction import (
-    BootstrapWork,
-    CodingSubmission,
-    DrawingSubmission,
-    OperationSubmission,
-    ReconstructionRun,
-    ReconstructionSnapshot,
-    SemanticSubmission,
-    Ticket,
-    TicketResponse,
-)
+from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
+from zeroshot.pipeline.stages.types import PipelineStage, ReasoningStage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow import (
     CUSTOM_STATE_TYPES,

@@ -34,7 +34,7 @@ console:
   muted_graph_nodes: []
 
 artifact_presenter:
-  _target_: zeroshot.pipeline.messages.ArtifactPresenter
+  _target_: zeroshot.pipeline.messages.artifact.ArtifactPresenter
   input_mode: "path"
   feedback_mode: "path"
 

@@ -3,8 +3,8 @@ import sys
 import unittest
 
 from src.metrics import (
-    BoundingBoxMetric,
     METRIC_REGISTRY,
+    BoundingBoxMetric,
     VoxelIoUMetric,
 )
 from src.metrics.base import CADMetric

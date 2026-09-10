@@ -6,7 +6,8 @@ Tests *about* the contract build it explicitly -- see `messages/test_contracts.p
 
 from typing import Any
 
-from zeroshot.pipeline.messages.contracts.drawings import (
+from zeroshot.pipeline.stages._base.parameters import Parameter
+from zeroshot.pipeline.stages.drawings.contracts import (
     _DRAWN_PARAMETERS,
     DrawingEvidence,
     DrawingSheet,
@@ -14,9 +15,8 @@ from zeroshot.pipeline.messages.contracts.drawings import (
     DrawnEntity,
     View,
 )
-from zeroshot.pipeline.messages.contracts.operations import OperationPlan
-from zeroshot.pipeline.messages.contracts.parameters import Parameter
-from zeroshot.pipeline.messages.contracts.semantics import (
+from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.semantics.contracts import (
     _GEOMETRY_PARAMETERS,
     FeatureGeometry,
     GeometryKind,

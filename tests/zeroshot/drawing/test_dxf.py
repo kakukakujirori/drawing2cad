@@ -6,7 +6,7 @@ import ezdxf
 import pytest
 
 from zeroshot.pipeline.drawing import export_drawing, export_sheet, read_drawing
-from zeroshot.pipeline.messages.contracts.drawings import (
+from zeroshot.pipeline.stages.drawings.contracts import (
     DrawnEntity,
     EdgeStyle,
     View,

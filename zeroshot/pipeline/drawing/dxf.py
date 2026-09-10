@@ -15,7 +15,8 @@ from ezdxf.addons.drawing.matplotlib import qsave
 from ezdxf.document import Drawing as DxfDocument
 from ezdxf.layouts import Modelspace
 
-from zeroshot.pipeline.messages.contracts.drawings import (
+from zeroshot.pipeline.stages._base.parameters import Parameter
+from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingEvidence,
     DrawingSheet,
     DrawingSource,
@@ -24,7 +25,6 @@ from zeroshot.pipeline.messages.contracts.drawings import (
     View,
     edge_style_for_linetype,
 )
-from zeroshot.pipeline.messages.contracts.parameters import Parameter
 
 # A sheet coordinate this far off the drawing plane, or an extrusion this far
 # from +Z, means the entity's numbers are not the page's own.

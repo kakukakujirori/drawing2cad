@@ -116,18 +116,17 @@ class QwenIntegrationTest(unittest.TestCase):
             self.model.model,
             "get_image_features",
             wraps=self.model.model.get_image_features,
-        ) as image_features:
-            with torch.no_grad():
-                output = self.model(
-                    input_ids=input_ids,
-                    attention_mask=torch.ones_like(input_ids),
-                    mm_token_type_ids=mm_token_type_ids,
-                    pixel_values=pixel_values,
-                    image_grid_thw=image_grid_thw,
-                    primitive_batch=self.primitive_batch,
-                    primitive_token_mask=primitive_mask,
-                    use_cache=False,
-                )
+        ) as image_features, torch.no_grad():
+            output = self.model(
+                input_ids=input_ids,
+                attention_mask=torch.ones_like(input_ids),
+                mm_token_type_ids=mm_token_type_ids,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                primitive_batch=self.primitive_batch,
+                primitive_token_mask=primitive_mask,
+                use_cache=False,
+            )
         image_features.assert_called_once()
         self.assertIs(image_features.call_args.args[0], pixel_values)
         self.assertIs(image_features.call_args.args[1], image_grid_thw)
@@ -167,17 +166,16 @@ class QwenIntegrationTest(unittest.TestCase):
             self.model.primitive_encoder,
             "forward",
             wraps=self.model.primitive_encoder.forward,
-        ) as encode:
-            with torch.no_grad():
-                generated = self.model.generate(
-                    input_ids=self.input_ids,
-                    attention_mask=self.attention_mask,
-                    mm_token_type_ids=self.mm_token_type_ids,
-                    primitive_batch=self.primitive_batch,
-                    primitive_token_mask=self.primitive_token_mask,
-                    max_new_tokens=3,
-                    do_sample=False,
-                )
+        ) as encode, torch.no_grad():
+            generated = self.model.generate(
+                input_ids=self.input_ids,
+                attention_mask=self.attention_mask,
+                mm_token_type_ids=self.mm_token_type_ids,
+                primitive_batch=self.primitive_batch,
+                primitive_token_mask=self.primitive_token_mask,
+                max_new_tokens=3,
+                do_sample=False,
+            )
         self.assertEqual(encode.call_count, 1)
         self.assertEqual(generated.shape, (1, self.input_ids.shape[1] + 3))
 

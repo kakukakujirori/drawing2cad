@@ -8,11 +8,9 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
-from zeroshot.pipeline.messages.contracts.reconstruction import (
-    DrawingSubmission,
-    tickets_assigned_to,
-)
+from zeroshot.pipeline.messages.tickets import tickets_assigned_to
 from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
+from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.tools import create_calculate_drawing_scale_tool
 from zeroshot.pipeline.verification import AttemptStore, DrawingVerifier

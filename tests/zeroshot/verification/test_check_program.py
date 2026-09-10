@@ -1,6 +1,6 @@
 import pytest
 
-from zeroshot.pipeline.messages.contracts import (
+from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,

@@ -36,7 +36,6 @@ def test_worker_writes_geometry_on_view_layers(monkeypatch, tmp_path) -> None:
 
     def fake_generate(step, paths):
         write_dxf(paths.dxf, views, [])
-        return None  # new contract: no manifest info returned
 
     techdraw_module = ModuleType("src.data.render.techdraw")
     techdraw_module.generate_techdraw = fake_generate

@@ -7,13 +7,12 @@ that the aggregation counts unscored samples as zeros.
 """
 
 import importlib.util
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from src.evaluation.scoring import score_sample
 from src.metrics.cadgenbench import CADGenBenchScoreMetric
-
 
 try:
     import cadquery as cq

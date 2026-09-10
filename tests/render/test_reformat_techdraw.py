@@ -7,7 +7,7 @@ import ezdxf
 import pytest
 from ezdxf.lldxf.tagwriter import TagCollector
 
-from src.data.dxf import DXFPrimitiveConfig, DXFPrimitiveParser, VIEW_DIRECTIONS
+from src.data.dxf import VIEW_DIRECTIONS, DXFPrimitiveConfig, DXFPrimitiveParser
 from src.data.render.reformat_techdraw import UNSTAMPED_LAYER, stamp_dxf
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "unstamped_sample.dxf"

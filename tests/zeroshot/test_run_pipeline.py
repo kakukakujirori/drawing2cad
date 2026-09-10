@@ -7,10 +7,10 @@ import pytest
 from omegaconf import OmegaConf
 
 from zeroshot import run_pipeline
-from zeroshot.pipeline.messages import (
-    ArtifactPresenter,
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
+from zeroshot.pipeline.messages.manifest import InputManifest
+from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
-    InputManifest,
     View,
     unread_sheet,
 )
@@ -31,7 +31,7 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
         },
         "console": None,
         "artifact_presenter": {
-            "_target_": "zeroshot.pipeline.messages.ArtifactPresenter",
+            "_target_": "zeroshot.pipeline.messages.artifact.ArtifactPresenter",
             "input_mode": "path",
             "feedback_mode": "none",
         },
@@ -103,7 +103,7 @@ def test_run_composes_dependencies_and_manifest(
             },
             "console": None,
             "artifact_presenter": {
-                "_target_": "zeroshot.pipeline.messages.ArtifactPresenter",
+                "_target_": "zeroshot.pipeline.messages.artifact.ArtifactPresenter",
                 "input_mode": "path",
                 "feedback_mode": "none",
             },

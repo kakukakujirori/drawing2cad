@@ -11,15 +11,12 @@ from typing import (
 from langchain_core.messages import AnyMessage
 from typing_extensions import is_typeddict
 
-from zeroshot.pipeline.messages.contracts.audit import AuditReport
-from zeroshot.pipeline.messages.contracts.reconstruction import (
-    CodingSubmission,
-    DrawingSubmission,
-    OperationSubmission,
-    ReconstructionRun,
-    ReconstructionSnapshot,
-    SemanticSubmission,
-)
+from zeroshot.pipeline.stages.audit.contracts import AuditReport
+from zeroshot.pipeline.stages.coding.submission import CodingSubmission
+from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
+from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.operations.submission import OperationSubmission
+from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.stages.types import (
     PipelineStage,
     ReasoningStage,

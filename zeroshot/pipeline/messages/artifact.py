@@ -12,13 +12,13 @@ from langchain_core.messages.content import (
     create_text_block,
 )
 
-from zeroshot.pipeline.messages.contracts import (
+from zeroshot.pipeline.messages.manifest import FeedbackManifest
+from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSheet,
     DrawingSource,
     View,
 )
-from zeroshot.pipeline.messages.manifest import FeedbackManifest
-from zeroshot.pipeline.sandbox import SandboxWorkdir
 
 # A pictorial is offered for context, never read: it fixes no axes, so nothing
 # lifts a coordinate from one.

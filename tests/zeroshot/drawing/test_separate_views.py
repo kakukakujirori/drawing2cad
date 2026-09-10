@@ -3,14 +3,14 @@
 import pytest
 
 from zeroshot.pipeline.drawing.separate_views import ViewSplitError, extent, place_views
-from zeroshot.pipeline.messages.contracts.drawings import (
+from zeroshot.pipeline.stages._base.parameters import Parameter
+from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingEvidence,
     DrawingSheet,
     DrawingSource,
     DrawnEntity,
     View,
 )
-from zeroshot.pipeline.messages.contracts.parameters import Parameter
 
 # Three boxes in the third-angle L: top sits above front and shares its
 # horizontal extent, right sits beside front and shares its vertical one.

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from zeroshot.pipeline.messages.contracts.drawings import (
+from zeroshot.pipeline.stages.drawings.contracts import (
     ORTHOGRAPHIC_VIEWS,
     Dimension,
     DrawingEvidence,

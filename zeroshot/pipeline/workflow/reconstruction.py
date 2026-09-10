@@ -6,27 +6,22 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
-from zeroshot.pipeline.messages.contracts import (
-    DrawingSource,
-    OperationPlan,
-    SemanticHypothesis,
-)
-from zeroshot.pipeline.messages.contracts.audit import (
+from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket
+from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
 )
-from zeroshot.pipeline.messages.contracts.reconstruction import (
-    BootstrapWork,
-    CodingSubmission,
-    DrawingSubmission,
-    OperationSubmission,
-    ReconstructionRun,
-    ReconstructionSnapshot,
-    SemanticSubmission,
-    Ticket,
-)
-from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.coding.submission import CodingSubmission
+from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
+from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
+from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
 from zeroshot.pipeline.stages.merge import merge_submission
+from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.operations.submission import OperationSubmission
+from zeroshot.pipeline.stages.resolve_refs import resolve_references
+from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
+from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     PipelineStage,
@@ -35,7 +30,6 @@ from zeroshot.pipeline.stages.types import (
 )
 from zeroshot.pipeline.stages.validate import validate_submission
 from zeroshot.pipeline.verification import VerifyOutputResult
-from zeroshot.pipeline.workflow.resolve_submission import resolve_references
 
 type ReasoningSubmission = (
     DrawingSubmission | SemanticSubmission | OperationSubmission | CodingSubmission

@@ -1,17 +1,17 @@
 import math
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 import ezdxf
 import torch
 
 from src.data import (
+    DXF_PRIMITIVE_TYPE_TO_ID,
+    VIEW_DIRECTION_TO_ID,
     DXFParseError,
     DXFPrimitiveConfig,
     DXFPrimitiveParser,
-    DXF_PRIMITIVE_TYPE_TO_ID,
-    VIEW_DIRECTION_TO_ID,
 )
 
 

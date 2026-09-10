@@ -9,7 +9,7 @@ all axes, so both the axis mapping and its sign are observable.
 import cadquery as cq
 import pytest
 
-from zeroshot.pipeline.messages.contracts.drawings import VIEW_FRAME, View
+from zeroshot.pipeline.stages.drawings.contracts import VIEW_FRAME, View
 from zeroshot.pipeline.verification.render._hlr import (
     Circle,
     ProjectedEdges,

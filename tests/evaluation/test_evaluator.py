@@ -1,6 +1,6 @@
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from src.evaluation.evaluator import (
     EvaluationConfig,
@@ -14,7 +14,6 @@ from src.metrics import (
     CadExecutionMetric,
     VoxelIoUMetric,
 )
-
 
 try:
     import cadquery as cq

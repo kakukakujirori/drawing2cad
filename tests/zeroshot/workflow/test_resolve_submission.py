@@ -8,21 +8,23 @@ arrives once however often a text passes through here.
 from collections.abc import Sequence
 
 from tests.zeroshot.contracts import evidence, feature, geometry, hypothesis, sheet
-from zeroshot.pipeline.messages.contracts import (
+from zeroshot.pipeline.stages.drawings.contracts import (
     Dimension,
     DimensionKind,
     DrawingEvidence,
     DrawingSource,
+)
+from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
-    SemanticHypothesis,
 )
-from zeroshot.pipeline.workflow.resolve_submission import (
+from zeroshot.pipeline.stages.resolve_refs import (
     _references_resolved_in_prose,
     resolve_references,
     unresolved_references,
 )
+from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
 
 
 def read(

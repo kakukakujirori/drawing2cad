@@ -9,10 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from zeroshot.pipeline.messages import (
+from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
+from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
-    FeedbackManifest,
-    InputManifest,
     View,
     unread_sheet,
 )

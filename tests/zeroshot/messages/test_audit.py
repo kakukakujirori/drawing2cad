@@ -1,7 +1,7 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from zeroshot.pipeline.messages.contracts.audit import (
+from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
     CausalHop,

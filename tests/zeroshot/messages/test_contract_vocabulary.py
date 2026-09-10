@@ -17,7 +17,7 @@ import ezdxf
 import pytest
 from ezdxf.tools import standards
 
-from zeroshot.pipeline.messages.contracts.drawings import (
+from zeroshot.pipeline.stages.drawings.contracts import (
     ORTHOGRAPHIC_VIEWS,
     VIEW_FRAME,
     DrawnEntity,
@@ -25,7 +25,7 @@ from zeroshot.pipeline.messages.contracts.drawings import (
     View,
     edge_style_for_linetype,
 )
-from zeroshot.pipeline.messages.contracts.semantics import (
+from zeroshot.pipeline.stages.semantics.contracts import (
     _EXCLUDED_GEOMETRY,
     GeometryKind,
 )

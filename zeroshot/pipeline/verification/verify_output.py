@@ -7,14 +7,14 @@ from typing import Literal, Self, cast
 
 from langchain_core.messages.content import ContentBlock, create_text_block
 
-from zeroshot.pipeline.messages import (
+from zeroshot.pipeline.messages.artifact import (
     DrawingSource,
     FeedbackManifest,
     View,
-    unread_sheet,
+    build_feedback_message_blocks,
 )
-from zeroshot.pipeline.messages.artifact import build_feedback_message_blocks
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages.drawings.contracts import unread_sheet
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.render.constants import (

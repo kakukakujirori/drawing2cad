@@ -2,16 +2,15 @@
 
 from pydantic import ValidationError
 
-from zeroshot.pipeline.messages.contracts import OperationPlan, SemanticHypothesis
-from zeroshot.pipeline.messages.contracts.reconstruction import (
-    OperationSubmission,
-    ReconstructionSnapshot,
-    SemanticSubmission,
-    TicketAnswers,
-)
+from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
+from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.operations.merge import merge_operations
+from zeroshot.pipeline.stages.operations.submission import OperationSubmission
+from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
 from zeroshot.pipeline.stages.semantics.merge import merge_semantics
+from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.stages.types import PipelineStage, ReasoningStage
 
 type StageArtifact = SemanticHypothesis | OperationPlan

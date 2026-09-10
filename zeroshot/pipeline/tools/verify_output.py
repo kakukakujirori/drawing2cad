@@ -6,7 +6,7 @@ from typing import Literal
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, tool
 
-from zeroshot.pipeline.messages import View
+from zeroshot.pipeline.messages.artifact import View
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutor

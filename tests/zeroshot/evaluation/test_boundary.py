@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from zeroshot.pipeline.messages import InputManifest
+from zeroshot.pipeline.messages.manifest import InputManifest
 
 PIPELINE_DIR = Path(__file__).resolve().parents[3] / "zeroshot" / "pipeline"
 

@@ -9,29 +9,24 @@ from tests.zeroshot.contracts import (
     hypothesis,
     replacing,
 )
-from zeroshot.pipeline.messages.contracts import (
-    Operation,
-    OperationPlan,
-    OperationVerb,
-)
-from zeroshot.pipeline.messages.contracts.audit import (
+from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
+from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
     CausalHop,
     RevisionRequest,
     StageOutputRef,
 )
-from zeroshot.pipeline.messages.contracts.reconstruction import (
-    BootstrapWork,
-    CodingSubmission,
-    DrawingSubmission,
-    OperationSubmission,
-    ReconstructionRun,
-    ReconstructionSnapshot,
-    SemanticSubmission,
-    Ticket,
-    TicketResponse,
+from zeroshot.pipeline.stages.coding.submission import CodingSubmission
+from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
+from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.operations.contracts import (
+    Operation,
+    OperationPlan,
+    OperationVerb,
 )
+from zeroshot.pipeline.stages.operations.submission import OperationSubmission
+from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.stages.validate import (
     SubmissionValidationError,

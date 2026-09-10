@@ -1,7 +1,7 @@
 import ast
 from dataclasses import dataclass
 
-from zeroshot.pipeline.messages.contracts import OperationPlan
+from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 
 # Methods that hand back the shape they were called on.
 _SHAPE_PRESERVING = frozenset({"clean", "copy"})

@@ -1,7 +1,7 @@
 from collections import Counter
 from collections.abc import Sequence
 
-from zeroshot.pipeline.messages.contracts.reconstruction import (
+from zeroshot.pipeline.messages.tickets import (
     Ticket,
     TicketResponse,
     tickets_assigned_to,

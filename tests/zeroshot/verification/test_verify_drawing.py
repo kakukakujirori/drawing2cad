@@ -3,13 +3,13 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from tests.zeroshot.contracts import drawing, evidence
-from zeroshot.pipeline.messages import (
+from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages.drawings.contracts import (
+    CropOf,
     DrawingSource,
     View,
     unread_sheet,
 )
-from zeroshot.pipeline.messages.contracts import CropOf
-from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification import AttemptStore, DrawingVerifier
 
 

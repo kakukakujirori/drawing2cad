@@ -1,12 +1,11 @@
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import yaml
 from hydra import compose, initialize_config_dir
 
 from src.data import DXF_ORIENTED_SAMPLE_FEATURE_INDICES, DXFPrimitiveConfig
 from src.models import PrimitiveEncoderConfig
-
 
 CONFIG_ROOT = Path(__file__).parents[2] / "configs"
 

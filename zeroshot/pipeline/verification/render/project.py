@@ -17,7 +17,7 @@ from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Core.TopoDS import TopoDS_Shape
 
-from zeroshot.pipeline.messages.contracts.drawings import VIEW_FRAME, View
+from zeroshot.pipeline.stages.drawings.contracts import VIEW_FRAME, View
 from zeroshot.pipeline.verification.render._hlr import (
     Arc,
     Circle,

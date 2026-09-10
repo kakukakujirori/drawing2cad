@@ -1,7 +1,7 @@
-from zeroshot.pipeline.messages.contracts.operations import OperationPlan
-from zeroshot.pipeline.messages.contracts.reconstruction import OperationSubmission
 from zeroshot.pipeline.stages._base.merge import merge_lists
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 
 
 def merge_operations(

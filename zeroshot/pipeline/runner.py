@@ -20,10 +20,11 @@ from zeroshot.pipeline.event_logging import (
     RunEventTransformer,
     has_run_completed,
 )
-from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
-from zeroshot.pipeline.messages.contracts import DrawingSheet, DrawingSource
-from zeroshot.pipeline.messages.contracts.reconstruction import ReconstructionRun
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
+from zeroshot.pipeline.messages.manifest import InputManifest
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages.contracts import ReconstructionRun
+from zeroshot.pipeline.stages.drawings.contracts import DrawingSheet, DrawingSource
 from zeroshot.pipeline.verification import attempt_relative_path
 from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, ReconstructionState
 from zeroshot.pipeline.workflow.reconstruction import load_reconstruction

@@ -10,7 +10,7 @@ from zeroshot.pipeline.event_logging.projections import (
     RunEventTransformer,
     _safe_value,
 )
-from zeroshot.pipeline.messages.contracts.audit import AuditReport
+from zeroshot.pipeline.stages.audit.contracts import AuditReport
 
 
 def test_event_serialization_redacts_images_and_secrets() -> None:

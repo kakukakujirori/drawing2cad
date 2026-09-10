@@ -12,8 +12,8 @@ class SolidChecksTest(unittest.TestCase):
         import cadquery as cq
 
         from src.data.audit.solid_checks import (
-            Severity,
             MeshValidityResult,
+            Severity,
             ShapeSignature,
             Thresholds,
             TopologyResult,

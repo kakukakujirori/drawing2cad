@@ -4,28 +4,33 @@ import pytest
 from pydantic import ValidationError
 
 from tests.zeroshot.contracts import drawing, feature, geometry, replacing
-from zeroshot.pipeline.messages.contracts import (
-    Operation,
-    OperationPlan,
-    OperationVerb,
-    PipelineStage,
-    SemanticFeature,
-    SemanticHypothesis,
-)
-from zeroshot.pipeline.messages.contracts.reconstruction import (
+from zeroshot.pipeline.messages.tickets import (
     BootstrapWork,
-    CodingSubmission,
-    OperationSubmission,
-    ReconstructionSnapshot,
-    SemanticSubmission,
     Ticket,
     TicketAnswers,
     TicketResponse,
 )
 from zeroshot.pipeline.stages._base.merge import merge_lists
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.coding.submission import CodingSubmission
+from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.merge import merge_submission
-from zeroshot.pipeline.stages.types import REASONING_STAGES, ReasoningStage
+from zeroshot.pipeline.stages.operations.contracts import (
+    Operation,
+    OperationPlan,
+    OperationVerb,
+)
+from zeroshot.pipeline.stages.operations.submission import OperationSubmission
+from zeroshot.pipeline.stages.semantics.contracts import (
+    SemanticFeature,
+    SemanticHypothesis,
+)
+from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
+from zeroshot.pipeline.stages.types import (
+    REASONING_STAGES,
+    PipelineStage,
+    ReasoningStage,
+)
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 
 

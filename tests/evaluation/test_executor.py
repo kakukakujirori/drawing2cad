@@ -1,9 +1,8 @@
 import tempfile
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from src.evaluation.executor import CadExecutionResult, execute_cadquery
-
 
 try:
     import cadquery as cq

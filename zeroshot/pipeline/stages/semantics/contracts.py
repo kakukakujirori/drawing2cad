@@ -13,7 +13,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from zeroshot.pipeline.messages.contracts.parameters import (
+from zeroshot.pipeline.stages._base.parameters import (
     Parameter,
     describe_parameters,
     require_name,

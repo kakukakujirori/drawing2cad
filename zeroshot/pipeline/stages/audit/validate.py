@@ -2,18 +2,16 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping
 from typing import cast
 
-from zeroshot.pipeline.messages.contracts import (
-    DrawingSource,
-    Operation,
-)
-from zeroshot.pipeline.messages.contracts.audit import (
+from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
     CausalHop,
     StageOutputRef,
 )
-from zeroshot.pipeline.messages.contracts.reconstruction import ReconstructionSnapshot
-from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
+from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
+from zeroshot.pipeline.stages.operations.contracts import Operation
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     PipelineStage,

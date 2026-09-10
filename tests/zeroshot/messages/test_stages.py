@@ -2,7 +2,7 @@
 
 import pytest
 
-from zeroshot.pipeline.messages.contracts import (
+from zeroshot.pipeline.stages.types import (
     PIPELINE_STAGES,
     REASONING_STAGES,
     PipelineStage,

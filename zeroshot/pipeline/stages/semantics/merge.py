@@ -1,7 +1,7 @@
-from zeroshot.pipeline.messages.contracts.reconstruction import SemanticSubmission
-from zeroshot.pipeline.messages.contracts.semantics import SemanticHypothesis
 from zeroshot.pipeline.stages._base.merge import merge_lists
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
+from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 
 
 def merge_semantics(

@@ -8,16 +8,15 @@ random: comparing end-to-end scores would only compare two random draws.
 """
 
 import importlib.util
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
 from src.metrics.base import MetricSample
 from src.metrics.eccv import ECCVChallengeMetric
 from src.metrics.eccv.metric import _chamfer, match_entities, match_incidence
-
 
 OFFICIAL_EVALUATOR = (
     Path(__file__).resolve().parents[2]

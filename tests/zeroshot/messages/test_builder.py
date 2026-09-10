@@ -12,18 +12,20 @@ from typing import Literal
 import pytest
 from langchain_core.messages.content import ContentBlock
 
-from zeroshot.pipeline.messages import (
+from zeroshot.pipeline.messages.artifact import (
     ArtifactPresenter,
+    build_feedback_message_blocks,
+)
+from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
+from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages._base.prompt import StageInstructions
+from zeroshot.pipeline.stages.drawings.contracts import (
+    CropOf,
+    DrawingSheet,
     DrawingSource,
-    FeedbackManifest,
-    InputManifest,
     View,
     unread_sheet,
 )
-from zeroshot.pipeline.messages.artifact import build_feedback_message_blocks
-from zeroshot.pipeline.messages.contracts import CropOf, DrawingSheet
-from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages._base.prompt import StageInstructions
 
 
 def _write(path: Path, content: bytes) -> Path:

@@ -11,7 +11,7 @@ from langchain_openrouter import ChatOpenRouter
 
 from tests.zeroshot.prompt_paths import ROLE_PATHS
 from zeroshot.pipeline.event_logging import ConsoleReporter
-from zeroshot.pipeline.messages import ArtifactPresenter
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.workflow import create_agent

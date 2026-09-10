@@ -2,7 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from zeroshot.pipeline.messages.contracts import DrawingSource
+from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
 
 
 def _safe_identifier(name: str, field_name: str) -> str:

@@ -1,6 +1,6 @@
-from pathlib import Path
-from dataclasses import replace
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
@@ -8,18 +8,17 @@ from transformers import AutoProcessor, Qwen3VLConfig
 
 from src.data import (
     DEFAULT_IMAGE_SOURCES,
-    DXFPrimitiveConfig,
-    DXFPrimitiveParser,
     Drawing2CADCollator,
     Drawing2CADDataset,
     Drawing2CADPreprocessor,
+    DXFPrimitiveConfig,
+    DXFPrimitiveParser,
     take_inventory,
 )
 from src.models import (
     Drawing2CADQwen3VLForConditionalGeneration,
     PrimitiveEncoderConfig,
 )
-
 
 DATASET_ROOT = Path("data/z2c_val")
 CHECKPOINT = "ADSKAILab/Zero-To-CAD-Qwen3-VL-2B"

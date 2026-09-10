@@ -15,36 +15,34 @@ from langchain_core.messages.content import ContentBlock
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.contracts import drawing, evidence, hypothesis, replacing, sheet
-from zeroshot.pipeline.messages import (
-    ArtifactPresenter,
-    DrawingSource,
-    InputManifest,
-    View,
-    unread_sheet,
-)
-from zeroshot.pipeline.messages.contracts import (
-    CropOf,
-    Operation,
-    OperationPlan,
-    OperationVerb,
-    PipelineStage,
-)
-from zeroshot.pipeline.messages.contracts.audit import (
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
+from zeroshot.pipeline.messages.manifest import InputManifest
+from zeroshot.pipeline.messages.tickets import TicketResponse
+from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
     RevisionRequest,
     StageOutputRef,
 )
-from zeroshot.pipeline.messages.contracts.reconstruction import (
-    CodingSubmission,
-    DrawingSubmission,
-    OperationSubmission,
-    ReconstructionRun,
-    SemanticSubmission,
-    TicketResponse,
-)
-from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.coding import stage as coding_stage_module
+from zeroshot.pipeline.stages.coding.submission import CodingSubmission
+from zeroshot.pipeline.stages.contracts import ReconstructionRun
+from zeroshot.pipeline.stages.drawings.contracts import (
+    CropOf,
+    DrawingSource,
+    View,
+    unread_sheet,
+)
+from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.operations.contracts import (
+    Operation,
+    OperationPlan,
+    OperationVerb,
+)
+from zeroshot.pipeline.stages.operations.submission import OperationSubmission
+from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
+from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import (
     ExecutionStatus,
     VerifyOutputResult,

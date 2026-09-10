@@ -11,23 +11,23 @@ from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _ref,
     _report,
 )
-from zeroshot.pipeline.messages.contracts import (
-    VIEW_FRAME,
-    DrawingSheet,
-    DrawingSource,
-    DrawnEntity,
-    GeometryKind,
-    Operation,
-    PipelineStage,
-)
-from zeroshot.pipeline.messages.contracts.audit import AuditReport
-from zeroshot.pipeline.messages.contracts.drawings import DrawingEvidence
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import (
     PromptTemplate,
     StageInstructions,
     build_system_prompt,
 )
+from zeroshot.pipeline.stages.audit.contracts import AuditReport
+from zeroshot.pipeline.stages.drawings.contracts import (
+    VIEW_FRAME,
+    DrawingEvidence,
+    DrawingSheet,
+    DrawingSource,
+    DrawnEntity,
+)
+from zeroshot.pipeline.stages.operations.contracts import Operation
+from zeroshot.pipeline.stages.semantics.contracts import GeometryKind
+from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.workflow.reconstruction import (
     open_next_round,

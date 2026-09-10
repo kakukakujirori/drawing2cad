@@ -12,8 +12,8 @@ from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _report,
     _snapshot,
 )
-from zeroshot.pipeline.messages.contracts.audit import RevisionRequest
-from zeroshot.pipeline.messages.contracts.drawings import Dimension
+from zeroshot.pipeline.stages.audit.contracts import RevisionRequest
+from zeroshot.pipeline.stages.drawings.contracts import Dimension
 from zeroshot.pipeline.stages.types import REASONING_STAGES
 from zeroshot.pipeline.stages.validate import (
     SubmissionValidationError,

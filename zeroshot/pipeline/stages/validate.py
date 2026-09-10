@@ -7,27 +7,23 @@ is measured against the snapshot is the artifact that revision merges to.
 
 from typing import cast
 
-from zeroshot.pipeline.messages.contracts import (
-    DrawingSource,
-    OperationPlan,
-    SemanticHypothesis,
-)
-from zeroshot.pipeline.messages.contracts.audit import AuditReport
-from zeroshot.pipeline.messages.contracts.reconstruction import (
-    CodingSubmission,
-    DrawingSubmission,
-    OperationSubmission,
-    ReconstructionSnapshot,
-    SemanticSubmission,
-    TicketAnswers,
-)
+from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.stages._base.validate import (
     SubmissionValidationError,
     validate_ticket_responses,
 )
+from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.audit.validate import validate_audit_report
+from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.coding.validate import validate_coding
+from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
+from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
+from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.operations.validate import validate_operations
+from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
+from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.stages.semantics.validate import validate_semantics
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,

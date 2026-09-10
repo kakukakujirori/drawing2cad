@@ -1,13 +1,11 @@
 from typing import cast
 
-from zeroshot.pipeline.messages.contracts import (
-    DrawingSource,
-    OperationPlan,
-    SemanticHypothesis,
-)
-from zeroshot.pipeline.messages.contracts.reconstruction import ReconstructionSnapshot
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
-from zeroshot.pipeline.workflow.resolve_submission import unresolved_references
+from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
+from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
+from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.resolve_refs import unresolved_references
+from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
 
 
 def validate_operations(

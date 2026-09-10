@@ -18,32 +18,30 @@ from tests.zeroshot.chat_models import ScriptedChatModel
 from tests.zeroshot.contracts import drawing, hypothesis, replacing
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
-from zeroshot.pipeline.messages import (
-    ArtifactPresenter,
-    DrawingSource,
-    InputManifest,
-    View,
-    unread_sheet,
-)
-from zeroshot.pipeline.messages.contracts import (
-    Operation,
-    OperationPlan,
-    OperationVerb,
-)
-from zeroshot.pipeline.messages.contracts.drawings import CropOf
-from zeroshot.pipeline.messages.contracts.reconstruction import (
-    CodingSubmission,
-    DrawingSubmission,
-    OperationSubmission,
-    SemanticSubmission,
-    TicketResponse,
-)
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
+from zeroshot.pipeline.messages.manifest import InputManifest
+from zeroshot.pipeline.messages.tickets import TicketResponse
 from zeroshot.pipeline.runner import (
     GraphFactory,
     PipelineRunner,
     _latest_program_source,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner
+from zeroshot.pipeline.stages.coding.submission import CodingSubmission
+from zeroshot.pipeline.stages.drawings.contracts import (
+    CropOf,
+    DrawingSource,
+    View,
+    unread_sheet,
+)
+from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.operations.contracts import (
+    Operation,
+    OperationPlan,
+    OperationVerb,
+)
+from zeroshot.pipeline.stages.operations.submission import OperationSubmission
+from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.verification import (
     CadQueryExecutor,
     ExecutionStatus,

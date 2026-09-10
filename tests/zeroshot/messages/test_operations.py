@@ -12,13 +12,13 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from tests.zeroshot.contracts import feature, hypothesis
-from zeroshot.pipeline.messages.contracts import (
+from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
-    SemanticHypothesis,
     linearise,
 )
+from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
 
 
 def op(

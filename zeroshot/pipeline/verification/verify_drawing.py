@@ -12,15 +12,18 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import ValidationError
 
 from zeroshot.pipeline.drawing.dxf import export_sheet, rasterize_dxf
-from zeroshot.pipeline.messages import (
+from zeroshot.pipeline.messages.artifact import (
     DrawingSource,
     FeedbackManifest,
     View,
+    build_feedback_message_blocks,
+)
+from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages.drawings.contracts import (
+    DrawingSheet,
+    DrawnEntity,
     unread_sheet,
 )
-from zeroshot.pipeline.messages.artifact import build_feedback_message_blocks
-from zeroshot.pipeline.messages.contracts import DrawingSheet, DrawnEntity
-from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification.attempts import AttemptStore
 
 _BOUNDED_PARAMETERS = {

@@ -1,8 +1,9 @@
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from datetime import UTC, datetime
+from pathlib import Path
+
 import yaml
 
 from src.utils.setup import setup_run
@@ -32,7 +33,7 @@ class SetupRunTest(unittest.TestCase):
             context = setup_run(
                 self._config(root),
                 output_dir=output,
-                timestamp=datetime(2026, 7, 19, tzinfo=timezone.utc),
+                timestamp=datetime(2026, 7, 19, tzinfo=UTC),
             )
             self.assertEqual(context.run_dir, output.resolve())
             self.assertEqual(context.metrics_path.name, "scalars.jsonl")

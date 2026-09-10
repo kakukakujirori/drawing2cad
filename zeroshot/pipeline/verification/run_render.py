@@ -24,7 +24,7 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
-from zeroshot.pipeline.messages.contracts.drawings import View
+from zeroshot.pipeline.stages.drawings.contracts import View
 from zeroshot.pipeline.verification.render._render3d import generate_render3d
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,

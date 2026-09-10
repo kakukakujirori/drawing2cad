@@ -15,12 +15,10 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import BaseModel
 
 from zeroshot.pipeline.messages.artifact import SandboxedArtifact
-from zeroshot.pipeline.messages.contracts.drawings import DrawingSource
-from zeroshot.pipeline.messages.contracts.reconstruction import (
-    ReconstructionSnapshot,
-    tickets_assigned_to,
-)
+from zeroshot.pipeline.messages.tickets import tickets_assigned_to
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
+from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     PipelineStage,

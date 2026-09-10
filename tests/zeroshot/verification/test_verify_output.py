@@ -7,8 +7,8 @@ from typing import Literal
 
 import pytest
 
-from zeroshot.pipeline.messages import View
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages.drawings.contracts import View
 from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.render.constants import (
@@ -1052,7 +1052,7 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
 
     from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
     from tests.zeroshot.workflow.test_agent import _subgraph
-    from zeroshot.pipeline.messages.contracts.reconstruction import CodingSubmission
+    from zeroshot.pipeline.stages.coding.submission import CodingSubmission
     from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
     executor = StubCadQueryExecutor(

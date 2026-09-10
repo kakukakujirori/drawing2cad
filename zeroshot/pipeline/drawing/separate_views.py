@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from zeroshot.pipeline.drawing.dxf import export_sheet
-from zeroshot.pipeline.messages.contracts.drawings import (
+from zeroshot.pipeline.stages._base.parameters import translated
+from zeroshot.pipeline.stages.drawings.contracts import (
     CropOf,
     DrawingEvidence,
     DrawingSheet,
@@ -17,7 +18,6 @@ from zeroshot.pipeline.messages.contracts.drawings import (
     DrawnEntity,
     View,
 )
-from zeroshot.pipeline.messages.contracts.parameters import translated
 
 # Narrower than any inter-view spacing and wider than any drawing detail: the
 # gaps a slot or a counterbore leaves are millimetres, the gap between views

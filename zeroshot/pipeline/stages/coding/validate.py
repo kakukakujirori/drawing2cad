@@ -1,5 +1,5 @@
-from zeroshot.pipeline.messages.contracts.reconstruction import ReconstructionSnapshot
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.verification import (
     ExecutionStatus,
     VerifyOutputResult,

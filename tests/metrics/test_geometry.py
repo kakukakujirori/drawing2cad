@@ -14,7 +14,6 @@ from src.metrics.geometry import (
 )
 from src.metrics.voxel_iou import VoxelIoUMetric
 
-
 HAS_TRIMESH = importlib.util.find_spec("trimesh") is not None
 
 

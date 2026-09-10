@@ -1,8 +1,6 @@
-from zeroshot.pipeline.messages.contracts import (
-    DrawingSource,
-    SemanticHypothesis,
-)
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
+from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
 
 
 def validate_semantics(

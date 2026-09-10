@@ -1,15 +1,14 @@
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
-from accelerate import Accelerator
 import torch
+from accelerate import Accelerator
 
 from src.models.factory import apply_language_lora, freeze_vision_encoder
 from src.training.checkpoint import AdapterCheckpointIO
 from src.training.state import TrainingProgress
 from tests.model_helpers import make_primitive_batch, tiny_drawing_model
-
 
 LORA_CONFIG = {
     "enabled": True,
