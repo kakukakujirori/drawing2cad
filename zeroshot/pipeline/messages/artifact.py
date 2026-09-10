@@ -17,7 +17,7 @@ from zeroshot.pipeline.messages.contracts import (
     DrawingSource,
     View,
 )
-from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
+from zeroshot.pipeline.messages.manifest import FeedbackManifest
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 
 # A pictorial is offered for context, never read: it fixes no axes, so nothing

@@ -20,10 +20,10 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     TicketAnswers,
     TicketResponse,
 )
-from zeroshot.pipeline.messages.contracts.stages import REASONING_STAGES, ReasoningStage
+from zeroshot.pipeline.stages.types import REASONING_STAGES, ReasoningStage
+from zeroshot.pipeline.stages.validate import SubmissionValidationError
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow.merge_submission import merge_submission
-from zeroshot.pipeline.workflow.validate_submission import SubmissionValidationError
 
 
 def _responses(stage: PipelineStage) -> list[TicketResponse]:

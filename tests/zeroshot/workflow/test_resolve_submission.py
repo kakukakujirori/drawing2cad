@@ -22,7 +22,6 @@ from zeroshot.pipeline.workflow.resolve_submission import (
     _references_resolved_in_prose,
     resolve_references,
     unresolved_references,
-    without_resolved_values,
 )
 
 
@@ -287,15 +286,6 @@ def test_a_parenthesis_of_the_models_own_is_left_alone() -> None:
     assert resolved(
         "sem_main_bore.geo_ball.radius (the seat, not the bore)", _ball()
     ) == ("sem_main_bore.geo_ball.radius (= 4.25) (the seat, not the bore)")
-
-
-def test_a_resolved_value_can_be_taken_back_out() -> None:
-    assert (
-        without_resolved_values(
-            "a ball of sem_main_bore.geo_ball.radius (= 4.25) at (0, 0)"
-        )
-        == "a ball of sem_main_bore.geo_ball.radius at (0, 0)"
-    )
 
 
 def test_every_string_in_an_answer_is_resolved() -> None:

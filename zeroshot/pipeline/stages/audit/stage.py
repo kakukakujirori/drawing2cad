@@ -10,8 +10,8 @@ from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
 from zeroshot.pipeline.messages.contracts.audit import AuditReport
-from zeroshot.pipeline.messages.contracts.stages import PipelineStage
 from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
+from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.workflow._config import _child_graph_config

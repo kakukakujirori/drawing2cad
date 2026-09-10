@@ -8,11 +8,11 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
-from zeroshot.pipeline.messages.contracts.reconstruction import CodingSubmission
 from zeroshot.pipeline.messages.contracts.drawings import DrawingSource
-from zeroshot.pipeline.messages.contracts.stages import PipelineStage
+from zeroshot.pipeline.messages.contracts.reconstruction import CodingSubmission
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
+from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import (
     AttemptStore,
     CadQueryExecutor,

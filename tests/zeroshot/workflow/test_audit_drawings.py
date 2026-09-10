@@ -14,12 +14,12 @@ from tests.zeroshot.workflow.test_reconstruction_workflow import (
 )
 from zeroshot.pipeline.messages.contracts.audit import RevisionRequest
 from zeroshot.pipeline.messages.contracts.drawings import Dimension
-from zeroshot.pipeline.messages.contracts.stages import REASONING_STAGES
-from zeroshot.pipeline.workflow.reconstruction import open_next_round
-from zeroshot.pipeline.workflow.validate_submission import (
+from zeroshot.pipeline.stages.types import REASONING_STAGES
+from zeroshot.pipeline.stages.validate import (
     SubmissionValidationError,
     validate_submission,
 )
+from zeroshot.pipeline.workflow.reconstruction import open_next_round
 
 
 def test_audit_traces_the_solid_to_the_sheet_owning_its_reading() -> None:

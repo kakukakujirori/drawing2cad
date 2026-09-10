@@ -87,6 +87,17 @@ def check_program(
     )
 
 
+def program_output_names(source: str) -> set[str]:
+    """Return directly assigned module-level ret_* names without judging the plan."""
+    tree = ast.parse(source, filename="model.py", mode="exec")
+    return {
+        name
+        for statement in tree.body
+        for name in assigned_names(statement)
+        if name.startswith("ret_")
+    }
+
+
 def assigned_names(statement: ast.stmt) -> set[str]:
     """Names assigned directly by one module-level statement."""
     if isinstance(statement, ast.Assign):

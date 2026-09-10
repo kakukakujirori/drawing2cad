@@ -82,7 +82,7 @@ class ChatOpenRouterSingleReasoning(ChatOpenRouter):
         ``ModelCallRetryMiddleware``, where it is logged and retried with
         visibility.
         """
-        from openrouter.utils import BackoffStrategy, RetryConfig  # noqa: PLC0415
+        from openrouter.utils import BackoffStrategy, RetryConfig
 
         client = super()._build_client()
         if self.max_retries <= 0:

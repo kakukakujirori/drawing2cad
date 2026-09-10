@@ -1,6 +1,7 @@
 """Round instructions shared by stages, independent of graph state channels."""
 
 from __future__ import annotations
+
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -14,16 +15,16 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import BaseModel
 
 from zeroshot.pipeline.messages.artifact import SandboxedArtifact
-from zeroshot.pipeline.messages.contracts.stages import (
-    REASONING_STAGES,
-    PipelineStage,
-)
 from zeroshot.pipeline.messages.contracts.drawings import DrawingSource
 from zeroshot.pipeline.messages.contracts.reconstruction import (
     ReconstructionSnapshot,
     tickets_assigned_to,
 )
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages.types import (
+    REASONING_STAGES,
+    PipelineStage,
+)
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
 

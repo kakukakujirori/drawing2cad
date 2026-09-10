@@ -1,7 +1,6 @@
 """Extend the ReAct loop with structured outputs, turn budgeting, and other utilities."""
 
-from collections.abc import Mapping, Sequence
-from types import MappingProxyType
+from collections.abc import Sequence
 from typing import Any, Literal, NotRequired, cast
 
 from langchain.agents import AgentState as _AgentState

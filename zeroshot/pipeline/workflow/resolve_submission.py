@@ -49,14 +49,8 @@ _REFERENCE = re.compile(
 # Anything written as though it were an address, so that a near miss is
 # refused rather than passed through as ordinary prose.
 _REFERENCE_LIKE = re.compile(r"\b(?:sem|ev|dim)_[a-z0-9_]+(?:\.[a-z0-9_]+)+\b")
-_RESOLVED_VALUE = re.compile(r"\s*\(= [^()]*\)")
 
 type _Held = Mapping[str, Sequence[float]]
-
-
-def without_resolved_values(text: str) -> str:
-    """`text` with the values this module wrote into it taken back out."""
-    return _RESOLVED_VALUE.sub("", text)
 
 
 def resolve_references[M: BaseModel](

@@ -32,6 +32,11 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     Ticket,
     TicketResponse,
 )
+from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
+from zeroshot.pipeline.stages.validate import (
+    SubmissionValidationError,
+    validate_submission,
+)
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow import reconstruction as reconstruction_module
 from zeroshot.pipeline.workflow.reconstruction import (
@@ -41,10 +46,6 @@ from zeroshot.pipeline.workflow.reconstruction import (
     open_next_round,
     save_reconstruction,
     start_reconstruction,
-)
-from zeroshot.pipeline.workflow.validate_submission import (
-    SubmissionValidationError,
-    validate_submission,
 )
 
 _SOURCE = "ret_base = object()\nret_hole = ret_base.cut(object())\nresult = ret_hole\n"
@@ -81,10 +82,10 @@ def _snapshot(source: str | None = _SOURCE) -> ReconstructionSnapshot:
     responses = [
         TicketResponse(
             ticket_id=ticket_id,
-            stage=stage,  # type: ignore[arg-type]
+            stage=stage,
             summary=f"Reviewed the ticket during {stage}.",
         )
-        for stage in ("drawings", "semantics", "operations", "coding")
+        for stage in REASONING_STAGES
     ]
     verification = VerifyOutputResult(
         status=(
@@ -98,12 +99,12 @@ def _snapshot(source: str | None = _SOURCE) -> ReconstructionSnapshot:
             Ticket(
                 ticket_id=ticket_id,
                 subject=BootstrapWork(instruction="Reconstruct the part."),
-                assigned_stages=["drawings", "semantics", "operations", "coding"],
+                assigned_stages=list(REASONING_STAGES),
                 responses=responses,
             )
         ],
         round=0,
-        last_completed_stage="coding",
+        last_completed_stage=PipelineStage.CODING,
         drawings=drawing(),
         semantics=hypothesis("the base", "the hole"),
         operations=_operations(),
@@ -353,6 +354,27 @@ def test_named_code_references_require_parseable_source() -> None:
         validate_submission(report, _snapshot(source))
 
 
+def test_whole_coding_reference_keeps_invalid_source_auditable() -> None:
+    validate_submission(
+        _report(target=_ref("coding", None)),
+        _snapshot("ret_base = (\n"),
+    )
+
+
+def test_audit_can_address_an_unplanned_code_output() -> None:
+    validate_submission(
+        _report(target=_ref("coding", "ret_unplanned")),
+        _snapshot(_SOURCE + "ret_unplanned = ret_base\n"),
+    )
+
+
+def test_repeated_missing_audit_reference_is_reported_once() -> None:
+    report = _report(_hop("coding", "ret_base", "operations", "op_absent"))
+    with pytest.raises(SubmissionValidationError) as caught:
+        validate_submission(report, _snapshot())
+    assert str(caught.value).count("operations member 'op_absent' does not exist") == 1
+
+
 def test_advance_reconstruction_integrates_each_stage_without_mutating_the_run() -> (
     None
 ):
@@ -414,7 +436,7 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     responses = [
         TicketResponse(
             ticket_id=ticket.ticket_id,
-            stage="semantics",
+            stage=PipelineStage.SEMANTICS,
             summary=f"Addressed {ticket.ticket_id}.",
         )
         for ticket in reversed(current.open_tickets)
@@ -523,7 +545,7 @@ def test_snapshot_commit_preserves_prior_responses() -> None:
     ticket = operations.open_tickets[0]
     rewritten = TicketResponse(
         ticket_id=ticket.ticket_id,
-        stage="semantics",
+        stage=PipelineStage.SEMANTICS,
         summary="Rewrote the earlier response.",
     )
     changed_ticket = Ticket(

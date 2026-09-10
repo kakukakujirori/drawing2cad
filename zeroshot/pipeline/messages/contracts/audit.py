@@ -14,7 +14,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from zeroshot.pipeline.messages.contracts.stages import (
+from zeroshot.pipeline.stages.types import (
     PipelineStage,
     ReasoningStage,
 )

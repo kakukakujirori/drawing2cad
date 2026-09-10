@@ -1,66 +1,42 @@
-import json
 import re
-from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol, cast
+from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import START, StateGraph
 from langgraph.pregel import Pregel
-from pydantic import BaseModel
 
 from zeroshot.pipeline.messages import (
     ArtifactPresenter,
-    DrawingSource,
     InputManifest,
     drawing_for_model,
 )
 from zeroshot.pipeline.messages.contracts.audit import AuditReport
 from zeroshot.pipeline.messages.contracts.reconstruction import (
-    CodingSubmission,
-    DrawingSubmission,
-    OperationSubmission,
     ReconstructionRun,
-    SemanticSubmission,
     TicketAnswers,
     tickets_assigned_to,
 )
-from zeroshot.pipeline.messages.contracts.stages import (
+from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages._base.prompt import StageInstructions
+from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.stage import stage_factory
+from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     PipelineStage,
     ReasoningStage,
     next_stage,
 )
-from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.stages import (
-    StageInstructions,
-    create_audit_stage,
-    create_coding_stage,
-    create_drawing_stage,
-    create_operation_stage,
-    create_semantic_stage,
-)
+from zeroshot.pipeline.stages.validate import validate_submission
 from zeroshot.pipeline.tools import (
     create_load_image_tool,
     create_run_shell_tool,
 )
-from zeroshot.pipeline.verification import (
-    AttemptStore,
-    CadQueryExecutor,
-    DrawingVerifier,
-    OutputVerifier,
-    StepRenderer,
-)
-from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
-from zeroshot.pipeline.workflow._config import _child_graph_config
+from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.workflow.components import compact_transcript
-from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 from zeroshot.pipeline.workflow.reconstruction import (
     advance_reconstruction,
     drawing_baseline,
@@ -74,10 +50,6 @@ from zeroshot.pipeline.workflow.state import (
     carry_thread,
     current_snapshot,
     lead_transcript,
-)
-from zeroshot.pipeline.workflow.validate_submission import (
-    SubmissionValidationError,
-    validate_submission,
 )
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
@@ -157,7 +129,7 @@ def create_reconstruction_graph(
         / "stages/_base/prompts/cad_reconstructor.md"
     )
 
-    drawing_stage = create_drawing_stage(
+    drawing_stage = stage_factory(PipelineStage.DRAWINGS)(
         drawings_agent_builder,
         tools=basic_tools,
         system_prompt_path=share_thread_system_prompt if share_thread else None,
@@ -168,7 +140,7 @@ def create_reconstruction_graph(
         drawing_filename=drawing_filename,
         input_after_compaction=compact_between_stages is not None,
     )
-    semantic_stage = create_semantic_stage(
+    semantic_stage = stage_factory(PipelineStage.SEMANTICS)(
         semantics_agent_builder,
         tools=basic_tools,
         system_prompt_path=share_thread_system_prompt if share_thread else None,
@@ -176,7 +148,7 @@ def create_reconstruction_graph(
         prompt_context=prompt_context,
         input_after_compaction=compact_between_stages is not None,
     )
-    operation_stage = create_operation_stage(
+    operation_stage = stage_factory(PipelineStage.OPERATIONS)(
         operations_agent_builder,
         tools=basic_tools,
         system_prompt_path=share_thread_system_prompt if share_thread else None,
@@ -184,7 +156,7 @@ def create_reconstruction_graph(
         prompt_context=prompt_context,
         input_after_compaction=compact_between_stages is not None,
     )
-    coding_stage = create_coding_stage(
+    coding_stage = stage_factory(PipelineStage.CODING)(
         coding_agent_builder,
         tools=basic_tools,
         system_prompt_path=share_thread_system_prompt if share_thread else None,
@@ -197,7 +169,7 @@ def create_reconstruction_graph(
         show_intermediate_returns=show_intermediate_returns,
         input_after_compaction=compact_between_stages is not None,
     )
-    audit_stage = create_audit_stage(
+    audit_stage = stage_factory(PipelineStage.AUDIT)(
         audit_agent_builder,
         tools=basic_tools,
         system_prompt_path=None,
@@ -248,10 +220,6 @@ def create_reconstruction_graph(
         if following is None:
             raise RuntimeError("the initial reconstruction has no unfinished stage")
         return following.value
-
-    # ------------------------------------------------------------------
-    # Reasoning-stage inference
-    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # Reasoning-stage validation, integration, and routing

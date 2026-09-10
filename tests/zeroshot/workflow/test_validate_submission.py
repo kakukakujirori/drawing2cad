@@ -33,13 +33,13 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     Ticket,
     TicketResponse,
 )
-from zeroshot.pipeline.messages.contracts.stages import REASONING_STAGES, next_stage
-from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
-from zeroshot.pipeline.workflow.merge_submission import merge_submission
-from zeroshot.pipeline.workflow.validate_submission import (
+from zeroshot.pipeline.stages.types import REASONING_STAGES, next_stage
+from zeroshot.pipeline.stages.validate import (
     SubmissionValidationError,
     validate_submission,
 )
+from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
+from zeroshot.pipeline.workflow.merge_submission import merge_submission
 
 
 def _semantics() -> SemanticHypothesis:
@@ -327,6 +327,17 @@ def test_operations_must_cover_only_current_semantic_features() -> None:
         _merge_and_validate(submission, _snapshot(PipelineStage.SEMANTICS))
 
 
+def test_semantics_rejects_a_citation_absent_from_the_current_drawing() -> None:
+    submission = SemanticSubmission(
+        **replacing(
+            hypothesis(proposal=[feature("sem_bore", "bore", evidence=["ev_absent"])])
+        ),
+        responses=[_response("ticket_initial", PipelineStage.SEMANTICS)],
+    )
+    with pytest.raises(SubmissionValidationError, match="sem_bore cites ev_absent"):
+        _merge_and_validate(submission, _snapshot(PipelineStage.DRAWINGS))
+
+
 def _validate_plan(
     plan: OperationPlan,
     semantics: SemanticHypothesis,
@@ -343,15 +354,19 @@ def _validate_plan(
 
 def test_operation_validation_names_both_missing_and_invented_features() -> None:
     semantics = hypothesis("base", "bore")
+    plan = _plan_for(["sem_feature_1", "sem_absent"])
+    plan.rationale = "The part is complete without sem_feature_2."
 
     with pytest.raises(SubmissionValidationError) as caught:
-        _validate_plan(_plan_for(["sem_feature_1", "sem_absent"]), semantics)
+        _validate_plan(plan, semantics)
 
     message = str(caught.value)
     assert "no operation in the plan builds" in message
     assert "sem_feature_2" in message
     assert "the hypothesis does not contain" in message
     assert "sem_absent" in message
+    assert "rationale" not in message
+    assert len(message.splitlines()) == 2
 
 
 def _measured_blend() -> SemanticHypothesis:
@@ -373,18 +388,17 @@ def _measured_blend() -> SemanticHypothesis:
     )
 
 
-def test_operation_validation_rejects_a_copied_high_precision_number() -> None:
-    with pytest.raises(SubmissionValidationError) as caught:
-        _validate_plan(
-            _plan_for(
-                ["sem_shoulder_blend"],
-                detail="Sweep a blend of radius 11.31245992416.",
-            ),
-            _measured_blend(),
-        )
-
-    assert "11.31245992416" in str(caught.value)
-    assert "sem_<feature>.geo_<claim>.<parameter>" in str(caught.value)
+@pytest.mark.parametrize(
+    "literal",
+    ["11.31245992416", "-11.31245992416", "11.31245992416e-6", "5.65622996208"],
+)
+def test_operation_validation_does_not_infer_copying_from_numeric_literals(
+    literal: str,
+) -> None:
+    _validate_plan(
+        _plan_for(["sem_shoulder_blend"], detail=f"Use an offset of {literal}."),
+        _measured_blend(),
+    )
 
 
 def test_operation_validation_accepts_derived_and_short_numbers() -> None:
@@ -422,7 +436,7 @@ def test_operation_validation_rejects_a_nonexistent_parameter_address() -> None:
         _validate_plan(
             _plan_for(
                 ["sem_shoulder_blend"],
-                detail=f"Sweep {address} along +z.",
+                detail=f"Sweep {address} along +z, offset by 11.31245992416.",
             ),
             _measured_blend(),
         )
@@ -503,10 +517,7 @@ def test_operation_validation_accepts_a_whole_entry_of_the_drawing() -> None:
     )
 
 
-def test_a_resolved_value_is_not_read_back_as_a_copied_number() -> None:
-    """The planner reads the resolved snapshot, so a value this pipeline wrote
-    returns in the next round's plan. Rejecting it would make the rule punish
-    its own output."""
+def test_operation_validation_accepts_a_reference_with_its_resolved_value() -> None:
     _validate_plan(
         _plan_for(
             ["sem_shoulder_blend"],
@@ -517,38 +528,6 @@ def test_a_resolved_value_is_not_read_back_as_a_copied_number() -> None:
         ),
         _measured_blend(),
     )
-
-
-def test_many_copied_numbers_produce_one_bounded_validation_message() -> None:
-    radii = [11.31245992416 + number for number in range(40)]
-    semantics = hypothesis(
-        proposal=[
-            feature(
-                "sem_blend",
-                "blend",
-                geometry=[
-                    geometry(
-                        "sphere",
-                        name=f"geo_sphere_{identifier}",
-                        radius=radius,
-                    )
-                    for identifier, radius in enumerate(radii, start=1)
-                ],
-            )
-        ]
-    )
-
-    with pytest.raises(SubmissionValidationError) as caught:
-        _validate_plan(
-            _plan_for(
-                ["sem_blend"],
-                detail=" ".join(f"{radius:.11f}" for radius in radii),
-            ),
-            semantics,
-        )
-
-    assert "and 37 more" in str(caught.value)
-    assert len(str(caught.value)) < 400
 
 
 def test_only_coding_accepts_a_separate_terminal_verification() -> None:

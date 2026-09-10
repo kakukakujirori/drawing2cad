@@ -19,8 +19,8 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     StageSubmission,
     TicketAnswers,
 )
-from zeroshot.pipeline.messages.contracts.stages import PipelineStage, ReasoningStage
-from zeroshot.pipeline.workflow.validate_submission import SubmissionValidationError
+from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.types import PipelineStage, ReasoningStage
 
 type StageArtifact = SemanticHypothesis | OperationPlan
 

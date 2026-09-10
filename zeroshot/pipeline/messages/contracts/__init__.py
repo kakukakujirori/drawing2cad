@@ -35,7 +35,7 @@ from zeroshot.pipeline.messages.contracts.semantics import (
     SemanticFeature,
     SemanticHypothesis,
 )
-from zeroshot.pipeline.messages.contracts.stages import (
+from zeroshot.pipeline.stages.types import (
     PIPELINE_STAGES,
     REASONING_STAGES,
     PipelineStage,

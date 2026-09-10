@@ -5,7 +5,6 @@ from langchain_core.tools import BaseTool, tool
 
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 
-
 _MAX_INLINE_CHARS = 16_000
 
 

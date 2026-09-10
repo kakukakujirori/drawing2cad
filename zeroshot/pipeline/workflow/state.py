@@ -20,7 +20,7 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     ReconstructionSnapshot,
     SemanticSubmission,
 )
-from zeroshot.pipeline.messages.contracts.stages import (
+from zeroshot.pipeline.stages.types import (
     PipelineStage,
     ReasoningStage,
 )

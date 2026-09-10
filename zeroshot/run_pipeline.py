@@ -12,7 +12,6 @@ from zeroshot.evaluation.run_scoring import score_run
 from zeroshot.pipeline.messages import DrawingSource, InputManifest, unread_sheet
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
-from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import ReconstructionState
 from zeroshot.provenance import record_run
 

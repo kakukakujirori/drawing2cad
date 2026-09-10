@@ -6,6 +6,40 @@ from zeroshot.pipeline.messages.contracts import (
     OperationVerb,
 )
 from zeroshot.pipeline.verification import ProgramCheck, check_program
+from zeroshot.pipeline.verification.check_program import program_output_names
+
+
+def test_output_names_include_only_direct_module_assignments() -> None:
+    source = """\
+ret_base = object()
+ret_hole: object = ret_base
+ret_left, ret_right = object(), object()
+ret_alias = ret_other = ret_base
+ret_declaration: object
+print(ret_unassigned)
+
+def helper():
+    ret_local = object()
+    return ret_local
+
+if True:
+    ret_conditional = object()
+
+result = ret_hole
+"""
+    assert program_output_names(source) == {
+        "ret_base",
+        "ret_hole",
+        "ret_left",
+        "ret_right",
+        "ret_alias",
+        "ret_other",
+    }
+
+
+def test_output_names_propagate_syntax_errors() -> None:
+    with pytest.raises(SyntaxError):
+        program_output_names("ret_base = (\n")
 
 
 def _operation(name: str, *, depends_on: tuple[str, ...] = ()) -> Operation:
