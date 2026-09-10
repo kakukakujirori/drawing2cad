@@ -3,10 +3,11 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 import pytest
 
-from zeroshot.pipeline.messages import ArtifactPresenter, View
+from zeroshot.pipeline.messages import View
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
 from zeroshot.pipeline.verification.attempts import AttemptStore
@@ -123,7 +124,7 @@ def _create_verifier(
     workdir: SandboxWorkdir,
     *,
     renderer: object | None = None,  # defaults to a StubRenderer
-    artifact_presenter: ArtifactPresenter | None = None,
+    feedback_presentation_mode: Literal["none", "path", "image"] = "none",
     views: Sequence[View] = THIRD_ANGLE,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
@@ -134,7 +135,7 @@ def _create_verifier(
         executor,  # type: ignore[arg-type]
         workdir,
         renderer=renderer or StubRenderer(),  # type: ignore[arg-type]
-        artifact_presenter=artifact_presenter,
+        feedback_presentation_mode=feedback_presentation_mode,
         attempt_store=attempt_store
         or AttemptStore(
             workdir,
@@ -204,13 +205,6 @@ class StubRenderer:
         )
 
 
-def _artifact_presenter(feedback_render3d: str = "path") -> ArtifactPresenter:
-    return ArtifactPresenter(
-        input_mode="path",
-        feedback_mode=feedback_render3d,  # type: ignore[arg-type]
-    )
-
-
 def _text(result: object) -> str:
     """Concatenate the text the model would read out of the tool result."""
     assert isinstance(result, list)
@@ -265,7 +259,7 @@ def test_the_tool_takes_no_arguments_and_names_the_file_it_builds(
         executor,  # type: ignore[arg-type]
         workdir,
         renderer=StubRenderer(),  # type: ignore[arg-type]
-        artifact_presenter=None,
+        feedback_presentation_mode="none",
         views=THIRD_ANGLE,
         source_filename="candidate.py",
     )
@@ -284,7 +278,7 @@ def test_the_tool_result_is_what_the_model_reads(tmp_path: Path) -> None:
         executor,  # type: ignore[arg-type]
         workdir,
         renderer=StubRenderer(),  # type: ignore[arg-type]
-        artifact_presenter=_artifact_presenter(),
+        feedback_presentation_mode="path",
         views=THIRD_ANGLE,
     )
 
@@ -611,7 +605,7 @@ def test_verified_output_is_rendered_and_offered_to_the_model(tmp_path: Path) ->
         executor,
         workdir,
         renderer=renderer,
-        artifact_presenter=_artifact_presenter(),
+        feedback_presentation_mode="path",
     )
 
     text = _text(verifier.feedback())
@@ -640,7 +634,7 @@ def test_rendered_artifacts_stay_inside_the_verification_directory(
         executor,
         workdir,
         renderer=StubRenderer(),
-        artifact_presenter=_artifact_presenter(),
+        feedback_presentation_mode="path",
     )
 
     verifier.feedback()
@@ -670,7 +664,7 @@ def test_failed_verification_renders_nothing_and_reports_only_the_error(
         executor,
         workdir,
         renderer=renderer,
-        artifact_presenter=_artifact_presenter(),
+        feedback_presentation_mode="path",
     )
 
     result = verifier.feedback()
@@ -691,7 +685,7 @@ def test_a_pictorial_that_failed_is_explained_where_it_would_have_been(
         executor,
         workdir,
         renderer=renderer,
-        artifact_presenter=_artifact_presenter(),
+        feedback_presentation_mode="path",
     )
 
     result = verifier.feedback()
@@ -719,7 +713,7 @@ def test_a_style_that_is_not_offered_is_neither_named_nor_explained(
         executor,
         workdir,
         renderer=renderer,
-        artifact_presenter=_artifact_presenter(),
+        feedback_presentation_mode="path",
     )
 
     text = _text(verifier.feedback())
@@ -739,7 +733,7 @@ def test_result_carries_paths_but_never_the_drawing_itself(
         executor,
         workdir,
         renderer=StubRenderer(),
-        artifact_presenter=_artifact_presenter(),
+        feedback_presentation_mode="path",
     )
 
     text = _text(verifier.feedback())
@@ -758,13 +752,13 @@ def test_images_are_embedded_only_when_the_presenter_asks_for_them(
     executor = StubCadQueryExecutor(_execution_report())
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
 
-    def block_types(mode: str) -> list[str]:
+    def block_types(mode: Literal["none", "path", "image"]) -> list[str]:
         workdir = SandboxWorkdir(host_bind_dir=tmp_path)
         result = _create_verifier(
             executor,
             workdir,
             renderer=StubRenderer(),
-            artifact_presenter=_artifact_presenter(mode),
+            feedback_presentation_mode=mode,
         ).feedback()
         assert isinstance(result, list)
         return [block["type"] for block in result]
@@ -774,7 +768,7 @@ def test_images_are_embedded_only_when_the_presenter_asks_for_them(
     assert "image" not in block_types("none")
 
 
-def test_without_an_artifact_presenter_the_model_sees_only_the_report(
+def test_without_visual_feedback_the_model_sees_only_the_report(
     tmp_path: Path,
 ) -> None:
     """Rendering for later evaluation must not leak artifacts into the context."""
@@ -934,7 +928,7 @@ def test_the_returns_are_neither_kept_nor_drawn_when_switched_off(
         executor,  # type: ignore[arg-type]
         workdir,
         renderer=renderer,  # type: ignore[arg-type]
-        artifact_presenter=None,
+        feedback_presentation_mode="none",
         attempt_store=AttemptStore(workdir, round_source=lambda: 0),
         views=THIRD_ANGLE,
         show_intermediate_returns=False,
@@ -1068,11 +1062,13 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir)
     answer = {
-        "responses": [{
-            "ticket_id": "ticket_initial",
-            "stage": "coding",
-            "summary": "The program still fails; audit must diagnose the operation.",
-        }]
+        "responses": [
+            {
+                "ticket_id": "ticket_initial",
+                "stage": "coding",
+                "summary": "The program still fails; audit must diagnose the operation.",
+            }
+        ]
     }
     model = ScriptedChatModel(
         responses=(
@@ -1110,7 +1106,7 @@ def test_the_verifier_asks_for_exactly_the_views_it_was_given(
         workdir,
         renderer=renderer,
         views=(View.LEFT, View.BOTTOM),
-        artifact_presenter=_artifact_presenter(),
+        feedback_presentation_mode="path",
     )
 
     text = _text(verifier.feedback())

@@ -32,7 +32,6 @@ from zeroshot.pipeline.messages import (
 )
 from zeroshot.pipeline.messages.contracts import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.components.compact import (
     COMPACTION_INSTRUCTION,
@@ -41,7 +40,7 @@ from zeroshot.pipeline.workflow.components.compact import (
 from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
 
 _ROLE = "cad_reconstructor"
-_INPUT_MARKER = "[Input drawing]"
+_INPUT_MARKER = "[Input artifacts]"
 
 
 class _Models(TypedDict):
@@ -114,7 +113,6 @@ def _continued_graph(
             default_timeout_s=10,
         ),
         sandbox_workdir=workdir,
-        renderer=StepRenderer(timeout_s=60.0),
         artifact_presenter=ArtifactPresenter(input_mode="path", feedback_mode="none"),
         input_manifest=InputManifest(
             sample_id="test",
@@ -168,8 +166,7 @@ def test_reasoning_stages_share_one_system_prompt(
         _continued_graph(workdir, **models).invoke({})
 
     prompts = {
-        _system_prompt(models[name])
-        for name in ("drawer", "lead", "planner", "coder")
+        _system_prompt(models[name]) for name in ("drawer", "lead", "planner", "coder")
     }
     assert len(prompts) == 1
     (shared_prompt,) = prompts

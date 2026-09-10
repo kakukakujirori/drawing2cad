@@ -38,7 +38,14 @@ from zeroshot.pipeline.messages.contracts.stages import (
     next_stage,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.stages._base.prompt import PromptTemplate, StageInstructions, build_system_prompt
+from zeroshot.pipeline.stages import (
+    StageInstructions,
+    create_audit_stage,
+    create_coding_stage,
+    create_drawing_stage,
+    create_operation_stage,
+    create_semantic_stage,
+)
 from zeroshot.pipeline.tools import (
     create_load_image_tool,
     create_run_shell_tool,
@@ -85,7 +92,6 @@ def create_reconstruction_graph(
     audit_agent_builder: AgentBuilder,
     sandbox_runner: SandboxRunner,
     sandbox_workdir: SandboxWorkdir,
-    renderer: StepRenderer,
     artifact_presenter: ArtifactPresenter,
     input_manifest: InputManifest,
     output_filename: str = "model.py",
@@ -126,26 +132,6 @@ def create_reconstruction_graph(
         round_source=current_round,
         root_dirname=verification_dirname,
     )
-    executor = CadQueryExecutor(sandbox_runner=sandbox_runner)
-    coding_verifier = OutputVerifier(
-        executor=executor,
-        workdir=sandbox_workdir,
-        renderer=renderer,
-        feedback_presentation_mode=artifact_presenter.feedback_mode,
-        attempt_store=attempt_store,
-        source_filename=output_filename,
-        show_intermediate_returns=show_intermediate_returns,
-    )
-    coding_middleware = VerifyOnWriteMiddleware(
-        coding_verifier,
-        refusal=(
-            "The current program must produce a verified solid and its "
-            "verification feedback must be shown before submission. Read the "
-            "feedback, correct model.py, and submit only after verification "
-            "succeeds."
-        ),
-        require_feedback_before_submit=True,
-    )
 
     # instantiate agents
     prompt_context = {
@@ -166,7 +152,10 @@ def create_reconstruction_graph(
         workdir=sandbox_workdir,
     )
 
-    share_thread_system_prompt = Path(__file__).resolve().parents[1] / "stages/_base/prompts/cad_reconstructor.md"
+    share_thread_system_prompt = (
+        Path(__file__).resolve().parents[1]
+        / "stages/_base/prompts/cad_reconstructor.md"
+    )
 
     drawing_stage = create_drawing_stage(
         drawings_agent_builder,
@@ -187,7 +176,7 @@ def create_reconstruction_graph(
         prompt_context=prompt_context,
         input_after_compaction=compact_between_stages is not None,
     )
-    operations_stage = create_operations_stage(
+    operation_stage = create_operation_stage(
         operations_agent_builder,
         tools=basic_tools,
         system_prompt_path=share_thread_system_prompt if share_thread else None,
@@ -201,6 +190,11 @@ def create_reconstruction_graph(
         system_prompt_path=share_thread_system_prompt if share_thread else None,
         instructions=stage_instructions,
         prompt_context=prompt_context,
+        attempt_store=attempt_store,
+        sandbox_runner=sandbox_runner,
+        feedback_presentation_mode=artifact_presenter.feedback_mode,
+        output_filename=output_filename,
+        show_intermediate_returns=show_intermediate_returns,
         input_after_compaction=compact_between_stages is not None,
     )
     audit_stage = create_audit_stage(
@@ -209,9 +203,8 @@ def create_reconstruction_graph(
         system_prompt_path=None,
         instructions=stage_instructions,
         prompt_context=prompt_context,
-        input_after_compaction=compact_between_stages is not None,
+        attempt_store=attempt_store,
     )
-
 
     def save_history(run: ReconstructionRun) -> None:
         save_reconstruction(history_path, run)
@@ -259,7 +252,6 @@ def create_reconstruction_graph(
     # ------------------------------------------------------------------
     # Reasoning-stage inference
     # ------------------------------------------------------------------
-
 
     # ------------------------------------------------------------------
     # Reasoning-stage validation, integration, and routing
@@ -315,7 +307,7 @@ def create_reconstruction_graph(
             else:
                 workspace_output = drawing_baseline(reconstruction)
         elif stage is PipelineStage.CODING:
-            workspace_output, _ = coding_verifier.verify()
+            workspace_output, _ = coding_stage.verifier.verify()
 
         try:
             updated = advance_reconstruction(
@@ -367,7 +359,6 @@ def create_reconstruction_graph(
     # ------------------------------------------------------------------
     # Audit validation and round transition
     # ------------------------------------------------------------------
-
 
     def integrate_audit_report(state: ReconstructionState) -> dict[str, Any]:
         """Validate an audit and atomically open its requested next round."""
@@ -440,7 +431,7 @@ def create_reconstruction_graph(
     workflow.add_node("initialize", initialize)
     workflow.add_node(PipelineStage.DRAWINGS.value, drawing_stage.run)
     workflow.add_node(PipelineStage.SEMANTICS.value, semantic_stage.run)
-    workflow.add_node(PipelineStage.OPERATIONS.value, operations_stage.run)
+    workflow.add_node(PipelineStage.OPERATIONS.value, operation_stage.run)
     workflow.add_node(PipelineStage.CODING.value, coding_stage.run)
     workflow.add_node(PipelineStage.AUDIT.value, audit_stage.run)
     workflow.add_node("integrate_stage_submission", integrate_stage_submission)

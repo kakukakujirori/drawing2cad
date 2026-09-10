@@ -47,7 +47,6 @@ def run(config: DictConfig) -> ReconstructionState | None:
         graph_factory=instantiate(config.workflow),
         artifact_presenter=instantiate(config.artifact_presenter),
         artifact_root=Path(to_absolute_path(config.artifact_root)),
-        renderer=instantiate(config.renderer) or StepRenderer(),
         on_existing=config.on_existing,
         console_reporter=instantiate(config.console),
         resume_from=(

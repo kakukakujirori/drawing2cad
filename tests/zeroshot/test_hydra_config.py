@@ -363,6 +363,5 @@ def test_every_rerun_policy_the_config_documents_is_accepted() -> None:
             graph_factory=instantiate(config.workflow),
             artifact_presenter=instantiate(config.artifact_presenter),
             artifact_root="unused",
-            renderer=instantiate(config.renderer),
             on_existing=config.on_existing,
         )

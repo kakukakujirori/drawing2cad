@@ -24,7 +24,7 @@ from zeroshot.pipeline.messages import ArtifactPresenter, InputManifest
 from zeroshot.pipeline.messages.contracts import DrawingSheet, DrawingSource
 from zeroshot.pipeline.messages.contracts.reconstruction import ReconstructionRun
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.verification import StepRenderer, attempt_relative_path
+from zeroshot.pipeline.verification import attempt_relative_path
 from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, ReconstructionState
 from zeroshot.pipeline.workflow.reconstruction import load_reconstruction
 
@@ -109,7 +109,6 @@ class PipelineRunner:
         graph_factory: GraphFactory,
         artifact_presenter: ArtifactPresenter,
         artifact_root: str | Path,
-        renderer: StepRenderer,
         output_filename: str = "model.py",
         verification_dirname: PurePosixPath = PurePosixPath("attempts"),
         on_existing: OnExisting = "fail",
@@ -122,7 +121,6 @@ class PipelineRunner:
             )
         self.artifact_presenter = artifact_presenter
         self.sandbox_runner = sandbox_runner
-        self.renderer = renderer
         self.artifact_root = Path(artifact_root)
         self.output_filename = output_filename
         self.verification_dirname = verification_dirname
@@ -297,7 +295,6 @@ class PipelineRunner:
             graph = self.graph_factory(
                 sandbox_runner=self.sandbox_runner,
                 sandbox_workdir=workdir,
-                renderer=self.renderer,
                 artifact_presenter=self.artifact_presenter,
                 input_manifest=staged_manifest,
                 output_filename=self.output_filename,

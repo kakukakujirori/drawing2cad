@@ -11,7 +11,6 @@ from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _ref,
     _report,
 )
-from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.contracts import (
     VIEW_FRAME,
     DrawingSheet,
@@ -23,7 +22,6 @@ from zeroshot.pipeline.messages.contracts import (
 )
 from zeroshot.pipeline.messages.contracts.audit import AuditReport
 from zeroshot.pipeline.messages.contracts.drawings import DrawingEvidence
-from zeroshot.pipeline.messages.manifest import InputManifest
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import (
     PromptTemplate,
@@ -77,8 +75,8 @@ def instructions(tmp_path: Path) -> StageInstructions:
     )
     return StageInstructions(
         prompt_context=_RUN_PATHS,
-        artifact_presenter=ArtifactPresenter(input_mode="path", feedback_mode="none"),
-        input_manifest=InputManifest(sample_id="prompt-test", drawing=source),
+        input_presentation_mode="path",
+        input_artifact=source,
         workdir=SandboxWorkdir(host_bind_dir=tmp_path),
     )
 
@@ -100,10 +98,10 @@ def render_stage(
         return instructions.build(
             state,
             PipelineStage(stage),
-            include_input=False,
+            include_artifact=False,
             **{
                 "attempt_dir": "/work/attempts/001",
-                "intermediate_returns": "",
+                "intermediate_returns_dir": "unavailable",
                 "drawing_attempt_dir": "/work/attempts/round_000/drawing/003",
                 "ticket_responses": "[]",
                 **context,
@@ -137,16 +135,18 @@ def test_a_reused_builder_reads_the_latest_round_and_ticket_ownership(
     instructions: StageInstructions,
     state: ReconstructionState,
 ) -> None:
-    first = instructions.build(state, PipelineStage.CODING, include_input=False).text
+    first = instructions.build(state, PipelineStage.CODING, include_artifact=False).text
     assert "round 0" in first
     assert "Tickets assigned to coding this round: ticket_initial" in first
 
     state["reconstruction"] = open_next_round(
         _completed_run(), _report(target=_ref("coding", "ret_hole"))
     )
-    coding = instructions.build(state, PipelineStage.CODING, include_input=False).text
+    coding = instructions.build(
+        state, PipelineStage.CODING, include_artifact=False
+    ).text
     semantics = instructions.build(
-        state, PipelineStage.SEMANTICS, include_input=False
+        state, PipelineStage.SEMANTICS, include_artifact=False
     ).text
 
     assert "round 1" in coding
@@ -163,13 +163,13 @@ def test_a_validation_retry_needs_only_the_error_from_state(
     message = instructions.build(
         {"stage_validation_error": "Unknown reference: sem_missing"},
         stage,
-        include_input=True,
+        include_artifact=True,
     )
 
     assert f"[{stage.title()} Validation Error]" in message.text
     assert "Unknown reference: sem_missing" in message.text
     assert "corrected complete output" in message.text
-    assert "[Input drawing]" not in message.text
+    assert "[Input artifacts]" not in message.text
     assert "## Coordinate frames" not in message.text
 
 
@@ -177,13 +177,13 @@ def test_input_is_attached_only_when_requested_and_fresh_on_each_build(
     instructions: StageInstructions,
     state: ReconstructionState,
 ) -> None:
-    plain = instructions.build(state, PipelineStage.DRAWINGS, include_input=False)
-    attached = instructions.build(state, PipelineStage.DRAWINGS, include_input=True)
-    another = instructions.build(state, PipelineStage.DRAWINGS, include_input=True)
+    plain = instructions.build(state, PipelineStage.DRAWINGS, include_artifact=False)
+    attached = instructions.build(state, PipelineStage.DRAWINGS, include_artifact=True)
+    another = instructions.build(state, PipelineStage.DRAWINGS, include_artifact=True)
 
-    assert "[Input drawing]" not in plain.text
+    assert "[Input artifacts]" not in plain.text
     assert attached.text.startswith(plain.text)
-    assert attached.text.count("[Input drawing]") == 1
+    assert attached.text.count("[Input artifacts]") == 1
     assert "- sheet_page (full_page): /work/drawing.dxf" in attached.text
     assert str(instructions.workdir.host_bind_dir) not in attached.text
     assert attached.text == another.text
@@ -271,7 +271,7 @@ def test_audit_explains_how_to_report_a_missing_semantic_feature(
     rendered = render_stage(
         "audit",
         attempt_dir="/work/attempts/001",
-        intermediate_returns="",
+        intermediate_returns_dir="unavailable",
         drawing_attempt_dir="/work/attempts/round_000/drawing/003",
         ticket_responses="[]",
     )
@@ -281,11 +281,12 @@ def test_audit_explains_how_to_report_a_missing_semantic_feature(
     assert "propose one or more stable `sem_...` names" in rendered
 
 
-def test_the_returns_section_says_what_the_directory_is_for() -> None:
+def test_the_returns_section_says_what_the_directory_is_for(
+    render_stage: Callable[..., str],
+) -> None:
     """The layout line alone does not say which `ret_` a defect belongs to."""
-    section = PromptTemplate(
-        STAGES_DIR / "audit/prompts/intermediate_returns.md"
-    ).render(returns_dir=INTERMEDIATE_RETURNS_DIR)
+    returns_dir = f"/work/attempts/001/{INTERMEDIATE_RETURNS_DIR}"
+    section = render_stage("audit", intermediate_returns_dir=returns_dir)
 
     assert INTERMEDIATE_RETURNS_DIR in section
     assert "ret_" in section
@@ -297,20 +298,18 @@ def test_the_audit_reads_the_attempt_directory_the_build_actually_wrote(
 ) -> None:
     """The per-operation views are what localise a defect to one `ret_...`, and
     the auditor only looks in a directory it was told about."""
-    section = PromptTemplate(
-        STAGES_DIR / "audit/prompts/intermediate_returns.md"
-    ).render(returns_dir=INTERMEDIATE_RETURNS_DIR)
+    returns_dir = f"/work/attempts/001/{INTERMEDIATE_RETURNS_DIR}"
     rendered = render_stage(
         "audit",
         attempt_dir="/work/attempts/001",
-        intermediate_returns=section,
+        intermediate_returns_dir=returns_dir,
         drawing_attempt_dir="/work/attempts/round_000/drawing/003",
         ticket_responses="[]",
     )
 
     assert "/work/attempts/001" in rendered
     assert "/work/attempts/round_000/drawing/003" in rendered
-    assert section in rendered
+    assert f"Recorded directory: {returns_dir}" in rendered
 
 
 def test_auditor_keeps_result_out_of_the_backtrace_graph() -> None:

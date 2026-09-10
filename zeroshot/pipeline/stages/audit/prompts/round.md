@@ -10,9 +10,18 @@ The built artifacts are in $attempt_dir, laid out as:
 - `output.step` — the solid that was built
 - `projection/<view>.dxf` — the solid drawn in each view the input drawing names, with a `.png` of the same view beside it to look at. A drawing that names no view is not redrawn
 - `render_3d/<style>.png` — its perspective renders, named as the inputs are
-$intermediate_returns
 
-If the report shows the program did not produce a solid, the directory holds no projection or renders.
+If the report shows the program did not produce a solid, projection and renders of the final result are unavailable. Intermediate operation outputs may still exist.
+
+## Intermediate operation outputs
+
+Recorded directory: $intermediate_returns_dir
+
+When available, each `<ret_name>/` directory may contain `output.step`, `projection/`, and `render_3d/` for the solid a planned operation left behind. Inspect the outputs relevant to a defect to determine whether that operation built what the plan meant it to, and which `ret_...` a backtrace should name. Failed exports or renders may be absent.
+
+When the recorded directory is unavailable, audit using the remaining evidence. For a resumed run, check that recorded files are still present before relying on them.
+
+## Drawing evidence and ticket responses
 
 Latest drawing attempt at or before this snapshot: $drawing_attempt_dir. When available, it contains the accepted `drawing.json` and each transcribed view as same-stem `.dxf` and `.png` files. A missing directory means the run was resumed without its earlier attempt artifacts; use the snapshot's `drawings` and their source files instead.
 

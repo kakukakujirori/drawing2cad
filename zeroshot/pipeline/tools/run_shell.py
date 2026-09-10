@@ -29,8 +29,7 @@ def _inline_output(text: str, stream: str, workdir: SandboxWorkdir) -> str:
     tail = _MAX_INLINE_CHARS - head
     omitted = len(text) - _MAX_INLINE_CHARS
     return (
-        text[:head]
-        + f"\n\n[Omitted {omitted} characters from {stream}. "
+        text[:head] + f"\n\n[Omitted {omitted} characters from {stream}. "
         f"Captured output saved to {path}; read only the relevant sections.]\n\n"
         + text[-tail:]
     )

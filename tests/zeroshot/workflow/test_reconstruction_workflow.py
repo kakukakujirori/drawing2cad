@@ -276,7 +276,9 @@ def test_audit_cross_validation_accepts_supported_backtrace_hops() -> None:
 )
 def test_audit_cannot_accept_without_a_verified_solid(status: ExecutionStatus) -> None:
     snapshot = _snapshot()
-    snapshot.verification = VerifyOutputResult(status=status, source=_SOURCE, returncode=1)
+    snapshot.verification = VerifyOutputResult(
+        status=status, source=_SOURCE, returncode=1
+    )
     with pytest.raises(SubmissionValidationError, match="without a verified solid"):
         validate_submission(AuditReport(accepted=True, findings=[]), snapshot)
 

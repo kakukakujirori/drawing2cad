@@ -19,7 +19,10 @@ from zeroshot.pipeline.messages.contracts.stages import (
     PipelineStage,
 )
 from zeroshot.pipeline.messages.contracts.drawings import DrawingSource
-from zeroshot.pipeline.messages.contracts.reconstruction import ReconstructionSnapshot, tickets_assigned_to
+from zeroshot.pipeline.messages.contracts.reconstruction import (
+    ReconstructionSnapshot,
+    tickets_assigned_to,
+)
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
@@ -51,9 +54,18 @@ class StageInstructions:
 
     def __post_init__(self) -> None:
         if self.input_presentation_mode not in ("path", "image"):
-            raise ValueError(f"invalid input_presentation_mode: {self.input_presentation_mode}")
+            raise ValueError(
+                f"invalid input_presentation_mode: {self.input_presentation_mode}"
+            )
 
-    def build(self, state: ReconstructionState, stage: PipelineStage, *, include_artifact: bool, **extra_context: str) -> HumanMessage:
+    def build(
+        self,
+        state: ReconstructionState,
+        stage: PipelineStage,
+        *,
+        include_artifact: bool,
+        **extra_context: str,
+    ) -> HumanMessage:
         if validation_error := state.get("stage_validation_error"):
             # A re-ask, so the round's terms and guidelines already stand in
             # the transcript and only the rejection is new.
@@ -87,7 +99,7 @@ class StageInstructions:
         if include_artifact:
             (instruction,) = cast(
                 list[HumanMessage],
-                merge_message_runs([instruction, self.create_artifact_message()])
+                merge_message_runs([instruction, self.create_artifact_message()]),
             )
 
         return instruction
@@ -132,6 +144,12 @@ def build_system_prompt(
     sections_templates = [PromptTemplate(prompt_path)]
     if "reconstruction_path" in context:
         stages_dir = Path(__file__).parent.parent
-        sections_templates.append(PromptTemplate(stages_dir / "_base" / "prompts" / "reconstruction_history.md"))
-    system_texts = "\n\n".join(template.render(**context) for template in sections_templates)
+        sections_templates.append(
+            PromptTemplate(
+                stages_dir / "_base" / "prompts" / "reconstruction_history.md"
+            )
+        )
+    system_texts = "\n\n".join(
+        template.render(**context) for template in sections_templates
+    )
     return SystemMessage(content_blocks=[create_text_block(system_texts)])

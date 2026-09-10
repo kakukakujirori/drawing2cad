@@ -198,9 +198,7 @@ def build_feedback_message_blocks(
         if manifest.drawing is not None
         else SandboxedArtifact([], workdir)
     )
-    failed = [
-        f"- {name}: unavailable ({why})" for name, why in manifest.errors.items()
-    ]
+    failed = [f"- {name}: unavailable ({why})" for name, why in manifest.errors.items()]
     if not presented.sheets and not failed:
         return []
 

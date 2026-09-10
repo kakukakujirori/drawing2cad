@@ -4,7 +4,6 @@ import pytest
 
 from tests.zeroshot.contracts import drawing, evidence
 from zeroshot.pipeline.messages import (
-    ArtifactPresenter,
     DrawingSource,
     View,
     unread_sheet,
@@ -41,7 +40,7 @@ def _verifier(tmp_path: Path) -> DrawingVerifier:
     return DrawingVerifier(
         workdir=workdir,
         attempt_store=AttemptStore(workdir, round_source=lambda: 0),
-        artifact_presenter=ArtifactPresenter(input_mode="path", feedback_mode="path"),
+        feedback_presentation_mode="path",
     )
 
 

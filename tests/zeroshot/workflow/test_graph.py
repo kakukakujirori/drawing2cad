@@ -44,13 +44,12 @@ from zeroshot.pipeline.messages.contracts.reconstruction import (
     TicketResponse,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages.coding import stage as coding_stage_module
 from zeroshot.pipeline.verification import (
     ExecutionStatus,
-    StepRenderer,
     VerifyOutputResult,
 )
 from zeroshot.pipeline.workflow import create_agent
-from zeroshot.pipeline.workflow import graph as graph_module
 from zeroshot.pipeline.workflow.graph import AgentBuilder, create_reconstruction_graph
 from zeroshot.pipeline.workflow.reconstruction import (
     advance_reconstruction,
@@ -321,7 +320,6 @@ def _graph(
             default_timeout_s=10,
         ),
         sandbox_workdir=workdir,
-        renderer=StepRenderer(timeout_s=60.0),
         artifact_presenter=_artifact_presenter(),
         input_manifest=InputManifest(
             sample_id="test",
@@ -360,7 +358,7 @@ def _stub_verification(
             return []
 
     monkeypatch.setattr(
-        graph_module,
+        coding_stage_module,
         "OutputVerifier",
         lambda **kwargs: StubVerifier(
             workdir=kwargs["workdir"],
@@ -481,8 +479,10 @@ def test_an_accepted_round_is_integrated_and_persisted(
     assert "/work/attempts/round_000/coding/000" in audit_instruction
     assert "/work/attempts/round_000/drawing/000" in audit_instruction
     assert "Addressed ticket_initial in coding." in audit_instruction
-    assert ("intermediate_returns/<ret_name>/" in audit_instruction) is has_returns
-    assert ("what the plan meant it to" in audit_instruction) is has_returns
+    returns_dir = "/work/attempts/round_000/coding/000/intermediate_returns"
+    assert (returns_dir in audit_instruction) is has_returns
+    assert ("Recorded directory: unavailable" in audit_instruction) is not has_returns
+    assert "what the plan meant it to" in audit_instruction
 
 
 def test_a_semantics_seed_starts_at_operations_without_calling_semantics(
@@ -790,6 +790,8 @@ def test_an_invalid_audit_is_retried_against_the_same_snapshot(
     assert len(auditor.received_messages) == 2
     assert "Audit Validation Error" in _last_instruction(auditor.received_messages[1])
     assert "op_missing" in _last_instruction(auditor.received_messages[1])
+    assert "[Input artifacts]" not in _last_instruction(auditor.received_messages[1])
+    assert "Recorded directory:" not in _last_instruction(auditor.received_messages[1])
     assert len(result["reconstruction"].snapshots) == 1
     assert result["audit_report"].accepted is True
     assert result["stage_validation_error"] is None

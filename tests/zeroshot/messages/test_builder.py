@@ -1,15 +1,16 @@
 """What a turn is shown of the run's files, and what it is never shown.
 
-The presenter is the only thing allowed to turn a host path into something the
-model receives, so most of what is checked here is an absence: no host path, no
+Input instructions and verification feedback translate host paths before the
+model receives them. Most of what is checked here is an absence: no host path, no
 file contents, and nothing about a sheet the run does not offer.
 """
 
 import base64
 from pathlib import Path
-from typing import Any
+from typing import Literal
 
 import pytest
+from langchain_core.messages.content import ContentBlock
 
 from zeroshot.pipeline.messages import (
     ArtifactPresenter,
@@ -19,8 +20,10 @@ from zeroshot.pipeline.messages import (
     View,
     unread_sheet,
 )
+from zeroshot.pipeline.messages.artifact import build_feedback_message_blocks
 from zeroshot.pipeline.messages.contracts import CropOf, DrawingSheet
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages._base.prompt import StageInstructions
 
 
 def _write(path: Path, content: bytes) -> Path:
@@ -52,6 +55,24 @@ def _input_manifest(tmp_path: Path, *sheets: DrawingSheet) -> InputManifest:
     )
 
 
+def _input_blocks(
+    manifest: InputManifest,
+    workdir: SandboxWorkdir,
+    *,
+    mode: Literal["path", "image"] = "path",
+) -> list[ContentBlock]:
+    return (
+        StageInstructions(
+            input_artifact=manifest.drawing,
+            input_presentation_mode=mode,
+            prompt_context={},
+            workdir=workdir,
+        )
+        .create_artifact_message()
+        .content_blocks
+    )
+
+
 def _feedback_manifest(
     *,
     sheets: tuple[DrawingSheet, ...] = (),
@@ -78,8 +99,8 @@ def workdir(tmp_path: Path) -> SandboxWorkdir:
     return SandboxWorkdir(host_bind_dir=tmp_path)
 
 
-def _text(blocks: list[dict[str, Any]]) -> str:
-    return "\n".join(block["text"] for block in blocks if block.get("type") == "text")
+def _text(blocks: list[ContentBlock]) -> str:
+    return "\n".join(block["text"] for block in blocks if block["type"] == "text")
 
 
 @pytest.mark.parametrize(
@@ -100,7 +121,7 @@ def test_a_sheet_is_named_where_the_model_can_open_it_and_nowhere_else(
     manifest = _input_manifest(tmp_path)
     (host,) = manifest.drawing.paths()
 
-    text = _text(_presenter().build_input_message_blocks(manifest, workdir))
+    text = _text(_input_blocks(manifest, workdir))
 
     assert str(workdir.host_to_sandbox_path(host)) in text
     assert str(host) not in text
@@ -115,7 +136,7 @@ def test_a_sheet_is_announced_with_the_view_it_holds(
         tmp_path, _drawing_sheet(tmp_path), _pictorial(tmp_path, "hlg")
     )
 
-    text = _text(_presenter().build_input_message_blocks(manifest, workdir))
+    text = _text(_input_blocks(manifest, workdir))
 
     assert "- sheet_drawing (full_page):" in text
     assert "- sheet_hlg (perspective):" in text
@@ -126,7 +147,7 @@ def test_a_full_page_says_its_views_are_told_apart_by_position(
 ) -> None:
     manifest = _input_manifest(tmp_path)
 
-    text = _text(_presenter().build_input_message_blocks(manifest, workdir))
+    text = _text(_input_blocks(manifest, workdir))
 
     assert "where they sit on the page" in text
 
@@ -137,15 +158,15 @@ def test_the_frame_is_not_said_here_because_it_belongs_to_the_round(
     """StageInstructions supplies the shared coordinate convention separately."""
     manifest = _input_manifest(tmp_path)
 
-    text = _text(_presenter().build_input_message_blocks(manifest, workdir))
+    text = _text(_input_blocks(manifest, workdir))
 
     assert "up=+y" not in text
 
 
-def test_the_advice_a_format_needs_follows_the_sheets_a_stage_reads(
+def test_input_lists_files_without_stage_specific_measurement_advice(
     tmp_path: Path, workdir: SandboxWorkdir
 ) -> None:
-    """A pictorial fixes no axes, so nothing is measured off one."""
+    """Drawing measurement advice belongs to the drawings stage guidelines."""
     vector = _input_manifest(
         tmp_path, _drawing_sheet(tmp_path), _pictorial(tmp_path, "hlg")
     )
@@ -156,13 +177,15 @@ def test_the_advice_a_format_needs_follows_the_sheets_a_stage_reads(
         ),
     )
 
-    vector_text = _text(_presenter().build_input_message_blocks(vector, workdir))
-    raster_text = _text(_presenter().build_input_message_blocks(raster, workdir))
+    vector_text = _text(_input_blocks(vector, workdir))
+    raster_text = _text(_input_blocks(raster, workdir))
 
-    assert "ezdxf" in vector_text
-    assert "OpenCV" not in vector_text
-    assert "OpenCV" in raster_text
-    assert "ezdxf" not in raster_text
+    assert "/work/input.dxf" in vector_text
+    assert "/work/hlg.png" in vector_text
+    assert "/work/page.png" in raster_text
+    for text in (vector_text, raster_text):
+        assert "ezdxf" not in text
+        assert "OpenCV" not in text
 
 
 def test_a_sheet_cut_out_of_another_is_named_like_any_other(
@@ -182,7 +205,7 @@ def test_a_sheet_cut_out_of_another_is_named_like_any_other(
     )
     manifest = _input_manifest(tmp_path, page, crop)
 
-    text = _text(_presenter().build_input_message_blocks(manifest, workdir))
+    text = _text(_input_blocks(manifest, workdir))
 
     assert "- sheet_front (front):" in text
 
@@ -194,15 +217,15 @@ def test_path_mode_attaches_nothing_and_image_mode_attaches_every_raster(
         tmp_path, _drawing_sheet(tmp_path), _pictorial(tmp_path, "hlg")
     )
 
-    by_path = _presenter().build_input_message_blocks(manifest, workdir)
-    by_image = _presenter(input_mode="image").build_input_message_blocks(
-        manifest, workdir
-    )
+    by_path = _input_blocks(manifest, workdir)
+    by_image = _input_blocks(manifest, workdir, mode="image")
 
     assert [block["type"] for block in by_path] == ["text"]
     assert [block["type"] for block in by_image] == ["text", "text", "image"]
-    assert base64.b64decode(by_image[2]["base64"]) == b"hlg"
-    assert by_image[2]["mime_type"] == "image/png"
+    image = by_image[2]
+    assert image["type"] == "image"
+    assert base64.b64decode(image["base64"]) == b"hlg"
+    assert image["mime_type"] == "image/png"
 
 
 def test_a_verification_that_drew_nothing_is_shown_as_nothing(
@@ -210,12 +233,7 @@ def test_a_verification_that_drew_nothing_is_shown_as_nothing(
 ) -> None:
     manifest = _feedback_manifest()
 
-    assert (
-        _presenter(feedback_mode="path").build_feedback_message_blocks(
-            manifest, workdir
-        )
-        == []
-    )
+    assert build_feedback_message_blocks(manifest, workdir, mode="path") == []
 
 
 def test_a_projected_sheet_is_named_and_a_missing_one_is_explained(
@@ -230,11 +248,7 @@ def test_a_projected_sheet_is_named_and_a_missing_one_is_explained(
         sheets=(drawn,), errors={"sheet_hlg": "renderer failed"}
     )
 
-    text = _text(
-        _presenter(feedback_mode="path").build_feedback_message_blocks(
-            manifest, workdir
-        )
-    )
+    text = _text(build_feedback_message_blocks(manifest, workdir, mode="path"))
 
     assert str(workdir.host_to_sandbox_path(Path(drawn.file or ""))) in text
     assert str(drawn.file) not in text
@@ -246,8 +260,6 @@ def test_withholding_the_feedback_also_withholds_why_it_is_missing(
 ) -> None:
     manifest = _feedback_manifest(errors={"sheet_hlg": "boom"})
 
-    blocks = _presenter(feedback_mode="none").build_feedback_message_blocks(
-        manifest, workdir
-    )
+    blocks = build_feedback_message_blocks(manifest, workdir, mode="none")
 
     assert blocks == []

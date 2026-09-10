@@ -1,11 +1,10 @@
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
-from hydra.utils import instantiate
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 
 from zeroshot import run_pipeline
 from zeroshot.pipeline.messages import (
@@ -15,7 +14,6 @@ from zeroshot.pipeline.messages import (
     View,
     unread_sheet,
 )
-from zeroshot.pipeline.verification import StepRenderer
 from zeroshot.pipeline.workflow import (
     ReconstructionState,
 )
@@ -32,10 +30,6 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
             "max_audit_reject_count": 7,
         },
         "console": None,
-        "renderer": {
-            "_target_": "zeroshot.pipeline.verification.StepRenderer",
-            "timeout_s": 42.0,
-        },
         "artifact_presenter": {
             "_target_": "zeroshot.pipeline.messages.ArtifactPresenter",
             "input_mode": "path",
@@ -120,10 +114,6 @@ def test_run_composes_dependencies_and_manifest(
                 ),
                 "responses": ["done"],
             },
-            "renderer": {
-                "_target_": "zeroshot.pipeline.verification.StepRenderer",
-                "timeout_s": 42.0,
-            },
             "sandbox_runner": {
                 "python_executable": sys.executable,
                 "default_timeout_s": 30.0,
@@ -156,8 +146,6 @@ def test_run_composes_dependencies_and_manifest(
     assert runner_options["artifact_root"] == artifact_root
     assert runner_options["console_reporter"] is None
     assert runner_options["resume_from"] == tmp_path / "reconstruction.json"
-    assert isinstance(runner_options["renderer"], StepRenderer)
-    assert runner_options["renderer"].timeout_s == 42.0
     graph_factory = runner_options["graph_factory"]
     assert graph_factory.func is create_reconstruction_graph
     assert graph_factory.keywords == {"max_audit_reject_count": 7}
@@ -212,49 +200,6 @@ def test_a_shared_workflow_requires_configured_compaction(
         match="share_thread=true requires.*compact_between_stages",
     ):
         run_pipeline._validate_workflow_config(config)
-
-
-def test_shipped_config_actually_builds_a_renderer() -> None:
-    """The renderer is optional in code, so only the config decides whether
-    visual feedback happens at all.  A default that quietly omits it renders
-    nothing while every test still passes."""
-    config = cast(
-        DictConfig,
-        OmegaConf.load(Path(run_pipeline.__file__).parent / "configs/default.yaml"),
-    )
-
-    assert config.get("renderer") is not None
-    renderer = instantiate(config.renderer)
-    assert isinstance(renderer, StepRenderer)
-    assert renderer.timeout_s > 0
-
-
-def test_null_renderer_falls_back_to_the_default_renderer(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """Rendering is not the visual-feedback switch, so it cannot be turned off.
-
-    Hydra yields None for `renderer: null`; that must mean the default
-    renderer, never a None that only surfaces once a candidate first verifies.
-    """
-    captured: dict[str, Any] = {}
-
-    class StubPipelineRunner:
-        def __init__(self, **kwargs: Any) -> None:
-            captured["runner_options"] = kwargs
-
-        def run_sample(self, manifest: InputManifest) -> ReconstructionState:
-            return ReconstructionState()
-
-    monkeypatch.setattr(run_pipeline, "PipelineRunner", StubPipelineRunner)
-    dxf_path = tmp_path / "input.dxf"
-    dxf_path.write_text("DXF_FIXTURE", encoding="utf-8")
-
-    run_pipeline.run(_config(tmp_path, dxf_path, renderer=None))
-
-    renderer = captured["runner_options"]["renderer"]
-    assert isinstance(renderer, StepRenderer)
-    assert renderer.timeout_s == StepRenderer().timeout_s
 
 
 def test_a_skipped_sample_is_neither_recorded_nor_scored(

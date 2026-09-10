@@ -47,14 +47,13 @@ from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification import (
     CadQueryExecutor,
     ExecutionStatus,
-    StepRenderer,
     VerifyOutputResult,
 )
 from zeroshot.pipeline.workflow import (
     StopReason,
     create_agent,
 )
-from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
+from zeroshot.pipeline.workflow.graph import AgentBuilder, create_reconstruction_graph
 from zeroshot.pipeline.workflow.reconstruction import (
     advance_reconstruction,
     save_reconstruction,
@@ -62,7 +61,9 @@ from zeroshot.pipeline.workflow.reconstruction import (
 )
 
 
-def _agent(role: str, model: BaseChatModel, *, max_turns: int = 30, **overrides: Any):
+def _agent(
+    role: str, model: BaseChatModel, *, max_turns: int = 30, **overrides: Any
+) -> AgentBuilder:
     return partial(
         create_agent, role=role, model=model, max_turns=max_turns, **overrides
     )
@@ -504,10 +505,6 @@ def _sandbox_runner() -> SandboxRunner:
     )
 
 
-def _renderer() -> StepRenderer:
-    return StepRenderer(timeout_s=120.0)
-
-
 def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     tmp_path: Path,
 ) -> None:
@@ -587,7 +584,6 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
             default_timeout_s=10,
         ),
         artifact_root=tmp_path / "artifacts",
-        renderer=_renderer(),
     )
 
     result = runner.run_sample(manifest)
@@ -669,7 +665,21 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     ).read_bytes() == b"ALLOWED_RENDER"
     assert not (saved_workdir / "inputs" / "sheet_hidden.png").exists()
     assert (saved_workdir / "scratch.txt").read_text(encoding="utf-8") == "persisted"
-    assert (saved_workdir / "attempts").is_dir()
+    # The coding stage renders even when feedback_mode="none"; the auditor
+    # still needs these artifacts, without a renderer supplied by the runner.
+    snapshot = result["reconstruction"].snapshots[-1]
+    assert snapshot.verification is not None
+    coding_attempt = (
+        saved_workdir
+        / "attempts"
+        / f"round_{snapshot.round:03d}"
+        / "coding"
+        / str(snapshot.verification.verification_id)
+    )
+    assert (coding_attempt / "output.step").is_file()
+    assert (coding_attempt / "projection" / "front.dxf").is_file()
+    assert (coding_attempt / "projection" / "front.png").is_file()
+    assert (coding_attempt / "render_3d" / "hlg_perspective.png").is_file()
 
     assert (saved_workdir / "events.jsonl").read_text(encoding="utf-8") == "FORGED"
 
@@ -755,7 +765,6 @@ def test_run_sample_preserves_workdir_when_graph_fails(tmp_path: Path) -> None:
         artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
-        renderer=_renderer(),
     )
 
     with pytest.raises(AssertionError, match="ran out of responses"):
@@ -806,7 +815,6 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
         artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
-        renderer=_renderer(),
         console_reporter=ConsoleReporter(
             Console(
                 file=console_output,
@@ -900,7 +908,6 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
         artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
-        renderer=_renderer(),
     )
 
     result = runner.run_sample(manifest)
@@ -953,7 +960,6 @@ def _runner_for_rerun(
         artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
-        renderer=_renderer(),
         on_existing=on_existing,  # type: ignore[arg-type]
         resume_from=resume_from,
     )
@@ -1012,7 +1018,6 @@ def test_a_failed_sample_is_not_treated_as_completed(tmp_path: Path) -> None:
         artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
-        renderer=_renderer(),
         on_existing="skip",
     )
     with pytest.raises(AssertionError, match="ran out of responses"):
@@ -1072,14 +1077,12 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
         artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
-        renderer=_renderer(),
         graph_factory=recording_factory,
     ).run_sample(manifest)
 
     assert set(captured) == {
         "sandbox_runner",
         "sandbox_workdir",
-        "renderer",
         "artifact_presenter",
         "input_manifest",
         "output_filename",
@@ -1110,7 +1113,6 @@ def test_a_graphs_own_settings_reach_it_through_the_factory(tmp_path: Path) -> N
         artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=tmp_path / "artifacts",
-        renderer=_renderer(),
         graph_factory=_graph_factory(
             coder,
             max_turns=2,
@@ -1137,7 +1139,6 @@ def test_retry_redoes_an_interrupted_sample(tmp_path: Path) -> None:
             artifact_presenter=_artifact_presenter_without_renders(),
             sandbox_runner=_sandbox_runner(),
             artifact_root=artifact_root,
-            renderer=_renderer(),
         ).run_sample(manifest)
 
     sample_root = artifact_root / manifest.sample_id
@@ -1220,7 +1221,6 @@ def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
         artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
-        renderer=_renderer(),
         graph_factory=_graph_factory(
             model,
             max_turns=2,
@@ -1261,7 +1261,6 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
         artifact_presenter=_artifact_presenter_without_renders(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
-        renderer=_renderer(),
         graph_factory=_graph_factory(
             ScriptedChatModel(responses=(_writing_model(), _CODING_ANSWER)),
             announce_turns=False,
@@ -1330,7 +1329,6 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             artifact_presenter=_artifact_presenter_without_renders(),
             sandbox_runner=_sandbox_runner(),
             artifact_root=artifact_root,
-            renderer=_renderer(),
             graph_factory=_graph_factory(
                 ScriptedChatModel(responses=responses),
                 max_turns=2,
