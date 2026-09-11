@@ -1,11 +1,23 @@
 """Message Compaction"""
 
 from collections.abc import Sequence
+from functools import partial
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import create_text_block
 from langchain_core.runnables import RunnableConfig
+from openai import LengthFinishReasonError
+
+from zeroshot.pipeline.workflow.middleware.connection_retry import (
+    ModelConnectionRetry,
+    report_model_retry,
+)
+
+
+class InvalidCompactionSummary(ValueError):
+    """A summary that cannot safely replace the original conversation."""
+
 
 COMPACTION_INSTRUCTION = """\
 You are about to continue this same conversation with everything above it
@@ -71,6 +83,7 @@ def compact_transcript(
     config: RunnableConfig | None = None,
     keep_head: int = 0,
     keep_tail: int = 0,
+    max_retries: int = 5,
 ) -> list[AnyMessage]:
     """Compact transcript messages into a summary while preserving initial inputs.
 
@@ -82,12 +95,16 @@ def compact_transcript(
     would otherwise cut a tool call away from its answer.
 
     The summary is wrapped as a `HumanMessage` to serve as context/input rather
-    than ungrounded past model output.
+    than ungrounded past model output. Transport failures and rejected summaries
+    each get up to `max_retries` retries, counted separately as in agent calls.
+    Exhaustion raises without changing the supplied transcript.
     """
     if keep_head < 0:
         raise ValueError(f"{keep_head=} must not be negative")
     if keep_tail < 0:
         raise ValueError(f"{keep_tail=} must not be negative")
+    if max_retries < 0:
+        raise ValueError(f"{max_retries=} must not be negative")
 
     head_end = _past_answers_to_earlier_calls(
         transcript, min(keep_head, len(transcript))
@@ -98,19 +115,62 @@ def compact_transcript(
     if tail_start <= head_end:
         return list(transcript)
 
-    notes = model.invoke(
-        [
-            *transcript[:tail_start],
-            HumanMessage(content_blocks=[create_text_block(COMPACTION_INSTRUCTION)]),
-        ],
-        config=config,
-    )
+    instruction = COMPACTION_INSTRUCTION
+    transport = ModelConnectionRetry(max_retries, role="compaction")
+    rejected = 0
+    while True:
+        try:
+            notes = transport.invoke(
+                partial(
+                    model.invoke,
+                    [*transcript[:tail_start], HumanMessage(content=instruction)],
+                    config=config,
+                )
+            )
+            summary = notes.text.strip()
+            metadata = notes.response_metadata
+            if metadata.get("finish_reason") in {
+                "length",
+                "content_filter",
+            } or metadata.get("status") in {"incomplete", "failed", "cancelled"}:
+                raise InvalidCompactionSummary(
+                    "Compaction returned an incomplete summary "
+                    f"(finish_reason={metadata.get('finish_reason')}, "
+                    f"status={metadata.get('status')})"
+                )
+            if not summary:
+                raise InvalidCompactionSummary("Compaction returned an empty summary")
+            if notes.tool_calls or notes.invalid_tool_calls:
+                raise InvalidCompactionSummary(
+                    "Compaction returned tool calls, not notes"
+                )
+        except (InvalidCompactionSummary, LengthFinishReasonError) as error:
+            retrying = rejected < max_retries
+            report_model_retry(
+                error,
+                role="compaction",
+                attempt=rejected,
+                max_retries=max_retries,
+                retrying=retrying,
+                adjusted=True,
+            )
+            if not retrying:
+                raise
+            rejected += 1
+            # Replace the instruction without accumulating partial summaries
+            # or correction prompts. The original context stays intact.
+            instruction = (
+                COMPACTION_INSTRUCTION
+                + "\nYour previous summary was empty or incomplete, or used tools. "
+                "Return shorter, complete notes covering every section. "
+                "Write the notes now; do not call tools."
+            )
+        else:
+            break
     return [
         *transcript[:head_end],
         HumanMessage(
-            content_blocks=[
-                create_text_block(SUMMARY_PREAMBLE.format(notes=notes.text.strip()))
-            ]
+            content_blocks=[create_text_block(SUMMARY_PREAMBLE.format(notes=summary))]
         ),
         *transcript[tail_start:],
     ]

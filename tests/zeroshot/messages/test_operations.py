@@ -130,7 +130,7 @@ def test_an_operation_cannot_wait_on_itself() -> None:
 
 
 def test_a_cycle_is_refused_and_named() -> None:
-    """`middleware/model_retry.py` hands this message back for a free retry, so
+    """`middleware/agent_retry.py` hands this message back for a free retry, so
     it has to say which dependency to drop rather than that one exists."""
     # `->` reads as "waits on", so the chain runs the way the dependencies do.
     with pytest.raises(ValidationError, match=r"op_a -> op_b -> op_c -> op_a"):

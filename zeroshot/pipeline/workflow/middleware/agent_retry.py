@@ -1,14 +1,10 @@
-"""Re-issue a model call the client could not retry itself, and say so."""
+"""Agent middleware for answer correction, backed by shared transport retries."""
 
-import asyncio
 import json
-import random
-import re
-import time
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any, override
 
-import httpx
 from langchain.agents import AgentState as _AgentState
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.agents.structured_output import (
@@ -17,8 +13,9 @@ from langchain.agents.structured_output import (
     StructuredOutputValidationError,
 )
 from langchain_core.messages import AIMessage, HumanMessage
-from openai import APIConnectionError, APIError, APIStatusError, LengthFinishReasonError
-from openrouter.errors import OpenRouterError
+from openai import LengthFinishReasonError
+
+from .connection_retry import ModelConnectionRetry, report_model_retry
 
 
 class UnansweredModelCall(Exception):
@@ -76,30 +73,26 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         error: Exception,
         *,
         retrying: bool,
-        adjusted: bool,
         response: ModelResponse[Any] | None = None,
-        max_attempts: int | None = None,
     ) -> None:
         """Say which attempt failed, why, and what happens next."""
-        details: dict[str, object] = {
-            "role": self.role,
-            "attempt": attempt + 1,
-            "max_attempts": (self.max_retries if max_attempts is None else max_attempts)
-            + 1,
-            "error_type": type(error).__qualname__,
-            "error": str(error)[:500],
-            "retrying": retrying,
-            "request_adjusted": adjusted,
-        }
-        if isinstance(error, (APIStatusError, OpenRouterError)):
-            details["status_code"] = error.status_code
+        details: dict[str, object] = {}
         if isinstance(error, StructuredOutputError):
             # The retry request carries this response only in memory. Preserve
             # the rejected raw output so a contract failure is reproducible.
             details["failed_response"] = _extract_text_or_tool_args(error.ai_message)
         if isinstance(error, UnansweredModelCall) and response is not None:
             details.update(_unanswered_diagnosis(response))
-        request.runtime.stream_writer({"model_retry": details})
+        report_model_retry(
+            error,
+            role=self.role,
+            attempt=attempt,
+            max_retries=self.max_retries,
+            retrying=retrying,
+            adjusted=True,
+            details=details,
+            stream_writer=request.runtime.stream_writer,
+        )
 
     @staticmethod
     def _retry_length_limited_request(
@@ -157,13 +150,6 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             ]
         )
 
-    @staticmethod
-    def _backoff_delay(retry_number: int) -> float:
-        """Match LangChain's default exponential backoff with ±25% jitter."""
-        delay = min(2.0**retry_number, 60.0)
-        jitter = delay * 0.25
-        return max(0.0, delay + random.uniform(-jitter, jitter))
-
     @override
     def wrap_model_call(
         self,
@@ -172,48 +158,23 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     ) -> ModelResponse[Any]:
         current_request = request
         rejected = 0
-        dropped = 0
+        transport = ModelConnectionRetry(
+            self.max_transport_retries, self.role, request.runtime.stream_writer
+        )
         while True:
             try:
-                response = handler(current_request)
-            except LengthFinishReasonError as error:
+                response = transport.invoke(partial(handler, current_request))
+            except (LengthFinishReasonError, StructuredOutputError) as error:
                 retrying = rejected < self.max_retries
-                self._report(
-                    current_request, rejected, error, retrying=retrying, adjusted=True
-                )
+                self._report(current_request, rejected, error, retrying=retrying)
                 if not retrying:
                     return _gave_up_answering(rejected + 1, error)
                 rejected += 1
-                current_request = self._retry_length_limited_request(current_request)
-            except StructuredOutputError as error:
-                retrying = rejected < self.max_retries
-                self._report(
-                    current_request, rejected, error, retrying=retrying, adjusted=True
+                current_request = (
+                    self._retry_length_limited_request(current_request)
+                    if isinstance(error, LengthFinishReasonError)
+                    else self._retry_structured_output_request(current_request, error)
                 )
-                if not retrying:
-                    return _gave_up_answering(rejected + 1, error)
-                rejected += 1
-                current_request = self._retry_structured_output_request(
-                    current_request,
-                    error,
-                )
-            except Exception as error:
-                retrying = (
-                    _is_retryable_model_error(error)
-                    and dropped < self.max_transport_retries
-                )
-                self._report(
-                    current_request,
-                    dropped,
-                    error,
-                    retrying=retrying,
-                    adjusted=False,
-                    max_attempts=self.max_transport_retries,
-                )
-                if not retrying:
-                    raise
-                dropped += 1
-                time.sleep(self._backoff_delay(dropped))
             else:
                 if not _is_unanswered(response):
                     return response
@@ -224,7 +185,6 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     rejected,
                     unanswered,
                     retrying=retrying,
-                    adjusted=True,
                     response=response,
                 )
                 if not retrying:
@@ -244,48 +204,23 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     ) -> ModelResponse[Any]:
         current_request = request
         rejected = 0
-        dropped = 0
+        transport = ModelConnectionRetry(
+            self.max_transport_retries, self.role, request.runtime.stream_writer
+        )
         while True:
             try:
-                response = await handler(current_request)
-            except LengthFinishReasonError as error:
+                response = await transport.ainvoke(partial(handler, current_request))
+            except (LengthFinishReasonError, StructuredOutputError) as error:
                 retrying = rejected < self.max_retries
-                self._report(
-                    current_request, rejected, error, retrying=retrying, adjusted=True
-                )
+                self._report(current_request, rejected, error, retrying=retrying)
                 if not retrying:
                     return _gave_up_answering(rejected + 1, error)
                 rejected += 1
-                current_request = self._retry_length_limited_request(current_request)
-            except StructuredOutputError as error:
-                retrying = rejected < self.max_retries
-                self._report(
-                    current_request, rejected, error, retrying=retrying, adjusted=True
+                current_request = (
+                    self._retry_length_limited_request(current_request)
+                    if isinstance(error, LengthFinishReasonError)
+                    else self._retry_structured_output_request(current_request, error)
                 )
-                if not retrying:
-                    return _gave_up_answering(rejected + 1, error)
-                rejected += 1
-                current_request = self._retry_structured_output_request(
-                    current_request,
-                    error,
-                )
-            except Exception as error:
-                retrying = (
-                    _is_retryable_model_error(error)
-                    and dropped < self.max_transport_retries
-                )
-                self._report(
-                    current_request,
-                    dropped,
-                    error,
-                    retrying=retrying,
-                    adjusted=False,
-                    max_attempts=self.max_transport_retries,
-                )
-                if not retrying:
-                    raise
-                dropped += 1
-                await asyncio.sleep(self._backoff_delay(dropped))
             else:
                 if not _is_unanswered(response):
                     return response
@@ -296,7 +231,6 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     rejected,
                     unanswered,
                     retrying=retrying,
-                    adjusted=True,
                     response=response,
                 )
                 if not retrying:
@@ -481,42 +415,3 @@ def _outline(value: Any) -> Any:
     if isinstance(value, dict):
         return f"<{len(value)} keys>" if value else {}
     return value
-
-
-_OPENROUTER_STREAM_ERROR = re.compile(
-    r"^OpenRouter API returned an error during streaming:.*\(code: (\d+)\)",
-    re.DOTALL,
-)
-
-
-def _openrouter_stream_status(exception: Exception) -> int | None:
-    """Return the HTTP status behind a streaming failure, or None if not one.
-
-    The library puts the status only in the message text, so a reworded message
-    silently stops matching — costing a retry, not correctness.
-    """
-    if type(exception) is not ValueError:
-        return None
-    match = _OPENROUTER_STREAM_ERROR.match(str(exception))
-    return int(match[1]) if match else None
-
-
-def _is_retryable_model_error(exception: Exception) -> bool:
-    """Whether to re-issue this call. SDK retries are off, so this is the policy.
-
-    ``APIError`` is matched by exact class, not isinstance: Codex reports an
-    overloaded stream as one after HTTP 200. ``TimeoutException`` is a sibling
-    of ``NetworkError``, not a subclass, so it has to be named.
-    """
-    if (status := _openrouter_stream_status(exception)) is not None:
-        return status == 429 or status >= 500
-    if type(exception) is APIError:
-        return True
-    if isinstance(exception, APIConnectionError):
-        return True
-    if isinstance(exception, (APIStatusError, OpenRouterError)):
-        return exception.status_code == 429 or exception.status_code >= 500
-    return isinstance(
-        exception,
-        (httpx.NetworkError, httpx.ProtocolError, httpx.TimeoutException),
-    )

@@ -228,12 +228,7 @@ def _check_semantic_name(name: str) -> None:
 
 
 def _first_cycle(operations: Iterable[Operation]) -> list[str]:
-    """One cycle, named, or an empty list.
-
-    Named rather than merely detected because the message is what the model
-    reads back through `middleware/model_retry.py`: "base -> bore -> base" says
-    which dependency to drop, where "the plan is cyclic" does not.
-    """
+    """Return one closed dependency cycle, or an empty list if none exists."""
     needs = {operation.name: list(operation.depends_on) for operation in operations}
     done: set[str] = set()
     path: list[str] = []
