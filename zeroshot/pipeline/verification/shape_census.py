@@ -111,11 +111,9 @@ def read_census(step_path: Path) -> ShapeCensus | None:
             cq.importers.importStep(str(step_path)).vals()  # type: ignore[arg-type]
         )
         volume = shape.Volume()
-    except (OSError, ValueError, RuntimeError, IndexError):
-        # A build that reached here has already been accepted as one valid
-        # solid, so this should not fire. It is here because a census is a
-        # diagnostic: failing to count what was built must not turn a build
-        # that worked into a run that crashed.
+    except (OSError, ValueError, RuntimeError, IndexError, StopIteration):
+        # CadQuery's mass calculation can encounter an empty nested compound
+        # in an intermediate return. This diagnostic must not stop verification.
         return None
 
     return ShapeCensus(

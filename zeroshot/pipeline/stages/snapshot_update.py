@@ -45,8 +45,8 @@ def build_snapshot_update(
 ) -> SnapshotUpdate:
     """Merge against the previous round and validate against the current one.
 
-    Drawing and coding use verified workspace output; semantics and operations
-    use structured revisions. This function neither runs verifiers nor saves state.
+    Verified artifacts are used directly; revision submissions are merged.
+    This function neither runs verifiers nor saves state.
     """
     if stage in {PipelineStage.DRAWINGS, PipelineStage.CODING}:
         deliverable = workspace_output

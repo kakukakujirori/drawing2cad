@@ -719,3 +719,27 @@ result = ret_apart
     assert counted.solids == 2
     # Both boxes, not just the one `.val()` would have returned.
     assert counted.volume == pytest.approx(2000.0)
+
+
+def test_an_empty_nested_compound_does_not_abort_verification(tmp_path: Path) -> None:
+    executor = CadQueryExecutor(
+        SandboxRunner(python_executable=Path(sys.executable), default_timeout_s=60.0)
+    )
+    source = """\
+import cadquery as cq
+
+result = cq.Workplane("XY").box(1, 2, 3)
+ret_nested = cq.Compound.makeCompound([cq.Compound.makeCompound([]), result.val()])
+"""
+
+    report = executor.execute(
+        _write_model(tmp_path, source),
+        intermediate_returns_dir=tmp_path / "intermediate_returns",
+    )
+
+    assert report.status is ExecutionStatus.VERIFIED
+    assert report.census is not None
+    assert report.census.volume == pytest.approx(6.0)
+    output = report.intermediate_returns[0]
+    assert output.step_path is not None and output.step_path.is_file()
+    assert output.census is None

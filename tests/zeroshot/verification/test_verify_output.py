@@ -846,6 +846,14 @@ def test_the_table_of_nothing_is_empty() -> None:
     assert _census_table(()) == ""
 
 
+def test_an_exported_return_without_census_is_not_reported_as_missing() -> None:
+    output = IntermediateReturn("ret_nested", step_path=Path("output.step"))
+
+    assert _census_table([output]) == (
+        "ret_nested  STEP exported; shape census unavailable"
+    )
+
+
 def test_every_kept_return_is_drawn_beside_its_step(tmp_path: Path) -> None:
     executor = StubCadQueryExecutor(
         _execution_report(), return_names=("ret_base", "ret_hole")

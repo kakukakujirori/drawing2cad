@@ -61,7 +61,12 @@ def _census_table(returns: Sequence[IntermediateReturn]) -> str:
     previous: ShapeCensus | None = None
     for output in returns:
         if output.census is None:
-            lines.append(f"{output.name:<{width}}  not exported: {output.error}")
+            reason = (
+                "STEP exported; shape census unavailable"
+                if output.step_path is not None
+                else f"not exported: {output.error}"
+            )
+            lines.append(f"{output.name:<{width}}  {reason}")
             continue
         lines.append(
             f"{output.name:<{width}}  "
