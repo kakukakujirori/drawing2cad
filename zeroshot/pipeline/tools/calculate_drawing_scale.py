@@ -72,44 +72,151 @@ def _candidates(
     return candidates
 
 
+class _Measurement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        ...,
+        pattern=r"^dim_[a-z0-9_]+$",
+        description=(
+            "Stable dim_ name for this printed dimension, in lower_snake_case. "
+            "Assign it now if no Dimension has been submitted yet; reuse it "
+            "when submitting Dimension.name and when revising this reading. "
+            "Each printed dimension may appear only once per call."
+        ),
+    )
+    nominal: float = Field(
+        ...,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Printed length converted to millimetres, not an angle or a "
+            "feature count. Must describe the same extent as measured: "
+            "both diameter, both radius, or the same linear distance."
+        ),
+    )
+    measured: float = Field(
+        ...,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Corresponding length in pixels, measured on the exact raster "
+            "file that will be named by DrawingView.file, after any crop "
+            "or resize. Do not pair a diameter with a radius, or a "
+            "horizontal distance with a slanted distance."
+        ),
+    )
+
+
+def calculate_drawing_scale(measurements: list[dict[str, Any]]) -> dict[str, Any]:
+    """Validate measurement pairs and fit mm/pixel without invoking a tool."""
+    readings = [_Measurement.model_validate(item) for item in measurements]
+    names = [m.name for m in readings]
+    nominal = [m.nominal for m in readings]
+    measured = [m.measured for m in readings]
+    thresholds = [_ABSOLUTE_TOLERANCE_PX + _RELATIVE_TOLERANCE * p for p in measured]
+
+    def result(
+        status: str,
+        message: str,
+        factor: float | None = None,
+        inliers: tuple[int, ...] = (),
+        alternatives: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "status": status,
+            "scale": None if factor is None else 1 / factor,
+            "unit": "mm/px",
+            "message": message,
+            "threshold": {
+                "absolute_px": _ABSOLUTE_TOLERANCE_PX,
+                "relative": _RELATIVE_TOLERANCE,
+                "rule": "absolute_px + relative * measured",
+            },
+            "inliers": [names[i] for i in inliers],
+            "outliers": [
+                name
+                for i, name in enumerate(names)
+                if factor is not None and i not in inliers
+            ],
+            "measurements": [
+                {
+                    **m.model_dump(),
+                    "residual_px": (
+                        None if factor is None else m.measured - factor * m.nominal
+                    ),
+                    "threshold_px": thresholds[i],
+                    "inlier": None if factor is None else i in inliers,
+                }
+                for i, m in enumerate(readings)
+            ],
+            "alternatives": alternatives or [],
+        }
+
+    if len(set(names)) != len(names):
+        return result(
+            "invalid_input",
+            "Names must be unique. Supply each printed dimension only once.",
+        )
+    if not readings:
+        return result("insufficient_evidence", "Supply at least one printed length.")
+    if any(
+        not math.isfinite(n / p) or n / p == 0 or not math.isfinite(p / n) or p / n == 0
+        for n, p in zip(nominal, measured)
+    ):
+        return result("invalid_input", "Length ratios exceed the numeric range.")
+    if len(readings) == 1:
+        return result(
+            "insufficient_evidence",
+            "Provisional scale from one dimension; no outlier check is possible.",
+            measured[0] / nominal[0],
+            (0,),
+        )
+
+    candidates = _candidates(nominal, measured, thresholds)
+    if not candidates:
+        return result("no_consensus", "No stable fit. Check the pixel measurements.")
+    support = max(map(len, candidates))
+    best = sorted(
+        (
+            (indices, factor)
+            for indices, factor in candidates.items()
+            if len(indices) == support
+        ),
+        key=lambda item: item[1],
+    )
+    alternatives = [
+        {"scale": 1 / factor, "inliers": [names[i] for i in indices]}
+        for indices, factor in best
+    ]
+    if len(best) > 1:
+        return result(
+            "ambiguous",
+            "Different inlier sets have equal support. Check readings or add "
+            "independent dimensions; no scale has been selected.",
+            alternatives=alternatives,
+        )
+    if support * 2 <= len(readings):
+        return result(
+            "no_consensus",
+            "The largest consensus is not a strict majority. Check for mixed "
+            "views, incorrect readings, or nonuniform scale.",
+            alternatives=alternatives,
+        )
+    indices, factor = best[0]
+    return result(
+        "ok",
+        "Multiply pixel lengths by scale to obtain millimetres.",
+        factor,
+        indices,
+    )
+
+
 def create_calculate_drawing_scale_tool() -> BaseTool:
-    class _Measurement(BaseModel):
-        model_config = ConfigDict(extra="forbid")
-
-        name: str = Field(
-            ...,
-            pattern=r"^dim_[a-z0-9_]+$",
-            description=(
-                "Stable dim_ name for this printed dimension, in lower_snake_case. "
-                "Assign it now if no Dimension has been submitted yet; reuse it "
-                "when submitting Dimension.name and when revising this reading. "
-                "Each printed dimension may appear only once per call."
-            ),
-        )
-        nominal: float = Field(
-            ...,
-            gt=0,
-            allow_inf_nan=False,
-            description=(
-                "Printed length converted to millimetres, not an angle or a "
-                "feature count. Must describe the same extent as measured: "
-                "both diameter, both radius, or the same linear distance."
-            ),
-        )
-        measured: float = Field(
-            ...,
-            gt=0,
-            allow_inf_nan=False,
-            description=(
-                "Corresponding length in pixels, measured on the exact raster "
-                "file that will be named by DrawingSheet.file, after any crop "
-                "or resize. Do not pair a diameter with a radius, or a "
-                "horizontal distance with a slanted distance."
-            ),
-        )
-
     @tool("calculate_drawing_scale")
-    def calculate_drawing_scale(measurements: list[_Measurement]) -> dict[str, Any]:
+    def _calculate_drawing_scale_tool(
+        measurements: list[_Measurement],
+    ) -> dict[str, Any]:
         """Fit millimetres per pixel for one raster view whose scale is uniform.
 
         Give the printed lengths and the pixel lengths you measured for them,
@@ -121,113 +228,6 @@ def create_calculate_drawing_scale_tool() -> BaseTool:
         `status` and `alternatives` say how. Fix the readings rather than pick
         one.
         """
-        names = [m.name for m in measurements]
-        nominal = [m.nominal for m in measurements]
-        measured = [m.measured for m in measurements]
-        thresholds = [
-            _ABSOLUTE_TOLERANCE_PX + _RELATIVE_TOLERANCE * p for p in measured
-        ]
+        return calculate_drawing_scale([item.model_dump() for item in measurements])
 
-        def result(
-            status: str,
-            message: str,
-            factor: float | None = None,
-            inliers: tuple[int, ...] = (),
-            alternatives: list[dict[str, Any]] | None = None,
-        ) -> dict[str, Any]:
-            return {
-                "status": status,
-                "scale": None if factor is None else 1 / factor,
-                "unit": "mm/px",
-                "message": message,
-                "threshold": {
-                    "absolute_px": _ABSOLUTE_TOLERANCE_PX,
-                    "relative": _RELATIVE_TOLERANCE,
-                    "rule": "absolute_px + relative * measured",
-                },
-                "inliers": [names[i] for i in inliers],
-                "outliers": [
-                    name
-                    for i, name in enumerate(names)
-                    if factor is not None and i not in inliers
-                ],
-                "measurements": [
-                    {
-                        **m.model_dump(),
-                        "residual_px": (
-                            None if factor is None else m.measured - factor * m.nominal
-                        ),
-                        "threshold_px": thresholds[i],
-                        "inlier": None if factor is None else i in inliers,
-                    }
-                    for i, m in enumerate(measurements)
-                ],
-                "alternatives": alternatives or [],
-            }
-
-        if len(set(names)) != len(names):
-            return result(
-                "invalid_input",
-                "Names must be unique. Supply each printed dimension only once.",
-            )
-        if not measurements:
-            return result(
-                "insufficient_evidence", "Supply at least one printed length."
-            )
-        if any(
-            not math.isfinite(n / p)
-            or n / p == 0
-            or not math.isfinite(p / n)
-            or p / n == 0
-            for n, p in zip(nominal, measured)
-        ):
-            return result("invalid_input", "Length ratios exceed the numeric range.")
-        if len(measurements) == 1:
-            return result(
-                "insufficient_evidence",
-                "Provisional scale from one dimension; no outlier check is possible.",
-                measured[0] / nominal[0],
-                (0,),
-            )
-
-        candidates = _candidates(nominal, measured, thresholds)
-        if not candidates:
-            return result(
-                "no_consensus", "No stable fit. Check the pixel measurements."
-            )
-        support = max(map(len, candidates))
-        best = sorted(
-            (
-                (indices, factor)
-                for indices, factor in candidates.items()
-                if len(indices) == support
-            ),
-            key=lambda item: item[1],
-        )
-        alternatives = [
-            {"scale": 1 / factor, "inliers": [names[i] for i in indices]}
-            for indices, factor in best
-        ]
-        if len(best) > 1:
-            return result(
-                "ambiguous",
-                "Different inlier sets have equal support. Check readings or add "
-                "independent dimensions; no scale has been selected.",
-                alternatives=alternatives,
-            )
-        if support * 2 <= len(measurements):
-            return result(
-                "no_consensus",
-                "The largest consensus is not a strict majority. Check for mixed "
-                "views, incorrect readings, or nonuniform scale.",
-                alternatives=alternatives,
-            )
-        indices, factor = best[0]
-        return result(
-            "ok",
-            "Multiply pixel lengths by scale to obtain millimetres.",
-            factor,
-            indices,
-        )
-
-    return calculate_drawing_scale
+    return _calculate_drawing_scale_tool

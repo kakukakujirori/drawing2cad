@@ -51,7 +51,6 @@ def page(entries):
             DrawingSheet(
                 name="sheet_page",
                 role=View.FULL_PAGE,
-                label=None,
                 crop_of=None,
                 scale=1.0,
                 file="page.dxf",

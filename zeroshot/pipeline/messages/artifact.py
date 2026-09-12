@@ -59,7 +59,6 @@ class _SandboxSheet:
 
     name: str
     role: View
-    label: str | None
     file: PurePosixPath
 
     @classmethod
@@ -67,7 +66,6 @@ class _SandboxSheet:
         return cls(
             name=sheet.name,
             role=sheet.role,
-            label=sheet.label,
             file=file,
         )
 

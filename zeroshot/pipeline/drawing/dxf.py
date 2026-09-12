@@ -203,7 +203,6 @@ def read_drawing(path: Path | str, name: str = "sheet_page") -> DrawingReading:
     sheet = DrawingSheet(
         name=name,
         role=View.FULL_PAGE,
-        label=None,
         crop_of=None,
         scale=1.0,
         file=str(path),

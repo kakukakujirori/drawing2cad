@@ -198,7 +198,6 @@ def test_a_sheet_cut_out_of_another_is_named_like_any_other(
     crop = DrawingSheet(
         name="sheet_front",
         role=View.FRONT,
-        label=None,
         crop_of=CropOf(sheet=page.name, box=[0.0, 0.0, 10.0, 10.0]),
         scale=1.0,
         file=str(_write(tmp_path / "front.png", b"FRONT")),

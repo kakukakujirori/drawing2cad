@@ -258,7 +258,6 @@ def place_views(
         sheet = DrawingSheet(
             name=f"sheet_{view.value}",
             role=view,
-            label=None,
             crop_of=CropOf(sheet=page, box=list(boxes[view])),
             scale=held[page].scale,
             file=str(path),

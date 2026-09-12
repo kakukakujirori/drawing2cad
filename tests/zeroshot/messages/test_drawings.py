@@ -36,7 +36,6 @@ def sheet(name="sheet_page", role="full_page", **fields):
     return {
         "name": name,
         "role": role,
-        "label": None,
         "crop_of": None,
         "scale": 1.0,
         "file": "/work/inputs/drawing.png",
