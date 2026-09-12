@@ -253,14 +253,11 @@ class DrawingSheet(BaseModel):
         ...,
         description=(
             "Stable sheet_ name in lower_snake_case, unique across the drawing. "
-            "Keep it for the same sheet or view; use a new name for a new one."
+            "Keep it for the same sheet or view; use a new name for a new one. "
+            "Include printed captions such as section_a_a or detail_b, if any."
         ),
     )
     role: View = Field(..., description="Projection type; unknown if not established.")
-    label: str | None = Field(
-        ...,
-        description="Printed caption such as SECTION A-A or DETAIL B; null if absent.",
-    )
     crop_of: CropOf | None = Field(
         ...,
         description=(
