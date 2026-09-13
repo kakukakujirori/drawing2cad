@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
@@ -11,7 +11,7 @@ from langgraph.pregel import Pregel
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
 from zeroshot.pipeline.stages.coding.submission import CodingSubmission
-from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
+from zeroshot.pipeline.stages.interpretation.contracts import ORTHOGRAPHIC_VIEWS
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import (
     AttemptStore,
@@ -39,7 +39,9 @@ class CodingStage:
         snapshot = current_snapshot(state)
         if snapshot.last_completed_stage is not PipelineStage.OPERATIONS:
             raise RuntimeError("coding requires integrated operations")
-        drawing = cast(DrawingSource, snapshot.drawings)
+        interpretation = snapshot.interpretation
+        if interpretation is None:
+            raise RuntimeError("coding requires integrated interpretation")
 
         if state.get("stage_validation_error") is None:
             self.verifier.reset()
@@ -48,7 +50,13 @@ class CodingStage:
         # The verifier redraws the solid in the views the drawing names, and
         # guesses none. Set here because both the build inside the agent and
         # the one at integration belong to this stage of this round.
-        self.verifier.views = [sheet.role for sheet in drawing.orthographic()]
+        self.verifier.views = list(
+            dict.fromkeys(
+                view.role
+                for view in interpretation.views
+                if view.role in ORTHOGRAPHIC_VIEWS
+            )
+        )
 
         previous = state.get("coding_state") or {}
         messages = [

@@ -19,14 +19,14 @@ from zeroshot.pipeline.stages._base.prompt import (
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.drawings.contracts import (
-    VIEW_FRAME,
-    DrawingEvidence,
     DrawingSheet,
     DrawingSource,
-    DrawnEntity,
+)
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    VIEW_FRAME,
+    DrawingInterpretation,
 )
 from zeroshot.pipeline.stages.operations.contracts import Operation
-from zeroshot.pipeline.stages.semantics.contracts import GeometryKind
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.workflow.lifecycle import (
@@ -47,7 +47,6 @@ _AN_UNREAD_PAGE = DrawingSource(
         DrawingSheet(
             name="sheet_page",
             role="full_page",
-            label=None,
             crop_of=None,
             scale=1.0,
             file="/work/inputs/drawing.dxf",
@@ -61,7 +60,8 @@ _AN_UNREAD_PAGE = DrawingSource(
 # Stable run paths; round and ticket ownership come from state at build time.
 _RUN_PATHS = {
     "coding_output_path": "/work/model.py",
-    "drawing_output_path": "/work/drawing.json",
+    "interpretation_output_path": "/work/interpretation.json",
+    "interpretation_schema": json.dumps(DrawingInterpretation.model_json_schema()),
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
 }
@@ -102,7 +102,6 @@ def render_stage(
             **{
                 "attempt_dir": "/work/attempts/001",
                 "intermediate_returns_dir": "unavailable",
-                "drawing_attempt_dir": "/work/attempts/round_000/drawing/003",
                 "ticket_responses": "[]",
                 **context,
             },
@@ -145,14 +144,14 @@ def test_a_reused_builder_reads_the_latest_round_and_ticket_ownership(
     coding = instructions.build(
         state, PipelineStage.CODING, include_artifact=False
     ).text
-    semantics = instructions.build(
-        state, PipelineStage.SEMANTICS, include_artifact=False
+    interpreted = instructions.build(
+        state, PipelineStage.INTERPRETATION, include_artifact=False
     ).text
 
     assert "round 1" in coding
     assert "Tickets assigned to coding this round: ticket_001_shape_mismatch" in coding
-    assert "Tickets assigned to semantics this round: none" in semantics
-    assert "ticket_initial" not in coding + semantics
+    assert "Assigned tickets: none" in interpreted
+    assert "ticket_initial" not in coding + interpreted
 
 
 @pytest.mark.parametrize("stage", list(PipelineStage))
@@ -177,9 +176,15 @@ def test_input_is_attached_only_when_requested_and_fresh_on_each_build(
     instructions: StageInstructions,
     state: ReconstructionState,
 ) -> None:
-    plain = instructions.build(state, PipelineStage.DRAWINGS, include_artifact=False)
-    attached = instructions.build(state, PipelineStage.DRAWINGS, include_artifact=True)
-    another = instructions.build(state, PipelineStage.DRAWINGS, include_artifact=True)
+    plain = instructions.build(
+        state, PipelineStage.INTERPRETATION, include_artifact=False
+    )
+    attached = instructions.build(
+        state, PipelineStage.INTERPRETATION, include_artifact=True
+    )
+    another = instructions.build(
+        state, PipelineStage.INTERPRETATION, include_artifact=True
+    )
 
     assert "[Input artifacts]" not in plain.text
     assert attached.text.startswith(plain.text)
@@ -194,15 +199,17 @@ def test_input_is_attached_only_when_requested_and_fresh_on_each_build(
     assert first_ids.isdisjoint(second_ids)
 
 
-def test_drawing_prompt_evidence_example_matches_the_runtime_contract(
+def test_interpretation_prompt_exposes_the_runtime_schema(
     render_stage: Callable[..., str],
 ) -> None:
-    prompt = render_stage("drawings")
+    prompt = render_stage("interpretation")
     examples = re.findall(r"```json\n(.*?)\n```", prompt, re.DOTALL)
     assert len(examples) == 1
-    evidence = DrawingEvidence.model_validate(json.loads(examples[0]))
-    assert evidence.entity is DrawnEntity.LINE
-    assert [p.name for p in evidence.parameters] == ["start", "end"]
+    schema = json.loads(examples[0])
+    assert schema == DrawingInterpretation.model_json_schema()
+    assert "parameters" in schema["$defs"]["SemanticFeature"]["properties"]
+    assert "Region" in schema["$defs"]
+    assert "geometry" not in schema["$defs"]["SemanticFeature"]["properties"]
 
 
 @pytest.mark.parametrize("stage", list(PipelineStage))
@@ -213,6 +220,7 @@ def test_stage_instructions_resolve_all_template_placeholders(
     rendered = render_stage(stage.value)
 
     assert rendered
+    rendered = rendered.replace(_RUN_PATHS["interpretation_schema"], "")
     assert not re.search(r"\$[a-zA-Z_][a-zA-Z_0-9]*|\$\{", rendered)
 
 
@@ -225,8 +233,7 @@ def test_reconstruction_guide_keeps_only_the_working_contract() -> None:
         "input_drawings",
         "snapshots",
         "open_tickets",
-        "drawings",
-        "semantics",
+        "interpretation",
         "operations",
         "program_source",
         "verification",
@@ -244,10 +251,7 @@ def test_the_system_prompt_explains_selective_history_navigation() -> None:
     ).render(**_RUN_PATHS)
 
     assert guide in rendered
-    assert (
-        "drawings -> semantics -> operations -> coding + verification -> audit"
-        in rendered
-    )
+    assert "interpretation -> operations -> coding + verification -> audit" in rendered
     assert "never edit or print the whole file" in rendered
     assert ".snapshots[-2]" in rendered
 
@@ -259,26 +263,20 @@ def test_the_system_prompt_explains_selective_history_navigation() -> None:
 def test_round_instructions_do_not_repeat_the_reconstruction_guide(
     render_stage: Callable[..., str],
 ) -> None:
-    rendered = render_stage("semantics")
+    rendered = render_stage("interpretation")
 
     assert "## Reconstruction history" not in rendered
     assert "ReconstructionRun" not in rendered
 
 
-def test_audit_explains_how_to_report_a_missing_semantic_feature(
-    render_stage: Callable[..., str],
-) -> None:
-    rendered = render_stage(
-        "audit",
-        attempt_dir="/work/attempts/001",
-        intermediate_returns_dir="unavailable",
-        drawing_attempt_dir="/work/attempts/round_000/drawing/003",
-        ticket_responses="[]",
+def test_audit_explains_how_to_report_a_missing_semantic_feature() -> None:
+    rendered = PromptTemplate(ROLE_PATHS["output_auditor"]).render(
+        output_schema="{}", max_turns="10"
     )
 
     assert "leave the `backtrace` empty" in rendered
-    assert "whole semantics stage (`name: null`)" in rendered
-    assert "propose one or more stable `sem_...` names" in rendered
+    assert "whole interpretation stage (`name: null`)" in rendered
+    assert "proposing one or more stable `sem_...` names" in rendered
 
 
 def test_the_returns_section_says_what_the_directory_is_for(
@@ -287,10 +285,13 @@ def test_the_returns_section_says_what_the_directory_is_for(
     """The layout line alone does not say which `ret_` a defect belongs to."""
     returns_dir = f"/work/attempts/001/{INTERMEDIATE_RETURNS_DIR}"
     section = render_stage("audit", intermediate_returns_dir=returns_dir)
+    role = PromptTemplate(ROLE_PATHS["output_auditor"]).render(
+        output_schema="{}", max_turns="10"
+    )
 
     assert INTERMEDIATE_RETURNS_DIR in section
     assert "ret_" in section
-    assert "what the plan meant it to" in section
+    assert "what the plan meant it to" in role
 
 
 def test_the_audit_reads_the_attempt_directory_the_build_actually_wrote(
@@ -303,12 +304,13 @@ def test_the_audit_reads_the_attempt_directory_the_build_actually_wrote(
         "audit",
         attempt_dir="/work/attempts/001",
         intermediate_returns_dir=returns_dir,
-        drawing_attempt_dir="/work/attempts/round_000/drawing/003",
         ticket_responses="[]",
     )
 
     assert "/work/attempts/001" in rendered
-    assert "/work/attempts/round_000/drawing/003" in rendered
+    assert "Latest interpretation verification" not in rendered
+    assert "_interpretation_raw" not in rendered
+    assert "_interpretation_validation_log" not in rendered
     assert f"Recorded directory: {returns_dir}" in rendered
 
 
@@ -319,8 +321,8 @@ def test_auditor_keeps_result_out_of_the_backtrace_graph() -> None:
         AuditReport,
     ).text
 
-    assert "`result` is the terminal export and is not a backtrace node" in rendered
-    assert "whole coding output with `name: null`" in rendered
+    assert "`result` is the terminal export, not a causal member" in rendered
+    assert "whole coding stage with `name: null`" in rendered
 
 
 def test_placeholders_are_filled_from_the_context(
@@ -351,7 +353,8 @@ def test_the_auditor_is_told_the_walk_rule_the_pipeline_would_reject_it_for() ->
         output_schema="{}", max_turns="10"
     )
 
-    assert "at most one hop inside any one stage" in rendered
+    assert "at most one same-prefix hop per prefix" in rendered
+    assert "sem_... -> dim_... -> view_..." in rendered
 
 
 def test_the_auditor_role_renders_its_contract() -> None:
@@ -363,7 +366,7 @@ def test_the_auditor_role_renders_its_contract() -> None:
     assert "$output_schema" not in rendered
 
 
-@pytest.mark.parametrize("stage", ["semantics", "operations"])
+@pytest.mark.parametrize("stage", ["operations"])
 def test_a_round_asks_for_a_revision_rather_than_a_whole_artifact(
     render_stage: Callable[..., str], stage: str
 ) -> None:
@@ -387,19 +390,18 @@ def test_the_coding_round_asks_only_for_ticket_responses(
     assert "ticket responses and nothing else" in rendered
 
 
-def test_the_drawing_round_uses_json_for_the_artifact_and_answer_for_tickets(
+def test_the_interpretation_round_uses_json_for_the_artifact_and_answer_for_tickets(
     render_stage: Callable[..., str],
 ) -> None:
-    rendered = render_stage("drawings")
+    rendered = render_stage("interpretation")
+    assert "/work/interpretation.json" in rendered
+    assert "complete artifact" in rendered
+    assert "InterpretationSubmission" in rendered
+    assert "current artifact validates" in rendered
+    assert "`edits`" not in rendered
 
-    assert "/work/drawing.json" in rendered
-    assert "schema-valid working draft" in rendered
-    assert "inspect the generated" in rendered
-    assert "latest verified file" in rendered
-    assert "substitute transport" in rendered
 
-
-@pytest.mark.parametrize("stage", ["drawings", "semantics", "operations", "coding"])
+@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding"])
 def test_every_reasoning_round_carries_that_stage_s_guidelines(
     render_stage: Callable[..., str], stage: str
 ) -> None:
@@ -411,7 +413,7 @@ def test_every_reasoning_round_carries_that_stage_s_guidelines(
 
 @pytest.mark.parametrize(
     "role",
-    ["semantic_hypothesizer", "operation_planner", "coder", "cad_reconstructor"],
+    ["drawing_interpreter", "operation_planner", "coder", "cad_reconstructor"],
 )
 def test_a_proposer_role_says_who_it_is_and_leaves_the_rest_to_the_instruction(
     role: str,
@@ -516,37 +518,25 @@ def test_the_digest_follows_the_file(tmp_path: Path) -> None:
     assert prompt.sha256 != before
 
 
-def test_the_drawing_guidelines_describe_how_the_views_are_actually_separated() -> None:
-    """The guidelines used to claim the three views sit on their own DXF
-    layers. They do not: across all twenty sample drawings every entity is on
-    layer `0`, and what does distinguish an edge is its linetype. The stage
-    spent turns rediscovering that on every run, and separating the views is
-    the drawing stage's job now."""
-    guidelines = _guidelines("drawings")
-
-    assert "hidden" in guidelines.lower()
-    assert "linetype" in guidelines.lower()
-    assert "layer `0`" in guidelines
-    assert "does not separate views" in guidelines
+def test_interpreter_uses_localized_evidence_and_checks_cross_view_ambiguities() -> (
+    None
+):
+    guidelines = _guidelines("interpretation")
+    assert "not a trace of every drawing primitive" in guidelines
+    assert "hidden lines and matching projections" in guidelines
+    assert "numeric sizes and model positions in parameters" in guidelines
+    assert "questions" in guidelines
 
 
-def test_the_drawing_round_prioritises_an_early_verified_file(
+def test_interpretation_prioritises_a_verified_draft_and_source_pixel_measurements(
     render_stage: Callable[..., str],
 ) -> None:
-    rendered = render_stage("drawings")
-
-    assert "Before half the turn budget" in rendered
-    assert "never a substitute transport" in rendered
-    assert '"$defs"' not in rendered
-
-
-def test_the_drawing_guidelines_fix_the_raster_uv_origin_at_a_pixel_corner() -> None:
-    guidelines = _guidelines("drawings")
-
-    assert "lower-left corner of the bottom-left pixel" in guidelines
-    assert "not at that pixel's centre" in guidelines
-    assert "(c, h - r - 1)" in guidelines
-    assert "(c + 0.5, h - r - 0.5)" in guidelines
+    rendered = render_stage("interpretation")
+    assert "save a provisional artifact" in rendered
+    assert "current artifact validates" in rendered
+    assert "top left, x right, y down" in rendered
+    assert "Never measure from a resized display" in rendered
+    assert "validation derives them" in rendered
 
 
 @pytest.mark.parametrize("stage", list(PipelineStage))
@@ -606,16 +596,12 @@ def test_the_coder_is_told_to_follow_the_operation_dag() -> None:
     assert "JSON list order is not the build order" in guidelines
 
 
-def test_a_stage_that_builds_in_3d_is_not_told_to_look_for_a_2d_entity() -> None:
-    """`spline` is a `DrawnEntity`, seen in a view; the kind a `geometry` entry
-    can hold is `bspline_curve` or `bspline_surface`. The coding guidelines
-    named `spline`, so the coder was told to watch for a kind that cannot
-    appear -- the drift the contract's two vocabularies invite."""
-    flat_only = {member.value for member in DrawnEntity} - {
-        member.value for member in GeometryKind
-    }
-    assert flat_only == {"spline", "polyline"}
-
+def test_downstream_prompts_use_interpreted_features_and_preserve_the_datum() -> None:
     for stage in ("operations", "coding"):
-        quoted = set(re.findall(r"`([a-z_]+)`", _guidelines(stage)))
-        assert not quoted & flat_only, stage
+        guidelines = _guidelines(stage)
+        assert "sem_main_bore.radius" in guidelines
+        assert "sem_main_bore.center" in guidelines
+        assert "datum" in guidelines
+        assert "null means unknown, never zero" in guidelines.lower()
+        assert "ev_" not in guidelines
+        assert "geo_" not in guidelines

@@ -419,9 +419,9 @@ def test_handed_over_history_uses_the_receiving_agents_system_prompt() -> None:
         second_model, system_prompt="SECOND SYSTEM", announce_turns=False
     ).invoke(
         {
-            **carried["semantics_state"],
+            **carried["interpretation_state"],
             "messages": [
-                *carried["semantics_state"]["messages"],
+                *carried["interpretation_state"]["messages"],
                 HumanMessage(content="next task"),
             ],
         }

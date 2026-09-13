@@ -14,14 +14,13 @@ from tests.zeroshot.prompt_paths import ROLE_PATHS
 from tests.zeroshot.workflow.test_graph import (
     _accepted_audit,
     _coding_submission,
-    _drawing_script,
-    _drawing_submission,
-    _invalid_drawing_submission,
+    _interpretation_script,
+    _interpretation_submission,
+    _invalid_interpretation_submission,
     _operation_submission,
-    _semantic_submission,
     _stub_verification,
     _verified,
-    _write_drawing,
+    _write_interpretation,
 )
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest
@@ -44,8 +43,7 @@ _INPUT_MARKER = "[Input artifacts]"
 
 
 class _Models(TypedDict):
-    drawer: ScriptedChatModel
-    lead: ScriptedChatModel
+    interpreter: ScriptedChatModel
     planner: ScriptedChatModel
     coder: ScriptedChatModel
     auditor: ScriptedChatModel
@@ -54,8 +52,7 @@ class _Models(TypedDict):
 def _continued_graph(
     workdir: SandboxWorkdir,
     *,
-    drawer: ScriptedChatModel,
-    lead: ScriptedChatModel,
+    interpreter: ScriptedChatModel,
     planner: ScriptedChatModel,
     coder: ScriptedChatModel,
     auditor: ScriptedChatModel,
@@ -67,23 +64,16 @@ def _continued_graph(
         "model_retries": 0,
         "checkpointer": False,
     }
-    dxf_path = workdir.host_bind_dir / "drawing.dxf"
-    dxf_path.write_text("0\nSECTION\n0\nEOF\n", encoding="utf-8")
-    (workdir.host_bind_dir / "sheet_front.dxf").write_text(
-        "0\nSECTION\n0\nEOF\n", encoding="utf-8"
-    )
+    from PIL import Image
+
+    image_path = workdir.host_bind_dir / "drawing.png"
+    Image.new("RGB", (20, 20), "white").save(image_path)
+    Image.new("RGB", (20, 20), "white").save(workdir.host_bind_dir / "front.png")
     return create_reconstruction_graph(
-        drawings_agent_builder=partial(
+        interpretation_agent_builder=partial(
             create_agent,
             role=_ROLE,
-            model=drawer,
-            max_turns=5,
-            **common,
-        ),
-        semantics_agent_builder=partial(
-            create_agent,
-            role=_ROLE,
-            model=lead,
+            model=interpreter,
             max_turns=5,
             **common,
         ),
@@ -117,7 +107,7 @@ def _continued_graph(
         input_manifest=InputManifest(
             sample_id="test",
             drawing=DrawingSource(
-                sheets=[unread_sheet("sheet_drawing", View.FULL_PAGE, dxf_path)]
+                sheets=[unread_sheet("sheet_drawing", View.FULL_PAGE, image_path)]
             ),
         ),
         share_thread=share_thread,
@@ -127,10 +117,8 @@ def _continued_graph(
 
 @pytest.fixture
 def models() -> _Models:
-    semantic = _semantic_submission()
     return {
-        "drawer": ScriptedChatModel(responses=_drawing_script()),
-        "lead": ScriptedChatModel(responses=(semantic,)),
+        "interpreter": ScriptedChatModel(responses=_interpretation_script()),
         "planner": ScriptedChatModel(responses=(_operation_submission(),)),
         "coder": ScriptedChatModel(responses=(_coding_submission(),)),
         "auditor": ScriptedChatModel(responses=(_accepted_audit(),)),
@@ -148,10 +136,8 @@ def _system_prompt(model: ScriptedChatModel) -> str:
 
 
 def _lead_thread(result: dict[str, Any], stage: PipelineStage) -> list[BaseMessage]:
-    if stage is PipelineStage.DRAWINGS:
-        return list(result["drawings_state"]["messages"])
-    if stage is PipelineStage.SEMANTICS:
-        return list(result["semantics_state"]["messages"])
+    if stage is PipelineStage.INTERPRETATION:
+        return list(result["interpretation_state"]["messages"])
     if stage is PipelineStage.OPERATIONS:
         return list(result["operations_state"]["messages"])
     return list(result["coding_state"]["messages"])
@@ -166,7 +152,7 @@ def test_reasoning_stages_share_one_system_prompt(
         _continued_graph(workdir, **models).invoke({})
 
     prompts = {
-        _system_prompt(models[name]) for name in ("drawer", "lead", "planner", "coder")
+        _system_prompt(models[name]) for name in ("interpreter", "planner", "coder")
     }
     assert len(prompts) == 1
     (shared_prompt,) = prompts
@@ -194,30 +180,30 @@ def test_each_reasoning_stage_continues_the_preceding_transcript(
     with SandboxWorkdir() as workdir:
         _continued_graph(workdir, **models).invoke({})
 
-    semantic_ask = models["lead"].received_messages[-1]
+    interpretation_ask = models["interpreter"].received_messages[-1]
     operation_ask = models["planner"].received_messages[0]
     coding_ask = models["coder"].received_messages[0]
-    semantic_text = "\n".join(_texts(semantic_ask))
+    interpretation_text = "\n".join(_texts(interpretation_ask))
     operation_text = "\n".join(_texts(operation_ask))
     coding_text = "\n".join(_texts(coding_ask))
 
-    assert semantic_text in operation_text
+    assert interpretation_text in operation_text
     assert operation_text in coding_text
 
 
-def test_shared_thread_retries_drawings_before_handing_over(
+def test_shared_thread_retries_interpretation_before_handing_over(
     monkeypatch: pytest.MonkeyPatch,
     models: _Models,
 ) -> None:
     _stub_verification(monkeypatch, _verified())
-    drawer = ScriptedChatModel(
+    interpreter = ScriptedChatModel(
         responses=(
-            _write_drawing(),
-            _invalid_drawing_submission(),
-            _drawing_submission(),
+            _write_interpretation(),
+            _invalid_interpretation_submission(),
+            _interpretation_submission(),
         )
     )
-    models["drawer"] = drawer
+    models["interpreter"] = interpreter
 
     with SandboxWorkdir() as workdir:
         result = _continued_graph(
@@ -226,12 +212,12 @@ def test_shared_thread_retries_drawings_before_handing_over(
             **models,
         ).invoke({})
 
-    assert len(drawer.received_messages) == 3
-    retry_text = "\n".join(_texts(drawer.received_messages[2]))
-    assert "Drawings Validation Error" in retry_text
+    assert len(interpreter.received_messages) == 3
+    retry_text = "\n".join(_texts(interpreter.received_messages[2]))
+    assert "Interpretation Validation Error" in retry_text
     assert "ticket_absent" in retry_text
-    semantic_text = "\n".join(_texts(models["lead"].received_messages[0]))
-    assert "Drawings Validation Error" in semantic_text
+    operation_text = "\n".join(_texts(models["planner"].received_messages[0]))
+    assert "Interpretation Validation Error" in operation_text
     assert (
         result["reconstruction"].snapshots[0].last_completed_stage
         is PipelineStage.CODING

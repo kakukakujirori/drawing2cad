@@ -139,7 +139,7 @@ def test_the_backend_chosen_decides_how_every_agent_is_asked_for_structured_outp
         )
 
     builders = [
-        "semantics_agent_builder",
+        "interpretation_agent_builder",
         "operations_agent_builder",
         "coding_agent_builder",
         "audit_agent_builder",
@@ -166,19 +166,21 @@ def test_a_sweep_only_has_to_override_the_sample_id() -> None:
     assert config.sample.target_step_path.endswith("/000405.step")
 
 
-def test_a_sweep_overriding_sample_id_with_dxf_input() -> None:
+@pytest.mark.parametrize("input_config", ["dxf", "dxf_no_context"])
+def test_a_sweep_overriding_sample_id_with_dxf_input(input_config: str) -> None:
     with initialize_config_dir(
         config_dir=str(CONFIG_DIR.resolve()),
         version_base="1.3",
     ):
         config = compose(
             config_name="default",
-            overrides=["input=dxf", "sample.sample_id=000405"],
+            overrides=[f"input={input_config}", "sample.sample_id=000405"],
         )
 
     assert config.sample.sample_id == "000405"
     assert config.sample.drawing.sheets[0].file.endswith("/000405.dxf")
     assert config.sample.target_step_path.endswith("/000405.step")
+    assert config.workflow.dxf_mm_per_unit == {"view_drawing": 1.0}
     assert all(
         sheet.file.endswith("/000405.png") for sheet in config.sample.drawing.sheets[1:]
     )
@@ -262,8 +264,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     # answers, on which model, for how long, and leaves the tools and the
     # contracts to the code.
     assert set(graph_factory.keywords) == {
-        "drawings_agent_builder",
-        "semantics_agent_builder",
+        "interpretation_agent_builder",
         "operations_agent_builder",
         "coding_agent_builder",
         "audit_agent_builder",
@@ -285,10 +286,10 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert isinstance(coder_model, ChatOpenAI)
     assert coder_model.model_name == "gemma4:e2b"
 
-    stage = graph_factory.keywords["semantics_agent_builder"]
+    stage = graph_factory.keywords["interpretation_agent_builder"]
     assert stage.func is create_agent
-    assert stage.keywords["role"] == "semantic_hypothesizer"
-    assert ROLE_PATHS["semantic_hypothesizer"].is_file()
+    assert stage.keywords["role"] == "drawing_interpreter"
+    assert ROLE_PATHS["drawing_interpreter"].is_file()
     assert stage.keywords["response_format_strategy"] == "provider"
     assert stage.keywords["model"].model_name == "gemma4:e2b"
 
@@ -317,8 +318,7 @@ def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None
     assert graph_factory.keywords["compact_between_stages"] is not None
 
     roles = {
-        graph_factory.keywords["drawings_agent_builder"].keywords["role"],
-        graph_factory.keywords["semantics_agent_builder"].keywords["role"],
+        graph_factory.keywords["interpretation_agent_builder"].keywords["role"],
         graph_factory.keywords["operations_agent_builder"].keywords["role"],
         graph_factory.keywords["coding_agent_builder"].keywords["role"],
     }
@@ -329,7 +329,7 @@ def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None
     # until the first sample builds its graph. Check every configured builder
     # against its callable now so configuration drift fails in this test.
     for key in (
-        "semantics_agent_builder",
+        "interpretation_agent_builder",
         "operations_agent_builder",
         "coding_agent_builder",
         "audit_agent_builder",

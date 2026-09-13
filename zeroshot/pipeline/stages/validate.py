@@ -5,8 +5,6 @@ is measured against the snapshot is the artifact that revision merges to.
 `merge_submission` produces it and hands it here as `deliverable`.
 """
 
-from typing import cast
-
 from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.stages._base.validate import (
     SubmissionValidationError,
@@ -17,14 +15,11 @@ from zeroshot.pipeline.stages.audit.validate import validate_audit_report
 from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.coding.validate import validate_coding
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
-from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
-from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
+from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.operations.validate import validate_operations
-from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
-from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
-from zeroshot.pipeline.stages.semantics.validate import validate_semantics
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     PipelineStage,
@@ -34,15 +29,9 @@ from zeroshot.pipeline.stages.types import (
 from zeroshot.pipeline.verification import VerifyOutputResult
 
 type Submission = (
-    DrawingSubmission
-    | SemanticSubmission
-    | OperationSubmission
-    | CodingSubmission
-    | AuditReport
+    InterpretationSubmission | OperationSubmission | CodingSubmission | AuditReport
 )
-type StageDeliverable = (
-    DrawingSource | SemanticHypothesis | OperationPlan | VerifyOutputResult
-)
+type StageDeliverable = DrawingInterpretation | OperationPlan | VerifyOutputResult
 
 
 def validate_submission(
@@ -54,7 +43,7 @@ def validate_submission(
     """Reject a submission that contradicts the round it belongs to.
 
     `deliverable` is the complete stage output: merged for proposal stages and
-    obtained from workspace verification for drawing and coding. An audit has none.
+    obtained from workspace verification for interpretation and coding. An audit has none.
     """
     if isinstance(submission, AuditReport):
         if deliverable is not None:
@@ -67,8 +56,7 @@ def validate_submission(
 
     stage = _next_reasoning_stage(snapshot.last_completed_stage)
     expected_submission = {
-        PipelineStage.DRAWINGS: DrawingSubmission,
-        PipelineStage.SEMANTICS: SemanticSubmission,
+        PipelineStage.INTERPRETATION: InterpretationSubmission,
         PipelineStage.OPERATIONS: OperationSubmission,
         PipelineStage.CODING: CodingSubmission,
     }[stage]
@@ -82,15 +70,11 @@ def validate_submission(
         expected_stage=stage,
     )
     match stage:
-        case PipelineStage.DRAWINGS:
-            if not isinstance(deliverable, DrawingSource):
-                raise SubmissionValidationError("drawing must revise a DrawingSource")
-        case PipelineStage.SEMANTICS:
-            if not isinstance(deliverable, SemanticHypothesis):
+        case PipelineStage.INTERPRETATION:
+            if not isinstance(deliverable, DrawingInterpretation):
                 raise SubmissionValidationError(
-                    "semantics must revise a SemanticHypothesis"
+                    "interpretation requires a verified DrawingInterpretation"
                 )
-            validate_semantics(deliverable, cast(DrawingSource, snapshot.drawings))
         case PipelineStage.OPERATIONS:
             if not isinstance(deliverable, OperationPlan):
                 raise SubmissionValidationError(

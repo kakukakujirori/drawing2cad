@@ -33,7 +33,7 @@ from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
-    drawing_baseline,
+    interpretation_baseline,
     load_reconstruction,
     open_next_round,
     save_reconstruction,
@@ -51,8 +51,7 @@ type AgentBuilder = partial[CompiledGraph]
 
 
 def create_reconstruction_graph(
-    drawings_agent_builder: AgentBuilder,
-    semantics_agent_builder: AgentBuilder,
+    interpretation_agent_builder: AgentBuilder,
     operations_agent_builder: AgentBuilder,
     coding_agent_builder: AgentBuilder,
     audit_agent_builder: AgentBuilder,
@@ -61,7 +60,8 @@ def create_reconstruction_graph(
     artifact_presenter: ArtifactPresenter,
     input_manifest: InputManifest,
     output_filename: str = "model.py",
-    drawing_filename: str = "drawing.json",
+    interpretation_filename: str = "interpretation.json",
+    dxf_mm_per_unit: dict[str, float] | None = None,
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     reconstruction_history_filename: str = "reconstruction.json",
     max_audit_reject_count: int = 3,
@@ -102,7 +102,9 @@ def create_reconstruction_graph(
     # instantiate agents
     prompt_context = {
         "coding_output_path": str(sandbox_workdir.sandbox_bind_dir / output_filename),
-        "drawing_output_path": str(sandbox_workdir.sandbox_bind_dir / drawing_filename),
+        "interpretation_output_path": str(
+            sandbox_workdir.sandbox_bind_dir / interpretation_filename
+        ),
         "verification_dir": str(
             sandbox_workdir.sandbox_bind_dir / verification_dirname
         ),
@@ -123,23 +125,15 @@ def create_reconstruction_graph(
         / "stages/_base/prompts/cad_reconstructor.md"
     )
 
-    drawing_stage = stage_factory(PipelineStage.DRAWINGS)(
-        drawings_agent_builder,
+    interpretation_stage = stage_factory(PipelineStage.INTERPRETATION)(
+        interpretation_agent_builder,
         tools=basic_tools,
         system_prompt_path=share_thread_system_prompt if share_thread else None,
         instructions=stage_instructions,
         prompt_context=prompt_context,
         attempt_store=attempt_store,
-        feedback_presentation_mode=artifact_presenter.feedback_mode,
-        drawing_filename=drawing_filename,
-        input_after_compaction=compact_between_stages is not None,
-    )
-    semantic_stage = stage_factory(PipelineStage.SEMANTICS)(
-        semantics_agent_builder,
-        tools=basic_tools,
-        system_prompt_path=share_thread_system_prompt if share_thread else None,
-        instructions=stage_instructions,
-        prompt_context=prompt_context,
+        interpretation_filename=interpretation_filename,
+        dxf_mm_per_unit=dxf_mm_per_unit,
         input_after_compaction=compact_between_stages is not None,
     )
     operation_stage = stage_factory(PipelineStage.OPERATIONS)(
@@ -257,17 +251,16 @@ def create_reconstruction_graph(
         snapshot = current_snapshot(state)
         stage = next_stage(snapshot.last_completed_stage)
         workspace_output = None
-        if stage is PipelineStage.DRAWINGS:
-            if tickets_assigned_to(snapshot.open_tickets, PipelineStage.DRAWINGS):
-                workspace_output = drawing_stage.verifier.accepted_drawing
+        if stage is PipelineStage.INTERPRETATION:
+            if tickets_assigned_to(snapshot.open_tickets, PipelineStage.INTERPRETATION):
+                workspace_output = interpretation_stage.verifier.accepted_interpretation
                 if workspace_output is None:
                     return _rejected_stage_submission(
                         state,
-                        "drawing.json has not been structurally validated and "
-                        "rendered for this submission",
+                        "interpretation.json has not passed validation for this submission",
                     )
             else:
-                workspace_output = drawing_baseline(reconstruction)
+                workspace_output = interpretation_baseline(reconstruction)
         elif stage is PipelineStage.CODING:
             workspace_output, _ = coding_stage.verifier.verify()
 
@@ -367,7 +360,7 @@ def create_reconstruction_graph(
             return "__end__"
 
         if current_snapshot(state).last_completed_stage is None:
-            return PipelineStage.DRAWINGS.value
+            return PipelineStage.INTERPRETATION.value
         return "__end__"
 
     # ------------------------------------------------------------------
@@ -391,8 +384,7 @@ def create_reconstruction_graph(
     # Construct a graph
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
     workflow.add_node("initialize", initialize)
-    workflow.add_node(PipelineStage.DRAWINGS.value, drawing_stage.run)
-    workflow.add_node(PipelineStage.SEMANTICS.value, semantic_stage.run)
+    workflow.add_node(PipelineStage.INTERPRETATION.value, interpretation_stage.run)
     workflow.add_node(PipelineStage.OPERATIONS.value, operation_stage.run)
     workflow.add_node(PipelineStage.CODING.value, coding_stage.run)
     workflow.add_node(PipelineStage.AUDIT.value, audit_stage.run)

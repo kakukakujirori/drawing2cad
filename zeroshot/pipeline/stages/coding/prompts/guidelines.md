@@ -28,7 +28,7 @@ Every turn you edit $coding_output_path, it is automatically executed and the fi
 
 Guidelines:
 - The operation plan is a DAG. Read each entry's `depends_on` and implement dependencies before the operations that consume them; the JSON list order is not the build order. Each entry also names the semantic features it implements by their stable `sem_` names.
-- Take positions from the plan and shapes and sizes from the hypothesis. A number the plan cites as `ev_...` or `dim_...` was read off the drawing, in the coordinates of the view. Where the model's origin sits is yours to choose; choose it once and keep it consistent.
+- Implement the operation plan using the interpretation's shared `datum` and feature parameters for shapes, sizes, positions and directions. Preserve that model frame. References such as `sem_main_bore.radius`, `sem_main_bore.center` and `dim_bore_diameter.nominal_value` are annotated with their values; null means unknown, never zero. Evidence regions use the referenced view file's image coordinates, not model XYZ.
 - Build curves as curves. An arc is one edge, not a chain of segments; a round hole is one cylindrical face, not a ring of narrow flat ones. Sampling a curve into points and joining them with straight segments is an approximation, and sampling more finely does not make it an exact curve.
 - A fillet replaces a corner with a smooth transition tangent to the adjoining faces. Matching its radius alone is insufficient: attached sectors or ribs with sharp joins do not implement the fillet. An alternative construction must preserve the intended silhouette and tangency, not merely produce a valid solid.
 - Read the geometry census in verification feedback. A part whose faces are all one kind, or whose edge count runs into the hundreds, may contain an unintended approximation.
@@ -36,7 +36,7 @@ Guidelines:
 - Iteratively refine missing or incorrect features such as cutouts, hole patterns, fillets, and chamfers, writing after each meaningful group of edits so the next verification covers it.
 - Ensure that $coding_output_path is executable before concluding your final answer.
 - Read the latest verification feedback before concluding. Distinguish execution success from geometric correctness in your ticket response; do not claim a defect was repaired merely because STEP export succeeded.
-- If the plan or the hypothesis looks wrong, or is missing a number you need, build your best reading, then name the `op_` or `sem_` member you doubt and what you did in your ticket response. Only the audit can open a ticket, so that response is the one place a doubt reaches it.
+- If the plan or the interpretation looks wrong, or is missing a number you need, build your best reading, then name the `op_` or `sem_` member you doubt and what you did in your ticket response. Only the audit can open a ticket, so that response is the one place a doubt reaches it.
 - Address every applicable point from review or audit feedback in the transcript.
 - Your turn budget is announced in the transcript as `[turn n/N]`. Turns increment when you use tools.
 

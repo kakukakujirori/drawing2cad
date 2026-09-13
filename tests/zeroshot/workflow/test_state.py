@@ -8,7 +8,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
-from tests.zeroshot.contracts import feature, geometry, hypothesis, replacing, sheet
+from tests.zeroshot.contracts import interpretation, replacing, sheet
 from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
 from zeroshot.pipeline.stages._base.parameters import Parameter, ParameterName
 from zeroshot.pipeline.stages.audit.contracts import (
@@ -31,21 +31,25 @@ from zeroshot.pipeline.stages.drawings.contracts import (
     EdgeStyle,
     View,
 )
-from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    Dimension as InterpretedDimension,
+)
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    DrawingInterpretation,
+    DrawingView,
+    Region,
+    SemanticFeature,
+)
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    View as InterpretedView,
+)
+from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
 )
 from zeroshot.pipeline.stages.operations.submission import OperationSubmission
-from zeroshot.pipeline.stages.semantics.contracts import (
-    Axis,
-    FeatureGeometry,
-    GeometryKind,
-    SemanticFeature,
-    SemanticHypothesis,
-)
-from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.stages.types import PipelineStage, ReasoningStage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow import (
@@ -62,9 +66,8 @@ from zeroshot.pipeline.workflow.state import (
 @pytest.mark.parametrize(
     "contract",
     [
-        SemanticHypothesis,
+        DrawingInterpretation,
         SemanticFeature,
-        FeatureGeometry,
         Parameter,
         DrawingEvidence,
     ],
@@ -82,14 +85,20 @@ def test_a_contract_carries_no_prose_beyond_its_field_descriptions(
     assert set(schema["properties"]) == set(contract.model_fields)
 
 
-# A plane is measured by nothing, so a hypothesis of bare planes never builds a
-# `Dimension` and the checkpoint check below would pass without covering it.
-_A_HYPOTHESIS = hypothesis(
-    proposal=[
-        feature(1, "flange"),
-        feature(2, "blind hole", geometry=[geometry("torus")]),
-    ]
-)
+_A_INTERPRETATION = interpretation("flange", "blind hole")
+_A_INTERPRETATION.views[0].dimensions = [
+    InterpretedDimension(
+        name="dim_bore",
+        kind="diameter",
+        text="5",
+        nominal_value=5.0,
+        measured_length=10.0,
+        region=Region(view="view_front", box_px=(0, 0, 10, 10)),
+        quantity=1,
+        note=None,
+    )
+]
+_A_INTERPRETATION.features[1].dimension_refs = ["dim_bore"]
 
 _A_PLAN = OperationPlan(
     proposal=[
@@ -170,20 +179,14 @@ _RECONSTRUCTION = ReconstructionRun(
                     ticket_id="ticket_initial",
                     subject=BootstrapWork(instruction="reconstruct the drawing"),
                     assigned_stages=[
-                        PipelineStage.DRAWINGS,
-                        PipelineStage.SEMANTICS,
+                        PipelineStage.INTERPRETATION,
                         PipelineStage.OPERATIONS,
                         PipelineStage.CODING,
                     ],
                     responses=[
                         TicketResponse(
                             ticket_id="ticket_initial",
-                            stage=PipelineStage.DRAWINGS,
-                            summary="read sheet_front",
-                        ),
-                        TicketResponse(
-                            ticket_id="ticket_initial",
-                            stage=PipelineStage.SEMANTICS,
+                            stage=PipelineStage.INTERPRETATION,
                             summary="established sem_feature_1 and sem_feature_2",
                         ),
                         TicketResponse(
@@ -201,8 +204,7 @@ _RECONSTRUCTION = ReconstructionRun(
             ],
             round=0,
             last_completed_stage=PipelineStage.CODING,
-            drawings=_A_DRAWING,
-            semantics=_A_HYPOTHESIS,
+            interpretation=_A_INTERPRETATION,
             operations=_A_PLAN,
             program_source=_VERIFICATION.source,
             verification=_VERIFICATION,
@@ -210,21 +212,11 @@ _RECONSTRUCTION = ReconstructionRun(
     ],
 )
 
-_DRAWING_SUBMISSION = DrawingSubmission(
+_INTERPRETATION_SUBMISSION = InterpretationSubmission(
     responses=[
         TicketResponse(
             ticket_id="ticket_initial",
-            stage=PipelineStage.DRAWINGS,
-            summary="read sheet_front",
-        )
-    ],
-)
-_SEMANTIC_SUBMISSION = SemanticSubmission(
-    **replacing(_A_HYPOTHESIS),
-    responses=[
-        TicketResponse(
-            ticket_id="ticket_initial",
-            stage=PipelineStage.SEMANTICS,
+            stage=PipelineStage.INTERPRETATION,
             summary="established sem_feature_1 and sem_feature_2",
         )
     ],
@@ -250,16 +242,9 @@ _CODING_SUBMISSION = CodingSubmission(
 )
 
 _ARTIFACTS: dict[str, object] = {
-    "drawings_state": {
-        "messages": [HumanMessage(content="read the drawing")],
-        "structured_response": _DRAWING_SUBMISSION,
-        "current_turn": 1,
-        "total_turns": 1,
-        "stop_reason": StopReason.COMPLETED,
-    },
-    "semantics_state": {
-        "messages": [HumanMessage(content="propose semantics")],
-        "structured_response": _SEMANTIC_SUBMISSION,
+    "interpretation_state": {
+        "messages": [HumanMessage(content="interpret the drawing")],
+        "structured_response": _INTERPRETATION_SUBMISSION,
         "current_turn": 1,
         "total_turns": 1,
         "stop_reason": StopReason.COMPLETED,
@@ -291,12 +276,10 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         Operation,
         OperationPlan,
         OperationVerb,
-        SemanticHypothesis,
+        DrawingInterpretation,
         SemanticFeature,
-        FeatureGeometry,
         Parameter,
         ParameterName,
-        Axis,
         DrawingEvidence,
         DrawingSheet,
         DrawingSource,
@@ -309,7 +292,6 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         DrawnEntity,
         EdgeStyle,
         DimensionKind,
-        GeometryKind,
         ExecutionStatus,
         StopReason,
         VerifyOutputResult,
@@ -324,8 +306,11 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         Ticket,
         TicketResponse,
         PipelineStage,
-        DrawingSubmission,
-        SemanticSubmission,
+        DrawingView,
+        Region,
+        InterpretedDimension,
+        InterpretedView,
+        InterpretationSubmission,
         OperationSubmission,
         CodingSubmission,
     }
@@ -376,9 +361,9 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
         assert type(restored[field]) is type(value), field
         assert restored[field] == value
 
-    semantics_state = restored["semantics_state"]
-    assert type(semantics_state["structured_response"]) is SemanticSubmission
-    assert type(semantics_state["stop_reason"]) is StopReason
+    interpretation_state = restored["interpretation_state"]
+    assert type(interpretation_state["structured_response"]) is InterpretationSubmission
+    assert type(interpretation_state["stop_reason"]) is StopReason
 
     operations_state = restored["operations_state"]
     assert type(operations_state["structured_response"]) is OperationSubmission
@@ -388,7 +373,7 @@ def _threaded_state(**stages: object) -> ReconstructionState:
     """A run part-way through, each stage holding what is its own."""
     read = [HumanMessage(content="read the views")]
     state: dict[str, object] = {
-        "semantics_state": {"messages": read, "current_turn": 3},
+        "interpretation_state": {"messages": read, "current_turn": 3},
         "operations_state": {
             "messages": read,
             "current_turn": 2,
@@ -402,7 +387,7 @@ def _threaded_state(**stages: object) -> ReconstructionState:
 @pytest.mark.parametrize(
     ("stage", "stage_state"),
     [
-        (PipelineStage.SEMANTICS, {"semantics_state": {"messages": ["it"]}}),
+        (PipelineStage.INTERPRETATION, {"interpretation_state": {"messages": ["it"]}}),
         (PipelineStage.OPERATIONS, {"operations_state": {"messages": ["it"]}}),
         (PipelineStage.CODING, {"coding_state": {"messages": ["it"]}}),
     ],
@@ -426,12 +411,11 @@ def test_the_thread_reaches_every_reasoning_stage_but_not_the_audit() -> None:
     update = carry_thread(state, lead_transcript(state, PipelineStage.CODING))
 
     assert set(update) == {
-        "drawings_state",
-        "semantics_state",
+        "interpretation_state",
         "operations_state",
         "coding_state",
     }
-    assert update["semantics_state"]["messages"] == ["wrote the model"]
+    assert update["interpretation_state"]["messages"] == ["wrote the model"]
     assert update["operations_state"]["messages"] == ["wrote the model"]
 
 
@@ -453,16 +437,16 @@ def test_what_a_stage_holds_besides_its_messages_survives_the_thread() -> None:
         lead_transcript(_threaded_state(), PipelineStage.CODING),
     )
 
-    assert update["semantics_state"]["current_turn"] == 3
+    assert update["interpretation_state"]["current_turn"] == 3
     assert update["operations_state"]["current_turn"] == 2
 
 
 def test_the_prompt_log_is_told_where_the_inherited_thread_ends() -> None:
     """Without the watermark a stage reports the transcript it was handed as
     the prompt it was given."""
-    state = _threaded_state(semantics_state={"messages": ["one", "two"]})
+    state = _threaded_state(interpretation_state={"messages": ["one", "two"]})
 
-    update = carry_thread(state, lead_transcript(state, PipelineStage.SEMANTICS))
+    update = carry_thread(state, lead_transcript(state, PipelineStage.INTERPRETATION))
 
     assert update["coding_state"]["reported_message_count"] == 2
     assert update["coding_state"]["current_turn"] == 4
@@ -471,7 +455,7 @@ def test_the_prompt_log_is_told_where_the_inherited_thread_ends() -> None:
 def test_a_stage_that_has_not_run_is_seeded_all_the_same() -> None:
     update = carry_thread(ReconstructionState(), [])
 
-    assert update["semantics_state"] == {
+    assert update["interpretation_state"] == {
         "messages": [],
         "reported_message_count": 0,
     }

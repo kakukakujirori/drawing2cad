@@ -15,6 +15,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from zeroshot.pipeline.stages.types import (
+    REASONING_STAGES,
     PipelineStage,
     ReasoningStage,
 )
@@ -30,18 +31,17 @@ type RevisionAction = Literal[
 
 
 _FIND_NAME = re.compile(r"^find_[a-z0-9_]+$")
-_SHEET_NAME = re.compile(r"^sheet_[a-z0-9_]+$")
-_SEMANTIC_NAME = re.compile(r"^sem_[a-z0-9_]+$")
+_INTERPRETATION_NAME = re.compile(r"^(?:view|dim|sem)_[a-z0-9_]+$")
 _OPERATION_NAME = re.compile(r"^op_[a-z0-9_]+$")
 _CODE_NAME = re.compile(r"^ret_[a-z0-9_]+$")
 
 
+# References and revision actions: checks independent of the audited snapshot.
+
+
 def _valid_member_name(stage: ReasoningStage, name: str) -> bool:
-    # The member a stage can be asked to revise is the one it edits: a sheet
-    # is given whole, as a feature and an operation are.
     pattern = {
-        PipelineStage.DRAWINGS: _SHEET_NAME,
-        PipelineStage.SEMANTICS: _SEMANTIC_NAME,
+        PipelineStage.INTERPRETATION: _INTERPRETATION_NAME,
         PipelineStage.OPERATIONS: _OPERATION_NAME,
         PipelineStage.CODING: _CODE_NAME,
     }[stage]
@@ -60,8 +60,8 @@ class StageOutputRef(BaseModel):
     name: str | None = Field(
         ...,
         description=(
-            "The stable member name: sheet_... for drawings, sem_... for "
-            "semantics, op_... for operations, and ret_... for coding. The "
+            "The stable member name: view_..., dim_... or sem_... for "
+            "interpretation, op_... for operations, and ret_... for coding. The "
             "terminal result variable is not a causal member; use null to "
             "refer to the stage's complete output."
         ),
@@ -85,7 +85,8 @@ class RevisionRequest(BaseModel):
         ...,
         description=(
             "The structural change requested. Use rename only when the stable "
-            "identity itself must change."
+            "identity itself must change. Coding accepts only modify; changing "
+            "operation/return identities requires an operations revision."
         ),
     )
     targets: list[StageOutputRef] = Field(
@@ -112,15 +113,17 @@ class RevisionRequest(BaseModel):
             "Stable names proposed for the result of the action. Add requires "
             "one or more names, split requires at least two, and merge and "
             "rename require exactly one. Modify and delete require an empty "
-            "list. Every proposed name must follow the naming convention of "
-            "the target stage: sheet_... for drawings, sem_... for semantics, "
-            "op_... for operations, ret_... for coding. Request a sheet edit "
-            "to correct its ev_ or dim_ members; those are not stage targets."
+            "list. Proposed names must be unique across this report. Add and "
+            "rename require new names; split and merge may retain their own "
+            "target names. Every proposed name must follow the naming convention of "
+            "the target stage: view_..., dim_... or sem_... for interpretation, "
+            "op_... for operations. Coding only permits modify, so its list is empty."
         ),
     )
 
     @model_validator(mode="after")
     def require_targets_and_names_appropriate_for_the_action(self) -> Self:
+        """Check action shape; existing-name collisions need the snapshot."""
         if not self.instruction.strip():
             raise ValueError("instruction must not be blank")
         if not self.targets:
@@ -133,6 +136,10 @@ class RevisionRequest(BaseModel):
         if len(stages) != 1:
             raise ValueError("all targets must belong to the same stage")
         stage = self.targets[0].stage
+        if stage is PipelineStage.CODING and self.action != "modify":
+            raise ValueError(
+                "coding accepts only modify; request structural changes at operations"
+            )
 
         if len(set(self.proposed_names)) != len(self.proposed_names):
             raise ValueError("proposed_names must not contain duplicates")
@@ -178,8 +185,13 @@ class RevisionRequest(BaseModel):
                 raise ValueError("rename requires exactly one named target")
             if len(self.proposed_names) != 1:
                 raise ValueError("rename requires exactly one proposed name")
+            if self.proposed_names[0] == self.targets[0].name:
+                raise ValueError("rename requires a different proposed name")
 
         return self
+
+
+# Causal paths: topology is local; declared artifact links need the snapshot.
 
 
 class CausalHop(BaseModel):
@@ -202,8 +214,17 @@ class CausalHop(BaseModel):
 
     @model_validator(mode="after")
     def require_a_meaningful_step(self) -> Self:
+        """Move within a stage or to its adjacent upstream stage."""
         if self.effect == self.cause:
             raise ValueError("a causal hop must move to a different output")
+        distance = REASONING_STAGES.index(self.effect.stage) - REASONING_STAGES.index(
+            self.cause.stage
+        )
+        if distance not in (0, 1):
+            raise ValueError(
+                "a causal hop must stay within one stage or move to the adjacent "
+                "upstream stage: coding -> operations -> interpretation"
+            )
         if not self.rationale.strip():
             raise ValueError("rationale must not be blank")
         return self
@@ -232,8 +253,8 @@ class AuditFinding(BaseModel):
         ...,
         description=(
             "Exact locators for the evidence supporting the observation, such as "
-            "an original artifact path, sheet_ name and its ev_ or dim_ entry, "
-            "canonical semantic reference, operation name or "
+            "an original artifact path, view_ name and pixel/UV region, "
+            "dim_ name, sem_ parameter reference, operation name or "
             "field, code result variable, or verification-report field. These are "
             "references only, not explanations."
         ),
@@ -244,13 +265,15 @@ class AuditFinding(BaseModel):
             "The causal path from the observed effect to the revision root, as "
             "adjacent effect-to-cause steps in traversal order. Each hop's cause "
             "moves within a stage or one step upstream along coding -> "
-            "operations -> semantics -> drawings. A semantics-to-drawings "
-            "hop names the sheet owning an entry cited by feature.evidence. "
+            "operations -> interpretation. An interpretation-internal hop "
+            "may name a feature's cited view or dimension. "
             "Each hop's cause "
             "must equal the next hop's effect, and the last cause must be one of "
             "the revision targets. Leave it empty when the defect is already at "
-            "its root. Take at most one hop inside any one stage. Point that "
-            "hop at the member where the defect started."
+            "its root. Do not revisit an output. Take at most one named-to-named "
+            "hop within each prefix (ret_, op_, sem_, dim_, view_); crossing "
+            "prefixes, such as sem_ -> dim_ -> view_, is allowed. Whole-stage "
+            "references have no prefix and do not count toward that limit."
         ),
     )
     revision_request: RevisionRequest = Field(
@@ -262,6 +285,7 @@ class AuditFinding(BaseModel):
 
     @model_validator(mode="after")
     def require_evidence_and_a_revision_path(self) -> Self:
+        """Require evidence and a contiguous, acyclic path ending at the target."""
         if _FIND_NAME.fullmatch(self.name) is None:
             raise ValueError("name must be a find_... lower_snake_case name")
         if not self.observation.strip():
@@ -272,11 +296,41 @@ class AuditFinding(BaseModel):
             raise ValueError("evidence locators must not be blank")
         if len(set(self.evidence)) != len(self.evidence):
             raise ValueError("evidence locators must not contain duplicates")
+
+        # A path must be continuous and may not revisit an output.
         for current, following in zip(self.backtrace, self.backtrace[1:], strict=False):
             if current.cause != following.effect:
                 raise ValueError(
                     "each causal hop's cause must equal the next hop's effect"
                 )
+        visited = (
+            {(self.backtrace[0].effect.stage, self.backtrace[0].effect.name)}
+            if self.backtrace
+            else set()
+        )
+        for hop in self.backtrace:
+            key = (hop.cause.stage, hop.cause.name)
+            if key in visited:
+                raise ValueError("a causal path must not contain a cycle")
+            visited.add(key)
+
+        # Limit walks within one member kind, allowing sem -> dim -> view.
+        walked_prefixes: set[str] = set()
+        for hop in self.backtrace:
+            if hop.effect.name is None or hop.cause.name is None:
+                continue
+            effect_prefix = hop.effect.name.partition("_")[0]
+            cause_prefix = hop.cause.name.partition("_")[0]
+            if effect_prefix != cause_prefix:
+                continue
+            if effect_prefix in walked_prefixes:
+                raise ValueError(
+                    f"a causal path must not step within the {effect_prefix}_ "
+                    "prefix more than once"
+                )
+            walked_prefixes.add(effect_prefix)
+
+        # The requested change must include the root reached by the path.
         if (
             self.backtrace
             and self.backtrace[-1].cause not in self.revision_request.targets
@@ -285,6 +339,9 @@ class AuditFinding(BaseModel):
                 "the final causal cause must be one of the revision targets"
             )
         return self
+
+
+# Report-wide consistency across otherwise independent findings.
 
 
 class AuditReport(BaseModel):
@@ -310,9 +367,19 @@ class AuditReport(BaseModel):
 
     @model_validator(mode="after")
     def require_the_decision_to_match_the_findings(self) -> Self:
+        """Require one decision and unambiguous finding and proposed identities."""
         if self.accepted == bool(self.findings):
             raise ValueError("accepted must be true exactly when findings is empty")
         names = [finding.name for finding in self.findings]
         if len(set(names)) != len(names):
             raise ValueError("finding names must be unique within a report")
+        proposed = [
+            (finding.revision_request.targets[0].stage, name)
+            for finding in self.findings
+            for name in finding.revision_request.proposed_names
+        ]
+        if len(set(proposed)) != len(proposed):
+            raise ValueError(
+                "proposed_names must be unique across findings for each stage"
+            )
         return self

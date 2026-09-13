@@ -61,7 +61,7 @@ class Operation(BaseModel):
             "A name for this step, unique within the plan, beginning op_ and "
             "carrying on in lower_snake_case: op_base_plate, op_bore_through, "
             "op_fillet_top_edges. The op_ marks it as a step, as sem_ marks a "
-            "hypothesis feature, so that a step named after the feature it "
+            "interpreted feature, so that a step named after the feature it "
             "builds still reads as the step. Name it for what it does rather "
             "than for where it comes in the order, since the order is worked "
             "out from the dependencies and the name is what every later stage "
@@ -84,14 +84,12 @@ class Operation(BaseModel):
         description=(
             "What this step does, in a sentence or two: the profile or edges "
             "it acts on, the direction it goes in, and where on the part it "
-            "lands. Cite any number the hypothesis or the drawing already "
-            "holds -- sem_main_bore.geo_cylinder.radius, ev_front_edge.start, "
-            "dim_bore_diameter.nominal -- and it is filled in before the next "
-            "stage reads it. A point takes .x or .y when you need one of its "
-            "two coordinates, as in ev_front_edge.start.x. A geo_ address may "
-            "stop at the claim to name all of its parameters. Drawing entry "
-            "and dimension addresses must name a parameter. Write out only "
-            "what neither artifact states."
+            "lands. Preserve the interpretation's datum and feature placement. "
+            "Cite a feature parameter as sem_main_bore.radius or "
+            "sem_main_bore.center, or a printed figure as "
+            "dim_bore_diameter.nominal_value. The pipeline annotates references "
+            "with their scalar, array or null values. Null means unknown, not zero. "
+            "Write out only construction choices that the interpretation does not state."
         ),
     )
     depends_on: list[str] = Field(
@@ -106,7 +104,7 @@ class Operation(BaseModel):
     semantics: list[str] = Field(
         ...,
         description=(
-            "The hypothesis features this operation helps build, by their "
+            "The interpreted features this operation helps build, by their "
             "stable sem_ names -- sem_main_bore, for example. Both operations "
             "and features are named identities: `depends_on` holds op_ names "
             "and `semantics` holds sem_ names. A "
@@ -193,7 +191,7 @@ class OperationPlan(BaseModel):
         return self
 
 
-# `op_` because a hypothesis feature is cited as `sem_main_bore`, and the two kinds of
+# `op_` because a interpreted feature is cited as `sem_main_bore`, and the two kinds of
 # identifier travel together through prose the coder and the audit both read.
 # A step named for the feature it builds is the likely case rather than the
 # awkward one -- the operation that bores the main bore has little else to be

@@ -1,111 +1,171 @@
-"""Audit's last upstream crossing addresses the owner of a drawing reading."""
+"""Audit links through the interpretation, including direct missing-member tickets."""
 
 import pytest
-from pydantic import ValidationError
 
-from tests.zeroshot.contracts import drawing, hypothesis
-from tests.zeroshot.workflow.test_reconstruction_workflow import (
-    _completed_run,
-    _hop,
-    _hop_from,
-    _ref,
-    _report,
-    _snapshot,
+from tests.zeroshot.workflow.test_resolve_submission import interpretation
+from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
+from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.audit.contracts import (
+    AuditFinding,
+    AuditReport,
+    CausalHop,
+    RevisionRequest,
+    StageOutputRef,
 )
-from zeroshot.pipeline.stages.audit.contracts import RevisionRequest
-from zeroshot.pipeline.stages.drawings.contracts import Dimension
-from zeroshot.pipeline.stages.types import REASONING_STAGES
-from zeroshot.pipeline.stages.validate import (
-    SubmissionValidationError,
-    validate_submission,
-)
-from zeroshot.pipeline.workflow.lifecycle import open_next_round
+from zeroshot.pipeline.stages.audit.validate import validate_audit_report
+from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
+from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
+from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
+from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 
 
-def test_audit_traces_the_solid_to_the_sheet_owning_its_reading() -> None:
-    report = _report(
-        _hop("coding", "ret_base", "operations", "op_base"),
-        _hop("operations", "op_base", "semantics", "sem_feature_1"),
-        _hop("semantics", "sem_feature_1", "drawings", "sheet_front"),
+def snapshot() -> ReconstructionSnapshot:
+    return ReconstructionSnapshot(
+        open_tickets=[
+            Ticket(
+                ticket_id="ticket_initial",
+                subject=BootstrapWork(instruction="Reconstruct"),
+                assigned_stages=list(REASONING_STAGES),
+                responses=[
+                    TicketResponse(
+                        ticket_id="ticket_initial", stage=stage, summary="Completed."
+                    )
+                    for stage in REASONING_STAGES
+                ],
+            )
+        ],
+        round=0,
+        last_completed_stage=PipelineStage.CODING,
+        interpretation=interpretation(),
+        operations=OperationPlan(
+            proposal=[
+                Operation(
+                    name="op_bore",
+                    verb="hole",
+                    detail="Cut the bore.",
+                    depends_on=[],
+                    semantics=["sem_bore"],
+                )
+            ],
+            rationale="One bore.",
+        ),
+        program_source="ret_bore = object()\nresult = ret_bore\n",
+        verification=VerifyOutputResult(status=ExecutionStatus.VERIFIED, returncode=0),
     )
-    run = _completed_run()
-    original = run.model_dump_json()
-    revised = open_next_round(run, report)
-    assert revised.snapshots[-1].open_tickets[0].assigned_stages == list(
-        REASONING_STAGES
-    )
-    assert run.model_dump_json() == original
 
 
-@pytest.mark.parametrize("with_hop", [False, True])
-def test_audit_rejects_a_sheet_absent_from_the_snapshot(with_hop: bool) -> None:
-    report = (
-        _report(_hop("semantics", "sem_feature_1", "drawings", "sheet_absent"))
-        if with_hop
-        else _report(target=_ref("drawings", "sheet_absent"))
-    )
-    with pytest.raises(SubmissionValidationError, match="sheet_absent.*does not exist"):
-        validate_submission(report, _snapshot())
+def ref(stage: str, name: str | None) -> StageOutputRef:
+    return StageOutputRef(stage=stage, name=name)
 
 
-def test_audit_rejects_an_existing_sheet_not_cited_by_the_feature() -> None:
-    snapshot = _snapshot().model_copy(update={"drawings": drawing("front", "top")})
-    report = _report(_hop("semantics", "sem_feature_1", "drawings", "sheet_top"))
-    with pytest.raises(SubmissionValidationError, match="sem_feature_1.evidence"):
-        validate_submission(report, snapshot)
-
-
-def test_a_dimension_citation_supports_the_hop_to_its_sheet() -> None:
-    snapshot = _snapshot()
-    assert snapshot.drawings is not None
-    snapshot.drawings.sheets[0].dimensions.append(
-        Dimension(
-            name="dim_width",
-            kind="linear",
-            text="10",
-            nominal=10,
-            quantity=1,
-            note=None,
+def report(
+    *hops: tuple[str, str, str, str], target: str | None = None, add: str | None = None
+) -> AuditReport:
+    backtrace = [
+        CausalHop(
+            effect=ref(es, en),
+            cause=ref(cs, cn),
+            rationale="Declared source of the mismatch.",
         )
-    )
-    snapshot.semantics = hypothesis("the base")
-    snapshot.semantics.proposal[0].evidence = ["dim_width"]
-    validate_submission(
-        _report(_hop("semantics", "sem_feature_1", "drawings", "sheet_front")),
-        snapshot,
+        for es, en, cs, cn in hops
+    ]
+    root = backtrace[-1].cause if backtrace else ref("interpretation", target)
+    return AuditReport(
+        accepted=False,
+        findings=[
+            AuditFinding(
+                name="find_bore",
+                observation="The drawn bore is missing or incorrect.",
+                evidence=["front.png"],
+                backtrace=backtrace,
+                revision_request=RevisionRequest(
+                    action="add" if add else "modify",
+                    targets=[root],
+                    instruction="Correct the bore.",
+                    proposed_names=[add] if add else [],
+                ),
+            )
+        ],
     )
 
 
-@pytest.mark.parametrize(
-    ("effect", "cause"),
-    [("coding", "drawings"), ("drawings", "semantics")],
-)
-def test_audit_rejects_skipped_or_reversed_stages_even_without_names(
-    effect: str,
+@pytest.mark.parametrize("cause", ["view_front", "dim_diameter"])
+def test_audit_traces_code_through_operation_feature_and_its_evidence(
     cause: str,
 ) -> None:
-    report = _report(_hop_from(_ref(effect, None), _ref(cause, None)))
-    with pytest.raises(SubmissionValidationError, match="adjacent upstream stage"):
-        validate_submission(report, _snapshot())
-
-
-def test_a_missing_sheet_can_be_requested_without_inventing_a_causal_chain() -> None:
-    report = _report(target=_ref("drawings", None))
-    report.findings[0].revision_request = RevisionRequest(
-        action="add",
-        targets=[_ref("drawings", None)],
-        instruction="Read the omitted top view from the input page.",
-        proposed_names=["sheet_top"],
+    validate_audit_report(
+        report(
+            ("coding", "ret_bore", "operations", "op_bore"),
+            ("operations", "op_bore", "interpretation", "sem_bore"),
+            ("interpretation", "sem_bore", "interpretation", cause),
+        ),
+        snapshot(),
     )
-    validate_submission(report, _snapshot())
 
 
-@pytest.mark.parametrize("name", ["ev_front_line", "dim_width", "sem_base"])
-def test_drawing_revision_proposes_sheets_not_entries(name: str) -> None:
-    with pytest.raises(ValidationError, match="invalid proposed names"):
-        RevisionRequest(
-            action="add",
-            targets=[_ref("drawings", None)],
-            instruction="Read the omitted top view.",
-            proposed_names=[name],
+@pytest.mark.parametrize("name", ["view_missing", "dim_missing", "sem_missing"])
+def test_missing_members_can_be_added_directly_without_inventing_a_chain(
+    name: str,
+) -> None:
+    validate_audit_report(report(add=name), snapshot())
+    with pytest.raises(SubmissionValidationError, match="does not exist"):
+        validate_audit_report(report(target=name), snapshot())
+
+
+def test_dimension_can_trace_to_its_source_view() -> None:
+    validate_audit_report(
+        report(("interpretation", "dim_diameter", "interpretation", "view_front")),
+        snapshot(),
+    )
+
+
+def test_operation_cannot_skip_its_feature_link_to_a_dimension() -> None:
+    with pytest.raises(SubmissionValidationError, match="op_bore.semantics"):
+        validate_audit_report(
+            report(("operations", "op_bore", "interpretation", "dim_diameter")),
+            snapshot(),
+        )
+
+
+def test_interpretation_hops_require_an_explicit_evidence_link() -> None:
+    with pytest.raises(SubmissionValidationError, match="not supported"):
+        validate_audit_report(
+            report(("interpretation", "view_front", "interpretation", "sem_bore")),
+            snapshot(),
+        )
+
+
+def test_feature_can_trace_through_a_dimension_to_another_view() -> None:
+    current = snapshot()
+    data = current.interpretation.model_dump()
+    front = data["views"][0]
+    data["views"].append(
+        {
+            **front,
+            "name": "view_top",
+            "role": "top",
+            "file": "top.png",
+            "region": {**front["region"], "view": "view_top"},
+            "dimensions": front["dimensions"],
+        }
+    )
+    front["dimensions"] = []
+    data["views"][1]["dimensions"][0]["region"]["view"] = "view_top"
+    current.interpretation = DrawingInterpretation.model_validate(data)
+
+    validate_audit_report(
+        report(
+            ("coding", "ret_bore", "operations", "op_bore"),
+            ("operations", "op_bore", "interpretation", "sem_bore"),
+            ("interpretation", "sem_bore", "interpretation", "dim_diameter"),
+            ("interpretation", "dim_diameter", "interpretation", "view_top"),
+        ),
+        current,
+    )
+    # The two declared links must not become an invented direct reference.
+    with pytest.raises(SubmissionValidationError, match="not supported"):
+        validate_audit_report(
+            report(("interpretation", "sem_bore", "interpretation", "view_top")),
+            current,
         )

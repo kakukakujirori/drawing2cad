@@ -1,40 +1,20 @@
 Coding and verification for reconstruction round $current_round are complete. Audit that immutable snapshot against the input drawing.
 
-The current workspace source is at:
+The program is at `$coding_output_path`.
 
-$coding_output_path
-
-A feature's `evidence` names entries of the drawing rather than restating them. Those entries hold the numbers, in the coordinates of the view.
-
-The built artifacts are in $attempt_dir, laid out as:
-- `output.step` — the solid that was built
-- `projection/<view>.dxf` — the solid drawn in each view the input drawing names, with a `.png` of the same view beside it to look at. A drawing that names no view is not redrawn
-- `render_3d/<style>.png` — its perspective renders, named as the inputs are
-
-If the report shows the program did not produce a solid, projection and renders of the final result are unavailable. Intermediate operation outputs may still exist.
+Built artifacts are in $attempt_dir:
+- `output.step`: the built solid.
+- `projection/<view>.dxf` and `.png`: projections for the orthographic views identified in the interpretation.
+- `render_3d/<style>.png`: perspective renders.
 
 ## Intermediate operation outputs
 
 Recorded directory: $intermediate_returns_dir
 
-When available, each `<ret_name>/` directory may contain `output.step`, `projection/`, and `render_3d/` for the solid a planned operation left behind. Inspect the outputs relevant to a defect to determine whether that operation built what the plan meant it to, and which `ret_...` a backtrace should name. Failed exports or renders may be absent.
+Expected paths within this directory: `<ret_name>/output.step`, `<ret_name>/projection/` and `<ret_name>/render_3d/`.
 
-When the recorded directory is unavailable, audit using the remaining evidence. For a resumed run, check that recorded files are still present before relying on them.
-
-## Drawing evidence and ticket responses
-
-Latest drawing attempt at or before this snapshot: $drawing_attempt_dir. When available, it contains the accepted `drawing.json` and each transcribed view as same-stem `.dxf` and `.png` files. A missing directory means the run was resumed without its earlier attempt artifacts; use the snapshot's `drawings` and their source files instead.
-
-The stages recorded these ticket responses while producing this snapshot:
+## Ticket responses
 
 ```json
 $ticket_responses
 ```
-
-Treat them as hand-off claims and unresolved doubts to check, not as proof that the named artifact is correct.
-
-If a feature visible in the input drawing has no corresponding `sem_...` member, inspect the drawing reading first. If the reading contains the needed linework, leave the `backtrace` empty and return an `add` revision request targeting the whole semantics stage (`name: null`), and propose one or more stable `sem_...` names. If the linework or its view is missing or misread, request a drawings revision first: `modify` the existing `sheet_...`, or `add` on the whole drawings stage with proposed `sheet_...` names for missing sheets. Do not invent evidence-free hops through unrelated outputs.
-
-To trace an existing feature back to drawings, locate the `ev_...` or `dim_...` entries in its `evidence` and name their owning sheet in the causal hop. A drawings target is a whole `sheet_...`, never an `ev_...` or `dim_...`; name the affected entries and the discrepancy in the evidence and instruction. The resulting ticket reopens drawings and all downstream reasoning stages.
-
-Do not edit the reconstruction history, source program, or generated artifacts. Return one `AuditReport`; the pipeline will validate every named reference and causal link against the immutable snapshot.

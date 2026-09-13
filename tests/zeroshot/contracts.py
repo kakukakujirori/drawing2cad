@@ -1,5 +1,4 @@
-"""Least-effort valid instances of the semantics contract, for tests about
-something else.
+"""Minimal valid pipeline artifacts, for tests about something else.
 
 Tests *about* the contract build it explicitly -- see `messages/test_contracts.py`.
 """
@@ -14,6 +13,14 @@ from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
     DrawnEntity,
     View,
+)
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    DrawingInterpretation,
+    DrawingView,
+    Region,
+)
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    SemanticFeature as InterpretedFeature,
 )
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.semantics.contracts import (
@@ -89,7 +96,6 @@ def sheet(role: str = "front", **overrides: object) -> DrawingSheet:
     fields: dict[str, object] = {
         "name": f"sheet_{role}",
         "role": View(role),
-        "label": None,
         "crop_of": None,
         "scale": 1.0,
         "file": f"inputs/{role}.dxf",
@@ -172,3 +178,44 @@ def replacing(artifact: SemanticHypothesis | OperationPlan) -> dict[str, Any]:
 def unchanged() -> dict[str, Any]:
     """The submission fields that leave the preceding round's artifact as it is."""
     return {"edits": [], "deleted": [], "rationale": None}
+
+
+def interpreted_feature(
+    identifier: int | str, description: str, **overrides: object
+) -> InterpretedFeature:
+    return InterpretedFeature.model_validate(
+        {
+            "name": f"sem_feature_{identifier}"
+            if isinstance(identifier, int)
+            else identifier,
+            "description": description,
+            "parameters": {},
+            "evidence": [Region(view="view_front", box_px=(0, 0, 10, 10))],
+            "dimension_refs": [],
+            **overrides,
+        }
+    )
+
+
+def interpretation(*descriptions: str, **overrides: object) -> DrawingInterpretation:
+    """Minimal adopted features with a real view reference, independent of input adapters."""
+    return DrawingInterpretation.model_validate(
+        {
+            "datum": "Origin at the base; x right, y back, z up.",
+            "views": [
+                DrawingView(
+                    name="view_front",
+                    role="front",
+                    file="inputs/front.png",
+                    region=Region(view="view_front", box_px=(0, 0, 10, 10)),
+                    dimensions=[],
+                )
+            ],
+            "features": [
+                interpreted_feature(index, description)
+                for index, description in enumerate(descriptions, start=1)
+            ],
+            "questions": [],
+            **overrides,
+        }
+    )

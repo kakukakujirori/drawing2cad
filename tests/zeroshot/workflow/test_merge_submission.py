@@ -1,158 +1,42 @@
-"""Merging a stage's revision onto the artifact of the preceding round."""
+"""Operation revisions merge by stable name; interpreted artifacts are file outputs."""
 
 import pytest
 from pydantic import ValidationError
 
-from tests.zeroshot.contracts import drawing, feature, geometry, replacing
-from zeroshot.pipeline.messages.tickets import (
-    BootstrapWork,
-    Ticket,
-    TicketAnswers,
-    TicketResponse,
-)
+from tests.zeroshot.contracts import interpretation, interpreted_feature, replacing
+from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
 from zeroshot.pipeline.stages._base.merge import merge_lists
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
+from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.merge import merge_submission
-from zeroshot.pipeline.stages.operations.contracts import (
-    Operation,
-    OperationPlan,
-    OperationVerb,
-)
+from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
 from zeroshot.pipeline.stages.operations.submission import OperationSubmission
-from zeroshot.pipeline.stages.semantics.contracts import (
-    SemanticFeature,
-    SemanticHypothesis,
-)
-from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
-from zeroshot.pipeline.stages.types import (
-    REASONING_STAGES,
-    PipelineStage,
-    ReasoningStage,
-)
+from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 
 
-def _responses(stage: PipelineStage) -> list[TicketResponse]:
-    return [
-        TicketResponse(
-            ticket_id="ticket_initial",
-            stage=stage,  # type: ignore[arg-type]
-            summary=f"Answered during {stage}.",
-        )
-    ]
-
-
-def _semantics() -> SemanticSubmission:
-    return SemanticSubmission(
-        edits=[],
-        deleted=[],
-        rationale=None,
-        responses=_responses(PipelineStage.SEMANTICS),
+def _operation(name="op_base_plate", **overrides):
+    return Operation.model_validate(
+        {
+            "name": name,
+            "verb": "extrude",
+            "detail": "extrude the plate",
+            "depends_on": [],
+            "semantics": ["sem_base_plate"],
+        }
+        | overrides
     )
 
 
-def _operations() -> OperationSubmission:
-    return OperationSubmission(
-        edits=[],
-        deleted=[],
-        rationale=None,
-        responses=_responses(PipelineStage.OPERATIONS),
-    )
-
-
-def _preceding(
-    semantics: SemanticHypothesis | None = None,
-    operations: OperationPlan | None = None,
-) -> ReconstructionSnapshot:
-    """The completed snapshot whose artifacts a revision round starts from."""
-    stages = (PipelineStage.SEMANTICS, PipelineStage.OPERATIONS, PipelineStage.CODING)
-    return ReconstructionSnapshot(
-        open_tickets=[
-            Ticket(
-                ticket_id="ticket_initial",
-                subject=BootstrapWork(instruction="Reconstruct the part."),
-                assigned_stages=list(stages),  # type: ignore[arg-type]
-                responses=[
-                    TicketResponse(
-                        ticket_id="ticket_initial",
-                        stage=stage,  # type: ignore[arg-type]
-                        summary=f"Answered during {stage}.",
-                    )
-                    for stage in stages
-                ],
-            )
-        ],
-        round=0,
-        last_completed_stage=PipelineStage.CODING,  # type: ignore[arg-type]
-        drawings=drawing(),
-        semantics=semantics if semantics is not None else _hypothesis(),
-        operations=operations if operations is not None else _plan(),
-        program_source="result = None\n",
-        verification=VerifyOutputResult(status=ExecutionStatus.VERIFIED, returncode=0),
-    )
-
-
-def _first_round() -> ReconstructionSnapshot:
-    """What a run starts from, before any stage has produced an artifact."""
-    return ReconstructionSnapshot(
-        open_tickets=[
-            Ticket(
-                ticket_id="ticket_initial",
-                subject=BootstrapWork(instruction="Reconstruct the part."),
-                assigned_stages=list(REASONING_STAGES),
-                responses=[],
-            )
-        ],
-        round=0,
-        last_completed_stage=None,
-        drawings=None,
-        semantics=None,
-        operations=None,
-        program_source=None,
-        verification=None,
-    )
-
-
-def _merged_semantics(
-    submission: SemanticSubmission,
-    previous: ReconstructionSnapshot,
-) -> SemanticHypothesis:
-    merged = merge_submission(submission, previous, PipelineStage.SEMANTICS)
-    assert isinstance(merged, SemanticHypothesis)
-    return merged
-
-
-def _bore() -> SemanticFeature:
-    return feature(
-        "sem_main_bore",
-        "the bore through the plate",
-        geometry=[geometry("cylinder", name="geo_cylinder")],
-        evidence=["ev_front_circle"],
-    )
-
-
-def _hypothesis() -> SemanticHypothesis:
-    return SemanticHypothesis(
-        proposal=[feature("sem_base_plate", "the plate"), _bore()],
-        rationale="the views agree",
-    )
-
-
-def _plan(detail: str = "extrude the plate") -> OperationPlan:
+def _plan():
     return OperationPlan(
         proposal=[
-            Operation(
-                name="op_base_plate",
-                verb=OperationVerb.EXTRUDE,
-                detail=detail,
-                depends_on=[],
-                semantics=["sem_base_plate"],
-            ),
-            Operation(
-                name="op_main_bore",
-                verb=OperationVerb.HOLE,
+            _operation(),
+            _operation(
+                "op_main_bore",
+                verb="hole",
                 detail="bore through the plate",
                 depends_on=["op_base_plate"],
                 semantics=["sem_main_bore"],
@@ -162,237 +46,153 @@ def _plan(detail: str = "extrude the plate") -> OperationPlan:
     )
 
 
-def test_a_first_round_builds_the_whole_artifact_from_its_edits() -> None:
-    previous = _hypothesis()
-    submission = SemanticSubmission(
-        **replacing(previous),
-        responses=_responses(PipelineStage.SEMANTICS),
-    )
-
-    assert _merged_semantics(submission, _first_round()) == previous
-
-
-def test_an_untouched_member_survives_a_revision() -> None:
-    submission = _semantics().model_copy(
-        update={"edits": [feature("sem_base_plate", "the plate, now chamfered")]}
-    )
-
-    merged = _merged_semantics(submission, _preceding())
-
-    assert [f.name for f in merged.proposal] == ["sem_base_plate", "sem_main_bore"]
-    assert merged.proposal[0].description == "the plate, now chamfered"
-    assert merged.proposal[1] == _hypothesis().proposal[1]
-
-
-def test_an_edited_feature_replaces_all_its_geometry_and_evidence() -> None:
-    previous = _preceding()
-    assert previous.semantics is not None
-    previous.semantics.proposal[1].geometry.append(geometry("plane", name="geo_plane"))
-    previous.semantics.proposal[1].evidence.append("ev_top_circle")
-    original = previous.model_dump_json()
-    wider = geometry("cylinder", name="geo_cylinder", radius=9.0)
-    submission = _semantics().model_copy(
-        update={
-            "edits": [
-                feature(
-                    "sem_main_bore",
-                    "the bore through the plate",
-                    geometry=[wider],
-                    evidence=["ev_front_circle"],
-                )
+def _snapshot(completed=True):
+    return ReconstructionSnapshot(
+        open_tickets=[
+            Ticket(
+                ticket_id="ticket_initial",
+                subject=BootstrapWork(instruction="Reconstruct the part."),
+                assigned_stages=list(REASONING_STAGES),
+                responses=[
+                    TicketResponse(
+                        ticket_id="ticket_initial",
+                        stage=stage,
+                        summary=f"Answered during {stage}.",
+                    )
+                    for stage in REASONING_STAGES
+                ]
+                if completed
+                else [],
+            )
+        ],
+        round=0,
+        last_completed_stage=PipelineStage.CODING if completed else None,
+        interpretation=interpretation(
+            features=[
+                interpreted_feature("sem_base_plate", "plate"),
+                interpreted_feature("sem_main_bore", "bore"),
             ]
-        }
+        )
+        if completed
+        else None,
+        operations=_plan() if completed else None,
+        program_source="result = None\n" if completed else None,
+        verification=VerifyOutputResult(status=ExecutionStatus.VERIFIED, returncode=0)
+        if completed
+        else None,
     )
 
-    revised = _merged_semantics(submission, previous).proposal[1]
 
-    assert revised.geometry == [wider]
-    assert revised.evidence == ["ev_front_circle"]
+def _submission(**overrides):
+    return OperationSubmission.model_validate(
+        {"edits": [], "deleted": [], "rationale": None, "responses": []} | overrides
+    )
+
+
+def _merge(submission, previous=None):
+    return merge_submission(
+        submission,
+        previous if previous is not None else _snapshot(),
+        PipelineStage.OPERATIONS,
+    )
+
+
+def test_a_first_round_builds_the_whole_artifact_from_its_edits():
+    assert _merge(_submission(**replacing(_plan())), _snapshot(False)) == _plan()
+
+
+def test_an_untouched_member_survives_a_revision():
+    revised = _operation(detail="extrude the chamfered plate")
+    merged = _merge(_submission(edits=[revised]))
+    assert merged.proposal == [revised, _plan().proposal[1]]
+
+
+def test_an_edit_replaces_the_complete_member_without_mutating_history():
+    previous = _snapshot()
+    original = previous.model_dump_json()
+    revised = _operation(
+        "op_main_bore",
+        verb="cut",
+        detail="wider bore",
+        depends_on=[],
+        semantics=["sem_main_bore"],
+    )
+    merged = _merge(_submission(edits=[revised]), previous)
+    assert merged.proposal[1] == revised
+    assert merged.proposal[1].depends_on == []
     assert previous.model_dump_json() == original
 
 
-def test_a_new_member_is_appended_and_an_edited_one_keeps_its_place() -> None:
-    submission = _semantics().model_copy(
-        update={
-            "edits": [
-                feature("sem_top_fillet", "the rounded top edge"),
-                feature("sem_base_plate", "the plate, revised"),
-            ]
-        }
-    )
-
-    merged = _merged_semantics(submission, _preceding())
-
-    assert [f.name for f in merged.proposal] == [
-        "sem_base_plate",
-        "sem_main_bore",
-        "sem_top_fillet",
+def test_a_new_member_is_appended_and_an_edited_one_keeps_its_place():
+    added = _operation("op_fillet", verb="fillet", depends_on=["op_main_bore"])
+    edited = _operation(detail="revised plate")
+    assert _merge(_submission(edits=[added, edited])).proposal == [
+        edited,
+        _plan().proposal[1],
+        added,
     ]
 
 
-def test_deleting_a_feature_and_removing_a_claim_by_replacing_its_feature() -> None:
-    submission = SemanticSubmission(
-        edits=[
-            feature(
-                "sem_main_bore", "the bore", geometry=[], evidence=["ev_front_circle"]
-            )
-        ],
-        deleted=["sem_base_plate"],
-        rationale=None,
-        responses=_responses(PipelineStage.SEMANTICS),
+def test_deletion_and_complete_replacement_remove_old_links():
+    bore = _operation(
+        "op_main_bore", verb="hole", depends_on=[], semantics=["sem_main_bore"]
     )
-
-    merged = _merged_semantics(submission, _preceding())
-
-    assert [f.name for f in merged.proposal] == ["sem_main_bore"]
-    assert merged.proposal[0].geometry == []
-    assert merged.proposal[0].evidence == ["ev_front_circle"]
+    assert _merge(_submission(edits=[bore], deleted=["op_base_plate"])).proposal == [
+        bore
+    ]
 
 
-def test_a_null_rationale_keeps_the_preceding_one() -> None:
-    assert _merged_semantics(_semantics(), _preceding()).rationale == "the views agree"
+def test_a_null_rationale_keeps_the_preceding_one():
+    assert _merge(_submission()).rationale == _plan().rationale
 
 
-def test_a_first_round_must_state_a_rationale() -> None:
+def test_a_first_round_must_state_a_rationale():
     with pytest.raises(SubmissionValidationError, match="no rationale to keep"):
-        merge_submission(_semantics(), _first_round(), PipelineStage.SEMANTICS)
+        _merge(_submission(), _snapshot(False))
 
 
-@pytest.mark.parametrize(
-    ("stage", "submission_type", "name"),
-    [
-        (PipelineStage.SEMANTICS, SemanticSubmission, "sem_absent"),
-        (PipelineStage.OPERATIONS, OperationSubmission, "op_absent"),
-    ],
-)
-def test_a_deletion_must_name_an_existing_member(
-    stage: ReasoningStage,
-    submission_type: type[SemanticSubmission] | type[OperationSubmission],
-    name: str,
-) -> None:
-    submission = submission_type(
-        edits=[], deleted=[name], rationale=None, responses=_responses(stage)
-    )
-    with pytest.raises(SubmissionValidationError, match=f"absent.*{name}"):
-        merge_submission(submission, _preceding(), stage)
+def test_a_deletion_must_name_an_existing_member():
+    with pytest.raises(SubmissionValidationError, match="absent.*op_absent"):
+        _merge(_submission(deleted=["op_absent"]))
 
 
-def test_a_revision_that_leaves_a_feature_unsupported_is_rejected() -> None:
-    """A citation is dropped by giving the feature again without it, so the
-    revision that empties one is a whole feature rather than an address."""
-    submission = _semantics().model_copy(
-        update={
-            "edits": [
-                feature(
-                    "sem_main_bore",
-                    "the bore through the plate",
-                    geometry=[geometry("cylinder", name="geo_cylinder")],
-                    evidence=[],
-                )
-            ]
-        }
-    )
-
-    with pytest.raises(SubmissionValidationError, match="cites no evidence"):
-        merge_submission(submission, _preceding(), PipelineStage.SEMANTICS)
+def test_a_stage_must_submit_its_own_kind_of_revision():
+    with pytest.raises(
+        SubmissionValidationError, match="operations must submit an OperationSubmission"
+    ):
+        _merge(InterpretationSubmission(responses=[]))
 
 
-def test_a_stage_must_submit_its_own_kind_of_revision() -> None:
-    with pytest.raises(SubmissionValidationError, match="SemanticSubmission"):
-        merge_submission(
-            _operations(),
-            _preceding(),
-            PipelineStage.SEMANTICS,
-        )
-
-
-def test_operations_replace_by_name_and_keep_their_place() -> None:
-    revised = Operation(
-        name="op_base_plate",
-        verb=OperationVerb.EXTRUDE,
-        detail="extrude the plate 30 mm",
-        depends_on=[],
-        semantics=["sem_base_plate"],
-    )
-    submission = _operations().model_copy(update={"edits": [revised]})
-
-    merged = merge_submission(submission, _preceding(), PipelineStage.OPERATIONS)
-
-    assert isinstance(merged, OperationPlan)
-    assert merged.proposal[0] == revised
-    assert merged.proposal[1] == _plan().proposal[1]
-    assert merged.rationale == "the bore follows the plate"
-
-
-@pytest.mark.parametrize(
-    ("stage", "submission_type", "deleted", "message"),
-    [
-        (
-            PipelineStage.SEMANTICS,
-            SemanticSubmission,
-            ["sem_base_plate", "sem_main_bore"],
-            "at least one feature",
-        ),
-        (
-            PipelineStage.OPERATIONS,
-            OperationSubmission,
-            ["op_base_plate"],
-            "depends on op_base_plate",
-        ),
-    ],
-)
-def test_invalid_merged_artifacts_raise_a_retryable_error_without_mutation(
-    stage: ReasoningStage,
-    submission_type: type[SemanticSubmission] | type[OperationSubmission],
-    deleted: list[str],
-    message: str,
-) -> None:
-    previous = _preceding()
+def test_invalid_merged_dependencies_raise_a_retryable_error_without_mutation():
+    previous = _snapshot()
     original = previous.model_dump_json()
-    submission = submission_type(
-        edits=[], deleted=deleted, rationale=None, responses=_responses(stage)
-    )
-    with pytest.raises(SubmissionValidationError, match=message) as caught:
-        merge_submission(submission, previous, stage)
+    with pytest.raises(
+        SubmissionValidationError, match="depends on op_base_plate"
+    ) as caught:
+        _merge(_submission(deleted=["op_base_plate"]), previous)
     assert isinstance(caught.value.__cause__, ValidationError)
     assert previous.model_dump_json() == original
 
 
-def test_merge_lists_accepts_iterators_and_preserves_replacement_order() -> None:
-    old = _hypothesis().proposal
-    edited = feature("sem_main_bore", "revised bore")
-    added = feature("sem_fillet", "fillet")
+def test_merge_lists_accepts_iterators_and_preserves_replacement_order():
+    old = _plan().proposal
+    edited, added = _operation("op_main_bore"), _operation("op_fillet")
     assert merge_lists(iter(old), iter([added, edited])) == [old[0], edited, added]
 
 
-def test_merge_lists_asserts_on_internal_edit_delete_conflicts() -> None:
-    edited = feature("sem_bore", "bore")
+def test_merge_lists_asserts_on_internal_edit_delete_conflicts():
+    edited = _operation()
     with pytest.raises(AssertionError, match="cannot edit and delete"):
         merge_lists([], iter([edited]), [edited.name])
 
 
-@pytest.mark.parametrize("stage", [PipelineStage.DRAWINGS, PipelineStage.CODING])
-def test_workspace_outputs_are_not_merged(stage: ReasoningStage) -> None:
-    submission = CodingSubmission(responses=_responses(stage))
-
-    with pytest.raises(SubmissionValidationError, match="workspace output"):
-        merge_submission(submission, _preceding(), stage)
-
-
 @pytest.mark.parametrize(
-    ("stage", "submission", "message"),
+    "stage,submission",
     [
-        (
-            PipelineStage.SEMANTICS,
-            CodingSubmission(responses=_responses(PipelineStage.SEMANTICS)),
-            "semantics must submit a SemanticSubmission",
-        ),
+        (PipelineStage.INTERPRETATION, InterpretationSubmission(responses=[])),
+        (PipelineStage.CODING, CodingSubmission(responses=[])),
     ],
 )
-def test_a_stage_is_given_the_submission_type_it_merges(
-    stage: ReasoningStage,
-    submission: TicketAnswers,
-    message: str,
-) -> None:
-    with pytest.raises(SubmissionValidationError, match=message):
-        merge_submission(submission, _first_round(), stage)
+def test_workspace_outputs_are_not_merged(stage, submission):
+    with pytest.raises(SubmissionValidationError, match="workspace output"):
+        merge_submission(submission, _snapshot(), stage)

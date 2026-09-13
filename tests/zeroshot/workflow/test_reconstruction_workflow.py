@@ -4,9 +4,8 @@ import pytest
 
 from tests.zeroshot.contracts import (
     drawing,
-    feature,
-    geometry,
-    hypothesis,
+    interpretation,
+    interpreted_feature,
     replacing,
 )
 from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
@@ -19,14 +18,13 @@ from zeroshot.pipeline.stages.audit.contracts import (
 )
 from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
-from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
 )
 from zeroshot.pipeline.stages.operations.submission import OperationSubmission
-from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.stages.validate import (
     SubmissionValidationError,
@@ -36,7 +34,7 @@ from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow import lifecycle as lifecycle_module
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
-    drawing_baseline,
+    interpretation_baseline,
     load_reconstruction,
     open_next_round,
     save_reconstruction,
@@ -100,8 +98,7 @@ def _snapshot(source: str | None = _SOURCE) -> ReconstructionSnapshot:
         ],
         round=0,
         last_completed_stage=PipelineStage.CODING,
-        drawings=drawing(),
-        semantics=hypothesis("the base", "the hole"),
+        interpretation=interpretation("the base", "the hole"),
         operations=_operations(),
         program_source=source,
         verification=verification,
@@ -132,11 +129,10 @@ def _advance_snapshot(
         open_tickets=tickets,
         round=current.round,
         last_completed_stage=stage,  # type: ignore[arg-type]
-        drawings=drawing() if stage == "drawings" else current.drawings,
-        semantics=(
-            hypothesis("the base", "the hole")
-            if stage == "semantics"
-            else current.semantics
+        interpretation=(
+            interpretation("the base", "the hole")
+            if stage == "interpretation"
+            else current.interpretation
         ),
         operations=_operations() if stage == "operations" else current.operations,
         program_source=_SOURCE if stage == "coding" else current.program_source,
@@ -168,11 +164,11 @@ def _stage_responses(
 
 
 def _reread(run: ReconstructionRun) -> ReconstructionRun:
-    """The stage every round opens with, whether or not a ticket asks for it."""
     return advance_reconstruction(
         run,
-        DrawingSubmission(responses=_stage_responses(run, "drawings")),
-        workspace_output=drawing_baseline(run),
+        InterpretationSubmission(responses=_stage_responses(run, "interpretation")),
+        workspace_output=interpretation_baseline(run)
+        or interpretation("the base", "the hole"),
     )
 
 
@@ -183,15 +179,8 @@ def _completed_run(
     run = run or start_reconstruction("run_example", "Reconstruct the part.", drawing())
     run = advance_reconstruction(
         run,
-        DrawingSubmission(responses=_stage_responses(run, "drawings")),
-        workspace_output=drawing(),
-    )
-    run = advance_reconstruction(
-        run,
-        SemanticSubmission(
-            **replacing(hypothesis("the base", "the hole")),
-            responses=_stage_responses(run, "semantics"),
-        ),
+        InterpretationSubmission(responses=_stage_responses(run, "interpretation")),
+        workspace_output=interpretation("the base", "the hole"),
     )
     run = advance_reconstruction(
         run,
@@ -261,7 +250,7 @@ def test_audit_cross_validation_accepts_supported_backtrace_hops() -> None:
     report = _report(
         _hop("coding", "ret_hole", "coding", "ret_base"),
         _hop("coding", "ret_base", "operations", "op_base"),
-        _hop("operations", "op_base", "semantics", "sem_feature_1"),
+        _hop("operations", "op_base", "interpretation", "sem_feature_1"),
     )
 
     validate_submission(report, _snapshot())
@@ -294,7 +283,7 @@ def test_audit_cannot_accept_without_a_verified_solid(status: ExecutionStatus) -
             "op_base.depends_on",
         ),
         (
-            _hop("operations", "op_hole", "semantics", "sem_feature_1"),
+            _hop("operations", "op_hole", "interpretation", "sem_feature_1"),
             "op_hole.semantics",
         ),
     ],
@@ -307,18 +296,12 @@ def test_audit_cross_validation_rejects_unsupported_contract_links(
         validate_submission(_report(hop), _snapshot())
 
 
-def test_audit_cross_validation_rejects_a_walk_through_one_stage() -> None:
-    """Two steps inside coding restate the plan's dependencies and route nowhere."""
+def test_whole_stage_reference_does_not_count_as_a_named_prefix_hop() -> None:
     report = _report(
         _hop_from(_ref("coding", None), _ref("coding", "ret_hole")),
         _hop("coding", "ret_hole", "coding", "ret_base"),
     )
-
-    with pytest.raises(
-        SubmissionValidationError,
-        match=r"more than once: coding 2 times",
-    ):
-        validate_submission(report, _snapshot())
+    validate_submission(report, _snapshot())
 
 
 def test_audit_cross_validation_accepts_one_step_inside_each_stage() -> None:
@@ -327,17 +310,47 @@ def test_audit_cross_validation_accepts_one_step_inside_each_stage() -> None:
         _hop_from(_ref("coding", None), _ref("coding", "ret_hole")),
         _hop("coding", "ret_hole", "operations", "op_hole"),
         _hop("operations", "op_hole", "operations", "op_base"),
-        _hop("operations", "op_base", "semantics", "sem_feature_1"),
+        _hop("operations", "op_base", "interpretation", "sem_feature_1"),
     )
 
     validate_submission(report, _snapshot())
 
 
 def test_audit_cross_validation_rejects_a_missing_revision_target() -> None:
-    target = _ref("semantics", "sem_absent")
+    target = _ref("interpretation", "sem_absent")
     report = _report(target=target)
 
     with pytest.raises(SubmissionValidationError, match="does not exist"):
+        validate_submission(report, _snapshot())
+
+
+@pytest.mark.parametrize(
+    ("action", "targets", "proposed", "collision"),
+    [
+        ("add", [None], ["op_new"], False),
+        ("add", [None], ["op_base"], True),
+        ("rename", ["op_base"], ["op_hole"], True),
+        ("split", ["op_base"], ["op_base", "op_new"], False),
+        ("split", ["op_base"], ["op_base", "op_hole"], True),
+        ("merge", ["op_base", "op_hole"], ["op_base"], False),
+        ("merge", ["op_base", "op_hole"], ["op_new"], False),
+    ],
+)
+def test_audit_new_names_only_reuse_their_own_split_or_merge_targets(
+    action, targets, proposed, collision
+) -> None:
+    finding = _report(target=_ref("operations", targets[0])).findings[0]
+    finding.revision_request = RevisionRequest(
+        action=action,
+        targets=[_ref("operations", name) for name in targets],
+        instruction="Correct the operation identities.",
+        proposed_names=proposed,
+    )
+    report = AuditReport(accepted=False, findings=[finding])
+    if collision:
+        with pytest.raises(SubmissionValidationError, match="already exists"):
+            validate_submission(report, _snapshot())
+    else:
         validate_submission(report, _snapshot())
 
 
@@ -428,10 +441,10 @@ def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
     original_json = run.model_dump_json()
     wrong_stage = OperationSubmission(
         **replacing(_operations()),
-        responses=_stage_responses(run, "drawings"),
+        responses=_stage_responses(run, "interpretation"),
     )
 
-    with pytest.raises(SubmissionValidationError, match="DrawingSubmission"):
+    with pytest.raises(SubmissionValidationError, match="InterpretationSubmission"):
         advance_reconstruction(run, wrong_stage)
 
     assert run.model_dump_json() == original_json
@@ -439,20 +452,18 @@ def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
 
 def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     completed = _completed_run()
-    first_finding = _report(target=_ref("semantics", "sem_feature_1")).findings[0]
+    first_finding = _report(target=_ref("interpretation", "sem_feature_1")).findings[0]
     second_finding = first_finding.model_copy(update={"name": "find_second_mismatch"})
-    run = _reread(
-        open_next_round(
-            completed,
-            AuditReport(accepted=False, findings=[first_finding, second_finding]),
-        )
+    run = open_next_round(
+        completed,
+        AuditReport(accepted=False, findings=[first_finding, second_finding]),
     )
     current = run.snapshots[-1]
     original_ticket_ids = [ticket.ticket_id for ticket in current.open_tickets]
     responses = [
         TicketResponse(
             ticket_id=ticket.ticket_id,
-            stage=PipelineStage.SEMANTICS,
+            stage=PipelineStage.INTERPRETATION,
             summary=f"Addressed {ticket.ticket_id}.",
         )
         for ticket in reversed(current.open_tickets)
@@ -460,10 +471,10 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
 
     advanced = advance_reconstruction(
         run,
-        SemanticSubmission(
-            **replacing(hypothesis("the base", "the hole")),
+        InterpretationSubmission(
             responses=responses,
         ),
+        workspace_output=interpretation("the base", "the hole"),
     )
 
     updated_tickets = advanced.snapshots[-1].open_tickets
@@ -480,47 +491,38 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     """Every later reader opens reconstruction.json rather than the prompt that
     carried the plan, so the numbers have to be in it."""
     completed = _completed_run()
-    run = _reread(
-        open_next_round(
-            completed,
-            AuditReport(
-                accepted=False,
-                findings=[
-                    _report(target=_ref("semantics", "sem_feature_1")).findings[0]
-                ],
-            ),
-        )
+    run = open_next_round(
+        completed,
+        AuditReport(
+            accepted=False,
+            findings=[
+                _report(target=_ref("interpretation", "sem_feature_1")).findings[0]
+            ],
+        ),
     )
     current = run.snapshots[-1]
-    held = hypothesis(
-        "the base",
-        proposal=[
-            feature(
-                1,
-                "the base",
-                geometry=[geometry("sphere", name="geo_ball", radius=4.25)],
-            )
-        ],
+    held = interpretation(
+        features=[interpreted_feature(1, "the base", parameters={"radius": 4.25})]
     )
 
     advanced = advance_reconstruction(
         run,
-        SemanticSubmission(
-            **replacing(held),
+        InterpretationSubmission(
             responses=[
                 TicketResponse(
                     ticket_id=ticket.ticket_id,
-                    stage="semantics",  # type: ignore[arg-type]
-                    summary="Restated sem_feature_1.geo_ball.radius.",
+                    stage="interpretation",  # type: ignore[arg-type]
+                    summary="Restated sem_feature_1.radius.",
                 )
                 for ticket in current.open_tickets
             ],
         ),
+        workspace_output=held,
     )
 
     stored = advanced.snapshots[-1]
     assert stored.open_tickets[0].responses[-1].summary == (
-        "Restated sem_feature_1.geo_ball.radius (= 4.25)."
+        "Restated sem_feature_1.radius (= 4.25)."
     )
 
 
@@ -534,34 +536,32 @@ def test_snapshot_commit_rejects_a_skipped_stage() -> None:
 def test_snapshot_commit_preserves_ticket_subjects() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
     run = lifecycle_module._commit_snapshot(
-        run, _advance_snapshot(run.snapshots[-1], "drawings")
+        run, _advance_snapshot(run.snapshots[-1], "interpretation")
     )
-    semantics = _advance_snapshot(run.snapshots[-1], "semantics")
-    original_ticket = semantics.open_tickets[0]
+    operations = _advance_snapshot(run.snapshots[-1], "operations")
+    original_ticket = operations.open_tickets[0]
     changed_ticket = Ticket(
         ticket_id=original_ticket.ticket_id,
         subject=BootstrapWork(instruction="A different task."),
         assigned_stages=original_ticket.assigned_stages,
         responses=original_ticket.responses,
     )
-    semantics = semantics.model_copy(update={"open_tickets": [changed_ticket]})
+    operations = operations.model_copy(update={"open_tickets": [changed_ticket]})
 
     with pytest.raises(ValueError, match="subject must not change"):
-        lifecycle_module._commit_snapshot(run, semantics)
+        lifecycle_module._commit_snapshot(run, operations)
 
 
 def test_snapshot_commit_preserves_prior_responses() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
     run = lifecycle_module._commit_snapshot(
-        run, _advance_snapshot(run.snapshots[-1], "drawings")
+        run, _advance_snapshot(run.snapshots[-1], "interpretation")
     )
-    semantics = _advance_snapshot(run.snapshots[-1], "semantics")
-    run = lifecycle_module._commit_snapshot(run, semantics)
     operations = _advance_snapshot(run.snapshots[-1], "operations")
     ticket = operations.open_tickets[0]
     rewritten = TicketResponse(
         ticket_id=ticket.ticket_id,
-        stage=PipelineStage.SEMANTICS,
+        stage=PipelineStage.INTERPRETATION,
         summary="Rewrote the earlier response.",
     )
     changed_ticket = Ticket(
@@ -579,7 +579,7 @@ def test_snapshot_commit_preserves_prior_responses() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("semantics", hypothesis("a replacement from the wrong stage")),
+        ("interpretation", interpretation("a replacement from the wrong stage")),
         ("verification", VerifyOutputResult(status=ExecutionStatus.REJECTED)),
     ],
 )
@@ -588,10 +588,8 @@ def test_snapshot_commit_preserves_artifacts_owned_by_other_stages(
 ) -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
     run = lifecycle_module._commit_snapshot(
-        run, _advance_snapshot(run.snapshots[-1], "drawings")
+        run, _advance_snapshot(run.snapshots[-1], "interpretation")
     )
-    semantics = _advance_snapshot(run.snapshots[-1], "semantics")
-    run = lifecycle_module._commit_snapshot(run, semantics)
     operations = _advance_snapshot(run.snapshots[-1], "operations")
     operations = operations.model_copy(update={field: value})
 
@@ -602,7 +600,7 @@ def test_snapshot_commit_preserves_artifacts_owned_by_other_stages(
 @pytest.mark.parametrize(
     ("root", "member", "expected"),
     [
-        ("semantics", "sem_feature_2", ["semantics", "operations", "coding"]),
+        ("interpretation", "sem_feature_2", ["interpretation", "operations", "coding"]),
         ("operations", "op_hole", ["operations", "coding"]),
         ("coding", "ret_hole", ["coding"]),
     ],
@@ -642,48 +640,34 @@ def test_an_unassigned_stage_leaves_the_ticket_untouched() -> None:
     run = _reread(
         open_next_round(_completed_run(), _report(target=_ref("coding", "ret_hole")))
     )
-
-    run = advance_reconstruction(
-        run,
-        SemanticSubmission(
-            **replacing(hypothesis("the base", "the hole")),
-            responses=[],
-        ),
-    )
     ticket = run.snapshots[-1].open_tickets[0]
-
     assert ticket.assigned_stages == ["coding"]
     assert ticket.responses == []
 
 
-def test_a_revision_round_carries_the_untouched_hypothesis_forward() -> None:
-    run = _reread(
-        open_next_round(
-            _completed_run(), _report(target=_ref("semantics", "sem_feature_2"))
-        )
+def test_a_revision_round_replaces_the_complete_interpretation() -> None:
+    run = open_next_round(
+        _completed_run(), _report(target=_ref("interpretation", "sem_feature_2"))
     )
-    previous = run.snapshots[-2].semantics
+    previous = interpretation_baseline(run)
     assert previous is not None
-
-    run = advance_reconstruction(
-        run,
-        SemanticSubmission(
-            edits=[feature("sem_feature_1", "the base, corrected")],
-            deleted=[],
-            rationale=None,
-            responses=_stage_responses(run, "semantics"),
-        ),
+    revised = previous.model_copy(
+        update={
+            "features": [
+                interpreted_feature("sem_feature_1", "the base, corrected"),
+                previous.features[1],
+            ]
+        }
     )
-    current = run.snapshots[-1].semantics
-    assert current is not None
-
-    assert [entry.name for entry in current.proposal] == [
-        "sem_feature_1",
-        "sem_feature_2",
-    ]
-    assert current.proposal[0].description == "the base, corrected"
-    assert current.proposal[1] == previous.proposal[1]
-    assert current.rationale == previous.rationale
+    advanced = advance_reconstruction(
+        run,
+        InterpretationSubmission(responses=_stage_responses(run, "interpretation")),
+        workspace_output=revised,
+    )
+    current = advanced.snapshots[-1].interpretation
+    assert current == revised
+    assert current.features[1] == previous.features[1]
+    assert previous.features[0].description == "the base"
 
 
 def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
@@ -691,7 +675,7 @@ def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
     original_json = run.model_dump_json()
     report = _report(
         _hop("coding", "ret_hole", "operations", "op_hole"),
-        _hop("operations", "op_hole", "semantics", "sem_feature_2"),
+        _hop("operations", "op_hole", "interpretation", "sem_feature_2"),
     )
 
     updated = open_next_round(run, report)
@@ -702,9 +686,8 @@ def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
     assert current.round == 1
     assert current.last_completed_stage is None
     # The accepted reading remains in the preceding immutable snapshot; the
-    # new round has not completed its drawing stage yet.
-    assert current.drawings is None
-    assert current.semantics is None
+    # new round has not completed its interpretation stage yet.
+    assert current.interpretation is None
     assert current.operations is None
     assert current.program_source is None
     assert current.verification is None

@@ -27,8 +27,8 @@ class OperationStage:
 
     def run(self, state: ReconstructionState, config: RunnableConfig) -> dict[str, Any]:
         snapshot = current_snapshot(state)
-        if snapshot.last_completed_stage is not PipelineStage.SEMANTICS:
-            raise RuntimeError("operations requires integrated semantics")
+        if snapshot.last_completed_stage is not PipelineStage.INTERPRETATION:
+            raise RuntimeError("operations requires an integrated interpretation")
 
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.OPERATIONS):
             return {"stage_submission": OperationSubmission.unchanged()}

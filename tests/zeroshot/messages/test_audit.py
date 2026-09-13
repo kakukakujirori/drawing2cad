@@ -1,3 +1,5 @@
+from itertools import pairwise
+
 import pytest
 from pydantic import BaseModel, ValidationError
 
@@ -22,7 +24,7 @@ def request(
 ) -> RevisionRequest:
     return RevisionRequest(
         action=action,  # type: ignore[arg-type]
-        targets=targets or [ref("semantics", "sem_bore")],
+        targets=targets or [ref("interpretation", "sem_bore")],
         instruction="Correct the bore interpretation.",
         proposed_names=proposed_names or [],
     )
@@ -37,7 +39,7 @@ def backtrace() -> list[CausalHop]:
         ),
         CausalHop(
             effect=ref("operations", "op_bore"),
-            cause=ref("semantics", "sem_bore"),
+            cause=ref("interpretation", "sem_bore"),
             rationale="The operation implements this semantic feature.",
         ),
     ]
@@ -52,7 +54,7 @@ def finding(
     return AuditFinding(
         name=name,
         observation="The reconstructed bore is too wide.",
-        evidence=["render_3d/hlg_front.png", "sem_bore.geo_cylinder.radius"],
+        evidence=["render_3d/hlg_front.png", "sem_bore.radius"],
         backtrace=backtrace() if hops is None else hops,
         revision_request=revision_request or request(),
     )
@@ -61,9 +63,9 @@ def finding(
 @pytest.mark.parametrize(
     ("stage", "name"),
     [
-        ("drawings", "sem_bore"),
-        ("semantics", "sheet_front"),
-        ("semantics", "op_bore"),
+        ("interpretation", "ev_front_line"),
+        ("interpretation", "sheet_front"),
+        ("interpretation", "op_bore"),
         ("operations", "sem_bore"),
         ("coding", "op_bore"),
         ("coding", "part"),
@@ -80,12 +82,12 @@ def test_a_stage_reference_rejects_a_name_owned_by_another_stage(
 @pytest.mark.parametrize(
     ("action", "targets", "proposed_names"),
     [
-        ("add", [ref("semantics", None)], ["sem_bore"]),
-        ("modify", [ref("semantics", None)], []),
-        ("modify", [ref("semantics", "sem_bore")], []),
+        ("add", [ref("interpretation", None)], ["sem_bore"]),
+        ("modify", [ref("interpretation", None)], []),
+        ("modify", [ref("interpretation", "sem_bore")], []),
         (
             "modify",
-            [ref("semantics", "sem_bore"), ref("semantics", "sem_hole")],
+            [ref("interpretation", "sem_bore"), ref("interpretation", "sem_hole")],
             [],
         ),
         ("delete", [ref("operations", "op_bore")], []),
@@ -101,10 +103,12 @@ def test_a_stage_reference_rejects_a_name_owned_by_another_stage(
         ),
         (
             "merge",
-            [ref("semantics", "sem_hole"), ref("semantics", "sem_bore")],
+            [ref("interpretation", "sem_hole"), ref("interpretation", "sem_bore")],
             ["sem_stepped_bore"],
         ),
-        ("rename", [ref("coding", "ret_hole")], ["ret_bore"]),
+        ("rename", [ref("operations", "op_hole")], ["op_bore"]),
+        ("modify", [ref("coding", "ret_hole")], []),
+        ("modify", [ref("coding", None)], []),
     ],
 )
 def test_each_revision_action_accepts_its_defined_shape(
@@ -118,11 +122,11 @@ def test_each_revision_action_accepts_its_defined_shape(
 @pytest.mark.parametrize(
     ("action", "targets", "proposed_names", "message"),
     [
-        ("add", [ref("semantics", "sem_bore")], ["sem_hole"], "whole-stage"),
-        ("modify", [ref("semantics", "sem_bore")], ["sem_hole"], "does not"),
+        ("add", [ref("interpretation", "sem_bore")], ["sem_hole"], "whole-stage"),
+        ("modify", [ref("interpretation", "sem_bore")], ["sem_hole"], "does not"),
         (
             "modify",
-            [ref("semantics", None), ref("semantics", "sem_bore")],
+            [ref("interpretation", None), ref("interpretation", "sem_bore")],
             [],
             "not both",
         ),
@@ -136,11 +140,11 @@ def test_each_revision_action_accepts_its_defined_shape(
         ("split", [ref("operations", "op_hole")], ["op_bore"], "at least two"),
         (
             "merge",
-            [ref("semantics", "sem_hole")],
+            [ref("interpretation", "sem_hole")],
             ["sem_bore"],
             "at least two",
         ),
-        ("rename", [ref("coding", "ret_hole")], [], "exactly one proposed"),
+        ("rename", [ref("operations", "op_hole")], [], "exactly one proposed"),
     ],
 )
 def test_each_revision_action_rejects_an_invalid_shape(
@@ -158,7 +162,7 @@ def test_a_revision_request_cannot_cross_stage_boundaries() -> None:
         request(
             "merge",
             targets=[
-                ref("semantics", "sem_bore"),
+                ref("interpretation", "sem_bore"),
                 ref("operations", "op_bore"),
             ],
             proposed_names=["sem_merged"],
@@ -174,9 +178,159 @@ def test_a_proposed_name_belongs_to_the_target_stage() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("action", "targets", "proposed_names"),
+    [
+        ("add", [None], ["ret_bore"]),
+        ("delete", ["ret_bore"], []),
+        ("split", ["ret_bore"], ["ret_through", "ret_counterbore"]),
+        ("merge", ["ret_through", "ret_counterbore"], ["ret_bore"]),
+        ("rename", ["ret_bore"], ["ret_through"]),
+    ],
+)
+def test_coding_cannot_change_identities_owned_by_the_operation_plan(
+    action: str, targets: list[str | None], proposed_names: list[str]
+) -> None:
+    with pytest.raises(ValidationError, match="coding accepts only modify"):
+        request(
+            action,
+            targets=[ref("coding", name) for name in targets],
+            proposed_names=proposed_names,
+        )
+
+
+@pytest.mark.parametrize(
+    ("stage", "name"),
+    [("interpretation", "sem_bore"), ("operations", "op_bore")],
+)
+def test_rename_must_change_the_identity(stage: str, name: str) -> None:
+    with pytest.raises(ValidationError, match="different proposed name"):
+        request("rename", targets=[ref(stage, name)], proposed_names=[name])
+
+
+@pytest.mark.parametrize(
+    ("action", "targets", "proposed_names"),
+    [
+        ("split", ["op_bore"], ["op_bore", "op_counterbore"]),
+        ("merge", ["op_bore", "op_counterbore"], ["op_bore"]),
+    ],
+)
+def test_split_and_merge_can_retain_a_target_identity(
+    action: str, targets: list[str], proposed_names: list[str]
+) -> None:
+    request(
+        action,
+        targets=[ref("operations", name) for name in targets],
+        proposed_names=proposed_names,
+    )
+
+
+def path(*members: tuple[str, str | None]) -> list[CausalHop]:
+    return [
+        CausalHop(
+            effect=ref(*effect),
+            cause=ref(*cause),
+            rationale="The cause explains the mismatch.",
+        )
+        for effect, cause in pairwise(members)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("effect", "cause"),
+    [
+        (("coding", "ret_bore"), ("interpretation", "sem_bore")),
+        (("coding", None), ("interpretation", None)),
+        (("interpretation", "sem_bore"), ("operations", "op_bore")),
+        (("operations", None), ("coding", None)),
+    ],
+)
+def test_hops_stay_within_a_stage_or_move_to_the_adjacent_upstream_stage(
+    effect: tuple[str, str | None], cause: tuple[str, str | None]
+) -> None:
+    with pytest.raises(ValidationError, match="adjacent upstream stage"):
+        path(effect, cause)
+
+
+def test_a_backtrace_can_follow_a_feature_to_its_dimension_and_source_view() -> None:
+    hops = path(
+        ("coding", "ret_bore"),
+        ("operations", "op_bore"),
+        ("interpretation", "sem_bore"),
+        ("interpretation", "dim_diameter"),
+        ("interpretation", "view_front"),
+    )
+    finding(hops=hops, revision_request=request(targets=[hops[-1].cause]))
+
+
+def test_a_backtrace_can_take_one_named_hop_within_each_prefix() -> None:
+    hops = path(
+        ("coding", "ret_final"),
+        ("coding", "ret_bore"),
+        ("operations", "op_bore"),
+        ("operations", "op_base"),
+        ("interpretation", "sem_bore"),
+        ("interpretation", "sem_base"),
+        ("interpretation", "dim_diameter"),
+        ("interpretation", "dim_width"),
+        ("interpretation", "view_front"),
+        ("interpretation", "view_page"),
+    )
+    finding(hops=hops, revision_request=request(targets=[hops[-1].cause]))
+
+
+@pytest.mark.parametrize(
+    ("stage", "prefix"),
+    [
+        ("coding", "ret"),
+        ("operations", "op"),
+        ("interpretation", "sem"),
+        ("interpretation", "dim"),
+        ("interpretation", "view"),
+    ],
+)
+def test_a_backtrace_cannot_walk_repeatedly_within_one_named_prefix(
+    stage: str, prefix: str
+) -> None:
+    hops = path(*[(stage, f"{prefix}_{name}") for name in ("final", "middle", "root")])
+    with pytest.raises(ValidationError, match=rf"{prefix}_ prefix more than once"):
+        finding(hops=hops, revision_request=request(targets=[hops[-1].cause]))
+
+
+@pytest.mark.parametrize(
+    ("stage", "prefix"),
+    [("coding", "ret"), ("operations", "op"), ("interpretation", "sem")],
+)
+def test_whole_stage_references_do_not_count_as_named_prefix_hops(
+    stage: str, prefix: str
+) -> None:
+    hops = path((stage, None), (stage, f"{prefix}_final"), (stage, f"{prefix}_root"))
+    finding(hops=hops, revision_request=request(targets=[hops[-1].cause]))
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        [("coding", None), ("coding", "ret_bore"), ("coding", None)],
+        [
+            ("interpretation", "sem_bore"),
+            ("interpretation", "dim_diameter"),
+            ("interpretation", "view_front"),
+            ("interpretation", "sem_bore"),
+        ],
+    ],
+)
+def test_a_backtrace_cannot_revisit_an_output(
+    members: list[tuple[str, str | None]],
+) -> None:
+    hops = path(*members)
+    with pytest.raises(ValidationError, match="cycle"):
+        finding(hops=hops, revision_request=request(targets=[hops[-1].cause]))
+
+
 def test_a_backtrace_must_be_contiguous() -> None:
     broken = backtrace()
-    broken[1] = broken[1].model_copy(update={"effect": ref("coding", "ret_other")})
+    broken[1] = broken[1].model_copy(update={"effect": ref("operations", "op_other")})
 
     with pytest.raises(ValidationError, match="next hop"):
         finding(hops=broken)
@@ -184,7 +338,7 @@ def test_a_backtrace_must_be_contiguous() -> None:
 
 def test_a_backtrace_must_end_at_a_revision_target() -> None:
     with pytest.raises(ValidationError, match="final causal cause"):
-        finding(revision_request=request(targets=[ref("semantics", "sem_other")]))
+        finding(revision_request=request(targets=[ref("interpretation", "sem_other")]))
 
 
 def test_an_empty_backtrace_is_valid_when_the_finding_is_already_at_its_root() -> None:
@@ -240,6 +394,40 @@ def test_finding_names_are_unique_within_a_report() -> None:
         AuditReport(accepted=False, findings=[finding(), finding()])
 
 
+def test_separate_findings_cannot_propose_the_same_identity() -> None:
+    first = finding(
+        hops=[],
+        revision_request=request(
+            "add", targets=[ref("interpretation", None)], proposed_names=["sem_new"]
+        ),
+    )
+    second = finding(
+        "find_rename_bore",
+        hops=[],
+        revision_request=request("rename", proposed_names=["sem_new"]),
+    )
+    with pytest.raises(ValidationError, match="unique across findings"):
+        AuditReport(accepted=False, findings=[first, second])
+
+
+def test_separate_findings_can_propose_distinct_identities() -> None:
+    AuditReport(
+        accepted=False,
+        findings=[
+            finding(
+                f"find_add_{name}",
+                hops=[],
+                revision_request=request(
+                    "add",
+                    targets=[ref("interpretation", None)],
+                    proposed_names=[f"sem_{name}"],
+                ),
+            )
+            for name in ("bore", "boss")
+        ],
+    )
+
+
 def _object_schemas(node: object) -> list[dict]:
     if isinstance(node, dict):
         found = [node] if node.get("type") == "object" else []
@@ -267,3 +455,16 @@ def test_audit_contracts_are_closed_and_every_property_is_required(
     for schema in _object_schemas(contract.model_json_schema()):
         assert set(schema.get("required", [])) == set(schema.get("properties", {}))
         assert schema.get("additionalProperties") is False
+
+
+@pytest.mark.parametrize("name", ["view_front", "dim_diameter", "sem_bore"])
+def test_interpretation_members_support_direct_add_without_a_backtrace(
+    name: str,
+) -> None:
+    finding(
+        hops=[],
+        revision_request=request(
+            "add", targets=[ref("interpretation", None)], proposed_names=[name]
+        ),
+    )
+    ref("interpretation", name)

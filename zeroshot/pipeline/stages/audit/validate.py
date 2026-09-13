@@ -1,4 +1,5 @@
-from collections import defaultdict
+"""Check an audit against committed outputs; report-only rules live in contracts."""
+
 from collections.abc import Iterable, Iterator, Mapping
 from typing import cast
 
@@ -10,13 +11,9 @@ from zeroshot.pipeline.stages.audit.contracts import (
     StageOutputRef,
 )
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
-from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import Operation
-from zeroshot.pipeline.stages.types import (
-    REASONING_STAGES,
-    PipelineStage,
-    ReasoningStage,
-)
+from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus
 from zeroshot.pipeline.verification.check_program import program_output_names
 
@@ -25,7 +22,8 @@ def validate_audit_report(
     report: AuditReport,
     snapshot: ReconstructionSnapshot,
 ) -> None:
-    """Reject an audit report that contradicts the audited stage outputs."""
+    """Check verification, member identities and declared causal links."""
+    # Acceptance requires a completed, successful build.
     if snapshot.last_completed_stage is not PipelineStage.CODING:
         raise SubmissionValidationError("audit requires a completed coding snapshot")
     if report.accepted and (
@@ -37,14 +35,10 @@ def validate_audit_report(
             "audit cannot accept a reconstruction without a verified solid; "
             "report the verification failure and the root that must change"
         )
-    drawing = cast(DrawingSource, snapshot.drawings)
-
+    # Index the committed members and the interpretation's explicit sources.
+    # Snapshot validation guarantees interpretation and operations after coding.
+    interpretation = cast(DrawingInterpretation, snapshot.interpretation)
     references = tuple(_iter_references(report.findings))
-    semantic_names = (
-        {feature.name for feature in snapshot.semantics.proposal}
-        if snapshot.semantics is not None
-        else set()
-    )
     operations_by_name = (
         {operation.name: operation for operation in snapshot.operations.proposal}
         if snapshot.operations is not None
@@ -55,40 +49,29 @@ def validate_audit_report(
         references,
     )
 
+    interpretation_links = _interpretation_sources(interpretation)
     known_members = {
-        PipelineStage.DRAWINGS: {sheet.name for sheet in drawing.sheets},
-        PipelineStage.SEMANTICS: semantic_names,
+        PipelineStage.INTERPRETATION: set(interpretation_links),
         PipelineStage.OPERATIONS: set(operations_by_name),
         PipelineStage.CODING: coding_names,
     }
     errors = [coding_error] if coding_error is not None else []
-    sheet_by_evidence = {
-        entry.name: sheet.name
-        for sheet in drawing.sheets
-        for entry in (*sheet.evidence, *sheet.dimensions)
-    }
-    cited_sheets = {
-        feature.name: {
-            sheet_by_evidence[name]
-            for name in feature.evidence
-            if name in sheet_by_evidence
-        }
-        for feature in (snapshot.semantics.proposal if snapshot.semantics else [])
-    }
+
+    # Existing references must resolve; proposed identities must not collide.
     errors.extend(_missing_reference_errors(references, known_members))
+    errors.extend(_proposed_name_errors(report.findings, known_members))
+
+    # Path shape is checked by AuditFinding; here each hop must match its source.
     for finding in report.findings:
-        error = _within_stage_walk_error(finding)
-        if error is not None:
-            errors.append(error)
-    for hop in _iter_hops(report.findings):
-        error = _causal_hop_error(
-            hop,
-            known_members=known_members,
-            operations_by_name=operations_by_name,
-            cited_sheets=cited_sheets,
-        )
-        if error is not None:
-            errors.append(error)
+        for hop in finding.backtrace:
+            error = _causal_hop_error(
+                hop,
+                known_members=known_members,
+                operations_by_name=operations_by_name,
+                interpretation_links=interpretation_links,
+            )
+            if error is not None:
+                errors.append(error)
 
     if errors:
         # A repeated reference or hop should not make the model repair the
@@ -108,10 +91,22 @@ def _iter_references(
         yield from finding.revision_request.targets
 
 
-def _iter_hops(findings: Iterable[AuditFinding]) -> Iterator[CausalHop]:
-    """Yield causal hops in report order."""
-    for finding in findings:
-        yield from finding.backtrace
+def _interpretation_sources(
+    interpretation: DrawingInterpretation,
+) -> dict[str, set[str]]:
+    """Map each view, dimension and feature to the members it explicitly cites."""
+    sources = {
+        view.name: {view.region.view} - {view.name} for view in interpretation.views
+    }
+    for view in interpretation.views:
+        for dimension in view.dimensions:
+            sources[dimension.name] = {view.name, dimension.region.view}
+    for feature in interpretation.features:
+        sources[feature.name] = {
+            *(region.view for region in feature.evidence),
+            *feature.dimension_refs,
+        }
+    return sources
 
 
 def _inspect_coding_outputs(
@@ -156,38 +151,27 @@ def _missing_reference_errors(
     return errors
 
 
-def _within_stage_walk_error(finding: AuditFinding) -> str | None:
-    """Refuse a backtrace that walks a stage instead of crossing out of it.
-
-    A hop between two members of one stage claims the effect is wrong because
-    the cause is, which for a chain of them restates the dependencies the
-    artifact already declares. One run's auditor reached every revision target
-    by starting at the program's last output and stepping back through all
-    twenty in order, one rationale each; every hop passed, and the path said
-    nothing the target had not. What a backtrace is for is the step out of the
-    stage where the defect shows into the stage it comes from, so each stage
-    gets one hop inside it: the one that names the member to blame.
-    """
-    walked: dict[ReasoningStage, list[str]] = defaultdict(list)
-    for hop in finding.backtrace:
-        if hop.effect.stage == hop.cause.stage:
-            walked[hop.effect.stage].append(f"{hop.effect.name} -> {hop.cause.name}")
-
-    # Counted per stage, not over the path: a backtrace that crosses all stages
-    # is entitled to its one naming hop in each of them.
-    overwalked = [
-        f"{stage} {len(steps)} times ({', '.join(steps)})"
-        for stage, steps in walked.items()
-        if len(steps) > 1
-    ]
-    if not overwalked:
-        return None
-    return (
-        f"{finding.name} steps between members of one stage more than once: "
-        f"{'; '.join(overwalked)}. Name the member the defect comes from in one "
-        "hop per stage and request the revision there; the operations it is "
-        "consumed by afterwards are not separate causes."
-    )
+def _proposed_name_errors(
+    findings: Iterable[AuditFinding],
+    known_members: Mapping[PipelineStage, set[str]],
+) -> list[str]:
+    """Only split/merge may retain an existing identity among their own targets."""
+    errors = []
+    for finding in findings:
+        request = finding.revision_request
+        stage = request.targets[0].stage
+        retained = (
+            {target.name for target in request.targets}
+            if request.action in {"split", "merge"}
+            else set()
+        )
+        collisions = (set(request.proposed_names) & known_members[stage]) - retained
+        for name in sorted(collisions):
+            errors.append(
+                f"{finding.name}: proposed {stage} name {name!r} already exists "
+                "in the audited snapshot and is not a retained split/merge target"
+            )
+    return errors
 
 
 def _causal_hop_error(
@@ -195,21 +179,11 @@ def _causal_hop_error(
     *,
     known_members: Mapping[PipelineStage, set[str]],
     operations_by_name: Mapping[str, Operation],
-    cited_sheets: Mapping[str, set[str]],
+    interpretation_links: Mapping[str, set[str]],
 ) -> str | None:
     """Validate only causal relations represented by an explicit contract."""
     effect = hop.effect
     cause = hop.cause
-
-    distance = REASONING_STAGES.index(effect.stage) - REASONING_STAGES.index(
-        cause.stage
-    )
-    if distance not in (0, 1):
-        return (
-            f"{effect.stage}-to-{cause.stage} hop must stay within one stage "
-            "or move to the adjacent upstream stage: coding -> operations -> "
-            "semantics -> drawings"
-        )
 
     # A whole-stage reference has no member identity with which to prove a
     # direct relation. Its existence was already checked above.
@@ -242,28 +216,26 @@ def _causal_hop_error(
 
     elif (
         effect.stage is PipelineStage.OPERATIONS
-        and cause.stage is PipelineStage.SEMANTICS
+        and cause.stage is PipelineStage.INTERPRETATION
     ):
         operation = operations_by_name[effect.name]
         if cause.name not in operation.semantics:
             return (
-                f"operations-to-semantics hop {effect.name!r} -> "
+                f"operations-to-interpretation hop {effect.name!r} -> "
                 f"{cause.name!r} is not supported by {effect.name}.semantics"
             )
 
     elif (
-        effect.stage is PipelineStage.SEMANTICS
-        and cause.stage is PipelineStage.DRAWINGS
+        effect.stage is PipelineStage.INTERPRETATION
+        and cause.stage is PipelineStage.INTERPRETATION
     ):
-        if cause.name not in cited_sheets[effect.name]:
+        if cause.name not in interpretation_links[effect.name]:
             return (
-                f"semantics-to-drawings hop {effect.name!r} -> {cause.name!r} "
-                f"is not supported by {effect.name}.evidence: name the sheet "
-                "owning a cited ev_ or dim_ entry. For an omission with no "
-                "existing citation, report the defect directly at its root."
+                f"interpretation hop {effect.name!r} -> {cause.name!r} "
+                "is not supported by the member's evidence, dimension_refs or "
+                "view region. For an omission with no existing citation, "
+                "report the defect directly at its root."
             )
 
-    # No machine-readable relation currently exists for coding-internal or
-    # semantics-internal reasoning. Such hops remain valid once both members
-    # are known rather than being rejected on a guess.
+    # Coding-internal dependencies have no machine-readable contract here.
     return None

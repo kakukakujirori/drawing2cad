@@ -8,14 +8,16 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+import ezdxf
 import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
+from PIL import Image
 from rich.console import Console
 
 from tests.zeroshot.chat_models import ScriptedChatModel
-from tests.zeroshot.contracts import drawing, hypothesis, replacing
+from tests.zeroshot.contracts import drawing, interpretation, replacing
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
@@ -29,19 +31,18 @@ from zeroshot.pipeline.runner import (
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.drawings.contracts import (
-    CropOf,
     DrawingSource,
     View,
     unread_sheet,
 )
-from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingView, Region
+from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
 )
 from zeroshot.pipeline.stages.operations.submission import OperationSubmission
-from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.verification import (
     CadQueryExecutor,
     ExecutionStatus,
@@ -78,40 +79,45 @@ def _ticket_response(stage: str, summary: str) -> TicketResponse:
     )
 
 
-_A_BOX = AIMessage(
-    content=SemanticSubmission(
-        **replacing(hypothesis("a box")),
-        responses=[_ticket_response("semantics", "Established sem_feature_1.")],
-    ).model_dump_json()
-)
-
-
 _A_READING = AIMessage(
-    content=DrawingSubmission(
-        responses=[_ticket_response("drawings", "Read sheet_front.")],
+    content=InterpretationSubmission(
+        responses=[_ticket_response("interpretation", "Established sem_feature_1.")],
     ).model_dump_json()
 )
 
 
-def _writing_drawing() -> AIMessage:
-    """Add one transcribed front view to the middleware-seeded drawing."""
-    view = drawing().sheets[0].model_dump(mode="json")
+def _writing_interpretation() -> AIMessage:
+    artifact = interpretation("a box").model_dump(mode="json")
     script = cleandoc(
         f"""
         import json
         import shutil
         from pathlib import Path
+        from PIL import Image
+        import ezdxf
+        from ezdxf import bbox
 
-        path = Path('/work/drawing.json')
-        source = json.loads(path.read_text())
-        page = next(sheet for sheet in source['sheets'] if sheet['role'] == 'full_page')
-        view = {view!r}
-        view['crop_of'] = {{'sheet': page['name'], 'box': [0.0, 0.0, 10.0, 10.0]}}
-        suffix = Path(page['file']).suffix
-        view['file'] = '/work/sheet_front' + suffix
-        shutil.copyfile(page['file'], view['file'])
-        source['sheets'].append(view)
-        path.write_text(json.dumps(source), encoding='utf-8')
+        artifact = {artifact!r}
+        inputs = json.loads(Path('/work/reconstruction.json').read_text())['input_drawings']['sheets']
+        views = []
+        for sheet in inputs:
+            file = sheet['file']
+            name = 'view_' + sheet['name'].removeprefix('sheet_')
+            if Path(file).suffix == '.dxf':
+                extent = bbox.extents(ezdxf.readfile(file).modelspace()).size
+                region = {{'view': name, 'box_uv': [0, 0, extent.x, extent.y]}}
+            else:
+                with Image.open(file) as image:
+                    width, height = image.size
+                region = {{'view': name, 'box_px': [0, 0, width, height]}}
+            views.append(dict(name=name, file=file, role='full_page', region=region, dimensions=[]))
+        front = dict(views[0], name='view_front', role='front')
+        front['file'] = '/work/view_front' + Path(front['file']).suffix
+        shutil.copyfile(views[0]['file'], front['file'])
+        views.append(front)
+        artifact['views'] = views
+        artifact['features'][0]['evidence'] = [dict(front['region'], view='view_front')]
+        Path('/work/interpretation.json').write_text(json.dumps(artifact))
         """
     )
     return AIMessage(
@@ -120,25 +126,17 @@ def _writing_drawing() -> AIMessage:
             {
                 "name": "run_shell",
                 "args": {"command": f"python -c {shlex.quote(script)}"},
-                "id": "call-write-drawing",
+                "id": "call-write-interpretation",
                 "type": "tool_call",
             }
         ],
     )
 
 
-def _drawing_stage():
+def _interpretation_stage():
     return _agent(
-        "drawing_analyzer",
-        ScriptedChatModel(responses=(_writing_drawing(), _A_READING)),
-        announce_turns=False,
-    )
-
-
-def _semantic_stage():
-    return _agent(
-        "semantic_hypothesizer",
-        ScriptedChatModel(responses=(_A_BOX,)),
+        "drawing_interpreter",
+        ScriptedChatModel(responses=(_writing_interpretation(), _A_READING)),
         announce_turns=False,
     )
 
@@ -204,8 +202,8 @@ def _graph_factory(
     so a run's config -- or a test -- binds it before the runner ever sees it."""
     return partial(
         create_reconstruction_graph,
-        drawings_agent_builder=_drawing_stage(),
-        semantics_agent_builder=_semantic_stage(),
+        interpretation_agent_builder=_interpretation_stage(),
+        dxf_mm_per_unit={"view_drawing": 1.0, "view_front": 1.0},
         operations_agent_builder=_operations_stage(),
         coding_agent_builder=_agent("coder", model, **agent_overrides),
         audit_agent_builder=_agent(
@@ -229,17 +227,12 @@ def _verified_resume_run():
     run = start_reconstruction("run_sample", "Reconstruct the drawing.", drawing())
     run = advance_reconstruction(
         run,
-        DrawingSubmission(
-            responses=[_ticket_response("drawings", "Read sheet_front.")],
+        InterpretationSubmission(
+            responses=[
+                _ticket_response("interpretation", "Established sem_feature_1.")
+            ],
         ),
-        workspace_output=drawing(),
-    )
-    run = advance_reconstruction(
-        run,
-        SemanticSubmission(
-            **replacing(hypothesis("a box")),
-            responses=[_ticket_response("semantics", "Established sem_feature_1.")],
-        ),
+        workspace_output=interpretation("a box"),
     )
     run = advance_reconstruction(
         run,
@@ -286,6 +279,18 @@ def test_resume_copies_an_external_attempt_directly(
     attempt = source_workspace / "attempts" / "round_000" / "coding" / "007"
     attempt.mkdir(parents=True)
     (attempt / "output.step").write_bytes(b"STEP")
+    diagnostic = Path(
+        "attempts/round_000/interpretation/001/_interpretation_validation_log.json"
+    )
+    (source_workspace / diagnostic).parent.mkdir(parents=True)
+    (source_workspace / diagnostic).write_text(
+        '{"reports": {"view_front": {"status": "ok"}}}'
+    )
+    future_diagnostic = Path(
+        "attempts/round_001/interpretation/000/_interpretation_validation_log.json"
+    )
+    (source_workspace / future_diagnostic).parent.mkdir(parents=True)
+    (source_workspace / future_diagnostic).write_text('{"reports": {}}')
     resume_path = source_workspace / "reconstruction.json"
     save_reconstruction(resume_path, run)
 
@@ -316,6 +321,11 @@ def test_resume_copies_an_external_attempt_directly(
         workspace / "attempts" / "round_000" / "coding" / "007" / "output.step"
     ).read_bytes() == b"STEP"
     assert (attempt / "output.step").is_file()
+    assert (workspace / diagnostic).read_bytes() == (
+        source_workspace / diagnostic
+    ).read_bytes()
+    assert not (workspace / future_diagnostic).exists()
+    assert (source_workspace / future_diagnostic).is_file()
 
 
 def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
@@ -329,6 +339,12 @@ def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     attempt.mkdir(parents=True)
     (attempt / "output.step").write_bytes(b"STEP")
     (workspace / "stale.txt").write_text("stale", encoding="utf-8")
+    diagnostic = Path(
+        "attempts/round_000/interpretation/001/_interpretation_validation_log.json"
+    )
+    (workspace / diagnostic).parent.mkdir(parents=True)
+    diagnostic_bytes = b'{"reports": {"view_front": {"status": "ok"}}}'
+    (workspace / diagnostic).write_bytes(diagnostic_bytes)
     resume_path = workspace / "reconstruction.json"
     save_reconstruction(resume_path, run)
     events_path = sample_root / "events.jsonl"
@@ -346,6 +362,7 @@ def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     assert (
         prepared / "attempts" / "round_000" / "coding" / "007" / "output.step"
     ).read_bytes() == b"STEP"
+    assert (prepared / diagnostic).read_bytes() == diagnostic_bytes
 
 
 @pytest.mark.parametrize("same_workspace", [False, True])
@@ -366,30 +383,32 @@ def test_resume_restores_drawing_stage_crops(
     raw = unread_sheet(
         "sheet_drawing", View.FULL_PAGE, "/work/inputs/sheet_drawing.dxf"
     )
-    crop = (
-        drawing()
-        .sheets[0]
-        .model_copy(
-            update={
-                "crop_of": CropOf(sheet="sheet_drawing", box=[0.0, 0.0, 20.0, 10.0]),
-                "file": "/work/derived/sheet_front.dxf",
-            }
-        )
+    page = DrawingView(
+        name="view_drawing",
+        role=View.FULL_PAGE,
+        file=raw.file,
+        region=Region(view="view_drawing", box_uv=(0, 0, 20, 10)),
+        dimensions=[],
+    )
+    crop = DrawingView(
+        name="view_front",
+        role=View.FRONT,
+        file="/work/derived/sheet_front.dxf",
+        region=Region(view="view_drawing", box_uv=(0, 0, 20, 10)),
+        dimensions=[],
     )
     relative_crop = crop.model_copy(
         update={
-            "name": "sheet_detail",
+            "name": "view_detail",
             "role": View.DETAIL,
             "file": "views/sheet_detail.png",
-            "evidence": [],
         }
     )
     temporary_crop = crop.model_copy(
         update={
-            "name": "sheet_section",
+            "name": "view_section",
             "role": View.SECTION,
             "file": "/tmp/sheet_section.png",
-            "evidence": [],
         }
     )
     run = start_reconstruction(
@@ -399,11 +418,11 @@ def test_resume_restores_drawing_stage_crops(
     )
     run = advance_reconstruction(
         run,
-        DrawingSubmission(
-            responses=[_ticket_response("drawings", "Read sheet_front.")],
+        InterpretationSubmission(
+            responses=[_ticket_response("interpretation", "Read view_front.")],
         ),
-        workspace_output=DrawingSource(
-            sheets=[raw, crop, relative_crop, temporary_crop]
+        workspace_output=interpretation(
+            views=[page, crop, relative_crop, temporary_crop]
         ),
     )
     derived = source_workspace / "derived" / "sheet_front.dxf"
@@ -450,10 +469,10 @@ def test_resume_restores_drawing_stage_crops(
     assert restored.read_bytes() == b"DERIVED DXF"
     assert (prepared / "views" / "sheet_detail.png").read_bytes() == b"DETAIL PNG"
     assert (prepared / "tmp" / "sheet_section.png").read_bytes() == b"SECTION PNG"
-    accepted = run.snapshots[-1].drawings
+    accepted = run.snapshots[-1].interpretation
     assert accepted is not None
     assert (
-        next(sheet.file for sheet in accepted.sheets if sheet.name == "sheet_front")
+        next(sheet.file for sheet in accepted.views if sheet.name == "view_front")
         == "/work/derived/sheet_front.dxf"
     )
     assert derived.is_file()
@@ -481,9 +500,16 @@ def _write_text_command(filename: str, content: str) -> str:
     return f"python -c {shlex.quote(script)}"
 
 
+def _write_fixture_dxf(path: Path) -> str:
+    doc = ezdxf.new()
+    doc.modelspace().add_lwpolyline([(0, 0), (10, 0), (10, 10), (0, 10)], close=True)
+    doc.saveas(path)
+    return path.read_text()
+
+
 def _manifest_without_renders(tmp_path: Path, sample_id: str) -> InputManifest:
     dxf_path = tmp_path / f"{sample_id}.dxf"
-    dxf_path.write_text("DXF_FIXTURE", encoding="utf-8")
+    _write_fixture_dxf(dxf_path)
     return InputManifest(
         sample_id=sample_id,
         drawing=DrawingSource(
@@ -509,8 +535,9 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     dxf_path = tmp_path / "source.dxf"
     selected_render_path = tmp_path / "selected.png"
     hidden_render_path = tmp_path / "hidden.png"
-    dxf_path.write_text("ORIGINAL_DXF", encoding="utf-8")
-    selected_render_path.write_bytes(b"ALLOWED_RENDER")
+    original_dxf = _write_fixture_dxf(dxf_path)
+    Image.new("RGB", (10, 10), "green").save(selected_render_path)
+    selected_bytes = selected_render_path.read_bytes()
     hidden_render_path.write_bytes(b"HIDDEN_RENDER")
 
     manifest = InputManifest(
@@ -527,8 +554,8 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         from pathlib import Path
 
         dxf = Path('/work/inputs/sheet_drawing.dxf')
-        assert dxf.read_text() == 'ORIGINAL_DXF'
-        assert Path('/work/inputs/sheet_style_a.png').read_bytes() == b'ALLOWED_RENDER'
+        assert 'ENTITIES' in dxf.read_text()
+        assert Path('/work/inputs/sheet_style_a.png').read_bytes().startswith(bytes.fromhex('89504e47'))
         assert not Path('/work/inputs/sheet_hidden.png').exists()
         try:
             dxf.write_text('SANDBOX_MUTATION')
@@ -595,7 +622,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert len(model.received_messages) == 4
 
     # The coder opens on the workflow transcript: its own prompt, the run's
-    # input, then what the semantic stage made of it.
+    # input, then the current interpretation and plan.
     initial_messages = model.received_messages[0]
     initial_human_message = initial_messages[1]
     assert isinstance(initial_human_message, HumanMessage)
@@ -649,18 +676,18 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
 
     assert result["coding_state"]["stop_reason"] is StopReason.COMPLETED
 
-    assert dxf_path.read_text(encoding="utf-8") == "ORIGINAL_DXF"
-    assert selected_render_path.read_bytes() == b"ALLOWED_RENDER"
+    assert dxf_path.read_text(encoding="utf-8") == original_dxf
+    assert selected_render_path.read_bytes() == selected_bytes
     assert hidden_render_path.read_bytes() == b"HIDDEN_RENDER"
 
     sample_artifact_root = tmp_path / "artifacts" / "sample-1"
     saved_workdir = sample_artifact_root / "workspace"
     assert (saved_workdir / "inputs" / "sheet_drawing.dxf").read_text(
         encoding="utf-8"
-    ) == "ORIGINAL_DXF"
+    ) == original_dxf
     assert (
         saved_workdir / "inputs" / "sheet_style_a.png"
-    ).read_bytes() == b"ALLOWED_RENDER"
+    ).read_bytes() == selected_bytes
     assert not (saved_workdir / "inputs" / "sheet_hidden.png").exists()
     assert (saved_workdir / "scratch.txt").read_text(encoding="utf-8") == "persisted"
     # The coding stage renders even when feedback_mode="none"; the auditor
@@ -844,7 +871,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     round_attempts = attempts / "round_000"
     assert sorted(path.name for path in round_attempts.iterdir()) == [
         "coding",
-        "drawing",
+        "interpretation",
     ]
     final_attempt = round_attempts / "coding" / "000"
     assert (final_attempt / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE
@@ -1055,8 +1082,8 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
         # A cast is a graph's own setting, so a real factory arrives with one
         # already bound; only what the runner adds is under test here.
         return create_reconstruction_graph(
-            drawings_agent_builder=_drawing_stage(),
-            semantics_agent_builder=_semantic_stage(),
+            interpretation_agent_builder=_interpretation_stage(),
+            dxf_mm_per_unit={"view_drawing": 1.0, "view_front": 1.0},
             operations_agent_builder=_operations_stage(),
             coding_agent_builder=_agent(
                 "coder",
@@ -1272,8 +1299,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
     # One per ask, not one per model call: the report is what an agent was
     # asked when it was asked, and a retry re-asks nothing new.
     assert [prompt["role"] for prompt in prompts] == [
-        "drawing_analyzer",
-        "semantic_hypothesizer",
+        "drawing_interpreter",
         "operation_planner",
         "coder",
         "output_auditor",
@@ -1340,8 +1366,7 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             if event["event"] == "stop_reason"
         ]
         expected_reasons = {
-            "drawing_analyzer": "COMPLETED",
-            "semantic_hypothesizer": "COMPLETED",
+            "drawing_interpreter": "COMPLETED",
             "operation_planner": "COMPLETED",
             "coder": expected,
         }

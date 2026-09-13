@@ -12,8 +12,8 @@ from pydantic import (
 
 from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket
 from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
-from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     STAGE_ARTIFACT_FIELDS,
@@ -52,20 +52,12 @@ class ReconstructionSnapshot(BaseModel):
             "a completed verification attempt, whether it succeeded or failed."
         ),
     )
-    drawings: DrawingSource | None = Field(
+    interpretation: DrawingInterpretation | None = Field(
         ...,
         description=(
-            "The complete DrawingSource produced in this round, or null until "
-            "this round's drawing stage completes. Earlier readings remain "
-            "available in preceding snapshots."
-        ),
-    )
-    semantics: SemanticHypothesis | None = Field(
-        ...,
-        description=(
-            "The complete semantic hypothesis produced in this round, or "
-            "null until this round's semantics stage completes. Earlier "
-            "hypotheses remain available in preceding snapshots."
+            "The complete drawing interpretation produced in this round, or null "
+            "until interpretation completes. Earlier interpretations remain in "
+            "preceding snapshots."
         ),
     )
     operations: OperationPlan | None = Field(
@@ -139,11 +131,11 @@ class ReconstructionSnapshot(BaseModel):
             )
 
         # Stage integrity checks
-        if PipelineStage.DRAWINGS in completed_stages and self.drawings is None:
-            raise ValueError("drawings must exist after drawings")
-
-        if PipelineStage.SEMANTICS in completed_stages and self.semantics is None:
-            raise ValueError("semantics must exist after semantics")
+        if (
+            PipelineStage.INTERPRETATION in completed_stages
+            and self.interpretation is None
+        ):
+            raise ValueError("interpretation must exist after interpretation")
 
         if PipelineStage.OPERATIONS in completed_stages and self.operations is None:
             raise ValueError("operations must exist after operations")

@@ -7,22 +7,20 @@ from zeroshot.pipeline.messages.tickets import TicketResponse
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
-from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
-from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
+from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.merge import merge_submission
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
-from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
-from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.stages.types import ArtifactField, PipelineStage, ReasoningStage
 from zeroshot.pipeline.stages.validate import validate_submission
 from zeroshot.pipeline.verification import VerifyOutputResult
 
 type ReasoningSubmission = (
-    DrawingSubmission | SemanticSubmission | OperationSubmission | CodingSubmission
+    InterpretationSubmission | OperationSubmission | CodingSubmission
 )
-type WorkspaceOutput = DrawingSource | VerifyOutputResult
+type WorkspaceOutput = DrawingInterpretation | VerifyOutputResult
 
 _LOG_LIMIT = 4000
 
@@ -48,7 +46,7 @@ def build_snapshot_update(
     Verified artifacts are used directly; revision submissions are merged.
     This function neither runs verifiers nor saves state.
     """
-    if stage in {PipelineStage.DRAWINGS, PipelineStage.CODING}:
+    if stage in {PipelineStage.INTERPRETATION, PipelineStage.CODING}:
         deliverable = workspace_output
     else:
         if workspace_output is not None:
@@ -60,25 +58,19 @@ def build_snapshot_update(
 
     # Validate the addresses before annotating them. A revised artifact is
     # cited against its own new contents, not the preceding round's values.
-    cited_hypothesis = (
+    interpretation = (
         deliverable
-        if isinstance(deliverable, SemanticHypothesis)
-        else current.semantics
+        if isinstance(deliverable, DrawingInterpretation)
+        else current.interpretation
     )
-    cited_drawing = cast(
-        DrawingSource,
-        deliverable if isinstance(deliverable, DrawingSource) else current.drawings,
-    )
-    if isinstance(deliverable, (DrawingSource, SemanticHypothesis, OperationPlan)):
-        deliverable = resolve_references(deliverable, cited_hypothesis, cited_drawing)
-    submission = resolve_references(submission, cited_hypothesis, cited_drawing)
+    if isinstance(deliverable, OperationPlan):
+        deliverable = resolve_references(deliverable, interpretation)
+    submission = resolve_references(submission, interpretation)
 
     artifacts: dict[ArtifactField, object]
     match stage:
-        case PipelineStage.DRAWINGS:
-            artifacts = {"drawings": deliverable}
-        case PipelineStage.SEMANTICS:
-            artifacts = {"semantics": deliverable}
+        case PipelineStage.INTERPRETATION:
+            artifacts = {"interpretation": deliverable}
         case PipelineStage.OPERATIONS:
             artifacts = {"operations": deliverable}
         case PipelineStage.CODING:

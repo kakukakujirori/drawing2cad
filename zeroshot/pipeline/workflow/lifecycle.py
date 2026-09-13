@@ -3,7 +3,6 @@
 import os
 import tempfile
 from pathlib import Path
-from typing import cast
 
 from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket
 from zeroshot.pipeline.stages.audit.contracts import (
@@ -12,6 +11,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
 )
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
 from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
 from zeroshot.pipeline.stages.snapshot_update import (
     ReasoningSubmission,
@@ -49,8 +49,7 @@ def start_reconstruction(
         ],
         round=0,
         last_completed_stage=None,
-        drawings=None,
-        semantics=None,
+        interpretation=None,
         operations=None,
         program_source=None,
         verification=None,
@@ -77,8 +76,7 @@ def open_next_round(
     # words into the next round, so the addresses in them are resolved here.
     report = resolve_references(
         report,
-        current.semantics,
-        cast(DrawingSource, current.drawings),
+        current.interpretation,
     )
 
     next_round = current.round + 1
@@ -87,8 +85,7 @@ def open_next_round(
         open_tickets=tickets,
         round=next_round,
         last_completed_stage=None,
-        drawings=None,
-        semantics=None,
+        interpretation=None,
         operations=None,
         program_source=None,
         verification=None,
@@ -100,12 +97,9 @@ def open_next_round(
     )
 
 
-def drawing_baseline(run: ReconstructionRun) -> DrawingSource:
-    """The accepted drawing from which the unfinished current round starts."""
-    current = run.snapshots[-1]
-    if current.round == 0:
-        return run.input_drawings
-    return cast(DrawingSource, run.snapshots[-2].drawings)
+def interpretation_baseline(run: ReconstructionRun) -> DrawingInterpretation | None:
+    """The accepted interpretation from the preceding round, if any."""
+    return run.snapshots[-2].interpretation if len(run.snapshots) > 1 else None
 
 
 def _ticket_from_finding(
@@ -138,8 +132,8 @@ def advance_reconstruction(
 ) -> ReconstructionRun:
     """Validate and atomically integrate one reasoning-stage result.
 
-    Drawing and coding receive their output from workspace verification;
-    semantics and operations derive theirs from the submitted structured diff.
+    Interpretation and coding receive verified workspace outputs; operations
+    derive theirs from the submitted structured diff.
     """
     current = run.snapshots[-1]
     stage = next_stage(current.last_completed_stage)

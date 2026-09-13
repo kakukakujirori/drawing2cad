@@ -1,27 +1,16 @@
 Guidelines:
-- Every entry is one modelling operation that turns the part so far into the part after it. Say which one in `verb`. A profile is not an operation -- it belongs to the entry that extrudes, revolves or sweeps it.
-- The hypothesis's `geometry` gives each feature's shape and size but never where it sits. Placing the features on the part is this stage's work, done by matching what its features cite across views.
-- A feature's `evidence` names entries of the drawing rather than restating them. Those entries hold the numbers read off the sheet, in the coordinates of the view.
-- Place an operation against the features around it, not against a coordinate system of your own: on the face of a feature, on the axis of one, through the width of one. The plan is about the solid, and where the sheet sits relative to the model is the coder's to settle once.
-- Do not copy a number out of the hypothesis or the drawing. Cite it and the value is filled in for you. A 3D claim is `sem_<feature>.geo_<claim>.<parameter>`, as in `sem_main_bore.geo_cylinder.radius`. An entry or a printed figure of the drawing stands alone, because its name is unique across the drawing, and must name its parameter: `ev_front_left_edge.start`, `dim_bore_diameter.nominal`. Add `.x` or `.y` for one number of a point. A claim's address may stop at the claim, `sem_base_profile.geo_plane`, to mean everything it states. Write out only what neither artifact holds: a depth you chose, an offset you worked out, a clearance.
-- Keep the plan, which is what your edits merge into and not what you write out, to at most 25 entries.
-- Name each operation in `name`, beginning `op_` and carrying on in lower_snake_case, for what the step does: `op_base_plate`, `op_bore_through`, `op_fillet_top_edges`. The `op_` marks it as a step the way `sem_` marks a hypothesis feature, so a step named after the feature it builds still reads as the step. The name is how every later stage cites it, and it carries no position -- the order is worked out separately.
-- Say what each operation waits on, in `depends_on`, and which hypothesis features it helps build, in `semantics`. Both hold stable names: a step waiting on `op_base_plate` and building `sem_main_bore` has `depends_on: ["op_base_plate"]` and `semantics: ["sem_main_bore"]`; an empty list says there are none. A feature may take several operations, and an operation may serve several. An operation may only wait on others in the same plan, and the waiting must not come round in a circle.
-- The build order is worked out from `depends_on`, not from the order you list operations in, so list them however you reason and put each dependency where it belongs.
-- Account for the whole part: the base volume, then what is added to and cut from it, then the fillets and chamfers. Every feature the hypothesis establishes needs an operation that builds it. A repeated feature is written as the operations it repeats, one entry each.
-- Revise an existing entry to answer feedback about the operation it performs, keeping its name so that references to it stay true and so that it replaces that entry rather than adding another. An entry you add takes a new name of its own; no existing identity changes or shifts. An entry you leave out of `edits` stays exactly as it was.
-- Where the hypothesis records an `open_question`, or leaves it open whether a region is added or removed material, choose one, record the choice, and continue.
-- If the hypothesis looks wrong, or is missing a number you need, plan anyway: choose, then name the `sem_` member you doubt and your choice in your ticket response. Only the audit can open a ticket, so that response is the one place a doubt reaches it.
-- Use `run_shell` and `load_image` to inspect the drawing or the perspective renders when the hypothesis leaves a dimension or a placement in doubt.
-- If feedback from a review or audit step is present in the transcript, address every point it raises.
-- Your turn budget is announced in the transcript as `[turn n/N]`. Turns increment by using tools.
+- Read the current `interpretation`: `features` states each finished shape, material/void meaning, position, orientation, size and termination; `datum` fixes the common model frame. Preserve these decisions while choosing CAD operations and their dependencies.
+- Each entry is one operation that leaves a solid. Put its modelling method in `verb`; a sketch or profile belongs in the operation that extrudes, revolves or sweeps it.
+- Cite a feature parameter as `sem_main_bore.radius` or `sem_main_bore.center`, and a printed figure as `dim_bore_diameter.nominal_value` or `dim_hole_count.quantity`. The pipeline annotates these references with their current scalar, array or null values. Use the exact parameter names in `features[].parameters`; null means unknown, never zero. Do not copy a known measurement into prose.
+- View regions locate drawing evidence in the referenced view's own file. Their pixel/UV coordinates are not model XYZ. Use the feature's model parameters and datum for placement; open the evidence regions when a claim needs checking.
+- Keep the complete plan to at most 25 entries. Name each operation `op_...` for what it does, retaining that identity across revisions.
+- `depends_on` names the `op_` results this operation consumes. `semantics` names every `sem_` feature it helps build. A feature may take several operations and an operation may serve several features. Every interpreted feature needs an operation, and every cited feature must exist in the interpretation.
+- The build order comes from `depends_on`, not the JSON list order. Dependencies must stay within the plan and must not form a cycle.
+- Account for the base volume, additions and cuts, then fillets and chamfers. Use the interpretation's feature placement rather than selecting a new datum or independently relocating features.
+- Each entry in `edits` replaces the whole operation. Preserve its stable name, omit unchanged operations, and use `deleted` only for existing whole-operation names. Do not edit and delete the same operation.
+- Review `interpretation.questions` and null parameters. If construction requires a choice the interpretation has not established, make a provisional choice and record the affected `sem_` parameter and choice in your ticket response. Do not silently replace a stated value. Only the audit can open a ticket.
+- Use `run_shell` and `load_image` to inspect source views when needed. Address applicable audit feedback and stay within the announced turn budget.
 
-A `detail` reads like these. The name, the verb, the dependencies and the features the step builds go in their own fields, so none of them is written into the sentence:
-- "Extrude the top-view outline 25 mm along +z to form the base plate."
-- "Cut a hole of sem_main_bore.geo_cylinder.radius through the plate at ev_top_circle.center, entering the +z face."
+Example `detail`: "Cut a hole of radius sem_main_bore.radius at sem_main_bore.center, along sem_main_bore.axis, through the host plate."
 
-Plain numbers in them are allowed if neither the hypothesis nor the drawing holds them. Anything either one holds should be cited instead, like `sem_main_bore.geo_cylinder.radius` or `ev_top_circle.center`.
-
-Cite a parameter under the name its own artifact states it by -- the ones you can see in a feature's `geometry`, and in the drawing's entries and printed figures.
-
-Stop calling tools when you answer, and write nothing around the answer itself.
+Plain numbers are for construction choices the interpretation does not state. Stop calling tools when you submit the structured answer, and write nothing around it.

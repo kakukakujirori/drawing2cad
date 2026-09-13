@@ -1,7 +1,7 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from tests.zeroshot.contracts import drawing, hypothesis, replacing
+from tests.zeroshot.contracts import drawing, interpretation, replacing
 from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
@@ -10,20 +10,19 @@ from zeroshot.pipeline.stages.audit.contracts import (
 )
 from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
-from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
 )
 from zeroshot.pipeline.stages.operations.submission import OperationSubmission
-from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 
 
-def _semantics():
-    return hypothesis("a base body")
+def _interpretation():
+    return interpretation("a base body")
 
 
 def _operations() -> OperationPlan:
@@ -43,7 +42,7 @@ def _operations() -> OperationPlan:
 
 def _finding() -> AuditFinding:
     target = StageOutputRef(
-        stage=PipelineStage.SEMANTICS,
+        stage=PipelineStage.INTERPRETATION,
         name="sem_feature_1",
     )
     return AuditFinding(
@@ -76,7 +75,7 @@ def _ticket(
     *,
     subject: BootstrapWork | AuditFinding | None = None,
     stages: tuple[str, ...] = (),
-    assigned: tuple[str, ...] = ("semantics", "operations", "coding"),
+    assigned: tuple[str, ...] = ("interpretation", "operations", "coding"),
 ) -> Ticket:
     return Ticket(
         ticket_id=ticket_id,
@@ -93,115 +92,66 @@ def _snapshot(
     last_completed_stage: str | None = None,
     verification: VerifyOutputResult | None = None,
 ) -> ReconstructionSnapshot:
-    semantics = (
-        _semantics()
-        if last_completed_stage in {"semantics", "operations", "coding"}
+    interpreted = (
+        _interpretation()
+        if last_completed_stage in {"interpretation", "operations", "coding"}
         else None
     )
     operations = (
         _operations() if last_completed_stage in {"operations", "coding"} else None
     )
-    drawings = drawing() if last_completed_stage is not None else None
     return ReconstructionSnapshot(
         open_tickets=[ticket or _ticket()],
         round=round,
         last_completed_stage=last_completed_stage,  # type: ignore[arg-type]
-        drawings=drawings,
-        semantics=semantics,
+        interpretation=interpreted,
         operations=operations,
         program_source=verification.source if verification is not None else None,
         verification=verification,
     )
 
 
-def test_semantics_and_operations_edit_their_own_member_types() -> None:
-    semantics = _semantics()
+def test_operations_edit_their_own_member_type() -> None:
     operations = _operations()
-
-    semantic_submission = SemanticSubmission(
-        **replacing(semantics),
-        responses=_responses("ticket_bootstrap", "semantics"),
+    submission = OperationSubmission(
+        **replacing(operations), responses=_responses("ticket_bootstrap", "operations")
     )
-    operation_submission = OperationSubmission(
-        **replacing(operations),
-        responses=_responses("ticket_bootstrap", "operations"),
-    )
+    assert submission.edits == operations.proposal
 
-    assert semantic_submission.edits == semantics.proposal
-    assert operation_submission.edits == operations.proposal
+
+def test_deletion_names_are_validated_without_requiring_a_snapshot() -> None:
+    submission = OperationSubmission(
+        edits=[], deleted=["op_future_operation"], rationale=None, responses=[]
+    )
+    assert submission.deleted == ["op_future_operation"]
 
 
 @pytest.mark.parametrize(
-    ("submission_type", "name"),
-    [
-        (SemanticSubmission, "sem_future_feature"),
-        (OperationSubmission, "op_future_operation"),
-    ],
+    "name", ["op_bore.detail", "op_bore.depends_on", "sem_bore", "op_Bore", ""]
 )
-def test_deletion_names_are_validated_without_requiring_a_snapshot(
-    submission_type: type[SemanticSubmission] | type[OperationSubmission],
-    name: str,
-) -> None:
-    submission = submission_type(edits=[], deleted=[name], rationale=None, responses=[])
-    assert submission.deleted == [name]
-
-
-@pytest.mark.parametrize(
-    ("submission_type", "name"),
-    [
-        (SemanticSubmission, "sem_bore.geo_cylinder"),
-        (SemanticSubmission, "sem_bore.evidence"),
-        (SemanticSubmission, "op_bore"),
-        (SemanticSubmission, "sem_Bore"),
-        (SemanticSubmission, ""),
-        (OperationSubmission, "op_bore.detail"),
-        (OperationSubmission, "op_bore.depends_on"),
-        (OperationSubmission, "sem_bore"),
-        (OperationSubmission, "op_Bore"),
-        (OperationSubmission, ""),
-    ],
-)
-def test_deletions_require_whole_member_names_of_the_owning_stage(
-    submission_type: type[SemanticSubmission] | type[OperationSubmission],
-    name: str,
-) -> None:
+def test_deletions_require_whole_operation_names(name: str) -> None:
     with pytest.raises(ValidationError, match="not a usable"):
-        submission_type(edits=[], deleted=[name], rationale=None, responses=[])
+        OperationSubmission(edits=[], deleted=[name], rationale=None, responses=[])
 
 
-@pytest.mark.parametrize("submission_type", [SemanticSubmission, OperationSubmission])
-def test_a_submission_cannot_edit_and_delete_the_same_member(
-    submission_type: type[SemanticSubmission] | type[OperationSubmission],
-) -> None:
-    artifact = _semantics() if submission_type is SemanticSubmission else _operations()
-    member = artifact.proposal[0]
+def test_a_submission_cannot_edit_and_delete_the_same_member() -> None:
+    member = _operations().proposal[0]
     with pytest.raises(ValidationError, match="both edited and deleted"):
-        submission_type.model_validate(
-            {
-                "edits": [member],
-                "deleted": [member.name],
-                "rationale": None,
-                "responses": [],
-            }
+        OperationSubmission(
+            edits=[member], deleted=[member.name], rationale=None, responses=[]
         )
 
 
-@pytest.mark.parametrize("submission_type", [SemanticSubmission, OperationSubmission])
 @pytest.mark.parametrize("field", ["edits", "deleted"])
-def test_a_submission_rejects_duplicate_member_names(
-    submission_type: type[SemanticSubmission] | type[OperationSubmission],
-    field: str,
-) -> None:
-    artifact = _semantics() if submission_type is SemanticSubmission else _operations()
-    member = artifact.proposal[0]
-    payload = {
-        "edits": [member, member] if field == "edits" else [],
-        "deleted": [member.name, member.name] if field == "deleted" else [],
-        "rationale": None,
-        "responses": [],
-    }
+def test_a_submission_rejects_duplicate_member_names(field: str) -> None:
+    member = _operations().proposal[0]
     with pytest.raises(ValidationError, match="more than once|same address twice"):
-        submission_type.model_validate(payload)
+        OperationSubmission(
+            edits=[member, member] if field == "edits" else [],
+            deleted=[member.name, member.name] if field == "deleted" else [],
+            rationale=None,
+            responses=[],
+        )
 
 
 def test_coding_carries_its_ticket_answers_and_nothing_else() -> None:
@@ -221,46 +171,40 @@ def test_coding_carries_its_ticket_answers_and_nothing_else() -> None:
             )
 
 
-def test_drawing_carries_ticket_answers_while_json_carries_the_artifact() -> None:
-    responses = _responses("ticket_bootstrap", "drawings")
+def test_interpretation_carries_ticket_answers_while_json_carries_the_artifact() -> (
+    None
+):
+    responses = _responses("ticket_bootstrap", "interpretation")
 
-    submission = DrawingSubmission(responses=responses)
+    submission = InterpretationSubmission(responses=responses)
 
     assert submission.responses == responses
-    assert set(DrawingSubmission.model_fields) == {"responses"}
+    assert set(InterpretationSubmission.model_fields) == {"responses"}
 
 
 def test_a_stage_submission_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        SemanticSubmission.model_validate(
+        InterpretationSubmission.model_validate(
             {
-                **replacing(_semantics()),
-                "responses": _responses("ticket_bootstrap", "semantics"),
-                "commentary": "not part of the submission contract",
+                "responses": _responses("ticket_bootstrap", "interpretation"),
+                "artifact": _interpretation(),
             }
         )
 
 
 def test_each_stage_submission_exposes_its_concrete_json_schema() -> None:
-    semantic_schema = SemanticSubmission.model_json_schema()
     operation_schema = OperationSubmission.model_json_schema()
-    drawing_schema = DrawingSubmission.model_json_schema()
-    coding_schema = CodingSubmission.model_json_schema()
-
-    assert semantic_schema["properties"]["edits"]["items"]["$ref"].endswith(
-        "/SemanticFeature"
-    )
     assert operation_schema["properties"]["edits"]["items"]["$ref"].endswith(
         "/Operation"
     )
-    assert set(drawing_schema["properties"]) == {"responses"}
-    assert set(coding_schema["properties"]) == {"responses"}
+    for submission in [InterpretationSubmission, CodingSubmission]:
+        assert set(submission.model_json_schema()["properties"]) == {"responses"}
 
 
 @pytest.mark.parametrize(
     ("submission", "expected_name"),
     [
-        (SemanticSubmission, "SemanticSubmission"),
+        (InterpretationSubmission, "InterpretationSubmission"),
         (OperationSubmission, "OperationSubmission"),
         (CodingSubmission, "CodingSubmission"),
     ],
@@ -274,7 +218,7 @@ def test_stage_submission_schema_names_are_provider_safe(
 
 
 def test_a_round_checkpoint_requires_every_ticket_response_in_stage_order() -> None:
-    ticket = _ticket(stages=("semantics",))
+    ticket = _ticket(stages=("interpretation",))
 
     with pytest.raises(ValidationError, match="responses must be"):
         _snapshot(
@@ -285,7 +229,7 @@ def test_a_round_checkpoint_requires_every_ticket_response_in_stage_order() -> N
 
 @pytest.mark.parametrize(
     "assigned",
-    [(), ("semantics",), ("semantics", "coding"), ("coding", "operations")],
+    [(), ("interpretation",), ("interpretation", "coding"), ("coding", "operations")],
 )
 def test_a_ticket_assignment_runs_from_one_revision_root_through_coding(
     assigned: tuple[str, ...],
@@ -296,13 +240,13 @@ def test_a_ticket_assignment_runs_from_one_revision_root_through_coding(
 
 def test_a_ticket_rejects_a_response_from_a_stage_it_does_not_assign() -> None:
     with pytest.raises(ValidationError, match="not assigned to this ticket"):
-        _ticket(stages=("semantics",), assigned=("operations", "coding"))
+        _ticket(stages=("interpretation",), assigned=("operations", "coding"))
 
 
 def test_a_completed_stage_leaves_no_response_on_a_ticket_it_is_not_assigned() -> None:
     snapshot = _snapshot(
         ticket=_ticket(assigned=("operations", "coding")),
-        last_completed_stage="semantics",
+        last_completed_stage="interpretation",
     )
 
     assert snapshot.open_tickets[0].responses == []
@@ -314,11 +258,11 @@ def test_a_ticket_rejects_a_response_for_another_ticket() -> None:
             ticket_id="ticket_one",
             subject=BootstrapWork(instruction="Reconstruct the part."),
             assigned_stages=[
-                PipelineStage.SEMANTICS,
+                PipelineStage.INTERPRETATION,
                 PipelineStage.OPERATIONS,
                 PipelineStage.CODING,
             ],
-            responses=_responses("ticket_other", "semantics"),
+            responses=_responses("ticket_other", "interpretation"),
         )
 
 
@@ -327,7 +271,7 @@ def test_a_failed_verification_is_a_valid_completed_coding_checkpoint() -> None:
         status=ExecutionStatus.REJECTED,
         executor_error="model.py was not found",
     )
-    ticket = _ticket(stages=("semantics", "operations", "coding"))
+    ticket = _ticket(stages=("interpretation", "operations", "coding"))
 
     snapshot = _snapshot(
         ticket=ticket,
@@ -340,7 +284,7 @@ def test_a_failed_verification_is_a_valid_completed_coding_checkpoint() -> None:
 
 
 def test_an_uninitialized_verification_does_not_complete_coding() -> None:
-    ticket = _ticket(stages=("semantics", "operations", "coding"))
+    ticket = _ticket(stages=("interpretation", "operations", "coding"))
 
     with pytest.raises(ValidationError, match="must be completed"):
         _snapshot(
@@ -353,8 +297,8 @@ def test_an_uninitialized_verification_does_not_complete_coding() -> None:
 @pytest.mark.parametrize(
     ("completed_stage", "field", "value"),
     [
-        (None, "semantics", _semantics()),
-        ("semantics", "operations", _operations()),
+        (None, "interpretation", _interpretation()),
+        ("interpretation", "operations", _operations()),
         ("operations", "program_source", "result = object()\n"),
         (
             "operations",
@@ -370,8 +314,8 @@ def test_snapshot_rejects_an_artifact_from_an_unfinished_stage(
 ) -> None:
     completed_stages = {
         None: (),
-        "semantics": ("semantics",),
-        "operations": ("semantics", "operations"),
+        "interpretation": ("interpretation",),
+        "operations": ("interpretation", "operations"),
     }[completed_stage]
     snapshot = _snapshot(
         ticket=_ticket(stages=completed_stages),
@@ -414,7 +358,7 @@ def test_round_zero_rejects_a_finding_in_place_of_bootstrap_work() -> None:
 
 def test_later_rounds_reject_bootstrap_tickets() -> None:
     first = _snapshot(
-        ticket=_ticket(stages=("semantics", "operations", "coding")),
+        ticket=_ticket(stages=("interpretation", "operations", "coding")),
         last_completed_stage="coding",
         verification=VerifyOutputResult(status=ExecutionStatus.REJECTED),
     )
@@ -442,7 +386,7 @@ def test_round_numbers_follow_snapshot_order() -> None:
 
 def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None:
     first = _snapshot(
-        ticket=_ticket(stages=("semantics", "operations", "coding")),
+        ticket=_ticket(stages=("interpretation", "operations", "coding")),
         last_completed_stage="coding",
         verification=VerifyOutputResult(
             verification_id="000",
@@ -460,8 +404,7 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
         ],
         round=1,
         last_completed_stage=None,
-        drawings=None,
-        semantics=None,
+        interpretation=None,
         operations=None,
         program_source=None,
         verification=None,

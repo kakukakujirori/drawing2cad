@@ -42,20 +42,12 @@ class AuditStage:
             if verification.verification_id is not None
             else self.attempt_store.sandbox_root
         )
-        drawing_attempt = self.attempt_store.latest_sandbox_attempt_dir(
-            "drawing", snapshot.round
-        )
         previous = state.get("audit_state") or {}
         instruction = self.instructions.build(
             state,
             PipelineStage.AUDIT,
             include_artifact=not previous,
             attempt_dir=attempt_dir,
-            drawing_attempt_dir=(
-                str(drawing_attempt)
-                if drawing_attempt is not None
-                else "unavailable in this workspace"
-            ),
             ticket_responses=json.dumps(
                 [
                     response.model_dump(mode="json")
