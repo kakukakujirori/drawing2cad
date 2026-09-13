@@ -11,9 +11,9 @@ from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest
 from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
-    View,
     unread_sheet,
 )
+from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.workflow import (
     ReconstructionState,
 )

@@ -23,9 +23,9 @@ from zeroshot.pipeline.stages.drawings.contracts import (
     CropOf,
     DrawingSheet,
     DrawingSource,
-    View,
     unread_sheet,
 )
+from zeroshot.pipeline.stages.interpretation.contracts import View
 
 
 def _write(path: Path, content: bytes) -> Path:

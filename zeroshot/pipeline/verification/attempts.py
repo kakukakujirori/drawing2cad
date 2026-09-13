@@ -6,7 +6,7 @@ from typing import Literal
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 
-type AttemptStage = Literal["drawing", "interpretation", "coding"]
+type AttemptStage = Literal["interpretation", "coding"]
 type RoundSource = Callable[[], int]
 
 
@@ -18,7 +18,7 @@ def attempt_relative_path(
     """Address one attempt below the configured attempt root."""
     if round_number < 0:
         raise ValueError("round_number must be non-negative")
-    if stage not in {"drawing", "interpretation", "coding"}:
+    if stage not in {"interpretation", "coding"}:
         raise ValueError(f"unsupported attempt stage: {stage!r}")
     if not attempt_id.isdigit():
         raise ValueError(f"attempt_id must be numeric: {attempt_id!r}")

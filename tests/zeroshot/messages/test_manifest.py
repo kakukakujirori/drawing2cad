@@ -12,9 +12,9 @@ import pytest
 from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
 from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
-    View,
     unread_sheet,
 )
+from zeroshot.pipeline.stages.interpretation.contracts import View
 
 
 def _write(path: Path, content: bytes = b"data") -> Path:

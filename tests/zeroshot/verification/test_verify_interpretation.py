@@ -9,9 +9,11 @@ from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSheet,
     DrawingSource,
+)
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    DrawingInterpretation,
     View,
 )
-from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.verify_interpretation import InterpretationVerifier
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware

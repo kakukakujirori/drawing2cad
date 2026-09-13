@@ -11,7 +11,6 @@ from .run_render import (
     RenderStatus,
     StepRenderer,
 )
-from .verify_drawing import DrawingVerificationResult, DrawingVerifier
 from .verify_output import (
     OutputVerifier,
     VerifyOutputResult,
@@ -21,8 +20,6 @@ __all__ = [
     "AttemptStore",
     "CadQueryExecutionReport",
     "CadQueryExecutor",
-    "DrawingVerificationResult",
-    "DrawingVerifier",
     "ExecutionStatus",
     "IntermediateReturn",
     "OutputVerifier",

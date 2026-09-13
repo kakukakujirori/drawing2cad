@@ -12,24 +12,17 @@ from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSheet,
     DrawingSource,
     DrawnEntity,
-    View,
 )
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
     Region,
+    View,
 )
 from zeroshot.pipeline.stages.interpretation.contracts import (
     SemanticFeature as InterpretedFeature,
 )
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
-from zeroshot.pipeline.stages.semantics.contracts import (
-    _GEOMETRY_PARAMETERS,
-    FeatureGeometry,
-    GeometryKind,
-    SemanticFeature,
-    SemanticHypothesis,
-)
 
 _A_SHEET_POINT = [0.0, 0.0]
 _SOME_POINTS = [0.0, 0.0, 1.0, 1.0, 2.0, 0.0]
@@ -115,58 +108,7 @@ def drawing(*roles: str, **overrides: object) -> DrawingSource:
     return DrawingSource(**fields)  # type: ignore[arg-type]
 
 
-def geometry(
-    kind: str = "torus",
-    axis: str | None = "z",
-    *,
-    name: str | None = None,
-    **sizes: float | list[float],
-) -> FeatureGeometry:
-    """A claim of `kind` measured by its own row, overridden by name."""
-    given: dict[str, float | list[float]] = {
-        name: sizes.pop(name, 5.0) for name in _GEOMETRY_PARAMETERS[GeometryKind(kind)]
-    }
-    given |= sizes
-    return FeatureGeometry(
-        name=name or f"geo_{kind}",
-        kind=kind,  # type: ignore[arg-type]
-        axis=axis,  # type: ignore[arg-type]
-        parameters=_named(given),
-    )
-
-
-def feature(
-    identifier: int | str, description: str, **overrides: object
-) -> SemanticFeature:
-    fields: dict[str, object] = {
-        "name": (
-            f"sem_feature_{identifier}" if isinstance(identifier, int) else identifier
-        ),
-        "description": description,
-        "geometry": [],
-        # What `drawing()` holds, so a hypothesis and a drawing built by these
-        # helpers agree about what the features rest on.
-        "evidence": ["ev_front_line"],
-        "open_question": None,
-        **overrides,
-    }
-    return SemanticFeature(**fields)  # type: ignore[arg-type]
-
-
-def hypothesis(*descriptions: str, **overrides: object) -> SemanticHypothesis:
-    """One feature per description, numbered from 1."""
-    fields: dict[str, object] = {
-        "proposal": [
-            feature(index, description)
-            for index, description in enumerate(descriptions, start=1)
-        ],
-        "rationale": "the views agree",
-        **overrides,
-    }
-    return SemanticHypothesis(**fields)  # type: ignore[arg-type]
-
-
-def replacing(artifact: SemanticHypothesis | OperationPlan) -> dict[str, Any]:
+def replacing(artifact: OperationPlan) -> dict[str, Any]:
     """The submission fields that build `artifact` from nothing, as round 0 does."""
     return {
         "edits": list(artifact.proposal),

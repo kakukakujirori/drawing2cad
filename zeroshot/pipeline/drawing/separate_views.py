@@ -16,8 +16,8 @@ from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSheet,
     DrawingSource,
     DrawnEntity,
-    View,
 )
+from zeroshot.pipeline.stages.interpretation.contracts import View
 
 # Narrower than any inter-view spacing and wider than any drawing detail: the
 # gaps a slot or a counterbore leaves are millimetres, the gap between views

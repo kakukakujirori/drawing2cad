@@ -29,7 +29,6 @@ from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
     DrawnEntity,
     EdgeStyle,
-    View,
 )
 from zeroshot.pipeline.stages.interpretation.contracts import (
     Dimension as InterpretedDimension,
@@ -39,6 +38,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
     Region,
     SemanticFeature,
+    View,
 )
 from zeroshot.pipeline.stages.interpretation.contracts import (
     View as InterpretedView,

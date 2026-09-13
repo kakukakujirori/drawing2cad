@@ -17,8 +17,8 @@ from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSheet,
     DrawingSource,
-    View,
 )
+from zeroshot.pipeline.stages.interpretation.contracts import View
 
 # A pictorial is offered for context, never read: it fixes no axes, so nothing
 # lifts a coordinate from one.

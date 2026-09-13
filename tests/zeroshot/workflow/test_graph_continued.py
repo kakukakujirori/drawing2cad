@@ -27,8 +27,10 @@ from zeroshot.pipeline.messages.manifest import InputManifest
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
-    View,
     unread_sheet,
+)
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    View,
 )
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.workflow import create_agent

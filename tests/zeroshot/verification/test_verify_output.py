@@ -8,7 +8,9 @@ from typing import Literal
 import pytest
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages.drawings.contracts import View
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    View,
+)
 from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.render.constants import (

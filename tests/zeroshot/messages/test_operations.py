@@ -11,14 +11,12 @@ from collections.abc import Sequence
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from tests.zeroshot.contracts import feature, hypothesis
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
     linearise,
 )
-from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
 
 
 def op(
@@ -44,13 +42,6 @@ def plan(*operations: Operation) -> OperationPlan:
     return OperationPlan(
         proposal=list(operations),
         rationale="because",
-    )
-
-
-def _features(*ids: int) -> SemanticHypothesis:
-    """A hypothesis that establishes exactly the test features named by `ids`."""
-    return hypothesis(
-        proposal=[feature(identifier, f"feature {identifier}") for identifier in ids]
     )
 
 

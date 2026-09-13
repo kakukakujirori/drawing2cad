@@ -18,16 +18,14 @@ import pytest
 from ezdxf.tools import standards
 
 from zeroshot.pipeline.stages.drawings.contracts import (
-    ORTHOGRAPHIC_VIEWS,
-    VIEW_FRAME,
     DrawnEntity,
     EdgeStyle,
-    View,
     edge_style_for_linetype,
 )
-from zeroshot.pipeline.stages.semantics.contracts import (
-    _EXCLUDED_GEOMETRY,
-    GeometryKind,
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    ORTHOGRAPHIC_VIEWS,
+    VIEW_FRAME,
+    View,
 )
 
 _CORPUS = Path(__file__).parents[3] / "data" / "test_vlm"
@@ -148,51 +146,6 @@ def test_every_linetype_in_the_drawings_resolves_to_a_meaning() -> None:
     }
     assert not unresolved, (
         f"the drawings hold linetypes the contract cannot read: {unresolved}"
-    )
-
-
-def _claimable() -> set[str]:
-    return {member.value.replace("_", "") for member in GeometryKind}
-
-
-def test_every_occ_geometry_type_is_either_named_or_excluded() -> None:
-    """The set of geometry a B-rep can hold is closed, so this is checkable
-    without any corpus at all: every member of OCC's two enums must be a
-    decision, not an oversight. Twenty files were not enough to make that
-    decision -- `ellipse` was dropped on their evidence and the wider census
-    found 34,712 of them -- so the enums are the authority and the census only
-    informs which ones to carry."""
-    from OCP.GeomAbs import GeomAbs_CurveType, GeomAbs_SurfaceType
-
-    universe = {
-        name.removeprefix("GeomAbs_")
-        for enum in (GeomAbs_SurfaceType, GeomAbs_CurveType)
-        for name in dir(enum)
-        if name.startswith("GeomAbs_")
-    }
-    undecided = {
-        name
-        for name in universe
-        if name.lower() not in _claimable() and name not in _EXCLUDED_GEOMETRY
-    }
-    assert not undecided, (
-        f"OCC types the contract neither names nor excludes: {undecided}"
-    )
-
-    stale = {name for name in _EXCLUDED_GEOMETRY if name not in universe}
-    assert not stale, f"excluded types OCC no longer has: {stale}"
-
-
-def test_the_local_targets_hold_no_geometry_the_contract_cannot_name() -> None:
-    """The corpus this pipeline is scored on, as a narrower second check."""
-    surfaces, curves = _built()
-    uncovered = {
-        name
-        for name in list(surfaces) + list(curves)
-        if name.lower() not in _claimable() and name not in _EXCLUDED_GEOMETRY
-    }
-    assert not uncovered, (
-        f"targets hold geometry the contract cannot claim: {uncovered}"
     )
 
 

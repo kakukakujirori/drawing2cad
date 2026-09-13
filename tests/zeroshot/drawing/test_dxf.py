@@ -9,8 +9,8 @@ from zeroshot.pipeline.drawing import export_drawing, export_sheet, read_drawing
 from zeroshot.pipeline.stages.drawings.contracts import (
     DrawnEntity,
     EdgeStyle,
-    View,
 )
+from zeroshot.pipeline.stages.interpretation.contracts import View
 
 
 def written(tmp_path, draw, name="sheet.dxf", setup=True):

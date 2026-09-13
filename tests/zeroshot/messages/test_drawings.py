@@ -7,7 +7,6 @@ import pytest
 from pydantic import ValidationError
 
 from zeroshot.pipeline.stages.drawings.contracts import (
-    ORTHOGRAPHIC_VIEWS,
     Dimension,
     DrawingEvidence,
     DrawingSheet,
@@ -15,6 +14,7 @@ from zeroshot.pipeline.stages.drawings.contracts import (
     EdgeStyle,
     edge_style_for_linetype,
 )
+from zeroshot.pipeline.stages.interpretation.contracts import ORTHOGRAPHIC_VIEWS
 
 
 def evidence(name="ev_edge", entity="line", source=(), **parameters):

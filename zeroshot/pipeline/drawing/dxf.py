@@ -22,9 +22,9 @@ from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
     DrawnEntity,
     EdgeStyle,
-    View,
     edge_style_for_linetype,
 )
+from zeroshot.pipeline.stages.interpretation.contracts import View
 
 # A sheet coordinate this far off the drawing plane, or an extrusion this far
 # from +Z, means the entity's numbers are not the page's own.

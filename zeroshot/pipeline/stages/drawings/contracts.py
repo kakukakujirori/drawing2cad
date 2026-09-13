@@ -15,40 +15,11 @@ from zeroshot.pipeline.stages._base.parameters import (
     require_parameters,
     require_unique,
 )
-
-# --- Vocabulary and projection frames ---
-
-
-class View(StrEnum):
-    # orthographic views
-    FRONT = "front"
-    BACK = "back"
-    TOP = "top"
-    BOTTOM = "bottom"
-    LEFT = "left"
-    RIGHT = "right"
-    # other views
-    SECTION = "section"
-    DETAIL = "detail"
-    ISOMETRIC = "isometric"
-    PERSPECTIVE = "perspective"
-    # A whole page carrying every view, before anything separates them.
-    FULL_PAGE = "full_page"
-    UNKNOWN = "unknown"
-
-
-# Sheet-right, sheet-up, and toward the viewer, in model axes.  Model XY is
-# the horizontal plane and +Z is vertical.  The signs make every tuple a
-# right-handed screen frame: right = up x out.
-VIEW_FRAME: Mapping[View, tuple[str, str, str]] = {
-    View.FRONT: ("+x", "+z", "-y"),
-    View.BACK: ("-x", "+z", "+y"),
-    View.TOP: ("+x", "+y", "+z"),
-    View.BOTTOM: ("+x", "-y", "-z"),
-    View.RIGHT: ("+y", "+z", "+x"),
-    View.LEFT: ("-y", "+z", "-x"),
-}
-ORTHOGRAPHIC_VIEWS = tuple(VIEW_FRAME)
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    ORTHOGRAPHIC_VIEWS,
+    VIEW_FRAME,
+    View,
+)
 
 DRAWING_SUFFIXES = frozenset({".dxf", ".png", ".jpg", ".jpeg"})
 

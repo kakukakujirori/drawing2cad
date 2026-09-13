@@ -32,10 +32,13 @@ from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
-    View,
     unread_sheet,
 )
-from zeroshot.pipeline.stages.interpretation.contracts import DrawingView, Region
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    DrawingView,
+    Region,
+    View,
+)
 from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,

@@ -35,13 +35,13 @@ from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionRun
 from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
-    View,
     unread_sheet,
 )
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
     Region,
+    View,
 )
 from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import (

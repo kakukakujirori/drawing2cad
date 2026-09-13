@@ -1,37 +1,26 @@
-"""The semantics contract, and the two things it exists to guarantee.
+"""The drawing contract, and the two things it exists to guarantee.
 
 Mechanically: that the schema stays inside what a provider's strict JSON-schema
 mode accepts, because the failure is a 400 at run time rather than anything a
 type checker would catch.
 
-Semantically: that a curve claim cannot be made without the numbers that define
-it. That is the whole point of the contract -- a stage that could say "arc" and
-move on is the stage that was handing on prose.
+Semantically: that a curve reading cannot be made without the numbers that
+define it. That is the whole point of the contract -- a stage that could say
+"arc" and move on is the stage that was handing on prose.
 """
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from tests.zeroshot.contracts import evidence, feature, geometry, hypothesis
+from tests.zeroshot.contracts import evidence
 from zeroshot.pipeline.stages._base.parameters import _ARITY, Parameter
 from zeroshot.pipeline.stages.drawings.contracts import (
     _DRAWN_PARAMETERS,
     DrawingEvidence,
     DrawnEntity,
 )
-from zeroshot.pipeline.stages.semantics.contracts import (
-    _EXCLUDED_GEOMETRY,
-    _GEOMETRY_PARAMETERS,
-    FeatureGeometry,
-    GeometryKind,
-    SemanticFeature,
-    SemanticHypothesis,
-)
 
 CONTRACTS = [
-    SemanticHypothesis,
-    SemanticFeature,
-    FeatureGeometry,
     DrawingEvidence,
     Parameter,
 ]
@@ -98,49 +87,6 @@ def test_the_schema_avoids_keywords_strict_output_rejects(
     model as a correction, not in `Field`, where they become schema keywords
     the provider refuses."""
     assert not _UNSUPPORTED_KEYWORDS & _keywords(contract.model_json_schema())
-
-
-@pytest.mark.parametrize("kind", list(GeometryKind))
-def test_every_kind_states_the_sizes_it_is_measured_by(kind: GeometryKind) -> None:
-    """Dropping a size the kind is measured by has to fail, or a claim can be
-    made as a bare label -- which is the prose this replaces."""
-    geometry(kind)
-    for name in _GEOMETRY_PARAMETERS[kind]:
-        thinned = [p for p in geometry(kind).parameters if p.name.value != name]
-        with pytest.raises(ValidationError, match=name):
-            FeatureGeometry(
-                name=f"geo_{kind.value}",
-                kind=kind,
-                axis="z",
-                parameters=thinned,
-            )
-
-
-@pytest.mark.parametrize("kind", list(GeometryKind))
-def test_no_kind_accepts_a_size_it_is_not_measured_by(kind: GeometryKind) -> None:
-    extra = Parameter(name="tube_radius", values=[1.0])
-    if extra.name.value in _GEOMETRY_PARAMETERS[kind]:
-        pytest.skip(f"{kind} is measured by {extra.name.value}")
-    with pytest.raises(ValidationError, match="unknown"):
-        FeatureGeometry(
-            name=f"geo_{kind.value}",
-            kind=kind,
-            axis="z",
-            parameters=[*geometry(kind).parameters, extra],
-        )
-
-
-def test_a_3d_claim_carries_no_position() -> None:
-    """The line this contract draws. A size is read off one view; a position in
-    3D is the cross-view correspondence already solved, which is the hard half
-    of the task -- and a wrong one is inherited in silence by every stage after
-    it, where a wrong radius shows up in the next render."""
-    positional = {"center", "start", "end", "point", "base_center", "origin"}
-    claimed = {name for row in _GEOMETRY_PARAMETERS.values() for name in row}
-    assert not positional & claimed
-    # The names live in one table now, so the split is only real while the
-    # claim side never reaches for a positional one.
-    assert positional & {name for row in _DRAWN_PARAMETERS.values() for name in row}
 
 
 @pytest.mark.parametrize("entity", list(DrawnEntity))
@@ -224,7 +170,6 @@ def test_a_knot_vector_is_not_held_to_the_shape_of_a_point_list() -> None:
 def test_an_arc_is_its_own_kind() -> None:
     """OCC stores an arc as a bounded circle, but the contract is what the
     model reasons in, and the two read differently off a drawing."""
-    assert GeometryKind.ARC in _GEOMETRY_PARAMETERS
     assert "start" in _DRAWN_PARAMETERS[DrawnEntity.ARC]
     assert "start" not in _DRAWN_PARAMETERS[DrawnEntity.CIRCLE]
 
@@ -237,171 +182,3 @@ def test_an_arc_is_bounded_the_way_the_file_bounds_it() -> None:
     assert _ARITY["start"] == 2
     assert _ARITY["end"] == 2
     assert "start_angle" not in _DRAWN_PARAMETERS[DrawnEntity.ARC]
-
-
-def test_a_feature_may_declare_no_geometry() -> None:
-    """A body of straight edges has nothing whose type is at risk. Forcing an
-    entry only produced labels -- a live run answered a rectangular plate with
-    four `line` claims carrying no parameters at all."""
-    assert feature(1, "a rectangular plate", geometry=[]).geometry == []
-
-
-@pytest.mark.parametrize("kind", [GeometryKind.LINE, GeometryKind.PLANE])
-def test_the_kinds_with_no_size_carry_their_claim_in_the_axis(
-    kind: GeometryKind,
-) -> None:
-    """A line and a plane have no size. They are named anyway, because the
-    field says what must be present in the built solid and both are: `axis` --
-    the direction it runs or the normal it faces -- is the whole claim."""
-    assert not _GEOMETRY_PARAMETERS[kind]
-    claim = geometry(kind)
-    assert claim.parameters == []
-    assert claim.axis is not None
-
-
-def test_naming_a_kind_and_excluding_it_are_exclusive() -> None:
-    """The two sets together are the decision; overlapping would make it two
-    decisions that disagree."""
-    named = {kind.value.replace("_", "") for kind in GeometryKind}
-    assert not {name.lower() for name in _EXCLUDED_GEOMETRY} & named
-
-
-@pytest.mark.parametrize("name", ["main_bore", "sem-Main", "sem_"])
-def test_a_feature_name_must_be_a_semantic_identity(name: str) -> None:
-    with pytest.raises(ValidationError, match="usable sem name"):
-        feature(name, "a boss")
-
-
-def test_a_name_may_carry_a_digit_anywhere_after_its_prefix() -> None:
-    """The prefix already keeps a name off anything Python binds, so what
-    follows it needs no second rule about where a digit may sit."""
-    assert feature("sem_2d_bore", "a boss").name == "sem_2d_bore"
-    assert geometry("sphere", name="geo_5radius").name == "geo_5radius"
-
-
-def test_feature_names_are_unique() -> None:
-    with pytest.raises(ValidationError, match="feature names must be unique"):
-        hypothesis(
-            proposal=[
-                feature("sem_main_bore", "a boss"),
-                feature("sem_main_bore", "a hole"),
-            ]
-        )
-
-
-def test_claim_names_are_unique_within_their_feature() -> None:
-    """A claim name is an address, not a label or list position, so one
-    address may not silently name two claims."""
-    with pytest.raises(ValidationError, match="duplicate names in .* geometry"):
-        feature(
-            1,
-            "a boss",
-            geometry=[
-                geometry("sphere", name="geo_round_end"),
-                geometry("cylinder", name="geo_round_end"),
-            ],
-        )
-
-
-def test_a_feature_cites_each_entry_once() -> None:
-    """The citation list is a set of addresses, so naming one twice says
-    nothing the first naming did not."""
-    with pytest.raises(ValidationError, match="duplicate names in .* evidence"):
-        feature(1, "a boss", evidence=["ev_front_edge", "ev_front_edge"])
-
-
-def test_a_feature_can_cite_a_printed_figure_directly() -> None:
-    supported = feature(1, "a dimensioned boss", evidence=["dim_boss_diameter"])
-
-    assert supported.evidence == ["dim_boss_diameter"]
-
-
-def test_geometry_and_evidence_names_mark_their_namespace() -> None:
-    with pytest.raises(ValidationError, match="usable geo name"):
-        geometry("sphere", name="round_end")
-    with pytest.raises(ValidationError, match="usable ev name"):
-        evidence("circle", name="front_circle")
-
-
-def test_a_rejected_name_names_the_characters_to_remove() -> None:
-    """`lower_snake_case` does not tell a model that wrote geo_baseradius5.79
-    that the period alone is the problem."""
-    with pytest.raises(ValidationError, match=r"Remove '\.'"):
-        geometry("sphere", name="geo_baseradius5.79")
-
-
-def test_a_feature_is_named_by_identity_and_not_by_its_place_in_the_list() -> None:
-    """A stable name survives a revision that drops or reorders a feature, so
-    nothing may resolve a feature by list index."""
-    revised = hypothesis(
-        proposal=[
-            feature("sem_main_hole", "a hole"),
-            feature("sem_outer_boss", "a boss"),
-        ]
-    )
-
-    assert [held.name for held in revised.proposal] == [
-        "sem_main_hole",
-        "sem_outer_boss",
-    ]
-
-
-def test_a_hypothesis_holds_at_least_one_feature() -> None:
-    with pytest.raises(ValidationError, match="at least one"):
-        hypothesis()
-
-
-def test_the_2d_evidence_and_the_3d_claim_may_disagree() -> None:
-    """A spline in a view is usually the silhouette of a blend, not a spline
-    surface. Recording the drawing's entity and the claimed face separately is
-    what keeps the stage from building a swept spline where a torus belongs."""
-    read = evidence("spline", name="ev_front_spline")
-    blend = feature(
-        1,
-        "shoulder blend",
-        geometry=[geometry("torus", major_radius=11.312, tube_radius=2.0)],
-        evidence=[read.name],
-    )
-    assert blend.geometry[0].kind == "torus"
-    assert blend.evidence == ["ev_front_spline"]
-    assert read.entity == "spline"
-
-
-def test_the_rendered_hypothesis_drops_the_parameters_a_kind_does_not_use() -> None:
-    """Every field being required means a geometry entry spells out a dozen
-    nulls. They are dropped from the rendering, not from the contract, which is
-    what keeps the downstream prompts readable."""
-    rendered = hypothesis(
-        proposal=[
-            feature(
-                1,
-                "bore",
-                geometry=[geometry("circle", radius=9.276)],
-            )
-        ]
-    ).model_dump_json(exclude_none=True)
-    assert '"values":[9.276]' in rendered
-    assert "null" not in rendered
-
-
-def test_a_hypothesis_feature_must_cite_evidence() -> None:
-    """The split puts the exact numbers in the evidence, so a feature with none
-    hands the stages after it a type and a size and nothing to place them by.
-
-    The requirement holds of the hypothesis rather than of the feature: a
-    feature travels between rounds carrying only the members that changed."""
-    partial = feature(1, "a boss", evidence=[])
-
-    with pytest.raises(ValidationError, match="cites no evidence"):
-        SemanticHypothesis(proposal=[partial], rationale="the views agree")
-
-
-def test_the_two_tables_agree_on_every_name_they_share() -> None:
-    """One arity table serves the reading and the claim, which is only sound
-    while a name they both use means the same shape on either side."""
-    drawn = {name for row in _DRAWN_PARAMETERS.values() for name in row}
-    claimed = {name for row in _GEOMETRY_PARAMETERS.values() for name in row}
-    assert drawn & claimed, "the tables share nothing, so they need not be unified"
-    assert (drawn | claimed) <= set(_ARITY)
-    for name in drawn & claimed:
-        assert _ARITY[name] == 1, f"{name} is shared, so it must be a plain size"

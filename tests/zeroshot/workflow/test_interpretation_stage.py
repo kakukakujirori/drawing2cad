@@ -14,10 +14,12 @@ from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSheet,
     DrawingSource,
-    View,
     unread_sheet,
 )
-from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    DrawingInterpretation,
+    View,
+)
 from zeroshot.pipeline.stages.interpretation.stage import create_interpretation_stage
 from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.verification.attempts import AttemptStore
