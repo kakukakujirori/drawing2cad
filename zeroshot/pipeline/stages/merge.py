@@ -8,12 +8,9 @@ from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.operations.merge import merge_operations
 from zeroshot.pipeline.stages.operations.submission import OperationSubmission
-from zeroshot.pipeline.stages.semantics.contracts import SemanticHypothesis
-from zeroshot.pipeline.stages.semantics.merge import merge_semantics
-from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.stages.types import PipelineStage, ReasoningStage
 
-type StageArtifact = SemanticHypothesis | OperationPlan
+type StageArtifact = OperationPlan
 
 
 def merge_submission(
@@ -24,16 +21,8 @@ def merge_submission(
     """Apply a revision to the preceding round's artifact."""
     try:
         match stage, submission:
-            case PipelineStage.SEMANTICS, SemanticSubmission():
-                return merge_semantics(submission, previous.semantics)
-
             case PipelineStage.OPERATIONS, OperationSubmission():
                 return merge_operations(submission, previous.operations)
-
-            case PipelineStage.SEMANTICS, _:
-                raise SubmissionValidationError(
-                    "semantics must submit a SemanticSubmission"
-                )
 
             case PipelineStage.OPERATIONS, _:
                 raise SubmissionValidationError(

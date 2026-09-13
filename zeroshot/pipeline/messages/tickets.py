@@ -53,7 +53,7 @@ class TicketResponse(BaseModel):
             "needed, or what remains doubtful upstream. Do not restate the "
             "artifact's geometry or measurements: it remains authoritative. "
             "Cite the concrete stable names examined or changed: "
-            "sheet_... in drawings, sem_... in semantics, op_... in "
+            "view_..., dim_..., or sem_... in interpretation, op_... in "
             "operations, and ret_... or result in coding."
         ),
     )

@@ -1,8 +1,11 @@
 ## Coordinate frames
 
 Model XY is the horizontal plane, and +Z points upward.
-Each drawing view has its own local UV coordinates:
-+U points right on the sheet, and +V points up.
+Region coordinates are relative to the file of the DrawingView identified by Region.view.
+Region.box_px uses pixel boundaries: origin at the file's top left, +x right, +y down.
+Region.box_uv uses millimetres: origin at the file's lower left, +U right, +V up. For DXF the origin is the geometry bounding box's lower left.
+
+Orthographic view directions:
 
 | View | +U | +V | Toward the viewer |
 |---|---|---|---|
@@ -14,4 +17,4 @@ Each drawing view has its own local UV coordinates:
 | Left | -Y | +Z | -X |
 
 These mappings specify directions, not a shared origin.
-A sheet's local UV coordinates are not absolute model coordinates.
+A DrawingView's local UV coordinates are not absolute model coordinates.

@@ -26,3 +26,8 @@ sample:
 
 artifact_presenter:
   input_mode: "path"
+
+# This dataset's native DXF coordinates are sheet millimetres.
+workflow:
+  dxf_mm_per_unit:
+    view_drawing: 1.0

@@ -14,9 +14,8 @@ from typing_extensions import is_typeddict
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
-from zeroshot.pipeline.stages.drawings.submission import DrawingSubmission
+from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.submission import OperationSubmission
-from zeroshot.pipeline.stages.semantics.submission import SemanticSubmission
 from zeroshot.pipeline.stages.types import (
     PipelineStage,
     ReasoningStage,
@@ -25,8 +24,7 @@ from zeroshot.pipeline.workflow.components.agent import AgentState
 
 
 class ReconstructionState(TypedDict):
-    drawings_state: NotRequired[AgentState]
-    semantics_state: NotRequired[AgentState]
+    interpretation_state: NotRequired[AgentState]
     operations_state: NotRequired[AgentState]
     coding_state: NotRequired[AgentState]
     audit_state: NotRequired[AgentState]
@@ -35,11 +33,7 @@ class ReconstructionState(TypedDict):
     # Keep the concrete models inline: checkpoint type discovery walks this
     # annotation and must see every runtime submission class.
     stage_submission: NotRequired[
-        DrawingSubmission
-        | SemanticSubmission
-        | OperationSubmission
-        | CodingSubmission
-        | None
+        InterpretationSubmission | OperationSubmission | CodingSubmission | None
     ]
     stage_validation_error: NotRequired[str | None]
     stage_validation_failure_count: NotRequired[int]
@@ -49,8 +43,7 @@ class ReconstructionState(TypedDict):
 # Where each reasoning stage keeps the transcript of the agent that carried
 # the thread. The one place that knows which channel belongs to which stage.
 _LEAD_TRANSCRIPT: Mapping[ReasoningStage, str] = {
-    PipelineStage.DRAWINGS: "drawings_state",
-    PipelineStage.SEMANTICS: "semantics_state",
+    PipelineStage.INTERPRETATION: "interpretation_state",
     PipelineStage.OPERATIONS: "operations_state",
     PipelineStage.CODING: "coding_state",
 }

@@ -61,10 +61,10 @@ def _derived_drawing_paths(
     """
     derived: set[PurePosixPath] = set()
     for snapshot in reconstruction.snapshots:
-        drawing = snapshot.drawings
+        drawing = snapshot.interpretation
         if drawing is None:
             continue
-        for file in drawing.paths():
+        for file in (view.file for view in drawing.views):
             path = PurePosixPath(str(file))
             # Reuse the sandbox's path rules: relative names live below /work,
             # /tmp maps to work/tmp, and an escaping or foreign absolute path
@@ -144,7 +144,7 @@ class PipelineRunner:
         """
         # Resolve every source before retry is allowed to clear the destination.
         resume_root = self.resume_from.parent if self.resume_from is not None else None
-        resume_attempt: tuple[PurePosixPath, Path] | None = None
+        resume_attempts: dict[PurePosixPath, Path] = {}
         drawing_files: dict[PurePosixPath, Path] = {}
         if reconstruction is not None and resume_root is not None:
             snapshot = reconstruction.snapshots[-1]
@@ -158,8 +158,13 @@ class PipelineRunner:
                 source = resume_root / self.verification_dirname / relative
                 if not source.is_dir():
                     raise FileNotFoundError(f"resume attempt is missing: {source}")
-                resume_attempt = relative, source
+                resume_attempts[relative] = source
 
+            for round_number in range(snapshot.round + 1):
+                relative = PurePosixPath(f"round_{round_number:03d}/interpretation")
+                source = resume_root / self.verification_dirname / relative
+                if source.is_dir():
+                    resume_attempts[relative] = source
             source_workdir = SandboxWorkdir(host_bind_dir=resume_root)
             drawing_files = {
                 relative: source_workdir.host_bind_dir / relative
@@ -177,7 +182,7 @@ class PipelineRunner:
                 source.resolve().is_relative_to(sample_artifact_root.resolve())
                 for source in [
                     *drawing_files.values(),
-                    *([resume_attempt[1]] if resume_attempt is not None else []),
+                    *resume_attempts.values(),
                 ]
             )
             # Protect in-place resume sources, then clear the incomplete run.
@@ -187,11 +192,10 @@ class PipelineRunner:
                         tempfile.TemporaryDirectory(prefix="drawing2cad-resume-")
                     )
                 )
-                if resume_attempt is not None:
-                    relative, source = resume_attempt
-                    staged = staging_root / "attempt"
+                for relative, source in resume_attempts.items():
+                    staged = staging_root / "attempts" / relative
                     shutil.copytree(source, staged)
-                    resume_attempt = relative, staged
+                    resume_attempts[relative] = staged
                 staged_drawings: dict[PurePosixPath, Path] = {}
                 for relative, source in drawing_files.items():
                     staged = staging_root / "drawings" / relative
@@ -208,15 +212,14 @@ class PipelineRunner:
                     f"{sample_artifact_root}"
                 )
 
-            # Restore the committed program, attempt, and derived drawing files.
+            # Restore the program, verification history, and derived drawing files.
             workspace = sample_artifact_root / self.WORKSPACE_DIRNAME
             workspace.mkdir(parents=True)
 
             source = _latest_program_source(reconstruction) if reconstruction else None
             if source is not None:
                 (workspace / self.output_filename).write_text(source, encoding="utf-8")
-            if resume_attempt is not None:
-                relative, source = resume_attempt
+            for relative, source in resume_attempts.items():
                 destination = workspace / self.verification_dirname / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(source, destination)
