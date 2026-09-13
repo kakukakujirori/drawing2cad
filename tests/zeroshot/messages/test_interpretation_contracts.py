@@ -6,8 +6,11 @@ import pytest
 from pydantic import ValidationError
 
 from zeroshot.pipeline.stages.interpretation.contracts import (
+    ORTHOGRAPHIC_VIEWS,
+    VIEW_FRAME,
     DrawingInterpretation,
     Region,
+    View,
 )
 
 
@@ -207,9 +210,6 @@ def test_schema_describes_fields_and_preserves_file_backed_views() -> None:
         "scale",
     }
     assert {"file", "region"} <= set(view_schema["required"])
-    assert (
-        "DrawingSheet" not in schema["$defs"] and "sheets" not in schema["properties"]
-    )
     assert set(schema["$defs"]["Region"]["properties"]) == {"view", "box_px", "box_uv"}
     assert "view" in schema["$defs"]["Region"]["required"]
     for held in [schema, *schema["$defs"].values()]:
@@ -218,3 +218,13 @@ def test_schema_describes_fields_and_preserves_file_backed_views() -> None:
         assert held["additionalProperties"] is False
         for name, field in held["properties"].items():
             assert field.get("description"), (held["title"], name)
+
+
+def test_every_orthographic_view_has_a_frame() -> None:
+    """Sections, details, pictorials, and an unsplit page establish no global axes."""
+    assert set(VIEW_FRAME) == set(ORTHOGRAPHIC_VIEWS)
+    assert set(VIEW_FRAME) < set(View)
+    axes = {axis for frame in VIEW_FRAME.values() for axis in frame}
+    assert axes <= {"+x", "-x", "+y", "-y", "+z", "-z"}
+    for view, frame in VIEW_FRAME.items():
+        assert len({axis.lstrip("+-") for axis in frame}) == 3, view

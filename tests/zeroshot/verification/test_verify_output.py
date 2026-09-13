@@ -5,7 +5,9 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
+import ezdxf
 import pytest
+from PIL import Image
 
 from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.sandbox import SandboxWorkdir
@@ -162,10 +164,17 @@ class StubRenderer:
 
     ``skip_styles`` drops perspective styles the way a partial render does, so
     the manifest can be checked for reporting only what actually exists.
+    ``corrupt_views`` writes an unreadable file where a projection should be.
     """
 
-    def __init__(self, *, skip_styles: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        skip_styles: tuple[str, ...] = (),
+        corrupt_views: tuple[str, ...] = (),
+    ) -> None:
         self.skip_styles = skip_styles
+        self.corrupt_views = corrupt_views
         self.calls: list[tuple[Path, ProjectionPaths, Render3dPaths]] = []
 
     def render_many(self, requests: Sequence[RenderRequest]) -> list[RenderReport]:
@@ -187,8 +196,15 @@ class StubRenderer:
         self.calls.append(
             (input_step_path, output_projection_paths, output_render3d_paths)
         )
-        for path in output_projection_paths.as_mapping().values():
-            path.write_text("0\nEOF\n", encoding="utf-8")
+        for view, path in output_projection_paths.as_mapping().items():
+            if view in self.corrupt_views:
+                path.write_text("not a drawing", encoding="utf-8")
+                continue
+            doc = ezdxf.new()
+            doc.modelspace().add_lwpolyline(
+                [(0, 0), (10, 0), (10, 10), (0, 10)], close=True
+            )
+            doc.saveas(path)
 
         errors: dict[str, str] = {}
         for style in self.skip_styles:
@@ -196,7 +212,7 @@ class StubRenderer:
             errors[style] = f"RuntimeError: {style} failed"
         for style, path in output_render3d_paths.as_mapping().items():
             assert style not in self.skip_styles
-            path.write_bytes(b"PNG")
+            Image.new("RGB", (20, 20), "white").save(path)
 
         return RenderReport(
             status=RenderStatus.OK if not errors else RenderStatus.PARTIAL,
@@ -675,6 +691,26 @@ def test_failed_verification_renders_nothing_and_reports_only_the_error(
     assert "projection/front.dxf" not in _text(result)
 
 
+def test_a_projection_that_cannot_be_read_is_explained_not_raised(
+    tmp_path: Path,
+) -> None:
+    """A drawing on disk that will not open is a failed one, not a lost report."""
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verifier = _create_verifier(
+        executor,
+        workdir,
+        renderer=StubRenderer(corrupt_views=("front",)),
+        feedback_presentation_mode="path",
+    )
+
+    text = _text(verifier.feedback())
+
+    assert "- view_projected_front: unavailable" in text
+    assert "view_projected_top (top)" in text
+
+
 def test_a_pictorial_that_failed_is_explained_where_it_would_have_been(
     tmp_path: Path,
 ) -> None:
@@ -696,7 +732,7 @@ def test_a_pictorial_that_failed_is_explained_where_it_would_have_been(
     # The reason belongs where the render would have been, not in the report.
     assert "render_errors" not in _report_json(result)
     assert (
-        f"- sheet_{FEEDBACK_PICTORIAL}: unavailable "
+        f"- view_projected_{FEEDBACK_PICTORIAL}: unavailable "
         f"(RuntimeError: {FEEDBACK_PICTORIAL} failed)"
     ) in text
 
@@ -1123,5 +1159,5 @@ def test_the_verifier_asks_for_exactly_the_views_it_was_given(
     assert set(projection_paths.as_mapping()) == {"left", "bottom"}
     sandbox_dir = f"{workdir.sandbox_bind_dir}/attempts/round_000/coding/000"
     assert f"{sandbox_dir}/projection/left.dxf" in text
-    assert "sheet_left (left)" in text
+    assert "view_projected_left (left)" in text
     assert "front.dxf" not in text

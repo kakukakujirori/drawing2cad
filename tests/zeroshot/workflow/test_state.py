@@ -8,14 +8,13 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
-from tests.zeroshot.contracts import interpretation, sheet
+from tests.zeroshot.contracts import interpretation, view
 from zeroshot.pipeline.messages.tickets import (
     BootstrapWork,
     Ticket,
     TicketAnswers,
     TicketResponse,
 )
-from zeroshot.pipeline.stages._base.parameters import Parameter, ParameterName
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
@@ -24,16 +23,6 @@ from zeroshot.pipeline.stages.audit.contracts import (
     StageOutputRef,
 )
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
-from zeroshot.pipeline.stages.drawings.contracts import (
-    CropOf,
-    Dimension,
-    DimensionKind,
-    DrawingEvidence,
-    DrawingSheet,
-    DrawingSource,
-    DrawnEntity,
-    EdgeStyle,
-)
 from zeroshot.pipeline.stages.interpretation.contracts import (
     Dimension as InterpretedDimension,
 )
@@ -70,8 +59,7 @@ from zeroshot.pipeline.workflow.state import (
     [
         DrawingInterpretation,
         SemanticFeature,
-        Parameter,
-        DrawingEvidence,
+        DrawingView,
     ],
 )
 def test_a_contract_carries_no_prose_beyond_its_field_descriptions(
@@ -152,25 +140,25 @@ _AUDIT_REPORT = AuditReport(
 
 # A page and the view cut from it, so a crop and a printed figure are both in
 # the state this checkpoints.
-_A_DRAWING = DrawingSource(
-    sheets=[
-        sheet("full_page", name="sheet_page", file="inputs/page.png", evidence=[]),
-        sheet(
-            "front",
-            crop_of=CropOf(sheet="sheet_page", box=[0.0, 0.0, 10.0, 10.0]),
-            dimensions=[
-                Dimension(
-                    name="dim_width",
-                    kind=DimensionKind.LINEAR,
-                    text="10",
-                    nominal=10.0,
-                    quantity=1,
-                    note=None,
-                )
-            ],
-        ),
-    ]
-)
+_A_DRAWING = [
+    view("full_page", name="view_page", file="inputs/page.png"),
+    view(
+        "front",
+        region=Region(view="view_page", box_uv=(0.0, 0.0, 10.0, 10.0)),
+        dimensions=[
+            InterpretedDimension(
+                name="dim_width",
+                kind="linear",
+                text="10",
+                nominal_value=10.0,
+                measured_length=None,
+                region=Region(view="view_page", box_uv=(0.0, 0.0, 10.0, 10.0)),
+                quantity=1,
+                note=None,
+            )
+        ],
+    ),
+]
 _RECONSTRUCTION = ReconstructionRun(
     run_id="run_test",
     input_drawings=_A_DRAWING,
@@ -279,20 +267,10 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         OperationVerb,
         DrawingInterpretation,
         SemanticFeature,
-        Parameter,
-        ParameterName,
-        DrawingEvidence,
-        DrawingSheet,
-        DrawingSource,
-        CropOf,
-        Dimension,
         # The contract's enums ride in state too. An enum missing from the
         # allowlist restores as a bare string, which still compares equal and
         # so fails nowhere until something asks it for `.value`.
         View,
-        DrawnEntity,
-        EdgeStyle,
-        DimensionKind,
         ExecutionStatus,
         StopReason,
         VerifyOutputResult,

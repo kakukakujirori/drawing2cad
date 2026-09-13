@@ -1,4 +1,3 @@
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -10,7 +9,11 @@ from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
 from zeroshot.pipeline.messages.tickets import TicketAnswers, tickets_assigned_to
-from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
+from zeroshot.pipeline.stages._base.prompt import (
+    StageInstructions,
+    build_system_prompt,
+    schema_for_prompt,
+)
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification.attempts import AttemptStore
@@ -60,7 +63,7 @@ class OperationStage:
                     self.instructions.workdir.sandbox_bind_dir
                     / self.verifier.source_filename
                 ),
-                operations_schema=json.dumps(OperationPlan.model_json_schema()),
+                operations_schema=schema_for_prompt(OperationPlan),
             ),
         ]
         result = self.agent.invoke(

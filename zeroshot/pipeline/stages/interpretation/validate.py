@@ -5,46 +5,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import ezdxf
-from ezdxf import bbox
 from PIL import Image
 
+from zeroshot.pipeline.messages.manifest import read_dxf_frame
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    UNDECIDED,
+    DrawingInterpretation,
+)
 from zeroshot.pipeline.tools.calculate_drawing_scale import calculate_drawing_scale
-
-
-def read_dxf_frame(path: Path, mm_per_unit: float) -> dict[str, Any]:
-    """Input metadata to expose before asking a model for native-DXF regions.
-
-    A DXF unit need not be a millimetre. The input adapter must supply its
-    physical conversion, accounting for the dataset's drawing-scale convention.
-    For a native point (x, y), u = (x - origin_x) * mm_per_unit, and likewise v.
-    The source file itself is preserved; its entity order is irrelevant.
-    """
-    if not math.isfinite(mm_per_unit) or mm_per_unit <= 0:
-        raise ValueError("DXF mm_per_unit must be finite and positive")
-    bounds = bbox.extents(ezdxf.readfile(path).modelspace())
-    if not bounds.has_data:
-        raise ValueError(f"{path}: DXF has no measurable sheet bounds")
-    if not all(
-        math.isfinite(value)
-        for point in (bounds.extmin, bounds.extmax)
-        for value in point
-    ):
-        raise ValueError(f"{path}: DXF bounds must be finite")
-    if abs(bounds.extmin.z) > 1e-6 or abs(bounds.extmax.z) > 1e-6:
-        raise ValueError(f"{path}: expected a planar XY drawing")
-    size = (bounds.size.x * mm_per_unit, bounds.size.y * mm_per_unit)
-    if any(not math.isfinite(value) or value <= 0 for value in size):
-        raise ValueError(
-            f"{path}: DXF must have positive finite sheet width and height"
-        )
-    return {
-        "origin_native": (bounds.extmin.x, bounds.extmin.y),
-        "mm_per_unit": mm_per_unit,
-        "size_mm": size,
-    }
 
 
 def _region(
@@ -113,6 +82,11 @@ def validate_interpretation(
     Use read_dxf_frame to expose the origin and conversion at input preparation.
     """
     interpretation = DrawingInterpretation.model_validate(interpretation.model_dump())
+    if UNDECIDED in interpretation.datum:
+        raise ValueError(
+            f"datum still holds {UNDECIDED}: state the model frame, and put "
+            "any question in questions"
+        )
     data = interpretation.model_dump()
     sizes: dict[tuple[Path, float | None], tuple[float, float]] = {}
     dxf_frames: dict[tuple[Path, float | None], dict[str, Any]] = {}

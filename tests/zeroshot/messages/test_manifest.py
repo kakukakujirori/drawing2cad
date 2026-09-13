@@ -1,8 +1,8 @@
 """What a manifest holds, and what it refuses to hold.
 
 The file checks are here rather than in the drawing contract because a
-`DrawingSource` is also what a stage answers with, where a path is a claim
-about the sandbox rather than something the host can go and look at.
+sheet a stage answers with names a path in the sandbox, not one the host
+can go and look at.
 """
 
 from pathlib import Path
@@ -10,11 +10,11 @@ from pathlib import Path
 import pytest
 
 from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
-from zeroshot.pipeline.stages.drawings.contracts import (
-    DrawingSource,
-    unread_sheet,
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    DrawingView,
+    Region,
+    View,
 )
-from zeroshot.pipeline.stages.interpretation.contracts import View
 
 
 def _write(path: Path, content: bytes = b"data") -> Path:
@@ -23,13 +23,32 @@ def _write(path: Path, content: bytes = b"data") -> Path:
     return path
 
 
-def _drawing(*files: Path) -> DrawingSource:
-    return DrawingSource(
-        sheets=[
-            unread_sheet(f"sheet_{index}", View.FULL_PAGE, file)
-            for index, file in enumerate(files)
-        ]
-    )
+def _drawing(*files: Path) -> list[DrawingView]:
+    return [
+        DrawingView(
+            name=f"view_{index}",
+            role=View.FULL_PAGE,
+            file=str(file),
+            region=Region(view=f"view_{index}", box_uv=(0.0, 0.0, 10.0, 10.0)),
+            dimensions=[],
+        )
+        for index, file in enumerate(files)
+    ]
+
+
+def _rendered(*files: Path) -> list[DrawingView]:
+    return [
+        DrawingView(
+            name=f"view_projected_{index}",
+            role=View.FRONT,
+            file=str(file),
+            region=Region(
+                view=f"view_projected_{index}", box_uv=(0.0, 0.0, 10.0, 10.0)
+            ),
+            dimensions=[],
+        )
+        for index, file in enumerate(files)
+    ]
 
 
 def _sample_manifest(tmp_path: Path, **overrides: object) -> InputManifest:
@@ -54,7 +73,7 @@ def test_a_sample_keeps_every_sheet_it_was_given(tmp_path: Path) -> None:
     manifest = _sample_manifest(tmp_path, sample_id="  sample-1  ")
 
     assert manifest.sample_id == "sample-1"
-    assert [path.name for path in manifest.drawing.paths()] == [
+    assert [Path(view.file).name for view in manifest.drawing] == [
         "input.dxf",
         "input.png",
     ]
@@ -75,7 +94,7 @@ def test_a_verification_that_drew_nothing_is_a_manifest_too(tmp_path: Path) -> N
     manifest = _feedback_manifest(tmp_path, verification_id="  verification-1  ")
 
     assert manifest.verification_id == "verification-1"
-    assert manifest.drawing is None
+    assert manifest.drawing == ()
     assert manifest.errors == {}
 
 
@@ -91,19 +110,17 @@ def test_a_verification_refuses_a_sheet_whose_file_is_not_there(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(FileNotFoundError):
-        _feedback_manifest(tmp_path, drawing=_drawing(tmp_path / "missing.dxf"))
+        _feedback_manifest(tmp_path, drawing=_rendered(tmp_path / "missing.dxf"))
 
 
 def test_a_sheet_is_either_drawn_or_explained_but_never_both(tmp_path: Path) -> None:
     """A file and a reason are alternatives; holding both means a wiring bug."""
-    drawn = _drawing(_write(tmp_path / "feedback.dxf", b"DXF"))
-    (name,) = (sheet.name for sheet in drawn.sheets)
+    drawn = _rendered(_write(tmp_path / "feedback.dxf", b"DXF"))
+    (name,) = (sheet.name for sheet in drawn)
 
     # Either alone is a legitimate outcome.
     assert _feedback_manifest(tmp_path, drawing=drawn).errors == {}
-    assert (
-        _feedback_manifest(tmp_path, errors={name: "renderer failed"}).drawing is None
-    )
+    assert _feedback_manifest(tmp_path, errors={name: "renderer failed"}).drawing == ()
 
     with pytest.raises(ValueError, match="both drawn and failed"):
         _feedback_manifest(tmp_path, drawing=drawn, errors={name: "renderer failed"})

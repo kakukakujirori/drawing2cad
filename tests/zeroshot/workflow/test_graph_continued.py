@@ -23,12 +23,8 @@ from tests.zeroshot.workflow.test_graph import (
     _write_interpretation,
 )
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
-from zeroshot.pipeline.messages.manifest import InputManifest
+from zeroshot.pipeline.messages.manifest import InputManifest, register_view
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.stages.drawings.contracts import (
-    DrawingSource,
-    unread_sheet,
-)
 from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.workflow import create_agent
@@ -106,9 +102,7 @@ def _continued_graph(
         artifact_presenter=ArtifactPresenter(input_mode="path", feedback_mode="none"),
         input_manifest=InputManifest(
             sample_id="test",
-            drawing=DrawingSource(
-                sheets=[unread_sheet("sheet_drawing", View.FULL_PAGE, image_path)]
-            ),
+            drawing=[register_view("view_drawing", View.FULL_PAGE, image_path)],
         ),
         share_thread=share_thread,
         **overrides,

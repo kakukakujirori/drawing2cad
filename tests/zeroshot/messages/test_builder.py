@@ -19,13 +19,11 @@ from zeroshot.pipeline.messages.artifact import (
 from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
-from zeroshot.pipeline.stages.drawings.contracts import (
-    CropOf,
-    DrawingSheet,
-    DrawingSource,
-    unread_sheet,
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    DrawingView,
+    Region,
+    View,
 )
-from zeroshot.pipeline.stages.interpretation.contracts import View
 
 
 def _write(path: Path, content: bytes) -> Path:
@@ -34,26 +32,36 @@ def _write(path: Path, content: bytes) -> Path:
     return path
 
 
-def _drawing_sheet(tmp_path: Path) -> DrawingSheet:
-    return unread_sheet(
-        "sheet_drawing",
+def _view(name: str, role: View, file: Path) -> DrawingView:
+    return DrawingView(
+        name=name,
+        role=role,
+        file=str(file),
+        region=Region(view=name, box_uv=(0.0, 0.0, 10.0, 10.0)),
+        dimensions=[],
+    )
+
+
+def _drawing_sheet(tmp_path: Path) -> DrawingView:
+    return _view(
+        "view_drawing",
         View.FULL_PAGE,
         _write(tmp_path / "input.dxf", b"RAW_DXF_MUST_NOT_BE_IN_PROMPT"),
     )
 
 
-def _pictorial(tmp_path: Path, stem: str) -> DrawingSheet:
-    return unread_sheet(
-        f"sheet_{stem}",
+def _pictorial(tmp_path: Path, stem: str) -> DrawingView:
+    return _view(
+        f"view_{stem}",
         View.PERSPECTIVE,
         _write(tmp_path / f"{stem}.png", stem.encode()),
     )
 
 
-def _input_manifest(tmp_path: Path, *sheets: DrawingSheet) -> InputManifest:
+def _input_manifest(tmp_path: Path, *sheets: DrawingView) -> InputManifest:
     return InputManifest(
         sample_id="sample-1",
-        drawing=DrawingSource(sheets=list(sheets) or [_drawing_sheet(tmp_path)]),
+        drawing=list(sheets) or [_drawing_sheet(tmp_path)],
     )
 
 
@@ -77,12 +85,12 @@ def _input_blocks(
 
 def _feedback_manifest(
     *,
-    sheets: tuple[DrawingSheet, ...] = (),
+    sheets: tuple[DrawingView, ...] = (),
     errors: dict[str, str] | None = None,
 ) -> FeedbackManifest:
     return FeedbackManifest(
         verification_id="verification-1",
-        drawing=DrawingSource(sheets=list(sheets)) if sheets else None,
+        drawing=list(sheets),
         errors=errors or {},
     )
 
@@ -121,7 +129,7 @@ def test_a_sheet_is_named_where_the_model_can_open_it_and_nowhere_else(
     tmp_path: Path, workdir: SandboxWorkdir
 ) -> None:
     manifest = _input_manifest(tmp_path)
-    (host,) = manifest.drawing.paths()
+    (host,) = (Path(view.file) for view in manifest.drawing)
 
     text = _text(_input_blocks(manifest, workdir))
 
@@ -140,8 +148,8 @@ def test_a_sheet_is_announced_with_the_view_it_holds(
 
     text = _text(_input_blocks(manifest, workdir))
 
-    assert "- sheet_drawing (full_page):" in text
-    assert "- sheet_hlg (perspective):" in text
+    assert "- view_drawing (full_page):" in text
+    assert "- view_hlg (perspective):" in text
 
 
 def test_a_full_page_says_its_views_are_told_apart_by_position(
@@ -174,9 +182,7 @@ def test_input_lists_files_without_stage_specific_measurement_advice(
     )
     raster = _input_manifest(
         tmp_path,
-        unread_sheet(
-            "sheet_drawing", View.FULL_PAGE, _write(tmp_path / "page.png", b"PNG")
-        ),
+        _view("view_drawing", View.FULL_PAGE, _write(tmp_path / "page.png", b"PNG")),
     )
 
     vector_text = _text(_input_blocks(vector, workdir))
@@ -195,20 +201,18 @@ def test_a_sheet_cut_out_of_another_is_named_like_any_other(
 ) -> None:
     """A cut-out is saved to a file of its own, so it is opened the same way."""
     page = _drawing_sheet(tmp_path)
-    crop = DrawingSheet(
-        name="sheet_front",
+    crop = DrawingView(
+        name="view_front",
         role=View.FRONT,
-        crop_of=CropOf(sheet=page.name, box=[0.0, 0.0, 10.0, 10.0]),
-        scale=1.0,
         file=str(_write(tmp_path / "front.png", b"FRONT")),
-        evidence=[],
+        region=Region(view=page.name, box_uv=(0.0, 0.0, 10.0, 10.0)),
         dimensions=[],
     )
     manifest = _input_manifest(tmp_path, page, crop)
 
     text = _text(_input_blocks(manifest, workdir))
 
-    assert "- sheet_front (front):" in text
+    assert "- view_front (front):" in text
 
 
 def test_path_mode_attaches_nothing_and_image_mode_attaches_every_raster(
@@ -240,26 +244,26 @@ def test_a_verification_that_drew_nothing_is_shown_as_nothing(
 def test_a_projected_sheet_is_named_and_a_missing_one_is_explained(
     tmp_path: Path, workdir: SandboxWorkdir
 ) -> None:
-    drawn = unread_sheet(
-        "sheet_drawing",
-        View.FULL_PAGE,
+    drawn = _view(
+        "view_projected_front",
+        View.FRONT,
         _write(tmp_path / "feedback.dxf", b"FEEDBACK_DXF"),
     )
     manifest = _feedback_manifest(
-        sheets=(drawn,), errors={"sheet_hlg": "renderer failed"}
+        sheets=(drawn,), errors={"view_projected_hlg": "renderer failed"}
     )
 
     text = _text(build_feedback_message_blocks(manifest, workdir, mode="path"))
 
     assert str(workdir.host_to_sandbox_path(Path(drawn.file or ""))) in text
     assert str(drawn.file) not in text
-    assert "- sheet_hlg: unavailable (renderer failed)" in text
+    assert "- view_projected_hlg: unavailable (renderer failed)" in text
 
 
 def test_withholding_the_feedback_also_withholds_why_it_is_missing(
     tmp_path: Path, workdir: SandboxWorkdir
 ) -> None:
-    manifest = _feedback_manifest(errors={"sheet_hlg": "boom"})
+    manifest = _feedback_manifest(errors={"view_projected_hlg": "boom"})
 
     blocks = build_feedback_message_blocks(manifest, workdir, mode="none")
 

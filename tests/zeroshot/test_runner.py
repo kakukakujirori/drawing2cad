@@ -21,7 +21,7 @@ from tests.zeroshot.contracts import drawing, interpretation
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
-from zeroshot.pipeline.messages.manifest import InputManifest
+from zeroshot.pipeline.messages.manifest import InputManifest, register_view
 from zeroshot.pipeline.messages.tickets import TicketAnswers, TicketResponse
 from zeroshot.pipeline.runner import (
     GraphFactory,
@@ -29,10 +29,6 @@ from zeroshot.pipeline.runner import (
     _latest_program_source,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner
-from zeroshot.pipeline.stages.drawings.contracts import (
-    DrawingSource,
-    unread_sheet,
-)
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
     Region,
@@ -98,11 +94,11 @@ def _writing_interpretation() -> AIMessage:
         from ezdxf import bbox
 
         artifact = {artifact!r}
-        inputs = json.loads(Path('/work/reconstruction.json').read_text())['input_drawings']['sheets']
+        inputs = json.loads(Path('/work/reconstruction.json').read_text())['input_drawings']
         views = []
-        for sheet in inputs:
-            file = sheet['file']
-            name = 'view_' + sheet['name'].removeprefix('sheet_')
+        for given in inputs:
+            file = given['file']
+            name = given['name']
             if Path(file).suffix == '.dxf':
                 extent = bbox.extents(ezdxf.readfile(file).modelspace()).size
                 region = {{'view': name, 'box_uv': [0, 0, extent.x, extent.y]}}
@@ -286,9 +282,7 @@ def test_resume_copies_an_external_attempt_directly(
     attempt = source_workspace / "attempts" / "round_000" / "coding" / "007"
     attempt.mkdir(parents=True)
     (attempt / "output.step").write_bytes(b"STEP")
-    diagnostic = Path(
-        f"attempts/round_000/{stage}/001/_{stage}_validation_log.json"
-    )
+    diagnostic = Path(f"attempts/round_000/{stage}/001/_{stage}_validation_log.json")
     (source_workspace / diagnostic).parent.mkdir(parents=True)
     (source_workspace / diagnostic).write_text(
         '{"reports": {"view_front": {"status": "ok"}}}'
@@ -354,9 +348,7 @@ def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     attempt.mkdir(parents=True)
     (attempt / "output.step").write_bytes(b"STEP")
     (workspace / "stale.txt").write_text("stale", encoding="utf-8")
-    diagnostic = Path(
-        f"attempts/round_000/{stage}/001/_{stage}_validation_log.json"
-    )
+    diagnostic = Path(f"attempts/round_000/{stage}/001/_{stage}_validation_log.json")
     (workspace / diagnostic).parent.mkdir(parents=True)
     diagnostic_bytes = b'{"reports": {"view_front": {"status": "ok"}}}'
     (workspace / diagnostic).write_bytes(diagnostic_bytes)
@@ -399,13 +391,10 @@ def test_resume_restores_drawing_stage_crops(
         else tmp_path / "source" / "workspace"
     )
     source_workspace.mkdir(parents=True)
-    raw = unread_sheet(
-        "sheet_drawing", View.FULL_PAGE, "/work/inputs/sheet_drawing.dxf"
-    )
     page = DrawingView(
         name="view_drawing",
         role=View.FULL_PAGE,
-        file=raw.file,
+        file="/work/inputs/view_drawing.dxf",
         region=Region(view="view_drawing", box_uv=(0, 0, 20, 10)),
         dimensions=[],
     )
@@ -433,7 +422,7 @@ def test_resume_restores_drawing_stage_crops(
     run = start_reconstruction(
         "run_sample",
         "Reconstruct the drawing.",
-        DrawingSource(sheets=[raw]),
+        [page],
     )
     run = advance_reconstruction(
         run,
@@ -531,9 +520,7 @@ def _manifest_without_renders(tmp_path: Path, sample_id: str) -> InputManifest:
     _write_fixture_dxf(dxf_path)
     return InputManifest(
         sample_id=sample_id,
-        drawing=DrawingSource(
-            sheets=[unread_sheet("sheet_drawing", View.FULL_PAGE, dxf_path)]
-        ),
+        drawing=[register_view("view_drawing", View.FULL_PAGE, dxf_path, 1.0)],
     )
 
 
@@ -561,21 +548,19 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
 
     manifest = InputManifest(
         sample_id="sample-1",
-        drawing=DrawingSource(
-            sheets=[
-                unread_sheet("sheet_drawing", View.FULL_PAGE, dxf_path),
-                unread_sheet("sheet_style_a", View.PERSPECTIVE, selected_render_path),
-            ]
-        ),
+        drawing=[
+            register_view("view_drawing", View.FULL_PAGE, dxf_path, 1.0),
+            register_view("view_style_a", View.PERSPECTIVE, selected_render_path),
+        ],
     )
     inspect_inputs = cleandoc(
         """
         from pathlib import Path
 
-        dxf = Path('/work/inputs/sheet_drawing.dxf')
+        dxf = Path('/work/inputs/view_drawing.dxf')
         assert 'ENTITIES' in dxf.read_text()
-        assert Path('/work/inputs/sheet_style_a.png').read_bytes().startswith(bytes.fromhex('89504e47'))
-        assert not Path('/work/inputs/sheet_hidden.png').exists()
+        assert Path('/work/inputs/view_style_a.png').read_bytes().startswith(bytes.fromhex('89504e47'))
+        assert not Path('/work/inputs/view_hidden.png').exists()
         try:
             dxf.write_text('SANDBOX_MUTATION')
         except OSError:
@@ -646,12 +631,12 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     initial_human_message = initial_messages[1]
     assert isinstance(initial_human_message, HumanMessage)
     initial_text = _message_text(initial_human_message)
-    assert "/work/inputs/sheet_drawing.dxf" in initial_text
-    assert "/work/inputs/sheet_style_a.png" in initial_text
+    assert "/work/inputs/view_drawing.dxf" in initial_text
+    assert "/work/inputs/view_style_a.png" in initial_text
     # A sheet the input config does not declare never reaches the run at all.
     # By its name rather than the bare word, which the format advice uses of a
     # hidden edge.
-    assert "sheet_hidden" not in initial_text
+    assert "view_hidden" not in initial_text
     assert "hidden.png" not in initial_text
     assert str(dxf_path) not in initial_text
     assert str(selected_render_path) not in initial_text
@@ -701,13 +686,13 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
 
     sample_artifact_root = tmp_path / "artifacts" / "sample-1"
     saved_workdir = sample_artifact_root / "workspace"
-    assert (saved_workdir / "inputs" / "sheet_drawing.dxf").read_text(
+    assert (saved_workdir / "inputs" / "view_drawing.dxf").read_text(
         encoding="utf-8"
     ) == original_dxf
     assert (
-        saved_workdir / "inputs" / "sheet_style_a.png"
+        saved_workdir / "inputs" / "view_style_a.png"
     ).read_bytes() == selected_bytes
-    assert not (saved_workdir / "inputs" / "sheet_hidden.png").exists()
+    assert not (saved_workdir / "inputs" / "view_hidden.png").exists()
     assert (saved_workdir / "scratch.txt").read_text(encoding="utf-8") == "persisted"
     # The coding stage renders even when feedback_mode="none"; the auditor
     # still needs these artifacts, without a renderer supplied by the runner.
@@ -1339,7 +1324,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
     # not through a role that every stage of a shared thread would read.
     assert "/work/model.py" in instruction
     assert "/work/model.py" not in coder["system"]
-    assert "/work/inputs/sheet_drawing.dxf" in instruction
+    assert "/work/inputs/view_drawing.dxf" in instruction
 
 
 def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:

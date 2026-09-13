@@ -18,13 +18,11 @@ from zeroshot.pipeline.stages._base.prompt import (
     build_system_prompt,
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
-from zeroshot.pipeline.stages.drawings.contracts import (
-    DrawingSheet,
-    DrawingSource,
-)
 from zeroshot.pipeline.stages.interpretation.contracts import (
     VIEW_FRAME,
     DrawingInterpretation,
+    DrawingView,
+    Region,
 )
 from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
 from zeroshot.pipeline.stages.types import PipelineStage
@@ -42,19 +40,15 @@ def _write(path: Path, body: str) -> Path:
 
 
 # What the graph supplies to every instruction, whichever stage asked for it.
-_AN_UNREAD_PAGE = DrawingSource(
-    sheets=[
-        DrawingSheet(
-            name="sheet_page",
-            role="full_page",
-            crop_of=None,
-            scale=1.0,
-            file="/work/inputs/drawing.dxf",
-            evidence=[],
-            dimensions=[],
-        )
-    ]
-)
+_AN_UNREAD_PAGE = [
+    DrawingView(
+        name="view_page",
+        role="full_page",
+        file="/work/inputs/drawing.dxf",
+        region=Region(view="view_page", box_uv=(0.0, 0.0, 420.0, 297.0)),
+        dimensions=[],
+    )
+]
 
 
 # Stable run paths; round and ticket ownership come from state at build time.
@@ -72,9 +66,7 @@ _RUN_PATHS = {
 @pytest.fixture
 def instructions(tmp_path: Path) -> StageInstructions:
     input_path = _write(tmp_path / "drawing.dxf", "0\nEOF\n")
-    source = DrawingSource(
-        sheets=[_AN_UNREAD_PAGE.sheets[0].model_copy(update={"file": str(input_path)})]
-    )
+    source = [_AN_UNREAD_PAGE[0].model_copy(update={"file": str(input_path)})]
     return StageInstructions(
         prompt_context=_RUN_PATHS,
         input_presentation_mode="path",
@@ -191,7 +183,7 @@ def test_input_is_attached_only_when_requested_and_fresh_on_each_build(
     assert "[Input artifacts]" not in plain.text
     assert attached.text.startswith(plain.text)
     assert attached.text.count("[Input artifacts]") == 1
-    assert "- sheet_page (full_page): /work/drawing.dxf" in attached.text
+    assert "- view_page (full_page): /work/drawing.dxf" in attached.text
     assert str(instructions.workdir.host_bind_dir) not in attached.text
     assert attached.text == another.text
     assert attached is not another

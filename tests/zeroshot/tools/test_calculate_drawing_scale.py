@@ -10,7 +10,9 @@ from pydantic import ValidationError
 
 from zeroshot.pipeline.event_logging import JsonlEventWriter
 from zeroshot.pipeline.event_logging.projections import RunEventTransformer
-from zeroshot.pipeline.tools import create_calculate_drawing_scale_tool
+from zeroshot.pipeline.tools.calculate_drawing_scale import (
+    create_calculate_drawing_scale_tool,
+)
 
 
 def _measurements(*pairs: tuple[float, float]) -> list[dict]:

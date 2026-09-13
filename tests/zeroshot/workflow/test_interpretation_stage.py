@@ -9,14 +9,11 @@ from langchain_core.tools import tool
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.verification.test_interpretation_validation import dxf_case
 from tests.zeroshot.verification.test_verify_interpretation import _case
+from zeroshot.pipeline.messages.artifact import drawing_for_model
+from zeroshot.pipeline.messages.manifest import register_view
 from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
-from zeroshot.pipeline.stages.drawings.contracts import (
-    DrawingSheet,
-    DrawingSource,
-    unread_sheet,
-)
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     View,
@@ -28,20 +25,8 @@ from zeroshot.pipeline.workflow.lifecycle import start_reconstruction
 
 
 def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path):
-    verifier, candidate = _case(tmp_path)
-    drawing = DrawingSource(
-        sheets=[
-            DrawingSheet(
-                name="sheet_page",
-                role=View.FULL_PAGE,
-                crop_of=None,
-                scale=1,
-                file=str(tmp_path / "source.png"),
-                evidence=[],
-                dimensions=[],
-            )
-        ]
-    )
+    verifier, candidate, _ = _case(tmp_path)
+    drawing = [register_view("view_page", View.FULL_PAGE, tmp_path / "source.png")]
     response = {
         "responses": [
             {
@@ -81,7 +66,11 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
         prompt_context={},
         attempt_store=verifier.attempt_store,
     )
-    run = start_reconstruction("run_test", "Reconstruct the part.", drawing)
+    run = start_reconstruction(
+        "run_test",
+        "Reconstruct the part.",
+        drawing_for_model(drawing, verifier.workdir),
+    )
     result = stage.run({"reconstruction": run}, {})
     assert result["stage_submission"] == TicketAnswers.model_validate(response)
     assert stage.verifier.accepted_interpretation is not None
@@ -99,19 +88,23 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
         == stage.verifier.accepted_interpretation
     )
     assert len(model.received_messages) == 3
-    assert (
-        sum("[Interpretation verification]" in message.text for message in messages)
-        == 1
-    )
+    # One for the premature answer, naming the seeded datum still to settle, and
+    # one for the write that followed.
+    verifications = [
+        message.text
+        for message in messages
+        if "[Interpretation verification]" in message.text
+    ]
+    assert len(verifications) == 2
+    assert "datum still holds ???" in verifications[0]
+    assert "valid." in verifications[1]
 
 
 def _dxf_input(tmp_path):
     candidate = dxf_case(tmp_path)
     data = candidate.model_dump()
     data["views"][0]["role"] = "full_page"
-    drawing = DrawingSource(
-        sheets=[unread_sheet("sheet_front", View.FULL_PAGE, tmp_path / "front.dxf")]
-    )
+    drawing = [register_view("view_front", View.FULL_PAGE, tmp_path / "front.dxf", 1.0)]
     workdir = SandboxWorkdir(tmp_path)
     return DrawingInterpretation.model_validate(data), drawing, workdir
 
@@ -169,7 +162,9 @@ def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
         attempt_store=AttemptStore(workdir, lambda: 0),
         dxf_mm_per_unit={"view_front": 25.4, "view_detail": 25.4},
     )
-    run = start_reconstruction("run_dxf", "Reconstruct the part.", drawing)
+    run = start_reconstruction(
+        "run_dxf", "Reconstruct the part.", drawing_for_model(drawing, workdir)
+    )
     result = stage.run({"reconstruction": run}, {})
     assert result["stage_submission"] == TicketAnswers.model_validate(response)
     text = model.received_messages[0][-1].text
@@ -202,7 +197,7 @@ def test_dxf_missing_original_factor_fails_before_building_agent(tmp_path, facto
     _, drawing, workdir = _dxf_input(tmp_path)
     builder = Mock(side_effect=AssertionError("agent construction must not start"))
     with pytest.raises(
-        ValueError, match="DXF input sheet_front requires dxf_mm_per_unit"
+        ValueError, match="DXF input view_front requires dxf_mm_per_unit"
     ):
         create_interpretation_stage(
             builder=builder,

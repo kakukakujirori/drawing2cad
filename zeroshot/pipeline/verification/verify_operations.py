@@ -47,14 +47,15 @@ class OperationPlanVerifier:
         baseline: OperationPlan | None,
         interpretation: DrawingInterpretation,
     ) -> None:
-        """Seed the preceding round's plan; the first round starts from null."""
+        """Seed the preceding round's plan; the first round has none to seed."""
         if self.source_path.is_symlink():
             raise ValueError(f"{self.source_filename} must not be a symlink")
-        self.source_path.write_text(
-            (baseline.model_dump_json(indent=2) if baseline is not None else "null")
-            + "\n",
-            encoding="utf-8",
-        )
+        if baseline is None:
+            self.source_path.unlink(missing_ok=True)
+        else:
+            self.source_path.write_text(
+                baseline.model_dump_json(indent=2) + "\n", encoding="utf-8"
+            )
         self._interpretation = interpretation
         self._accepted = None
         self._checked = None

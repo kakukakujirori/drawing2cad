@@ -11,8 +11,10 @@ from pydantic import (
 )
 
 from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket
-from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
-from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    DrawingInterpretation,
+    DrawingView,
+)
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
@@ -160,11 +162,12 @@ class ReconstructionRun(BaseModel):
             "snapshot in this reconstruction."
         ),
     )
-    input_drawings: DrawingSource = Field(
+    input_drawings: list[DrawingView] = Field(
         ...,
+        min_length=1,
         description=(
-            "The immutable drawing supplied to the run, before the drawing "
-            "stage separates or transcribes it."
+            "The immutable drawing supplied to the run, before the "
+            "interpretation identifies or separates any view."
         ),
     )
     snapshots: list[ReconstructionSnapshot] = Field(

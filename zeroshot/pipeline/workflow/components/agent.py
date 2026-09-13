@@ -17,7 +17,7 @@ from langchain_core.tools import BaseTool
 from langgraph.types import Checkpointer
 from pydantic import BaseModel
 
-from zeroshot.pipeline.tools import ToolFeedbackError
+from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.workflow.middleware import (
     ModelCallRetryMiddleware,
     PromptLogMiddleware,

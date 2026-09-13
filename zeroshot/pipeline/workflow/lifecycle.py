@@ -10,8 +10,11 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditReport,
 )
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
-from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
-from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    UNDECIDED,
+    DrawingInterpretation,
+    DrawingView,
+)
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
 from zeroshot.pipeline.stages.snapshot_update import (
@@ -35,7 +38,7 @@ from zeroshot.pipeline.stages.validate import validate_submission
 def start_reconstruction(
     run_id: str,
     instruction: str,
-    drawings: DrawingSource,
+    drawings: list[DrawingView],
 ) -> ReconstructionRun:
     """Start a run whose first round has not produced a drawing reading yet."""
     snapshot = ReconstructionSnapshot(
@@ -97,9 +100,15 @@ def open_next_round(
     )
 
 
-def interpretation_baseline(run: ReconstructionRun) -> DrawingInterpretation | None:
-    """The accepted interpretation from the preceding round, if any."""
-    return run.snapshots[-2].interpretation if len(run.snapshots) > 1 else None
+def interpretation_baseline(run: ReconstructionRun) -> DrawingInterpretation:
+    """The interpretation accepted last round, or the input already registered."""
+    accepted = run.snapshots[-2].interpretation if len(run.snapshots) > 1 else None
+    return accepted or DrawingInterpretation(
+        datum=UNDECIDED,
+        views=list(run.input_drawings),
+        features=[],
+        questions=[],
+    )
 
 
 def operations_baseline(run: ReconstructionRun) -> OperationPlan | None:

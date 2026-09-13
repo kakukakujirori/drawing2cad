@@ -8,13 +8,12 @@ from typing import Literal, Self, cast
 from langchain_core.messages.content import ContentBlock, create_text_block
 
 from zeroshot.pipeline.messages.artifact import (
-    DrawingSource,
-    FeedbackManifest,
     View,
     build_feedback_message_blocks,
 )
+from zeroshot.pipeline.messages.manifest import FeedbackManifest, register_view
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages.drawings.contracts import unread_sheet
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingView
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.render.constants import (
@@ -45,6 +44,11 @@ _TRANSIENT_OUTCOMES = frozenset({ExecutionStatus.TIMEOUT, ExecutionStatus.INFRA_
 # shaded pass, so it says which side is material as well as where the edges
 # are. Three pictures of one camera would spend a message saying it three times.
 FEEDBACK_PICTORIAL = "hlg_translucent_faces_perspective"
+
+
+def _projected(view: str) -> str:
+    """Name a drawing of the built solid apart from the views of the input."""
+    return f"view_projected_{view}"
 
 
 def _census_table(returns: Sequence[IntermediateReturn]) -> str:
@@ -329,28 +333,28 @@ class OutputVerifier:
         # per view, and one pictorial. A view is named by its role, which is
         # also the field the renderer wrote it under.
         pictorial = render_report.render3d_paths.as_mapping().get(FEEDBACK_PICTORIAL)
-        sheets = [
-            *(
-                unread_sheet(f"sheet_{view}", View(view), path)
-                for view, path in render_report.projection_paths.as_mapping().items()
-            ),
-            *(
-                [
-                    unread_sheet(
-                        f"sheet_{FEEDBACK_PICTORIAL}", View.PERSPECTIVE, pictorial
-                    )
-                ]
-                if pictorial
-                else []
-            ),
-        ]
+        sheets: list[DrawingView] = []
         failed = dict(render_report.projection_errors)
+
+        def offer(name: str, role: View, path: Path, mm_per_unit: float | None) -> None:
+            """Announce a drawing, or explain it: an unreadable one is not fatal."""
+            try:
+                sheets.append(register_view(_projected(name), role, path, mm_per_unit))
+            except Exception as why:  # noqa: BLE001 - report it where it would have been
+                failed[name] = f"{type(why).__name__}: {why}"
+
+        # A projection is written at 1:1 in model millimetres, so its own frame
+        # is already the sheet coordinates the contract uses.
+        for view, path in render_report.projection_paths.as_mapping().items():
+            offer(view, View(view), path, 1.0)
+        if pictorial:
+            offer(FEEDBACK_PICTORIAL, View.PERSPECTIVE, pictorial, None)
         if why := render_report.render3d_errors.get(FEEDBACK_PICTORIAL):
             failed[FEEDBACK_PICTORIAL] = why
         manifest = FeedbackManifest(
             verification_id=verification_id,
-            drawing=DrawingSource(sheets=sheets) if sheets else None,
-            errors={f"sheet_{name}": why for name, why in failed.items()},
+            drawing=sheets,
+            errors={_projected(name): why for name, why in failed.items()},
         )
         return report, manifest
 

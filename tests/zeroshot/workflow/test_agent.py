@@ -30,7 +30,7 @@ from tests.zeroshot.chat_models import (
     tool_call,
     unanswered_tool_calls,
 )
-from zeroshot.pipeline.tools import ToolFeedbackError
+from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.workflow import StopReason
 from zeroshot.pipeline.workflow.components.agent import create_agent
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal, Self
@@ -14,15 +14,11 @@ from langchain_core.messages.content import (
 
 from zeroshot.pipeline.messages.manifest import FeedbackManifest
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages.drawings.contracts import (
-    DrawingSheet,
-    DrawingSource,
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    PICTORIAL_VIEWS,
+    DrawingView,
+    View,
 )
-from zeroshot.pipeline.stages.interpretation.contracts import View
-
-# A pictorial is offered for context, never read: it fixes no axes, so nothing
-# lifts a coordinate from one.
-_PICTORIAL = frozenset({View.PERSPECTIVE, View.ISOMETRIC})
 
 _MIME_TYPES: Mapping[str, str] = {
     ".png": "image/png",
@@ -31,27 +27,23 @@ _MIME_TYPES: Mapping[str, str] = {
 }
 
 
-def drawing_for_model(drawing: DrawingSource, workdir: SandboxWorkdir) -> DrawingSource:
-    """The same drawing with every file addressed where the model can open it.
+def drawing_for_model(
+    drawing: Sequence[DrawingView], workdir: SandboxWorkdir
+) -> list[DrawingView]:
+    """The same views with every file addressed where the model can open it.
 
-    A drawing the model then reads, answers about, and hands back stays in
-    those addresses, so nothing carries a host path into a message by mistake.
+    Views the model then reads, answers about, and hands back stay in those
+    addresses, so nothing carries a host path into a message by mistake.
     """
-    return drawing.model_copy(
-        update={
-            "sheets": [
-                sheet.model_copy(
-                    update={"file": str(workdir.host_to_sandbox_path(sheet.file))}
-                )
-                for sheet in drawing.sheets
-            ]
-        }
-    )
+    return [
+        view.model_copy(update={"file": str(workdir.host_to_sandbox_path(view.file))})
+        for view in drawing
+    ]
 
 
 @dataclass(frozen=True)
 class _SandboxSheet:
-    """A `DrawingSheet` whose file is addressed where the model can open it.
+    """A `DrawingView` addressed where the model can open it.
 
     Nothing host-side is kept, so a host path cannot reach a message by being
     to hand.
@@ -62,7 +54,7 @@ class _SandboxSheet:
     file: PurePosixPath
 
     @classmethod
-    def of(cls, sheet: DrawingSheet, file: PurePosixPath) -> _SandboxSheet:
+    def of(cls, sheet: DrawingView, file: PurePosixPath) -> _SandboxSheet:
         return cls(
             name=sheet.name,
             role=sheet.role,
@@ -98,14 +90,14 @@ class SandboxedArtifact:
     workdir: SandboxWorkdir
 
     @classmethod
-    def of(cls, drawing: DrawingSource, workdir: SandboxWorkdir) -> Self:
+    def of(cls, sheets: Sequence[DrawingView], workdir: SandboxWorkdir) -> Self:
         """Every sheet the drawing holds, not only the ones a stage reads.
 
         The audit is offered the unsplit sheet whatever the reasoning stages
         worked from, so a split that went wrong is still there to point at.
         """
         found = []
-        for sheet in drawing.sheets:
+        for sheet in sheets:
             held = Path(sheet.file)
             _check_reachable(held, workdir, sheet.name)
             found.append(_SandboxSheet.of(sheet, workdir.host_to_sandbox_path(held)))
@@ -113,7 +105,7 @@ class SandboxedArtifact:
 
     def read(self) -> list[_SandboxSheet]:
         """The sheets a stage reads, which is every one that is not a pictorial."""
-        return [sheet for sheet in self.sheets if sheet.role not in _PICTORIAL]
+        return [sheet for sheet in self.sheets if sheet.role not in PICTORIAL_VIEWS]
 
     def listing(self) -> list[str]:
         described = [
@@ -191,11 +183,7 @@ def build_feedback_message_blocks(
     if mode == "none":
         return []
 
-    presented = (
-        SandboxedArtifact.of(manifest.drawing, workdir)
-        if manifest.drawing is not None
-        else SandboxedArtifact([], workdir)
-    )
+    presented = SandboxedArtifact.of(manifest.drawing, workdir)
     failed = [f"- {name}: unavailable ({why})" for name, why in manifest.errors.items()]
     if not presented.sheets and not failed:
         return []

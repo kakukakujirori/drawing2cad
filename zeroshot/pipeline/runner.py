@@ -24,7 +24,7 @@ from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.contracts import ReconstructionRun
-from zeroshot.pipeline.stages.drawings.contracts import DrawingSheet, DrawingSource
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingView
 from zeroshot.pipeline.verification import attempt_relative_path
 from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, ReconstructionState
 from zeroshot.pipeline.workflow.lifecycle import load_reconstruction
@@ -356,15 +356,13 @@ class PipelineRunner:
 
         # Every sheet the manifest declares is staged, so what the run offers
         # is decided by the input config alone rather than by the presenter.
-        def staged(sheet: DrawingSheet) -> DrawingSheet:
-            source_path = Path(sheet.file)
-            copy = staged_input_dir / f"{sheet.name}{source_path.suffix.lower()}"
+        def staged(view: DrawingView) -> DrawingView:
+            source_path = Path(view.file)
+            copy = staged_input_dir / f"{view.name}{source_path.suffix.lower()}"
             shutil.copyfile(source_path, copy)
-            return sheet.model_copy(update={"file": str(copy)})
+            return view.model_copy(update={"file": str(copy)})
 
         return InputManifest(
             sample_id=manifest.sample_id,
-            drawing=DrawingSource(
-                sheets=[staged(sheet) for sheet in manifest.drawing.sheets]
-            ),
+            drawing=[staged(view) for view in manifest.drawing],
         )

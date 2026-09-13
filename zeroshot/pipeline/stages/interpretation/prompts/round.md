@@ -1,6 +1,6 @@
 Interpret the drawing for round $current_round. Assigned tickets: $assigned_tickets.
 
-Write the complete artifact to `$interpretation_output_path`. On the first round no file is seeded: create it from the supplied images. On revisions the previous accepted interpretation is supplied in full at that path. Retain unaffected entries and stable names while resolving assigned tickets; omitted entries are removed.
+Write the complete artifact to `$interpretation_output_path`. That file is always seeded in full: on the first round with the input files already registered as views and `datum` left as `"???"`, and on revisions with the interpretation accepted last round. Settle the datum, read the views, and add what the drawing states. Retain unaffected entries and stable names while resolving assigned tickets; omitted entries are removed.
 
 Successful verification fills the derived fields in that same file. Continue editing it and use the automatic feedback to correct errors and inconsistent measurements.
 

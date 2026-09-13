@@ -28,10 +28,8 @@ from zeroshot.pipeline.stages.types import (
     next_stage,
 )
 from zeroshot.pipeline.stages.validate import validate_submission
-from zeroshot.pipeline.tools import (
-    create_load_image_tool,
-    create_run_shell_tool,
-)
+from zeroshot.pipeline.tools.load_image import create_load_image_tool
+from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.lifecycle import (

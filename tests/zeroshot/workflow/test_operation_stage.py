@@ -5,11 +5,10 @@ from functools import partial
 from langchain_core.tools import tool
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
-from tests.zeroshot.contracts import interpretation, sheet
+from tests.zeroshot.contracts import interpretation, view
 from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
-from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
@@ -53,7 +52,7 @@ def _plan(*, builds: str = "sem_feature_1") -> OperationPlan:
 def _interpreted_run(tmp_path):
     page = tmp_path / "front.dxf"
     page.write_text("0\nEOF\n")
-    source = DrawingSource(sheets=[sheet("front", file=str(page))])
+    source = [view("front", file=str(page))]
     return source, advance_reconstruction(
         start_reconstruction("run_plan", "Reconstruct the part.", source),
         TicketAnswers.model_validate(
@@ -121,7 +120,7 @@ def test_an_invalid_plan_is_refused_until_the_file_validates(tmp_path):
     assert "OperationPlan JSON schema" in model.received_messages[0][-1].text
 
 
-def test_an_unassigned_stage_answers_nothing_and_seeds_the_plan(tmp_path):
+def test_an_unassigned_stage_answers_nothing_and_writes_no_plan(tmp_path):
     source, run = _interpreted_run(tmp_path)
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     run.snapshots[-1].open_tickets[0].assigned_stages = [PipelineStage.CODING]
@@ -133,5 +132,5 @@ def test_an_unassigned_stage_answers_nothing_and_seeds_the_plan(tmp_path):
         "stage_submission": TicketAnswers(responses=[])
     }
     assert model.received_messages == []
-    # Round zero has no preceding plan to seed.
-    assert (tmp_path / "operations.json").read_text() == "null\n"
+    # Round zero has no preceding plan to seed, so the model creates the file.
+    assert not (tmp_path / "operations.json").exists()

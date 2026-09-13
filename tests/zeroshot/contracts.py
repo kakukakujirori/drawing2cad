@@ -1,16 +1,9 @@
 """Minimal valid pipeline artifacts, for tests about something else.
 
-Tests *about* the contract build it explicitly -- see `messages/test_contracts.py`.
+Tests *about* the contract build it explicitly -- see
+`messages/test_interpretation_contracts.py`.
 """
 
-from zeroshot.pipeline.stages._base.parameters import Parameter
-from zeroshot.pipeline.stages.drawings.contracts import (
-    _DRAWN_PARAMETERS,
-    DrawingEvidence,
-    DrawingSheet,
-    DrawingSource,
-    DrawnEntity,
-)
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
@@ -21,88 +14,27 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     SemanticFeature as InterpretedFeature,
 )
 
-_A_SHEET_POINT = [0.0, 0.0]
-_SOME_POINTS = [0.0, 0.0, 1.0, 1.0, 2.0, 0.0]
 
-
-def _named(given: dict[str, float | list[float]]) -> list[Parameter]:
-    return [
-        Parameter(
-            name=name,  # type: ignore[arg-type]
-            values=value if isinstance(value, list) else [value],
-        )
-        for name, value in given.items()
-    ]
-
-
-_STAND_IN: dict[str, list[float]] = {
-    "start": _A_SHEET_POINT,
-    "end": [1.0, 0.0],
-    "center": _A_SHEET_POINT,
-    "major_axis": [1.0, 0.0],
-    "control_points": _SOME_POINTS,
-    "vertices": _SOME_POINTS,
-    # one per control point, plus the degree, plus one
-    "knots": [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-}
-
-# Endpoints have to lie on the curve they bound, so these two carry a whole row.
-_ON_CURVE: dict[DrawnEntity, dict[str, float | list[float]]] = {
-    DrawnEntity.ARC: {"radius": 5.0, "start": [5.0, 0.0], "end": [0.0, 5.0]},
-    DrawnEntity.ELLIPSE: {
-        "major_axis": [5.0, 0.0],
-        "minor_radius": 2.0,
-        "start": [5.0, 0.0],
-        "end": [0.0, 2.0],
-    },
-}
-
-
-def evidence(
-    entity: str = "line", *, name: str | None = None, **values: float | list[float]
-) -> DrawingEvidence:
-    """A reading of `entity` whose parameters are its own row."""
-    drawn = DrawnEntity(entity)
-    stand_in = _STAND_IN | _ON_CURVE.get(drawn, {})
-    given = {
-        name: values.pop(name, stand_in.get(name, 5.0))
-        for name in _DRAWN_PARAMETERS[drawn]
-    }
-    given |= values
-    return DrawingEvidence(
-        name=name or f"ev_{entity}",
-        entity=entity,  # type: ignore[arg-type]
-        edge_style="visible",
-        source=[],
-        parameters=_named(given),
-    )
-
-
-def sheet(role: str = "front", **overrides: object) -> DrawingSheet:
-    """A sheet named after the view it shows, carrying one reading.
+def view(role: str = "front", **overrides: object) -> DrawingView:
+    """A view named after what it shows, its region covering its own file.
 
     Its file is relative, so it reads the same from either side of a sandbox.
     """
+    name = str(overrides.pop("name", f"view_{role}"))
     fields: dict[str, object] = {
-        "name": f"sheet_{role}",
+        "name": name,
         "role": View(role),
-        "crop_of": None,
-        "scale": 1.0,
         "file": f"inputs/{role}.dxf",
-        "evidence": [evidence(name=f"ev_{role}_line")],
+        "region": Region(view=name, box_uv=(0.0, 0.0, 100.0, 100.0)),
         "dimensions": [],
         **overrides,
     }
-    return DrawingSheet(**fields)  # type: ignore[arg-type]
+    return DrawingView(**fields)  # type: ignore[arg-type]
 
 
-def drawing(*roles: str, **overrides: object) -> DrawingSource:
-    """One sheet per view, front alone by default."""
-    fields: dict[str, object] = {
-        "sheets": [sheet(role) for role in roles or ("front",)],
-        **overrides,
-    }
-    return DrawingSource(**fields)  # type: ignore[arg-type]
+def drawing(*roles: str) -> list[DrawingView]:
+    """One view per role, front alone by default."""
+    return [view(role) for role in roles or ("front",)]
 
 
 def interpreted_feature(

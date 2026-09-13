@@ -3,16 +3,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import ezdxf
 import pytest
 from omegaconf import OmegaConf
 
 from zeroshot import run_pipeline
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
-from zeroshot.pipeline.messages.manifest import InputManifest
-from zeroshot.pipeline.stages.drawings.contracts import (
-    DrawingSource,
-    unread_sheet,
-)
+from zeroshot.pipeline.messages.manifest import InputManifest, register_view
 from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.workflow import (
     ReconstructionState,
@@ -28,6 +25,7 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
             "_target_": "zeroshot.pipeline.workflow.graph.create_reconstruction_graph",
             "_partial_": True,
             "max_audit_reject_count": 7,
+            "dxf_mm_per_unit": {"view_drawing": 1.0},
         },
         "console": None,
         "artifact_presenter": {
@@ -53,7 +51,7 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
             "drawing": {
                 "sheets": [
                     {
-                        "name": "sheet_drawing",
+                        "name": "view_drawing",
                         "role": "full_page",
                         "file": str(dxf_path),
                     }
@@ -70,7 +68,9 @@ def test_run_composes_dependencies_and_manifest(
     monkeypatch,
 ) -> None:
     dxf_path = tmp_path / "input.dxf"
-    dxf_path.write_text("DXF_FIXTURE", encoding="utf-8")
+    doc = ezdxf.new()
+    doc.modelspace().add_lwpolyline([(0, 0), (10, 0), (10, 10), (0, 10)], close=True)
+    doc.saveas(dxf_path)
     artifact_root = tmp_path / "artifacts"
     captured: dict[str, Any] = {}
 
@@ -100,6 +100,7 @@ def test_run_composes_dependencies_and_manifest(
                 ),
                 "_partial_": True,
                 "max_audit_reject_count": 7,
+                "dxf_mm_per_unit": {"view_drawing": 1.0},
             },
             "console": None,
             "artifact_presenter": {
@@ -125,7 +126,7 @@ def test_run_composes_dependencies_and_manifest(
                 "drawing": {
                     "sheets": [
                         {
-                            "name": "sheet_drawing",
+                            "name": "view_drawing",
                             "role": "full_page",
                             "file": str(dxf_path),
                         }
@@ -148,7 +149,10 @@ def test_run_composes_dependencies_and_manifest(
     assert runner_options["resume_from"] == tmp_path / "reconstruction.json"
     graph_factory = runner_options["graph_factory"]
     assert graph_factory.func is create_reconstruction_graph
-    assert graph_factory.keywords == {"max_audit_reject_count": 7}
+    assert graph_factory.keywords == {
+        "max_audit_reject_count": 7,
+        "dxf_mm_per_unit": {"view_drawing": 1.0},
+    }
     assert captured["sandbox_options"] == {
         "python_executable": Path(sys.executable),
         "default_timeout_s": 30.0,
@@ -157,9 +161,7 @@ def test_run_composes_dependencies_and_manifest(
     }
     assert captured["manifest"] == InputManifest(
         sample_id="sample-1",
-        drawing=DrawingSource(
-            sheets=[unread_sheet("sheet_drawing", View.FULL_PAGE, dxf_path)]
-        ),
+        drawing=[register_view("view_drawing", View.FULL_PAGE, dxf_path, 1.0)],
     )
     assert result is not None
     assert result == {}
@@ -214,7 +216,9 @@ def test_a_skipped_sample_is_neither_recorded_nor_scored(
     monkeypatch.setattr(run_pipeline, "score", lambda config: called.append("score"))
 
     dxf_path = tmp_path / "input.dxf"
-    dxf_path.write_text("DXF_FIXTURE", encoding="utf-8")
+    doc = ezdxf.new()
+    doc.modelspace().add_lwpolyline([(0, 0), (10, 0), (10, 10), (0, 10)], close=True)
+    doc.saveas(dxf_path)
     config = _config(tmp_path, dxf_path)
     config.sample.target_step_path = str(tmp_path / "target.step")
 
@@ -244,7 +248,9 @@ def test_a_run_that_raised_is_still_described_and_scored(
     monkeypatch.setattr(run_pipeline, "score", lambda config: called.append("score"))
 
     dxf_path = tmp_path / "input.dxf"
-    dxf_path.write_text("DXF_FIXTURE", encoding="utf-8")
+    doc = ezdxf.new()
+    doc.modelspace().add_lwpolyline([(0, 0), (10, 0), (10, 10), (0, 10)], close=True)
+    doc.saveas(dxf_path)
     config = _config(tmp_path, dxf_path)
     config.sample.target_step_path = str(tmp_path / "target.step")
     (Path(config.artifact_root) / config.sample.sample_id).mkdir(parents=True)
@@ -264,7 +270,9 @@ def test_a_run_is_recorded_before_it_is_scored(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setattr(run_pipeline, "score", lambda config: called.append("score"))
 
     dxf_path = tmp_path / "input.dxf"
-    dxf_path.write_text("DXF_FIXTURE", encoding="utf-8")
+    doc = ezdxf.new()
+    doc.modelspace().add_lwpolyline([(0, 0), (10, 0), (10, 10), (0, 10)], close=True)
+    doc.saveas(dxf_path)
     config = _config(tmp_path, dxf_path)
     config.sample.target_step_path = str(tmp_path / "target.step")
 

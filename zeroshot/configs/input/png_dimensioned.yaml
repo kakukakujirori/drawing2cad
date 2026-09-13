@@ -11,7 +11,7 @@
 sample:
   drawing:
     sheets:
-      - name: sheet_drawing
+      - name: view_drawing
         role: full_page
         file: data/test_vlm/techdraw_dimensioned/${sample.sample_id}_dim.png
 

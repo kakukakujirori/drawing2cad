@@ -9,10 +9,9 @@ from omegaconf import DictConfig
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from zeroshot.evaluation.run_scoring import score_run
-from zeroshot.pipeline.messages.manifest import InputManifest
+from zeroshot.pipeline.messages.manifest import InputManifest, register_view
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
-from zeroshot.pipeline.stages.drawings.contracts import DrawingSource, unread_sheet
 from zeroshot.pipeline.workflow import ReconstructionState
 from zeroshot.provenance import record_run
 
@@ -56,18 +55,18 @@ def run(config: DictConfig) -> ReconstructionState | None:
         ),
     )
 
+    mm_per_unit = config.workflow.get("dxf_mm_per_unit") or {}
     manifest = InputManifest(
         sample_id=config.sample.sample_id,
-        drawing=DrawingSource(
-            sheets=[
-                unread_sheet(
-                    name=sheet.name,
-                    role=sheet.role,
-                    file=to_absolute_path(sheet.file),
-                )
-                for sheet in config.sample.drawing.sheets
-            ]
-        ),
+        drawing=[
+            register_view(
+                name=sheet.name,
+                role=sheet.role,
+                file=to_absolute_path(sheet.file),
+                mm_per_unit=mm_per_unit.get(sheet.name),
+            )
+            for sheet in config.sample.drawing.sheets
+        ],
     )
 
     return runner.run_sample(manifest)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
@@ -13,9 +13,10 @@ from typing import Any
 from langchain_core.messages.content import ContentBlock, create_text_block
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
 from zeroshot.pipeline.stages.interpretation.contracts import (
+    PICTORIAL_VIEWS,
     DrawingInterpretation,
+    DrawingView,
     View,
 )
 from zeroshot.pipeline.stages.interpretation.validate import validate_interpretation
@@ -40,7 +41,7 @@ class InterpretationVerifier:
         self,
         workdir: SandboxWorkdir,
         attempt_store: AttemptStore,
-        input_artifact: DrawingSource,
+        input_artifact: Sequence[DrawingView],
         source_filename: str = "interpretation.json",
         *,
         dxf_mm_per_unit: Mapping[str, float] | None = None,
@@ -52,10 +53,12 @@ class InterpretationVerifier:
         self.attempt_store = attempt_store
         self.source_filename = source_filename
         self.dxf_mm_per_unit = dxf_mm_per_unit
+        # A pictorial fixes no axes, so losing it costs no coordinate; only
+        # the pages a view can be read off must survive as FULL_PAGE.
         self._original_files = {
-            workdir.host_to_sandbox_path(sheet.file)
-            for sheet in input_artifact.sheets
-            if sheet.crop_of is None
+            workdir.host_to_sandbox_path(view.file)
+            for view in input_artifact
+            if view.role not in PICTORIAL_VIEWS
         }
         self._built: InterpretationVerificationResult | None = None
         self._built_from_digest: str | None = None
@@ -65,16 +68,13 @@ class InterpretationVerifier:
     def source_path(self) -> Path:
         return self.workdir.host_bind_dir / self.source_filename
 
-    def reset(self, baseline: DrawingInterpretation | None) -> None:
-        """Create the first artifact from scratch; seed revisions in full."""
+    def reset(self, baseline: DrawingInterpretation) -> None:
+        """Seed the artifact in full: the input registered, or last round's answer."""
         if self.source_path.is_symlink():
             raise ValueError(f"{self.source_filename} must not be a symlink")
-        if baseline is None:
-            self.source_path.unlink(missing_ok=True)
-        else:
-            self.source_path.write_text(
-                baseline.model_dump_json(indent=2) + "\n", encoding="utf-8"
-            )
+        self.source_path.write_text(
+            baseline.model_dump_json(indent=2) + "\n", encoding="utf-8"
+        )
         self._built = None
         self._built_from_digest = None
         self._last_feedback_result = None

@@ -20,7 +20,7 @@ from tests.zeroshot.contracts import (
     interpreted_feature,
 )
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
-from zeroshot.pipeline.messages.manifest import InputManifest
+from zeroshot.pipeline.messages.manifest import InputManifest, register_view
 from zeroshot.pipeline.messages.tickets import TicketAnswers, TicketResponse
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.audit.contracts import (
@@ -31,10 +31,6 @@ from zeroshot.pipeline.stages.audit.contracts import (
 )
 from zeroshot.pipeline.stages.coding import stage as coding_stage_module
 from zeroshot.pipeline.stages.contracts import ReconstructionRun
-from zeroshot.pipeline.stages.drawings.contracts import (
-    DrawingSource,
-    unread_sheet,
-)
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
@@ -335,9 +331,7 @@ def _graph(
         artifact_presenter=_artifact_presenter(),
         input_manifest=InputManifest(
             sample_id="test",
-            drawing=DrawingSource(
-                sheets=[unread_sheet("sheet_input", View.FULL_PAGE, path)]
-            ),
+            drawing=[register_view("view_input", View.FULL_PAGE, path)],
         ),
         reconstruction_history_filename=history_filename,
         **overrides,

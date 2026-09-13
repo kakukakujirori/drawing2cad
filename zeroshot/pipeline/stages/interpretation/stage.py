@@ -10,12 +10,18 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
+from zeroshot.pipeline.messages.manifest import read_dxf_frame
 from zeroshot.pipeline.messages.tickets import TicketAnswers, tickets_assigned_to
-from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
+from zeroshot.pipeline.stages._base.prompt import (
+    StageInstructions,
+    build_system_prompt,
+    schema_for_prompt,
+)
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.interpretation.validate import read_dxf_frame
 from zeroshot.pipeline.stages.types import PipelineStage
-from zeroshot.pipeline.tools import create_calculate_drawing_scale_tool
+from zeroshot.pipeline.tools.calculate_drawing_scale import (
+    create_calculate_drawing_scale_tool,
+)
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.verify_interpretation import InterpretationVerifier
 from zeroshot.pipeline.workflow._config import _child_graph_config
@@ -52,7 +58,7 @@ class InterpretationStage:
                 self.instructions.workdir.sandbox_bind_dir
                 / self.verifier.source_filename
             ),
-            interpretation_schema=json.dumps(DrawingInterpretation.model_json_schema()),
+            interpretation_schema=schema_for_prompt(DrawingInterpretation),
         )
         if self.dxf_context is not None and state.get("stage_validation_error") is None:
             instruction.content = [
@@ -76,19 +82,18 @@ def _dxf_context(
     instructions: StageInstructions, factors: Mapping[str, float] | None
 ) -> str | None:
     originals = []
-    for sheet in instructions.input_artifact.sheets:
-        # check the existence of DXF files
-        if sheet.crop_of is not None or Path(sheet.file).suffix.lower() != ".dxf":
+    for view in instructions.input_artifact:
+        if Path(view.file).suffix.lower() != ".dxf":
             continue
 
-        name = "view_" + sheet.name.removeprefix("sheet_")
+        name = view.name
         factor = (factors or {}).get(name)
         if factor is None:
             raise ValueError(
-                f"DXF input {sheet.name} requires dxf_mm_per_unit[{name!r}]; "
+                f"DXF input {name} requires dxf_mm_per_unit[{name!r}]; "
                 "configure its actual millimetres per native drawing unit."
             )
-        file = instructions.workdir.host_to_sandbox_path(sheet.file)
+        file = instructions.workdir.host_to_sandbox_path(view.file)
         originals.append(
             {
                 "view": name,

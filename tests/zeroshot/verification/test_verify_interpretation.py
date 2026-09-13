@@ -5,12 +5,10 @@ import pytest
 from PIL import Image
 
 from tests.zeroshot.verification.test_interpretation_validation import raster_case
+from zeroshot.pipeline.messages.manifest import register_view
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages.drawings.contracts import (
-    DrawingSheet,
-    DrawingSource,
-)
 from zeroshot.pipeline.stages.interpretation.contracts import (
+    UNDECIDED,
     DrawingInterpretation,
     View,
 )
@@ -19,7 +17,7 @@ from zeroshot.pipeline.verification.verify_interpretation import InterpretationV
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
 
-def _case(tmp_path: Path, measurements=None):
+def _case(tmp_path: Path, measurements=None, *, pictorial: str | None = None):
     data = (
         raster_case(tmp_path)
         if measurements is None
@@ -36,32 +34,35 @@ def _case(tmp_path: Path, measurements=None):
             "dimensions": [],
         },
     )
+    given = [register_view("view_page", View.FULL_PAGE, tmp_path / "source.png")]
+    if pictorial is not None:
+        Image.new("RGB", (60, 40), "white").save(tmp_path / f"{pictorial}.png")
+        given.append(
+            register_view(
+                f"view_{pictorial}", View.PERSPECTIVE, tmp_path / f"{pictorial}.png"
+            )
+        )
     workdir = SandboxWorkdir(tmp_path)
     verifier = InterpretationVerifier(
         workdir,
         AttemptStore(workdir, round_source=lambda: 0),
-        DrawingSource(
-            sheets=[
-                DrawingSheet(
-                    name="sheet_page",
-                    role=View.FULL_PAGE,
-                    crop_of=None,
-                    scale=1,
-                    file=str(tmp_path / "source.png"),
-                    evidence=[],
-                    dimensions=[],
-                )
-            ]
-        ),
+        given,
     )
-    return verifier, DrawingInterpretation.model_validate(data)
+    seed = DrawingInterpretation(
+        datum=UNDECIDED, views=given, features=[], questions=[]
+    )
+    return verifier, DrawingInterpretation.model_validate(data), seed
 
 
-def test_first_round_is_unseeded_and_revisions_keep_the_complete_baseline(tmp_path):
-    verifier, candidate = _case(tmp_path)
+def test_first_round_seeds_the_input_and_revisions_keep_the_complete_baseline(tmp_path):
+    verifier, candidate, seed = _case(tmp_path)
     verifier.source_path.write_text("stale")
-    verifier.reset(None)
-    assert not verifier.source_path.exists()
+    verifier.reset(seed)
+    seeded = DrawingInterpretation.model_validate_json(
+        verifier.source_path.read_bytes()
+    )
+    assert seeded == seed
+    assert [view.name for view in seeded.views] == ["view_page"]
     verifier.reset(candidate)
     assert (
         DrawingInterpretation.model_validate_json(verifier.source_path.read_bytes())
@@ -73,8 +74,10 @@ def test_first_round_is_unseeded_and_revisions_keep_the_complete_baseline(tmp_pa
 def test_verification_fills_the_main_file_and_keeps_unadvertised_debug_records(
     tmp_path,
 ):
-    verifier, candidate = _case(tmp_path, [(4.2, 42), (10, 100), (20, 200), (30, 50)])
-    verifier.reset(None)
+    verifier, candidate, seed = _case(
+        tmp_path, [(4.2, 42), (10, 100), (20, 200), (30, 50)]
+    )
+    verifier.reset(seed)
     payload = candidate.model_dump_json()
     verifier.source_path.write_text(payload)
     result = verifier.verify()
@@ -114,7 +117,7 @@ def test_verification_fills_the_main_file_and_keeps_unadvertised_debug_records(
 
 
 def test_automatic_enrichment_does_not_trigger_another_verification(tmp_path):
-    verifier, candidate = _case(tmp_path)
+    verifier, candidate, _ = _case(tmp_path)
     middleware = VerifyOnWriteMiddleware(verifier, fingerprint=verifier.source_digest)
     payload = candidate.model_dump_json()
     verifier.source_path.write_text(payload)
@@ -129,7 +132,7 @@ def test_automatic_enrichment_does_not_trigger_another_verification(tmp_path):
 
 
 def test_failed_writeback_preserves_the_submission(tmp_path, monkeypatch):
-    verifier, candidate = _case(tmp_path)
+    verifier, candidate, _ = _case(tmp_path)
     payload = candidate.model_dump_json()
     verifier.source_path.write_text(payload)
 
@@ -150,7 +153,7 @@ def test_failed_writeback_preserves_the_submission(tmp_path, monkeypatch):
 
 
 def test_crop_edits_trigger_feedback_and_do_not_reuse_previous_acceptance(tmp_path):
-    verifier, candidate = _case(tmp_path)
+    verifier, candidate, _ = _case(tmp_path)
     verifier.reset(candidate)
     middleware = VerifyOnWriteMiddleware(verifier, fingerprint=verifier.source_digest)
     verifier.feedback()
@@ -169,8 +172,8 @@ def test_crop_edits_trigger_feedback_and_do_not_reuse_previous_acceptance(tmp_pa
 
 
 def test_invalid_json_and_missing_original_page_are_rejected_and_recorded(tmp_path):
-    verifier, candidate = _case(tmp_path)
-    verifier.reset(None)
+    verifier, candidate, seed = _case(tmp_path)
+    verifier.reset(seed)
     verifier.source_path.write_text("{")
     assert "Invalid JSON" in verifier.feedback()[0]["text"]
     assert verifier.accepted_interpretation is None
@@ -188,8 +191,18 @@ def test_invalid_json_and_missing_original_page_are_rejected_and_recorded(tmp_pa
     assert not verifier.confirmed
 
 
+def test_a_pictorial_input_is_not_required_to_come_back_as_a_full_page(tmp_path):
+    """A pictorial fixes no axes, so leaving it undeclared loses no coordinate."""
+    verifier, candidate, seed = _case(tmp_path, pictorial="hlg")
+    verifier.reset(seed)
+    verifier.source_path.write_text(candidate.model_dump_json())
+
+    assert "Retain each original input file" not in verifier.feedback()[0]["text"]
+    assert verifier.confirmed
+
+
 def test_absent_calibration_stays_valid_and_reports_zero_measurements(tmp_path):
-    verifier, candidate = _case(tmp_path, [])
+    verifier, candidate, _ = _case(tmp_path, [])
     verifier.reset(candidate)
     feedback = verifier.feedback()[0]["text"]
     assert verifier.confirmed

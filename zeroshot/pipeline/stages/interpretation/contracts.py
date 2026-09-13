@@ -1,10 +1,27 @@
-from collections.abc import Mapping
+import re
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from zeroshot.pipeline.stages._base.parameters import require_name, require_unique
+
+def require_name(name: str, prefix: str) -> None:
+    if re.fullmatch(rf"{prefix}[a-z0-9_]+", name):
+        return
+    stray = dict.fromkeys(re.findall(r"[^a-z0-9_]", name.removeprefix(prefix)))
+    raise ValueError(
+        f"{name!r} is not a usable {prefix.removesuffix('_')} name. "
+        f"Begin with {prefix} and carry on in lower_snake_case."
+        + (f" Remove {', '.join(map(repr, stray))}." if stray else "")
+    )
+
+
+def require_unique(names: Iterable[str], subject: str) -> None:
+    duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
+    if duplicates:
+        raise ValueError(f"duplicate names in {subject}: {', '.join(duplicates)}")
 
 
 class Contract(BaseModel):
@@ -38,6 +55,13 @@ VIEW_FRAME: Mapping[View, tuple[str, str, str]] = {
     View.LEFT: ("-y", "+z", "-x"),
 }
 ORTHOGRAPHIC_VIEWS = tuple(VIEW_FRAME)
+
+# A pictorial is offered for context: it fixes no axes, so nothing lifts a coordinate from one.
+PICTORIAL_VIEWS = frozenset({View.PERSPECTIVE, View.ISOMETRIC})
+
+# What a seeded artifact carries where the model has yet to decide.
+# Validation refuses a submission that still holds one, so it cannot survive a round.
+UNDECIDED = "???"
 
 
 class Region(Contract):
@@ -200,7 +224,7 @@ class DrawingInterpretation(Contract):
     datum: str = Field(
         ...,
         min_length=1,
-        description="Define the shared model origin and right-handed xyz axes against the part and its views.",
+        description="Define the shared model origin in 3D. Replace the seeded '???'.",
     )
     views: list[DrawingView] = Field(
         ...,
