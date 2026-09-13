@@ -1,5 +1,6 @@
 """Report what a turn's writes produced, and gate unverified answers."""
 
+from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol, override
@@ -53,9 +54,11 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         *,
         refusal: str = _SUBMISSION_REFUSED,
         require_feedback_before_submit: bool = False,
+        fingerprint: Callable[[], str | None] | None = None,
     ) -> None:
         super().__init__()
         self.verifier = verifier
+        self.fingerprint = fingerprint
         self.refusal = refusal
         self.require_feedback_before_submit = require_feedback_before_submit
         # What was on disk at construction is not this agent's work, so
@@ -72,14 +75,17 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         self._last_report = []
 
     def _digest(self) -> str | None:
+        if self.fingerprint is not None:
+            return self.fingerprint()
         # By content, not timestamp: the agent reads the program far more often
         # than it writes it, and a build must not follow a `cat`.
         path = self.verifier.source_path
         return sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
     def _build(self) -> list[ContentBlock]:
-        self._last_seen = self._last_built = self._digest()
         self._last_report = self.verifier.feedback()
+        # Validation may fill derived fields in the watched artifact.
+        self._last_seen = self._last_built = self._digest()
         return self._last_report
 
     @override
