@@ -276,8 +276,9 @@ def _verified_resume_run():
     return run
 
 
+@pytest.mark.parametrize("stage", ["interpretation", "operations"])
 def test_resume_copies_an_external_attempt_directly(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
 ) -> None:
     run = _verified_resume_run()
 
@@ -286,14 +287,18 @@ def test_resume_copies_an_external_attempt_directly(
     attempt.mkdir(parents=True)
     (attempt / "output.step").write_bytes(b"STEP")
     diagnostic = Path(
-        "attempts/round_000/interpretation/001/_interpretation_validation_log.json"
+        f"attempts/round_000/{stage}/001/_{stage}_validation_log.json"
     )
     (source_workspace / diagnostic).parent.mkdir(parents=True)
     (source_workspace / diagnostic).write_text(
         '{"reports": {"view_front": {"status": "ok"}}}'
     )
+    artifact = diagnostic.parent / f"{stage}.json"
+    (source_workspace / artifact).write_text(
+        getattr(run.snapshots[-1], stage).model_dump_json()
+    )
     future_diagnostic = Path(
-        "attempts/round_001/interpretation/000/_interpretation_validation_log.json"
+        f"attempts/round_001/{stage}/000/_{stage}_validation_log.json"
     )
     (source_workspace / future_diagnostic).parent.mkdir(parents=True)
     (source_workspace / future_diagnostic).write_text('{"reports": {}}')
@@ -330,12 +335,16 @@ def test_resume_copies_an_external_attempt_directly(
     assert (workspace / diagnostic).read_bytes() == (
         source_workspace / diagnostic
     ).read_bytes()
+    assert (workspace / artifact).read_bytes() == (
+        source_workspace / artifact
+    ).read_bytes()
     assert not (workspace / future_diagnostic).exists()
     assert (source_workspace / future_diagnostic).is_file()
 
 
+@pytest.mark.parametrize("stage", ["interpretation", "operations"])
 def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
-    tmp_path: Path,
+    tmp_path: Path, stage: str
 ) -> None:
     run = _verified_resume_run()
     artifact_root = tmp_path / "artifacts"
@@ -346,11 +355,14 @@ def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     (attempt / "output.step").write_bytes(b"STEP")
     (workspace / "stale.txt").write_text("stale", encoding="utf-8")
     diagnostic = Path(
-        "attempts/round_000/interpretation/001/_interpretation_validation_log.json"
+        f"attempts/round_000/{stage}/001/_{stage}_validation_log.json"
     )
     (workspace / diagnostic).parent.mkdir(parents=True)
     diagnostic_bytes = b'{"reports": {"view_front": {"status": "ok"}}}'
     (workspace / diagnostic).write_bytes(diagnostic_bytes)
+    artifact = diagnostic.parent / f"{stage}.json"
+    artifact_json = getattr(run.snapshots[-1], stage).model_dump_json()
+    (workspace / artifact).write_text(artifact_json)
     resume_path = workspace / "reconstruction.json"
     save_reconstruction(resume_path, run)
     events_path = sample_root / "events.jsonl"
@@ -369,6 +381,7 @@ def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
         prepared / "attempts" / "round_000" / "coding" / "007" / "output.step"
     ).read_bytes() == b"STEP"
     assert (prepared / diagnostic).read_bytes() == diagnostic_bytes
+    assert (prepared / artifact).read_text() == artifact_json
 
 
 @pytest.mark.parametrize("same_workspace", [False, True])

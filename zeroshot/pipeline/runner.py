@@ -161,10 +161,11 @@ class PipelineRunner:
                 resume_attempts[relative] = source
 
             for round_number in range(snapshot.round + 1):
-                relative = PurePosixPath(f"round_{round_number:03d}/interpretation")
-                source = resume_root / self.verification_dirname / relative
-                if source.is_dir():
-                    resume_attempts[relative] = source
+                for stage in ("interpretation", "operations"):
+                    relative = PurePosixPath(f"round_{round_number:03d}/{stage}")
+                    source = resume_root / self.verification_dirname / relative
+                    if source.is_dir():
+                        resume_attempts[relative] = source
             source_workdir = SandboxWorkdir(host_bind_dir=resume_root)
             drawing_files = {
                 relative: source_workdir.host_bind_dir / relative
