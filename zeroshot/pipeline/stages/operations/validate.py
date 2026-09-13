@@ -1,5 +1,4 @@
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
-from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.resolve_refs import unresolved_references
@@ -7,13 +6,13 @@ from zeroshot.pipeline.stages.resolve_refs import unresolved_references
 
 def validate_operations(
     operations: OperationPlan,
-    snapshot: ReconstructionSnapshot,
+    interpretation: DrawingInterpretation | None,
 ) -> None:
-    if snapshot.interpretation is None:
+    if interpretation is None:
         raise SubmissionValidationError(
             "operations requires an integrated DrawingInterpretation"
         )
-    errors = _operation_plan_errors(operations, snapshot.interpretation)
+    errors = _operation_plan_errors(operations, interpretation)
     if errors:
         raise SubmissionValidationError("\n".join(errors))
 

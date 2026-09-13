@@ -16,7 +16,10 @@ from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
-from zeroshot.pipeline.stages.contracts import ReconstructionRun
+from zeroshot.pipeline.stages.contracts import (
+    ReconstructionRun,
+    ReconstructionSnapshot,
+)
 from zeroshot.pipeline.stages.stage import stage_factory
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
@@ -36,6 +39,7 @@ from zeroshot.pipeline.workflow.lifecycle import (
     interpretation_baseline,
     load_reconstruction,
     open_next_round,
+    operations_baseline,
     save_reconstruction,
     start_reconstruction,
 )
@@ -61,6 +65,7 @@ def create_reconstruction_graph(
     input_manifest: InputManifest,
     output_filename: str = "model.py",
     interpretation_filename: str = "interpretation.json",
+    operations_filename: str = "operations.json",
     dxf_mm_per_unit: dict[str, float] | None = None,
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     reconstruction_history_filename: str = "reconstruction.json",
@@ -105,6 +110,9 @@ def create_reconstruction_graph(
         "interpretation_output_path": str(
             sandbox_workdir.sandbox_bind_dir / interpretation_filename
         ),
+        "operations_output_path": str(
+            sandbox_workdir.sandbox_bind_dir / operations_filename
+        ),
         "verification_dir": str(
             sandbox_workdir.sandbox_bind_dir / verification_dirname
         ),
@@ -142,6 +150,8 @@ def create_reconstruction_graph(
         system_prompt_path=share_thread_system_prompt if share_thread else None,
         instructions=stage_instructions,
         prompt_context=prompt_context,
+        attempt_store=attempt_store,
+        operations_filename=operations_filename,
         input_after_compaction=compact_between_stages is not None,
     )
     coding_stage = stage_factory(PipelineStage.CODING)(
@@ -233,6 +243,34 @@ def create_reconstruction_graph(
             "stage_submission": None,
         }
 
+    def _workspace_output(
+        stage: PipelineStage | None,
+        snapshot: ReconstructionSnapshot,
+        reconstruction: ReconstructionRun,
+    ) -> Any:
+        """The verified artifact the stage produced, or the baseline it kept."""
+        tickets = snapshot.open_tickets
+        match stage:
+            case PipelineStage.INTERPRETATION:
+                if not tickets_assigned_to(tickets, PipelineStage.INTERPRETATION):
+                    return interpretation_baseline(reconstruction)
+                accepted = interpretation_stage.verifier.accepted_interpretation
+                filename = interpretation_filename
+            case PipelineStage.OPERATIONS:
+                if not tickets_assigned_to(tickets, PipelineStage.OPERATIONS):
+                    return operations_baseline(reconstruction)
+                accepted = operation_stage.verifier.accepted_plan
+                filename = operations_filename
+            case PipelineStage.CODING:
+                return coding_stage.verifier.verify()[0]
+            case _:
+                raise RuntimeError(f"{stage} is not a reasoning stage")
+        if accepted is None:
+            raise SubmissionValidationError(
+                f"{filename} has not passed validation for this submission"
+            )
+        return accepted
+
     def integrate_stage_submission(
         state: ReconstructionState,
     ) -> dict[str, Any]:
@@ -250,25 +288,11 @@ def create_reconstruction_graph(
 
         snapshot = current_snapshot(state)
         stage = next_stage(snapshot.last_completed_stage)
-        workspace_output = None
-        if stage is PipelineStage.INTERPRETATION:
-            if tickets_assigned_to(snapshot.open_tickets, PipelineStage.INTERPRETATION):
-                workspace_output = interpretation_stage.verifier.accepted_interpretation
-                if workspace_output is None:
-                    return _rejected_stage_submission(
-                        state,
-                        "interpretation.json has not passed validation for this submission",
-                    )
-            else:
-                workspace_output = interpretation_baseline(reconstruction)
-        elif stage is PipelineStage.CODING:
-            workspace_output, _ = coding_stage.verifier.verify()
-
         try:
             updated = advance_reconstruction(
                 reconstruction,
                 submission,
-                workspace_output=workspace_output,
+                workspace_output=_workspace_output(stage, snapshot, reconstruction),
             )
         except SubmissionValidationError as error:
             return _rejected_stage_submission(state, str(error))

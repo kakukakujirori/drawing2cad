@@ -9,6 +9,7 @@ from langchain_core.tools import tool
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.verification.test_interpretation_validation import dxf_case
 from tests.zeroshot.verification.test_verify_interpretation import _case
+from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.drawings.contracts import (
@@ -21,7 +22,6 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     View,
 )
 from zeroshot.pipeline.stages.interpretation.stage import create_interpretation_stage
-from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.workflow.components.agent import create_agent
 from zeroshot.pipeline.workflow.lifecycle import start_reconstruction
@@ -60,9 +60,9 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
 
     model = ScriptedChatModel(
         responses=(
-            tool_call("InterpretationSubmission", response, "premature"),
+            tool_call("TicketAnswers", response, "premature"),
             tool_call("write_interpretation", {}, "write"),
-            tool_call("InterpretationSubmission", response, "accepted"),
+            tool_call("TicketAnswers", response, "accepted"),
         )
     )
     stage = create_interpretation_stage(
@@ -83,9 +83,7 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
     )
     run = start_reconstruction("run_test", "Reconstruct the part.", drawing)
     result = stage.run({"reconstruction": run}, {})
-    assert result["stage_submission"] == InterpretationSubmission.model_validate(
-        response
-    )
+    assert result["stage_submission"] == TicketAnswers.model_validate(response)
     assert stage.verifier.accepted_interpretation is not None
     messages = result["interpretation_state"]["messages"]
     assert any("not ready to submit" in message.text for message in messages)
@@ -151,7 +149,7 @@ def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
     model = ScriptedChatModel(
         responses=(
             tool_call("write_dxf_interpretation", {}, "write"),
-            tool_call("InterpretationSubmission", response, "accepted"),
+            tool_call("TicketAnswers", response, "accepted"),
         )
     )
     stage = create_interpretation_stage(
@@ -173,9 +171,7 @@ def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
     )
     run = start_reconstruction("run_dxf", "Reconstruct the part.", drawing)
     result = stage.run({"reconstruction": run}, {})
-    assert result["stage_submission"] == InterpretationSubmission.model_validate(
-        response
-    )
+    assert result["stage_submission"] == TicketAnswers.model_validate(response)
     text = model.received_messages[0][-1].text
     assert "u = (x - origin_native[0]) * mm_per_unit" in text
     assert "v = (y - origin_native[1]) * mm_per_unit" in text

@@ -3,24 +3,16 @@
 from dataclasses import dataclass, replace
 from typing import cast
 
-from zeroshot.pipeline.messages.tickets import TicketResponse
-from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
-from zeroshot.pipeline.stages.coding.submission import CodingSubmission
+from zeroshot.pipeline.messages.tickets import TicketAnswers, TicketResponse
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
-from zeroshot.pipeline.stages.merge import merge_submission
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
-from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
 from zeroshot.pipeline.stages.types import ArtifactField, PipelineStage, ReasoningStage
 from zeroshot.pipeline.stages.validate import validate_submission
 from zeroshot.pipeline.verification import VerifyOutputResult
 
-type ReasoningSubmission = (
-    InterpretationSubmission | OperationSubmission | CodingSubmission
-)
-type WorkspaceOutput = DrawingInterpretation | VerifyOutputResult
+type WorkspaceOutput = DrawingInterpretation | OperationPlan | VerifyOutputResult
 
 _LOG_LIMIT = 4000
 
@@ -34,26 +26,17 @@ class SnapshotUpdate:
 
 
 def build_snapshot_update(
-    submission: ReasoningSubmission,
+    submission: TicketAnswers,
     current: ReconstructionSnapshot,
-    previous: ReconstructionSnapshot,
     stage: ReasoningStage,
     *,
     workspace_output: WorkspaceOutput | None = None,
 ) -> SnapshotUpdate:
-    """Merge against the previous round and validate against the current one.
+    """Validate the verified workspace artifact against the current round.
 
-    Verified artifacts are used directly; revision submissions are merged.
     This function neither runs verifiers nor saves state.
     """
-    if stage in {PipelineStage.INTERPRETATION, PipelineStage.CODING}:
-        deliverable = workspace_output
-    else:
-        if workspace_output is not None:
-            raise SubmissionValidationError(
-                f"{stage} does not accept a workspace output"
-            )
-        deliverable = merge_submission(submission, previous, stage)
+    deliverable = workspace_output
     validate_submission(submission, current, deliverable=deliverable)
 
     # Validate the addresses before annotating them. A revised artifact is

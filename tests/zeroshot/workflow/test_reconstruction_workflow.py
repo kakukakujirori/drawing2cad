@@ -6,9 +6,13 @@ from tests.zeroshot.contracts import (
     drawing,
     interpretation,
     interpreted_feature,
-    replacing,
 )
-from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
+from zeroshot.pipeline.messages.tickets import (
+    BootstrapWork,
+    Ticket,
+    TicketAnswers,
+    TicketResponse,
+)
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
@@ -16,15 +20,12 @@ from zeroshot.pipeline.stages.audit.contracts import (
     RevisionRequest,
     StageOutputRef,
 )
-from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
-from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
 )
-from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.stages.validate import (
     SubmissionValidationError,
@@ -166,7 +167,7 @@ def _stage_responses(
 def _reread(run: ReconstructionRun) -> ReconstructionRun:
     return advance_reconstruction(
         run,
-        InterpretationSubmission(responses=_stage_responses(run, "interpretation")),
+        TicketAnswers(responses=_stage_responses(run, "interpretation")),
         workspace_output=interpretation_baseline(run)
         or interpretation("the base", "the hole"),
     )
@@ -179,15 +180,13 @@ def _completed_run(
     run = run or start_reconstruction("run_example", "Reconstruct the part.", drawing())
     run = advance_reconstruction(
         run,
-        InterpretationSubmission(responses=_stage_responses(run, "interpretation")),
+        TicketAnswers(responses=_stage_responses(run, "interpretation")),
         workspace_output=interpretation("the base", "the hole"),
     )
     run = advance_reconstruction(
         run,
-        OperationSubmission(
-            **replacing(_operations()),
-            responses=_stage_responses(run, "operations"),
-        ),
+        TicketAnswers(responses=_stage_responses(run, "operations")),
+        workspace_output=_operations(),
     )
     verification = verification or VerifyOutputResult(
         status=ExecutionStatus.VERIFIED,
@@ -196,7 +195,7 @@ def _completed_run(
     )
     run = advance_reconstruction(
         run,
-        CodingSubmission(
+        TicketAnswers(
             responses=_stage_responses(run, "coding"),
         ),
         workspace_output=verification,
@@ -439,13 +438,12 @@ def test_coding_without_readable_source_still_completes_the_round() -> None:
 def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
     original_json = run.model_dump_json()
-    wrong_stage = OperationSubmission(
-        **replacing(_operations()),
-        responses=_stage_responses(run, "interpretation"),
-    )
+    answers = TicketAnswers(responses=_stage_responses(run, "interpretation"))
 
-    with pytest.raises(SubmissionValidationError, match="InterpretationSubmission"):
-        advance_reconstruction(run, wrong_stage)
+    with pytest.raises(
+        SubmissionValidationError, match="verified DrawingInterpretation"
+    ):
+        advance_reconstruction(run, answers, workspace_output=_operations())
 
     assert run.model_dump_json() == original_json
 
@@ -471,7 +469,7 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
 
     advanced = advance_reconstruction(
         run,
-        InterpretationSubmission(
+        TicketAnswers(
             responses=responses,
         ),
         workspace_output=interpretation("the base", "the hole"),
@@ -507,7 +505,7 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
 
     advanced = advance_reconstruction(
         run,
-        InterpretationSubmission(
+        TicketAnswers(
             responses=[
                 TicketResponse(
                     ticket_id=ticket.ticket_id,
@@ -661,7 +659,7 @@ def test_a_revision_round_replaces_the_complete_interpretation() -> None:
     )
     advanced = advance_reconstruction(
         run,
-        InterpretationSubmission(responses=_stage_responses(run, "interpretation")),
+        TicketAnswers(responses=_stage_responses(run, "interpretation")),
         workspace_output=revised,
     )
     current = advanced.snapshots[-1].interpretation

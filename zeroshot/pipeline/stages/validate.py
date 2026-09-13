@@ -1,8 +1,8 @@
 """Contextual validation of one stage's submission against its snapshot.
 
-A reasoning stage submits a revision rather than a whole artifact, so what
-is measured against the snapshot is the artifact that revision merges to.
-`merge_submission` produces it and hands it here as `deliverable`.
+Every reasoning stage revises its artifact in the workspace and answers with
+ticket responses alone, so what is measured against the snapshot is the
+verified artifact the pipeline read back, handed here as `deliverable`.
 """
 
 from zeroshot.pipeline.messages.tickets import TicketAnswers
@@ -12,13 +12,10 @@ from zeroshot.pipeline.stages._base.validate import (
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.audit.validate import validate_audit_report
-from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.coding.validate import validate_coding
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
-from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.operations.validate import validate_operations
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
@@ -28,9 +25,7 @@ from zeroshot.pipeline.stages.types import (
 )
 from zeroshot.pipeline.verification import VerifyOutputResult
 
-type Submission = (
-    InterpretationSubmission | OperationSubmission | CodingSubmission | AuditReport
-)
+type Submission = TicketAnswers | AuditReport
 type StageDeliverable = DrawingInterpretation | OperationPlan | VerifyOutputResult
 
 
@@ -42,8 +37,8 @@ def validate_submission(
 ) -> None:
     """Reject a submission that contradicts the round it belongs to.
 
-    `deliverable` is the complete stage output: merged for proposal stages and
-    obtained from workspace verification for interpretation and coding. An audit has none.
+    `deliverable` is the complete stage output obtained from workspace
+    verification. An audit has none.
     """
     if isinstance(submission, AuditReport):
         if deliverable is not None:
@@ -55,15 +50,6 @@ def validate_submission(
         raise TypeError(f"unsupported submission type: {type(submission).__name__}")
 
     stage = _next_reasoning_stage(snapshot.last_completed_stage)
-    expected_submission = {
-        PipelineStage.INTERPRETATION: InterpretationSubmission,
-        PipelineStage.OPERATIONS: OperationSubmission,
-        PipelineStage.CODING: CodingSubmission,
-    }[stage]
-    if not isinstance(submission, expected_submission):
-        raise SubmissionValidationError(
-            f"{stage} must submit a {expected_submission.__name__}"
-        )
     validate_ticket_responses(
         submission.responses,
         snapshot.open_tickets,
@@ -78,9 +64,9 @@ def validate_submission(
         case PipelineStage.OPERATIONS:
             if not isinstance(deliverable, OperationPlan):
                 raise SubmissionValidationError(
-                    "operations must revise an OperationPlan"
+                    "operations requires a verified OperationPlan"
                 )
-            validate_operations(deliverable, snapshot)
+            validate_operations(deliverable, snapshot.interpretation)
         case PipelineStage.CODING:
             if not isinstance(deliverable, VerifyOutputResult):
                 raise SubmissionValidationError(

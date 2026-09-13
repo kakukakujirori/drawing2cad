@@ -2,6 +2,13 @@ Revise the operation plan for reconstruction round $current_round.
 
 Tickets assigned to operations this round: $assigned_tickets
 
-In the initial round the plan is empty, so plan every operation the current drawing interpretation takes. In a later round the plan the preceding round settled stands as it is, and you change every operation your assigned tickets and the interpretation-stage responses recorded on them affect: give those operations, and leave every other one out so that it keeps what it had. A ticket that is not assigned to you was traced to a defect in the program itself; leave it to coding.
+Maintain the complete plan in `$operations_output_path`. The first round seeds that file with `null`, so establish every operation the current drawing interpretation takes. A later round seeds it with the plan the preceding round settled: change the operations your assigned tickets and the interpretation-stage responses recorded on them affect, and leave every other operation and its `op_...` name exactly as it stands. The file is the whole plan and never a diff, so an operation you drop from it is deleted. A ticket that is not assigned to you was traced to a defect in the program itself; leave it to coding.
 
-Return one `OperationSubmission`: complete operations to add or replace in `edits`, existing whole-operation `op_...` names to remove in `deleted`, and exactly one operations-stage response for each assigned ticket and none for any other. Field addresses such as `op_bore.detail` are not deletion targets; change fields by submitting the complete operation. Do not both edit and delete the same operation. Each response must name the concrete `op_...` entries you established, changed, or examined.
+After a turn that changes the file, the pipeline validates it against the current interpretation and reports the result. Correct what it rejects and write again.
+
+Return one `TicketAnswers` once the file validates: exactly one operations-stage response for each assigned ticket and none for any other, each naming the concrete `op_...` entries you established, changed, or examined. Do not repeat the plan in that answer.
+
+OperationPlan JSON schema:
+```json
+$operations_schema
+```

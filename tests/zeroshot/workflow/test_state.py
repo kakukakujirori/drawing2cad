@@ -8,8 +8,13 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
-from tests.zeroshot.contracts import interpretation, replacing, sheet
-from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
+from tests.zeroshot.contracts import interpretation, sheet
+from zeroshot.pipeline.messages.tickets import (
+    BootstrapWork,
+    Ticket,
+    TicketAnswers,
+    TicketResponse,
+)
 from zeroshot.pipeline.stages._base.parameters import Parameter, ParameterName
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
@@ -18,7 +23,6 @@ from zeroshot.pipeline.stages.audit.contracts import (
     RevisionRequest,
     StageOutputRef,
 )
-from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
 from zeroshot.pipeline.stages.drawings.contracts import (
     CropOf,
@@ -43,13 +47,11 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 from zeroshot.pipeline.stages.interpretation.contracts import (
     View as InterpretedView,
 )
-from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
 )
-from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.types import PipelineStage, ReasoningStage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow import (
@@ -212,7 +214,7 @@ _RECONSTRUCTION = ReconstructionRun(
     ],
 )
 
-_INTERPRETATION_SUBMISSION = InterpretationSubmission(
+_INTERPRETATION_SUBMISSION = TicketAnswers(
     responses=[
         TicketResponse(
             ticket_id="ticket_initial",
@@ -221,8 +223,7 @@ _INTERPRETATION_SUBMISSION = InterpretationSubmission(
         )
     ],
 )
-_OPERATION_SUBMISSION = OperationSubmission(
-    **replacing(_A_PLAN),
+_OPERATION_SUBMISSION = TicketAnswers(
     responses=[
         TicketResponse(
             ticket_id="ticket_initial",
@@ -231,7 +232,7 @@ _OPERATION_SUBMISSION = OperationSubmission(
         )
     ],
 )
-_CODING_SUBMISSION = CodingSubmission(
+_CODING_SUBMISSION = TicketAnswers(
     responses=[
         TicketResponse(
             ticket_id="ticket_initial",
@@ -310,9 +311,7 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         Region,
         InterpretedDimension,
         InterpretedView,
-        InterpretationSubmission,
-        OperationSubmission,
-        CodingSubmission,
+        TicketAnswers,
     }
 
 
@@ -362,11 +361,11 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
         assert restored[field] == value
 
     interpretation_state = restored["interpretation_state"]
-    assert type(interpretation_state["structured_response"]) is InterpretationSubmission
+    assert type(interpretation_state["structured_response"]) is TicketAnswers
     assert type(interpretation_state["stop_reason"]) is StopReason
 
     operations_state = restored["operations_state"]
-    assert type(operations_state["structured_response"]) is OperationSubmission
+    assert type(operations_state["structured_response"]) is TicketAnswers
 
 
 def _threaded_state(**stages: object) -> ReconstructionState:

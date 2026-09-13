@@ -2,7 +2,7 @@ The program to write and maintain is:
 
 $coding_output_path
 
-Keep this as one complete, self-contained CadQuery program. On a revision, inspect the existing file before editing it and preserve any implementation that remains correct.
+Keep this as one complete, self-contained CadQuery program.
 
 Each planned operation has a stable `op_` name. Record the completed CadQuery result of every operation in the corresponding `ret_` variable by replacing the `op_` prefix:
 
@@ -21,10 +21,10 @@ Requirements:
 - The script must be self-contained and must not load the input drawing or other external files at runtime.
 - The generated geometry must be valid and exportable to STEP format.
 - DO NOT use try-except blocks in $coding_output_path. Resolve operation failures instead of hiding them.
-- Do not silently omit a planned operation. If one cannot be made to work, leave the program in its best executable state and report exactly what remains incomplete in your final answer.
+- If a planned operation cannot be made to work, leave the program in its best executable state and report exactly what remains incomplete in your final answer.
 
 Verification:
-Every turn you edit $coding_output_path, it is automatically executed and the final solid is exported to a STEP file. The feedback includes the execution status, return code, stdout, stderr, any executor error, a count of faces and edges by kind, and paths to the generated DXF and perspective renders under `$verification_dir/round_NNN/coding/NNN/`. This costs you no turn, so write early enough to use the feedback before you stop.
+Every turn you edit $coding_output_path, it is automatically executed and the final solid is exported to a STEP file. The feedback includes the execution status, return code, stdout, stderr, any executor error, a count of faces and edges by kind, and paths to the generated DXF and perspective renders under `$verification_dir/round_NNN/coding/NNN/`. This costs you no turn.
 
 Guidelines:
 - The operation plan is a DAG. Read each entry's `depends_on` and implement dependencies before the operations that consume them; the JSON list order is not the build order. Each entry also names the semantic features it implements by their stable `sem_` names.
@@ -39,5 +39,3 @@ Guidelines:
 - If the plan or the interpretation looks wrong, or is missing a number you need, build your best reading, then name the `op_` or `sem_` member you doubt and what you did in your ticket response. Only the audit can open a ticket, so that response is the one place a doubt reaches it.
 - Address every applicable point from review or audit feedback in the transcript.
 - Your turn budget is announced in the transcript as `[turn n/N]`. Turns increment when you use tools.
-
-When you stop, return only the structured `CodingSubmission` requested by the current instruction.

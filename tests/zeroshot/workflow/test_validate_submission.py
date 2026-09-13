@@ -5,23 +5,24 @@ from collections.abc import Sequence
 
 import pytest
 
-from tests.zeroshot.contracts import interpretation, interpreted_feature, replacing
-from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
-from zeroshot.pipeline.stages.coding.submission import CodingSubmission
+from tests.zeroshot.contracts import interpretation, interpreted_feature
+from zeroshot.pipeline.messages.tickets import (
+    BootstrapWork,
+    Ticket,
+    TicketAnswers,
+    TicketResponse,
+)
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import (
     Dimension,
     DrawingInterpretation,
     Region,
 )
-from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
-from zeroshot.pipeline.stages.merge import merge_submission
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
 )
-from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     PipelineStage,
@@ -129,32 +130,32 @@ def _snapshot(
     )
 
 
-def _merge_and_validate(output, snapshot, *, workspace_output=None):
-    stage = next_stage(snapshot.last_completed_stage)
+def _verified_and_validate(output, snapshot, *, workspace_output=None):
+    """Validate against the artifact this round's verifier would hand over."""
     deliverable = workspace_output
-    if stage is PipelineStage.OPERATIONS and deliverable is None:
-        deliverable = merge_submission(output, snapshot, stage)
-    elif stage is PipelineStage.INTERPRETATION and deliverable is None:
-        deliverable = _interpretation()
+    if deliverable is None:
+        deliverable = {
+            PipelineStage.INTERPRETATION: _interpretation(),
+            PipelineStage.OPERATIONS: _operations(),
+        }.get(next_stage(snapshot.last_completed_stage))
     validate_submission(output, snapshot, deliverable=deliverable)
 
 
 def test_every_reasoning_stage_accepts_its_expected_deliverable() -> None:
-    _merge_and_validate(
-        InterpretationSubmission(
+    _verified_and_validate(
+        TicketAnswers(
             responses=[_response("ticket_initial", PipelineStage.INTERPRETATION)],
         ),
         _snapshot(None),
     )
-    _merge_and_validate(
-        OperationSubmission(
-            **replacing(_operations()),
+    _verified_and_validate(
+        TicketAnswers(
             responses=[_response("ticket_initial", PipelineStage.OPERATIONS)],
         ),
         _snapshot(PipelineStage.INTERPRETATION),
     )
-    _merge_and_validate(
-        CodingSubmission(
+    _verified_and_validate(
+        TicketAnswers(
             responses=[_response("ticket_initial", PipelineStage.CODING)],
         ),
         _snapshot(PipelineStage.OPERATIONS),
@@ -203,12 +204,12 @@ def test_ticket_responses_must_cover_the_current_snapshot_exactly_once(
             _ticket("ticket_two"),
         ],
     )
-    submission = InterpretationSubmission(
+    submission = TicketAnswers(
         responses=responses,
     )
 
     with pytest.raises(SubmissionValidationError, match=message):
-        _merge_and_validate(submission, snapshot)
+        _verified_and_validate(submission, snapshot)
 
 
 def test_a_stage_answers_its_assigned_tickets_and_only_those() -> None:
@@ -220,16 +221,16 @@ def test_a_stage_answers_its_assigned_tickets_and_only_those() -> None:
         ],
     )
 
-    _merge_and_validate(
-        InterpretationSubmission(
+    _verified_and_validate(
+        TicketAnswers(
             responses=[_response("ticket_one", PipelineStage.INTERPRETATION)],
         ),
         snapshot,
     )
 
     with pytest.raises(SubmissionValidationError, match="not assigned.*ticket_two"):
-        _merge_and_validate(
-            InterpretationSubmission(
+        _verified_and_validate(
+            TicketAnswers(
                 responses=[
                     _response("ticket_one", PipelineStage.INTERPRETATION),
                     _response("ticket_two", PipelineStage.INTERPRETATION),
@@ -245,30 +246,34 @@ def test_a_stage_assigned_nothing_answers_nothing() -> None:
         tickets=[_ticket("ticket_one", assigned=(PipelineStage.CODING,))],
     )
 
-    _merge_and_validate(
-        InterpretationSubmission(responses=[]),
+    _verified_and_validate(
+        TicketAnswers(responses=[]),
         snapshot,
     )
 
 
 def test_the_current_snapshot_decides_which_deliverable_type_is_valid() -> None:
-    operations = OperationSubmission(
-        **replacing(_operations()),
+    answers = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.INTERPRETATION)],
     )
 
-    with pytest.raises(SubmissionValidationError, match="InterpretationSubmission"):
-        _merge_and_validate(operations, _snapshot(None))
+    with pytest.raises(
+        SubmissionValidationError, match="verified DrawingInterpretation"
+    ):
+        _verified_and_validate(answers, _snapshot(None), workspace_output=_operations())
 
 
 def test_operations_must_cover_only_current_semantic_features() -> None:
-    submission = OperationSubmission(
-        **replacing(_operations(semantics=["sem_absent"])),
+    submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.OPERATIONS)],
     )
 
     with pytest.raises(SubmissionValidationError, match="sem_feature_1"):
-        _merge_and_validate(submission, _snapshot(PipelineStage.INTERPRETATION))
+        _verified_and_validate(
+            submission,
+            _snapshot(PipelineStage.INTERPRETATION),
+            workspace_output=_operations(semantics=["sem_absent"]),
+        )
 
 
 def test_interpretation_rejects_an_evidence_view_absent_from_the_artifact() -> None:
@@ -289,12 +294,12 @@ def test_interpretation_rejects_an_evidence_view_absent_from_the_artifact() -> N
 
 
 def _validate_plan(plan: OperationPlan, held: DrawingInterpretation) -> None:
-    _merge_and_validate(
-        OperationSubmission(
-            **replacing(plan),
+    _verified_and_validate(
+        TicketAnswers(
             responses=[_response("ticket_initial", PipelineStage.OPERATIONS)],
         ),
         _snapshot(PipelineStage.INTERPRETATION, held=held),
+        workspace_output=plan,
     )
 
 
@@ -443,23 +448,23 @@ def test_operation_validation_accepts_a_reference_with_its_resolved_value() -> N
 
 
 def test_only_coding_accepts_a_separate_terminal_verification() -> None:
-    interpretation_submission = InterpretationSubmission(
+    interpretation_submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.INTERPRETATION)],
     )
-    coding_submission = CodingSubmission(
+    coding_submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
     with pytest.raises(SubmissionValidationError, match="DrawingInterpretation"):
-        _merge_and_validate(
+        _verified_and_validate(
             interpretation_submission,
             _snapshot(None),
             workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
         )
     with pytest.raises(SubmissionValidationError, match="requires"):
-        _merge_and_validate(coding_submission, _snapshot(PipelineStage.OPERATIONS))
+        _verified_and_validate(coding_submission, _snapshot(PipelineStage.OPERATIONS))
     with pytest.raises(SubmissionValidationError, match="must be terminal"):
-        _merge_and_validate(
+        _verified_and_validate(
             coding_submission,
             _snapshot(PipelineStage.OPERATIONS),
             workspace_output=VerifyOutputResult(),
@@ -467,12 +472,12 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
 
 
 def test_coding_checks_the_submitted_program_against_current_round_operations() -> None:
-    submission = CodingSubmission(
+    submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
     with pytest.raises(SubmissionValidationError, match="missing.*op_base"):
-        _merge_and_validate(
+        _verified_and_validate(
             submission,
             _snapshot(PipelineStage.OPERATIONS),
             workspace_output=VerifyOutputResult(
@@ -483,11 +488,11 @@ def test_coding_checks_the_submitted_program_against_current_round_operations() 
 
 
 def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
-    submission = CodingSubmission(
+    submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
-    _merge_and_validate(
+    _verified_and_validate(
         submission,
         _snapshot(PipelineStage.OPERATIONS),
         workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
@@ -495,12 +500,12 @@ def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
 
 
 def test_completed_coding_accepts_only_an_audit_report() -> None:
-    submission = CodingSubmission(
+    submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],
     )
 
     with pytest.raises(SubmissionValidationError, match="only an AuditReport"):
-        _merge_and_validate(
+        _verified_and_validate(
             submission,
             _snapshot(PipelineStage.CODING),
             workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
@@ -510,7 +515,7 @@ def test_completed_coding_accepts_only_an_audit_report() -> None:
 def test_interpretation_cannot_submit_ticket_answers_without_a_verified_artifact() -> (
     None
 ):
-    submission = InterpretationSubmission(
+    submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.INTERPRETATION)]
     )
     with pytest.raises(

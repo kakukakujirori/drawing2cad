@@ -11,11 +11,9 @@ from typing import (
 from langchain_core.messages import AnyMessage
 from typing_extensions import is_typeddict
 
+from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
-from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
-from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
-from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.types import (
     PipelineStage,
     ReasoningStage,
@@ -30,11 +28,7 @@ class ReconstructionState(TypedDict):
     audit_state: NotRequired[AgentState]
 
     reconstruction: NotRequired[ReconstructionRun]
-    # Keep the concrete models inline: checkpoint type discovery walks this
-    # annotation and must see every runtime submission class.
-    stage_submission: NotRequired[
-        InterpretationSubmission | OperationSubmission | CodingSubmission | None
-    ]
+    stage_submission: NotRequired[TicketAnswers | None]
     stage_validation_error: NotRequired[str | None]
     stage_validation_failure_count: NotRequired[int]
     audit_report: NotRequired[AuditReport | None]

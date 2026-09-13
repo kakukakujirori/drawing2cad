@@ -3,8 +3,6 @@
 Tests *about* the contract build it explicitly -- see `messages/test_contracts.py`.
 """
 
-from typing import Any
-
 from zeroshot.pipeline.stages._base.parameters import Parameter
 from zeroshot.pipeline.stages.drawings.contracts import (
     _DRAWN_PARAMETERS,
@@ -22,7 +20,6 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 from zeroshot.pipeline.stages.interpretation.contracts import (
     SemanticFeature as InterpretedFeature,
 )
-from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 
 _A_SHEET_POINT = [0.0, 0.0]
 _SOME_POINTS = [0.0, 0.0, 1.0, 1.0, 2.0, 0.0]
@@ -106,20 +103,6 @@ def drawing(*roles: str, **overrides: object) -> DrawingSource:
         **overrides,
     }
     return DrawingSource(**fields)  # type: ignore[arg-type]
-
-
-def replacing(artifact: OperationPlan) -> dict[str, Any]:
-    """The submission fields that build `artifact` from nothing, as round 0 does."""
-    return {
-        "edits": list(artifact.proposal),
-        "deleted": [],
-        "rationale": artifact.rationale,
-    }
-
-
-def unchanged() -> dict[str, Any]:
-    """The submission fields that leave the preceding round's artifact as it is."""
-    return {"edits": [], "deleted": [], "rationale": None}
 
 
 def interpreted_feature(

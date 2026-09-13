@@ -7,10 +7,9 @@ from typing import Literal
 
 import pytest
 
+from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages.interpretation.contracts import (
-    View,
-)
+from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.render.constants import (
@@ -1062,7 +1061,6 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
 
     from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
     from tests.zeroshot.workflow.test_agent import _subgraph
-    from zeroshot.pipeline.stages.coding.submission import CodingSubmission
     from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
     executor = StubCadQueryExecutor(
@@ -1082,14 +1080,14 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
     }
     model = ScriptedChatModel(
         responses=(
-            tool_call("CodingSubmission", answer, "first"),
-            tool_call("CodingSubmission", answer, "after-feedback"),
+            tool_call("TicketAnswers", answer, "first"),
+            tool_call("TicketAnswers", answer, "after-feedback"),
         )
     )
     agent = _subgraph(
         model,
         tools=(),
-        output_schema=CodingSubmission,
+        output_schema=TicketAnswers,
         response_format_strategy="tool",
         max_turns=2,
         extra_middleware=[

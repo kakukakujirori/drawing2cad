@@ -139,13 +139,10 @@ def tickets_assigned_to(
 
 
 class TicketAnswers(BaseModel):
-    """What every reasoning stage owes the round: one answer per open ticket.
+    """Your answers to the tickets assigned to you, and nothing else.
 
-    Separate from the revision below because coding has nothing else to send.
-    A schema that showed it `edits`, `deleted` and `rationale` and then refused
-    every value it put in them cost four of ten GLM runs, which died after six
-    corrections that could not tell the model what to write instead of a
-    string. A field a stage must leave empty does not belong in its answer.
+    Every reasoning stage revises its artifact in its workspace file, which
+    the pipeline verifies and reads back, so no artifact belongs in here.
     """
 
     model_config = ConfigDict(extra="forbid")

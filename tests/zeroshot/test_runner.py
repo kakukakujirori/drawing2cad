@@ -17,19 +17,18 @@ from PIL import Image
 from rich.console import Console
 
 from tests.zeroshot.chat_models import ScriptedChatModel
-from tests.zeroshot.contracts import drawing, interpretation, replacing
+from tests.zeroshot.contracts import drawing, interpretation
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest
-from zeroshot.pipeline.messages.tickets import TicketResponse
+from zeroshot.pipeline.messages.tickets import TicketAnswers, TicketResponse
 from zeroshot.pipeline.runner import (
     GraphFactory,
     PipelineRunner,
     _latest_program_source,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner
-from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
     unread_sheet,
@@ -39,13 +38,11 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     Region,
     View,
 )
-from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
 )
-from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.verification import (
     CadQueryExecutor,
     ExecutionStatus,
@@ -83,7 +80,7 @@ def _ticket_response(stage: str, summary: str) -> TicketResponse:
 
 
 _A_READING = AIMessage(
-    content=InterpretationSubmission(
+    content=TicketAnswers(
         responses=[_ticket_response("interpretation", "Established sem_feature_1.")],
     ).model_dump_json()
 )
@@ -144,27 +141,46 @@ def _interpretation_stage():
     )
 
 
+_A_PLAN = OperationPlan(
+    proposal=[
+        Operation(
+            name="op_base",
+            verb=OperationVerb.EXTRUDE,
+            detail="extrude it",
+            depends_on=[],
+            semantics=["sem_feature_1"],
+        )
+    ],
+    rationale="one extrude",
+)
+
+
 def _operations_stage():
-    submission = OperationSubmission(
-        **replacing(
-            OperationPlan(
-                proposal=[
-                    Operation(
-                        name="op_base",
-                        verb=OperationVerb.EXTRUDE,
-                        detail="extrude it",
-                        depends_on=[],
-                        semantics=["sem_feature_1"],
+    write = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "run_shell",
+                "args": {
+                    "command": "python -c "
+                    + shlex.quote(
+                        "from pathlib import Path;"
+                        f"Path('/work/operations.json').write_text({_A_PLAN.model_dump_json()!r})"
                     )
-                ],
-                rationale="one extrude",
-            )
-        ),
+                },
+                "id": "call-write-operations",
+                "type": "tool_call",
+            }
+        ],
+    )
+    submission = TicketAnswers(
         responses=[_ticket_response("operations", "Established op_base.")],
     )
     return _agent(
         "operation_planner",
-        ScriptedChatModel(responses=(AIMessage(content=submission.model_dump_json()),)),
+        ScriptedChatModel(
+            responses=(write, AIMessage(content=submission.model_dump_json()))
+        ),
         announce_turns=False,
     )
 
@@ -189,7 +205,7 @@ def _writing_model(call_id: str = "call-write-model") -> AIMessage:
 
 
 _CODING_ANSWER = AIMessage(
-    content=CodingSubmission(
+    content=TicketAnswers(
         responses=[_ticket_response("coding", "Implemented ret_base and result.")],
     ).model_dump_json()
 )
@@ -230,7 +246,7 @@ def _verified_resume_run():
     run = start_reconstruction("run_sample", "Reconstruct the drawing.", drawing())
     run = advance_reconstruction(
         run,
-        InterpretationSubmission(
+        TicketAnswers(
             responses=[
                 _ticket_response("interpretation", "Established sem_feature_1.")
             ],
@@ -239,27 +255,14 @@ def _verified_resume_run():
     )
     run = advance_reconstruction(
         run,
-        OperationSubmission(
-            **replacing(
-                OperationPlan(
-                    proposal=[
-                        Operation(
-                            name="op_base",
-                            verb=OperationVerb.EXTRUDE,
-                            detail="extrude it",
-                            depends_on=[],
-                            semantics=["sem_feature_1"],
-                        )
-                    ],
-                    rationale="one extrude",
-                )
-            ),
+        TicketAnswers(
             responses=[_ticket_response("operations", "Established op_base.")],
         ),
+        workspace_output=_A_PLAN,
     )
     run = advance_reconstruction(
         run,
-        CodingSubmission(
+        TicketAnswers(
             responses=[_ticket_response("coding", "Implemented ret_base and result.")],
         ),
         workspace_output=VerifyOutputResult(
@@ -421,7 +424,7 @@ def test_resume_restores_drawing_stage_crops(
     )
     run = advance_reconstruction(
         run,
-        InterpretationSubmission(
+        TicketAnswers(
             responses=[_ticket_response("interpretation", "Read view_front.")],
         ),
         workspace_output=interpretation(
@@ -875,6 +878,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     assert sorted(path.name for path in round_attempts.iterdir()) == [
         "coding",
         "interpretation",
+        "operations",
     ]
     final_attempt = round_attempts / "coding" / "000"
     assert (final_attempt / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE

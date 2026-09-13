@@ -8,9 +8,9 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
+from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
-from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.interpretation.contracts import ORTHOGRAPHIC_VIEWS
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import (
@@ -122,9 +122,9 @@ def create_coding_stage(
         system_prompt=build_system_prompt(
             system_prompt_path,
             prompt_context | {"max_turns": coding_agent_builder.keywords["max_turns"]},
-            CodingSubmission,
+            TicketAnswers,
         ),
-        output_schema=CodingSubmission,
+        output_schema=TicketAnswers,
         extra_middleware=[coding_middleware],
     )
     return CodingStage(

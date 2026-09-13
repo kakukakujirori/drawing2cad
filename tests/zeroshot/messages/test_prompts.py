@@ -26,7 +26,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     VIEW_FRAME,
     DrawingInterpretation,
 )
-from zeroshot.pipeline.stages.operations.contracts import Operation
+from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.workflow.lifecycle import (
@@ -62,6 +62,8 @@ _RUN_PATHS = {
     "coding_output_path": "/work/model.py",
     "interpretation_output_path": "/work/interpretation.json",
     "interpretation_schema": json.dumps(DrawingInterpretation.model_json_schema()),
+    "operations_output_path": "/work/operations.json",
+    "operations_schema": json.dumps(OperationPlan.model_json_schema()),
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
 }
@@ -220,7 +222,8 @@ def test_stage_instructions_resolve_all_template_placeholders(
     rendered = render_stage(stage.value)
 
     assert rendered
-    rendered = rendered.replace(_RUN_PATHS["interpretation_schema"], "")
+    for schema in ("interpretation_schema", "operations_schema"):
+        rendered = rendered.replace(_RUN_PATHS[schema], "")
     assert not re.search(r"\$[a-zA-Z_][a-zA-Z_0-9]*|\$\{", rendered)
 
 
@@ -366,14 +369,16 @@ def test_the_auditor_role_renders_its_contract() -> None:
     assert "$output_schema" not in rendered
 
 
-@pytest.mark.parametrize("stage", ["operations"])
-def test_a_round_asks_for_a_revision_rather_than_a_whole_artifact(
-    render_stage: Callable[..., str], stage: str
+def test_the_operations_round_uses_json_for_the_plan_and_answer_for_tickets(
+    render_stage: Callable[..., str],
 ) -> None:
-    rendered = render_stage(stage)
+    rendered = render_stage("operations")
 
-    assert "`edits`" in rendered
-    assert "`deleted`" in rendered
+    assert "/work/operations.json" in rendered
+    assert "`TicketAnswers`" in rendered
+    assert "never a diff" in rendered
+    assert "`edits`" not in rendered
+    assert "`deleted`" not in rendered
     assert "deliverable" not in rendered
 
 
@@ -396,7 +401,7 @@ def test_the_interpretation_round_uses_json_for_the_artifact_and_answer_for_tick
     rendered = render_stage("interpretation")
     assert "/work/interpretation.json" in rendered
     assert "complete artifact" in rendered
-    assert "InterpretationSubmission" in rendered
+    assert "TicketAnswers" in rendered
     assert "current artifact validates" in rendered
     assert "`edits`" not in rendered
 

@@ -1,22 +1,24 @@
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
-from tests.zeroshot.contracts import drawing, interpretation, replacing
-from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
+from tests.zeroshot.contracts import drawing, interpretation
+from zeroshot.pipeline.messages.tickets import (
+    BootstrapWork,
+    Ticket,
+    TicketAnswers,
+    TicketResponse,
+)
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     RevisionRequest,
     StageOutputRef,
 )
-from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
-from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
 )
-from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 
@@ -111,64 +113,19 @@ def _snapshot(
     )
 
 
-def test_operations_edit_their_own_member_type() -> None:
-    operations = _operations()
-    submission = OperationSubmission(
-        **replacing(operations), responses=_responses("ticket_bootstrap", "operations")
-    )
-    assert submission.edits == operations.proposal
-
-
-def test_deletion_names_are_validated_without_requiring_a_snapshot() -> None:
-    submission = OperationSubmission(
-        edits=[], deleted=["op_future_operation"], rationale=None, responses=[]
-    )
-    assert submission.deleted == ["op_future_operation"]
-
-
-@pytest.mark.parametrize(
-    "name", ["op_bore.detail", "op_bore.depends_on", "sem_bore", "op_Bore", ""]
-)
-def test_deletions_require_whole_operation_names(name: str) -> None:
-    with pytest.raises(ValidationError, match="not a usable"):
-        OperationSubmission(edits=[], deleted=[name], rationale=None, responses=[])
-
-
-def test_a_submission_cannot_edit_and_delete_the_same_member() -> None:
-    member = _operations().proposal[0]
-    with pytest.raises(ValidationError, match="both edited and deleted"):
-        OperationSubmission(
-            edits=[member], deleted=[member.name], rationale=None, responses=[]
-        )
-
-
-@pytest.mark.parametrize("field", ["edits", "deleted"])
-def test_a_submission_rejects_duplicate_member_names(field: str) -> None:
-    member = _operations().proposal[0]
-    with pytest.raises(ValidationError, match="more than once|same address twice"):
-        OperationSubmission(
-            edits=[member, member] if field == "edits" else [],
-            deleted=[member.name, member.name] if field == "deleted" else [],
-            rationale=None,
-            responses=[],
-        )
-
-
-def test_coding_carries_its_ticket_answers_and_nothing_else() -> None:
-    """A field coding must leave empty is a field it can get wrong: four of ten
+def test_a_stage_carries_its_ticket_answers_and_nothing_else() -> None:
+    """A field a stage must leave empty is a field it can get wrong: four of ten
     GLM runs died sending `rationale` a string against a validator that refused
-    it. The revision members are not in this schema at all."""
+    it. Every artifact now lives in a workspace file instead."""
     responses = _responses("ticket_bootstrap", "coding")
 
-    submission = CodingSubmission(responses=responses)
+    submission = TicketAnswers(responses=responses)
 
     assert submission.responses == responses
-    assert set(CodingSubmission.model_fields) == {"responses"}
+    assert set(TicketAnswers.model_fields) == {"responses"}
     for revision in ("edits", "deleted", "rationale"):
         with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-            CodingSubmission.model_validate(
-                {"responses": responses, revision: "anything"}
-            )
+            TicketAnswers.model_validate({"responses": responses, revision: "anything"})
 
 
 def test_interpretation_carries_ticket_answers_while_json_carries_the_artifact() -> (
@@ -176,15 +133,15 @@ def test_interpretation_carries_ticket_answers_while_json_carries_the_artifact()
 ):
     responses = _responses("ticket_bootstrap", "interpretation")
 
-    submission = InterpretationSubmission(responses=responses)
+    submission = TicketAnswers(responses=responses)
 
     assert submission.responses == responses
-    assert set(InterpretationSubmission.model_fields) == {"responses"}
+    assert set(TicketAnswers.model_fields) == {"responses"}
 
 
 def test_a_stage_submission_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        InterpretationSubmission.model_validate(
+        TicketAnswers.model_validate(
             {
                 "responses": _responses("ticket_bootstrap", "interpretation"),
                 "artifact": _interpretation(),
@@ -192,29 +149,10 @@ def test_a_stage_submission_rejects_extra_fields() -> None:
         )
 
 
-def test_each_stage_submission_exposes_its_concrete_json_schema() -> None:
-    operation_schema = OperationSubmission.model_json_schema()
-    assert operation_schema["properties"]["edits"]["items"]["$ref"].endswith(
-        "/Operation"
-    )
-    for submission in [InterpretationSubmission, CodingSubmission]:
-        assert set(submission.model_json_schema()["properties"]) == {"responses"}
-
-
-@pytest.mark.parametrize(
-    ("submission", "expected_name"),
-    [
-        (InterpretationSubmission, "InterpretationSubmission"),
-        (OperationSubmission, "OperationSubmission"),
-        (CodingSubmission, "CodingSubmission"),
-    ],
-)
-def test_stage_submission_schema_names_are_provider_safe(
-    submission: type[BaseModel],
-    expected_name: str,
-) -> None:
-    assert submission.__name__ == expected_name
-    assert submission.model_json_schema()["title"] == expected_name
+def test_the_shared_submission_schema_is_provider_safe() -> None:
+    schema = TicketAnswers.model_json_schema()
+    assert set(schema["properties"]) == {"responses"}
+    assert schema["title"] == TicketAnswers.__name__ == "TicketAnswers"
 
 
 def test_a_round_checkpoint_requires_every_ticket_response_in_stage_order() -> None:
@@ -424,5 +362,5 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
     assert isinstance(restored.snapshots[1].open_tickets[0].subject, AuditFinding)
 
 
-def test_a_coding_stage_with_no_ticket_of_its_own_answers_nothing() -> None:
-    assert CodingSubmission.unchanged().responses == []
+def test_a_stage_with_no_ticket_of_its_own_answers_nothing() -> None:
+    assert TicketAnswers(responses=[]).responses == []

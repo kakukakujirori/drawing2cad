@@ -18,11 +18,10 @@ from tests.zeroshot.contracts import (
     drawing,
     interpretation,
     interpreted_feature,
-    replacing,
 )
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest
-from zeroshot.pipeline.messages.tickets import TicketResponse
+from zeroshot.pipeline.messages.tickets import TicketAnswers, TicketResponse
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
@@ -31,7 +30,6 @@ from zeroshot.pipeline.stages.audit.contracts import (
     StageOutputRef,
 )
 from zeroshot.pipeline.stages.coding import stage as coding_stage_module
-from zeroshot.pipeline.stages.coding.submission import CodingSubmission
 from zeroshot.pipeline.stages.contracts import ReconstructionRun
 from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
@@ -43,13 +41,11 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     Region,
     View,
 )
-from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
 )
-from zeroshot.pipeline.stages.operations.submission import OperationSubmission
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import (
     ExecutionStatus,
@@ -87,7 +83,7 @@ def _interpretation_submission(
     ticket_id: str | None = _ROUND_ZERO_TICKET,
 ) -> AIMessage:
     return _message(
-        InterpretationSubmission(
+        TicketAnswers(
             responses=_responses(ticket_id, PipelineStage.INTERPRETATION),
         )
     )
@@ -95,7 +91,7 @@ def _interpretation_submission(
 
 def _invalid_interpretation_submission() -> AIMessage:
     return _message(
-        InterpretationSubmission(
+        TicketAnswers(
             responses=_responses("ticket_absent", PipelineStage.INTERPRETATION),
         )
     )
@@ -170,21 +166,41 @@ def _plan(*, builds: Sequence[int | str] = (1,), detail: str = "extrude"):
 
 def _operation_submission(
     ticket_id: str | None = _ROUND_ZERO_TICKET,
+) -> AIMessage:
+    return _message(
+        TicketAnswers(responses=_responses(ticket_id, PipelineStage.OPERATIONS))
+    )
+
+
+def _write_operations(plan: OperationPlan, call_id: str = "plan") -> AIMessage:
+    payload = base64.b64encode(
+        (plan.model_dump_json(indent=2) + "\n").encode()
+    ).decode()
+    command = (
+        'python -c "import base64;'
+        "open('/work/operations.json','wb').write(base64.b64decode('"
+        + payload
+        + "'))\""
+    )
+    return tool_call("run_shell", {"command": command}, call_id)
+
+
+def _operations_script(
+    ticket_id: str | None = _ROUND_ZERO_TICKET,
     *,
     builds: Sequence[int | str] = (1,),
     detail: str = "extrude",
-) -> AIMessage:
-    return _message(
-        OperationSubmission(
-            **replacing(_plan(builds=builds, detail=detail)),
-            responses=_responses(ticket_id, PipelineStage.OPERATIONS),
-        )
+    call_id: str = "plan",
+) -> tuple[AIMessage, AIMessage]:
+    return (
+        _write_operations(_plan(builds=builds, detail=detail), call_id),
+        _operation_submission(ticket_id),
     )
 
 
 def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
     return _message(
-        CodingSubmission(
+        TicketAnswers(
             responses=_responses(ticket_id, PipelineStage.CODING),
         )
     )
@@ -384,7 +400,7 @@ def _last_instruction(messages: list[BaseMessage]) -> str:
 def _interpretation_seed() -> ReconstructionRun:
     return advance_reconstruction(
         start_reconstruction("run_test", "Reconstruct the drawing.", drawing()),
-        InterpretationSubmission(
+        TicketAnswers(
             responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.INTERPRETATION)]
         ),
         workspace_output=interpretation("a plate"),
@@ -394,10 +410,10 @@ def _interpretation_seed() -> ReconstructionRun:
 def _operations_resume() -> ReconstructionRun:
     return advance_reconstruction(
         _interpretation_seed(),
-        OperationSubmission(
-            **replacing(_plan()),
-            responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.OPERATIONS)],
+        TicketAnswers(
+            responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.OPERATIONS)]
         ),
+        workspace_output=_plan(),
     )
 
 
@@ -413,7 +429,7 @@ def test_an_accepted_round_is_integrated_and_persisted(
         ),
     )
     interpreter = ScriptedChatModel(responses=_interpretation_script())
-    planner = ScriptedChatModel(responses=(_operation_submission(),))
+    planner = ScriptedChatModel(responses=_operations_script())
     coder = ScriptedChatModel(responses=(_coding_submission(),))
     auditor = ScriptedChatModel(responses=(_accepted_audit(),))
 
@@ -476,7 +492,7 @@ def test_an_interpretation_seed_starts_at_operations_without_calling_interpretat
 ) -> None:
     calls = _stub_verification(monkeypatch, _verified())
     interpreter = ScriptedChatModel(responses=())
-    planner = ScriptedChatModel(responses=(_operation_submission(),))
+    planner = ScriptedChatModel(responses=_operations_script())
     coder = ScriptedChatModel(responses=(_coding_submission(),))
     auditor = ScriptedChatModel(responses=(_accepted_audit(),))
 
@@ -493,7 +509,7 @@ def test_an_interpretation_seed_starts_at_operations_without_calling_interpretat
         )
 
     assert interpreter.received_messages == []
-    assert len(planner.received_messages) == 1
+    assert len(planner.received_messages) == 2
     assert calls == ["verify"]
     assert persisted == result["reconstruction"]
     assert persisted.snapshots[-1].interpretation == interpretation("a plate")
@@ -534,7 +550,7 @@ def test_every_stage_reads_the_same_history_path_and_current_round(
 ) -> None:
     _stub_verification(monkeypatch, _verified())
     interpreter = ScriptedChatModel(responses=_interpretation_script())
-    planner = ScriptedChatModel(responses=(_operation_submission(),))
+    planner = ScriptedChatModel(responses=_operations_script())
     coder = ScriptedChatModel(responses=(_coding_submission(),))
     auditor = ScriptedChatModel(responses=(_accepted_audit(),))
 
@@ -558,7 +574,7 @@ def test_every_stage_reads_the_same_history_path_and_current_round(
 def test_only_the_interpretation_stage_receives_the_scale_tool(monkeypatch):
     _stub_verification(monkeypatch, _verified())
     interpreter = ScriptedChatModel(responses=_interpretation_script())
-    planner = ScriptedChatModel(responses=(_operation_submission(),))
+    planner = ScriptedChatModel(responses=_operations_script())
     coder = ScriptedChatModel(responses=(_coding_submission(),))
     auditor = ScriptedChatModel(responses=(_accepted_audit(),))
     with SandboxWorkdir() as workdir:
@@ -585,7 +601,7 @@ def test_invalid_operations_retry_without_reaching_coding(
     interpreter = ScriptedChatModel(responses=_interpretation_script())
     planner = ScriptedChatModel(
         responses=(
-            _operation_submission(builds=("sem_absent",)),
+            *_operations_script("ticket_absent"),
             _operation_submission(),
         )
     )
@@ -601,15 +617,15 @@ def test_invalid_operations_retry_without_reaching_coding(
             max_stage_validation_retries=1,
         ).invoke({})
 
-    assert len(planner.received_messages) == 2
+    assert len(planner.received_messages) == 3
     assert len(coder.received_messages) == 1
     assert calls == ["verify"]
-    retry = _last_instruction(planner.received_messages[1])
+    retry = _last_instruction(planner.received_messages[-1])
     assert "Operations Validation Error" in retry
-    assert "sem_feature_1" in retry
+    assert "ticket_absent" in retry
     validation_message = next(
         message
-        for message in planner.received_messages[1]
+        for message in planner.received_messages[-1]
         if isinstance(message, HumanMessage)
         and "Operations Validation Error" in message.text
     )
@@ -639,9 +655,7 @@ def test_invalid_interpretations_retry_or_exhaust_before_operations(
             else _invalid_interpretation_submission(),
         )
     )
-    planner = ScriptedChatModel(
-        responses=(_operation_submission(),) if recovers else ()
-    )
+    planner = ScriptedChatModel(responses=_operations_script() if recovers else ())
     coder = ScriptedChatModel(responses=(_coding_submission(),) if recovers else ())
     auditor = ScriptedChatModel(responses=(_accepted_audit(),) if recovers else ())
     with SandboxWorkdir() as workdir:
@@ -661,7 +675,7 @@ def test_invalid_interpretations_retry_or_exhaust_before_operations(
     snapshot = result["reconstruction"].snapshots[0]
     if recovers:
         assert snapshot.last_completed_stage is PipelineStage.CODING
-        assert len(planner.received_messages) == 1
+        assert len(planner.received_messages) == 2
         assert result["stage_validation_error"] is None
     else:
         assert snapshot.last_completed_stage is None
@@ -675,7 +689,10 @@ def test_stage_validation_retry_limit_stops_before_downstream_work(
 ) -> None:
     calls = _stub_verification(monkeypatch)
     planner = ScriptedChatModel(
-        responses=tuple(_operation_submission(builds=("sem_absent",)) for _ in range(2))
+        responses=(
+            *_operations_script("ticket_absent"),
+            _operation_submission("ticket_absent"),
+        )
     )
     coder = ScriptedChatModel(responses=())
     auditor = ScriptedChatModel(responses=())
@@ -690,7 +707,7 @@ def test_stage_validation_retry_limit_stops_before_downstream_work(
             max_stage_validation_retries=1,
         ).invoke({})
 
-    assert len(planner.received_messages) == 2
+    assert len(planner.received_messages) == 3
     assert coder.received_messages == []
     assert auditor.received_messages == []
     assert calls == []
@@ -698,7 +715,7 @@ def test_stage_validation_retry_limit_stops_before_downstream_work(
     assert snapshot.last_completed_stage is PipelineStage.INTERPRETATION
     assert snapshot.operations is None
     assert result["stage_validation_failure_count"] == 2
-    assert "sem_absent" in result["stage_validation_error"]
+    assert "ticket_absent" in result["stage_validation_error"]
 
 
 def test_a_persisted_interpretation_checkpoint_can_restart_the_graph(monkeypatch):
@@ -725,7 +742,7 @@ def test_a_persisted_interpretation_checkpoint_can_restart_the_graph(monkeypatch
             interpreter=ScriptedChatModel(
                 responses=_interpretation_script(call_id="resume")
             ),
-            planner=ScriptedChatModel(responses=(_operation_submission(),)),
+            planner=ScriptedChatModel(responses=_operations_script()),
             coder=ScriptedChatModel(responses=(_coding_submission(),)),
             auditor=ScriptedChatModel(responses=(_accepted_audit(),)),
         ).invoke({"reconstruction": checkpoint})
@@ -747,7 +764,7 @@ def test_an_invalid_audit_is_retried_against_the_same_snapshot(
         result = _graph(
             workdir,
             interpreter=ScriptedChatModel(responses=_interpretation_script()),
-            planner=ScriptedChatModel(responses=(_operation_submission(),)),
+            planner=ScriptedChatModel(responses=_operations_script()),
             coder=ScriptedChatModel(responses=(_coding_submission(),)),
             auditor=auditor,
             max_stage_validation_retries=1,
@@ -777,8 +794,10 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(monkeypat
     )
     planner = ScriptedChatModel(
         responses=(
-            _operation_submission(),
-            _operation_submission(_ROUND_ONE_TICKET, detail="extrude revised plate"),
+            *_operations_script(),
+            *_operations_script(
+                _ROUND_ONE_TICKET, detail="extrude revised plate", call_id="replan"
+            ),
         )
     )
     coder = ScriptedChatModel(
@@ -810,9 +829,10 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(monkeypat
     assert second.operations == _plan(detail="extrude revised plate")
     assert len(second.open_tickets[0].responses) == 3
     assert len(interpreter.received_messages) == 4
-    assert len(planner.received_messages) == len(coder.received_messages) == 2
+    assert len(planner.received_messages) == 4
+    assert len(coder.received_messages) == 2
     assert len(auditor.received_messages) == 1
-    assert "round 1" in _last_instruction(planner.received_messages[1])
+    assert "round 1" in _last_instruction(planner.received_messages[2])
 
 
 def test_an_interpretation_revision_refreshes_parameter_values_and_preserves_history(
@@ -839,15 +859,10 @@ def test_an_interpretation_revision_refreshes_parameter_values_and_preserves_his
             ),
             planner=ScriptedChatModel(
                 responses=(
-                    _operation_submission(detail="start at sem_feature_1.offset"),
-                    _message(
-                        OperationSubmission(
-                            edits=[],
-                            deleted=[],
-                            rationale=None,
-                            responses=_responses(ticket, PipelineStage.OPERATIONS),
-                        )
-                    ),
+                    *_operations_script(detail="start at sem_feature_1.offset"),
+                    # A round that changes nothing still hands on the seeded plan,
+                    # whose references are refreshed against the new interpretation.
+                    _operation_submission(ticket),
                 )
             ),
             coder=ScriptedChatModel(
@@ -881,7 +896,7 @@ def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(
 ) -> None:
     _stub_verification(monkeypatch, _verified("000"), _verified("001"))
     interpreter = ScriptedChatModel(responses=_interpretation_script())
-    planner = ScriptedChatModel(responses=(_operation_submission(),))
+    planner = ScriptedChatModel(responses=_operations_script())
     coder = ScriptedChatModel(
         responses=(_coding_submission(), _coding_submission(_ROUND_ONE_TICKET))
     )
@@ -904,7 +919,7 @@ def test_a_coding_rooted_finding_reopens_the_round_for_coding_alone(
 
     # The unassigned stages were not asked again, and their artifacts stand.
     assert len(interpreter.received_messages) == 2
-    assert len(planner.received_messages) == 1
+    assert len(planner.received_messages) == 2
     assert len(coder.received_messages) == 2
     assert second.interpretation == first.interpretation
     assert second.operations == first.operations
@@ -921,7 +936,7 @@ def test_rejection_at_the_round_limit_finishes_without_opening_another_round(
         result = _graph(
             workdir,
             interpreter=ScriptedChatModel(responses=_interpretation_script()),
-            planner=ScriptedChatModel(responses=(_operation_submission(),)),
+            planner=ScriptedChatModel(responses=_operations_script()),
             coder=ScriptedChatModel(responses=(_coding_submission(),)),
             auditor=auditor,
             max_audit_reject_count=0,

@@ -4,7 +4,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket
+from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketAnswers
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
@@ -12,9 +12,9 @@ from zeroshot.pipeline.stages.audit.contracts import (
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
 from zeroshot.pipeline.stages.drawings.contracts import DrawingSource
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
+from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
 from zeroshot.pipeline.stages.snapshot_update import (
-    ReasoningSubmission,
     WorkspaceOutput,
     build_snapshot_update,
 )
@@ -102,6 +102,11 @@ def interpretation_baseline(run: ReconstructionRun) -> DrawingInterpretation | N
     return run.snapshots[-2].interpretation if len(run.snapshots) > 1 else None
 
 
+def operations_baseline(run: ReconstructionRun) -> OperationPlan | None:
+    """The accepted operation plan from the preceding round, if any."""
+    return run.snapshots[-2].operations if len(run.snapshots) > 1 else None
+
+
 def _ticket_from_finding(
     round_number: int,
     finding: AuditFinding,
@@ -126,25 +131,23 @@ def _assigned_stages(finding: AuditFinding) -> list[ReasoningStage]:
 
 def advance_reconstruction(
     run: ReconstructionRun,
-    submission: ReasoningSubmission,
+    submission: TicketAnswers,
     *,
     workspace_output: WorkspaceOutput | None = None,
 ) -> ReconstructionRun:
     """Validate and atomically integrate one reasoning-stage result.
 
-    Interpretation and coding receive verified workspace outputs; operations
-    derive theirs from the submitted structured diff.
+    Every reasoning stage revises its artifact in the workspace; the verified
+    result arrives here, and the submission carries only ticket answers.
     """
     current = run.snapshots[-1]
     stage = next_stage(current.last_completed_stage)
     if stage not in REASONING_STAGES:
         raise ValueError("a completed coding snapshot cannot advance again")
 
-    previous = run.snapshots[-2] if len(run.snapshots) > 1 else current
     update = build_snapshot_update(
         submission,
         current,
-        previous,
         stage,
         workspace_output=workspace_output,
     )

@@ -10,10 +10,9 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
-from zeroshot.pipeline.messages.tickets import tickets_assigned_to
+from zeroshot.pipeline.messages.tickets import TicketAnswers, tickets_assigned_to
 from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.interpretation.submission import InterpretationSubmission
 from zeroshot.pipeline.stages.interpretation.validate import read_dxf_frame
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.tools import create_calculate_drawing_scale_tool
@@ -43,7 +42,7 @@ class InterpretationStage:
             self.verifier.reset(interpretation_baseline(state["reconstruction"]))
             self.middleware.reset()
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.INTERPRETATION):
-            return {"stage_submission": InterpretationSubmission.unchanged()}
+            return {"stage_submission": TicketAnswers(responses=[])}
         previous = state.get("interpretation_state") or {}
         instruction = self.instructions.build(
             state,
@@ -153,9 +152,9 @@ def create_interpretation_stage(
         system_prompt=build_system_prompt(
             system_prompt_path,
             prompt_context | {"max_turns": builder.keywords["max_turns"]},
-            InterpretationSubmission,
+            TicketAnswers,
         ),
-        output_schema=InterpretationSubmission,
+        output_schema=TicketAnswers,
         extra_middleware=[middleware],
     )
     return InterpretationStage(

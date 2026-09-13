@@ -17,7 +17,7 @@ from tests.zeroshot.workflow.test_graph import (
     _interpretation_script,
     _interpretation_submission,
     _invalid_interpretation_submission,
-    _operation_submission,
+    _operations_script,
     _stub_verification,
     _verified,
     _write_interpretation,
@@ -29,9 +29,7 @@ from zeroshot.pipeline.stages.drawings.contracts import (
     DrawingSource,
     unread_sheet,
 )
-from zeroshot.pipeline.stages.interpretation.contracts import (
-    View,
-)
+from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.components.compact import (
@@ -121,7 +119,7 @@ def _continued_graph(
 def models() -> _Models:
     return {
         "interpreter": ScriptedChatModel(responses=_interpretation_script()),
-        "planner": ScriptedChatModel(responses=(_operation_submission(),)),
+        "planner": ScriptedChatModel(responses=_operations_script()),
         "coder": ScriptedChatModel(responses=(_coding_submission(),)),
         "auditor": ScriptedChatModel(responses=(_accepted_audit(),)),
     }
@@ -238,7 +236,7 @@ def test_reasoning_states_end_with_the_same_latest_thread(
     assert threads[0] == threads[1] == threads[2]
     # The answer itself, as its own JSON rather than wrapped in a tool call.
     assert any(
-        "CodingSubmission" not in text and '"stage":"coding"' in text
+        "TicketAnswers" not in text and '"stage":"coding"' in text
         for text in threads[0]
     )
 
