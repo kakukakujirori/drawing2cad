@@ -102,11 +102,9 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
 
 def _dxf_input(tmp_path):
     candidate = dxf_case(tmp_path)
-    data = candidate.model_dump()
-    data["views"][0]["role"] = "full_page"
-    drawing = [register_view("view_front", View.FULL_PAGE, tmp_path / "front.dxf", 1.0)]
+    drawing = [register_view("view_front", View.FRONT, tmp_path / "front.dxf", 25.4)]
     workdir = SandboxWorkdir(tmp_path)
-    return DrawingInterpretation.model_validate(data), drawing, workdir
+    return candidate, drawing, workdir
 
 
 def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
@@ -168,6 +166,8 @@ def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
     result = stage.run({"reconstruction": run}, {})
     assert result["stage_submission"] == TicketAnswers.model_validate(response)
     text = model.received_messages[0][-1].text
+    assert "The original DXFs below are already registered" in text
+    assert "using role full_page" not in text
     assert "u = (x - origin_native[0]) * mm_per_unit" in text
     assert "v = (y - origin_native[1]) * mm_per_unit" in text
     metadata = json.loads(text.splitlines()[-1])
@@ -186,10 +186,17 @@ def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
     }
     accepted = stage.verifier.accepted_interpretation
     assert accepted is not None and len(accepted.views) == 2
+    assert accepted.views[0].role == View.FRONT
     assert accepted.views[0].region.box_uv == pytest.approx((0, 0, 101.6, 76.2))
     reports = stage.verifier.verify().reports
     assert reports["view_front"]["status"] == "native_dxf"
     assert reports["view_detail"]["mm_per_unit"] == 25.4
+    data = accepted.model_dump()
+    data["views"][0]["region"]["box_uv"] = [0, 0, 50, 50]
+    stage.verifier.source_path.write_text(json.dumps(data))
+    rejected = stage.verifier.verify()
+    assert not rejected.confirmed
+    assert "full-file region" in rejected.errors[0]
 
 
 @pytest.mark.parametrize("factors", [None, {"view_detail": 25.4}])

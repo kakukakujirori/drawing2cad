@@ -1,3 +1,4 @@
+import math
 import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -71,7 +72,7 @@ class Region(Contract):
         ...,
         description="DrawingView.name (view_...) identifying the file and scale used by these coordinates.",
     )
-    box_px: tuple[float, float, float, float] | None = Field(
+    box_px: tuple[int, int, int, int] | None = Field(
         default=None,
         description="x0, y0, x1, y1 pixel boundaries in the referenced DrawingView.file: origin at that file's top left, x right, y down. Required for raster images, forbidden for native DXF. The displayed image or FULL_PAGE role does not change this reference.",
     )
@@ -93,6 +94,19 @@ class Region(Contract):
                     raise ValueError(f"{name} must use the referenced file's origin")
         require_name(self.view, "view_")
         return self
+
+    def matches_bounds(self, other: Self, *, tol: float = 1e-7) -> bool:
+        """Check if this region references the same view and covers the same bounds."""
+        if self.view != other.view:
+            return False
+        if other.box_px is not None:
+            return self.box_px == other.box_px
+        if other.box_uv is not None:
+            return self.box_uv is not None and all(
+                math.isclose(a, b, rel_tol=0, abs_tol=tol)
+                for a, b in zip(self.box_uv, other.box_uv)
+            )
+        return False
 
 
 class Dimension(Contract):
@@ -123,7 +137,7 @@ class Dimension(Contract):
     )
     region: Region = Field(
         ...,
-        description="Region containing the printed callout and its indicated target; may refer to the original FULL_PAGE even when the measurement is on another sheet's file.",
+        description="Region containing the printed callout and its indicated target; may refer to an original input view even when the measurement is on another view's file.",
     )
     quantity: int = Field(
         ...,
@@ -151,16 +165,16 @@ class DrawingView(Contract):
     name: str = Field(..., description="Stable view_ name, kept across revisions.")
     role: View = Field(
         ...,
-        description="FULL_PAGE for an original input image; otherwise the identified projection, such as front, top or right.",
+        description="Keep each registered input's role. FULL_PAGE means an unsplit page; other roles identify projections such as front, top or right, or pictorial context.",
     )
     file: str = Field(
         ...,
         min_length=1,
-        description="Path to this sheet's image or DXF in the workspace. For each detail view (e.g., front, top, right), crop and save a separate file.",
+        description="Path to this view's image or DXF in the workspace. Keep registered input files; save a separate crop only when identifying a new view within another file.",
     )
     region: Region = Field(
         ...,
-        description="Where this sheet is located in the referenced DrawingView. An original input's region refers to itself and covers its full file; a view may refer to a region of the FULL_PAGE.",
+        description="Where this view is located in the referenced DrawingView. Preserve each registered input's self-reference and full-file bounds; a new crop refers to its region in the parent view.",
     )
     dimensions: list[Dimension] = Field(
         ..., description="Printed figures on this sheet; empty if none."
@@ -228,7 +242,7 @@ class DrawingInterpretation(Contract):
     )
     views: list[DrawingView] = Field(
         ...,
-        description="Original input images registered with role FULL_PAGE, and identified views; each has a file and a Region locating it.",
+        description="Registered input files with their existing names, roles and full-file Regions, plus newly identified crops. Pictorial inputs may be omitted. Add printed dimensions to the appropriate views.",
     )
     features: list[SemanticFeature] = Field(
         ...,

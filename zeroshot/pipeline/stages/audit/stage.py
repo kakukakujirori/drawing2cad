@@ -1,4 +1,3 @@
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -48,14 +47,6 @@ class AuditStage:
             PipelineStage.AUDIT,
             include_artifact=not previous,
             attempt_dir=attempt_dir,
-            ticket_responses=json.dumps(
-                [
-                    response.model_dump(mode="json")
-                    for ticket in snapshot.open_tickets
-                    for response in ticket.responses
-                ],
-                indent=2,
-            ),
             intermediate_returns_dir=(
                 str(PurePosixPath(attempt_dir) / INTERMEDIATE_RETURNS_DIR)
                 if verification.intermediate_returns

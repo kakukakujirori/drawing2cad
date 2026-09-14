@@ -17,7 +17,6 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     PICTORIAL_VIEWS,
     DrawingInterpretation,
     DrawingView,
-    View,
 )
 from zeroshot.pipeline.stages.interpretation.validate import validate_interpretation
 from zeroshot.pipeline.verification.attempts import AttemptStore
@@ -53,13 +52,13 @@ class InterpretationVerifier:
         self.attempt_store = attempt_store
         self.source_filename = source_filename
         self.dxf_mm_per_unit = dxf_mm_per_unit
-        # A pictorial fixes no axes, so losing it costs no coordinate; only
-        # the pages a view can be read off must survive as FULL_PAGE.
-        self._original_files = {
-            workdir.host_to_sandbox_path(view.file)
+        self._original_views = [
+            view.model_copy(
+                update={"file": str(workdir.host_to_sandbox_path(view.file))},
+                deep=True,
+            )
             for view in input_artifact
-            if view.role not in PICTORIAL_VIEWS
-        }
+        ]
         self._built: InterpretationVerificationResult | None = None
         self._built_from_digest: str | None = None
         self._last_feedback_result: InterpretationVerificationResult | None = None
@@ -130,17 +129,22 @@ class InterpretationVerifier:
             payload = self.source_path.read_bytes()
             (attempt_dir / "_interpretation_raw.json").write_bytes(payload)
             submitted = DrawingInterpretation.model_validate_json(payload)
-            retained = {
-                self.workdir.host_to_sandbox_path(self._file_path(view.file))
-                for view in submitted.views
-                if view.role == View.FULL_PAGE
-            }
-            missing = self._original_files - retained
-            if missing:
-                raise ValueError(
-                    "Retain each original input file as a FULL_PAGE view: "
-                    + ", ".join(map(str, sorted(missing)))
-                )
+            by_name = {view.name: view for view in submitted.views}
+            for original in self._original_views:
+                view = by_name.get(original.name)
+                if view is None and original.role in PICTORIAL_VIEWS:
+                    continue
+                if (
+                    view is None
+                    or self._file_path(view.file) != self._file_path(original.file)
+                    or view.role != original.role
+                    or not view.region.matches_bounds(original.region)
+                ):
+                    raise ValueError(
+                        "Retain each original input file with its registered name, "
+                        f"role and full-file region: {original.name} ({original.role}), "
+                        f"{original.file}. Dimensions may be added."
+                    )
             interpretation, reports = validate_interpretation(
                 submitted,
                 workdir=self.workdir,

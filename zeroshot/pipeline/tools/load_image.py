@@ -34,7 +34,9 @@ def create_load_image_tool(workdir: SandboxWorkdir) -> BaseTool:
     @tool("load_image")
     def load_image(image_path: str) -> list[dict[str, Any]]:
         """
-        Load an image from a file path.
+        Load an existing image file, such as a PNG or JPEG. Read JSON, Python
+        and other text files with run_shell. If another tool creates or changes
+        the image, wait for its result before loading that image path.
         Args:
             image_path: The path to the image file.
         """

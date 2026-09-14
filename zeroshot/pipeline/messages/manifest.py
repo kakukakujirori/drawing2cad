@@ -17,7 +17,10 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
     Region,
     View,
+    require_unique,
 )
+
+DRAWING_SUFFIXES = frozenset({".dxf", ".png", ".jpg", ".jpeg"})
 
 
 def read_dxf_frame(path: Path, mm_per_unit: float) -> dict[str, Any]:
@@ -61,15 +64,22 @@ def register_view(
 ) -> DrawingView:
     """Address one drawing file as a view, its region covering the whole of it."""
     path = Path(file)
+    if path.suffix.lower() not in DRAWING_SUFFIXES:
+        raise ValueError(f"unsupported drawing file: {path}")
     if path.suffix.lower() == ".dxf":
         if mm_per_unit is None:
             raise ValueError(f"{name}: a native DXF input needs its mm_per_unit")
-        width, height = read_dxf_frame(path, mm_per_unit)["size_mm"]
+        # NOTE: By assuming that all the primitives are in the first quadrant,
+        #       we ensure the similar treatment of DXF and raster images.
+        frame = read_dxf_frame(path, mm_per_unit)
+        if min(frame["origin_native"]) < -1e-6:
+            raise ValueError(f"{name}: DXF primitives must lie in the first quadrant")
+        width, height = frame["size_mm"]
         region = Region(view=name, box_uv=(0.0, 0.0, width, height))
     else:
         with Image.open(path) as image:
             width, height = image.size
-        region = Region(view=name, box_px=(0.0, 0.0, width, height))
+        region = Region(view=name, box_px=(0, 0, width, height))
     return DrawingView(
         name=name, role=role, file=str(file), region=region, dimensions=[]
     )
@@ -86,6 +96,8 @@ def _safe_identifier(name: str, field_name: str) -> str:
 
 def _present(files: Iterable[str]) -> None:
     for path in map(Path, files):
+        if path.suffix.lower() not in DRAWING_SUFFIXES:
+            raise ValueError(f"unsupported drawing file: {path}")
         if not path.is_file():
             raise FileNotFoundError(f"Not Found: {path}")
 
@@ -95,9 +107,9 @@ class InputManifest:
     """The drawings a sample is made of.
 
     Views rather than a path because a sample may arrive as one sheet, as one
-        file per view, as DXF, as PNG, or as a mixture, and every stage after this
-        one should be unable to tell which. A perspective render offered alongside
-        the drawing is a view like any other.
+    file per view, as DXF, as PNG, or as a mixture, and every stage after this
+    one should be unable to tell which. A perspective render offered alongside
+    the drawing is a view like any other.
     """
 
     sample_id: str
@@ -106,6 +118,7 @@ class InputManifest:
     def __post_init__(self) -> None:
         if not self.drawing:
             raise ValueError("a sample needs at least one view")
+        require_unique((view.name for view in self.drawing), "input views")
         _present(view.file for view in self.drawing)
         object.__setattr__(
             self, "sample_id", _safe_identifier(self.sample_id, "sample_id")
@@ -116,10 +129,9 @@ class InputManifest:
 class FeedbackManifest:
     """What a verification drew of the solid it built, and what it could not.
 
-    Files rather than views: nothing cites a render, so none of them carries a
-    region. `errors` is keyed by the name the sheet would have been announced
-    under, because a sheet that was never produced cannot carry its own
-    explanation.
+    Each view covers its rendered file. `errors` is keyed by the name the
+    view would have been announced under, because a file that was never
+    produced cannot carry its own explanation.
     """
 
     verification_id: str

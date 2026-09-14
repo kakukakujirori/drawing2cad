@@ -107,8 +107,9 @@ def _dxf_context(
         return None
     return (
         "[Native DXF coordinates]\n"
-        "Register each original DXF with the view name and file below, "
-        "using role full_page. Native (x, y) becomes normalized millimetres: "
+        "The original DXFs below are already registered. Keep their names, "
+        "files, roles and full-file regions; add dimension readings. "
+        "Native (x, y) becomes normalized millimetres: "
         "u = (x - origin_native[0]) * mm_per_unit; "
         "v = (y - origin_native[1]) * mm_per_unit. "
         "The full-file box_uv is [0, 0, size_mm[0], size_mm[1]]. "

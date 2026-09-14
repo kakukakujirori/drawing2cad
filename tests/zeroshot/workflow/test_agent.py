@@ -453,6 +453,45 @@ def test_agent_reports_the_typed_answer_its_role_owes() -> None:
     assert result["messages"][-1].text == _ANSWER
 
 
+def test_a_tool_answer_is_acknowledged_before_the_next_instruction() -> None:
+    answer = ExampleProposal(proposal=["a boss"], rationale="one extrusion")
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("ExampleProposal", answer.model_dump(), "answer-1"),
+            tool_call("ExampleProposal", answer.model_dump(), "answer-2"),
+        )
+    )
+    graph = _subgraph(
+        model,
+        announce_turns=False,
+        output_schema=ExampleProposal,
+        response_format_strategy="tool",
+    )
+    first = graph.invoke({"messages": [HumanMessage(content="first task")]})
+    instruction = HumanMessage(content="Check the revised input.")
+    second = graph.invoke(
+        {**first, "messages": [*first["messages"], instruction]}
+    )
+
+    messages = model.received_messages[-1]
+    acknowledgement_index = next(
+        index
+        for index, message in enumerate(messages)
+        if isinstance(message, ToolMessage) and message.tool_call_id == "answer-1"
+    )
+    call, acknowledgement, following = messages[
+        acknowledgement_index - 1 : acknowledgement_index + 2
+    ]
+    assert isinstance(call, AIMessage)
+    assert call.tool_calls[0]["args"] == answer.model_dump()
+    assert isinstance(acknowledgement, ToolMessage)
+    assert acknowledgement.tool_call_id == "answer-1"
+    assert acknowledgement.content == "Submission received."
+    assert following == instruction
+    assert unanswered_tool_calls(model.received_messages[-1]) == []
+    assert second["structured_response"] == answer
+
+
 def test_agent_refuses_an_answer_that_breaks_its_output_contract() -> None:
     model = ScriptedChatModel(responses=(AIMessage(content='{"proposal": "a boss"}'),))
 
@@ -1186,6 +1225,16 @@ def test_an_answer_is_refused_while_the_program_does_not_build(
     )
     assert "not ready to submit" in refusal
     assert verifier.seen == ["result = broken", "result = 1"]
+    messages = result["messages"]
+    acknowledgement_index = next(
+        index
+        for index, message in enumerate(messages)
+        if isinstance(message, ToolMessage) and message.tool_call_id == "call-1"
+    )
+    assert messages[acknowledgement_index].content == "Submission received."
+    assert isinstance(messages[acknowledgement_index + 1], HumanMessage)
+    assert "not ready to submit" in messages[acknowledgement_index + 1].text
+    assert unanswered_tool_calls(messages) == []
 
 
 def test_an_answer_stands_when_the_program_builds(tmp_path: Path) -> None:

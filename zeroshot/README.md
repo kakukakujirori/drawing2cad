@@ -37,8 +37,8 @@ python -m zeroshot.evaluation.aggregate_run \
 
 The graph runs `interpretation -> operations -> coding -> audit`. The interpreter
 writes the complete `interpretation.json` and returns only its ticket responses.
-Operations still submit a structured revision; the interpreter needs no merge
-module because its verified file replaces the complete artifact.
+Operations similarly write the complete `operations.json` and return ticket
+responses. Each verified file replaces that stage's complete artifact.
 
 After a JSON or referenced-image change, automatic verification checks the files,
 calibrates each raster view from its dimensions, and reports errors, scale status,
@@ -59,12 +59,16 @@ Feature parameters can be referenced in operation details as
 with `view_`, `dim_`, or `sem_` names. An omitted feature can be requested directly
 at that stage with an `add` finding and a null target name.
 
-Existing `drawings` contracts remain as the input/render file adapter. New runs
-use the interpretation snapshot format; old reconstruction histories with
-separate `drawings` and `semantics` snapshots cannot be resumed directly.
+Input and rendered files use `DrawingView`. The first interpretation is seeded
+with the registered input views and `datum: "???"`. Set the datum and add readings,
+preserving each input's name, file, role and self-referencing full-file region;
+pictorial inputs may be omitted. Create crops only for newly separated views.
+Inputs require unique `view_` names and DXF, PNG or JPEG files. Old reconstruction
+histories using `DrawingSource`, or separate `drawings` and `semantics` snapshots,
+cannot be resumed directly.
 Native DXF verification requires explicit `workflow.dxf_mm_per_unit` metadata
 keyed by the registered `view_` names; it does not assume native units are mm.
-Original `sheet_front` input metadata uses the key `view_front`. The interpreter
+For example, input `view_front` uses metadata key `view_front`. The interpreter
 receives each original DXF's native origin, physical conversion and full-file
 UV bounds. Additional DXF files need their own configured `view_` keys and use
 their own geometry-bounding-box origins. Raster crops need no DXF factor.

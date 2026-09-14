@@ -228,3 +228,28 @@ def test_every_orthographic_view_has_a_frame() -> None:
     assert axes <= {"+x", "-x", "+y", "-y", "+z", "-z"}
     for view, frame in VIEW_FRAME.items():
         assert len({axis.lstrip("+-") for axis in frame}) == 3, view
+
+
+def test_region_matches_bounds() -> None:
+    raster = Region(view="view_front", box_px=(0, 0, 100, 200))
+    assert raster.matches_bounds(raster)
+    assert raster.matches_bounds(Region(view="view_front", box_px=(0, 0, 100, 200)))
+    # Different view name
+    assert not raster.matches_bounds(Region(view="view_other", box_px=(0, 0, 100, 200)))
+    # Different pixel bounds
+    assert not raster.matches_bounds(Region(view="view_front", box_px=(0, 0, 100, 150)))
+
+    dxf = Region(view="view_front", box_uv=(0.0, 0.0, 50.0, 80.0))
+    assert dxf.matches_bounds(dxf)
+    # Within tolerance
+    assert dxf.matches_bounds(
+        Region(view="view_front", box_uv=(0.0, 0.0, 50.0 + 1e-8, 80.0 - 1e-8))
+    )
+    # Outside tolerance
+    assert not dxf.matches_bounds(
+        Region(view="view_front", box_uv=(0.0, 0.0, 50.0 + 1e-5, 80.0))
+    )
+
+    # Disagreeing kind (raster vs DXF)
+    assert not raster.matches_bounds(dxf)
+    assert not dxf.matches_bounds(raster)

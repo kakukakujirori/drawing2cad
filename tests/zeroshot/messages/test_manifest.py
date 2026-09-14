@@ -8,8 +8,13 @@ can go and look at.
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
-from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
+from zeroshot.pipeline.messages.manifest import (
+    FeedbackManifest,
+    InputManifest,
+    register_view,
+)
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
     Region,
@@ -88,6 +93,36 @@ def test_a_sample_refuses_an_empty_or_unsafe_id(tmp_path: Path, sample_id: str) 
 def test_a_sample_refuses_a_sheet_whose_file_is_not_there(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         _sample_manifest(tmp_path, drawing=_drawing(tmp_path / "missing.dxf"))
+
+
+def test_a_sample_rejects_duplicate_names_before_inputs_can_be_copied(tmp_path):
+    first = _drawing(_write(tmp_path / "first.png"))[0]
+    second = _drawing(_write(tmp_path / "second.png"))[0]
+    with pytest.raises(ValueError, match="duplicate names in input views: view_0"):
+        InputManifest(sample_id="sample", drawing=[first, second])
+
+
+def test_registration_rejects_images_the_presenter_cannot_attach(tmp_path):
+    path = tmp_path / "input.webp"
+    Image.new("RGB", (20, 10)).save(path)
+    with pytest.raises(ValueError, match="unsupported drawing file"):
+        register_view("view_input", View.FULL_PAGE, path)
+    with pytest.raises(ValueError, match="unsupported drawing file"):
+        InputManifest(sample_id="sample", drawing=_drawing(path))
+
+
+def test_registration_rejects_negative_dxf_coordinates(tmp_path: Path) -> None:
+    import ezdxf
+
+    doc = ezdxf.new()
+    doc.modelspace().add_lwpolyline(
+        [(-10, -5), (10, -5), (10, 10), (-10, 10)], close=True
+    )
+    dxf_path = tmp_path / "negative.dxf"
+    doc.saveas(dxf_path)
+
+    with pytest.raises(ValueError, match="first quadrant"):
+        register_view("view_negative", View.FULL_PAGE, dxf_path, 1.0)
 
 
 def test_a_verification_that_drew_nothing_is_a_manifest_too(tmp_path: Path) -> None:

@@ -17,7 +17,13 @@ from zeroshot.pipeline.verification.verify_interpretation import InterpretationV
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
 
-def _case(tmp_path: Path, measurements=None, *, pictorial: str | None = None):
+def _case(
+    tmp_path: Path,
+    measurements=None,
+    *,
+    pictorial: str | None = None,
+    input_role: View = View.FULL_PAGE,
+):
     data = (
         raster_case(tmp_path)
         if measurements is None
@@ -28,13 +34,13 @@ def _case(tmp_path: Path, measurements=None, *, pictorial: str | None = None):
         0,
         {
             "name": "view_page",
-            "role": "full_page",
+            "role": input_role,
             "file": "/work/source.png",
             "region": {"view": "view_page", "box_px": [0, 0, 1200, 1400]},
             "dimensions": [],
         },
     )
-    given = [register_view("view_page", View.FULL_PAGE, tmp_path / "source.png")]
+    given = [register_view("view_page", input_role, tmp_path / "source.png")]
     if pictorial is not None:
         Image.new("RGB", (60, 40), "white").save(tmp_path / f"{pictorial}.png")
         given.append(
@@ -199,6 +205,57 @@ def test_a_pictorial_input_is_not_required_to_come_back_as_a_full_page(tmp_path)
 
     assert "Retain each original input file" not in verifier.feedback()[0]["text"]
     assert verifier.confirmed
+
+
+@pytest.mark.parametrize("role", [View.FRONT, View.TOP, View.SECTION, View.UNKNOWN])
+def test_registered_roles_survive_dimension_readings_and_enrichment(tmp_path, role):
+    verifier, candidate, _ = _case(tmp_path, input_role=role)
+    candidate.views[0].dimensions = candidate.views[1].dimensions
+    candidate.views[1].dimensions = []
+    verifier.reset(candidate)
+
+    verifier.feedback()
+    accepted = verifier.accepted_interpretation
+    assert accepted is not None
+    assert accepted.views[0].role == role
+    assert accepted.views[0].scale == pytest.approx(0.1)
+    assert accepted.views[0].region.box_uv is not None
+    verifier.reset(accepted)
+    assert verifier.verify().confirmed
+
+
+@pytest.mark.parametrize("changed", ["name", "file", "role", "reference", "bounds"])
+def test_original_identity_and_full_file_region_cannot_be_rewritten(tmp_path, changed):
+    verifier, candidate, _ = _case(tmp_path, input_role=View.FRONT)
+    data = candidate.model_dump()
+    original = data["views"][0]
+    if changed == "name":
+        original["name"] = original["region"]["view"] = "view_renamed"
+    elif changed == "file":
+        original["file"] = "/work/front.png"
+    elif changed == "role":
+        original["role"] = "full_page"
+    elif changed == "reference":
+        original["region"]["view"] = "view_front"
+    else:
+        original["region"]["box_px"] = [0, 0, 100, 100]
+    verifier.source_path.write_text(json.dumps(data))
+
+    assert (
+        "registered name, role and full-file region" in verifier.feedback()[0]["text"]
+    )
+    assert not verifier.confirmed
+
+
+def test_retained_pictorial_keeps_its_registration(tmp_path):
+    verifier, candidate, seed = _case(tmp_path, pictorial="hlg")
+    pictorial = seed.views[-1].model_copy(update={"file": "/work/hlg.png"})
+    candidate.views.append(pictorial)
+    verifier.reset(candidate)
+    assert verifier.verify().confirmed
+    candidate.views[-1].role = View.FULL_PAGE
+    verifier.reset(candidate)
+    assert not verifier.verify().confirmed
 
 
 def test_absent_calibration_stays_valid_and_reports_zero_measurements(tmp_path):

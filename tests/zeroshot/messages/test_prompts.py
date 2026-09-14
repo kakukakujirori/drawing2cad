@@ -96,7 +96,6 @@ def render_stage(
             **{
                 "attempt_dir": "/work/attempts/001",
                 "intermediate_returns_dir": "unavailable",
-                "ticket_responses": "[]",
                 **context,
             },
         ).text
@@ -235,7 +234,7 @@ def test_reconstruction_guide_keeps_only_the_working_contract() -> None:
         "responses",
     ):
         assert field in guide
-    assert "structured submission by itself" in guide
+    assert "exactly one response per assigned ticket" not in guide
     assert len(guide.split()) < 220
 
 
@@ -299,7 +298,6 @@ def test_the_audit_reads_the_attempt_directory_the_build_actually_wrote(
         "audit",
         attempt_dir="/work/attempts/001",
         intermediate_returns_dir=returns_dir,
-        ticket_responses="[]",
     )
 
     assert "/work/attempts/001" in rendered
@@ -307,6 +305,18 @@ def test_the_audit_reads_the_attempt_directory_the_build_actually_wrote(
     assert "_interpretation_raw" not in rendered
     assert "_interpretation_validation_log" not in rendered
     assert f"Recorded directory: {returns_dir}" in rendered
+
+
+def test_audit_reads_ticket_bodies_from_history_without_echoing_them(
+    render_stage: Callable[..., str],
+) -> None:
+    rendered = render_stage("audit", ticket_responses="BODY_MUST_NOT_BE_ECHOED")
+
+    assert "open_tickets" in rendered
+    assert "subjects and stage responses" in rendered
+    assert ".snapshots[-1]" in rendered
+    assert "/work/reconstruction.json" in rendered
+    assert "BODY_MUST_NOT_BE_ECHOED" not in rendered
 
 
 def test_auditor_keeps_result_out_of_the_backtrace_graph() -> None:
@@ -337,7 +347,7 @@ def test_the_coding_round_carries_the_history_and_result_contract(
 ) -> None:
     rendered = render_stage("coding")
 
-    assert "ret_<operation name without op_>" in rendered
+    assert "`ret_` variable by replacing its `op_` prefix" in rendered
     assert "# ----" not in rendered
     assert "Lxx-Lyy" not in rendered
 
@@ -352,12 +362,15 @@ def test_the_auditor_is_told_the_walk_rule_the_pipeline_would_reject_it_for() ->
     assert "sem_... -> dim_... -> view_..." in rendered
 
 
-def test_the_auditor_role_renders_its_contract() -> None:
-    rendered = PromptTemplate(ROLE_PATHS["output_auditor"]).render(
-        output_schema="SENTINEL_SCHEMA", max_turns="10"
-    )
+def test_the_auditor_role_does_not_repeat_the_api_contract() -> None:
+    rendered = build_system_prompt(
+        ROLE_PATHS["output_auditor"],
+        {**_RUN_PATHS, "max_turns": "10"},
+        AuditReport,
+    ).text
 
-    assert "SENTINEL_SCHEMA" in rendered
+    assert "`AuditReport`" in rendered
+    assert json.dumps(AuditReport.model_json_schema(), indent=2) not in rendered
     assert "$output_schema" not in rendered
 
 
@@ -421,7 +434,7 @@ def test_a_proposer_role_says_who_it_is_and_leaves_the_rest_to_the_instruction(
     body = PromptTemplate(ROLE_PATHS[role]).path.read_text(encoding="utf-8")
 
     assert "$" not in body
-    assert "run_shell" in body
+    assert body.strip()
     assert "result` variable" not in body
     assert "try-except" not in body
 
@@ -532,7 +545,7 @@ def test_interpretation_prioritises_a_verified_draft_and_source_pixel_measuremen
     assert "save a provisional artifact" in rendered
     assert "current artifact validates" in rendered
     assert "top left, x right, y down" in rendered
-    assert "Never measure from a resized display" in rendered
+    assert "native pixels, not a resized display" in rendered
     assert "validation derives them" in rendered
 
 

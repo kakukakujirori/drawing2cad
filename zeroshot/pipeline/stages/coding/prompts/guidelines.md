@@ -1,10 +1,4 @@
-The program to write and maintain is:
-
-$coding_output_path
-
-Keep this as one complete, self-contained CadQuery program.
-
-Each planned operation has a stable `op_` name. Record the completed CadQuery result of every operation in the corresponding `ret_` variable by replacing the `op_` prefix:
+Assign each operation's completed CadQuery result to a stable `ret_` variable by replacing its `op_` prefix. Helper functions and variables such as `part` are allowed. For example:
 
 ```python
 ret_base_plate = cq.Workplane("XY").rect(80, 60).extrude(25)
@@ -12,11 +6,8 @@ ret_bore_through = ret_base_plate.faces(">Z").workplane().hole(12)
 result = ret_bore_through
 ```
 
-Here `ret_base_plate` is the result of `op_base_plate`, and `ret_bore_through` is the result of `op_bore_through`. These names are the durable connection between the operation plan and the code, and let later verification inspect the model after a specific operation.
-
 Requirements:
-- Assign every planned operation's completed result to its corresponding `ret_<operation name without op_>` variable. Helper functions and variables such as `part` are allowed, but the completed result of each planned operation must still be assigned to its corresponding ret_ variable.
-- Build an operation from the `ret_` results of the operations it depends on. Keep the data flow consistent with the plan rather than rebuilding an unrelated solid inside a later operation.
+- The plan is a DAG: build each operation from the `ret_` results named by its `depends_on`, implementing dependencies first. The JSON list order is not the build order.
 - Store the final completed CadQuery solid in `result`. Normally `result` is the final operation's `ret_` variable, not a fresh reconstruction that bypasses the planned operations.
 - The script must be self-contained and must not load the input drawing or other external files at runtime.
 - The generated geometry must be valid and exportable to STEP format.
@@ -27,14 +18,12 @@ Verification:
 Every turn you edit $coding_output_path, it is automatically executed and the final solid is exported to a STEP file. The feedback includes the execution status, return code, stdout, stderr, any executor error, a count of faces and edges by kind, and paths to the generated DXF and perspective renders under `$verification_dir/round_NNN/coding/NNN/`. This costs you no turn.
 
 Guidelines:
-- The operation plan is a DAG. Read each entry's `depends_on` and implement dependencies before the operations that consume them; the JSON list order is not the build order. Each entry also names the semantic features it implements by their stable `sem_` names.
 - Implement the operation plan using the interpretation's shared `datum` and feature parameters for shapes, sizes, positions and directions. Preserve that model frame. References such as `sem_main_bore.radius`, `sem_main_bore.center` and `dim_bore_diameter.nominal_value` are annotated with their values; null means unknown, never zero. Evidence regions use the referenced view file's image coordinates, not model XYZ.
 - Build curves as curves. An arc is one edge, not a chain of segments; a round hole is one cylindrical face, not a ring of narrow flat ones. Sampling a curve into points and joining them with straight segments is an approximation, and sampling more finely does not make it an exact curve.
 - A fillet replaces a corner with a smooth transition tangent to the adjoining faces. Matching its radius alone is insufficient: attached sectors or ribs with sharp joins do not implement the fillet. An alternative construction must preserve the intended silhouette and tangency, not merely produce a valid solid.
 - Read the geometry census in verification feedback. A part whose faces are all one kind, or whose edge count runs into the hundreds, may contain an unintended approximation.
 - Inspect the generated DXF and perspective renders under this round's `coding/` directory using `run_shell` and `load_image` to compare the result with the source drawing.
 - Iteratively refine missing or incorrect features such as cutouts, hole patterns, fillets, and chamfers, writing after each meaningful group of edits so the next verification covers it.
-- Ensure that $coding_output_path is executable before concluding your final answer.
 - Read the latest verification feedback before concluding. Distinguish execution success from geometric correctness in your ticket response; do not claim a defect was repaired merely because STEP export succeeded.
 - If the plan or the interpretation looks wrong, or is missing a number you need, build your best reading, then name the `op_` or `sem_` member you doubt and what you did in your ticket response. Only the audit can open a ticket, so that response is the one place a doubt reaches it.
 - Address every applicable point from review or audit feedback in the transcript.
