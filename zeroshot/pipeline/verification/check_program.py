@@ -122,36 +122,44 @@ def _operation_name(return_name: str) -> str:
 
 
 def _identity_returns(tree: ast.Module) -> tuple[str, ...]:
-    """Find the `ret_*` names that never build anything.
+    """Find the `ret_*` names whose final value only passes another return through.
 
-    Every assignment to such a name just passes another `ret_*` through. One
-    assignment that builds clears the name: real work followed by a `.clean()`
-    still did the work.
+    Cleaning its own completed shape keeps an operation's work. Replacing it
+    with another return discards that work, even if an earlier assignment built.
     """
     builds: dict[str, bool] = {}
     for statement in tree.body:
-        if not isinstance(statement, ast.Assign | ast.AnnAssign):
+        if (
+            not isinstance(statement, ast.Assign | ast.AnnAssign)
+            or statement.value is None
+        ):
             continue
-        is_built = statement.value is not None and not _preserve_input(statement.value)
+        preserved = _preserve_input(statement.value)
         for name in assigned_names(statement):
             if name.startswith("ret_"):
-                builds[name] = builds.get(name, False) or is_built
+                builds[name] = (
+                    builds.get(name, False) if preserved == name else preserved is None
+                )
     return tuple(sorted(name for name, built in builds.items() if not built))
 
 
-def _preserve_input(value: ast.expr) -> bool:
-    """Whether this is a `ret_*` under nothing but shape-preserving calls.
+def _preserve_input(value: ast.expr) -> str | None:
+    """The `ret_*` beneath only shape-preserving calls, if any.
 
     An argument, a plain function call or an operator may have built
     something, and stops the walk.
     """
     while isinstance(value, ast.Call):
         if value.args or value.keywords or not isinstance(value.func, ast.Attribute):
-            return False
+            return None
         if value.func.attr not in _SHAPE_PRESERVING:
-            return False
+            return None
         value = value.func.value
-    return isinstance(value, ast.Name) and value.id.startswith("ret_")
+    return (
+        value.id
+        if isinstance(value, ast.Name) and value.id.startswith("ret_")
+        else None
+    )
 
 
 def _unconsumed_returns(

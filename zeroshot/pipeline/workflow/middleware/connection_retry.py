@@ -1,6 +1,7 @@
 """Retry connection failures and transient API errors, including HTTP 429/5xx."""
 
 import asyncio
+import json
 import logging
 import random
 import re
@@ -97,6 +98,25 @@ def report_model_retry(
     )
     if status is not None:
         payload["status_code"] = status
+    if isinstance(error, OpenRouterError):
+        data = getattr(error, "data", None)
+        metadata = getattr(getattr(data, "error", None), "metadata", None)
+        if isinstance(metadata, dict):
+            provider_error = {}
+            for name in ("provider_name", "raw"):
+                value = metadata.get(name)
+                if value is None:
+                    continue
+                if isinstance(value, str):
+                    try:
+                        value = json.loads(value)
+                    except ValueError:
+                        pass
+                value = _provider_error_detail(value)
+                text = value if isinstance(value, str) else json.dumps(value)
+                provider_error[name] = text[:4000]
+            if provider_error:
+                payload["provider_error"] = provider_error
     payload.update(details or {})
     if stream_writer is None:
         try:
@@ -109,6 +129,45 @@ def report_model_retry(
         stream_writer({"model_retry": payload})
     else:
         logging.getLogger(__name__).warning("model_retry: %s", payload)
+
+
+def _provider_error_detail(value: Any) -> Any:
+    """Keep diagnostic fields and redact recognizable credential/image text.
+
+    This intentionally drops echoed request structures; it is not a general
+    secret detector for arbitrary provider prose.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _provider_error_detail(item)
+            for key, item in value.items()
+            if key
+            in {
+                "error",
+                "errors",
+                "message",
+                "msg",
+                "type",
+                "code",
+                "param",
+                "detail",
+                "loc",
+            }
+        }
+    if isinstance(value, list):
+        return [_provider_error_detail(item) for item in value]
+    if isinstance(value, str):
+        value = re.sub(
+            r"data:image/[^\s\"'<>]+", "<redacted image>", value, flags=re.IGNORECASE
+        )
+        return re.sub(
+            r"(\b(?:authorization|(?:x[-_])?api[-_ ]?key)\b[\"']?\s*[:=]\s*[\"']?"
+            r"(?:(?:bearer|basic)\s+)?|\bbearer\s+)[^\s,\"';}]+",
+            r"\1<redacted>",
+            value,
+            flags=re.IGNORECASE,
+        )
+    return value
 
 
 _OPENROUTER_STREAM_ERROR = re.compile(

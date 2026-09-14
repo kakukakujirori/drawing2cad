@@ -27,6 +27,7 @@ from langchain_core.callbacks import (
 from langchain_core.messages import AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_openrouter.chat_models import ChatOpenRouter
+from pydantic import Field
 
 # Constant across a block's deltas, and concatenated by the chunk merge because
 # it is a string the merge has no exemption for. `type` is already exempt in
@@ -66,6 +67,8 @@ def _thin_reasoning_details(details: Any, kept: set[Any]) -> None:
 
 class ChatOpenRouterSingleReasoning(ChatOpenRouter):
     """Send each turn's reasoning once, and its constant fields once."""
+
+    max_images_per_request: int | None = Field(default=None, gt=0, strict=True)
 
     @override
     def _build_client(self) -> Any:
@@ -157,6 +160,8 @@ class ChatOpenRouterSingleReasoning(ChatOpenRouter):
             _drop_block_ids(message_dict)
             _drop_null_detail_fields(message_dict)
             _drop_redundant_reasoning(message_dict)
+        if self.max_images_per_request is not None:
+            _cap_tool_images(message_dicts, self.max_images_per_request)
         return _lift_tool_images(message_dicts), params
 
 
@@ -196,6 +201,44 @@ def _image_parts(content: Any) -> list[dict[str, Any]]:
         for part in content
         if isinstance(part, dict) and part.get("type") == "image_url"
     ]
+
+
+def _cap_tool_images(message_dicts: list[dict[str, Any]], limit: int) -> None:
+    """Keep sources and the newest tool images on the wire, leaving history intact."""
+    originals = sum(
+        len(_image_parts(message.get("content")))
+        for message in message_dicts
+        if message.get("role") != "tool"
+    )
+    if originals > limit:
+        raise ValueError(
+            f"Original image attachments ({originals}) exceed "
+            f"max_images_per_request ({limit}); none were dropped."
+        )
+    remaining = limit - originals
+    for message in reversed(message_dicts):
+        if message.get("role") != "tool":
+            continue
+        images = _image_parts(message.get("content"))
+        omitted = max(len(images) - remaining, 0)
+        remaining = max(remaining - len(images), 0)
+        if not omitted:
+            continue
+        content = []
+        for part in message["content"]:
+            if isinstance(part, dict) and part.get("type") == "image_url" and omitted:
+                content.append(
+                    {
+                        "type": "text",
+                        "text": "Previously loaded image omitted from this request to stay within the image limit.",
+                    }
+                )
+                omitted -= 1
+            else:
+                content.append(part)
+        message["content"] = (
+            content if _image_parts(content) else _tool_result_text(content, 0)
+        )
 
 
 def _lift_tool_images(
@@ -240,6 +283,8 @@ def _tool_result_text(content: list[Any], images: int) -> str:
         for part in content
         if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
     )
+    if not images:
+        return said
     loaded = f"Loaded {images} image{'s' if images > 1 else ''}, attached below."
     return f"{said} {loaded}".strip()
 

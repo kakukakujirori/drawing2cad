@@ -149,15 +149,16 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         """Count the turn."""
         del runtime
 
-        last_message = state["messages"][-1]
-        is_tool_call = isinstance(last_message, AIMessage) and bool(
-            last_message.tool_calls
+        last_ai_message = next(
+            (m for m in reversed(state["messages"]) if isinstance(m, AIMessage)),
+            None,
         )
+        is_tool_call = last_ai_message is not None and bool(last_ai_message.tool_calls)
 
         progress: dict[str, Any] = {
             "current_turn": state.get("current_turn", 0) + 1,
             "total_turns": state.get("total_turns", 0) + 1,
         }
-        if is_tool_call:
+        if is_tool_call and state.get("structured_response") is None:
             return progress
         return progress | {"stop_reason": StopReason.COMPLETED}

@@ -6,8 +6,15 @@ A `structured_response` written into agent state short-circuits it, because
 langchain reads that key as an answer already given.
 """
 
+import json
+
+import httpx
 import pytest
 from langchain_core.messages import AIMessage
+from openrouter.errors.badrequestresponse_error import (
+    BadRequestResponseError,
+    BadRequestResponseErrorData,
+)
 from pydantic import BaseModel, field_validator
 
 from tests.zeroshot.chat_models import ScriptedChatModel
@@ -16,6 +23,8 @@ from zeroshot.pipeline.workflow.middleware.agent_retry import (
     _rejected_arguments,
 )
 from zeroshot.pipeline.workflow.middleware.connection_retry import (
+    ModelConnectionRetry,
+    _provider_error_detail,
     is_retryable_model_error,
 )
 
@@ -209,6 +218,128 @@ def test_a_non_valueerror_carrying_the_same_text_is_not_matched() -> None:
     assert not is_retryable_model_error(
         RuntimeError("OpenRouter API returned an error during streaming: x (code: 502)")
     )
+
+
+def test_openrouter_400_records_bounded_provider_details_without_retrying():
+    data = BadRequestResponseErrorData.model_validate(
+        {
+            "error": {
+                "code": 400,
+                "message": "Provider returned error",
+                "metadata": {
+                    "provider_name": "ExampleProvider",
+                    "raw": json.dumps(
+                        {
+                            "authorization": "provider-secret",
+                            "source": "private-source",
+                            "image": "data:image/png;base64,private-image",
+                            "message": "Unmatched tool call. " + "x" * 5000,
+                        }
+                    ),
+                    "request": "private-request",
+                },
+            },
+        }
+    )
+    response = httpx.Response(400, headers={"authorization": "header-secret"})
+    error = BadRequestResponseError(data, response, body="private-body")
+    events = []
+    calls = 0
+
+    def fail():
+        nonlocal calls
+        calls += 1
+        raise error
+
+    with pytest.raises(BadRequestResponseError):
+        ModelConnectionRetry(5, "interpreter", events.append).invoke(fail)
+
+    assert calls == 1
+    event = events[0]["model_retry"]
+    assert event["status_code"] == 400 and not event["retrying"]
+    assert event["error"] == "Provider returned error"
+    assert event["provider_error"]["provider_name"] == "ExampleProvider"
+    raw = event["provider_error"]["raw"]
+    assert "Unmatched tool call" in raw and len(raw) == 4000
+    assert not any(
+        value in json.dumps(event)
+        for value in (
+            "provider-secret",
+            "private-source",
+            "private-image",
+            "private-request",
+            "header-secret",
+            "private-body",
+        )
+    )
+
+
+def test_provider_diagnostics_drop_request_echoes_and_redact_embedded_credentials():
+    raw = {
+        "error": {
+            "message": "Invalid input: data:image/png;base64,cHJpdmF0ZQ==",
+            "type": "BadRequestError",
+            "code": 400,
+            "param": "messages[27].content",
+        },
+        "detail": [{"loc": ["body", "messages", 27], "input": "private prompt"}],
+        "request": {"messages": [{"role": "user", "content": "private prompt"}]},
+        "headers": {"X-API-Key": "diagnostic-secret"},
+    }
+    assert _provider_error_detail(raw) == {
+        "error": {
+            "message": "Invalid input: <redacted image>",
+            "type": "BadRequestError",
+            "code": 400,
+            "param": "messages[27].content",
+        },
+        "detail": [{"loc": ["body", "messages", 27]}],
+    }
+    for text in (
+        "Invalid credential: Authorization: Bearer diagnostic-secret",
+        "Authorization: Basic diagnostic-secret",
+        "Bearer diagnostic-secret",
+        "'api_key': 'diagnostic-secret'",
+        "X-API-Key=diagnostic-secret",
+    ):
+        assert "diagnostic-secret" not in _provider_error_detail(text)
+    assert _provider_error_detail("temporarily rate-limited upstream") == (
+        "temporarily rate-limited upstream"
+    )
+
+
+def test_provider_diagnostics_keep_cloudflare_nested_validation_errors():
+    diagnostic = {
+        "code": 8007,
+        "message": "AiError: Image count 9 exceeds limit 8 per request",
+        "detail": [
+            {
+                "loc": ["body", "messages", 27, "content"],
+                "msg": "Input should be a valid string",
+                "type": "string_type",
+            }
+        ],
+    }
+    raw = {
+        "errors": [
+            {
+                **diagnostic,
+                "detail": [
+                    {
+                        **diagnostic["detail"][0],
+                        "input": "data:image/png;base64,private-image",
+                        "ctx": {"request": "private prompt"},
+                    }
+                ],
+                "headers": {"Authorization": "Bearer private-key"},
+            }
+        ],
+        "success": False,
+        "result": {"request": "private prompt"},
+        "messages": ["private prompt"],
+    }
+
+    assert _provider_error_detail(raw) == {"errors": [diagnostic]}
 
 
 def test_a_tool_call_answer_is_shown_back_to_its_author() -> None:

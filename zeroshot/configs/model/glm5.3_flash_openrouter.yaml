@@ -30,6 +30,8 @@ model:
   openrouter_provider:
     order: [Together, Fireworks, DeepInfra, Cloudflare]
     allow_fallbacks: false
+  # Keep original inputs and the newest tool images within Cloudflare's limit.
+  max_images_per_request: 8
 
   # Small enough that the effort share binds, and split from what the runs
   # measured. On a hard turn this model reaches for the same amount of thinking

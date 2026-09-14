@@ -7,7 +7,7 @@ from typing import Any, Protocol, override
 
 from langchain.agents import AgentState as _AgentState
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock, create_text_block
 from langgraph.runtime import Runtime
 
@@ -16,6 +16,11 @@ _SUBMISSION_REFUSED = (
     "Submitting ends the stage and hands the current artifact on as the answer. "
     "Correct it and trigger verification again; answer only once the current "
     "artifact is confirmed."
+)
+_PARALLEL_SUBMISSION_REFUSED = (
+    "Submission refused because ordinary tool calls are still pending. "
+    "Read their results and any verification feedback, then submit again "
+    "without calling other tools in the same turn."
 )
 
 
@@ -107,8 +112,39 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         if response.structured_response is None:
             return response
 
+        answered = {
+            message.tool_call_id
+            for message in response.result
+            if isinstance(message, ToolMessage)
+        }
+        if any(
+            call["id"] not in answered
+            for message in response.result
+            if isinstance(message, AIMessage)
+            for call in message.tool_calls
+        ):
+            # Pending writes can invalidate even a confirmed artifact. Keep the
+            # tool group contiguous; a HumanMessage here would split its results.
+            # LangChain's tools-to-model edge ends on a structured tool's name,
+            # even without structured_response, so clear that name on refusal.
+            return ModelResponse(
+                result=[
+                    message.model_copy(
+                        update={
+                            "content": _PARALLEL_SUBMISSION_REFUSED,
+                            "status": "error",
+                            "name": None,
+                        }
+                    )
+                    if isinstance(message, ToolMessage)
+                    else message
+                    for message in response.result
+                ],
+                structured_response=None,
+            )
+
         # Build the exact content being submitted, unless that is already the
-        # build standing: an answer may arrive in the same turn as a write.
+        # build standing after the preceding tools finished.
         # Either way the refusal repeats the build's own output, so what failed
         # is stated with the refusal rather than a turn behind it.
         built_before_call = self._digest() == self._last_built

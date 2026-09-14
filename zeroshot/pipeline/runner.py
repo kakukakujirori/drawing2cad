@@ -50,6 +50,47 @@ def _latest_program_source(reconstruction: ReconstructionRun) -> str | None:
     )
 
 
+def _validate_resume_inputs(
+    reconstruction: ReconstructionRun,
+    manifest: InputManifest,
+    source_workspace: Path,
+) -> None:
+    """Reject a different input before retry can remove the resumed workspace."""
+    previous = {view.name: view for view in reconstruction.input_drawings}
+    current = {view.name: view for view in manifest.drawing}
+    if previous.keys() != current.keys():
+        raise ValueError(
+            "resume input view names differ: "
+            f"missing={sorted(previous.keys() - current.keys())}, "
+            f"unexpected={sorted(current.keys() - previous.keys())}"
+        )
+    workdir = SandboxWorkdir(host_bind_dir=source_workspace)
+    for name, original in previous.items():
+        supplied = current[name]
+        if (
+            original.model_dump(exclude={"file"})
+            != supplied.model_dump(exclude={"file"})
+            or Path(original.file).suffix.lower() != Path(supplied.file).suffix.lower()
+        ):
+            raise ValueError(f"resume input metadata differs: {name}")
+        saved = workdir.sandbox_to_host_path(original.file)
+        expected = (
+            source_workspace / "inputs" / f"{name}{Path(supplied.file).suffix.lower()}"
+        )
+        if saved != expected:
+            raise ValueError(
+                f"resume input path is not the staged path for {name}: {original.file}"
+            )
+        if not saved.resolve().is_relative_to(source_workspace.resolve()):
+            raise ValueError(
+                f"resume input file escapes the workspace: {original.file}"
+            )
+        if not saved.is_file():
+            raise FileNotFoundError(f"resume input file is missing: {saved}")
+        if saved.read_bytes() != Path(supplied.file).read_bytes():
+            raise ValueError(f"resume input file contents differ: {name}")
+
+
 def _derived_drawing_paths(
     reconstruction: ReconstructionRun,
     source_workdir: SandboxWorkdir,
@@ -247,21 +288,33 @@ class PipelineRunner:
 
         # Read before `retry` clears the destination. This also permits an
         # interrupted run to resume from its own durable history.
-        reconstruction_resume = (
-            load_reconstruction(self.resume_from)
-            if self.resume_from is not None
-            else None
-        )
-        workspace_path = self._prepare_workspace(
-            sample_artifact_root,
-            events_path,
-            reconstruction_resume,
-        )
-
-        run_id = f"{manifest.sample_id}:{uuid4()}"
-        checkpoint_path = sample_artifact_root / "checkpoints.sqlite"
-
+        reconstruction_resume = None
+        if self.resume_from is not None:
+            reconstruction_resume = load_reconstruction(self.resume_from)
+            _validate_resume_inputs(
+                reconstruction_resume, manifest, self.resume_from.parent
+            )
         with ExitStack() as stack:
+            # Retry can remove the input or a parent used to reach it, even
+            # when symlinks make the final target live outside the sample.
+            sample_resolved = sample_artifact_root.resolve()
+            if self.on_existing == "retry" and any(
+                source.resolve().is_relative_to(sample_resolved)
+                for view in manifest.drawing
+                for source in (Path(view.file), *Path(view.file).absolute().parents)
+            ):
+                manifest = self._stage_inputs(
+                    manifest, stack.enter_context(SandboxWorkdir())
+                )
+            workspace_path = self._prepare_workspace(
+                sample_artifact_root,
+                events_path,
+                reconstruction_resume,
+            )
+
+            run_id = f"{manifest.sample_id}:{uuid4()}"
+            checkpoint_path = sample_artifact_root / "checkpoints.sqlite"
+
             # instantiate event loggers (available only in this block)
             event_writer = stack.enter_context(
                 JsonlEventWriter(

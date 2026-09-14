@@ -6,6 +6,7 @@ from functools import partial
 from inspect import cleandoc
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import ezdxf
@@ -488,6 +489,184 @@ def test_resume_restores_drawing_stage_crops(
         == "/work/derived/sheet_front.dxf"
     )
     assert derived.is_file()
+
+
+def _resume_input_case(tmp_path: Path, same_workspace: bool):
+    artifact_root = tmp_path / "destination"
+    sample_id = "renamed-sample"
+    source_workspace = (
+        artifact_root / sample_id / "workspace"
+        if same_workspace
+        else tmp_path / "source" / "workspace"
+    )
+    source_input = source_workspace / "inputs" / "view_drawing.png"
+    source_input.parent.mkdir(parents=True)
+    Image.new("RGB", (20, 30), "white").save(source_input)
+    original = register_view("view_drawing", View.FULL_PAGE, source_input)
+    original.file = "/work/inputs/view_drawing.png"
+    run = _verified_resume_run()
+    run.run_id = "run_original_sample"
+    run.input_drawings = [original]
+    run.snapshots[-1].interpretation.views = [original.model_copy(deep=True)]
+    run.snapshots[-1].interpretation.features[0].evidence = [
+        Region(view="view_drawing", box_px=(0, 0, 10, 10))
+    ]
+    attempt = source_workspace / "attempts" / "round_000" / "coding" / "007"
+    attempt.mkdir(parents=True)
+    (attempt / "output.step").write_bytes(b"fixture STEP")
+    resume_path = source_workspace / "reconstruction.json"
+    save_reconstruction(resume_path, run)
+    (source_workspace / "stale.txt").write_text("keep until inputs match")
+    supplied = tmp_path / "same-drawing-at-another-path.png"
+    supplied.write_bytes(source_input.read_bytes())
+    manifest = InputManifest(
+        sample_id=sample_id,
+        drawing=[register_view("view_drawing", View.FULL_PAGE, supplied)],
+    )
+    runner = _runner_for_rerun(
+        artifact_root, "retry" if same_workspace else "fail", resume_from=resume_path
+    )
+    # This checkpoint has finished its allowed coding rounds; no model runs.
+    runner.graph_factory.keywords["max_audit_reject_count"] = 0
+    return runner, manifest, run, source_input
+
+
+@pytest.mark.parametrize("same_workspace", [False, True])
+def test_public_resume_accepts_the_same_input_at_another_path_and_sample_name(
+    tmp_path: Path, same_workspace: bool
+):
+    runner, manifest, original, _ = _resume_input_case(tmp_path, same_workspace)
+
+    result = runner.run_sample(manifest)
+
+    assert result["reconstruction"] == original
+    destination = runner.artifact_root / manifest.sample_id
+    assert has_run_completed(destination / "events.jsonl")
+    restored = destination / "workspace" / "inputs" / "view_drawing.png"
+    assert restored.read_bytes() == Path(manifest.drawing[0].file).read_bytes()
+    assert (destination / "workspace" / "model.py").read_text() == VALID_BOX_SOURCE
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize(
+    "source_location",
+    ["inside", "inside_symlink", "outside_symlink", "outside_alias_symlink", "outside"],
+)
+def test_retry_preserves_current_inputs_before_clearing_the_sample(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resume: bool,
+    source_location: str,
+) -> None:
+    runner, manifest, _, saved_input = _resume_input_case(
+        tmp_path, same_workspace=source_location != "outside"
+    )
+    runner.on_existing = "retry"
+    if not resume:
+        runner.resume_from = None
+    sample_root = runner.artifact_root / manifest.sample_id
+    sample_root.mkdir(parents=True, exist_ok=True)
+    leftover = sample_root / "discard-me.txt"
+    leftover.write_text("stale")
+    external_input = Path(manifest.drawing[0].file)
+    expected = external_input.read_bytes()
+    if source_location == "inside":
+        supplied = saved_input
+    elif source_location == "inside_symlink":
+        supplied = sample_root / "current.png"
+        supplied.symlink_to(external_input)
+    elif source_location == "outside_symlink":
+        supplied = tmp_path / "current.png"
+        supplied.symlink_to(saved_input)
+    elif source_location == "outside_alias_symlink":
+        (sample_root / "current.png").symlink_to(external_input)
+        alias = tmp_path / "sample-alias"
+        alias.symlink_to(sample_root, target_is_directory=True)
+        supplied = alias / "current.png"
+    else:
+        supplied = external_input
+
+        def reject_temporary_directory(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError("external inputs need no temporary copy")
+
+        monkeypatch.setattr(
+            "zeroshot.pipeline.runner.tempfile.TemporaryDirectory",
+            reject_temporary_directory,
+        )
+    manifest.drawing[0].file = str(supplied)
+    original_view = manifest.drawing[0].model_copy(deep=True)
+
+    def inspect_inputs(**kwargs: Any) -> Any:
+        staged = kwargs["input_manifest"].drawing[0]
+        assert staged.model_dump(exclude={"file"}) == original_view.model_dump(
+            exclude={"file"}
+        )
+        assert Path(staged.file) == (
+            sample_root / "workspace" / "inputs" / "view_drawing.png"
+        )
+        assert Path(staged.file).read_bytes() == expected
+        assert not Path(staged.file).is_symlink()
+        # Stop at the graph boundary: no model or sandbox command is needed.
+        return SimpleNamespace(
+            stream_events=lambda *args, **kwargs: SimpleNamespace(output={})
+        )
+
+    runner.graph_factory = inspect_inputs
+
+    assert runner.run_sample(manifest) == {}
+    assert not leftover.exists()
+    assert external_input.read_bytes() == expected
+    assert manifest.drawing[0] == original_view
+
+
+@pytest.mark.parametrize("same_workspace", [False, True])
+@pytest.mark.parametrize(
+    "difference",
+    ["contents", "role", "name", "bounds", "suffix", "missing", "legacy_path"],
+)
+def test_public_resume_rejects_different_or_missing_inputs_before_clearing_anything(
+    tmp_path: Path, same_workspace: bool, difference: str
+):
+    runner, manifest, original, saved_input = _resume_input_case(
+        tmp_path, same_workspace
+    )
+    supplied = Path(manifest.drawing[0].file)
+    if difference == "contents":
+        # Same dimensions and metadata, different source content.
+        Image.new("RGB", (20, 30), "black").save(supplied)
+    elif difference == "role":
+        manifest.drawing[0].role = View.FRONT
+    elif difference == "name":
+        manifest.drawing[0].name = "view_other"
+    elif difference == "bounds":
+        Image.new("RGB", (40, 50), "white").save(supplied)
+        manifest.drawing[0] = register_view("view_drawing", View.FULL_PAGE, supplied)
+    elif difference == "suffix":
+        renamed = supplied.with_suffix(".jpg")
+        renamed.write_bytes(supplied.read_bytes())
+        manifest.drawing[0].file = str(renamed)
+    elif difference == "missing":
+        saved_input.unlink()
+    else:
+        legacy = saved_input.with_name("drawing.png")
+        saved_input.rename(legacy)
+        saved_input = legacy
+        original.input_drawings[0].file = "/work/inputs/drawing.png"
+        original.snapshots[-1].interpretation.views[0].file = "/work/inputs/drawing.png"
+        save_reconstruction(runner.resume_from, original)
+    source_workspace = runner.resume_from.parent
+    history_before = runner.resume_from.read_bytes()
+    source_before = saved_input.read_bytes() if saved_input.exists() else None
+
+    error_type = FileNotFoundError if difference == "missing" else ValueError
+    with pytest.raises(error_type, match="resume input"):
+        runner.run_sample(manifest)
+
+    assert runner.resume_from.read_bytes() == history_before
+    assert (source_workspace / "stale.txt").read_text() == "keep until inputs match"
+    if source_before is not None:
+        assert saved_input.read_bytes() == source_before
+    assert not (runner.artifact_root / manifest.sample_id / "events.jsonl").exists()
 
 
 def _final_verification(result: Mapping[str, Any]) -> VerifyOutputResult | None:

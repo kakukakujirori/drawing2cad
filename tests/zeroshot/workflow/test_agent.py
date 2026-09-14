@@ -469,9 +469,7 @@ def test_a_tool_answer_is_acknowledged_before_the_next_instruction() -> None:
     )
     first = graph.invoke({"messages": [HumanMessage(content="first task")]})
     instruction = HumanMessage(content="Check the revised input.")
-    second = graph.invoke(
-        {**first, "messages": [*first["messages"], instruction]}
-    )
+    second = graph.invoke({**first, "messages": [*first["messages"], instruction]})
 
     messages = model.received_messages[-1]
     acknowledgement_index = next(
@@ -1252,6 +1250,77 @@ def test_an_answer_stands_when_the_program_builds(tmp_path: Path) -> None:
 
     assert result["structured_response"] == _Answer(done=True)
     assert not any("has not passed verification" in m.text for m in result["messages"])
+
+
+@pytest.mark.parametrize("already_verified", [False, True])
+def test_a_submission_waits_for_parallel_tools_and_a_separate_answer(
+    tmp_path: Path, already_verified: bool
+) -> None:
+    """A rejected answer cannot split tool results or accept a pending write."""
+    path = tmp_path / "model.py"
+    mixed = _answer_call("early-answer")
+    mixed.tool_calls.extend(
+        tool_call(
+            "write" if already_verified else "echo",
+            {"text": "result = changed"}
+            if already_verified
+            else {"value": "reading the drawing"},
+            "parallel-tool",
+        ).tool_calls
+    )
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("write", {"text": "result = initial"}, "initial-write"),
+            mixed,
+            tool_call("write", {"text": "result = repaired"}, "repair"),
+            _answer_call("final-answer"),
+        )
+    )
+    graph, verifier = _verifying_agent(
+        model,
+        path,
+        builds=[True, False, True] if already_verified else [False, True],
+        announce_turns=False,
+        output_schema=_Answer,
+        response_format_strategy="tool",
+    )
+
+    states = list(
+        graph.stream({"messages": [HumanMessage(content="go")]}, stream_mode="values")
+    )
+    result = states[-1]
+    messages = result["messages"]
+    assert len(model.received_messages) == 4
+    next_request = model.received_messages[2]
+    mixed_index = next(
+        index
+        for index, message in enumerate(next_request)
+        if isinstance(message, AIMessage)
+        and any(call["id"] == "early-answer" for call in message.tool_calls)
+    )
+    # The provider requires the entire parallel group before another role.
+    group = next_request[mixed_index + 1 : mixed_index + 3]
+    assert all(isinstance(message, ToolMessage) for message in group)
+    assert {message.tool_call_id for message in group} == {
+        "early-answer",
+        "parallel-tool",
+    }
+    assert group[0].status == "error"
+    assert "submit" in group[0].text.lower()
+    assert all(
+        state.get("stop_reason") is None
+        for state in states
+        if state.get("current_turn") == 2
+    )
+    assert result["structured_response"] == _Answer(done=True)
+    assert result["stop_reason"] is StopReason.COMPLETED
+    assert verifier.seen == (
+        ["result = initial", "result = changed", "result = repaired"]
+        if already_verified
+        else ["result = initial", "result = repaired"]
+    )
+    assert path.read_text(encoding="utf-8") == "result = repaired"
+    assert unanswered_tool_calls(messages) == []
 
 
 def test_an_answer_waits_until_the_model_has_seen_required_feedback(

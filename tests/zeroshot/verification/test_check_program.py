@@ -211,16 +211,44 @@ result = ret_hole
     assert not check.sound
 
 
-def test_a_tidy_up_after_real_work_still_implements_its_operation() -> None:
+@pytest.mark.parametrize(
+    "cleanup",
+    ["ret_hole = ret_hole.clean()", "ret_hole: object = ret_hole.copy().clean()"],
+)
+def test_a_tidy_up_after_real_work_still_implements_its_operation(cleanup: str) -> None:
     plan = _plan(_operation("op_base"), _operation("op_hole"))
     source = """\
 ret_base = object()
 ret_hole = ret_base.cut(object())
-ret_hole = ret_hole.clean()
-result = ret_hole
 """
+    source += f"{cleanup}\nresult = ret_hole\n"
 
     assert check_program(source, plan).sound
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "ret_hole = ret_base",
+        "ret_hole: object = ret_base.clean()",
+        "ret_hole = ret_base.copy().clean()",
+    ],
+)
+def test_replacing_a_completed_operation_with_its_input_loses_its_work(
+    replacement: str,
+) -> None:
+    plan = _plan(_operation("op_base"), _operation("op_hole"))
+    source = (
+        "ret_base = object()\n"
+        "ret_hole = ret_base.cut(object())\n"
+        f"{replacement}\n"
+        "result = ret_hole\n"
+    )
+
+    check = check_program(source, plan)
+
+    assert check.identity_operations == ("ret_hole",)
+    assert not check.sound
 
 
 @pytest.mark.parametrize(
