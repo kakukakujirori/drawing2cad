@@ -1,5 +1,6 @@
 """Local validation for file-backed interpretation sheets and evidence."""
 
+import json
 from copy import deepcopy
 
 import pytest
@@ -8,6 +9,7 @@ from pydantic import ValidationError
 from zeroshot.pipeline.stages.interpretation.contracts import (
     ORTHOGRAPHIC_VIEWS,
     VIEW_FRAME,
+    DimensionSummary,
     DrawingInterpretation,
     Region,
     View,
@@ -253,3 +255,36 @@ def test_region_matches_bounds() -> None:
     # Disagreeing kind (raster vs DXF)
     assert not raster.matches_bounds(dxf)
     assert not dxf.matches_bounds(raster)
+
+
+def test_interpretation_all_dimensions_and_inventory() -> None:
+    interpretation = DrawingInterpretation.model_validate(pin_interpretation())
+
+    assert len(interpretation.all_dimensions) == 1
+    dimension = interpretation.all_dimensions[0]
+    assert dimension.name == "dim_pin_diameter"
+    assert dimension.kind == "diameter"
+    assert dimension.text == "Ø4.2"
+    assert dimension.nominal_value == 4.2
+    assert dimension.quantity == 1
+
+    inventory = interpretation.dimension_inventory()
+    assert len(inventory) == 1
+    summary = inventory[0]
+    assert isinstance(summary, DimensionSummary)
+    assert summary.name == "dim_pin_diameter"
+    assert summary.text == "Ø4.2"
+    assert summary.nominal_value == 4.2
+    assert summary.kind == "diameter"
+    assert summary.quantity == 1
+
+    rendered = interpretation.render_dimension_inventory()
+    assert json.loads(rendered) == [
+        {
+            "name": "dim_pin_diameter",
+            "text": "Ø4.2",
+            "nominal_value": 4.2,
+            "kind": "diameter",
+            "quantity": 1,
+        }
+    ]

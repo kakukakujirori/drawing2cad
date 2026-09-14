@@ -21,9 +21,7 @@ def validate_dimension_checks(
         )
     if interpretation is None:
         raise SubmissionValidationError("coding requires an integrated interpretation")
-    dimensions = {
-        dimension.name for view in interpretation.views for dimension in view.dimensions
-    }
+    dimensions = {dimension.name for dimension in interpretation.all_dimensions}
     missing, unknown = (
         sorted(dimensions - checks.keys()),
         sorted(checks.keys() - dimensions),

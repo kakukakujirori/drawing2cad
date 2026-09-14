@@ -1,3 +1,4 @@
+import json
 import math
 import re
 from collections import Counter
@@ -160,6 +161,27 @@ class Dimension(Contract):
             raise ValueError("angular dimensions cannot have measured_length")
         return self
 
+    def to_summary(self) -> "DimensionSummary":
+        return DimensionSummary(
+            name=self.name,
+            text=self.text,
+            nominal_value=self.nominal_value,
+            kind=self.kind,
+            quantity=self.quantity,
+        )
+
+
+class DimensionSummary(Contract):
+    name: str = Field(..., description="Stable dim_ name.")
+    text: str = Field(..., description="The callout exactly as printed.")
+    nominal_value: float | None = Field(
+        ..., description="Printed nominal value; null if unreadable."
+    )
+    kind: Literal["linear", "diameter", "radius", "angular"] = Field(
+        ..., description="The kind of printed dimension."
+    )
+    quantity: int = Field(..., ge=1, description="Feature count.")
+
 
 class DrawingView(Contract):
     name: str = Field(..., description="Stable view_ name, kept across revisions.")
@@ -256,18 +278,32 @@ class DrawingInterpretation(Contract):
         ),
     )
 
+    @property
+    def all_dimensions(self) -> tuple[Dimension, ...]:
+        return tuple(dim for view in self.views for dim in view.dimensions)
+
+    def dimension_inventory(self) -> list[DimensionSummary]:
+        return [dim.to_summary() for dim in self.all_dimensions]
+
+    def render_dimension_inventory(self) -> str:
+        return json.dumps(
+            [summary.model_dump(mode="json") for summary in self.dimension_inventory()],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
     @model_validator(mode="after")
     def require_unique_names(self) -> Self:
         require_unique((view.name for view in self.views), "views")
         require_unique((feature.name for feature in self.features), "features")
-        dimensions = [dim.name for view in self.views for dim in view.dimensions]
+        dimensions = [dim.name for dim in self.all_dimensions]
         require_unique(dimensions, "dimensions")
         return self
 
     @model_validator(mode="after")
     def validate_references(self) -> Self:
         names = {view.name for view in self.views}
-        dimensions = {dim.name for view in self.views for dim in view.dimensions}
+        dimensions = {dim.name for dim in self.all_dimensions}
         for view in self.views:
             if view.region.view not in names:
                 raise ValueError(
