@@ -237,7 +237,7 @@ _OPERATION_SUBMISSION = TicketAnswers(
     ],
 )
 _CODING_SUBMISSION = TicketAnswers(
-    dimension_checks=_DIMENSION_CHECKS,
+    stage_report=StageReport(dimension_checks=_DIMENSION_CHECKS),
     responses=[
         TicketResponse(
             ticket_id="ticket_initial",

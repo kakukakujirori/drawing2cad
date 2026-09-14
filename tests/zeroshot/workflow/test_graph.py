@@ -21,7 +21,11 @@ from tests.zeroshot.contracts import (
 )
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest, register_view
-from zeroshot.pipeline.messages.tickets import TicketAnswers, TicketResponse
+from zeroshot.pipeline.messages.tickets import (
+    StageReport,
+    TicketAnswers,
+    TicketResponse,
+)
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
@@ -199,7 +203,7 @@ def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
     return _message(
         TicketAnswers(
             responses=_responses(ticket_id, PipelineStage.CODING),
-            dimension_checks={},
+            stage_report=StageReport(dimension_checks={}),
         )
     )
 

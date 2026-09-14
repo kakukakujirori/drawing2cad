@@ -165,7 +165,7 @@ def test_every_reasoning_stage_accepts_its_expected_deliverable() -> None:
     _verified_and_validate(
         TicketAnswers(
             responses=[_response("ticket_initial", PipelineStage.CODING)],
-            dimension_checks={},
+            stage_report=StageReport(dimension_checks={}),
         ),
         _snapshot(PipelineStage.OPERATIONS),
         workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
@@ -462,7 +462,7 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
     )
     coding_submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],
-        dimension_checks={},
+        stage_report=StageReport(dimension_checks={}),
     )
 
     with pytest.raises(SubmissionValidationError, match="DrawingInterpretation"):
@@ -484,7 +484,7 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
 def test_coding_checks_the_submitted_program_against_current_round_operations() -> None:
     submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],
-        dimension_checks={},
+        stage_report=StageReport(dimension_checks={}),
     )
 
     with pytest.raises(SubmissionValidationError, match="missing.*op_base"):
@@ -501,7 +501,7 @@ def test_coding_checks_the_submitted_program_against_current_round_operations() 
 def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
     submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],
-        dimension_checks={},
+        stage_report=StageReport(dimension_checks={}),
     )
 
     _verified_and_validate(
@@ -512,7 +512,9 @@ def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
 
     with pytest.raises(SubmissionValidationError, match="requires dimension_checks"):
         _verified_and_validate(
-            submission.model_copy(update={"dimension_checks": None}),
+            submission.model_copy(
+                update={"stage_report": StageReport(dimension_checks=None)}
+            ),
             _snapshot(PipelineStage.OPERATIONS),
             workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
         )
@@ -572,17 +574,19 @@ def test_coding_checks_all_dimensions_once_across_tickets_even_without_a_program
             _response(ticket.ticket_id, PipelineStage.CODING)
             for ticket in snapshot.open_tickets
         ],
-        remark="The current program failed before a solid was available.",
-        dimension_checks={
-            "dim_width": "Not established: ret_base has not produced a solid.",
-            "dim_equal": "Not checked: same intended extent as dim_width, but no final solid.",
-            "dim_unreadable": "Not established: the printed value is unreadable.",
-        },
+        stage_report=StageReport(
+            remark="The current program failed before a solid was available.",
+            dimension_checks={
+                "dim_width": "Not established: ret_base has not produced a solid.",
+                "dim_equal": "Not checked: same intended extent as dim_width, but no final solid.",
+                "dim_unreadable": "Not established: the printed value is unreadable.",
+            },
+        ),
     )
     terminal = VerifyOutputResult(status=ExecutionStatus.REJECTED, source=source)
     validate_submission(submission, snapshot, deliverable=terminal)
     assert held.features[0].dimension_refs == []
-    del submission.dimension_checks["dim_unreadable"]
+    del submission.stage_report.dimension_checks["dim_unreadable"]
     with pytest.raises(SubmissionValidationError, match="missing.*dim_unreadable"):
         validate_submission(submission, snapshot, deliverable=terminal)
 
@@ -604,9 +608,11 @@ def test_coding_dimension_coverage_uses_ids_including_equal_and_unreadable_value
 ):
     submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],
-        dimension_checks=None
-        if names is None
-        else {name: "Not checked: no solid." for name in names},
+        stage_report=StageReport(
+            dimension_checks=None
+            if names is None
+            else {name: "Not checked: no solid." for name in names}
+        ),
     )
     with pytest.raises(SubmissionValidationError, match=message):
         validate_submission(
@@ -628,7 +634,8 @@ def test_non_coding_stages_cannot_submit_dimension_checks_even_when_empty(stage)
     ):
         _verified_and_validate(
             TicketAnswers(
-                responses=[_response("ticket_initial", stage)], dimension_checks={}
+                responses=[_response("ticket_initial", stage)],
+                stage_report=StageReport(dimension_checks={}),
             ),
             snapshot,
         )
@@ -644,12 +651,14 @@ def test_coding_saves_remark_and_resolved_dimension_checks_together(tmp_path):
     )
     submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],
-        remark="The adopted width remains dim_width.nominal_value despite the failed build.",
-        dimension_checks={
-            "dim_width": "Not established: ret_base was intended to span dim_width.nominal_value.",
-            "dim_equal": "Not checked: no solid to compare against dim_equal.nominal_value.",
-            "dim_unreadable": "Not established: dim_unreadable.nominal_value is unreadable.",
-        },
+        stage_report=StageReport(
+            remark="The adopted width remains dim_width.nominal_value despite the failed build.",
+            dimension_checks={
+                "dim_width": "Not established: ret_base was intended to span dim_width.nominal_value.",
+                "dim_equal": "Not checked: no solid to compare against dim_equal.nominal_value.",
+                "dim_unreadable": "Not established: dim_unreadable.nominal_value is unreadable.",
+            },
+        ),
     )
     committed = advance_reconstruction(
         run,
@@ -668,13 +677,15 @@ def test_coding_saves_remark_and_resolved_dimension_checks_together(tmp_path):
     )
     assert set(report.model_dump()) == {"remark", "dimension_checks"}
     assert len(restored.snapshots[-1].open_tickets[0].responses) == 3
-    assert submission.dimension_checks["dim_width"].endswith("dim_width.nominal_value.")
+    assert submission.stage_report.dimension_checks["dim_width"].endswith(
+        "dim_width.nominal_value."
+    )
 
 
 def test_completed_coding_accepts_only_an_audit_report() -> None:
     submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],
-        dimension_checks={},
+        stage_report=StageReport(dimension_checks={}),
     )
 
     with pytest.raises(SubmissionValidationError, match="only an AuditReport"):
@@ -709,7 +720,9 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
                 summary="Established sem_feature_1.width.",
             )
         ],
-        remark="The undimensioned height also uses sem_feature_1.width provisionally.",
+        stage_report=StageReport(
+            remark="The undimensioned height also uses sem_feature_1.width provisionally."
+        ),
     )
     with pytest.raises(
         SubmissionValidationError, match="verified DrawingInterpretation"
@@ -735,7 +748,10 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
     with pytest.raises(SubmissionValidationError, match="missing ticket responses"):
         advance_reconstruction(
             interpreted,
-            TicketAnswers(responses=[], remark="This does not answer the ticket."),
+            TicketAnswers(
+                responses=[],
+                stage_report=StageReport(remark="This does not answer the ticket."),
+            ),
             workspace_output=_operations(),
         )
     assert interpreted.model_dump_json() == before

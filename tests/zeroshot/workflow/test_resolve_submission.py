@@ -2,7 +2,11 @@
 
 import pytest
 
-from zeroshot.pipeline.messages.tickets import TicketAnswers, TicketResponse
+from zeroshot.pipeline.messages.tickets import (
+    StageReport,
+    TicketAnswers,
+    TicketResponse,
+)
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
@@ -159,18 +163,20 @@ def test_ticket_summary_and_stage_report_references_resolve_without_mutating_sub
                 summary="Kept sem_bore.radius despite the ticket's ambiguity.",
             )
         ],
-        remark="Separately check dim_diameter.quantity and sem_bore.center.",
-        dimension_checks={
-            "dim_diameter": "Not checked: compare dim_diameter.nominal_value with sem_bore.radius."
-        },
+        stage_report=StageReport(
+            remark="Separately check dim_diameter.quantity and sem_bore.center.",
+            dimension_checks={
+                "dim_diameter": "Not checked: compare dim_diameter.nominal_value with sem_bore.radius."
+            },
+        ),
     )
     before = submission.model_dump_json()
     resolved = resolve_references(submission, interpretation())
 
     assert "sem_bore.radius (= 6.000123456789123)" in resolved.responses[0].summary
-    assert "dim_diameter.quantity (= 2)" in resolved.remark
-    assert "sem_bore.center (= [0.0 null 3.0])" in resolved.remark
-    assert resolved.dimension_checks == {
+    assert "dim_diameter.quantity (= 2)" in resolved.stage_report.remark
+    assert "sem_bore.center (= [0.0 null 3.0])" in resolved.stage_report.remark
+    assert resolved.stage_report.dimension_checks == {
         "dim_diameter": (
             "Not checked: compare dim_diameter.nominal_value (= 12.0) "
             "with sem_bore.radius (= 6.000123456789123)."

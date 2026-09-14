@@ -120,16 +120,18 @@ def test_a_stage_carries_ticket_answers_and_optional_additional_concerns() -> No
     it. Every artifact now lives in a workspace file instead."""
     responses = _responses("ticket_bootstrap", "coding")
 
-    submission = TicketAnswers(responses=responses, dimension_checks={})
+    submission = TicketAnswers(
+        responses=responses,
+        stage_report=StageReport(dimension_checks={}),
+    )
 
     assert submission.responses == responses
-    assert submission.remark == ""
-    assert submission.dimension_checks == {}
-    assert isinstance(submission, StageReport)
+    assert submission.stage_report.remark == ""
+    assert submission.stage_report.dimension_checks == {}
+    assert submission.stage_report == StageReport(dimension_checks={})
     assert set(TicketAnswers.model_fields) == {
         "responses",
-        "remark",
-        "dimension_checks",
+        "stage_report",
     }
     for revision in ("edits", "deleted", "rationale"):
         with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
@@ -144,11 +146,10 @@ def test_interpretation_carries_ticket_answers_while_json_carries_the_artifact()
     submission = TicketAnswers(responses=responses)
 
     assert submission.responses == responses
-    assert submission.dimension_checks is None
+    assert submission.stage_report.dimension_checks is None
     assert set(TicketAnswers.model_fields) == {
         "responses",
-        "remark",
-        "dimension_checks",
+        "stage_report",
     }
 
 
@@ -164,16 +165,17 @@ def test_a_stage_submission_rejects_extra_fields() -> None:
 
 def test_the_shared_submission_schema_is_provider_safe() -> None:
     schema = TicketAnswers.model_json_schema()
-    assert set(schema["properties"]) == {"responses", "remark", "dimension_checks"}
-    assert schema["properties"]["remark"]["default"] == ""
-    assert schema["properties"]["dimension_checks"]["default"] is None
+    assert set(schema["properties"]) == {"responses", "stage_report"}
     assert schema["title"] == TicketAnswers.__name__ == "TicketAnswers"
 
 
 @pytest.mark.parametrize("explanation", ["", " ", "\t\n"])
 def test_dimension_checks_require_nonblank_explanations(explanation):
     with pytest.raises(ValidationError, match="dim_width.*must not be blank"):
-        TicketAnswers(responses=[], dimension_checks={"dim_width": explanation})
+        TicketAnswers(
+            responses=[],
+            stage_report=StageReport(dimension_checks={"dim_width": explanation}),
+        )
 
 
 def test_old_reports_do_not_claim_dimension_checks():

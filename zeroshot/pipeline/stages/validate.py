@@ -58,7 +58,10 @@ def validate_submission(
         snapshot.open_tickets,
         expected_stage=stage,
     )
-    if stage is not PipelineStage.CODING and submission.dimension_checks is not None:
+    if (
+        stage is not PipelineStage.CODING
+        and submission.stage_report.dimension_checks is not None
+    ):
         raise SubmissionValidationError(f"{stage} dimension_checks must be null")
     match stage:
         case PipelineStage.INTERPRETATION:
@@ -78,7 +81,7 @@ def validate_submission(
                     "coding requires a terminal verification result"
                 )
             validate_dimension_checks(
-                submission.dimension_checks, snapshot.interpretation
+                submission.stage_report.dimension_checks, snapshot.interpretation
             )
             validate_coding(snapshot, deliverable)
         case _:

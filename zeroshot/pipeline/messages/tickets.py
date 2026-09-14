@@ -184,12 +184,14 @@ class StageReport(BaseModel):
         return checks
 
 
-class TicketAnswers(StageReport):
-    """Your assigned-ticket answers and any additional stage-wide observations.
+class TicketAnswers(BaseModel):
+    """Your assigned-ticket answers and stage-wide observations.
 
     Every reasoning stage revises its artifact in its workspace file, which
     the pipeline verifies and reads back, so no artifact belongs in here.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     responses: list[TicketResponse] = Field(
         ...,
@@ -198,4 +200,8 @@ class TicketAnswers(StageReport):
             "to, and none for the others. The pipeline validates the ticket IDs "
             "and the assignment against the current snapshot."
         ),
+    )
+    stage_report: StageReport = Field(
+        default_factory=StageReport,
+        description="Stage-wide observations and dimension checks.",
     )

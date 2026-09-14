@@ -1106,7 +1106,7 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir)
     answer = {
-        "dimension_checks": {},
+        "stage_report": {"dimension_checks": {}},
         "responses": [
             {
                 "ticket_id": "ticket_initial",

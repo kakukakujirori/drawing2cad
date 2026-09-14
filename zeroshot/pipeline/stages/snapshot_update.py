@@ -71,7 +71,7 @@ def build_snapshot_update(
     return SnapshotUpdate(
         artifacts=artifacts,
         responses=submission.responses,
-        report=StageReport.model_validate(submission.model_dump(exclude={"responses"})),
+        report=submission.stage_report,
     )
 
 

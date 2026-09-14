@@ -23,7 +23,11 @@ from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest, register_view
-from zeroshot.pipeline.messages.tickets import TicketAnswers, TicketResponse
+from zeroshot.pipeline.messages.tickets import (
+    StageReport,
+    TicketAnswers,
+    TicketResponse,
+)
 from zeroshot.pipeline.runner import (
     GraphFactory,
     PipelineRunner,
@@ -206,7 +210,7 @@ def _writing_model(call_id: str = "call-write-model") -> AIMessage:
 _CODING_ANSWER = AIMessage(
     content=TicketAnswers(
         responses=[_ticket_response("coding", "Implemented ret_base and result.")],
-        dimension_checks={},
+        stage_report=StageReport(dimension_checks={}),
     ).model_dump_json()
 )
 
@@ -264,7 +268,7 @@ def _verified_resume_run():
         run,
         TicketAnswers(
             responses=[_ticket_response("coding", "Implemented ret_base and result.")],
-            dimension_checks={},
+            stage_report=StageReport(dimension_checks={}),
         ),
         workspace_output=VerifyOutputResult(
             verification_id="007",

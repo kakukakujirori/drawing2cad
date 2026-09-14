@@ -11,6 +11,7 @@ from tests.zeroshot.contracts import (
 )
 from zeroshot.pipeline.messages.tickets import (
     BootstrapWork,
+    StageReport,
     Ticket,
     TicketAnswers,
     TicketResponse,
@@ -201,7 +202,7 @@ def _completed_run(
         run,
         TicketAnswers(
             responses=_stage_responses(run, "coding"),
-            dimension_checks={},
+            stage_report=StageReport(dimension_checks={}),
         ),
         workspace_output=verification,
     )
