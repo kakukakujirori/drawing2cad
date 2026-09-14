@@ -9,6 +9,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     CausalHop,
     RevisionRequest,
     StageOutputRef,
+    TicketReview,
 )
 
 
@@ -50,6 +51,7 @@ def finding(
     *,
     hops: list[CausalHop] | None = None,
     revision_request: RevisionRequest | None = None,
+    related_ticket_ids: list[str] | None = None,
 ) -> AuditFinding:
     return AuditFinding(
         name=name,
@@ -57,6 +59,7 @@ def finding(
         evidence=["render_3d/hlg_front.png", "sem_bore.radius"],
         backtrace=backtrace() if hops is None else hops,
         revision_request=revision_request or request(),
+        related_ticket_ids=related_ticket_ids or [],
     )
 
 
@@ -447,13 +450,20 @@ def _object_schemas(node: object) -> list[dict]:
         CausalHop,
         AuditFinding,
         AuditReport,
+        TicketReview,
     ],
 )
-def test_audit_contracts_are_closed_and_every_property_is_required(
+def test_audit_contracts_are_closed_and_only_legacy_lists_are_optional(
     contract: type[BaseModel],
 ) -> None:
     for schema in _object_schemas(contract.model_json_schema()):
-        assert set(schema.get("required", [])) == set(schema.get("properties", {}))
+        legacy_fields = {
+            "AuditFinding": {"related_ticket_ids"},
+            "AuditReport": {"ticket_reviews"},
+        }.get(schema.get("title"), set())
+        assert set(schema.get("required", [])) == (
+            set(schema.get("properties", {})) - legacy_fields
+        )
         assert schema.get("additionalProperties") is False
 
 
@@ -468,3 +478,104 @@ def test_interpretation_members_support_direct_add_without_a_backtrace(
         ),
     )
     ref("interpretation", name)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"ticket_id": "not_a_ticket"},
+        {"summary": "  "},
+        {"stage": "audit"},
+        {"revision_request": {}},
+    ],
+)
+def test_ticket_review_requires_a_named_check_without_another_revision(change) -> None:
+    with pytest.raises(ValidationError):
+        TicketReview.model_validate(
+            {
+                "ticket_id": "ticket_bore",
+                "summary": "The bore is restored.",
+                "solved": True,
+            }
+            | change
+        )
+
+
+def test_related_ticket_ids_are_unique_within_each_finding() -> None:
+    with pytest.raises(ValidationError, match="related_ticket_ids.*duplicates"):
+        finding(related_ticket_ids=["ticket_bore", "ticket_bore"])
+
+
+def test_a_ticket_is_reviewed_only_once() -> None:
+    review = TicketReview(
+        ticket_id="ticket_bore", summary="Bore restored.", solved=True
+    )
+    with pytest.raises(ValidationError, match="duplicate ticket IDs"):
+        AuditReport(accepted=True, ticket_reviews=[review, review], findings=[])
+
+
+@pytest.mark.parametrize(
+    ("solved", "related", "valid"),
+    [
+        ([], [], True),
+        ([True, True], [], True),
+        ([False, True], ["ticket_0"], True),
+        ([False, False], ["ticket_0", "ticket_1"], True),
+        ([False], [], False),
+        ([True], ["ticket_0"], False),
+        ([False], ["ticket_0", "ticket_other"], False),
+        ([], ["ticket_other"], False),
+    ],
+)
+def test_unsolved_reviews_match_exactly_the_tickets_in_current_findings(
+    solved: list[bool], related: list[str], valid: bool
+) -> None:
+    values = {
+        "accepted": False,
+        "ticket_reviews": [
+            TicketReview(
+                ticket_id=f"ticket_{index}", summary="Checked the bore.", solved=value
+            )
+            for index, value in enumerate(solved)
+        ],
+        "findings": [finding(related_ticket_ids=related)],
+    }
+    if valid:
+        report = AuditReport(**values)
+        assert (
+            not report.accepted
+        )  # New defects still reject when every old ticket is solved.
+    else:
+        with pytest.raises(ValidationError, match="unsolved ticket IDs") as caught:
+            AuditReport(**values)
+        assert any(ticket in str(caught.value) for ticket in [*related, "ticket_0"])
+
+
+def test_one_unsolved_ticket_can_require_several_current_findings() -> None:
+    report = AuditReport(
+        accepted=False,
+        ticket_reviews=[
+            TicketReview(
+                ticket_id="ticket_bore", summary="Two defects remain.", solved=False
+            )
+        ],
+        findings=[
+            finding(name, related_ticket_ids=["ticket_bore"])
+            for name in ("find_wrong_bore", "find_wrong_boss")
+        ],
+    )
+    assert len(report.findings) == 2
+
+
+def test_legacy_finding_keeps_its_backtrace_and_revision_request() -> None:
+    original = finding()
+    payload = original.model_dump()
+    payload.pop("related_ticket_ids")
+    restored = AuditFinding.model_validate(payload)
+    assert restored == original
+    assert restored.related_ticket_ids == []
+    for field in ("backtrace", "revision_request"):
+        with pytest.raises(ValidationError, match=field):
+            AuditFinding.model_validate(
+                {key: value for key, value in payload.items() if key != field}
+            )

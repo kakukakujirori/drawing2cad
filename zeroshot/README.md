@@ -36,9 +36,17 @@ python -m zeroshot.evaluation.aggregate_run \
 ### Interpretation pipeline
 
 The graph runs `interpretation -> operations -> coding -> audit`. The interpreter
-writes the complete `interpretation.json` and returns only its ticket responses.
+writes the complete `interpretation.json` and returns `TicketAnswers`.
 Operations similarly write the complete `operations.json` and return ticket
 responses. Each verified file replaces that stage's complete artifact.
+Ticket summaries describe their own outcomes; `remark` carries additional concerns.
+Reports are saved under `.snapshots[-1].stage_reports` in `reconstruction.json`
+for downstream stages and audit to read, including after resume. Audit reviews
+each current defect ticket and relates unresolved defects to new findings;
+the initial bootstrap work is read but is not carried into subsequent rounds.
+Coding also reports `dimension_checks` for every registered dimension ID. Submission
+validation enforces complete, nonblank coverage; audit checks the claims against
+the final geometry. Unknown or unverified dimensions must be explained, not omitted.
 
 After a JSON or referenced-image change, automatic verification checks the files,
 calibrates each raster view from its dimensions, and reports errors, scale status,

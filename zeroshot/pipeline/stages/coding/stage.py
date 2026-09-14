@@ -1,3 +1,4 @@
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -65,6 +66,24 @@ class CodingStage:
                 state,
                 PipelineStage.CODING,
                 include_artifact=(not previous or self.input_after_compaction),
+                dimension_inventory=json.dumps(
+                    [
+                        dimension.model_dump(
+                            mode="json",
+                            include={
+                                "name",
+                                "text",
+                                "nominal_value",
+                                "kind",
+                                "quantity",
+                            },
+                        )
+                        for view in interpretation.views
+                        for dimension in view.dimensions
+                    ],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             ),
         ]
         result = self.agent.invoke(

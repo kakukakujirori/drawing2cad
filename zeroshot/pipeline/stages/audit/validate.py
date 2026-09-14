@@ -22,10 +22,11 @@ def validate_audit_report(
     report: AuditReport,
     snapshot: ReconstructionSnapshot,
 ) -> None:
-    """Check verification, member identities and declared causal links."""
+    """Check ticket coverage, verification, members and declared causal links."""
     # Acceptance requires a completed, successful build.
     if snapshot.last_completed_stage is not PipelineStage.CODING:
         raise SubmissionValidationError("audit requires a completed coding snapshot")
+    _validate_ticket_coverage(report, snapshot)
     if report.accepted and (
         snapshot.verification is None
         or snapshot.verification.status is not ExecutionStatus.VERIFIED
@@ -78,6 +79,30 @@ def validate_audit_report(
         # same mechanical contradiction more than once.
         unique_errors = list(dict.fromkeys(errors))
         raise SubmissionValidationError("\n".join(unique_errors))
+
+
+def _validate_ticket_coverage(
+    report: AuditReport,
+    snapshot: ReconstructionSnapshot,
+) -> None:
+    """Only current defect tickets are reviewed; bootstrap is a one-round order.
+
+    Report validation already links every unsolved review to current findings.
+    Here we check those reviews against the snapshot, including on acceptance.
+    """
+    expected = {
+        ticket.ticket_id
+        for ticket in snapshot.open_tickets
+        if isinstance(ticket.subject, AuditFinding)
+    }
+    reviewed = {review.ticket_id for review in report.ticket_reviews}
+    if expected != reviewed:
+        raise SubmissionValidationError(
+            "ticket_reviews must cover every current defect ticket exactly once "
+            "and exclude bootstrap work: "
+            f"missing={sorted(expected - reviewed)}, "
+            f"unexpected={sorted(reviewed - expected)}"
+        )
 
 
 def _iter_references(

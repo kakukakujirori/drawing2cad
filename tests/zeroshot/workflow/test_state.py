@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from tests.zeroshot.contracts import interpretation, view
 from zeroshot.pipeline.messages.tickets import (
     BootstrapWork,
+    StageReport,
     Ticket,
     TicketAnswers,
     TicketResponse,
@@ -21,6 +22,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     CausalHop,
     RevisionRequest,
     StageOutputRef,
+    TicketReview,
 )
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import (
@@ -89,6 +91,7 @@ _A_INTERPRETATION.views[0].dimensions = [
     )
 ]
 _A_INTERPRETATION.features[1].dimension_refs = ["dim_bore"]
+_DIMENSION_CHECKS = {"dim_bore": "Unconfirmed: ret_base omits the interpreted bore."}
 
 _A_PLAN = OperationPlan(
     proposal=[
@@ -112,11 +115,19 @@ _VERIFICATION = VerifyOutputResult(
 
 _AUDIT_REPORT = AuditReport(
     accepted=False,
+    ticket_reviews=[
+        TicketReview(
+            ticket_id="ticket_missing_boss",
+            summary="The boss is still absent from the current solid.",
+            solved=False,
+        )
+    ],
     findings=[
         AuditFinding(
             name="find_missing_boss",
             observation="the boss is missing",
             evidence=["attempts/v1/techdraw.dxf"],
+            related_ticket_ids=["ticket_missing_boss"],
             backtrace=[
                 CausalHop(
                     effect=StageOutputRef(stage=PipelineStage.CODING, name="ret_base"),
@@ -198,6 +209,11 @@ _RECONSTRUCTION = ReconstructionRun(
             operations=_A_PLAN,
             program_source=_VERIFICATION.source,
             verification=_VERIFICATION,
+            stage_reports={
+                PipelineStage.CODING: StageReport(
+                    remark="Check the boss.", dimension_checks=_DIMENSION_CHECKS
+                )
+            },
         )
     ],
 )
@@ -221,6 +237,7 @@ _OPERATION_SUBMISSION = TicketAnswers(
     ],
 )
 _CODING_SUBMISSION = TicketAnswers(
+    dimension_checks=_DIMENSION_CHECKS,
     responses=[
         TicketResponse(
             ticket_id="ticket_initial",
@@ -276,6 +293,7 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         VerifyOutputResult,
         AuditFinding,
         AuditReport,
+        TicketReview,
         CausalHop,
         RevisionRequest,
         StageOutputRef,
@@ -290,6 +308,7 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         InterpretedDimension,
         InterpretedView,
         TicketAnswers,
+        StageReport,
     }
 
 
@@ -333,6 +352,13 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
 
     graph.invoke(ReconstructionState(), config)
     restored = graph.get_state(config).values
+    assert type(restored["audit_report"].ticket_reviews[0]) is TicketReview
+    assert (
+        type(
+            restored["reconstruction"].snapshots[-1].stage_reports[PipelineStage.CODING]
+        )
+        is StageReport
+    )
 
     for field, value in _ARTIFACTS.items():
         assert type(restored[field]) is type(value), field

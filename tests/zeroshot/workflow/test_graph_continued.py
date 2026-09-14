@@ -102,7 +102,7 @@ def _continued_graph(
         artifact_presenter=ArtifactPresenter(input_mode="path", feedback_mode="none"),
         input_manifest=InputManifest(
             sample_id="test",
-            drawing=[register_view("view_drawing", View.FULL_PAGE, image_path)],
+            drawing=[register_view("view_input", View.FULL_PAGE, image_path)],
         ),
         share_thread=share_thread,
         **overrides,

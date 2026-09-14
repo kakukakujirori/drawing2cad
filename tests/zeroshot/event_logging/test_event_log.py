@@ -28,7 +28,38 @@ def test_event_serialization_redacts_images_and_secrets() -> None:
     assert serialized["openai_api_key"] == "<redacted>"
 
 
-def test_audit_and_validation_are_recorded_as_their_raw_node_updates() -> None:
+@pytest.mark.parametrize("accepted", [True, False])
+def test_audit_and_validation_are_recorded_as_their_raw_node_updates(
+    accepted: bool,
+) -> None:
+    report = {
+        "accepted": accepted,
+        "ticket_reviews": [
+            {
+                "ticket_id": "ticket_bore",
+                "summary": "Checked the current bore.",
+                "solved": accepted,
+            }
+        ],
+        "findings": []
+        if accepted
+        else [
+            {
+                "name": "find_bore",
+                "observation": "The bore is still missing.",
+                "evidence": ["view_front"],
+                "backtrace": [],
+                "revision_request": {
+                    "action": "modify",
+                    "targets": [{"stage": "coding", "name": "ret_bore"}],
+                    "instruction": "Restore the bore.",
+                    "proposed_names": [],
+                },
+                "related_ticket_ids": ["ticket_bore"],
+            }
+        ],
+    }
+    error = None if accepted else "ticket_reviews missing=['ticket_other']"
     events: list[RunEvent] = []
     transformer = RunEventTransformer(sink=events.append)
     transformer.init()
@@ -42,7 +73,7 @@ def test_audit_and_validation_are_recorded_as_their_raw_node_updates() -> None:
                 "namespace": [],
                 "data": {
                     "audit": {
-                        "audit_report": AuditReport(accepted=True, findings=[]),
+                        "audit_report": AuditReport.model_validate(report),
                     }
                 },
             },
@@ -57,8 +88,8 @@ def test_audit_and_validation_are_recorded_as_their_raw_node_updates() -> None:
                 "namespace": [],
                 "data": {
                     "integrate_audit_report": {
-                        "stage_validation_error": None,
-                        "stage_validation_failure_count": 0,
+                        "stage_validation_error": error,
+                        "stage_validation_failure_count": 0 if accepted else 1,
                     }
                 },
             },
@@ -72,7 +103,7 @@ def test_audit_and_validation_are_recorded_as_their_raw_node_updates() -> None:
             "namespace": [],
             "data": {
                 "node": "audit",
-                "report": {"accepted": True, "findings": []},
+                "report": report,
             },
         },
         {
@@ -81,8 +112,8 @@ def test_audit_and_validation_are_recorded_as_their_raw_node_updates() -> None:
             "namespace": [],
             "data": {
                 "node": "integrate_audit_report",
-                "error": None,
-                "failure_count": 0,
+                "error": error,
+                "failure_count": 0 if accepted else 1,
             },
         },
     ]

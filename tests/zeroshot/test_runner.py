@@ -64,7 +64,9 @@ def _agent(
     )
 
 
-_ACCEPTED_AUDIT = AIMessage(content='{"accepted": true, "findings": []}')
+_ACCEPTED_AUDIT = AIMessage(
+    content='{"accepted": true, "ticket_reviews": [], "findings": []}'
+)
 
 
 def _ticket_response(stage: str, summary: str) -> TicketResponse:
@@ -106,7 +108,7 @@ def _writing_interpretation() -> AIMessage:
                 with Image.open(file) as image:
                     width, height = image.size
                 region = {{'view': name, 'box_px': [0, 0, width, height]}}
-            views.append(dict(name=name, file=file, role='full_page', region=region, dimensions=[]))
+            views.append(dict(name=name, file=file, role=given['role'], region=region, dimensions=[]))
         front = dict(views[0], name='view_front', role='front')
         front['file'] = '/work/view_front' + Path(front['file']).suffix
         shutil.copyfile(views[0]['file'], front['file'])
@@ -203,6 +205,7 @@ def _writing_model(call_id: str = "call-write-model") -> AIMessage:
 _CODING_ANSWER = AIMessage(
     content=TicketAnswers(
         responses=[_ticket_response("coding", "Implemented ret_base and result.")],
+        dimension_checks={},
     ).model_dump_json()
 )
 
@@ -260,6 +263,7 @@ def _verified_resume_run():
         run,
         TicketAnswers(
             responses=[_ticket_response("coding", "Implemented ret_base and result.")],
+            dimension_checks={},
         ),
         workspace_output=VerifyOutputResult(
             verification_id="007",
@@ -751,7 +755,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     )
     assert audit["data"] == {
         "node": "audit",
-        "report": {"accepted": True, "findings": []},
+        "report": {"accepted": True, "ticket_reviews": [], "findings": []},
     }
     assert "verify_output" not in {event["data"].get("tool_name") for event in events}
     assert "output" not in {event["event"] for event in events}

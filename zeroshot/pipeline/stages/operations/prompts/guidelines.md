@@ -7,7 +7,7 @@ Guidelines:
 - `depends_on` names the `op_` results this operation consumes. `semantics` names every `sem_` feature it helps build. A feature may take several operations and an operation may serve several features. Every interpreted feature needs an operation, and every cited feature must exist in the interpretation.
 - The build order comes from `depends_on`, not the JSON list order. Dependencies must stay within the plan and must not form a cycle.
 - Account for the base volume, additions and cuts, then fillets and chamfers.
-- Review `interpretation.questions` and null parameters. If construction requires a choice the interpretation has not established, make a provisional choice and record the affected `sem_` parameter and choice in your ticket response. Do not silently replace a stated value. Only the audit can open a ticket.
+- Review `interpretation.questions` and null parameters. If construction requires a choice the interpretation has not established, make a provisional choice and report the affected `sem_` parameter and choice, following the summary/remark rule. Do not silently replace a stated value. Only the audit can open a ticket.
 - Use `run_shell` and `load_image` to inspect source views when needed. Address applicable audit feedback and stay within the announced turn budget.
 
 Example `detail`: "Cut a hole of radius sem_main_bore.radius at sem_main_bore.center, along sem_main_bore.axis, through the host plate."

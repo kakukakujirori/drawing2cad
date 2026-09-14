@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from tests.zeroshot.contracts import drawing, interpretation
 from zeroshot.pipeline.messages.tickets import (
     BootstrapWork,
+    StageReport,
     Ticket,
     TicketAnswers,
     TicketResponse,
@@ -113,16 +114,23 @@ def _snapshot(
     )
 
 
-def test_a_stage_carries_its_ticket_answers_and_nothing_else() -> None:
+def test_a_stage_carries_ticket_answers_and_optional_additional_concerns() -> None:
     """A field a stage must leave empty is a field it can get wrong: four of ten
     GLM runs died sending `rationale` a string against a validator that refused
     it. Every artifact now lives in a workspace file instead."""
     responses = _responses("ticket_bootstrap", "coding")
 
-    submission = TicketAnswers(responses=responses)
+    submission = TicketAnswers(responses=responses, dimension_checks={})
 
     assert submission.responses == responses
-    assert set(TicketAnswers.model_fields) == {"responses"}
+    assert submission.remark == ""
+    assert submission.dimension_checks == {}
+    assert isinstance(submission, StageReport)
+    assert set(TicketAnswers.model_fields) == {
+        "responses",
+        "remark",
+        "dimension_checks",
+    }
     for revision in ("edits", "deleted", "rationale"):
         with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
             TicketAnswers.model_validate({"responses": responses, revision: "anything"})
@@ -136,7 +144,12 @@ def test_interpretation_carries_ticket_answers_while_json_carries_the_artifact()
     submission = TicketAnswers(responses=responses)
 
     assert submission.responses == responses
-    assert set(TicketAnswers.model_fields) == {"responses"}
+    assert submission.dimension_checks is None
+    assert set(TicketAnswers.model_fields) == {
+        "responses",
+        "remark",
+        "dimension_checks",
+    }
 
 
 def test_a_stage_submission_rejects_extra_fields() -> None:
@@ -151,8 +164,24 @@ def test_a_stage_submission_rejects_extra_fields() -> None:
 
 def test_the_shared_submission_schema_is_provider_safe() -> None:
     schema = TicketAnswers.model_json_schema()
-    assert set(schema["properties"]) == {"responses"}
+    assert set(schema["properties"]) == {"responses", "remark", "dimension_checks"}
+    assert schema["properties"]["remark"]["default"] == ""
+    assert schema["properties"]["dimension_checks"]["default"] is None
     assert schema["title"] == TicketAnswers.__name__ == "TicketAnswers"
+
+
+@pytest.mark.parametrize("explanation", ["", " ", "\t\n"])
+def test_dimension_checks_require_nonblank_explanations(explanation):
+    with pytest.raises(ValidationError, match="dim_width.*must not be blank"):
+        TicketAnswers(responses=[], dimension_checks={"dim_width": explanation})
+
+
+def test_old_reports_do_not_claim_dimension_checks():
+    assert (
+        StageReport.model_validate({"remark": "A prior concern."}).dimension_checks
+        is None
+    )
+    assert StageReport(dimension_checks={}).dimension_checks == {}
 
 
 def test_a_round_checkpoint_requires_every_ticket_response_in_stage_order() -> None:
@@ -264,6 +293,29 @@ def test_snapshot_rejects_an_artifact_from_an_unfinished_stage(
 
     with pytest.raises(ValidationError, match="unfinished stage artifacts"):
         ReconstructionSnapshot.model_validate(data)
+
+
+@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding"])
+def test_snapshot_rejects_reports_from_unfinished_stages(stage):
+    data = _snapshot().model_dump()
+    data["stage_reports"] = {stage: {"remark": "A concern."}}
+    with pytest.raises(ValidationError, match="unfinished stages.*stage_reports"):
+        ReconstructionSnapshot.model_validate(data)
+
+
+def test_old_completed_history_loads_without_claiming_a_stage_report():
+    snapshot = _snapshot(
+        ticket=_ticket(stages=("interpretation",)),
+        last_completed_stage="interpretation",
+    )
+    run = ReconstructionRun(
+        run_id="run_legacy", input_drawings=drawing(), snapshots=[snapshot]
+    )
+    data = run.model_dump()
+    del data["snapshots"][0]["stage_reports"]
+
+    restored = ReconstructionRun.model_validate(data)
+    assert restored.snapshots[0].stage_reports == {}
 
 
 def test_round_zero_requires_exactly_one_bootstrap_ticket() -> None:

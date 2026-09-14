@@ -2,6 +2,7 @@ import json
 import re
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -18,6 +19,7 @@ from zeroshot.pipeline.stages._base.prompt import (
     build_system_prompt,
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
+from zeroshot.pipeline.stages.coding.stage import CodingStage
 from zeroshot.pipeline.stages.interpretation.contracts import (
     VIEW_FRAME,
     DrawingInterpretation,
@@ -60,6 +62,7 @@ _RUN_PATHS = {
     "operations_schema": json.dumps(OperationPlan.model_json_schema()),
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
+    "dimension_inventory": "[]",
 }
 
 
@@ -232,10 +235,11 @@ def test_reconstruction_guide_keeps_only_the_working_contract() -> None:
         "program_source",
         "verification",
         "responses",
+        "stage_reports",
     ):
         assert field in guide
     assert "exactly one response per assigned ticket" not in guide
-    assert len(guide.split()) < 220
+    assert len(guide.split()) < 320
 
 
 def test_the_system_prompt_explains_selective_history_navigation() -> None:
@@ -251,7 +255,7 @@ def test_the_system_prompt_explains_selective_history_navigation() -> None:
 
     assert "jq -c" in rendered
     assert "members by name" in rendered
-    assert len(rendered.split()) < 350
+    assert len(rendered.split()) < 430
 
 
 def test_round_instructions_do_not_repeat_the_reconstruction_guide(
@@ -374,6 +378,15 @@ def test_the_auditor_role_does_not_repeat_the_api_contract() -> None:
     assert "$output_schema" not in rendered
 
 
+def test_auditor_reviews_defects_but_does_not_carry_bootstrap_work() -> None:
+    rendered = PromptTemplate(ROLE_PATHS["output_auditor"]).render(max_turns="10")
+
+    assert "one `ticket_reviews` entry per current defect ticket" in rendered
+    assert "Read bootstrap work and its responses but exclude it" in rendered
+    assert "Cover every unsolved review" in rendered
+    assert "root may have changed" in rendered
+
+
 def test_the_operations_round_uses_json_for_the_plan_and_answer_for_tickets(
     render_stage: Callable[..., str],
 ) -> None:
@@ -387,7 +400,7 @@ def test_the_operations_round_uses_json_for_the_plan_and_answer_for_tickets(
     assert "deliverable" not in rendered
 
 
-def test_the_coding_round_asks_only_for_ticket_responses(
+def test_the_coding_round_keeps_code_in_the_workspace_and_reports_concerns(
     render_stage: Callable[..., str],
 ) -> None:
     """Coding revises the workspace, so its answer has no revision members to
@@ -397,7 +410,67 @@ def test_the_coding_round_asks_only_for_ticket_responses(
     assert "`edits`" not in rendered
     assert "`deleted`" not in rendered
     assert "`rationale`" not in rendered
-    assert "ticket responses and nothing else" in rendered
+    assert "ticket responses, any additional concerns in remark" in rendered
+    assert "`dimension_checks`" in rendered
+    assert "pipeline captures it through verification" in rendered
+
+
+def test_audit_can_read_concerns_from_both_ticket_summaries_and_stage_reports() -> None:
+    prompt = build_system_prompt(
+        ROLE_PATHS["output_auditor"],
+        {**_RUN_PATHS, "max_turns": "10"},
+        AuditReport,
+    ).text
+
+    assert "upstream blockers or provisional interpretations" in prompt
+    assert "additional concerns outside those answers" in prompt
+    assert "both ticket summaries and stage remarks" in prompt
+    assert "placement does not determine" in prompt
+    assert "missing reports in old snapshots" in prompt
+
+
+def test_coding_receives_all_dimension_readings_even_when_the_plan_omits_them(
+    instructions: StageInstructions,
+    state: ReconstructionState,
+) -> None:
+    from tests.zeroshot.workflow.test_resolve_submission import interpretation
+    from tests.zeroshot.workflow.test_validate_submission import _snapshot
+
+    held = interpretation()
+    dimension = held.views[0].dimensions[0]
+    held.views[0].dimensions.extend(
+        [
+            dimension.model_copy(update={"name": "dim_duplicate_value"}),
+            dimension.model_copy(
+                update={"name": "dim_unreadable", "nominal_value": None}
+            ),
+        ]
+    )
+    state["reconstruction"].snapshots[0] = _snapshot(
+        PipelineStage.OPERATIONS, held=held
+    )
+    agent = Mock()
+    agent.invoke.return_value = {}
+    stage = CodingStage(
+        agent=agent,
+        instructions=instructions,
+        verifier=Mock(),
+        middleware=Mock(),
+        input_after_compaction=False,
+    )
+    stage.run(state, {})
+    instruction = agent.invoke.call_args.args[0]["messages"][-1].text
+    (inventory,) = re.findall(r"```json\n(.*?)\n```", instruction, re.DOTALL)
+    readings = json.loads(inventory)
+
+    assert [item["name"] for item in readings] == [
+        dimension.name,
+        "dim_duplicate_value",
+        "dim_unreadable",
+    ]
+    assert readings[0]["nominal_value"] == readings[1]["nominal_value"]
+    assert readings[2]["nominal_value"] is None
+    assert set(readings[0]) == {"name", "text", "nominal_value", "kind", "quantity"}
 
 
 def test_the_interpretation_round_uses_json_for_the_artifact_and_answer_for_tickets(

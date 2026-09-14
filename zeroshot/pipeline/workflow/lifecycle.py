@@ -147,7 +147,7 @@ def advance_reconstruction(
     """Validate and atomically integrate one reasoning-stage result.
 
     Every reasoning stage revises its artifact in the workspace; the verified
-    result arrives here, and the submission carries only ticket answers.
+    result arrives here alongside the ticket answers and stage report.
     """
     current = run.snapshots[-1]
     stage = next_stage(current.last_completed_stage)
@@ -188,6 +188,7 @@ def advance_reconstruction(
             **update.artifacts,
             "open_tickets": tickets,
             "last_completed_stage": stage,
+            "stage_reports": {**current.stage_reports, stage: update.report},
         }
     )
     return _commit_snapshot(run, candidate)
@@ -279,6 +280,11 @@ def _require_only_stage_artifact_changed(
                 raise ValueError(
                     f"{stage} must preserve the current {artifact} artifact"
                 )
+    for other in REASONING_STAGES:
+        if other != stage and replacement.stage_reports.get(
+            other
+        ) != current.stage_reports.get(other):
+            raise ValueError(f"{stage} must preserve the current {other} stage report")
 
 
 # ---------------------------------------------------------------------------

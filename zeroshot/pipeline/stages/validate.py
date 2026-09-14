@@ -1,7 +1,7 @@
 """Contextual validation of one stage's submission against its snapshot.
 
 Every reasoning stage revises its artifact in the workspace and answers with
-ticket responses alone, so what is measured against the snapshot is the
+ticket responses and a stage report, so what is measured against the snapshot is the
 verified artifact the pipeline read back, handed here as `deliverable`.
 """
 
@@ -12,7 +12,10 @@ from zeroshot.pipeline.stages._base.validate import (
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.audit.validate import validate_audit_report
-from zeroshot.pipeline.stages.coding.validate import validate_coding
+from zeroshot.pipeline.stages.coding.validate import (
+    validate_coding,
+    validate_dimension_checks,
+)
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
@@ -55,6 +58,8 @@ def validate_submission(
         snapshot.open_tickets,
         expected_stage=stage,
     )
+    if stage is not PipelineStage.CODING and submission.dimension_checks is not None:
+        raise SubmissionValidationError(f"{stage} dimension_checks must be null")
     match stage:
         case PipelineStage.INTERPRETATION:
             if not isinstance(deliverable, DrawingInterpretation):
@@ -72,6 +77,9 @@ def validate_submission(
                 raise SubmissionValidationError(
                     "coding requires a terminal verification result"
                 )
+            validate_dimension_checks(
+                submission.dimension_checks, snapshot.interpretation
+            )
             validate_coding(snapshot, deliverable)
         case _:
             raise SubmissionValidationError(f"unexpected reasoning stage: {stage}")

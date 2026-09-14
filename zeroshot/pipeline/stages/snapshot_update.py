@@ -1,9 +1,13 @@
-"""Build validated artifact and ticket-response updates for a snapshot."""
+"""Build validated artifact, ticket-response and report updates for a snapshot."""
 
 from dataclasses import dataclass, replace
 from typing import cast
 
-from zeroshot.pipeline.messages.tickets import TicketAnswers, TicketResponse
+from zeroshot.pipeline.messages.tickets import (
+    StageReport,
+    TicketAnswers,
+    TicketResponse,
+)
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
@@ -23,6 +27,7 @@ class SnapshotUpdate:
     # The complete candidate is validated as a ReconstructionSnapshot by the caller.
     artifacts: dict[ArtifactField, object]
     responses: list[TicketResponse]
+    report: StageReport
 
 
 def build_snapshot_update(
@@ -63,7 +68,11 @@ def build_snapshot_update(
                 "verification": _verification_for_snapshot(terminal),
             }
 
-    return SnapshotUpdate(artifacts=artifacts, responses=submission.responses)
+    return SnapshotUpdate(
+        artifacts=artifacts,
+        responses=submission.responses,
+        report=StageReport.model_validate(submission.model_dump(exclude={"responses"})),
+    )
 
 
 def _verification_for_snapshot(verification: VerifyOutputResult) -> VerifyOutputResult:

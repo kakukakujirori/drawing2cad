@@ -28,6 +28,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditReport,
     RevisionRequest,
     StageOutputRef,
+    TicketReview,
 )
 from zeroshot.pipeline.stages.coding import stage as coding_stage_module
 from zeroshot.pipeline.stages.contracts import ReconstructionRun
@@ -198,6 +199,7 @@ def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
     return _message(
         TicketAnswers(
             responses=_responses(ticket_id, PipelineStage.CODING),
+            dimension_checks={},
         )
     )
 
@@ -474,7 +476,8 @@ def test_an_accepted_round_is_integrated_and_persisted(
     audit_instruction = _last_instruction(auditor.received_messages[0])
     assert "/work/attempts/round_000/coding/000" in audit_instruction
     assert "/work/attempts/round_000/interpretation/000" not in audit_instruction
-    assert "Addressed ticket_initial in coding." in audit_instruction
+    assert "Addressed ticket_initial in coding." not in audit_instruction
+    assert "open_tickets" in audit_instruction
     returns_dir = "/work/attempts/round_000/coding/000/intermediate_returns"
     assert (returns_dir in audit_instruction) is has_returns
     assert ("Recorded directory: unavailable" in audit_instruction) is not has_returns
@@ -827,6 +830,52 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(monkeypat
     assert len(coder.received_messages) == 2
     assert len(auditor.received_messages) == 1
     assert "round 1" in _last_instruction(planner.received_messages[2])
+
+
+def test_revision_audit_retries_missing_reviews_without_opening_another_round(
+    monkeypatch,
+):
+    _stub_verification(monkeypatch, _verified("000"), _verified("001"))
+    audited = AuditReport(
+        accepted=True,
+        findings=[],
+        ticket_reviews=[
+            TicketReview(
+                ticket_id=_ROUND_ONE_TICKET,
+                solved=True,
+                summary="The previously missing hole is present in the current solid.",
+            )
+        ],
+    )
+    auditor = ScriptedChatModel(
+        responses=(
+            _rejected_audit(),
+            _accepted_audit(),
+            _message(audited),
+        )
+    )
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            interpreter=ScriptedChatModel(responses=_interpretation_script()),
+            planner=ScriptedChatModel(responses=_operations_script()),
+            coder=ScriptedChatModel(
+                responses=(
+                    _coding_submission(),
+                    _coding_submission(_ROUND_ONE_TICKET),
+                )
+            ),
+            auditor=auditor,
+            max_audit_reject_count=2,
+            max_stage_validation_retries=1,
+        ).invoke({})
+
+    assert len(auditor.received_messages) == 3
+    assert _ROUND_ONE_TICKET in _last_instruction(auditor.received_messages[-1])
+    assert "ticket_reviews" in _last_instruction(auditor.received_messages[-1])
+    assert len(result["reconstruction"].snapshots) == 2
+    assert result["audit_report"] == audited
+    assert result["stage_validation_error"] is None
 
 
 def test_an_interpretation_revision_refreshes_parameter_values_and_preserves_history(

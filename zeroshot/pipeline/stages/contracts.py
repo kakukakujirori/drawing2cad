@@ -10,7 +10,7 @@ from pydantic import (
     model_validator,
 )
 
-from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket
+from zeroshot.pipeline.messages.tickets import BootstrapWork, StageReport, Ticket
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
@@ -88,6 +88,14 @@ class ReconstructionSnapshot(BaseModel):
             "in `program_source`, and long logs are clipped."
         ),
     )
+    stage_reports: dict[ReasoningStage, StageReport] = Field(
+        default_factory=dict,
+        description=(
+            "Reports from stages completed in this round, stored separately "
+            "from ticket responses. Missing reports in older histories mean "
+            "no report was recorded, not that the stage confirmed no concerns."
+        ),
+    )
 
     @model_validator(mode="after")
     def require_a_consistent_stage_checkpoint(self) -> Self:
@@ -106,6 +114,11 @@ class ReconstructionSnapshot(BaseModel):
             else REASONING_STAGES.index(self.last_completed_stage) + 1
         )
         completed_stages = REASONING_STAGES[:completed_count]
+        if premature_reports := sorted(set(self.stage_reports) - set(completed_stages)):
+            raise ValueError(
+                "unfinished stages must not have stage_reports: "
+                + ", ".join(premature_reports)
+            )
         for ticket in self.open_tickets:
             expected_stages = tuple(
                 stage for stage in completed_stages if stage in ticket.assigned_stages

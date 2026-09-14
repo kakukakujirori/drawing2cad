@@ -1,5 +1,7 @@
 """Cross-validation and persistence at the workflow boundary."""
 
+import json
+
 import pytest
 
 from tests.zeroshot.contracts import (
@@ -19,6 +21,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     CausalHop,
     RevisionRequest,
     StageOutputRef,
+    TicketReview,
 )
 from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
 from zeroshot.pipeline.stages.operations.contracts import (
@@ -71,8 +74,9 @@ def _operations() -> OperationPlan:
     )
 
 
-def _snapshot(source: str | None = _SOURCE) -> ReconstructionSnapshot:
-    ticket_id = "ticket_initial"
+def _snapshot(
+    source: str | None = _SOURCE, *, ticket_id: str = "ticket_initial"
+) -> ReconstructionSnapshot:
     responses = [
         TicketResponse(
             ticket_id=ticket_id,
@@ -197,6 +201,7 @@ def _completed_run(
         run,
         TicketAnswers(
             responses=_stage_responses(run, "coding"),
+            dimension_checks={},
         ),
         workspace_output=verification,
     )
@@ -224,16 +229,23 @@ def _hop_from(effect: StageOutputRef, cause: StageOutputRef) -> CausalHop:
     )
 
 
-def _report(*hops: CausalHop, target: StageOutputRef | None = None) -> AuditReport:
+def _report(
+    *hops: CausalHop,
+    target: StageOutputRef | None = None,
+    ticket_reviews: list[TicketReview] | None = None,
+    related_ticket_ids: list[str] | None = None,
+) -> AuditReport:
     revision_target = target or hops[-1].cause
     return AuditReport(
         accepted=False,
+        ticket_reviews=ticket_reviews or [],
         findings=[
             AuditFinding(
                 name="find_shape_mismatch",
                 observation="The rendered shape differs from the drawing.",
                 evidence=["render_3d/hlg_front.png"],
                 backtrace=list(hops),
+                related_ticket_ids=related_ticket_ids or [],
                 revision_request=RevisionRequest(
                     action="modify",
                     targets=[revision_target],
@@ -689,6 +701,9 @@ def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
     assert current.operations is None
     assert current.program_source is None
     assert current.verification is None
+    assert current.stage_reports == {}
+    assert updated.snapshots[-2].stage_reports == run.snapshots[-1].stage_reports
+    assert set(updated.snapshots[-2].stage_reports) == set(REASONING_STAGES)
     assert current.open_tickets[0].ticket_id == "ticket_001_shape_mismatch"
     assert current.open_tickets[0].subject == report.findings[0]
     assert current.open_tickets[0].responses == []
@@ -740,3 +755,152 @@ def test_failed_atomic_save_preserves_the_previous_file(
 
     assert path.read_bytes() == original_bytes
     assert list(tmp_path.glob(".reconstruction.json.*")) == []
+
+
+@pytest.mark.parametrize("solved", [True, False])
+@pytest.mark.parametrize("ticket_id", ["ticket_initial", "ticket_other_bootstrap"])
+def test_bootstrap_is_read_but_never_reviewed_or_linked(
+    solved: bool, ticket_id: str
+) -> None:
+    snapshot = _snapshot(ticket_id=ticket_id)
+    validate_submission(
+        AuditReport(accepted=True, ticket_reviews=[], findings=[]), snapshot
+    )
+    initial = _report(target=_ref("coding", "ret_hole"))
+    validate_submission(initial, snapshot)
+    assert initial.ticket_reviews == initial.findings[0].related_ticket_ids == []
+    report = _report(
+        target=_ref("coding", "ret_hole"),
+        ticket_reviews=[
+            TicketReview(
+                ticket_id=ticket_id,
+                summary="Checked the request.",
+                solved=solved,
+            )
+        ],
+        related_ticket_ids=[] if solved else [ticket_id],
+    )
+    with pytest.raises(SubmissionValidationError, match=f"unexpected=.*{ticket_id}"):
+        validate_submission(report, snapshot)
+
+
+@pytest.mark.parametrize(
+    ("reviewed", "valid"),
+    [
+        (["ticket_001_shape_mismatch"], True),
+        ([], False),
+        (["ticket_initial"], False),
+        (["ticket_absent"], False),
+        (["ticket_001_shape_mismatch", "ticket_absent"], False),
+    ],
+)
+def test_audit_reviews_cover_current_defect_tickets_even_on_acceptance(
+    reviewed: list[str], valid: bool
+) -> None:
+    run = _completed_run(
+        open_next_round(_completed_run(), _report(target=_ref("coding", "ret_hole")))
+    )
+    report = AuditReport(
+        accepted=True,
+        findings=[],
+        ticket_reviews=[
+            TicketReview(ticket_id=name, summary="The hole is restored.", solved=True)
+            for name in reviewed
+        ],
+    )
+    if valid:
+        validate_submission(report, run.snapshots[-1])
+    else:
+        previous = run.model_dump_json()
+        with pytest.raises(
+            SubmissionValidationError, match="missing=.*unexpected="
+        ) as caught:
+            open_next_round(run, report)
+        assert any(
+            name in str(caught.value)
+            for name in [*reviewed, "ticket_001_shape_mismatch"]
+        )
+        assert run.model_dump_json() == previous
+
+
+@pytest.mark.parametrize("solved_second", [True, False])
+def test_current_findings_replace_old_tickets_and_choose_the_new_revision_root(
+    solved_second: bool,
+) -> None:
+    first = _report(target=_ref("coding", "ret_hole")).findings[0]
+    second = first.model_copy(update={"name": "find_second_mismatch"})
+    run = _completed_run(
+        open_next_round(
+            _completed_run(), AuditReport(accepted=False, findings=[first, second])
+        )
+    )
+    old_ids = [ticket.ticket_id for ticket in run.snapshots[-1].open_tickets]
+    reviews = [
+        TicketReview(
+            ticket_id=name,
+            summary="Checked the current solid.",
+            solved=solved_second if index else False,
+        )
+        for index, name in enumerate(old_ids)
+    ]
+    report = _report(
+        _hop("coding", "ret_hole", "operations", "op_hole"),
+        _hop("operations", "op_hole", "interpretation", "sem_feature_2"),
+        ticket_reviews=reviews,
+        related_ticket_ids=[
+            review.ticket_id for review in reviews if not review.solved
+        ],
+    )
+    previous = run.model_dump_json()
+    updated = open_next_round(run, report)
+    assert run.model_dump_json() == previous
+    current = updated.snapshots[-1]
+    assert current.round == 2
+    assert (
+        len(current.open_tickets) == 1
+    )  # Never copy old unsolved tickets alongside the finding.
+    ticket = current.open_tickets[0]
+    assert ticket.ticket_id == "ticket_002_shape_mismatch"
+    assert ticket.subject == report.findings[0]
+    assert ticket.assigned_stages == list(REASONING_STAGES)
+    assert ticket.responses == []
+    assert not any(
+        isinstance(ticket.subject, BootstrapWork) for ticket in current.open_tickets
+    )
+    assert "audit_report" not in current.model_dump()
+    assert "ticket_reviews" not in current.model_dump()
+    assert ReconstructionRun.model_validate_json(updated.model_dump_json()) == updated
+
+
+def test_legacy_ticket_history_loads_but_a_new_audit_must_review_it(tmp_path) -> None:
+    run = _completed_run(
+        open_next_round(_completed_run(), _report(target=_ref("coding", "ret_hole")))
+    )
+    payload = run.model_dump(mode="json")
+    for snapshot in payload["snapshots"]:
+        for ticket in snapshot["open_tickets"]:
+            ticket["subject"].pop("related_ticket_ids", None)
+    path = tmp_path / "reconstruction.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    restored = load_reconstruction(path)
+    assert restored == run
+    current = restored.snapshots[-1]
+    assert current.open_tickets[0].subject.related_ticket_ids == []
+    with pytest.raises(
+        SubmissionValidationError, match="missing=.*ticket_001_shape_mismatch"
+    ):
+        validate_submission(AuditReport(accepted=True, findings=[]), current)
+    validate_submission(
+        AuditReport(
+            accepted=True,
+            findings=[],
+            ticket_reviews=[
+                TicketReview(
+                    ticket_id=current.open_tickets[0].ticket_id,
+                    summary="The old defect is resolved.",
+                    solved=True,
+                )
+            ],
+        ),
+        current,
+    )

@@ -49,8 +49,10 @@ class TicketResponse(BaseModel):
     summary: str = Field(
         ...,
         description=(
-            "A concise account of what this stage changed, why no change was "
-            "needed, or what remains doubtful upstream. Do not restate the "
+            "Answer this assigned ticket: what changed, why no change was "
+            "needed, or what prevented resolution. Include upstream concerns "
+            "and provisional interpretations needed to explain this ticket's "
+            "outcome; put additional concerns in remark. Do not restate the "
             "artifact's geometry or measurements: it remains authoritative. "
             "Cite the concrete stable names examined or changed: "
             "view_..., dim_..., or sem_... in interpretation, op_... in "
@@ -138,14 +140,56 @@ def tickets_assigned_to(
     return [ticket for ticket in tickets if stage in ticket.assigned_stages]
 
 
-class TicketAnswers(BaseModel):
-    """Your answers to the tickets assigned to you, and nothing else.
+class StageReport(BaseModel):
+    """Stage-wide observations stored once, separately from ticket responses."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    remark: str = Field(
+        default="",
+        description=(
+            "Additional concerns not covered by the assigned-ticket responses; "
+            "empty if none. State the affected subject, reason and how you "
+            "handled it. Include concerns about unassigned tickets here, naming "
+            "their IDs when known. Do not repeat artifact details, ticket "
+            "summaries or recorded questions. A shared explanation may appear "
+            "once here, but each ticket summary must still state its outcome "
+            "and the concern's effect on it."
+        ),
+    )
+    dimension_checks: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Coding only: one entry for every dim_ name in the current "
+            "interpretation, including unreadable values and equal values under "
+            "different names. For each dimension identify where the final "
+            "geometry realizes it and the supporting check, or explain why it "
+            "is not established or not checked. Assigning a value to a variable "
+            "alone does not establish the geometry. Use {} when there are no "
+            "dimensions, and null in other stages. This is the coder's account, "
+            "not independent proof that the dimensions are satisfied."
+        ),
+    )
+
+    @field_validator("dimension_checks")
+    @classmethod
+    def require_dimension_explanations(
+        cls, checks: dict[str, str] | None
+    ) -> dict[str, str] | None:
+        for name, explanation in (checks or {}).items():
+            if not explanation.strip():
+                raise ValueError(
+                    f"{name}: dimension check explanation must not be blank"
+                )
+        return checks
+
+
+class TicketAnswers(StageReport):
+    """Your assigned-ticket answers and any additional stage-wide observations.
 
     Every reasoning stage revises its artifact in its workspace file, which
     the pipeline verifies and reads back, so no artifact belongs in here.
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     responses: list[TicketResponse] = Field(
         ...,

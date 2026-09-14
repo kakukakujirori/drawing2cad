@@ -1,10 +1,38 @@
+from collections.abc import Mapping
+
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.verification import (
     ExecutionStatus,
     VerifyOutputResult,
     check_program,
 )
+
+
+def validate_dimension_checks(
+    checks: Mapping[str, str] | None,
+    interpretation: DrawingInterpretation | None,
+) -> None:
+    """Require coverage of the drawing's dimensions, not proof of their geometry."""
+    if checks is None:
+        raise SubmissionValidationError(
+            "coding requires dimension_checks; use {} when there are no dimensions"
+        )
+    if interpretation is None:
+        raise SubmissionValidationError("coding requires an integrated interpretation")
+    dimensions = {
+        dimension.name for view in interpretation.views for dimension in view.dimensions
+    }
+    missing, unknown = (
+        sorted(dimensions - checks.keys()),
+        sorted(checks.keys() - dimensions),
+    )
+    if missing or unknown:
+        raise SubmissionValidationError(
+            "dimension_checks must cover every current dimension exactly once; "
+            f"missing: {missing}; unknown: {unknown}"
+        )
 
 
 def validate_coding(

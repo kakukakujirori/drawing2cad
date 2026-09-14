@@ -1,6 +1,7 @@
 """The audit stage's answer.
 
 AuditReport
+├── ticket_reviews: TicketReview[]
 └── findings: AuditFinding[]
     ├── backtrace: CausalHop[]
     │   ├── effect: StageOutputRef
@@ -282,6 +283,15 @@ class AuditFinding(BaseModel):
             "The revision this defect requires, at the root its backtrace reaches."
         ),
     )
+    related_ticket_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Current defect tickets whose unresolved problems this finding covers. "
+            "Empty for a new defect. Never cite bootstrap work. Several tickets "
+            "may share a finding, and one ticket may require several findings. "
+            "These are review links, not causal backtrace edges."
+        ),
+    )
 
     @model_validator(mode="after")
     def require_evidence_and_a_revision_path(self) -> Self:
@@ -296,6 +306,8 @@ class AuditFinding(BaseModel):
             raise ValueError("evidence locators must not be blank")
         if len(set(self.evidence)) != len(self.evidence):
             raise ValueError("evidence locators must not contain duplicates")
+        if len(set(self.related_ticket_ids)) != len(self.related_ticket_ids):
+            raise ValueError("related_ticket_ids must not contain duplicates")
 
         # A path must be continuous and may not revisit an output.
         for current, following in zip(self.backtrace, self.backtrace[1:], strict=False):
@@ -344,6 +356,39 @@ class AuditFinding(BaseModel):
 # Report-wide consistency across otherwise independent findings.
 
 
+class TicketReview(BaseModel):
+    """Whether a previously observed defect is resolved in the current artifacts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ticket_id: str = Field(
+        ...,
+        pattern=r"^ticket_[a-z0-9][a-z0-9_]*$",
+        description="The current defect ticket being checked; never bootstrap work.",
+    )
+    summary: str = Field(
+        ...,
+        description=(
+            "The current check and why the old defect is resolved or remains. "
+            "Do not repeat a finding's backtrace or revision request here."
+        ),
+    )
+    solved: bool = Field(
+        ...,
+        description=(
+            "True only if the observed defect is resolved, not merely because "
+            "the requested edit was attempted. If false, a current finding "
+            "must include this ticket in related_ticket_ids."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def require_a_check_summary(self) -> Self:
+        if not self.summary.strip():
+            raise ValueError("summary must not be blank")
+        return self
+
+
 class AuditReport(BaseModel):
     """The auditor's complete acceptance decision and defect analysis.
 
@@ -356,6 +401,14 @@ class AuditReport(BaseModel):
     accepted: bool = Field(
         ...,
         description=("True only when no reasoning-stage output requires correction."),
+    )
+    ticket_reviews: list[TicketReview] = Field(
+        default_factory=list,
+        description=(
+            "Exactly one review per current defect ticket (subject AuditFinding). "
+            "Initial bootstrap work is read but not reviewed, so round 0 uses []. "
+            "An empty review list is not evidence for acceptance."
+        ),
     )
     findings: list[AuditFinding] = Field(
         ...,
@@ -370,6 +423,23 @@ class AuditReport(BaseModel):
         """Require one decision and unambiguous finding and proposed identities."""
         if self.accepted == bool(self.findings):
             raise ValueError("accepted must be true exactly when findings is empty")
+        review_ids = [review.ticket_id for review in self.ticket_reviews]
+        if len(set(review_ids)) != len(review_ids):
+            raise ValueError("ticket_reviews must not contain duplicate ticket IDs")
+        unsolved = {
+            review.ticket_id for review in self.ticket_reviews if not review.solved
+        }
+        related = {
+            ticket_id
+            for finding in self.findings
+            for ticket_id in finding.related_ticket_ids
+        }
+        if unsolved != related:
+            raise ValueError(
+                "unsolved ticket IDs must equal finding.related_ticket_ids: "
+                f"without a finding={sorted(unsolved - related)}, "
+                f"without an unsolved review={sorted(related - unsolved)}"
+            )
         names = [finding.name for finding in self.findings]
         if len(set(names)) != len(names):
             raise ValueError("finding names must be unique within a report")

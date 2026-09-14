@@ -1106,13 +1106,14 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir)
     answer = {
+        "dimension_checks": {},
         "responses": [
             {
                 "ticket_id": "ticket_initial",
                 "stage": "coding",
                 "summary": "The program still fails; audit must diagnose the operation.",
             }
-        ]
+        ],
     }
     model = ScriptedChatModel(
         responses=(
