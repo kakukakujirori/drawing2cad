@@ -13,6 +13,7 @@ from langchain_core.messages.content import (
     create_text_block,
 )
 from langchain_core.outputs import ChatGenerationChunk
+from pydantic import BaseModel
 
 from zeroshot.pipeline.models.openrouter import ChatOpenRouterSingleReasoning
 
@@ -86,6 +87,25 @@ def test_a_null_first_format_is_still_filled_in_by_a_later_delta(
     (detail,) = merged.message.additional_kwargs["reasoning_details"]
     assert detail["format"] == "unknown"
     assert detail["text"] == "a b c"
+
+
+class _Echo(BaseModel):
+    value: str
+
+
+class _Answer(BaseModel):
+    done: bool
+
+
+def test_a_call_is_forced_only_when_the_answer_is_the_one_tool_left() -> None:
+    """Forced to pick among several tools, GLM submitted near-empty answers."""
+    model = ChatOpenRouterSingleReasoning(model="test", api_key="EMPTY")
+
+    working: Any = model.bind_tools([_Echo, _Answer], tool_choice="any")
+    final: Any = model.bind_tools([_Answer], tool_choice="any")
+
+    assert working.kwargs["tool_choice"] == "auto"
+    assert final.kwargs["tool_choice"] == "required"
 
 
 def test_payload_sends_reasoning_once() -> None:

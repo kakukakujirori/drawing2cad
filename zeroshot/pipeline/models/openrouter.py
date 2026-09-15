@@ -17,17 +17,20 @@ of `"unknown"` in a single transcript, replayed on every later request.
 single merged entry this produces, so it does not reach either problem here.
 """
 
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from typing import Any, override
 
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
     CallbackManagerForLLMRun,
 )
-from langchain_core.messages import AIMessageChunk, BaseMessage
+from langchain_core.language_models import LanguageModelInput
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
+from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
 from langchain_openrouter.chat_models import ChatOpenRouter
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 # Constant across a block's deltas, and concatenated by the chunk merge because
 # it is a string the merge has no exemption for. `type` is already exempt in
@@ -101,6 +104,24 @@ class ChatOpenRouterSingleReasoning(ChatOpenRouter):
                 retry_connection_errors=False,
             )
         return client
+
+    @override
+    def bind_tools(
+        self,
+        tools: Sequence[
+            dict[str, Any] | type[BaseModel] | Callable[..., Any] | BaseTool
+        ],
+        *,
+        tool_choice: dict | str | bool | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        """Keep LangChain's `any` only when one tool is bound, as on the final turn.
+
+        Forced to pick among several tools, GLM submitted near-empty answers mid-work.
+        """
+        if tool_choice == "any" and len(tools) > 1:
+            tool_choice = "auto"
+        return super().bind_tools(tools, tool_choice=tool_choice, **kwargs)
 
     @override
     def _stream(

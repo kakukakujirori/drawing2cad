@@ -1,46 +1,26 @@
 # @package _global_
 
-# Binds the answer as a tool. A json_schema response format is accepted here
-# but suppresses tool calling, so a stage answers on turn 1 having read nothing.
+# A json_schema response format suppresses this model's tool calling.
 response_format_strategy: tool
 
 model:
   _target_: zeroshot.pipeline.models.openrouter.ChatOpenRouterSingleReasoning
 
   model: z-ai/glm-5.3-flash
-  # `summary` is not part of OpenRouter's reasoning contract -- that is the
-  # OpenAI Responses shape -- so only `effort` is set here.
-  #
-  # OpenRouter reads effort as a share of `max_tokens`: xhigh is ~95% of it and
-  # high ~80%. Above the model's own 131,072-token output ceiling either share
-  # is unreachable, so the effort stops meaning anything and the model thinks
-  # until the ceiling stops it -- one measured turn spent 96,547 tokens
-  # reasoning, hit `finish_reason: length` at 131,072, and returned nothing.
+  # Effort is a share of max_tokens; OpenRouter takes no `summary`.
   reasoning:
     effort: medium
   output_version: v1
   api_key: ${oc.env:OPENROUTER_API_KEY}
 
-  # OpenRouter spreads this model over 22 upstreams that differ in what they
-  # accept, and picks one per request. `response_format_strategy: tool` needs
-  # `tool_choice`, which several of them do not implement at all -- a stage
-  # routed to one of those answers with no tool call, no text and no structured
-  # output. Pin the ones that carry the whole contract: tool_choice
-  # required/function, structured outputs, and the full context window.
+  # Upstreams that support tool_choice, structured outputs and the full context.
   openrouter_provider:
     order: [Together, Fireworks, DeepInfra, Cloudflare]
     allow_fallbacks: false
-  # Keep original inputs and the newest tool images within Cloudflare's limit.
+  # Cloudflare's image limit.
   max_images_per_request: 8
 
-  # Small enough that the effort share binds, and split from what the runs
-  # measured. On a hard turn this model reaches for the same amount of thinking
-  # every time -- 25.0k, 29.7k, 30.4k, 31.2k tokens across four stages -- so the
-  # cap belongs there rather than below it, where thinking simply eats the
-  # answer. The other half is the answer, and coding's answer is a whole
-  # CadQuery program in one tool call: at 40k total, reasoning took 31k, the
-  # call carrying the program was cut off mid-argument, and the turn came back
-  # with `finish_reason: tool_calls` and no call in it.
+  # Hard turns reason for ~30k tokens; the rest leaves room for a whole program.
   max_tokens: 60000
 
   timeout: 60000  # milliseconds

@@ -175,6 +175,25 @@ def test_a_turn_that_only_thought_is_asked_again_rather_than_ending_the_stage() 
     assert "build on it rather than starting over" in nudge
 
 
+def test_text_without_a_tool_call_is_asked_again_rather_than_ending_the_stage() -> None:
+    """Under ToolStrategy the agent loop ends on text, with no answer."""
+    said = AIMessage(content="The program is done.", response_metadata={"id": "gen-1"})
+    model = ScriptedChatModel(responses=(said, _answering("ticket_initial", "call_1")))
+
+    reports = [
+        chunk["model_retry"]
+        for chunk in _agent(model).stream({"messages": []}, stream_mode="custom")
+        if "model_retry" in chunk
+    ]
+
+    (report,) = reports
+    assert report["error_type"] == "TextWithoutToolCall"
+    assert report["generation_id"] == "gen-1"
+    replayed, correction = model.received_messages[1][-2:]
+    assert replayed.text == "The program is done."
+    assert "submit your answer as a tool call" in correction.text
+
+
 def test_a_model_that_never_answers_ends_the_stage_without_failing_the_run() -> None:
     """The graph re-asks a stage that submitted nothing, so raising here would
     end a run the pipeline can still recover."""

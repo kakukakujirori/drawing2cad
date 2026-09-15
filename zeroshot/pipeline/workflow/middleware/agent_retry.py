@@ -11,6 +11,7 @@ from langchain.agents.structured_output import (
     MultipleStructuredOutputsError,
     StructuredOutputError,
     StructuredOutputValidationError,
+    ToolStrategy,
 )
 from langchain_core.messages import AIMessage, HumanMessage
 from openai import LengthFinishReasonError
@@ -19,7 +20,14 @@ from .connection_retry import ModelConnectionRetry, report_model_retry
 
 
 class UnansweredModelCall(Exception):
-    """A model call that came back with no tool call, no text and no answer."""
+    """A model call that came back with nothing the agent loop can act on."""
+
+
+class TextWithoutToolCall(UnansweredModelCall):
+    """Text without a tool call under ToolStrategy, which ends the agent unanswered.
+
+    `ChatOpenRouterSingleReasoning.bind_tools` lets models skip tools, so this happens.
+    """
 
 
 class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
@@ -136,7 +144,17 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     def _retry_unanswered_request(
         request: ModelRequest[None],
         response: ModelResponse[Any],
+        error: UnansweredModelCall,
     ) -> ModelRequest[None]:
+        if isinstance(error, TextWithoutToolCall):
+            # Replayed so the correction has the turn it refers to.
+            return request.override(
+                messages=[
+                    *request.messages,
+                    *(m for m in response.result if isinstance(m, AIMessage)),
+                    HumanMessage(content=_CALL_A_TOOL),
+                ]
+            )
         return request.override(
             messages=[
                 *request.messages,
@@ -176,9 +194,9 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     else self._retry_structured_output_request(current_request, error)
                 )
             else:
-                if not _is_unanswered(response):
+                unanswered = _unanswered(current_request, response)
+                if unanswered is None:
                     return response
-                unanswered = UnansweredModelCall(_UNANSWERED)
                 retrying = rejected < self.max_retries
                 self._report(
                     current_request,
@@ -193,7 +211,9 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 current_request = (
                     self._retry_length_limited_request(current_request)
                     if _answering_ran_out_of_output(current_request, response)
-                    else self._retry_unanswered_request(current_request, response)
+                    else self._retry_unanswered_request(
+                        current_request, response, unanswered
+                    )
                 )
 
     @override
@@ -222,9 +242,9 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     else self._retry_structured_output_request(current_request, error)
                 )
             else:
-                if not _is_unanswered(response):
+                unanswered = _unanswered(current_request, response)
+                if unanswered is None:
                     return response
-                unanswered = UnansweredModelCall(_UNANSWERED)
                 retrying = rejected < self.max_retries
                 self._report(
                     current_request,
@@ -239,7 +259,9 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 current_request = (
                     self._retry_length_limited_request(current_request)
                     if _answering_ran_out_of_output(current_request, response)
-                    else self._retry_unanswered_request(current_request, response)
+                    else self._retry_unanswered_request(
+                        current_request, response, unanswered
+                    )
                 )
 
 
@@ -269,6 +291,12 @@ def _gave_up_answering(attempts: int, error: Exception) -> ModelResponse[Any]:
 
 
 _UNANSWERED = "the model returned no tool call, no text and no structured output"
+_TEXT_WITHOUT_CALL = "the model returned text without a tool call"
+_CALL_A_TOOL = (
+    "Your last turn was text without a tool call, so nothing ran and no answer "
+    "was submitted. Call a tool to keep working, or submit your answer as a "
+    "tool call."
+)
 _THOUGHT_TOO_LONG = (
     "Your last turn spent its whole output budget on thinking and came back "
     "empty. You have been thinking a long time, so answer now. The analysis "
@@ -291,18 +319,22 @@ def _visible_output_tokens(response: ModelResponse[Any]) -> int:
     return (usage.get("output_tokens") or 0) - reasoning
 
 
-def _is_unanswered(response: ModelResponse[Any]) -> bool:
-    """Whether the response holds nothing to act on.
+def _unanswered(
+    request: ModelRequest[None], response: ModelResponse[Any]
+) -> UnansweredModelCall | None:
+    """Why this response would end the agent loop without an answer, or None.
 
-    Reasoning alone leaves this true, and the agent loop reads that as a
-    finished answer.
+    Reasoning alone would, and so would text under ToolStrategy.
     """
-    if response.structured_response is not None:
-        return False
-    return not any(
-        getattr(message, "tool_calls", None) or message.text.strip()
-        for message in response.result
-    )
+    if response.structured_response is not None or any(
+        getattr(message, "tool_calls", None) for message in response.result
+    ):
+        return None
+    if not any(message.text.strip() for message in response.result):
+        return UnansweredModelCall(_UNANSWERED)
+    if isinstance(request.response_format, ToolStrategy):
+        return TextWithoutToolCall(_TEXT_WITHOUT_CALL)
+    return None
 
 
 def _extract_text_or_tool_args(message: AIMessage) -> str:
@@ -348,7 +380,7 @@ def _answering_ran_out_of_output(
 
 
 def _unanswered_diagnosis(response: ModelResponse[Any]) -> dict[str, object]:
-    """Say what the backend reported about an answer that carried nothing.
+    """Say what the backend reported about a turn that gave no answer.
 
     An empty completion is the same event whether the model ran out of output
     budget mid-thought, was cut off upstream, or simply stopped -- and the
@@ -362,7 +394,8 @@ def _unanswered_diagnosis(response: ModelResponse[Any]) -> dict[str, object]:
     usage = getattr(last, "usage_metadata", None) or {}
     return {
         "finish_reason": _finish_reason(response),
-        "provider": metadata.get("provider"),
+        # OpenRouter streams leave `provider` null; GET /api/v1/generation?id= names it.
+        "generation_id": metadata.get("id"),
         "output_tokens": usage.get("output_tokens"),
         "reasoning_tokens": (usage.get("output_token_details") or {}).get("reasoning"),
     }
