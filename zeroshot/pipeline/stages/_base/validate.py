@@ -1,5 +1,5 @@
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from zeroshot.pipeline.messages.tickets import (
     Ticket,
@@ -11,6 +11,18 @@ from zeroshot.pipeline.stages.types import ReasoningStage
 
 class SubmissionValidationError(ValueError):
     """A stage's submission contradicts the current reconstruction snapshot."""
+
+
+def raise_together(*checks: Callable[[], None]) -> None:
+    """Report every contradiction at once, so one re-ask can fix them together."""
+    errors = []
+    for check in checks:
+        try:
+            check()
+        except SubmissionValidationError as error:
+            errors.append(str(error))
+    if errors:
+        raise SubmissionValidationError("\n".join(errors))
 
 
 def validate_ticket_responses(

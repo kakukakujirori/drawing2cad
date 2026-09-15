@@ -694,7 +694,11 @@ def test_coding_saves_remark_and_resolved_dimension_checks_together(tmp_path):
         "dim_unreadable.nominal_value (= null)"
         in report.dimension_checks["dim_unreadable"]
     )
-    assert set(report.model_dump()) == {"remark", "dimension_checks"}
+    assert set(report.model_dump()) == {
+        "remark",
+        "dimension_checks",
+        "unticketed_changes",
+    }
     assert len(restored.snapshots[-1].open_tickets[0].responses) == 3
     assert submission.stage_report.dimension_checks["dim_width"].endswith(
         "dim_width.nominal_value."
@@ -755,7 +759,11 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
     assert (
         "sem_feature_1.width (= 12.0)" in snapshot.open_tickets[0].responses[0].summary
     )
-    assert set(report.model_dump()) == {"remark", "dimension_checks"}
+    assert set(report.model_dump()) == {
+        "remark",
+        "dimension_checks",
+        "unticketed_changes",
+    }
     assert type(report) is StageReport
     assert run.snapshots[-1].stage_reports == {}
     history = tmp_path / "reconstruction.json"

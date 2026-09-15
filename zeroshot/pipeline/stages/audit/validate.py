@@ -50,7 +50,9 @@ def validate_audit_report(
         references,
     )
 
-    interpretation_links = _interpretation_sources(interpretation)
+    interpretation_links = {
+        name: member.cites for name, member in interpretation.members().items()
+    }
     known_members = {
         PipelineStage.INTERPRETATION: set(interpretation_links),
         PipelineStage.OPERATIONS: set(operations_by_name),
@@ -114,24 +116,6 @@ def _iter_references(
             yield hop.effect
             yield hop.cause
         yield from finding.revision_request.targets
-
-
-def _interpretation_sources(
-    interpretation: DrawingInterpretation,
-) -> dict[str, set[str]]:
-    """Map each view, dimension and feature to the members it explicitly cites."""
-    sources = {
-        view.name: {view.region.view} - {view.name} for view in interpretation.views
-    }
-    for view in interpretation.views:
-        for dimension in view.dimensions:
-            sources[dimension.name] = {view.name, dimension.region.view}
-    for feature in interpretation.features:
-        sources[feature.name] = {
-            *(region.view for region in feature.evidence),
-            *feature.dimension_refs,
-        }
-    return sources
 
 
 def _inspect_coding_outputs(
@@ -204,7 +188,7 @@ def _causal_hop_error(
     *,
     known_members: Mapping[PipelineStage, set[str]],
     operations_by_name: Mapping[str, Operation],
-    interpretation_links: Mapping[str, set[str]],
+    interpretation_links: Mapping[str, frozenset[str]],
 ) -> str | None:
     """Validate only causal relations represented by an explicit contract."""
     effect = hop.effect

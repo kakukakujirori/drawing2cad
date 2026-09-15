@@ -25,6 +25,17 @@ def resolve_references[M: BaseModel](
     return cast(M, _references_resolved_within(answer, interpretation))
 
 
+def without_annotations(text: str) -> str:
+    """Drop the "(= value)" the pipeline appended after each reference.
+
+    `_REFERENCE` matches an address together with its annotation, and this
+    writes the address back alone: "sem_bore.radius (= 3.0)" -> "sem_bore.radius".
+    """
+    return _REFERENCE.sub(
+        lambda address: f"{address['member']}.{address['parameter']}", text
+    )
+
+
 def unresolved_references(
     text: str, interpretation: DrawingInterpretation | None
 ) -> list[str]:

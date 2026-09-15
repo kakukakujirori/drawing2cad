@@ -48,7 +48,7 @@ class CodingStage:
         if state.get("stage_validation_error") is None:
             self.output_verifier.reset()
             self.middleware.reset()
-        self.ticket_verifier.reset(snapshot)
+        self.ticket_verifier.reset(state["reconstruction"])
 
         # The verifier checks the program against this round's operations and
         # redraws the solid in the views the drawing names, guessing none. Set
@@ -113,7 +113,7 @@ def create_coding_stage(
         source_filename=output_filename,
         show_intermediate_returns=show_intermediate_returns,
     )
-    ticket_verifier = TicketVerifier()
+    ticket_verifier = TicketVerifier(lambda: output_verifier.accepted_source)
     coding_middleware = VerifyOnWriteMiddleware(
         output_verifier,
         ticket_verifier=ticket_verifier,

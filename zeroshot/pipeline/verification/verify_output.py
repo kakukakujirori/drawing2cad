@@ -391,6 +391,12 @@ class OutputVerifier:
             return False
         return report.status is ExecutionStatus.VERIFIED and report.returncode == 0
 
+    @property
+    def accepted_source(self) -> str | None:
+        """The program of the most recent `feedback` build, once confirmed."""
+        report = self._last_feedback_report
+        return report.source if report is not None and self.confirmed else None
+
     def feedback(self) -> list[ContentBlock]:
         """Verify, and say what happened in blocks a message can carry."""
         report, manifest = self.verify()

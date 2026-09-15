@@ -6,6 +6,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -170,18 +171,27 @@ class StageReport(BaseModel):
             "not independent proof that the dimensions are satisfied."
         ),
     )
+    unticketed_changes: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Changes your tickets did not ask for, each with its reason. Use a "
+            "member name as the key: datum, view_..., dim_..., sem_..., op_... or "
+            "ret_.... The value describes the change and its justification. "
+            "Leave this {} in round 0 and when your tickets asked for every change."
+        ),
+    )
 
-    @field_validator("dimension_checks")
+    @field_validator("dimension_checks", "unticketed_changes")
     @classmethod
-    def require_dimension_explanations(
-        cls, checks: dict[str, str] | None
+    def require_explanations(
+        cls, explanations: dict[str, str] | None, info: ValidationInfo
     ) -> dict[str, str] | None:
-        for name, explanation in (checks or {}).items():
+        for name, explanation in (explanations or {}).items():
             if not explanation.strip():
                 raise ValueError(
-                    f"{name}: dimension check explanation must not be blank"
+                    f"{info.field_name}.{name}: explanation must not be blank"
                 )
-        return checks
+        return explanations
 
 
 class TicketAnswers(BaseModel):

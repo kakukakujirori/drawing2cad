@@ -356,6 +356,8 @@ def _stub_verification(
         def __init__(self, workdir: SandboxWorkdir, source_filename: str) -> None:
             self.source_path = workdir.host_bind_dir / source_filename
 
+        accepted_source = None
+
         @property
         def confirmed(self) -> bool:
             return True

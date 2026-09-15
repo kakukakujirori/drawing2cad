@@ -98,7 +98,9 @@ class RevisionRequest(BaseModel):
             "every named member that shares the defect; modify may instead take "
             "one whole-stage reference, but not both at once. Split and rename "
             "take exactly one named member, and merge at least two. Every "
-            "target must belong to the same stage."
+            "target must belong to the same stage. Without an explanation, the "
+            "owning stage changes only these targets, the proposed names and "
+            "members that cite them, so list every member that must change."
         ),
     )
     instruction: str = Field(

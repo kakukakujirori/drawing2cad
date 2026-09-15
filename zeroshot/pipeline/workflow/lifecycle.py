@@ -156,7 +156,7 @@ def advance_reconstruction(
 
     update = build_snapshot_update(
         submission,
-        current,
+        run,
         stage,
         workspace_output=workspace_output,
     )

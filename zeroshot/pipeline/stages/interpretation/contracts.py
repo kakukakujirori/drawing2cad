@@ -8,6 +8,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from zeroshot.pipeline.stages.types import Member
+
 
 def require_name(name: str, prefix: str) -> None:
     if re.fullmatch(rf"{prefix}[a-z0-9_]+", name):
@@ -285,6 +287,46 @@ class DrawingInterpretation(Contract):
     def dimension_inventory(self) -> list[DimensionSummary]:
         return [dim.to_summary() for dim in self.all_dimensions]
 
+    def members(self) -> dict[str, Member]:
+        """The datum, views, dimensions and features, and the names each cites.
+
+        Validation fills scales, image sizes and raster UV boxes, so they are left out.
+        """
+        members = {"datum": Member(self.datum, frozenset())}
+        for view in self.views:
+            members[view.name] = Member(
+                (
+                    view.model_dump(
+                        exclude={"dimensions", "image_size", "scale", "region"}
+                    ),
+                    _as_written(view.region),
+                ),
+                frozenset({view.region.view} - {view.name}),
+            )
+            for dimension in view.dimensions:
+                members[dimension.name] = Member(
+                    (
+                        view.name,
+                        dimension.model_dump(exclude={"region"}),
+                        _as_written(dimension.region),
+                    ),
+                    frozenset({view.name, dimension.region.view}),
+                )
+        for feature in self.features:
+            members[feature.name] = Member(
+                (
+                    feature.model_dump(exclude={"evidence"}),
+                    [_as_written(region) for region in feature.evidence],
+                ),
+                frozenset(
+                    {
+                        *(region.view for region in feature.evidence),
+                        *feature.dimension_refs,
+                    }
+                ),
+            )
+        return members
+
     def render_dimension_inventory(self) -> str:
         return json.dumps(
             [summary.model_dump(mode="json") for summary in self.dimension_inventory()],
@@ -326,3 +368,10 @@ class DrawingInterpretation(Contract):
                         f"{feature.name}.evidence[{index}].view: unknown view {region.view}"
                     )
         return self
+
+
+def _as_written(region: Region) -> Region:
+    """A raster region without the UV box validation derives from its pixels."""
+    if region.box_px is None:
+        return region
+    return region.model_copy(update={"box_uv": None})

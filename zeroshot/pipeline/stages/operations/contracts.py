@@ -14,6 +14,9 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from zeroshot.pipeline.stages.resolve_refs import without_annotations
+from zeroshot.pipeline.stages.types import Member
+
 
 # The modelling operations a plan may be made of.
 #
@@ -190,6 +193,21 @@ class OperationPlan(BaseModel):
             )
         return self
 
+    def members(self) -> dict[str, Member]:
+        """Each operation, and the features and dimensions it cites.
+
+        The pipeline annotates references with values, so compare the text as written.
+        """
+        return {
+            operation.name: Member(
+                operation.model_copy(
+                    update={"detail": without_annotations(operation.detail)}
+                ),
+                frozenset({*operation.semantics, *_CITED.findall(operation.detail)}),
+            )
+            for operation in self.proposal
+        }
+
 
 # `op_` because a interpreted feature is cited as `sem_main_bore`, and the two kinds of
 # identifier travel together through prose the coder and the audit both read.
@@ -201,6 +219,7 @@ class OperationPlan(BaseModel):
 _NAME = re.compile(r"^op_[a-z0-9_]+$")
 _SEMANTIC_NAME = re.compile(r"^sem_[a-z0-9_]+$")
 _LONGEST_NAME = 40
+_CITED = re.compile(r"\b(?:sem|dim)_[a-z0-9_]+")
 
 
 def _check_name(name: str) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Literal, cast
+from typing import Literal, NamedTuple, cast
 
 
 class PipelineStage(StrEnum):
@@ -32,6 +32,13 @@ STAGE_ARTIFACT_FIELDS: Mapping[ReasoningStage, tuple[ArtifactField, ...]] = {
 type ArtifactField = Literal[
     "interpretation", "operations", "program_source", "verification"
 ]
+
+
+class Member(NamedTuple):
+    """A named part of a stage artifact, compared across rounds."""
+
+    content: object
+    cites: frozenset[str]
 
 
 def next_stage(completed: PipelineStage | None) -> PipelineStage | None:

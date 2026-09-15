@@ -513,7 +513,10 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     )
     current = run.snapshots[-1]
     held = interpretation(
-        features=[interpreted_feature(1, "the base", parameters={"radius": 4.25})]
+        features=[
+            interpreted_feature(1, "the base", parameters={"radius": 4.25}),
+            interpreted_feature(2, "the hole"),
+        ]
     )
 
     advanced = advance_reconstruction(
@@ -658,7 +661,7 @@ def test_an_unassigned_stage_leaves_the_ticket_untouched() -> None:
 
 def test_a_revision_round_replaces_the_complete_interpretation() -> None:
     run = open_next_round(
-        _completed_run(), _report(target=_ref("interpretation", "sem_feature_2"))
+        _completed_run(), _report(target=_ref("interpretation", "sem_feature_1"))
     )
     previous = interpretation_baseline(run)
     assert previous is not None

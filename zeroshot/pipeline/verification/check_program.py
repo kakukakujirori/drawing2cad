@@ -2,6 +2,7 @@ import ast
 from dataclasses import dataclass
 
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.types import Member
 
 # Methods that hand back the shape they were called on.
 _SHAPE_PRESERVING = frozenset({"clean", "copy"})
@@ -95,6 +96,24 @@ def program_output_names(source: str) -> set[str]:
         for statement in tree.body
         for name in assigned_names(statement)
         if name.startswith("ret_")
+    }
+
+
+def program_members(source: str) -> dict[str, Member]:
+    """Each ret_x as its module-level assignments, citing the op_x it implements.
+
+    Syntax errors propagate, as in ``check_program``.
+    """
+    # ponytail: only module-level ret_ assignments are compared, so an edited
+    # helper they call goes unseen; compare helper definitions if that matters.
+    statements: dict[str, list[str]] = {}
+    for statement in ast.parse(source, filename="model.py", mode="exec").body:
+        for name in assigned_names(statement):
+            if name.startswith("ret_"):
+                statements.setdefault(name, []).append(ast.unparse(statement))
+    return {
+        name: Member(text, frozenset({_operation_name(name)}))
+        for name, text in statements.items()
     }
 
 

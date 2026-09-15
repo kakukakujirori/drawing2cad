@@ -53,7 +53,7 @@ class OperationStage:
             self.middleware.reset()
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.OPERATIONS):
             return {"stage_submission": TicketAnswers(responses=[])}
-        self.ticket_verifier.reset(snapshot)
+        self.ticket_verifier.reset(state["reconstruction"])
 
         previous = state.get("operations_state") or {}
         messages = [
@@ -100,7 +100,7 @@ def create_operation_stage(
         attempt_store=attempt_store,
         source_filename=operations_filename,
     )
-    ticket_verifier = TicketVerifier()
+    ticket_verifier = TicketVerifier(lambda: operation_verifier.accepted_plan)
     middleware = VerifyOnWriteMiddleware(
         operation_verifier,
         ticket_verifier=ticket_verifier,

@@ -53,7 +53,7 @@ class InterpretationStage:
             self.middleware.reset()
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.INTERPRETATION):
             return {"stage_submission": TicketAnswers(responses=[])}
-        self.ticket_verifier.reset(snapshot)
+        self.ticket_verifier.reset(state["reconstruction"])
         previous = state.get("interpretation_state") or {}
         instruction = self.instructions.build(
             state,
@@ -148,7 +148,9 @@ def create_interpretation_stage(
         source_filename=interpretation_filename,
         dxf_mm_per_unit=dxf_mm_per_unit,
     )
-    ticket_verifier = TicketVerifier()
+    ticket_verifier = TicketVerifier(
+        lambda: interpretation_verifier.accepted_interpretation
+    )
     middleware = VerifyOnWriteMiddleware(
         interpretation_verifier,
         ticket_verifier=ticket_verifier,

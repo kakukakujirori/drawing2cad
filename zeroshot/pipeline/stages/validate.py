@@ -5,12 +5,12 @@ ticket responses and a stage report, so what is measured against the snapshot is
 verified artifact the pipeline read back, handed here as `deliverable`.
 """
 
-from collections.abc import Callable
 from functools import partial
 
 from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.stages._base.validate import (
     SubmissionValidationError,
+    raise_together,
     validate_ticket_responses,
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
@@ -56,7 +56,7 @@ def validate_submission(
         raise TypeError(f"unsupported submission type: {type(submission).__name__}")
 
     stage = _next_reasoning_stage(snapshot.last_completed_stage)
-    _raise_together(
+    raise_together(
         partial(validate_ticket_answers, submission, snapshot),
         partial(_validate_deliverable, stage, snapshot, deliverable),
     )
@@ -75,7 +75,7 @@ def validate_ticket_answers(
         elif checks is not None:
             raise SubmissionValidationError(f"{stage} dimension_checks must be null")
 
-    _raise_together(
+    raise_together(
         partial(
             validate_ticket_responses,
             answers.responses,
@@ -111,18 +111,6 @@ def _validate_deliverable(
             validate_coding(snapshot, deliverable)
         case _:
             raise SubmissionValidationError(f"unexpected reasoning stage: {stage}")
-
-
-def _raise_together(*checks: Callable[[], None]) -> None:
-    """Report every contradiction at once, so one re-ask can fix them together."""
-    errors = []
-    for check in checks:
-        try:
-            check()
-        except SubmissionValidationError as error:
-            errors.append(str(error))
-    if errors:
-        raise SubmissionValidationError("\n".join(errors))
 
 
 def _next_reasoning_stage(

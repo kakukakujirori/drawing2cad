@@ -239,7 +239,7 @@ def test_reconstruction_guide_keeps_only_the_working_contract() -> None:
     ):
         assert field in guide
     assert "exactly one response per assigned ticket" not in guide
-    assert len(guide.split()) < 320
+    assert len(guide.split()) < 450
 
 
 def test_the_system_prompt_explains_selective_history_navigation() -> None:
@@ -255,7 +255,7 @@ def test_the_system_prompt_explains_selective_history_navigation() -> None:
 
     assert "jq -c" in rendered
     assert "members by name" in rendered
-    assert len(rendered.split()) < 430
+    assert len(rendered.split()) < 500
 
 
 def test_round_instructions_do_not_repeat_the_reconstruction_guide(
@@ -394,7 +394,7 @@ def test_the_operations_round_uses_json_for_the_plan_and_answer_for_tickets(
 
     assert "/work/operations.json" in rendered
     assert "`TicketAnswers`" in rendered
-    assert "never a diff" in rendered
+    assert "contents when you answer become this round's plan" in rendered
     assert "`edits`" not in rendered
     assert "`deleted`" not in rendered
     assert "deliverable" not in rendered
@@ -424,7 +424,7 @@ def test_audit_can_read_concerns_from_both_ticket_summaries_and_stage_reports() 
 
     assert "upstream blockers or provisional interpretations" in prompt
     assert "additional concerns outside those answers" in prompt
-    assert "both ticket summaries and stage remarks" in prompt
+    assert "ticket summaries, stage remarks and `unticketed_changes`" in prompt
     assert "placement does not determine" in prompt
     assert "missing reports in old snapshots" in prompt
 
@@ -479,7 +479,7 @@ def test_the_interpretation_round_uses_json_for_the_artifact_and_answer_for_tick
 ) -> None:
     rendered = render_stage("interpretation")
     assert "/work/interpretation.json" in rendered
-    assert "complete artifact" in rendered
+    assert "contents when you answer become this round's interpretation" in rendered
     assert "TicketAnswers" in rendered
     assert "current artifact validates" in rendered
     assert "`edits`" not in rendered

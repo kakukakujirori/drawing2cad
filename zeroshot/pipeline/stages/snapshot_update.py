@@ -1,6 +1,7 @@
 """Build validated artifact, ticket-response and report updates for a snapshot."""
 
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import cast
 
 from zeroshot.pipeline.messages.tickets import (
@@ -8,10 +9,12 @@ from zeroshot.pipeline.messages.tickets import (
     TicketAnswers,
     TicketResponse,
 )
-from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
+from zeroshot.pipeline.stages._base.validate import raise_together
+from zeroshot.pipeline.stages.contracts import ReconstructionRun
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
+from zeroshot.pipeline.stages.revision_scope import validate_revision_scope
 from zeroshot.pipeline.stages.types import ArtifactField, PipelineStage, ReasoningStage
 from zeroshot.pipeline.stages.validate import validate_submission
 from zeroshot.pipeline.verification import VerifyOutputResult
@@ -32,7 +35,7 @@ class SnapshotUpdate:
 
 def build_snapshot_update(
     submission: TicketAnswers,
-    current: ReconstructionSnapshot,
+    history: ReconstructionRun,
     stage: ReasoningStage,
     *,
     workspace_output: WorkspaceOutput | None = None,
@@ -41,8 +44,19 @@ def build_snapshot_update(
 
     This function neither runs verifiers nor saves state.
     """
+    current = history.snapshots[-1]
     deliverable = workspace_output
-    validate_submission(submission, current, deliverable=deliverable)
+    raise_together(
+        partial(validate_submission, submission, current, deliverable=deliverable),
+        partial(
+            validate_revision_scope,
+            submission.stage_report,
+            history,
+            deliverable.source
+            if isinstance(deliverable, VerifyOutputResult)
+            else deliverable,
+        ),
+    )
 
     # Validate the addresses before annotating them. A revised artifact is
     # cited against its own new contents, not the preceding round's values.
