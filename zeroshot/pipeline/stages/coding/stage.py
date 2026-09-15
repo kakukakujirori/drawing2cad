@@ -19,6 +19,7 @@ from zeroshot.pipeline.verification import (
     OutputVerifier,
     StepRenderer,
 )
+from zeroshot.pipeline.verification.verify_tickets import TicketVerifier
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
@@ -31,7 +32,8 @@ type AgentBuilder = partial[CompiledGraph]
 class CodingStage:
     agent: CompiledGraph
     instructions: StageInstructions
-    verifier: OutputVerifier
+    output_verifier: OutputVerifier
+    ticket_verifier: TicketVerifier
     middleware: VerifyOnWriteMiddleware
     input_after_compaction: bool
 
@@ -44,13 +46,16 @@ class CodingStage:
             raise RuntimeError("coding requires integrated interpretation")
 
         if state.get("stage_validation_error") is None:
-            self.verifier.reset()
+            self.output_verifier.reset()
             self.middleware.reset()
+        self.ticket_verifier.reset(snapshot)
 
-        # The verifier redraws the solid in the views the drawing names, and
-        # guesses none. Set here because both the build inside the agent and
-        # the one at integration belong to this stage of this round.
-        self.verifier.views = list(
+        # The verifier checks the program against this round's operations and
+        # redraws the solid in the views the drawing names, guessing none. Set
+        # here because both the build inside the agent and the one at
+        # integration belong to this stage of this round.
+        self.output_verifier.operations = snapshot.operations
+        self.output_verifier.views = list(
             dict.fromkeys(
                 view.role
                 for view in interpretation.views
@@ -99,7 +104,7 @@ def create_coding_stage(
 
     executor = CadQueryExecutor(sandbox_runner=sandbox_runner)
     renderer = StepRenderer()
-    coding_verifier = OutputVerifier(
+    output_verifier = OutputVerifier(
         executor=executor,
         workdir=instructions.workdir,
         renderer=renderer,
@@ -108,13 +113,15 @@ def create_coding_stage(
         source_filename=output_filename,
         show_intermediate_returns=show_intermediate_returns,
     )
+    ticket_verifier = TicketVerifier()
     coding_middleware = VerifyOnWriteMiddleware(
-        coding_verifier,
+        output_verifier,
+        ticket_verifier=ticket_verifier,
         refusal=(
-            "The current program must produce a verified solid and its "
-            "verification feedback must be shown before submission. Read the "
-            "feedback, correct model.py, and submit only after verification "
-            "succeeds."
+            "The current program must produce a verified solid that implements "
+            "the operation plan, and its verification feedback must be shown "
+            "before submission. Read the feedback, correct model.py, and submit "
+            "only after verification succeeds."
         ),
         require_feedback_before_submit=True,
     )
@@ -131,7 +138,8 @@ def create_coding_stage(
     return CodingStage(
         agent=coding_agent,
         instructions=instructions,
-        verifier=coding_verifier,
+        output_verifier=output_verifier,
+        ticket_verifier=ticket_verifier,
         middleware=coding_middleware,
         input_after_compaction=input_after_compaction,
     )

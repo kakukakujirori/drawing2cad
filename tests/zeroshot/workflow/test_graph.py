@@ -310,6 +310,7 @@ def _graph(
     coder: ScriptedChatModel,
     auditor: ScriptedChatModel,
     history_filename: str = "reconstruction.json",
+    coder_options: dict[str, Any] | None = None,
     **overrides: Any,
 ):
     from PIL import Image
@@ -328,7 +329,7 @@ def _graph(
             "drawing_interpreter", interpreter, **common
         ),
         operations_agent_builder=_agent("operation_planner", planner, **common),
-        coding_agent_builder=_agent("coder", coder, **common),
+        coding_agent_builder=_agent("coder", coder, **common | (coder_options or {})),
         audit_agent_builder=_agent("output_auditor", auditor, **common),
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable), default_timeout_s=10
@@ -544,6 +545,46 @@ def test_an_operations_checkpoint_resumes_at_coding(
         result["reconstruction"].snapshots[-1].last_completed_stage
         is PipelineStage.CODING
     )
+
+
+def test_a_coding_answer_that_contradicts_its_round_is_refused_inside_the_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _stub_verification(monkeypatch, _verified())
+    responses = _responses(_ROUND_ZERO_TICKET, PipelineStage.CODING)
+    unchecked = TicketAnswers(responses=responses)
+    checked = TicketAnswers(
+        responses=responses, stage_report=StageReport(dimension_checks={})
+    )
+    coder = ScriptedChatModel(
+        responses=(
+            tool_call("TicketAnswers", unchecked.model_dump(mode="json"), "answer-1"),
+            tool_call("TicketAnswers", checked.model_dump(mode="json"), "answer-2"),
+        )
+    )
+
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            interpreter=ScriptedChatModel(responses=()),
+            planner=ScriptedChatModel(responses=()),
+            coder=coder,
+            auditor=ScriptedChatModel(responses=(_accepted_audit(),)),
+            coder_options={"response_format_strategy": "tool"},
+        ).invoke({"reconstruction": _operations_resume()})
+
+    refusal = next(
+        message.text
+        for message in coder.received_messages[-1]
+        if isinstance(message, HumanMessage)
+        and "TicketAnswers are not ready" in message.text
+    )
+    assert "coding requires dimension_checks" in refusal
+    assert calls == ["verify"]
+    assert result["stage_validation_failure_count"] == 0
+    snapshot = result["reconstruction"].snapshots[-1]
+    assert snapshot.last_completed_stage is PipelineStage.CODING
+    assert snapshot.stage_reports[PipelineStage.CODING].dimension_checks == {}
 
 
 def test_every_stage_reads_the_same_history_path_and_current_round(

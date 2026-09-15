@@ -1093,6 +1093,41 @@ def test_only_verified_program_outcomes_are_confirmed(
     assert not verifier.confirmed
 
 
+def test_a_program_that_builds_but_misses_its_operations_is_not_confirmed(
+    tmp_path: Path,
+) -> None:
+    from zeroshot.pipeline.stages.operations.contracts import (
+        Operation,
+        OperationPlan,
+        OperationVerb,
+    )
+
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    verifier = _create_verifier(executor, workdir)
+    verifier.operations = OperationPlan(
+        proposal=[
+            Operation(
+                name="op_base",
+                verb=OperationVerb.EXTRUDE,
+                detail="build the base",
+                depends_on=[],
+                semantics=["sem_base"],
+            )
+        ],
+        rationale="one step",
+    )
+
+    text = _text(verifier.feedback())
+
+    assert not verifier.confirmed
+    assert (
+        "model.py does not match the current OperationPlan: missing=('op_base',)"
+        in text
+    )
+
+
 def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> None:
     from langchain_core.messages import HumanMessage
 

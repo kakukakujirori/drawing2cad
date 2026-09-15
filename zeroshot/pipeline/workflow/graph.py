@@ -252,15 +252,17 @@ def create_reconstruction_graph(
             case PipelineStage.INTERPRETATION:
                 if not tickets_assigned_to(tickets, PipelineStage.INTERPRETATION):
                     return interpretation_baseline(reconstruction)
-                accepted = interpretation_stage.verifier.accepted_interpretation
+                accepted = (
+                    interpretation_stage.interpretation_verifier.accepted_interpretation
+                )
                 filename = interpretation_filename
             case PipelineStage.OPERATIONS:
                 if not tickets_assigned_to(tickets, PipelineStage.OPERATIONS):
                     return operations_baseline(reconstruction)
-                accepted = operation_stage.verifier.accepted_plan
+                accepted = operation_stage.operation_verifier.accepted_plan
                 filename = operations_filename
             case PipelineStage.CODING:
-                return coding_stage.verifier.verify()[0]
+                return coding_stage.output_verifier.verify()[0]
             case _:
                 raise RuntimeError(f"{stage} is not a reasoning stage")
         if accepted is None:

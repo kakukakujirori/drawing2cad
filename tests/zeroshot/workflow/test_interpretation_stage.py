@@ -73,7 +73,7 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
     )
     result = stage.run({"reconstruction": run}, {})
     assert result["stage_submission"] == TicketAnswers.model_validate(response)
-    assert stage.verifier.accepted_interpretation is not None
+    assert stage.interpretation_verifier.accepted_interpretation is not None
     messages = result["interpretation_state"]["messages"]
     assert any("not ready to submit" in message.text for message in messages)
     assert any('"inliers": "3/3"' in message.text for message in messages)
@@ -83,9 +83,9 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
 
     assert (
         DrawingInterpretation.model_validate_json(
-            stage.verifier.source_path.read_bytes()
+            stage.interpretation_verifier.source_path.read_bytes()
         )
-        == stage.verifier.accepted_interpretation
+        == stage.interpretation_verifier.accepted_interpretation
     )
     assert len(model.received_messages) == 3
     # One for the premature answer, naming the seeded datum still to settle, and
@@ -184,17 +184,17 @@ def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
         "view_front": 25.4,
         "view_detail": 25.4,
     }
-    accepted = stage.verifier.accepted_interpretation
+    accepted = stage.interpretation_verifier.accepted_interpretation
     assert accepted is not None and len(accepted.views) == 2
     assert accepted.views[0].role == View.FRONT
     assert accepted.views[0].region.box_uv == pytest.approx((0, 0, 101.6, 76.2))
-    reports = stage.verifier.verify().reports
+    reports = stage.interpretation_verifier.verify().reports
     assert reports["view_front"]["status"] == "native_dxf"
     assert reports["view_detail"]["mm_per_unit"] == 25.4
     data = accepted.model_dump()
     data["views"][0]["region"]["box_uv"] = [0, 0, 50, 50]
-    stage.verifier.source_path.write_text(json.dumps(data))
-    rejected = stage.verifier.verify()
+    stage.interpretation_verifier.source_path.write_text(json.dumps(data))
+    rejected = stage.interpretation_verifier.verify()
     assert not rejected.confirmed
     assert "full-file region" in rejected.errors[0]
 

@@ -40,6 +40,12 @@ class ArtifactVerifier(Protocol):
     def feedback(self) -> list[ContentBlock]: ...
 
 
+class AnswerVerifier(Protocol):
+    """Why the stage's answer contradicts its round; nothing when it stands."""
+
+    def feedback(self, answer: Any, /) -> list[ContentBlock]: ...
+
+
 class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     """Verify a watched artifact whenever a turn changed it.
 
@@ -50,19 +56,22 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     It also gates the stage's answer. A model whose answer schema is bound as a
     tool can call it the way it calls any other tool, part-way through the work;
     only a build standing between that call and the end of the stage stops a
-    unverified artifact becoming the stage's result.
+    unverified artifact becoming the stage's result. What either verifier
+    reports is handed back to the model; this middleware judges nothing itself.
     """
 
     def __init__(
         self,
         verifier: ArtifactVerifier,
         *,
+        ticket_verifier: AnswerVerifier | None = None,
         refusal: str = _SUBMISSION_REFUSED,
         require_feedback_before_submit: bool = False,
         fingerprint: Callable[[], str | None] | None = None,
     ) -> None:
         super().__init__()
         self.verifier = verifier
+        self.ticket_verifier = ticket_verifier
         self.fingerprint = fingerprint
         self.refusal = refusal
         self.require_feedback_before_submit = require_feedback_before_submit
@@ -111,47 +120,55 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         response = handler(request)
         if response.structured_response is None:
             return response
-
-        answered = {
-            message.tool_call_id
-            for message in response.result
-            if isinstance(message, ToolMessage)
-        }
-        if any(
-            call["id"] not in answered
-            for message in response.result
-            if isinstance(message, AIMessage)
-            for call in message.tool_calls
-        ):
-            # Pending writes can invalidate even a confirmed artifact. Keep the
-            # tool group contiguous; a HumanMessage here would split its results.
+        if _has_unrun_calls(response):
+            # Unrun tools may still change the artifact. A HumanMessage here
+            # would split their results, so only the acknowledgement changes.
             return _refused(response, _PARALLEL_SUBMISSION_REFUSED)
 
-        # Build the exact content being submitted, unless that is already the
-        # build standing after the preceding tools finished.
-        # Either way the refusal repeats the build's own output, so what failed
-        # is stated with the refusal rather than a turn behind it.
-        built_before_call = self._digest() == self._last_built
-        if built_before_call:
-            blocks = self._last_report
-        else:
-            blocks = self._build()
-        if self.verifier.confirmed and (
-            built_before_call or not self.require_feedback_before_submit
-        ):
+        reasons = self._artifact_reasons()
+        # A refused text answer would end the stage, so integration reports it.
+        if self.ticket_verifier is not None and _answered_by_tool(response):
+            reasons += self.ticket_verifier.feedback(response.structured_response)
+        if not reasons:
             return response
-        if not blocks:
-            # A file never written matches "never built"; say why it fails.
-            blocks = self._build()
 
         refused = _refused(response, "Submission refused; see the message below.")
         return ModelResponse(
-            result=[
-                *refused.result,
-                HumanMessage(content_blocks=[*blocks, create_text_block(self.refusal)]),
-            ],
+            result=[*refused.result, HumanMessage(content_blocks=reasons)],
             structured_response=None,
         )
+
+    def _artifact_reasons(self) -> list[ContentBlock]:
+        """Why the artifact is not ready to submit; nothing when it is."""
+        # A build of exactly this content already stands, and the model read it.
+        reported = self._digest() == self._last_built
+        report = self._last_report if reported else self._build()
+        if self.verifier.confirmed and (
+            reported or not self.require_feedback_before_submit
+        ):
+            return []
+        # A file never written also matches "never built", but has no report.
+        return [*(report or self._build()), create_text_block(self.refusal)]
+
+
+def _has_unrun_calls(response: ModelResponse[Any]) -> bool:
+    """Whether the answer came with tool calls that have not run yet."""
+    answered = {
+        message.tool_call_id
+        for message in response.result
+        if isinstance(message, ToolMessage)
+    }
+    return any(
+        call["id"] not in answered
+        for message in response.result
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+    )
+
+
+def _answered_by_tool(response: ModelResponse[Any]) -> bool:
+    """Whether the answer came as a tool call rather than as text."""
+    return any(isinstance(message, ToolMessage) for message in response.result)
 
 
 def _refused(response: ModelResponse[Any], text: str) -> ModelResponse[Any]:

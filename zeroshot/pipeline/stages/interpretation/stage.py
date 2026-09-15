@@ -24,6 +24,7 @@ from zeroshot.pipeline.tools.calculate_drawing_scale import (
 )
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.verify_interpretation import InterpretationVerifier
+from zeroshot.pipeline.verification.verify_tickets import TicketVerifier
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.lifecycle import interpretation_baseline
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
@@ -37,7 +38,8 @@ type AgentBuilder = partial[CompiledGraph]
 class InterpretationStage:
     agent: CompiledGraph
     instructions: StageInstructions
-    verifier: InterpretationVerifier
+    interpretation_verifier: InterpretationVerifier
+    ticket_verifier: TicketVerifier
     middleware: VerifyOnWriteMiddleware
     input_after_compaction: bool
     dxf_context: str | None = None
@@ -45,10 +47,13 @@ class InterpretationStage:
     def run(self, state: ReconstructionState, config: RunnableConfig) -> dict[str, Any]:
         snapshot = current_snapshot(state)
         if state.get("stage_validation_error") is None:
-            self.verifier.reset(interpretation_baseline(state["reconstruction"]))
+            self.interpretation_verifier.reset(
+                interpretation_baseline(state["reconstruction"])
+            )
             self.middleware.reset()
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.INTERPRETATION):
             return {"stage_submission": TicketAnswers(responses=[])}
+        self.ticket_verifier.reset(snapshot)
         previous = state.get("interpretation_state") or {}
         instruction = self.instructions.build(
             state,
@@ -56,7 +61,7 @@ class InterpretationStage:
             include_artifact=(not previous or self.input_after_compaction),
             interpretation_output_path=str(
                 self.instructions.workdir.sandbox_bind_dir
-                / self.verifier.source_filename
+                / self.interpretation_verifier.source_filename
             ),
             interpretation_schema=schema_for_prompt(DrawingInterpretation),
         )
@@ -136,16 +141,18 @@ def create_interpretation_stage(
     dxf_context = _dxf_context(instructions, dxf_mm_per_unit)
     if system_prompt_path is None:
         system_prompt_path = Path(__file__).parent / "prompts" / "role.md"
-    verifier = InterpretationVerifier(
+    interpretation_verifier = InterpretationVerifier(
         workdir=instructions.workdir,
         attempt_store=attempt_store,
         input_artifact=instructions.input_artifact,
         source_filename=interpretation_filename,
         dxf_mm_per_unit=dxf_mm_per_unit,
     )
+    ticket_verifier = TicketVerifier()
     middleware = VerifyOnWriteMiddleware(
-        verifier,
-        fingerprint=verifier.source_digest,
+        interpretation_verifier,
+        ticket_verifier=ticket_verifier,
+        fingerprint=interpretation_verifier.source_digest,
         refusal=(
             "The interpretation is not ready to submit. Correct the current JSON "
             "and referenced files, read the validation and calibration feedback, "
@@ -164,5 +171,11 @@ def create_interpretation_stage(
         extra_middleware=[middleware],
     )
     return InterpretationStage(
-        agent, instructions, verifier, middleware, input_after_compaction, dxf_context
+        agent,
+        instructions,
+        interpretation_verifier,
+        ticket_verifier,
+        middleware,
+        input_after_compaction,
+        dxf_context,
     )

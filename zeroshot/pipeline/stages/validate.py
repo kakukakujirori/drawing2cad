@@ -5,6 +5,9 @@ ticket responses and a stage report, so what is measured against the snapshot is
 verified artifact the pipeline read back, handed here as `deliverable`.
 """
 
+from collections.abc import Callable
+from functools import partial
+
 from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.stages._base.validate import (
     SubmissionValidationError,
@@ -53,16 +56,41 @@ def validate_submission(
         raise TypeError(f"unsupported submission type: {type(submission).__name__}")
 
     stage = _next_reasoning_stage(snapshot.last_completed_stage)
-    validate_ticket_responses(
-        submission.responses,
-        snapshot.open_tickets,
-        expected_stage=stage,
+    _raise_together(
+        partial(validate_ticket_answers, submission, snapshot),
+        partial(_validate_deliverable, stage, snapshot, deliverable),
     )
-    if (
-        stage is not PipelineStage.CODING
-        and submission.stage_report.dimension_checks is not None
-    ):
-        raise SubmissionValidationError(f"{stage} dimension_checks must be null")
+
+
+def validate_ticket_answers(
+    answers: TicketAnswers, snapshot: ReconstructionSnapshot
+) -> None:
+    """Reject ticket responses or a stage report that contradict the round."""
+    stage = _next_reasoning_stage(snapshot.last_completed_stage)
+    checks = answers.stage_report.dimension_checks
+
+    def validate_report() -> None:
+        if stage is PipelineStage.CODING:
+            validate_dimension_checks(checks, snapshot.interpretation)
+        elif checks is not None:
+            raise SubmissionValidationError(f"{stage} dimension_checks must be null")
+
+    _raise_together(
+        partial(
+            validate_ticket_responses,
+            answers.responses,
+            snapshot.open_tickets,
+            expected_stage=stage,
+        ),
+        validate_report,
+    )
+
+
+def _validate_deliverable(
+    stage: ReasoningStage,
+    snapshot: ReconstructionSnapshot,
+    deliverable: StageDeliverable | None,
+) -> None:
     match stage:
         case PipelineStage.INTERPRETATION:
             if not isinstance(deliverable, DrawingInterpretation):
@@ -80,22 +108,21 @@ def validate_submission(
                 raise SubmissionValidationError(
                     "coding requires a terminal verification result"
                 )
-            # Report both at once so one re-ask can fix them together.
-            errors = []
-            for check in (
-                lambda: validate_dimension_checks(
-                    submission.stage_report.dimension_checks, snapshot.interpretation
-                ),
-                lambda: validate_coding(snapshot, deliverable),
-            ):
-                try:
-                    check()
-                except SubmissionValidationError as error:
-                    errors.append(str(error))
-            if errors:
-                raise SubmissionValidationError("\n".join(errors))
+            validate_coding(snapshot, deliverable)
         case _:
             raise SubmissionValidationError(f"unexpected reasoning stage: {stage}")
+
+
+def _raise_together(*checks: Callable[[], None]) -> None:
+    """Report every contradiction at once, so one re-ask can fix them together."""
+    errors = []
+    for check in checks:
+        try:
+            check()
+        except SubmissionValidationError as error:
+            errors.append(str(error))
+    if errors:
+        raise SubmissionValidationError("\n".join(errors))
 
 
 def _next_reasoning_stage(

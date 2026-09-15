@@ -18,6 +18,7 @@ from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.verify_operations import OperationPlanVerifier
+from zeroshot.pipeline.verification.verify_tickets import TicketVerifier
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.lifecycle import operations_baseline
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
@@ -31,7 +32,8 @@ type AgentBuilder = partial[CompiledGraph]
 class OperationStage:
     agent: CompiledGraph
     instructions: StageInstructions
-    verifier: OperationPlanVerifier
+    operation_verifier: OperationPlanVerifier
+    ticket_verifier: TicketVerifier
     middleware: VerifyOnWriteMiddleware
     input_after_compaction: bool
 
@@ -45,12 +47,13 @@ class OperationStage:
             raise RuntimeError("operations requires an integrated interpretation")
 
         if state.get("stage_validation_error") is None:
-            self.verifier.reset(
+            self.operation_verifier.reset(
                 operations_baseline(state["reconstruction"]), interpretation
             )
             self.middleware.reset()
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.OPERATIONS):
             return {"stage_submission": TicketAnswers(responses=[])}
+        self.ticket_verifier.reset(snapshot)
 
         previous = state.get("operations_state") or {}
         messages = [
@@ -61,7 +64,7 @@ class OperationStage:
                 include_artifact=(not previous or self.input_after_compaction),
                 operations_output_path=str(
                     self.instructions.workdir.sandbox_bind_dir
-                    / self.verifier.source_filename
+                    / self.operation_verifier.source_filename
                 ),
                 operations_schema=schema_for_prompt(OperationPlan),
             ),
@@ -92,13 +95,15 @@ def create_operation_stage(
     if system_prompt_path is None:
         system_prompt_path = Path(__file__).parent / "prompts" / "role.md"
 
-    verifier = OperationPlanVerifier(
+    operation_verifier = OperationPlanVerifier(
         workdir=instructions.workdir,
         attempt_store=attempt_store,
         source_filename=operations_filename,
     )
+    ticket_verifier = TicketVerifier()
     middleware = VerifyOnWriteMiddleware(
-        verifier,
+        operation_verifier,
+        ticket_verifier=ticket_verifier,
         refusal=(
             "The operation plan is not ready to submit. Correct the current JSON "
             "using the validation feedback, and answer only after it validates."
@@ -118,7 +123,8 @@ def create_operation_stage(
     return OperationStage(
         agent=agent,
         instructions=instructions,
-        verifier=verifier,
+        operation_verifier=operation_verifier,
+        ticket_verifier=ticket_verifier,
         middleware=middleware,
         input_after_compaction=input_after_compaction,
     )

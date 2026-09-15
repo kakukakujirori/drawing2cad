@@ -1268,6 +1268,85 @@ def test_an_answer_before_the_file_exists_is_refused_with_feedback(
     assert not any(m.text == "Submission received." for m in result["messages"][:-1])
 
 
+class _Tickets:
+    """Scripted ticket feedback, one entry per answer checked."""
+
+    def __init__(self, *feedback: str) -> None:
+        self.seen: list[object] = []
+        self._feedback = list(feedback)
+
+    def feedback(self, answer: object) -> list[ContentBlock]:
+        self.seen.append(answer)
+        text = self._feedback.pop(0) if self._feedback else ""
+        return [create_text_block(text)] if text else []
+
+
+def test_an_answer_that_contradicts_its_round_is_refused_inside_the_agent(
+    tmp_path: Path,
+) -> None:
+    """A contract miss is fixed in-turn, not by spending a stage re-ask."""
+    path = tmp_path / "model.py"
+    path.write_text("result = broken", encoding="utf-8")
+    tickets = _Tickets("dimension_checks missing", "dimension_checks missing")
+    middleware = VerifyOnWriteMiddleware(
+        _CountingVerifier(path, builds=[False, True]), ticket_verifier=tickets
+    )
+    graph = _subgraph(
+        ScriptedChatModel(
+            responses=(
+                _answer_call("call-1"),
+                tool_call("write", {"text": "result = 1"}, "call-2"),
+                _answer_call("call-3"),
+                _answer_call("call-4"),
+            )
+        ),
+        tools=(_writing_tool(path), echo),
+        extra_middleware=[middleware],
+        announce_turns=False,
+        output_schema=_Answer,
+        response_format_strategy="tool",
+    )
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["structured_response"] == _Answer(done=True)
+    assert len(tickets.seen) == 3
+    messages = result["messages"]
+    unbuilt, contradicted = (
+        messages[index + 1].text
+        for index, message in enumerate(messages)
+        if isinstance(message, ToolMessage)
+        and message.tool_call_id in {"call-1", "call-3"}
+    )
+    # Every reason at once while the build fails; only the answer's after it.
+    assert "not ready to submit" in unbuilt
+    assert "dimension_checks missing" in unbuilt
+    assert contradicted == "dimension_checks missing"
+    assert unanswered_tool_calls(messages) == []
+
+
+def test_a_text_answer_is_left_to_integration(tmp_path: Path) -> None:
+    """Refusing a text answer would end the stage without saying why."""
+    path = tmp_path / "model.py"
+    path.write_text("result = 1", encoding="utf-8")
+    tickets = _Tickets("dimension_checks missing")
+    graph = _subgraph(
+        ScriptedChatModel(responses=(AIMessage(content='{"done": true}'),)),
+        tools=(_writing_tool(path), echo),
+        extra_middleware=[
+            VerifyOnWriteMiddleware(_CountingVerifier(path), ticket_verifier=tickets)
+        ],
+        announce_turns=False,
+        output_schema=_Answer,
+        response_format_strategy="provider",
+    )
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["structured_response"] == _Answer(done=True)
+    assert tickets.seen == []
+
+
 def test_an_answer_stands_when_the_program_builds(tmp_path: Path) -> None:
     path = tmp_path / "model.py"
     path.write_text("result = 1", encoding="utf-8")

@@ -14,8 +14,10 @@ from zeroshot.pipeline.messages.artifact import (
 from zeroshot.pipeline.messages.manifest import FeedbackManifest, register_view
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingView
+from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.attempts import AttemptStore
+from zeroshot.pipeline.verification.check_program import check_program
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
@@ -193,6 +195,8 @@ class OutputVerifier:
         # drawing sets this per round; nothing is drawn until one does, because
         # a guessed view has nothing to be compared against.
         self.views: Sequence[View] = tuple(views)
+        # The round's operations, set like `views`; the program must implement them.
+        self.operations: OperationPlan | None = None
         self.source_filename = source_filename
         self.attempt_store = attempt_store
         self.show_intermediate_returns = show_intermediate_returns
@@ -377,13 +381,13 @@ class OutputVerifier:
 
     @property
     def confirmed(self) -> bool:
-        """Whether the most recent `feedback` build yielded a usable STEP.
+        """Whether the most recent `feedback` build implements the operations.
 
         False before the first build, so a program never built cannot pass for
         one that did.
         """
         report = self._last_feedback_report
-        if report is None:
+        if report is None or self._program_faults(report):
             return False
         return report.status is ExecutionStatus.VERIFIED and report.returncode == 0
 
@@ -410,4 +414,15 @@ class OutputVerifier:
                     heading="[Projected drawing]",
                 )
             )
+        if faults := self._program_faults(report):
+            blocks.append(create_text_block("\n".join(faults)))
         return blocks
+
+    def _program_faults(self, report: VerifyOutputResult) -> tuple[str, ...]:
+        if self.operations is None or report.source is None:
+            return ()
+        try:
+            return check_program(report.source, self.operations).faults
+        except SyntaxError:
+            # The build already reports it.
+            return ()

@@ -113,7 +113,7 @@ def test_an_invalid_plan_is_refused_until_the_file_validates(tmp_path):
     result = stage.run({"reconstruction": run}, {})
 
     assert result["stage_submission"] == TicketAnswers.model_validate(_ANSWER)
-    assert stage.verifier.accepted_plan == _plan()
+    assert stage.operation_verifier.accepted_plan == _plan()
     messages = result["operations_state"]["messages"]
     assert any("sem_absent" in message.text for message in messages)
     assert any("not ready to submit" in message.text for message in messages)

@@ -454,7 +454,8 @@ def test_coding_receives_all_dimension_readings_even_when_the_plan_omits_them(
     stage = CodingStage(
         agent=agent,
         instructions=instructions,
-        verifier=Mock(),
+        output_verifier=Mock(),
+        ticket_verifier=Mock(),
         middleware=Mock(),
         input_after_compaction=False,
     )
