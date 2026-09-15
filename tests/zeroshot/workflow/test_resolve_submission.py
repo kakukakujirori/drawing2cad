@@ -2,11 +2,6 @@
 
 import pytest
 
-from zeroshot.pipeline.messages.tickets import (
-    StageReport,
-    TicketAnswers,
-    TicketResponse,
-)
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
@@ -17,6 +12,11 @@ from zeroshot.pipeline.stages.resolve_refs import (
     _references_resolved_in_prose,
     resolve_references,
     unresolved_references,
+)
+from zeroshot.pipeline.stages.tickets.contracts import (
+    StageReport,
+    TicketAnswers,
+    TicketResponse,
 )
 
 

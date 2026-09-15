@@ -21,11 +21,6 @@ from tests.zeroshot.contracts import (
 )
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest, register_view
-from zeroshot.pipeline.messages.tickets import (
-    StageReport,
-    TicketAnswers,
-    TicketResponse,
-)
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
@@ -35,7 +30,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     TicketReview,
 )
 from zeroshot.pipeline.stages.coding import stage as coding_stage_module
-from zeroshot.pipeline.stages.contracts import ReconstructionRun
+from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
@@ -46,6 +41,11 @@ from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
+)
+from zeroshot.pipeline.stages.tickets.contracts import (
+    StageReport,
+    TicketAnswers,
+    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import (
@@ -400,7 +400,7 @@ def _last_instruction(messages: list[BaseMessage]) -> str:
     )
 
 
-def _interpretation_seed() -> ReconstructionRun:
+def _interpretation_seed() -> ReconstructionHistory:
     return advance_reconstruction(
         start_reconstruction("run_test", "Reconstruct the drawing.", drawing()),
         TicketAnswers(
@@ -410,7 +410,7 @@ def _interpretation_seed() -> ReconstructionRun:
     )
 
 
-def _operations_resume() -> ReconstructionRun:
+def _operations_resume() -> ReconstructionHistory:
     return advance_reconstruction(
         _interpretation_seed(),
         TicketAnswers(
@@ -444,7 +444,7 @@ def test_an_accepted_round_is_integrated_and_persisted(
             coder=coder,
             auditor=auditor,
         ).invoke({})
-        persisted = ReconstructionRun.model_validate_json(
+        persisted = ReconstructionHistory.model_validate_json(
             (workdir.host_bind_dir / "reconstruction.json").read_text(encoding="utf-8")
         )
         working_interpretation = DrawingInterpretation.model_validate_json(
@@ -508,7 +508,7 @@ def test_an_interpretation_seed_starts_at_operations_without_calling_interpretat
             coder=coder,
             auditor=auditor,
         ).invoke({"reconstruction": _interpretation_seed()})
-        persisted = ReconstructionRun.model_validate_json(
+        persisted = ReconstructionHistory.model_validate_json(
             (workdir.host_bind_dir / "reconstruction.json").read_text(encoding="utf-8")
         )
 
@@ -780,7 +780,7 @@ def test_a_persisted_interpretation_checkpoint_can_restart_the_graph(monkeypatch
             max_stage_validation_retries=1,
         ).invoke({})
         history_path = workdir.host_bind_dir / "reconstruction.json"
-        checkpoint = ReconstructionRun.model_validate_json(history_path.read_text())
+        checkpoint = ReconstructionHistory.model_validate_json(history_path.read_text())
         resumed = _graph(
             workdir,
             interpreter=ScriptedChatModel(
@@ -790,7 +790,7 @@ def test_a_persisted_interpretation_checkpoint_can_restart_the_graph(monkeypatch
             coder=ScriptedChatModel(responses=(_coding_submission(),)),
             auditor=ScriptedChatModel(responses=(_accepted_audit(),)),
         ).invoke({"reconstruction": checkpoint})
-        persisted = ReconstructionRun.model_validate_json(history_path.read_text())
+        persisted = ReconstructionHistory.model_validate_json(history_path.read_text())
     assert stopped["reconstruction"] == checkpoint
     assert checkpoint.snapshots[0].last_completed_stage is None
     assert resumed["reconstruction"] == persisted
@@ -961,7 +961,7 @@ def test_an_interpretation_revision_refreshes_parameter_values_and_preserves_his
             auditor=ScriptedChatModel(responses=(_interpretation_rejected_audit(),)),
             max_audit_reject_count=1,
         ).invoke({})
-        persisted = ReconstructionRun.model_validate_json(
+        persisted = ReconstructionHistory.model_validate_json(
             (tmp_path / "reconstruction.json").read_text()
         )
     assert calls == ["verify", "verify"]

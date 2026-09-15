@@ -23,7 +23,7 @@ from zeroshot.pipeline.event_logging import (
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.stages.contracts import ReconstructionRun
+from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingView
 from zeroshot.pipeline.verification import attempt_relative_path
 from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, ReconstructionState
@@ -38,7 +38,7 @@ OnExisting = Literal["fail", "skip", "retry"]
 _ON_EXISTING = ("fail", "skip", "retry")
 
 
-def _latest_program_source(reconstruction: ReconstructionRun) -> str | None:
+def _latest_program_source(reconstruction: ReconstructionHistory) -> str | None:
     """Return the newest committed program available before the resumed stage."""
     return next(
         (
@@ -51,7 +51,7 @@ def _latest_program_source(reconstruction: ReconstructionRun) -> str | None:
 
 
 def _validate_resume_inputs(
-    reconstruction: ReconstructionRun,
+    reconstruction: ReconstructionHistory,
     manifest: InputManifest,
     source_workspace: Path,
 ) -> None:
@@ -92,7 +92,7 @@ def _validate_resume_inputs(
 
 
 def _derived_drawing_paths(
-    reconstruction: ReconstructionRun,
+    reconstruction: ReconstructionHistory,
     source_workdir: SandboxWorkdir,
 ) -> set[PurePosixPath]:
     """Workspace-relative drawing files created while reading the input.
@@ -175,7 +175,7 @@ class PipelineRunner:
         self,
         sample_artifact_root: Path,
         events_path: Path,
-        reconstruction: ReconstructionRun | None,
+        reconstruction: ReconstructionHistory | None,
     ) -> Path:
         """Reset one sample and restore the files needed by a resumed stage.
 

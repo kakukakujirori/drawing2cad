@@ -3,7 +3,6 @@
 import pytest
 
 from tests.zeroshot.workflow.test_resolve_submission import interpretation
-from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketResponse
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
@@ -16,6 +15,11 @@ from zeroshot.pipeline.stages.audit.validate import validate_audit_report
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
+from zeroshot.pipeline.stages.tickets.contracts import (
+    BootstrapWork,
+    Ticket,
+    TicketResponse,
+)
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 

@@ -6,7 +6,6 @@ from langchain_core.tools import tool
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.contracts import interpretation, view
-from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.operations.contracts import (
@@ -15,6 +14,7 @@ from zeroshot.pipeline.stages.operations.contracts import (
     OperationVerb,
 )
 from zeroshot.pipeline.stages.operations.stage import create_operation_stage
+from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.workflow.components.agent import create_agent

@@ -1,11 +1,28 @@
-"""Refuse a revision that changes members its tickets do not cover, unexplained."""
+"""Check a stage's ticket answers against its round and the round it revises."""
 
-from zeroshot.pipeline.messages.tickets import StageReport, tickets_assigned_to
-from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from collections import Counter
+from collections.abc import Sequence
+from functools import partial
+
+from zeroshot.pipeline.stages._base.validate import (
+    SubmissionValidationError,
+    raise_together,
+)
 from zeroshot.pipeline.stages.audit.contracts import AuditFinding
-from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
+from zeroshot.pipeline.stages.coding.validate import validate_dimension_checks
+from zeroshot.pipeline.stages.contracts import (
+    ReconstructionHistory,
+    ReconstructionSnapshot,
+)
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.tickets.contracts import (
+    StageReport,
+    Ticket,
+    TicketAnswers,
+    TicketResponse,
+    tickets_assigned_to,
+)
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     Member,
@@ -18,9 +35,35 @@ from zeroshot.pipeline.verification.check_program import program_members
 type StageArtifact = DrawingInterpretation | OperationPlan | str
 
 
+def validate_ticket_answers(
+    answers: TicketAnswers, snapshot: ReconstructionSnapshot
+) -> None:
+    """Reject ticket responses or a stage report that contradict the round."""
+    stage = next_stage(snapshot.last_completed_stage)
+    if stage not in REASONING_STAGES:
+        return None  # This should not happen
+    checks = answers.stage_report.dimension_checks
+
+    def validate_report() -> None:
+        if stage is PipelineStage.CODING:
+            validate_dimension_checks(checks, snapshot.interpretation)
+        elif checks is not None:
+            raise SubmissionValidationError(f"{stage} dimension_checks must be null")
+
+    raise_together(
+        partial(
+            _validate_responses,
+            answers.responses,
+            snapshot.open_tickets,
+            expected_stage=stage,
+        ),
+        validate_report,
+    )
+
+
 def validate_revision_scope(
     report: StageReport,
-    history: ReconstructionRun,
+    history: ReconstructionHistory,
     artifact: StageArtifact | None,
 ) -> None:
     """Reject member changes that no ticket covers and the report leaves unexplained."""
@@ -152,3 +195,49 @@ def _cites(
     return frozenset[str]().union(
         *(members[name].cites for members in (before, after) if name in members)
     )
+
+
+def _validate_responses(
+    responses: Sequence[TicketResponse],
+    tickets: Sequence[Ticket],
+    *,
+    expected_stage: ReasoningStage,
+) -> None:
+    """Require one response for every ticket assigned to this stage, and no other."""
+    known_ids = {ticket.ticket_id for ticket in tickets}
+    expected_ids = {
+        ticket.ticket_id for ticket in tickets_assigned_to(tickets, expected_stage)
+    }
+    response_counts = Counter(response.ticket_id for response in responses)
+    submitted_ids = set(response_counts)
+
+    duplicated = sorted(
+        ticket_id for ticket_id, count in response_counts.items() if count > 1
+    )
+    missing = sorted(expected_ids - submitted_ids)
+    unassigned = sorted(submitted_ids & (known_ids - expected_ids))
+    unknown = sorted(submitted_ids - known_ids)
+    wrong_stage = sorted(
+        response.ticket_id for response in responses if response.stage != expected_stage
+    )
+
+    errors: list[str] = []
+    if duplicated:
+        errors.append("duplicate ticket responses: " + ", ".join(duplicated))
+    if missing:
+        errors.append("missing ticket responses: " + ", ".join(missing))
+    if unassigned:
+        errors.append(
+            f"{expected_stage} is not assigned to these tickets and must not "
+            "respond to them: " + ", ".join(unassigned)
+        )
+    if unknown:
+        errors.append("unknown ticket responses: " + ", ".join(unknown))
+    if wrong_stage:
+        errors.append(
+            f"ticket responses must belong to {expected_stage}: "
+            + ", ".join(wrong_stage)
+        )
+
+    if errors:
+        raise SubmissionValidationError("\n".join(errors))

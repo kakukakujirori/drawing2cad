@@ -7,22 +7,21 @@ verified artifact the pipeline read back, handed here as `deliverable`.
 
 from functools import partial
 
-from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.stages._base.validate import (
     SubmissionValidationError,
     raise_together,
-    validate_ticket_responses,
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.audit.validate import validate_audit_report
 from zeroshot.pipeline.stages.coding.validate import (
     validate_coding,
-    validate_dimension_checks,
 )
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.operations.validate import validate_operations
+from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
+from zeroshot.pipeline.stages.tickets.validate import validate_ticket_answers
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     PipelineStage,
@@ -55,34 +54,14 @@ def validate_submission(
     if not isinstance(submission, TicketAnswers):
         raise TypeError(f"unsupported submission type: {type(submission).__name__}")
 
-    stage = _next_reasoning_stage(snapshot.last_completed_stage)
+    stage = next_stage(snapshot.last_completed_stage)
+    if stage not in REASONING_STAGES:
+        raise SubmissionValidationError(
+            "a completed coding snapshot accepts only an AuditReport"
+        )
     raise_together(
         partial(validate_ticket_answers, submission, snapshot),
         partial(_validate_deliverable, stage, snapshot, deliverable),
-    )
-
-
-def validate_ticket_answers(
-    answers: TicketAnswers, snapshot: ReconstructionSnapshot
-) -> None:
-    """Reject ticket responses or a stage report that contradict the round."""
-    stage = _next_reasoning_stage(snapshot.last_completed_stage)
-    checks = answers.stage_report.dimension_checks
-
-    def validate_report() -> None:
-        if stage is PipelineStage.CODING:
-            validate_dimension_checks(checks, snapshot.interpretation)
-        elif checks is not None:
-            raise SubmissionValidationError(f"{stage} dimension_checks must be null")
-
-    raise_together(
-        partial(
-            validate_ticket_responses,
-            answers.responses,
-            snapshot.open_tickets,
-            expected_stage=stage,
-        ),
-        validate_report,
     )
 
 
@@ -111,14 +90,3 @@ def _validate_deliverable(
             validate_coding(snapshot, deliverable)
         case _:
             raise SubmissionValidationError(f"unexpected reasoning stage: {stage}")
-
-
-def _next_reasoning_stage(
-    completed_stage: ReasoningStage | None,
-) -> ReasoningStage:
-    stage = next_stage(completed_stage)
-    if stage not in REASONING_STAGES:
-        raise SubmissionValidationError(
-            "a completed coding snapshot accepts only an AuditReport"
-        )
-    return stage

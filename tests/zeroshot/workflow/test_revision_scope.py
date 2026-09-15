@@ -11,29 +11,29 @@ from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _report,
     _stage_responses,
 )
-from zeroshot.pipeline.messages.tickets import StageReport, TicketAnswers
-from zeroshot.pipeline.stages.contracts import ReconstructionRun
+from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
-from zeroshot.pipeline.stages.revision_scope import StageArtifact
+from zeroshot.pipeline.stages.tickets.contracts import StageReport, TicketAnswers
+from zeroshot.pipeline.stages.tickets.validate import StageArtifact
 from zeroshot.pipeline.stages.validate import SubmissionValidationError
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
 from zeroshot.pipeline.workflow.lifecycle import advance_reconstruction, open_next_round
 
 
-def _revision(stage: str, name: str | None) -> ReconstructionRun:
+def _revision(stage: str, name: str | None) -> ReconstructionHistory:
     return open_next_round(_completed_run(), _report(target=_ref(stage, name)))
 
 
 def _answer(
-    run: ReconstructionRun,
+    history: ReconstructionHistory,
     stage: str,
     artifact: StageArtifact | VerifyOutputResult,
     **report: object,
-) -> ReconstructionRun:
+) -> ReconstructionHistory:
     return advance_reconstruction(
-        run,
+        history,
         TicketAnswers(
-            responses=_stage_responses(run, stage),
+            responses=_stage_responses(history, stage),
             stage_report=StageReport.model_validate(report),
         ),
         workspace_output=artifact,  # type: ignore[arg-type]

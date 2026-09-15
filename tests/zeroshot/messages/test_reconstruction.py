@@ -2,23 +2,26 @@ import pytest
 from pydantic import ValidationError
 
 from tests.zeroshot.contracts import drawing, interpretation
-from zeroshot.pipeline.messages.tickets import (
-    BootstrapWork,
-    StageReport,
-    Ticket,
-    TicketAnswers,
-    TicketResponse,
-)
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     RevisionRequest,
     StageOutputRef,
 )
-from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
+from zeroshot.pipeline.stages.contracts import (
+    ReconstructionHistory,
+    ReconstructionSnapshot,
+)
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
+)
+from zeroshot.pipeline.stages.tickets.contracts import (
+    BootstrapWork,
+    StageReport,
+    Ticket,
+    TicketAnswers,
+    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
@@ -310,13 +313,13 @@ def test_old_completed_history_loads_without_claiming_a_stage_report():
         ticket=_ticket(stages=("interpretation",)),
         last_completed_stage="interpretation",
     )
-    run = ReconstructionRun(
+    run = ReconstructionHistory(
         run_id="run_legacy", input_drawings=drawing(), snapshots=[snapshot]
     )
     data = run.model_dump()
     del data["snapshots"][0]["stage_reports"]
 
-    restored = ReconstructionRun.model_validate(data)
+    restored = ReconstructionHistory.model_validate(data)
     assert restored.snapshots[0].stage_reports == {}
 
 
@@ -328,7 +331,7 @@ def test_round_zero_requires_exactly_one_bootstrap_ticket() -> None:
     )
 
     with pytest.raises(ValidationError, match="exactly one bootstrap"):
-        ReconstructionRun(
+        ReconstructionHistory(
             run_id="run_example",
             input_drawings=drawing(),
             snapshots=[invalid_first],
@@ -341,7 +344,7 @@ def test_round_zero_rejects_a_finding_in_place_of_bootstrap_work() -> None:
     )
 
     with pytest.raises(ValidationError, match="exactly one bootstrap"):
-        ReconstructionRun(
+        ReconstructionHistory(
             run_id="run_example",
             input_drawings=drawing(),
             snapshots=[first],
@@ -360,7 +363,7 @@ def test_later_rounds_reject_bootstrap_tickets() -> None:
     )
 
     with pytest.raises(ValidationError, match="only in round 0"):
-        ReconstructionRun(
+        ReconstructionHistory(
             run_id="run_example",
             input_drawings=drawing(),
             snapshots=[first, second],
@@ -369,7 +372,7 @@ def test_later_rounds_reject_bootstrap_tickets() -> None:
 
 def test_round_numbers_follow_snapshot_order() -> None:
     with pytest.raises(ValidationError, match="snapshot rounds"):
-        ReconstructionRun(
+        ReconstructionHistory(
             run_id="run_example",
             input_drawings=drawing(),
             snapshots=[_snapshot(round=1)],
@@ -401,13 +404,13 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
         program_source=None,
         verification=None,
     )
-    run = ReconstructionRun(
+    run = ReconstructionHistory(
         run_id="run_example",
         input_drawings=drawing(),
         snapshots=[first, second],
     )
 
-    restored = ReconstructionRun.model_validate_json(run.model_dump_json())
+    restored = ReconstructionHistory.model_validate_json(run.model_dump_json())
 
     assert restored == run
     assert isinstance(restored.snapshots[0].verification, VerifyOutputResult)

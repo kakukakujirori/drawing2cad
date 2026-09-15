@@ -4,12 +4,14 @@ import os
 import tempfile
 from pathlib import Path
 
-from zeroshot.pipeline.messages.tickets import BootstrapWork, Ticket, TicketAnswers
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
 )
-from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
+from zeroshot.pipeline.stages.contracts import (
+    ReconstructionHistory,
+    ReconstructionSnapshot,
+)
 from zeroshot.pipeline.stages.interpretation.contracts import (
     UNDECIDED,
     DrawingInterpretation,
@@ -20,6 +22,11 @@ from zeroshot.pipeline.stages.resolve_refs import resolve_references
 from zeroshot.pipeline.stages.snapshot_update import (
     WorkspaceOutput,
     build_snapshot_update,
+)
+from zeroshot.pipeline.stages.tickets.contracts import (
+    BootstrapWork,
+    Ticket,
+    TicketAnswers,
 )
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
@@ -39,7 +46,7 @@ def start_reconstruction(
     run_id: str,
     instruction: str,
     drawings: list[DrawingView],
-) -> ReconstructionRun:
+) -> ReconstructionHistory:
     """Start a run whose first round has not produced a drawing reading yet."""
     snapshot = ReconstructionSnapshot(
         open_tickets=[
@@ -57,7 +64,7 @@ def start_reconstruction(
         program_source=None,
         verification=None,
     )
-    return ReconstructionRun(
+    return ReconstructionHistory(
         run_id=run_id,
         input_drawings=drawings,
         snapshots=[snapshot],
@@ -65,11 +72,11 @@ def start_reconstruction(
 
 
 def open_next_round(
-    run: ReconstructionRun,
+    history: ReconstructionHistory,
     report: AuditReport,
-) -> ReconstructionRun:
+) -> ReconstructionHistory:
     """Create the next round from a rejected, cross-validated audit report."""
-    current = run.snapshots[-1]
+    current = history.snapshots[-1]
     validate_submission(report, current)
 
     if report.accepted:
@@ -93,27 +100,29 @@ def open_next_round(
         program_source=None,
         verification=None,
     )
-    return ReconstructionRun(
-        run_id=run.run_id,
-        input_drawings=run.input_drawings,
-        snapshots=[*run.snapshots, snapshot],
+    return ReconstructionHistory(
+        run_id=history.run_id,
+        input_drawings=history.input_drawings,
+        snapshots=[*history.snapshots, snapshot],
     )
 
 
-def interpretation_baseline(run: ReconstructionRun) -> DrawingInterpretation:
+def interpretation_baseline(history: ReconstructionHistory) -> DrawingInterpretation:
     """The interpretation accepted last round, or the input already registered."""
-    accepted = run.snapshots[-2].interpretation if len(run.snapshots) > 1 else None
+    accepted = (
+        history.snapshots[-2].interpretation if len(history.snapshots) > 1 else None
+    )
     return accepted or DrawingInterpretation(
         datum=UNDECIDED,
-        views=list(run.input_drawings),
+        views=list(history.input_drawings),
         features=[],
         questions=[],
     )
 
 
-def operations_baseline(run: ReconstructionRun) -> OperationPlan | None:
+def operations_baseline(history: ReconstructionHistory) -> OperationPlan | None:
     """The accepted operation plan from the preceding round, if any."""
-    return run.snapshots[-2].operations if len(run.snapshots) > 1 else None
+    return history.snapshots[-2].operations if len(history.snapshots) > 1 else None
 
 
 def _ticket_from_finding(
@@ -139,24 +148,24 @@ def _assigned_stages(finding: AuditFinding) -> list[ReasoningStage]:
 
 
 def advance_reconstruction(
-    run: ReconstructionRun,
+    history: ReconstructionHistory,
     submission: TicketAnswers,
     *,
     workspace_output: WorkspaceOutput | None = None,
-) -> ReconstructionRun:
+) -> ReconstructionHistory:
     """Validate and atomically integrate one reasoning-stage result.
 
     Every reasoning stage revises its artifact in the workspace; the verified
     result arrives here alongside the ticket answers and stage report.
     """
-    current = run.snapshots[-1]
+    current = history.snapshots[-1]
     stage = next_stage(current.last_completed_stage)
     if stage not in REASONING_STAGES:
         raise ValueError("a completed coding snapshot cannot advance again")
 
     update = build_snapshot_update(
         submission,
-        run,
+        history,
         stage,
         workspace_output=workspace_output,
     )
@@ -191,15 +200,15 @@ def advance_reconstruction(
             "stage_reports": {**current.stage_reports, stage: update.report},
         }
     )
-    return _commit_snapshot(run, candidate)
+    return _commit_snapshot(history, candidate)
 
 
 def _commit_snapshot(
-    run: ReconstructionRun,
+    history: ReconstructionHistory,
     snapshot: ReconstructionSnapshot,
-) -> ReconstructionRun:
+) -> ReconstructionHistory:
     """Commit one structurally valid current-round stage transition."""
-    current = run.snapshots[-1]
+    current = history.snapshots[-1]
 
     if current.last_completed_stage is PipelineStage.CODING:
         raise ValueError("a completed coding snapshot is immutable")
@@ -218,10 +227,10 @@ def _commit_snapshot(
     _require_ticket_progress(current, snapshot, expected_stage)
     _require_only_stage_artifact_changed(current, snapshot, expected_stage)
 
-    return ReconstructionRun(
-        run_id=run.run_id,
-        input_drawings=run.input_drawings,
-        snapshots=[*run.snapshots[:-1], snapshot],
+    return ReconstructionHistory(
+        run_id=history.run_id,
+        input_drawings=history.input_drawings,
+        snapshots=[*history.snapshots[:-1], snapshot],
     )
 
 
@@ -292,15 +301,15 @@ def _require_only_stage_artifact_changed(
 # ---------------------------------------------------------------------------
 
 
-def load_reconstruction(path: Path) -> ReconstructionRun:
+def load_reconstruction(path: Path) -> ReconstructionHistory:
     """Load and validate the complete reconstruction history at ``path``."""
-    return ReconstructionRun.model_validate_json(path.read_text(encoding="utf-8"))
+    return ReconstructionHistory.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def save_reconstruction(path: Path, run: ReconstructionRun) -> None:
+def save_reconstruction(path: Path, history: ReconstructionHistory) -> None:
     """Atomically replace ``path`` with the complete reconstruction history."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = run.model_dump_json(indent=2) + "\n"
+    payload = history.model_dump_json(indent=2) + "\n"
 
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.",

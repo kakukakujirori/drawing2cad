@@ -6,14 +6,10 @@ from collections.abc import Sequence
 import pytest
 
 from tests.zeroshot.contracts import drawing, interpretation, interpreted_feature
-from zeroshot.pipeline.messages.tickets import (
-    BootstrapWork,
-    StageReport,
-    Ticket,
-    TicketAnswers,
-    TicketResponse,
+from zeroshot.pipeline.stages.contracts import (
+    ReconstructionHistory,
+    ReconstructionSnapshot,
 )
-from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import (
     Dimension,
     DrawingInterpretation,
@@ -23,6 +19,13 @@ from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
+)
+from zeroshot.pipeline.stages.tickets.contracts import (
+    BootstrapWork,
+    StageReport,
+    Ticket,
+    TicketAnswers,
+    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
@@ -661,7 +664,7 @@ def test_non_coding_stages_cannot_submit_dimension_checks_even_when_empty(stage)
 
 
 def test_coding_saves_remark_and_resolved_dimension_checks_together(tmp_path):
-    run = ReconstructionRun(
+    run = ReconstructionHistory(
         run_id="run_dimension_checks",
         input_drawings=drawing(),
         snapshots=[

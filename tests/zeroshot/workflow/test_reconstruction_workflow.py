@@ -9,13 +9,6 @@ from tests.zeroshot.contracts import (
     interpretation,
     interpreted_feature,
 )
-from zeroshot.pipeline.messages.tickets import (
-    BootstrapWork,
-    StageReport,
-    Ticket,
-    TicketAnswers,
-    TicketResponse,
-)
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
@@ -24,11 +17,21 @@ from zeroshot.pipeline.stages.audit.contracts import (
     StageOutputRef,
     TicketReview,
 )
-from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
+from zeroshot.pipeline.stages.contracts import (
+    ReconstructionHistory,
+    ReconstructionSnapshot,
+)
 from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
+)
+from zeroshot.pipeline.stages.tickets.contracts import (
+    BootstrapWork,
+    StageReport,
+    Ticket,
+    TicketAnswers,
+    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.stages.validate import (
@@ -155,7 +158,7 @@ def _advance_snapshot(
 
 
 def _stage_responses(
-    run: ReconstructionRun,
+    history: ReconstructionHistory,
     stage: str,
 ) -> list[TicketResponse]:
     return [
@@ -164,33 +167,35 @@ def _stage_responses(
             stage=stage,  # type: ignore[arg-type]
             summary=f"Reviewed the ticket during {stage}.",
         )
-        for ticket in run.snapshots[-1].open_tickets
+        for ticket in history.snapshots[-1].open_tickets
         if stage in ticket.assigned_stages
     ]
 
 
-def _reread(run: ReconstructionRun) -> ReconstructionRun:
+def _reread(history: ReconstructionHistory) -> ReconstructionHistory:
     return advance_reconstruction(
-        run,
-        TicketAnswers(responses=_stage_responses(run, "interpretation")),
-        workspace_output=interpretation_baseline(run)
+        history,
+        TicketAnswers(responses=_stage_responses(history, "interpretation")),
+        workspace_output=interpretation_baseline(history)
         or interpretation("the base", "the hole"),
     )
 
 
 def _completed_run(
-    run: ReconstructionRun | None = None,
+    history: ReconstructionHistory | None = None,
     verification: VerifyOutputResult | None = None,
-) -> ReconstructionRun:
-    run = run or start_reconstruction("run_example", "Reconstruct the part.", drawing())
-    run = advance_reconstruction(
-        run,
-        TicketAnswers(responses=_stage_responses(run, "interpretation")),
+) -> ReconstructionHistory:
+    history = history or start_reconstruction(
+        "run_example", "Reconstruct the part.", drawing()
+    )
+    history = advance_reconstruction(
+        history,
+        TicketAnswers(responses=_stage_responses(history, "interpretation")),
         workspace_output=interpretation("the base", "the hole"),
     )
-    run = advance_reconstruction(
-        run,
-        TicketAnswers(responses=_stage_responses(run, "operations")),
+    history = advance_reconstruction(
+        history,
+        TicketAnswers(responses=_stage_responses(history, "operations")),
         workspace_output=_operations(),
     )
     verification = verification or VerifyOutputResult(
@@ -198,15 +203,15 @@ def _completed_run(
         source=_SOURCE,
         returncode=0,
     )
-    run = advance_reconstruction(
-        run,
+    history = advance_reconstruction(
+        history,
         TicketAnswers(
-            responses=_stage_responses(run, "coding"),
+            responses=_stage_responses(history, "coding"),
             stage_report=StageReport(dimension_checks={}),
         ),
         workspace_output=verification,
     )
-    return run
+    return history
 
 
 def _hop(
@@ -445,7 +450,7 @@ def test_coding_without_readable_source_still_completes_the_round() -> None:
     assert snapshot.verification.status is ExecutionStatus.REJECTED
     assert snapshot.verification.stderr == failed.stderr
     assert snapshot.open_tickets[0].responses[-1].stage is PipelineStage.CODING
-    assert ReconstructionRun.model_validate_json(run.model_dump_json()) == run
+    assert ReconstructionHistory.model_validate_json(run.model_dump_json()) == run
 
 
 def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
@@ -873,7 +878,9 @@ def test_current_findings_replace_old_tickets_and_choose_the_new_revision_root(
     )
     assert "audit_report" not in current.model_dump()
     assert "ticket_reviews" not in current.model_dump()
-    assert ReconstructionRun.model_validate_json(updated.model_dump_json()) == updated
+    assert (
+        ReconstructionHistory.model_validate_json(updated.model_dump_json()) == updated
+    )
 
 
 def test_legacy_ticket_history_loads_but_a_new_audit_must_review_it(tmp_path) -> None:

@@ -6,8 +6,8 @@ from tests.zeroshot.workflow.test_revision_scope import (
     _revision,
 )
 from tests.zeroshot.workflow.test_validate_submission import _response, _snapshot
-from zeroshot.pipeline.messages.tickets import StageReport, TicketAnswers
-from zeroshot.pipeline.stages.contracts import ReconstructionRun
+from zeroshot.pipeline.stages.contracts import ReconstructionHistory
+from zeroshot.pipeline.stages.tickets.contracts import StageReport, TicketAnswers
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification.verify_tickets import TicketVerifier
 
@@ -49,8 +49,8 @@ def test_changes_outside_the_tickets_are_explained_against_the_artifact() -> Non
     assert "op_bore (added), op_hole (removed)" in block["text"]
 
 
-def _planned_run() -> ReconstructionRun:
-    return ReconstructionRun(
+def _planned_run() -> ReconstructionHistory:
+    return ReconstructionHistory(
         run_id="run_tickets",
         input_drawings=drawing(),
         snapshots=[_snapshot(PipelineStage.OPERATIONS)],

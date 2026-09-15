@@ -10,12 +10,16 @@ from pydantic import (
     model_validator,
 )
 
-from zeroshot.pipeline.messages.tickets import BootstrapWork, StageReport, Ticket
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
 )
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.tickets.contracts import (
+    BootstrapWork,
+    StageReport,
+    Ticket,
+)
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     STAGE_ARTIFACT_FIELDS,
@@ -43,7 +47,7 @@ class ReconstructionSnapshot(BaseModel):
         ge=0,
         description=(
             "The zero-based round number, equal to this snapshot's position "
-            "in ReconstructionRun.snapshots."
+            "in ReconstructionHistory.snapshots."
         ),
     )
     last_completed_stage: ReasoningStage | None = Field(
@@ -130,7 +134,7 @@ class ReconstructionSnapshot(BaseModel):
                     f"{expected_stages}, got {actual_stages}"
                 )
 
-        # Previous-round artifacts remain in ReconstructionRun and must not
+        # Previous-round artifacts remain in ReconstructionHistory and must not
         # fill a stage that has not completed in this round.
         premature = [
             artifact
@@ -163,7 +167,7 @@ class ReconstructionSnapshot(BaseModel):
         return self
 
 
-class ReconstructionRun(BaseModel):
+class ReconstructionHistory(BaseModel):
     """The complete durable history stored in reconstruction.json."""
 
     model_config = ConfigDict(extra="forbid")

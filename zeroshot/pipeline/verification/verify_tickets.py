@@ -5,17 +5,17 @@ from functools import partial
 
 from langchain_core.messages.content import ContentBlock, create_text_block
 
-from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.stages._base.validate import (
     SubmissionValidationError,
     raise_together,
 )
-from zeroshot.pipeline.stages.contracts import ReconstructionRun
-from zeroshot.pipeline.stages.revision_scope import (
+from zeroshot.pipeline.stages.contracts import ReconstructionHistory
+from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
+from zeroshot.pipeline.stages.tickets.validate import (
     StageArtifact,
     validate_revision_scope,
+    validate_ticket_answers,
 )
-from zeroshot.pipeline.stages.validate import validate_ticket_answers
 
 
 class TicketVerifier:
@@ -27,9 +27,9 @@ class TicketVerifier:
     def __init__(self, artifact: Callable[[], StageArtifact | None]) -> None:
         # The stage's confirmed artifact, or None while it is not confirmed.
         self.artifact = artifact
-        self._history: ReconstructionRun | None = None
+        self._history: ReconstructionHistory | None = None
 
-    def reset(self, history: ReconstructionRun) -> None:
+    def reset(self, history: ReconstructionHistory) -> None:
         self._history = history
 
     def feedback(self, answers: TicketAnswers) -> list[ContentBlock]:

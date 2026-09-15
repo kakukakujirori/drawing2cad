@@ -8,13 +8,16 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
-from zeroshot.pipeline.messages.tickets import TicketAnswers, tickets_assigned_to
 from zeroshot.pipeline.stages._base.prompt import (
     StageInstructions,
     build_system_prompt,
     schema_for_prompt,
 )
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.tickets.contracts import (
+    TicketAnswers,
+    tickets_assigned_to,
+)
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.verify_operations import OperationPlanVerifier

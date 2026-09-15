@@ -4,17 +4,17 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import cast
 
-from zeroshot.pipeline.messages.tickets import (
+from zeroshot.pipeline.stages._base.validate import raise_together
+from zeroshot.pipeline.stages.contracts import ReconstructionHistory
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
+from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.resolve_refs import resolve_references
+from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
     TicketAnswers,
     TicketResponse,
 )
-from zeroshot.pipeline.stages._base.validate import raise_together
-from zeroshot.pipeline.stages.contracts import ReconstructionRun
-from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.operations.contracts import OperationPlan
-from zeroshot.pipeline.stages.resolve_refs import resolve_references
-from zeroshot.pipeline.stages.revision_scope import validate_revision_scope
+from zeroshot.pipeline.stages.tickets.validate import validate_revision_scope
 from zeroshot.pipeline.stages.types import ArtifactField, PipelineStage, ReasoningStage
 from zeroshot.pipeline.stages.validate import validate_submission
 from zeroshot.pipeline.verification import VerifyOutputResult
@@ -35,7 +35,7 @@ class SnapshotUpdate:
 
 def build_snapshot_update(
     submission: TicketAnswers,
-    history: ReconstructionRun,
+    history: ReconstructionHistory,
     stage: ReasoningStage,
     *,
     workspace_output: WorkspaceOutput | None = None,

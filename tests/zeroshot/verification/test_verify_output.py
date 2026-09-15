@@ -9,9 +9,9 @@ import ezdxf
 import pytest
 from PIL import Image
 
-from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.interpretation.contracts import View
+from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.render.constants import (

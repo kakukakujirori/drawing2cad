@@ -11,13 +11,16 @@ from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
 from zeroshot.pipeline.messages.manifest import read_dxf_frame
-from zeroshot.pipeline.messages.tickets import TicketAnswers, tickets_assigned_to
 from zeroshot.pipeline.stages._base.prompt import (
     StageInstructions,
     build_system_prompt,
     schema_for_prompt,
 )
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
+from zeroshot.pipeline.stages.tickets.contracts import (
+    TicketAnswers,
+    tickets_assigned_to,
+)
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.tools.calculate_drawing_scale import (
     create_calculate_drawing_scale_tool,

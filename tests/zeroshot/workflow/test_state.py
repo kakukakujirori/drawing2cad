@@ -9,13 +9,6 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
 from tests.zeroshot.contracts import interpretation, view
-from zeroshot.pipeline.messages.tickets import (
-    BootstrapWork,
-    StageReport,
-    Ticket,
-    TicketAnswers,
-    TicketResponse,
-)
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
@@ -24,7 +17,10 @@ from zeroshot.pipeline.stages.audit.contracts import (
     StageOutputRef,
     TicketReview,
 )
-from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
+from zeroshot.pipeline.stages.contracts import (
+    ReconstructionHistory,
+    ReconstructionSnapshot,
+)
 from zeroshot.pipeline.stages.interpretation.contracts import (
     Dimension as InterpretedDimension,
 )
@@ -42,6 +38,13 @@ from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
+)
+from zeroshot.pipeline.stages.tickets.contracts import (
+    BootstrapWork,
+    StageReport,
+    Ticket,
+    TicketAnswers,
+    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import PipelineStage, ReasoningStage
 from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
@@ -170,7 +173,7 @@ _A_DRAWING = [
         ],
     ),
 ]
-_RECONSTRUCTION = ReconstructionRun(
+_RECONSTRUCTION = ReconstructionHistory(
     run_id="run_test",
     input_drawings=_A_DRAWING,
     snapshots=[
@@ -298,7 +301,7 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         RevisionRequest,
         StageOutputRef,
         BootstrapWork,
-        ReconstructionRun,
+        ReconstructionHistory,
         ReconstructionSnapshot,
         Ticket,
         TicketResponse,

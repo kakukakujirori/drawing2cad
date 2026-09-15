@@ -23,11 +23,6 @@ from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest, register_view
-from zeroshot.pipeline.messages.tickets import (
-    StageReport,
-    TicketAnswers,
-    TicketResponse,
-)
 from zeroshot.pipeline.runner import (
     GraphFactory,
     PipelineRunner,
@@ -43,6 +38,11 @@ from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
+)
+from zeroshot.pipeline.stages.tickets.contracts import (
+    StageReport,
+    TicketAnswers,
+    TicketResponse,
 )
 from zeroshot.pipeline.verification import (
     CadQueryExecutor,

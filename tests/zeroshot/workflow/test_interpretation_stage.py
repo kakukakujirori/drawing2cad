@@ -11,7 +11,6 @@ from tests.zeroshot.verification.test_interpretation_validation import dxf_case
 from tests.zeroshot.verification.test_verify_interpretation import _case
 from zeroshot.pipeline.messages.artifact import drawing_for_model
 from zeroshot.pipeline.messages.manifest import register_view
-from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.interpretation.contracts import (
@@ -19,6 +18,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     View,
 )
 from zeroshot.pipeline.stages.interpretation.stage import create_interpretation_stage
+from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.workflow.components.agent import create_agent
 from zeroshot.pipeline.workflow.lifecycle import start_reconstruction

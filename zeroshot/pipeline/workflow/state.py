@@ -11,9 +11,12 @@ from typing import (
 from langchain_core.messages import AnyMessage
 from typing_extensions import is_typeddict
 
-from zeroshot.pipeline.messages.tickets import TicketAnswers
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
-from zeroshot.pipeline.stages.contracts import ReconstructionRun, ReconstructionSnapshot
+from zeroshot.pipeline.stages.contracts import (
+    ReconstructionHistory,
+    ReconstructionSnapshot,
+)
+from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.types import (
     PipelineStage,
     ReasoningStage,
@@ -27,7 +30,7 @@ class ReconstructionState(TypedDict):
     coding_state: NotRequired[AgentState]
     audit_state: NotRequired[AgentState]
 
-    reconstruction: NotRequired[ReconstructionRun]
+    reconstruction: NotRequired[ReconstructionHistory]
     stage_submission: NotRequired[TicketAnswers | None]
     stage_validation_error: NotRequired[str | None]
     stage_validation_failure_count: NotRequired[int]

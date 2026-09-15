@@ -11,16 +11,19 @@ from langgraph.pregel import Pregel
 
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter, drawing_for_model
 from zeroshot.pipeline.messages.manifest import InputManifest
-from zeroshot.pipeline.messages.tickets import TicketAnswers, tickets_assigned_to
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.contracts import (
-    ReconstructionRun,
+    ReconstructionHistory,
     ReconstructionSnapshot,
 )
 from zeroshot.pipeline.stages.stage import stage_factory
+from zeroshot.pipeline.stages.tickets.contracts import (
+    TicketAnswers,
+    tickets_assigned_to,
+)
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     PipelineStage,
@@ -174,8 +177,8 @@ def create_reconstruction_graph(
         attempt_store=attempt_store,
     )
 
-    def save_history(run: ReconstructionRun) -> None:
-        save_reconstruction(history_path, run)
+    def save_history(history: ReconstructionHistory) -> None:
+        save_reconstruction(history_path, history)
 
     # ------------------------------------------------------------------
     # Round initialization and common stage input
@@ -183,21 +186,21 @@ def create_reconstruction_graph(
 
     def initialize(state: ReconstructionState) -> dict[str, Any]:
         """Create or adopt and persist the history before any model reads it."""
-        run = state.get("reconstruction")
-        if run is None:
+        history = state.get("reconstruction")
+        if history is None:
             run_suffix = re.sub(
                 r"[^a-z0-9]+", "_", input_manifest.sample_id.casefold()
             ).strip("_")
-            run = start_reconstruction(
+            history = start_reconstruction(
                 run_id=f"run_{run_suffix or 'sample'}",
                 instruction="Reconstruct the input drawing as a CadQuery model.",
                 # Addressed the way the model will read them, because the model
                 # is what reads and revises this history from here on.
                 drawings=drawing_for_model(input_manifest.drawing, sandbox_workdir),
             )
-        save_history(run)
+        save_history(history)
         return {
-            "reconstruction": run,
+            "reconstruction": history,
             "stage_submission": None,
             "stage_validation_error": None,
             "stage_validation_failure_count": 0,
@@ -244,7 +247,7 @@ def create_reconstruction_graph(
     def _workspace_output(
         stage: PipelineStage | None,
         snapshot: ReconstructionSnapshot,
-        reconstruction: ReconstructionRun,
+        reconstruction: ReconstructionHistory,
     ) -> Any:
         """The verified artifact the stage produced, or the baseline it kept."""
         tickets = snapshot.open_tickets

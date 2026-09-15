@@ -264,7 +264,7 @@ def test_round_instructions_do_not_repeat_the_reconstruction_guide(
     rendered = render_stage("interpretation")
 
     assert "## Reconstruction history" not in rendered
-    assert "ReconstructionRun" not in rendered
+    assert "ReconstructionHistory" not in rendered
 
 
 def test_audit_explains_how_to_report_a_missing_semantic_feature() -> None:
