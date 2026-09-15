@@ -125,23 +125,7 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         ):
             # Pending writes can invalidate even a confirmed artifact. Keep the
             # tool group contiguous; a HumanMessage here would split its results.
-            # LangChain's tools-to-model edge ends on a structured tool's name,
-            # even without structured_response, so clear that name on refusal.
-            return ModelResponse(
-                result=[
-                    message.model_copy(
-                        update={
-                            "content": _PARALLEL_SUBMISSION_REFUSED,
-                            "status": "error",
-                            "name": None,
-                        }
-                    )
-                    if isinstance(message, ToolMessage)
-                    else message
-                    for message in response.result
-                ],
-                structured_response=None,
-            )
+            return _refused(response, _PARALLEL_SUBMISSION_REFUSED)
 
         # Build the exact content being submitted, unless that is already the
         # build standing after the preceding tools finished.
@@ -156,11 +140,34 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             built_before_call or not self.require_feedback_before_submit
         ):
             return response
+        if not blocks:
+            # A file never written matches "never built"; say why it fails.
+            blocks = self._build()
 
+        refused = _refused(response, "Submission refused; see the message below.")
         return ModelResponse(
             result=[
-                *response.result,
+                *refused.result,
                 HumanMessage(content_blocks=[*blocks, create_text_block(self.refusal)]),
             ],
             structured_response=None,
         )
+
+
+def _refused(response: ModelResponse[Any], text: str) -> ModelResponse[Any]:
+    """Replace the answer's acknowledgement so no message says it was received.
+
+    LangChain's tools-to-model edge ends on a structured tool's name, even
+    without structured_response, so the name is cleared too.
+    """
+    return ModelResponse(
+        result=[
+            message.model_copy(
+                update={"content": text, "status": "error", "name": None}
+            )
+            if isinstance(message, ToolMessage)
+            else message
+            for message in response.result
+        ],
+        structured_response=None,
+    )

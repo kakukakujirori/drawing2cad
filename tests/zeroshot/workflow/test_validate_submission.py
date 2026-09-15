@@ -498,6 +498,25 @@ def test_coding_checks_the_submitted_program_against_current_round_operations() 
         )
 
 
+def test_coding_reports_dimension_and_program_faults_together() -> None:
+    submission = TicketAnswers(
+        responses=[_response("ticket_initial", PipelineStage.CODING)],
+        stage_report=StageReport(dimension_checks={"dim_r16": "from the leader"}),
+    )
+
+    with pytest.raises(
+        SubmissionValidationError, match=r"(?s)unknown: \['dim_r16'\].*remark.*op_base"
+    ):
+        _verified_and_validate(
+            submission,
+            _snapshot(PipelineStage.OPERATIONS),
+            workspace_output=VerifyOutputResult(
+                status=ExecutionStatus.REJECTED,
+                source="ret_other = object()\nresult = ret_other\n",
+            ),
+        )
+
+
 def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
     submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],

@@ -111,20 +111,6 @@ def test_registration_rejects_images_the_presenter_cannot_attach(tmp_path):
         InputManifest(sample_id="sample", drawing=_drawing(path))
 
 
-def test_registration_rejects_negative_dxf_coordinates(tmp_path: Path) -> None:
-    import ezdxf
-
-    doc = ezdxf.new()
-    doc.modelspace().add_lwpolyline(
-        [(-10, -5), (10, -5), (10, 10), (-10, 10)], close=True
-    )
-    dxf_path = tmp_path / "negative.dxf"
-    doc.saveas(dxf_path)
-
-    with pytest.raises(ValueError, match="first quadrant"):
-        register_view("view_negative", View.FULL_PAGE, dxf_path, 1.0)
-
-
 def test_a_verification_that_drew_nothing_is_a_manifest_too(tmp_path: Path) -> None:
     manifest = _feedback_manifest(tmp_path, verification_id="  verification-1  ")
 

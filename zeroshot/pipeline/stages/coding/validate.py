@@ -30,6 +30,12 @@ def validate_dimension_checks(
         raise SubmissionValidationError(
             "dimension_checks must cover every current dimension exactly once; "
             f"missing: {missing}; unknown: {unknown}"
+            + (
+                ". Unknown IDs are not interpretation dimensions; report a "
+                "printed figure the interpretation lacks in remark instead"
+                if unknown
+                else ""
+            )
         )
 
 

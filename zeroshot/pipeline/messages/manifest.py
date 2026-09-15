@@ -69,12 +69,7 @@ def register_view(
     if path.suffix.lower() == ".dxf":
         if mm_per_unit is None:
             raise ValueError(f"{name}: a native DXF input needs its mm_per_unit")
-        # NOTE: By assuming that all the primitives are in the first quadrant,
-        #       we ensure the similar treatment of DXF and raster images.
-        frame = read_dxf_frame(path, mm_per_unit)
-        if min(frame["origin_native"]) < -1e-6:
-            raise ValueError(f"{name}: DXF primitives must lie in the first quadrant")
-        width, height = frame["size_mm"]
+        width, height = read_dxf_frame(path, mm_per_unit)["size_mm"]
         region = Region(view=name, box_uv=(0.0, 0.0, width, height))
     else:
         with Image.open(path) as image:

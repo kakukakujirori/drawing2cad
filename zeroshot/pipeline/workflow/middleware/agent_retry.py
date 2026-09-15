@@ -135,16 +135,16 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     @staticmethod
     def _retry_unanswered_request(
         request: ModelRequest[None],
+        response: ModelResponse[Any],
     ) -> ModelRequest[None]:
         return request.override(
             messages=[
                 *request.messages,
                 HumanMessage(
                     content=(
-                        "Your last turn spent its whole output budget on thinking "
-                        "and came back empty. You have been thinking a long time, "
-                        "so answer now. The analysis you have already done is "
-                        "above; build on it rather than starting over."
+                        _CUT_OFF_CALL
+                        if _visible_output_tokens(response) >= _CUT_OFF_CALL_TOKENS
+                        else _THOUGHT_TOO_LONG
                     )
                 ),
             ]
@@ -193,7 +193,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 current_request = (
                     self._retry_length_limited_request(current_request)
                     if _answering_ran_out_of_output(current_request, response)
-                    else self._retry_unanswered_request(current_request)
+                    else self._retry_unanswered_request(current_request, response)
                 )
 
     @override
@@ -239,7 +239,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 current_request = (
                     self._retry_length_limited_request(current_request)
                     if _answering_ran_out_of_output(current_request, response)
-                    else self._retry_unanswered_request(current_request)
+                    else self._retry_unanswered_request(current_request, response)
                 )
 
 
@@ -269,6 +269,26 @@ def _gave_up_answering(attempts: int, error: Exception) -> ModelResponse[Any]:
 
 
 _UNANSWERED = "the model returned no tool call, no text and no structured output"
+_THOUGHT_TOO_LONG = (
+    "Your last turn spent its whole output budget on thinking and came back "
+    "empty. You have been thinking a long time, so answer now. The analysis "
+    "you have already done is above; build on it rather than starting over."
+)
+# Output beyond reasoning that long was a tool call the limit cut off.
+_CUT_OFF_CALL_TOKENS = 1000
+_CUT_OFF_CALL = (
+    "Your last turn reached the output-token limit while writing a tool call, "
+    "so the call was cut off and never ran; nothing was written. Keep each "
+    "tool call short: write a large file in several smaller pieces, and think "
+    "less before writing. The analysis you have already done is above."
+)
+
+
+def _visible_output_tokens(response: ModelResponse[Any]) -> int:
+    last = response.result[-1] if response.result else None
+    usage = getattr(last, "usage_metadata", None) or {}
+    reasoning = (usage.get("output_token_details") or {}).get("reasoning") or 0
+    return (usage.get("output_tokens") or 0) - reasoning
 
 
 def _is_unanswered(response: ModelResponse[Any]) -> bool:

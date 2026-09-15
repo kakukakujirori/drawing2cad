@@ -979,7 +979,8 @@ class _CountingVerifier:
         return self._sound
 
     def feedback(self) -> list[ContentBlock]:
-        self.seen.append(self.source_path.read_text(encoding="utf-8"))
+        path = self.source_path
+        self.seen.append(path.read_text(encoding="utf-8") if path.is_file() else "")
         self._sound = self._builds.pop(0) if self._builds else True
         return [create_text_block(f"[verified] build {len(self.seen)}")]
 
@@ -1229,10 +1230,42 @@ def test_an_answer_is_refused_while_the_program_does_not_build(
         for index, message in enumerate(messages)
         if isinstance(message, ToolMessage) and message.tool_call_id == "call-1"
     )
-    assert messages[acknowledgement_index].content == "Submission received."
+    assert messages[acknowledgement_index].status == "error"
+    assert "refused" in messages[acknowledgement_index].text
     assert isinstance(messages[acknowledgement_index + 1], HumanMessage)
     assert "not ready to submit" in messages[acknowledgement_index + 1].text
     assert unanswered_tool_calls(messages) == []
+
+
+def test_an_answer_before_the_file_exists_is_refused_with_feedback(
+    tmp_path: Path,
+) -> None:
+    """A missing file is not a standing build; the refusal must say what failed."""
+    path = tmp_path / "model.py"
+    graph, verifier = _verifying_agent(
+        ScriptedChatModel(
+            responses=(
+                _answer_call("call-1"),
+                tool_call("write", {"text": "result = 1"}, "call-2"),
+                _answer_call("call-3"),
+            )
+        ),
+        path,
+        builds=[False, True],
+        announce_turns=False,
+        output_schema=_Answer,
+        response_format_strategy="tool",
+    )
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["structured_response"] == _Answer(done=True)
+    assert verifier.seen == ["", "result = 1"]
+    refusal = next(
+        m.text for m in result["messages"] if "not ready to submit" in m.text
+    )
+    assert "[verified] build 1" in refusal
+    assert not any(m.text == "Submission received." for m in result["messages"][:-1])
 
 
 def test_an_answer_stands_when_the_program_builds(tmp_path: Path) -> None:
@@ -1439,6 +1472,26 @@ def test_a_working_turn_that_ran_long_is_not_told_to_stop_using_tools() -> None:
     correction = model.received_messages[-1][-1].text
     assert "Do not call tools" not in correction
     assert "whole output budget on thinking" in correction
+
+
+def test_a_tool_call_cut_off_by_the_limit_is_told_to_write_in_pieces() -> None:
+    """Most of the budget went into a call, so "stop thinking" misdiagnoses it."""
+    cut_off = _empty("length")
+    cut_off.usage_metadata = {
+        "input_tokens": 1,
+        "output_tokens": 60000,
+        "total_tokens": 60001,
+        "output_token_details": {"reasoning": 39374},
+    }
+    model = ScriptedChatModel(responses=(cut_off, AIMessage(content="done")))
+
+    _subgraph(model, announce_turns=False, model_retries=1).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+
+    correction = model.received_messages[-1][-1].text
+    assert "cut off" in correction
+    assert "thinking and came back" not in correction
 
 
 def test_an_empty_answer_that_did_not_run_out_earns_the_plain_nudge() -> None:

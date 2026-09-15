@@ -80,10 +80,20 @@ def validate_submission(
                 raise SubmissionValidationError(
                     "coding requires a terminal verification result"
                 )
-            validate_dimension_checks(
-                submission.stage_report.dimension_checks, snapshot.interpretation
-            )
-            validate_coding(snapshot, deliverable)
+            # Report both at once so one re-ask can fix them together.
+            errors = []
+            for check in (
+                lambda: validate_dimension_checks(
+                    submission.stage_report.dimension_checks, snapshot.interpretation
+                ),
+                lambda: validate_coding(snapshot, deliverable),
+            ):
+                try:
+                    check()
+                except SubmissionValidationError as error:
+                    errors.append(str(error))
+            if errors:
+                raise SubmissionValidationError("\n".join(errors))
         case _:
             raise SubmissionValidationError(f"unexpected reasoning stage: {stage}")
 

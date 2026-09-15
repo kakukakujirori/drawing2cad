@@ -201,8 +201,9 @@ class StubRenderer:
                 path.write_text("not a drawing", encoding="utf-8")
                 continue
             doc = ezdxf.new()
+            # Projections keep the model frame, which may extend below zero.
             doc.modelspace().add_lwpolyline(
-                [(0, 0), (10, 0), (10, 10), (0, 10)], close=True
+                [(-5, -5), (10, -5), (10, 10), (-5, 10)], close=True
             )
             doc.saveas(path)
 
