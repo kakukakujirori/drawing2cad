@@ -14,9 +14,11 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.interpretation.contracts import (
+    ORTHOGRAPHIC_VIEWS,
     PICTORIAL_VIEWS,
     DrawingInterpretation,
     DrawingView,
+    View,
 )
 from zeroshot.pipeline.stages.interpretation.validate import validate_interpretation
 from zeroshot.pipeline.verification.attempts import AttemptStore
@@ -120,7 +122,7 @@ class InterpretationVerifier:
         attempt_id, attempt_dir, sandbox_attempt_dir = self.attempt_store.issue(
             "interpretation"
         )
-        interpretation = None
+        validated_interpretation = None
         reports: dict[str, dict[str, Any]] = {}
         errors: list[str] = []
         try:
@@ -128,8 +130,10 @@ class InterpretationVerifier:
                 raise ValueError(f"{self.source_filename} must not be a symlink")
             payload = self.source_path.read_bytes()
             (attempt_dir / "_interpretation_raw.json").write_bytes(payload)
-            submitted = DrawingInterpretation.model_validate_json(payload)
-            by_name = {view.name: view for view in submitted.views}
+            submitted_interpretation = DrawingInterpretation.model_validate_json(
+                payload
+            )
+            by_name = {view.name: view for view in submitted_interpretation.views}
             for original in self._original_views:
                 view = by_name.get(original.name)
                 if view is None and original.role in PICTORIAL_VIEWS:
@@ -145,12 +149,24 @@ class InterpretationVerifier:
                         f"role and full-file region: {original.name} ({original.role}), "
                         f"{original.file}. Dimensions may be added."
                     )
-            interpretation, reports = validate_interpretation(
-                submitted,
+            if any(
+                original.role is View.FULL_PAGE for original in self._original_views
+            ) and not any(
+                view.role in ORTHOGRAPHIC_VIEWS
+                for view in submitted_interpretation.views
+            ):
+                raise ValueError(
+                    "A full_page input is an unsplit page. Add at least one DrawingView "
+                    "with an orthographic role (front, back, top, bottom, left or right). "
+                    "For a single-view drawing only showing the front or the top, "
+                    "add a new DrawingView that uses the same file with a full-file region."
+                )
+            validated_interpretation, reports = validate_interpretation(
+                submitted_interpretation,
                 workdir=self.workdir,
                 dxf_mm_per_unit=self.dxf_mm_per_unit,
             )
-            enriched = interpretation.model_dump_json(indent=2) + "\n"
+            enriched = validated_interpretation.model_dump_json(indent=2) + "\n"
             (attempt_dir / self.source_filename).write_text(enriched, encoding="utf-8")
             # Replace only after validation and a complete write; preserve edits on failure.
             with TemporaryDirectory(dir=self.source_path.parent) as temporary:
@@ -166,7 +182,7 @@ class InterpretationVerifier:
         self._built = InterpretationVerificationResult(
             attempt_id=attempt_id,
             attempt_dir=sandbox_attempt_dir,
-            interpretation=interpretation,
+            interpretation=validated_interpretation,
             reports=reports,
             errors=tuple(errors),
         )

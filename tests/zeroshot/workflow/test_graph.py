@@ -348,6 +348,7 @@ def _graph(
 def _stub_verification(
     monkeypatch: pytest.MonkeyPatch,
     *reports: VerifyOutputResult,
+    views_seen: list[list[View]] | None = None,
 ) -> list[str]:
     remaining = list(reports)
     calls: list[str] = []
@@ -367,6 +368,8 @@ def _stub_verification(
 
         def verify(self) -> tuple[VerifyOutputResult, None]:
             calls.append("verify")
+            if views_seen is not None:
+                views_seen.append(list(self.views))
             return remaining.pop(0), None
 
         def feedback(self) -> list[ContentBlock]:
@@ -425,11 +428,13 @@ def test_an_accepted_round_is_integrated_and_persisted(
     monkeypatch: pytest.MonkeyPatch,
     has_returns: bool,
 ) -> None:
+    views_seen: list[list[View]] = []
     calls = _stub_verification(
         monkeypatch,
         replace(
             _verified(), intermediate_returns="ret_step1: solid" if has_returns else ""
         ),
+        views_seen=views_seen,
     )
     interpreter = ScriptedChatModel(responses=_interpretation_script())
     planner = ScriptedChatModel(responses=_operations_script())
@@ -462,6 +467,8 @@ def test_an_accepted_round_is_integrated_and_persisted(
         )
 
     assert calls == ["verify"]
+    # The full_page input is not projected; the view identified on it is.
+    assert views_seen == [[View.FRONT]]
     assert persisted == result["reconstruction"]
     snapshot = persisted.snapshots[0]
     assert snapshot.last_completed_stage is PipelineStage.CODING

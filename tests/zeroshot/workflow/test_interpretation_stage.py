@@ -88,7 +88,7 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
         == stage.interpretation_verifier.accepted_interpretation
     )
     assert len(model.received_messages) == 3
-    # One for the premature answer, naming the seeded datum still to settle, and
+    # One for the premature answer, naming the view the seed still lacks, and
     # one for the write that followed.
     verifications = [
         message.text
@@ -96,7 +96,7 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
         if "[Interpretation verification]" in message.text
     ]
     assert len(verifications) == 2
-    assert "datum still holds ???" in verifications[0]
+    assert "full_page input is an unsplit page" in verifications[0]
     assert "valid." in verifications[1]
 
 

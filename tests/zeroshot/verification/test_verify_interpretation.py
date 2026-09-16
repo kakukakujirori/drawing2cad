@@ -247,6 +247,55 @@ def test_original_identity_and_full_file_region_cannot_be_rewritten(tmp_path, ch
     assert not verifier.confirmed
 
 
+@pytest.mark.parametrize(
+    ("role", "accepted"),
+    [
+        (View.FRONT, True),
+        (View.RIGHT, True),
+        (View.SECTION, False),
+        (View.UNKNOWN, False),
+    ],
+)
+def test_a_full_page_input_requires_an_orthographic_view(tmp_path, role, accepted):
+    verifier, candidate, _ = _case(tmp_path)
+    candidate.views[1].role = role
+    verifier.source_path.write_text(candidate.model_dump_json())
+
+    text = verifier.feedback()[0]["text"]
+
+    assert verifier.confirmed is accepted
+    assert ("full_page input is an unsplit page" in text) is not accepted
+
+
+def test_a_single_view_may_reuse_the_full_page_file_and_bounds(tmp_path):
+    verifier, candidate, _ = _case(tmp_path)
+    candidate.views[1].role = View.SECTION
+    data = candidate.model_dump()
+    data["views"].append(
+        {
+            "name": "view_single",
+            "role": "front",
+            "file": "/work/source.png",
+            "region": {"view": "view_page", "box_px": [0, 0, 1200, 1400]},
+            "dimensions": [],
+        }
+    )
+    verifier.source_path.write_text(json.dumps(data))
+
+    verifier.feedback()
+
+    assert verifier.confirmed
+
+
+def test_the_full_page_cannot_be_relabelled_as_the_view(tmp_path):
+    verifier, candidate, _ = _case(tmp_path)
+    candidate.views[0].role = View.FRONT
+    verifier.source_path.write_text(candidate.model_dump_json())
+
+    assert "Retain each original input file" in verifier.feedback()[0]["text"]
+    assert not verifier.confirmed
+
+
 def test_retained_pictorial_keeps_its_registration(tmp_path):
     verifier, candidate, seed = _case(tmp_path, pictorial="hlg")
     pictorial = seed.views[-1].model_copy(update={"file": "/work/hlg.png"})

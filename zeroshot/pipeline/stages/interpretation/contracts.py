@@ -194,11 +194,11 @@ class DrawingView(Contract):
     file: str = Field(
         ...,
         min_length=1,
-        description="Path to this view's image or DXF in the workspace. Keep registered input files; save a separate crop only when identifying a new view within another file.",
+        description="Path to this view's image or DXF in the workspace. Keep registered input files. Save a crop for a new view identified within another file; a single-view drawing may reuse that file instead.",
     )
     region: Region = Field(
         ...,
-        description="Where this view is located in the referenced DrawingView. Preserve each registered input's self-reference and full-file bounds; a new crop refers to its region in the parent view.",
+        description="Where this view is located in the referenced DrawingView. Preserve each registered input's self-reference and full-file bounds. A new view gives its location in the parent view; a single-view drawing that reuses the parent file covers the whole file.",
     )
     dimensions: list[Dimension] = Field(
         ..., description="Printed figures on this sheet; empty if none."
@@ -266,7 +266,7 @@ class DrawingInterpretation(Contract):
     )
     views: list[DrawingView] = Field(
         ...,
-        description="Registered input files with their existing names, roles and full-file Regions, plus newly identified crops. Add printed dimensions to the appropriate views.",
+        description="Registered input files with their existing names, roles and full-file Regions, plus every newly identified view. A FULL_PAGE input requires at least one new view with an orthographic role (e.g, front or top). Add printed dimensions to the appropriate views.",
     )
     features: list[SemanticFeature] = Field(
         ...,
