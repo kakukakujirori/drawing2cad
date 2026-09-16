@@ -1,3 +1,4 @@
+## Audit Round
 Coding and verification for reconstruction round $current_round are complete. Audit that immutable snapshot against the input drawing.
 
 The program is at `$coding_output_path`.

@@ -20,5 +20,5 @@ Orthographic view directions:
 These mappings specify directions, not a shared origin.
 A DrawingView's local UV coordinates are not absolute model coordinates.
 
-## Which is the front view?
+### Which is the front view?
 For a conventional third-angle L arrangement, the lower-left view is front, the view directly above it is top, and the view directly to its right is right. Use this arrangement even when another view has the most informative silhouette. Explicit view labels or projection symbols take precedence. If the arrangement is free-style, you may define the front view as you see fit.
