@@ -53,6 +53,15 @@ def _projected(view: str) -> str:
     return f"view_projected_{view}"
 
 
+def _validity(output: IntermediateReturn) -> str:
+    """Flag a BRep that was not valid before export; its STEP may have been repaired."""
+    if output.valid is None:
+        return f"BRep validity unknown ({output.validity_reason or 'not checked'}); "
+    if not output.valid:
+        return f"BRep INVALID before export ({output.validity_reason}); "
+    return ""
+
+
 def _census_table(returns: Sequence[IntermediateReturn]) -> str:
     """Lay out what each `ret_*` held, one line each, in program order.
 
@@ -66,16 +75,17 @@ def _census_table(returns: Sequence[IntermediateReturn]) -> str:
     lines: list[str] = []
     previous: ShapeCensus | None = None
     for output in returns:
+        head = f"{output.name:<{width}}  {_validity(output)}"
         if output.census is None:
             reason = (
                 "STEP exported; shape census unavailable"
                 if output.step_path is not None
                 else f"not exported: {output.error}"
             )
-            lines.append(f"{output.name:<{width}}  {reason}")
+            lines.append(head + reason)
             continue
         lines.append(
-            f"{output.name:<{width}}  "
+            head
             + (
                 output.census.describe()
                 if previous is None

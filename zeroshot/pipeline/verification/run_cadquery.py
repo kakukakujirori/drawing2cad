@@ -1,4 +1,5 @@
 import ast
+import json
 import shutil
 import traceback
 from collections.abc import Sequence
@@ -12,8 +13,8 @@ from zeroshot.pipeline.sandbox import (
     SandboxWorkdir,
 )
 from zeroshot.pipeline.verification._run_program import (
-    ERROR_SUFFIX,
     INTERMEDIATE_RETURNS_DIR,
+    METADATA_SUFFIX,
 )
 from zeroshot.pipeline.verification.check_program import assigned_names
 from zeroshot.pipeline.verification.shape_census import ShapeCensus, read_census
@@ -32,12 +33,15 @@ class ExecutionStatus(StrEnum):
 
 @dataclass(frozen=True)
 class IntermediateReturn:
-    """One `ret_*` as it stood the moment the program assigned it."""
+    """One `ret_*` as the program left it, on finishing or on raising."""
 
     name: str
     step_path: Path | None = None
     error: str | None = None
     census: ShapeCensus | None = None
+    # Of the BRep before export; None when it could not be checked.
+    valid: bool | None = None
+    validity_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,46 @@ def _returned_names(source: str, filename: str) -> list[str]:
     return names
 
 
+def _read_one_return(
+    name: str,
+    sandbox_temp_returns_dir: Path,
+    host_dest_returns_dir: Path,
+) -> IntermediateReturn:
+    # JSON check
+    try:
+        metadata = json.loads(
+            (sandbox_temp_returns_dir / f"{name}{METADATA_SUFFIX}").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, ValueError) as error:
+        return IntermediateReturn(
+            name, error=f"metadata unreadable: {type(error).__name__}"
+        )
+
+    validity = {
+        "valid": metadata.get("valid"),
+        "validity_reason": metadata.get("validity_reason"),
+    }
+
+    # STEP check
+    built = sandbox_temp_returns_dir / f"{name}.step"
+    if not built.is_file():
+        error = metadata.get("export_error") or "no step file was written"
+        return IntermediateReturn(name, error=error, **validity)
+
+    # STEP copy to host (One directory per return, laid out like the attempt that holds it)
+    kept = host_dest_returns_dir / name / "output.step"
+    try:
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(built, kept)
+    except OSError as error:
+        return IntermediateReturn(name, error=f"not kept: {error}", **validity)
+    return IntermediateReturn(
+        name, step_path=kept, census=read_census(kept), **validity
+    )
+
+
 def _read_returns(
     ret_names: Sequence[str],
     sandbox_temp_returns_dir: Path,
@@ -82,37 +126,17 @@ def _read_returns(
 ) -> tuple[IntermediateReturn, ...]:
     """Keep a STEP for each named output, or the reason the program wrote none.
 
-    Empty when the program never got that far, which is every run that failed
-    to build: what such a run needs said is in the traceback.
+    A program that raised still leaves the outputs it assigned before raising.
+    An output never assigned left no metadata and is left out.
     """
     if not sandbox_temp_returns_dir.is_dir():
         return ()
     host_dest_returns_dir.mkdir(parents=True, exist_ok=True)
-
-    outputs: list[IntermediateReturn] = []
-    for name in ret_names:
-        built = sandbox_temp_returns_dir / f"{name}.step"
-        if built.is_file():
-            # One directory per return, laid out like the attempt that holds it.
-            kept = host_dest_returns_dir / name / "output.step"
-            kept.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(built, kept)
-            outputs.append(
-                IntermediateReturn(name, step_path=kept, census=read_census(kept))
-            )
-            continue
-        reported = sandbox_temp_returns_dir / f"{name}{ERROR_SUFFIX}"
-        outputs.append(
-            IntermediateReturn(
-                name,
-                error=(
-                    reported.read_text(encoding="utf-8")
-                    if reported.is_file()
-                    else "no step file was written"
-                ),
-            )
-        )
-    return tuple(outputs)
+    return tuple(
+        _read_one_return(name, sandbox_temp_returns_dir, host_dest_returns_dir)
+        for name in ret_names
+        if (sandbox_temp_returns_dir / f"{name}{METADATA_SUFFIX}").exists()
+    )
 
 
 class CadQueryExecutor:
@@ -130,8 +154,8 @@ class CadQueryExecutor:
         Both directories are host paths the caller keeps. The sandbox writes
         to `output.step` and `intermediate_returns/` in its own workdir, which
         is gone by the time this returns. Given a returns directory, one STEP
-        file is kept there for every `ret_*` the program holds once it has run,
-        so a program that fails to build leaves none.
+        file is kept there for every `ret_*` the program holds once it has run
+        or raised; the failure itself stays in `status` and `stderr`.
         """
         # file read check
         try:

@@ -110,15 +110,11 @@ def read_census(step_path: Path) -> ShapeCensus | None:
         shape = cq.Compound.makeCompound(
             cq.importers.importStep(str(step_path)).vals()  # type: ignore[arg-type]
         )
-        volume = shape.Volume()
-    except (OSError, ValueError, RuntimeError, IndexError, StopIteration):
-        # CadQuery's mass calculation can encounter an empty nested compound
-        # in an intermediate return. This diagnostic must not stop verification.
+        return ShapeCensus(
+            solids=len(shape.Solids()),
+            volume=shape.Volume(),
+            faces=_kinds(shape.Faces(), BRepAdaptor_Surface),
+            edges=_kinds(shape.Edges(), BRepAdaptor_Curve),
+        )
+    except Exception:  # noqa: BLE001 - e.g. an empty nested compound; a diagnostic must not stop verification
         return None
-
-    return ShapeCensus(
-        solids=len(shape.Solids()),
-        volume=volume,
-        faces=_kinds(shape.Faces(), BRepAdaptor_Surface),
-        edges=_kinds(shape.Edges(), BRepAdaptor_Curve),
-    )

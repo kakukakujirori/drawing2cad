@@ -97,6 +97,7 @@ class StubCadQueryExecutor:
         return IntermediateReturn(
             name,
             step_path=step_path,
+            valid=True,
             census=ShapeCensus(
                 1, 100.0 * (index + 1), Counter({"Plane": 6}), Counter({"Line": 12})
             ),
@@ -826,10 +827,12 @@ def test_the_table_states_each_return_and_its_change() -> None:
     returns = (
         IntermediateReturn(
             "ret_base",
+            valid=True,
             census=ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
         ),
         IntermediateReturn(
             "ret_hole",
+            valid=True,
             census=ShapeCensus(
                 1,
                 5880.0,
@@ -851,8 +854,8 @@ def test_the_table_states_each_return_and_its_change() -> None:
 def test_an_operation_that_built_nothing_shows_no_change() -> None:
     census = ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12}))
     returns = (
-        IntermediateReturn("ret_base", census=census),
-        IntermediateReturn("ret_cleaned", census=census),
+        IntermediateReturn("ret_base", census=census, valid=True),
+        IntermediateReturn("ret_cleaned", census=census, valid=True),
     )
 
     assert _census_table(returns).splitlines()[1] == (
@@ -864,11 +867,13 @@ def test_a_return_that_was_not_exported_carries_the_reason() -> None:
     returns = (
         IntermediateReturn(
             "ret_base",
+            valid=True,
             census=ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
         ),
-        IntermediateReturn("ret_count", error="TypeError: not a shape"),
+        IntermediateReturn("ret_count", error="TypeError: not a shape", valid=True),
         IntermediateReturn(
             "ret_grown",
+            valid=True,
             census=ShapeCensus(1, 9000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
         ),
     )
@@ -880,12 +885,40 @@ def test_a_return_that_was_not_exported_carries_the_reason() -> None:
     assert lines[2].startswith("ret_grown  volume 9000.0 (+3000.0)")
 
 
+def test_an_invalid_or_unchecked_brep_is_flagged_beside_its_census() -> None:
+    census = ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12}))
+    returns = (
+        IntermediateReturn(
+            "ret_base",
+            census=census,
+            valid=False,
+            validity_reason="shape 1 of 1 is invalid",
+        ),
+        IntermediateReturn(
+            "ret_count",
+            error="TypeError: not a shape",
+            validity_reason="holds no shape",
+        ),
+    )
+
+    assert _census_table(returns).splitlines() == [
+        (
+            "ret_base   BRep INVALID before export (shape 1 of 1 is invalid); "
+            "volume 6000.0; faces 6 (Plane 6); edges 12 (Line 12)"
+        ),
+        (
+            "ret_count  BRep validity unknown (holds no shape); "
+            "not exported: TypeError: not a shape"
+        ),
+    ]
+
+
 def test_the_table_of_nothing_is_empty() -> None:
     assert _census_table(()) == ""
 
 
 def test_an_exported_return_without_census_is_not_reported_as_missing() -> None:
-    output = IntermediateReturn("ret_nested", step_path=Path("output.step"))
+    output = IntermediateReturn("ret_nested", step_path=Path("output.step"), valid=True)
 
     assert _census_table([output]) == (
         "ret_nested  STEP exported; shape census unavailable"
@@ -994,7 +1027,7 @@ def test_a_result_that_fails_still_reports_what_the_returns_built(
     tmp_path: Path,
 ) -> None:
     executor = StubCadQueryExecutor(
-        _execution_report(status=ExecutionStatus.FAILED, returncode=0),
+        _execution_report(status=ExecutionStatus.FAILED, returncode=1),
         return_names=("ret_base", "ret_hole"),
     )
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
@@ -1011,16 +1044,22 @@ def test_a_result_that_fails_still_reports_what_the_returns_built(
     assert (returns_dir / "ret_base" / "projection" / "front.dxf").is_file()
     # No STEP of its own, so the attempt's own views are absent.
     assert "attempts/round_000/coding/000/projection/front.dxf" not in text
+    # What the returns built never passes for the result.
+    assert _report_json(verifier.feedback())["status"] == "FAILED"
+    assert not verifier.confirmed
+    assert verifier.accepted_source is None
 
 
 def test_a_part_that_broke_apart_says_how_many_pieces() -> None:
     returns = (
         IntermediateReturn(
             "ret_whole",
+            valid=True,
             census=ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
         ),
         IntermediateReturn(
             "ret_split",
+            valid=True,
             census=ShapeCensus(
                 3, 5000.0, Counter({"Plane": 18}), Counter({"Line": 36})
             ),

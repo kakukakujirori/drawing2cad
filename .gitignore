@@ -12,5 +12,5 @@ __pycache__/
 /logs
 /outputs
 
-# scaffolding for the multi-agent refactor; delete once it lands
-/_refactor
+# codebase
+.vscode/

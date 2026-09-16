@@ -41,7 +41,7 @@ def validate_ticket_answers(
     """Reject ticket responses or a stage report that contradict the round."""
     stage = next_stage(snapshot.last_completed_stage)
     if stage not in REASONING_STAGES:
-        return None  # This should not happen
+        return  # This should not happen
     checks = answers.stage_report.dimension_checks
 
     def validate_report() -> None:

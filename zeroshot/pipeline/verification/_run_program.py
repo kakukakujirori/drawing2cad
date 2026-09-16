@@ -8,6 +8,7 @@ The host half is `run_cadquery.py`, which stages this, names the outputs to
 keep, and reads back what lands in the workdir.
 """
 
+import json
 import sys
 import traceback
 from collections.abc import Sequence
@@ -15,7 +16,7 @@ from pathlib import Path
 
 RESULT_STEP = "output.step"
 INTERMEDIATE_RETURNS_DIR = "intermediate_returns"
-ERROR_SUFFIX = ".err"
+METADATA_SUFFIX = ".json"
 
 
 def _report(error: BaseException) -> int:
@@ -36,40 +37,77 @@ def _export(value: object, path: Path | str) -> None:
     cq.exporters.export(value, str(path), exportType="STEP")
 
 
-def _run(program: Path) -> dict[str, object]:
-    """The globals the program leaves behind, as running it directly would."""
+def _run(program: Path, namespace: dict[str, object]) -> None:
+    """Run the program in `namespace`, which keeps whatever it assigned before raising."""
     code = compile(program.read_text(encoding="utf-8"), str(program), "exec")
-    namespace: dict[str, object] = {
-        "__name__": "__main__",
-        "__file__": str(program),
-    }
     exec(code, namespace)  # noqa: S102 - the program is the input, and the sandbox is the guard
-    return namespace
+
+
+def _validity(value: object) -> tuple[bool | None, str | None]:
+    """Check the BRep before export, since a STEP export can repair invalid shapes."""
+    import cadquery as cq
+
+    try:
+        shapes = value.vals() if isinstance(value, cq.Workplane) else [value]
+        if not shapes:
+            return None, "holds no shape"
+        if strangers := [
+            type(s).__name__ for s in shapes if not isinstance(s, cq.Shape)
+        ]:
+            return None, f"holds non-shape values: {', '.join(strangers)}"
+        invalid = [i for i, s in enumerate(shapes, 1) if not s.isValid()]
+    except Exception as error:  # noqa: BLE001 - unknown, never valid
+        return None, f"{type(error).__name__}: {error}"
+    if invalid:
+        return (
+            False,
+            f"shape {', '.join(map(str, invalid))} of {len(shapes)} is invalid",
+        )
+    return True, None
+
+
+def _keep_one(value: object, name: str, directory: Path) -> dict[str, object]:
+    valid, validity_reason = _validity(value)
+    metadata: dict[str, object] = {
+        "valid": valid,
+        "validity_reason": validity_reason,
+        "export_error": None,
+    }
+    try:
+        _export(value, directory / f"{name}.step")
+    except Exception as error:  # noqa: BLE001 - a kept output must not fail the build
+        metadata["export_error"] = f"{type(error).__name__}: {error}"
+    return metadata
 
 
 def _keep(namespace: dict[str, object], names: Sequence[str]) -> None:
-    """Export each named output, recording what will not export instead of raising.
+    """Export each named output as the namespace holds it now, with its metadata.
 
-    Every `ret_*` still holds what it was last given, so this runs once at the
-    end rather than stepping through the program.
+    Runs once when the program ends or raises, so a `ret_*` reassigned later
+    is kept as last assigned. One never assigned leaves no file.
     """
     directory = Path(INTERMEDIATE_RETURNS_DIR)
     directory.mkdir(parents=True, exist_ok=True)
     for name in names:
-        try:
-            _export(namespace.get(name), directory / f"{name}.step")
-        except Exception as error:  # noqa: BLE001 - a kept output must not fail the build
-            (directory / f"{name}{ERROR_SUFFIX}").write_text(
-                f"{type(error).__name__}: {error}", encoding="utf-8"
-            )
+        if name not in namespace:
+            continue
+        metadata = _keep_one(namespace[name], name, directory)
+        (directory / f"{name}{METADATA_SUFFIX}").write_text(
+            json.dumps(metadata), encoding="utf-8"
+        )
 
 
 def main(argv: Sequence[str]) -> int:
     program, names = Path(argv[1]), argv[2:]
+    namespace: dict[str, object] = {"__name__": "__main__", "__file__": str(program)}
     try:
-        namespace = _run(program)
+        _run(program, namespace)
     except Exception as error:  # noqa: BLE001 - reported below as an exit code
-        return _report(error)
+        # Report first: a failure while keeping outputs must not hide this traceback.
+        status = _report(error)
+        if names:
+            _keep(namespace, names)
+        return status
 
     if names:
         _keep(namespace, names)

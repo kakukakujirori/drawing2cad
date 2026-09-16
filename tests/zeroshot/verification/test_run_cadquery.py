@@ -19,6 +19,7 @@ from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutor,
     ExecutionStatus,
     StepVerificationError,
+    _read_returns,
     _returned_names,
 )
 from zeroshot.pipeline.verification.shape_census import ShapeCensus
@@ -522,13 +523,16 @@ def test_execute_keeps_every_named_output_when_asked_for_them(
         CadQueryExecutor.verify_step(output.step_path)
 
 
-def test_a_program_that_does_not_build_keeps_nothing(tmp_path: Path) -> None:
-    executor = CadQueryExecutor(
+def _real_executor() -> CadQueryExecutor:
+    return CadQueryExecutor(
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable),
             default_timeout_s=60.0,
         ),
     )
+
+
+def test_a_program_that_raises_keeps_what_it_built_before(tmp_path: Path) -> None:
     source = """\
 import cadquery as cq
 
@@ -536,16 +540,93 @@ ret_base = cq.Workplane("XY").box(10, 20, 30)
 ret_hole = ret_base.no_such_method()
 result = ret_hole
 """
-    model_path = _write_model(tmp_path, source)
-
-    report = executor.execute(
-        model_path, intermediate_returns_dir=tmp_path / "intermediate_returns"
+    report = _real_executor().execute(
+        _write_model(tmp_path, source),
+        intermediate_returns_dir=tmp_path / "intermediate_returns",
     )
 
     assert report.status is ExecutionStatus.FAILED
-    assert report.intermediate_returns == ()
-    # What that run needs said is the line the coder wrote.
+    assert report.returncode != 0
+    # The failure is still the line the coder wrote.
     assert "line 4" in report.stderr
+    # ret_hole was never assigned, so only ret_base is reported.
+    (base,) = report.intermediate_returns
+    assert base.name == "ret_base"
+    assert base.valid is True
+    assert base.step_path is not None and base.step_path.is_file()
+    assert base.census is not None and base.census.volume == pytest.approx(6000.0)
+
+
+def test_a_program_that_raises_before_any_return_keeps_none(tmp_path: Path) -> None:
+    source = """\
+import cadquery as cq
+
+raise RuntimeError("boom")
+ret_base = cq.Workplane("XY").box(10, 20, 30)
+result = ret_base
+"""
+    report = _real_executor().execute(
+        _write_model(tmp_path, source),
+        intermediate_returns_dir=tmp_path / "intermediate_returns",
+    )
+
+    assert report.status is ExecutionStatus.FAILED
+    assert "RuntimeError: boom" in report.stderr
+    assert report.intermediate_returns == ()
+
+
+def test_an_invalid_return_stays_invalid_though_its_step_imports_valid(
+    tmp_path: Path,
+) -> None:
+    source = """\
+import cadquery as cq
+
+ret_bowtie = (
+    cq.Workplane("XY").polyline([(0, 0), (10, 10), (10, 0), (0, 10)]).close().extrude(5)
+)
+ret_box = cq.Workplane("XY").box(1, 2, 3)
+ret_empty = cq.Workplane("XY")
+result = ret_box
+"""
+    report = _real_executor().execute(
+        _write_model(tmp_path, source),
+        intermediate_returns_dir=tmp_path / "intermediate_returns",
+    )
+    kept = {output.name: output for output in report.intermediate_returns}
+
+    bowtie = kept["ret_bowtie"]
+    assert bowtie.valid is False
+    assert bowtie.validity_reason == "shape 1 of 1 is invalid"
+    # The STEP round trip repairs it, which is why validity is checked before export.
+    assert bowtie.step_path is not None
+    CadQueryExecutor.verify_step(bowtie.step_path)
+    assert kept["ret_box"].valid is True
+    # An empty stack is unknown, not valid.
+    assert kept["ret_empty"].valid is None
+    assert kept["ret_empty"].validity_reason == "holds no shape"
+
+
+def test_a_return_whose_metadata_is_unreadable_does_not_cost_the_rest(
+    tmp_path: Path,
+) -> None:
+    sandbox_dir = tmp_path / "sandbox"
+    sandbox_dir.mkdir()
+    (sandbox_dir / "ret_broken.json").write_text("{", encoding="utf-8")
+    (sandbox_dir / "ret_base.json").write_text(
+        '{"valid": true, "validity_reason": null, "export_error": null}',
+        encoding="utf-8",
+    )
+    _write_valid_box_step(sandbox_dir / "ret_base.step")
+
+    broken, base = _read_returns(
+        ["ret_broken", "ret_unassigned", "ret_base"], sandbox_dir, tmp_path / "host"
+    )
+
+    assert broken.valid is None
+    assert broken.validity_reason is None
+    assert broken.error == "metadata unreadable: JSONDecodeError"
+    assert base.valid is True
+    assert base.step_path == tmp_path / "host" / "ret_base" / "output.step"
 
 
 def test_a_named_output_that_is_not_a_shape_is_reported_rather_than_kept(
@@ -571,10 +652,12 @@ result = ret_base
     )
 
     assert report.status is ExecutionStatus.VERIFIED
-    reported = {output.name: output.error for output in report.intermediate_returns}
-    assert reported["ret_base"] is None
+    reported = {output.name: output for output in report.intermediate_returns}
+    assert reported["ret_base"].error is None
     # Whatever the exporter said about an int, said back rather than raised.
-    assert reported["ret_count"]
+    assert reported["ret_count"].error
+    assert reported["ret_count"].valid is None
+    assert reported["ret_count"].validity_reason == "holds non-shape values: int"
     assert not (tmp_path / "intermediate_returns" / "ret_count.step").exists()
 
 
