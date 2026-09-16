@@ -16,6 +16,7 @@ Orthographic view directions:
 | Right | +Y | +Z | +X |
 | Left | -Y | +Z | -X |
 
+"Toward the viewer" points from the part to the person looking at that view. The frame is right-handed, so in the Front view +X is right, +Z is up and +Y points away from the viewer, into the page: the Front view shows the part's smallest-Y faces, and the Back view its largest-Y faces. Check your datum against this table rather than a habitual CAD frame.
 These mappings specify directions, not a shared origin.
 A DrawingView's local UV coordinates are not absolute model coordinates.
 

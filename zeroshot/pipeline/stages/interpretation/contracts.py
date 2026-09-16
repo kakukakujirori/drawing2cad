@@ -266,7 +266,7 @@ class DrawingInterpretation(Contract):
     )
     views: list[DrawingView] = Field(
         ...,
-        description="Registered input files with their existing names, roles and full-file Regions, plus newly identified crops. Pictorial inputs may be omitted. Add printed dimensions to the appropriate views.",
+        description="Registered input files with their existing names, roles and full-file Regions, plus newly identified crops. Add printed dimensions to the appropriate views.",
     )
     features: list[SemanticFeature] = Field(
         ...,

@@ -18,6 +18,7 @@ from openrouter.errors.badrequestresponse_error import (
 from pydantic import BaseModel, field_validator
 
 from tests.zeroshot.chat_models import ScriptedChatModel
+from tests.zeroshot.workflow.test_agent import _FlakyChatModel, _length_failure
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.middleware.agent_retry import (
     _rejected_arguments,
@@ -191,7 +192,33 @@ def test_text_without_a_tool_call_is_asked_again_rather_than_ending_the_stage() 
     assert report["generation_id"] == "gen-1"
     replayed, correction = model.received_messages[1][-2:]
     assert replayed.text == "The program is done."
-    assert "submit your answer as a tool call" in correction.text
+    assert "call Answer to submit your answer" in correction.text
+
+
+def test_a_rejected_tool_answer_is_asked_for_again_as_a_call() -> None:
+    """Asked for raw JSON, a model free to skip tools wrote its answer as text."""
+    model = ScriptedChatModel(
+        responses=(_answering("T1", "call_1"), _answering("ticket_initial", "call_2"))
+    )
+
+    _agent(model).invoke({"messages": []})
+
+    correction = str(model.received_messages[1][-1].content)
+    assert "call Answer again with corrected arguments" in correction
+    assert "raw JSON" not in correction
+
+
+def test_a_cut_off_tool_answer_is_asked_for_again_as_a_shorter_call() -> None:
+    model = _FlakyChatModel(
+        responses=(_answering("ticket_initial", "call_1"),),
+        errors=(_length_failure(),),
+    )
+
+    _agent(model).invoke({"messages": []})
+
+    correction = model.received_messages[0][-1].text
+    assert "Call Answer again with concise arguments" in correction
+    assert "Do not call tools" not in correction
 
 
 def test_a_model_that_never_answers_ends_the_stage_without_failing_the_run() -> None:
@@ -206,6 +233,7 @@ def test_a_model_that_never_answers_ends_the_stage_without_failing_the_run() -> 
     gave_up = result["messages"][-1].text
     assert "still could not be read" in gave_up
     assert "no tool call, no text" in gave_up
+    assert "call Answer with the corrected answer" in gave_up
 
 
 _STREAM_ERROR = "OpenRouter API returned an error during streaming: "
@@ -396,3 +424,60 @@ def test_a_large_rejected_answer_comes_back_as_its_shape() -> None:
 def test_a_plain_text_answer_is_not_shown_back_twice() -> None:
     """It is already replayed as the message it was."""
     assert _rejected_arguments(AIMessage(content="not JSON")) == ""
+
+
+class _Report(BaseModel):
+    findings: list[Answer]
+
+
+def test_a_large_rejected_answer_shows_the_entry_the_error_names() -> None:
+    """Shown only a shape, an auditor rewrote its whole report and broke new parts."""
+    model = ScriptedChatModel(
+        responses=(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "_Report",
+                        "args": {
+                            "findings": [
+                                *(
+                                    {"ticket_id": "ticket_" + "x" * 400}
+                                    for _ in range(4)
+                                ),
+                                {"ticket_id": "T9"},
+                            ]
+                        },
+                        "id": "call_1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "_Report",
+                        "args": {"findings": []},
+                        "id": "call_2",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+        )
+    )
+
+    create_agent(
+        role="auditor",
+        model=model,
+        tools=[],
+        output_schema=_Report,
+        response_format_strategy="tool",
+        max_turns=5,
+        announce_turns=False,
+        checkpointer=False,
+    ).invoke({"messages": []})
+
+    correction = str(model.received_messages[1][-1].content)
+    assert '{"ticket_id": "T9"}' in correction
+    assert '"<1 keys>"' in correction

@@ -1,9 +1,9 @@
 """Agent middleware for answer correction, backed by shared transport retries."""
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from functools import partial
-from typing import Any, override
+from typing import Any, NamedTuple, override
 
 from langchain.agents import AgentState as _AgentState
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
@@ -15,6 +15,7 @@ from langchain.agents.structured_output import (
 )
 from langchain_core.messages import AIMessage, HumanMessage
 from openai import LengthFinishReasonError
+from pydantic import ValidationError
 
 from .connection_retry import ModelConnectionRetry, report_model_retry
 
@@ -89,6 +90,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             # The retry request carries this response only in memory. Preserve
             # the rejected raw output so a contract failure is reproducible.
             details["failed_response"] = _extract_text_or_tool_args(error.ai_message)
+            details["generation_id"] = error.ai_message.response_metadata.get("id")
         if isinstance(error, UnansweredModelCall) and response is not None:
             details.update(_unanswered_diagnosis(response))
         report_model_retry(
@@ -109,15 +111,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         return request.override(
             messages=[
                 *request.messages,
-                HumanMessage(
-                    content=(
-                        "Your response reached the output-token limit and could not "
-                        "be parsed. Do not call tools. Return only concise raw JSON "
-                        "that matches the required schema, with no explanation, "
-                        "analysis, or Markdown outside it. Keep every string value "
-                        "short enough to complete the entire JSON object."
-                    )
-                ),
+                HumanMessage(content=_answer_wording(request).too_long),
             ]
         )
 
@@ -136,7 +130,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             messages=[
                 *request.messages,
                 *replay,
-                HumanMessage(content=_correction_text(error)),
+                HumanMessage(content=_correction_text(error, request)),
             ]
         )
 
@@ -152,7 +146,11 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 messages=[
                     *request.messages,
                     *(m for m in response.result if isinstance(m, AIMessage)),
-                    HumanMessage(content=_CALL_A_TOOL),
+                    HumanMessage(
+                        content=_CALL_A_TOOL.format(
+                            submit=_answer_wording(request).submit
+                        )
+                    ),
                 ]
             )
         return request.override(
@@ -186,7 +184,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 retrying = rejected < self.max_retries
                 self._report(current_request, rejected, error, retrying=retrying)
                 if not retrying:
-                    return _gave_up_answering(rejected + 1, error)
+                    return _gave_up_answering(current_request, rejected + 1, error)
                 rejected += 1
                 current_request = (
                     self._retry_length_limited_request(current_request)
@@ -206,7 +204,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     response=response,
                 )
                 if not retrying:
-                    return _gave_up_answering(rejected + 1, unanswered)
+                    return _gave_up_answering(current_request, rejected + 1, unanswered)
                 rejected += 1
                 current_request = (
                     self._retry_length_limited_request(current_request)
@@ -234,7 +232,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 retrying = rejected < self.max_retries
                 self._report(current_request, rejected, error, retrying=retrying)
                 if not retrying:
-                    return _gave_up_answering(rejected + 1, error)
+                    return _gave_up_answering(current_request, rejected + 1, error)
                 rejected += 1
                 current_request = (
                     self._retry_length_limited_request(current_request)
@@ -254,7 +252,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     response=response,
                 )
                 if not retrying:
-                    return _gave_up_answering(rejected + 1, unanswered)
+                    return _gave_up_answering(current_request, rejected + 1, unanswered)
                 rejected += 1
                 current_request = (
                     self._retry_length_limited_request(current_request)
@@ -265,15 +263,59 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                 )
 
 
-_GAVE_UP = (
-    "After {attempts} attempts your answer still could not be read as the "
-    "required structured output. The last problem was: {error}. This stage is "
-    "now unanswered; if you are asked again, answer with the corrected JSON "
-    "and nothing else."
+class _AnswerWording(NamedTuple):
+    """How corrections ask for an answer, in the channel the strategy parses."""
+
+    correct: str
+    too_long: str
+    asked_again: str
+    submit: str
+
+
+_JSON_WORDING = _AnswerWording(
+    correct=(
+        "return corrected raw JSON that matches the required schema, with no "
+        "explanation or Markdown outside it"
+    ),
+    too_long=(
+        "Your response reached the output-token limit and could not be parsed. "
+        "Do not call tools. Return only concise raw JSON that matches the "
+        "required schema, with no explanation, analysis, or Markdown outside "
+        "it. Keep every string value short enough to complete the entire JSON "
+        "object."
+    ),
+    asked_again="answer with the corrected JSON and nothing else",
+    submit="return your answer as raw JSON",
 )
 
 
-def _gave_up_answering(attempts: int, error: Exception) -> ModelResponse[Any]:
+def _answer_wording(request: ModelRequest[None]) -> _AnswerWording:
+    """Under ToolStrategy the answer is a tool call; asking for JSON gets text."""
+    if not isinstance(request.response_format, ToolStrategy):
+        return _JSON_WORDING
+    tool = " or ".join(spec.name for spec in request.response_format.schema_specs)
+    return _AnswerWording(
+        correct=f"call {tool} again with corrected arguments",
+        too_long=(
+            "Your answer reached the output-token limit and was cut off. Call "
+            f"{tool} again with concise arguments, keeping every string value "
+            "short enough to complete the call."
+        ),
+        asked_again=f"call {tool} with the corrected answer and nothing else",
+        submit=f"call {tool} to submit your answer",
+    )
+
+
+_GAVE_UP = (
+    "After {attempts} attempts your answer still could not be read as the "
+    "required structured output. The last problem was: {error}. This stage is "
+    "now unanswered; if you are asked again, {asked_again}."
+)
+
+
+def _gave_up_answering(
+    request: ModelRequest[None], attempts: int, error: Exception
+) -> ModelResponse[Any]:
     """End the turn with no answer, saying why.
 
     Plain text and no tool calls: this message is kept in the stage's
@@ -283,7 +325,11 @@ def _gave_up_answering(attempts: int, error: Exception) -> ModelResponse[Any]:
     return ModelResponse(
         result=[
             AIMessage(
-                content=_GAVE_UP.format(attempts=attempts, error=str(error)[:500])
+                content=_GAVE_UP.format(
+                    attempts=attempts,
+                    error=str(error)[:500],
+                    asked_again=_answer_wording(request).asked_again,
+                )
             )
         ],
         structured_response=None,
@@ -294,8 +340,7 @@ _UNANSWERED = "the model returned no tool call, no text and no structured output
 _TEXT_WITHOUT_CALL = "the model returned text without a tool call"
 _CALL_A_TOOL = (
     "Your last turn was text without a tool call, so nothing ran and no answer "
-    "was submitted. Call a tool to keep working, or submit your answer as a "
-    "tool call."
+    "was submitted. Call a tool to keep working, or {submit}."
 )
 _THOUGHT_TOO_LONG = (
     "Your last turn spent its whole output budget on thinking and came back "
@@ -401,7 +446,7 @@ def _unanswered_diagnosis(response: ModelResponse[Any]) -> dict[str, object]:
     }
 
 
-def _correction_text(error: StructuredOutputError) -> str:
+def _correction_text(error: StructuredOutputError, request: ModelRequest[None]) -> str:
     """Tell the model what was wrong with its answer, in terms it can act on."""
     if isinstance(error, MultipleStructuredOutputsError):
         return (
@@ -414,11 +459,10 @@ def _correction_text(error: StructuredOutputError) -> str:
             f"Your previous response could not be parsed as the required "
             f"{error.tool_name} structured output. Validation error: "
             f"{error.source}."
-            + _rejected_arguments(error.ai_message)
+            + _rejected_arguments(error.ai_message, error.source)
             + " You may continue using tools if you need more "
-            "information. When you are ready to answer, return corrected raw "
-            "JSON that matches the required schema, with no explanation or "
-            "Markdown outside it."
+            "information. When you are ready to answer, "
+            f"{_answer_wording(request).correct}."
         )
     return f"Your previous response was rejected: {error}. Answer again."
 
@@ -429,7 +473,7 @@ def _correction_text(error: StructuredOutputError) -> str:
 _REJECTED_BUDGET = 1200
 
 
-def _rejected_arguments(message: AIMessage) -> str:
+def _rejected_arguments(message: AIMessage, source: BaseException | None = None) -> str:
     """The answer the model sent, when the model cannot otherwise see it.
 
     A tool-call answer is never replayed as a message -- a tool call with no
@@ -439,9 +483,11 @@ def _rejected_arguments(message: AIMessage) -> str:
     it, and nothing in the exchange could have told it which of the three it
     had filled.
 
-    Large arguments come back as a shape rather than a value. Which member was
-    wrong is what a rejected answer has to show; a whole hypothesis restated is
-    the same information at fifty times the price.
+    Large arguments come back as a shape, keeping in full only the entries the
+    error names: which member was wrong is what a rejected answer has to show,
+    and a whole report restated is the same information at fifty times the
+    price -- one auditor, shown a shape alone, rewrote its report from memory
+    and broke a different part of it each time.
     """
     if not message.tool_calls:
         return ""
@@ -451,18 +497,37 @@ def _rejected_arguments(message: AIMessage) -> str:
 
     rendered = json.dumps(arguments, ensure_ascii=False, default=str)
     if len(rendered) > _REJECTED_BUDGET:
+        cited = _cited_entries(source)
         rendered = json.dumps(
-            {key: _outline(value) for key, value in arguments.items()},
+            {
+                key: _outline(value, {index for name, index in cited if name == key})
+                for key, value in arguments.items()
+            },
             ensure_ascii=False,
             default=str,
         )
     return f" You sent: {rendered}."
 
 
-def _outline(value: Any) -> Any:
-    """One member of a rejected answer, small enough to show alongside the rest."""
+def _cited_entries(source: BaseException | None) -> set[tuple[str, int]]:
+    """The list entries the validation error names, such as ("findings", 4)."""
+    cause = source.__cause__ if source is not None else None
+    if not isinstance(cause, ValidationError):
+        return set()
+    return {
+        (str(loc[0]), loc[1])
+        for error in cause.errors()
+        if len(loc := error["loc"]) > 1 and isinstance(loc[1], int)
+    }
+
+
+def _outline(value: Any, shown: Collection[int] = ()) -> Any:
+    """One member of a rejected answer, keeping in full the entries the error names."""
     if isinstance(value, str) and len(value) > 80:
         return f"<{len(value)} characters>"
+    if isinstance(value, list) and shown:
+        # The model rewrote whole reports from memory when it could not see the entry.
+        return [item if i in shown else _outline(item) for i, item in enumerate(value)]
     if isinstance(value, list):
         return f"<{len(value)} entries>" if value else []
     if isinstance(value, dict):
