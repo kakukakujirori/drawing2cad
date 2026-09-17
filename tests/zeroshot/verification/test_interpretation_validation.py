@@ -154,16 +154,34 @@ def test_full_page_and_separate_files_use_referenced_regions_and_own_measurement
     )
 
 
-def test_uv_within_one_pixel_is_replaced_by_calculated_coordinates(
+def test_submitted_scale_and_uv_are_replaced_by_calculated_values(
     tmp_path: Path,
 ) -> None:
     data = raster_case(tmp_path).model_dump()
-    data["features"][0]["evidence"][0]["box_uv"] = (56.05, 38.85, 64.25, 45.55)
+    data["views"][0]["scale"] = 0.25
+    data["features"][0]["evidence"][0]["box_uv"] = (0, 0, 1, 1)
     accepted, _ = validate_interpretation(
         DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
     )
+    assert accepted.views[0].scale == pytest.approx(0.1)
     assert accepted.features[0].evidence[0].box_uv == pytest.approx(
         (56, 38.9, 64.2, 45.6)
+    )
+
+
+def test_a_corrected_measurement_recalibrates_an_enriched_file(tmp_path: Path) -> None:
+    accepted, _ = validate_interpretation(
+        raster_case(tmp_path), workdir=SandboxWorkdir(tmp_path)
+    )
+    data = accepted.model_dump()
+    for dimension in data["views"][0]["dimensions"]:
+        dimension["measured_length"] *= 2
+    revised, _ = validate_interpretation(
+        DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
+    )
+    assert revised.views[0].scale == pytest.approx(0.05)
+    assert revised.features[0].evidence[0].box_uv == pytest.approx(
+        (28, 19.45, 32.1, 22.8)
     )
 
 
@@ -180,11 +198,13 @@ def test_unconfirmed_calibration_does_not_publish_scale_or_uv(
     assert accepted.features[0].evidence[0].box_uv is None
     assert accepted.views[0].image_size == (1200, 1400)
     data = original.model_dump()
+    data["views"][0]["scale"] = 0.1
     data["features"][0]["evidence"][0]["box_uv"] = (56, 38.9, 64.2, 45.6)
-    with pytest.raises(ValueError):
-        validate_interpretation(
-            DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
-        )
+    stale, _ = validate_interpretation(
+        DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
+    )
+    assert stale.views[0].scale is None
+    assert stale.features[0].evidence[0].box_uv is None
 
 
 def test_calibration_ignores_angles_unreadable_zero_and_unmeasured_figures(
@@ -214,19 +234,13 @@ def test_calibration_ignores_angles_unreadable_zero_and_unmeasured_figures(
     assert len(diagnostics["view_front"]["measurements"]) == 3
 
 
-@pytest.mark.parametrize(
-    "defect", ["image_size", "scale", "uv", "pixel_bounds", "uv_only"]
-)
+@pytest.mark.parametrize("defect", ["image_size", "pixel_bounds", "uv_only"])
 def test_raster_rejects_inconsistent_metadata_and_regions(
     tmp_path: Path, defect: str
 ) -> None:
     data = raster_case(tmp_path).model_dump()
     if defect == "image_size":
         data["views"][0]["image_size"] = (1201, 1400)
-    elif defect == "scale":
-        data["views"][0]["scale"] = 0.25
-    elif defect == "uv":
-        data["features"][0]["evidence"][0]["box_uv"] = (0, 0, 1, 1)
     elif defect == "pixel_bounds":
         data["features"][0]["evidence"][0]["box_px"] = (0, 0, 1201, 1400)
     else:

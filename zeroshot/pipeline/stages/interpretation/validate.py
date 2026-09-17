@@ -37,27 +37,16 @@ def _region(
         raise ValueError(f"{subject}: region exceeds referenced file bounds {size}")
 
     if not dxf:
-        expected = None
+        # Derived from box_px and the current scale; a submitted value may be stale.
+        uv = None
         if scale is not None:
             x0, y0, x1, y1 = px
-            expected = (
+            uv = (
                 x0 * scale,
                 (size[1] - y1) * scale,
                 x1 * scale,
                 (size[1] - y0) * scale,
             )
-        if uv is not None:
-            if expected is None:
-                raise ValueError(
-                    f"{subject}: cannot validate box_uv without scale consensus"
-                )
-            # Allow one source pixel of rounding, then store the exact conversion.
-            if any(
-                not math.isclose(a, b, rel_tol=0, abs_tol=scale)
-                for a, b in zip(uv, expected)
-            ):
-                raise ValueError(f"{subject}: box_uv disagrees with box_px")
-        uv = expected
     return {**region, "box_uv": uv}
 
 
@@ -70,8 +59,9 @@ def validate_interpretation(
     """Validate and enrich without mutating model output or the input files.
 
     Raster submissions normally leave image_size, scale and box_uv null.
-    Already enriched values are accepted only if they still agree with the file
-    and measurements. No consensus (including one measurement) leaves scale/UV
+    Scale and box_uv are recalculated on every call, since a measurement fix
+    changes them. A stored image_size must still match its file, which catches
+    a resized sheet. No consensus (including one measurement) leaves scale/UV
     null; return diagnostics to the interpreter instead of guessing a scale.
 
     Native DXF uses normalized, sheet-relative UV in mm, never preview pixels.
@@ -159,14 +149,8 @@ def validate_interpretation(
                     and dim.measured_length is not None
                 ]
             )
+            # Recalculated on every write; a submitted scale is ignored.
             scale = report["scale"] if report["status"] == "ok" else None
-            if view.scale is not None and (
-                scale is None
-                or not math.isclose(view.scale, scale, rel_tol=1e-9, abs_tol=0)
-            ):
-                raise ValueError(
-                    f"{view.name}: scale disagrees with dimension calibration"
-                )
             reports[view.name] = report
             output.update(image_size=size, scale=scale)
         contexts[view.name] = (size, scale, dxf)
