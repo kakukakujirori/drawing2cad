@@ -542,7 +542,10 @@ def test_agent_returns_invalid_structured_output_to_the_model_for_correction() -
 
     retry_messages = model.received_messages[1]
     assert retry_messages[-2].text == invalid_answer
-    assert "validation error" in retry_messages[-1].text.lower()
+    assert (
+        "Validation error: $.proposal: Input should be a valid list."
+        in retry_messages[-1].text
+    )
     assert result["structured_response"] == ExampleProposal(
         proposal=["a boss", "a through hole"], rationale="both are turned"
     )

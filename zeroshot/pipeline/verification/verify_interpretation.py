@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from langchain_core.messages.content import ContentBlock, create_text_block
+from pydantic import ValidationError
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.interpretation.contracts import (
@@ -22,6 +23,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 )
 from zeroshot.pipeline.stages.interpretation.validate import validate_interpretation
 from zeroshot.pipeline.verification.attempts import AttemptStore
+from zeroshot.pipeline.verification.validation_errors import file_errors
 
 
 @dataclass(frozen=True)
@@ -98,7 +100,7 @@ class InterpretationVerifier:
         digest = sha256(payload)
         try:
             data = json.loads(payload)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             return digest.hexdigest()
         views = data.get("views", []) if isinstance(data, dict) else []
         if not isinstance(views, list):
@@ -125,6 +127,7 @@ class InterpretationVerifier:
         validated_interpretation = None
         reports: dict[str, dict[str, Any]] = {}
         errors: list[str] = []
+        payload = b""
         try:
             if self.source_path.is_symlink():
                 raise ValueError(f"{self.source_filename} must not be a symlink")
@@ -173,6 +176,8 @@ class InterpretationVerifier:
                 replacement = Path(temporary) / self.source_filename
                 replacement.write_text(enriched, encoding="utf-8")
                 replacement.replace(self.source_path)
+        except ValidationError as error:
+            errors.extend(file_errors(error, self.source_filename, payload))
         except Exception as error:  # noqa: BLE001 - return submission errors to the agent
             errors.append(f"{type(error).__name__}: {error}")
         (attempt_dir / "_interpretation_validation_log.json").write_text(

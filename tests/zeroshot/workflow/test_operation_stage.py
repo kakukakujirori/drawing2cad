@@ -1,5 +1,6 @@
 """The plan lives in the workspace file; the answer carries tickets alone."""
 
+import json
 from functools import partial
 
 from langchain_core.tools import tool
@@ -17,6 +18,7 @@ from zeroshot.pipeline.stages.operations.stage import create_operation_stage
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification.attempts import AttemptStore
+from zeroshot.pipeline.verification.verify_operations import OperationPlanVerifier
 from zeroshot.pipeline.workflow.components.agent import create_agent
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
@@ -118,6 +120,25 @@ def test_an_invalid_plan_is_refused_until_the_file_validates(tmp_path):
     assert any("sem_absent" in message.text for message in messages)
     assert any("not ready to submit" in message.text for message in messages)
     assert "OperationPlan JSON schema" in model.received_messages[0][-1].text
+
+
+def test_a_schema_error_points_at_its_key_in_the_plan_file(tmp_path):
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    verifier = OperationPlanVerifier(workdir, AttemptStore(workdir, lambda: 0))
+    verifier.reset(None, interpretation("a plate"))
+    data = _plan().model_dump(mode="json")
+    data["proposal"][0]["revision_note"] = "x"
+    text = json.dumps(data, indent=2)
+    verifier.source_path.write_text(text)
+    error = verifier.feedback()[0]["text"].splitlines()[-1]
+    position, rest = error.split(" ", 1)
+    _, line, column = position.split(":")
+    assert text.splitlines()[int(line) - 1][int(column) - 1 :].startswith(
+        '"revision_note"'
+    )
+    assert (
+        rest == "$.proposal[0].revision_note (op_base): Extra inputs are not permitted"
+    )
 
 
 def test_an_unassigned_stage_answers_nothing_and_writes_no_plan(tmp_path):

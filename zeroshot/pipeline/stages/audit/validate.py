@@ -13,6 +13,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import Operation
+from zeroshot.pipeline.stages.resolve_refs import close_names
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus
 from zeroshot.pipeline.verification.check_program import program_output_names
@@ -153,9 +154,11 @@ def _missing_reference_errors(
             reference.name is not None
             and reference.name not in known_members[reference.stage]
         ):
+            maybe = close_names(reference.name, known_members[reference.stage])
             errors.append(
                 f"{reference.stage} member {reference.name!r} does not exist "
                 "in the audited snapshot"
+                + (f". Maybe: {', '.join(maybe)}?" if maybe else "")
             )
     return errors
 

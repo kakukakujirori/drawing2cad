@@ -480,4 +480,8 @@ def test_a_large_rejected_answer_shows_the_entry_the_error_names() -> None:
 
     correction = str(model.received_messages[1][-1].content)
     assert '{"ticket_id": "T9"}' in correction
+    assert (
+        "Validation error: $.findings[4].ticket_id: "
+        "ticket_id must be a ticket_... identifier." in correction
+    )
     assert '"<1 keys>"' in correction

@@ -6,6 +6,7 @@ import json
 from pathlib import Path, PurePosixPath
 
 from langchain_core.messages.content import ContentBlock, create_text_block
+from pydantic import ValidationError
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
@@ -13,6 +14,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretat
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.operations.validate import validate_operations
 from zeroshot.pipeline.verification.attempts import AttemptStore
+from zeroshot.pipeline.verification.validation_errors import file_errors
 
 
 class OperationPlanVerifier:
@@ -91,6 +93,10 @@ class OperationPlanVerifier:
             plan = OperationPlan.model_validate_json(contents)
             validate_operations(plan, self._interpretation)
             self._accepted = plan
+        except ValidationError as invalid:
+            error = "\n".join(
+                file_errors(invalid, self.source_filename, contents or b"")
+            )
         except Exception as invalid:  # noqa: BLE001 - return errors to the agent
             error = f"{type(invalid).__name__}: {invalid}"
         (attempt_dir / "_operations_validation_log.json").write_text(

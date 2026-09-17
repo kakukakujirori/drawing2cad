@@ -1,7 +1,10 @@
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
-from zeroshot.pipeline.stages.resolve_refs import unresolved_references
+from zeroshot.pipeline.stages.resolve_refs import (
+    reference_suggestions,
+    unresolved_references,
+)
 
 
 def validate_operations(
@@ -43,13 +46,13 @@ def _operation_plan_errors(
         )
 
     for operation in sorted(plan.proposal, key=lambda item: item.name):
-        if unresolved := unresolved_references(operation.detail, interpretation):
-            named = ", ".join(unresolved)
+        for address in dict.fromkeys(
+            unresolved_references(operation.detail, interpretation)
+        ):
+            maybe = reference_suggestions(address, interpretation)
             errors.append(
-                f"{operation.name} refers to {named}, which names nothing the "
-                "round holds. Cite a feature parameter as sem_main_bore.radius "
-                "or a printed figure as dim_bore_diameter.nominal_value. "
-                "Use the parameter names recorded in the interpretation."
+                f"{operation.name}: unknown reference {address}."
+                + (f" Maybe: {', '.join(maybe)}?" if maybe else "")
             )
 
     return errors

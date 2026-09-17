@@ -17,6 +17,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from openai import LengthFinishReasonError
 from pydantic import ValidationError
 
+from zeroshot.pipeline.verification.validation_errors import answer_errors
+
 from .connection_retry import ModelConnectionRetry, report_model_retry
 
 
@@ -457,13 +459,35 @@ def _correction_text(error: StructuredOutputError, request: ModelRequest[None]) 
     if isinstance(error, StructuredOutputValidationError):
         return (
             f"Your previous response was not a valid {error.tool_name} "
-            f"structured output. Validation error: {error.source}."
+            f"structured output. Validation error: {_validation_problem(error)}."
             + _rejected_arguments(error.ai_message, error.tool_name, error.source)
             + " You may continue using tools if you need more "
             "information. When you are ready to answer, "
             f"{_answer_wording(request).correct}."
         )
     return f"Your previous response was rejected: {error}. Answer again."
+
+
+def _validation_problem(error: StructuredOutputValidationError) -> str:
+    """Pydantic errors by JSON path; any other rejection as it was raised."""
+    cause = error.source.__cause__
+    answer = _call_arguments(error.ai_message, error.tool_name)
+    if answer is None:
+        try:
+            answer = json.loads(error.ai_message.text)
+        except ValueError:
+            pass
+    if not isinstance(cause, ValidationError) or answer is None:
+        return str(error.source)
+    return "\n".join(answer_errors(cause, answer))
+
+
+def _call_arguments(message: AIMessage, tool_name: str) -> object:
+    """The arguments of the call that carried the answer, if it came as one."""
+    return next(
+        (call["args"] for call in message.tool_calls if call["name"] == tool_name),
+        None,
+    )
 
 
 # What a rejected answer may spend on being shown back to its author. A
@@ -490,10 +514,7 @@ def _rejected_arguments(
     price -- one auditor, shown a shape alone, rewrote its report from memory
     and broke a different part of it each time.
     """
-    arguments = next(
-        (call["args"] for call in message.tool_calls if call["name"] == tool_name),
-        None,
-    )
+    arguments = _call_arguments(message, tool_name)
     if not isinstance(arguments, dict):
         return ""
 

@@ -119,6 +119,13 @@ def test_missing_members_can_be_added_directly_without_inventing_a_chain(
         validate_audit_report(report(target=name), snapshot())
 
 
+def test_a_mistyped_member_suggests_a_close_existing_one() -> None:
+    with pytest.raises(
+        SubmissionValidationError, match=r"snapshot\. Maybe: sem_bore\?$"
+    ):
+        validate_audit_report(report(target="sem_bor"), snapshot())
+
+
 def test_dimension_can_trace_to_its_source_view() -> None:
     validate_audit_report(
         report(("interpretation", "dim_diameter", "interpretation", "view_front")),

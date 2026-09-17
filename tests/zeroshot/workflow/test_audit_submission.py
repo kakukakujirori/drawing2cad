@@ -74,7 +74,7 @@ def _answer(payload: dict[str, Any], strategy: str, call_id: str) -> AIMessage:
 @pytest.mark.parametrize(
     ("rejected", "problem"),
     [
-        ({"accepted": True, "findings": []}, "ticket_reviews\n  Field required"),
+        ({"accepted": True, "findings": []}, "$: field 'ticket_reviews' is required"),
         (_UNREVIEWED.model_dump(mode="json"), f"missing=['{_TICKET}']"),
         (
             _report(target=_ref("coding", "ret_hole")).model_dump(mode="json"),

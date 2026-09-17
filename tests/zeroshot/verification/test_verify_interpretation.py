@@ -177,11 +177,18 @@ def test_crop_edits_trigger_feedback_and_do_not_reuse_previous_acceptance(tmp_pa
     assert verifier.verify().attempt_id == "002"
 
 
+def test_json_too_deep_to_parse_is_rejected_not_raised(tmp_path):
+    verifier, _, seed = _case(tmp_path)
+    verifier.reset(seed)
+    verifier.source_path.write_text('{"views": ' + "[" * 10000 + "]" * 10000 + "}")
+    assert "Invalid JSON: recursion limit exceeded" in verifier.feedback()[0]["text"]
+
+
 def test_invalid_json_and_missing_original_page_are_rejected_and_recorded(tmp_path):
     verifier, candidate, seed = _case(tmp_path)
     verifier.reset(seed)
     verifier.source_path.write_text("{")
-    assert "Invalid JSON" in verifier.feedback()[0]["text"]
+    assert "interpretation.json:1:2 Invalid JSON" in verifier.feedback()[0]["text"]
     assert verifier.accepted_interpretation is None
     attempt = tmp_path / "attempts/round_000/interpretation/000"
     assert (attempt / "_interpretation_raw.json").read_text() == "{"
@@ -195,6 +202,20 @@ def test_invalid_json_and_missing_original_page_are_rejected_and_recorded(tmp_pa
     verifier.source_path.write_text(json.dumps(data))
     assert "Retain each original input file" in verifier.feedback()[0]["text"]
     assert not verifier.confirmed
+
+
+def test_a_schema_error_points_at_its_key_in_the_written_file(tmp_path):
+    verifier, candidate, _ = _case(tmp_path)
+    data = candidate.model_dump(mode="json")
+    data["features"][0]["center"] = [0, 0]
+    text = json.dumps(data, indent=2)
+    verifier.source_path.write_text(text)
+    (error,) = json.loads(verifier.feedback()[0]["text"].splitlines()[-1])["errors"]
+    position, rest = error.split(" ", 1)
+    _, line, column = position.split(":")
+    assert text.splitlines()[int(line) - 1][int(column) - 1 :].startswith('"center"')
+    name = candidate.features[0].name
+    assert rest == f"$.features[0].center ({name}): Extra inputs are not permitted"
 
 
 def test_a_pictorial_input_is_not_required_to_come_back_as_a_full_page(tmp_path):
