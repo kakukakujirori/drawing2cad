@@ -1,0 +1,49 @@
+# @package _global_
+
+# Baseline without staged reasoning: one coder reads the drawing and writes
+# CadQuery; audit findings go straight back to it. Budgets mirror `continued`:
+# the coder gets the 3 x 20 turns the reasoning stages share, audit keeps 20.
+defaults:
+  - /model: gemma4_ollama
+  - _self_
+
+workflow:
+  _target_: zeroshot.pipeline_single.graph.create_single_graph
+  _partial_: true
+
+  coding_agent_builder:
+    _target_: zeroshot.pipeline.workflow.create_agent
+    _partial_: true
+    role: coder
+    model: ${model}
+
+    response_format_strategy: ${response_format_strategy}
+    max_turns: 60
+    announce_turns: true
+    reset_turns_when_reentrant: true
+    model_retries: 5
+    checkpointer: false
+
+  audit_agent_builder:
+    _target_: zeroshot.pipeline.workflow.create_agent
+    _partial_: true
+    role: output_auditor
+    model: ${model}
+
+    response_format_strategy: ${response_format_strategy}
+    max_turns: 20
+    announce_turns: true
+    reset_turns_when_reentrant: true
+    model_retries: 5
+    checkpointer: false
+
+  # The coder's transcript is compacted before audit, as `continued` does at
+  # each handover, so round 1 starts from notes rather than 60 raw turns.
+  compact_between_stages: ${model}
+
+  # The staged coder draws the views the interpretation names; with no
+  # interpretation, draw the three views every sample sheet carries.
+  projection_views: [front, top, right]
+
+  max_audit_reject_count: 1
+  max_stage_validation_retries: 3

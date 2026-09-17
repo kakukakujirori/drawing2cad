@@ -32,3 +32,25 @@ Evaluate:
 python -m zeroshot.evaluation.aggregate_run \
     --run-dir outputs/gpt5.6_luna
 ```
+
+## Single-agent baseline
+
+Coder + Auditor construction:
+
+```bash
+# gpt5.6-luna
+python -m zeroshot.run_pipeline --multirun \
+    model=gpt5.6_luna_codex \
+    artifact_root=outputs/gpt5.6_luna_single \
+    on_existing=retry \
+    workflow=single \
+    sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
+
+# glm5.3-flash
+python -m zeroshot.run_pipeline --multirun \
+    model=glm5.3_flash_openrouter \
+    artifact_root=outputs/glm5.3_flash_single \
+    on_existing=retry \
+    workflow=single \
+    sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
+```
