@@ -286,12 +286,13 @@ class AuditFinding(BaseModel):
         ),
     )
     related_ticket_ids: list[str] = Field(
-        default_factory=list,
+        ...,
         description=(
-            "Current defect tickets whose unresolved problems this finding covers. "
-            "Empty for a new defect. Never cite bootstrap work. Several tickets "
-            "may share a finding, and one ticket may require several findings. "
-            "These are review links, not causal backtrace edges."
+            "If this finding describes the remaining problem of a current defect ticket "
+            "you reviewed as unsolved, list that ticket's ID. Use [] for a new defect. "
+            "Never cite bootstrap work. Several tickets may share a finding, and "
+            "one ticket may require several findings. These are review links, "
+            "not causal backtrace edges."
         ),
     )
 
@@ -405,7 +406,7 @@ class AuditReport(BaseModel):
         description=("True only when no reasoning-stage output requires correction."),
     )
     ticket_reviews: list[TicketReview] = Field(
-        default_factory=list,
+        ...,
         description=(
             "Exactly one review per current defect ticket (subject AuditFinding). "
             "Initial bootstrap work is read but not reviewed, so round 0 uses []. "

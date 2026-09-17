@@ -62,6 +62,7 @@ def _finding() -> AuditFinding:
             instruction="Correct the interpreted base width.",
             proposed_names=[],
         ),
+        related_ticket_ids=[],
     )
 
 

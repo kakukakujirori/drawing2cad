@@ -423,7 +423,7 @@ def test_a_large_rejected_answer_comes_back_as_its_shape() -> None:
 
 def test_a_plain_text_answer_is_not_shown_back_twice() -> None:
     """It is already replayed as the message it was."""
-    assert _rejected_arguments(AIMessage(content="not JSON")) == ""
+    assert _rejected_arguments(AIMessage(content="not JSON"), "Answer") == ""
 
 
 class _Report(BaseModel):

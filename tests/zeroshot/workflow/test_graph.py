@@ -22,6 +22,7 @@ from tests.zeroshot.contracts import (
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest, register_view
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages.audit import stage as audit_stage_module
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
@@ -209,13 +210,14 @@ def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
 
 
 def _accepted_audit() -> AIMessage:
-    return _message(AuditReport(accepted=True, findings=[]))
+    return _message(AuditReport(accepted=True, ticket_reviews=[], findings=[]))
 
 
 def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
     return _message(
         AuditReport(
             accepted=False,
+            ticket_reviews=[],
             findings=[
                 AuditFinding(
                     name="find_missing_hole",
@@ -234,6 +236,7 @@ def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
                         instruction="Implement the missing hole.",
                         proposed_names=[],
                     ),
+                    related_ticket_ids=[],
                 )
             ],
         )
@@ -244,6 +247,7 @@ def _interpretation_rejected_audit() -> AIMessage:
     return _message(
         AuditReport(
             accepted=False,
+            ticket_reviews=[],
             findings=[
                 AuditFinding(
                     name="find_wrong_edge",
@@ -261,6 +265,7 @@ def _interpretation_rejected_audit() -> AIMessage:
                         instruction="Correct the front sheet's edge reading.",
                         proposed_names=[],
                     ),
+                    related_ticket_ids=[],
                 )
             ],
         )
@@ -271,6 +276,7 @@ def _invalid_audit() -> AIMessage:
     return _message(
         AuditReport(
             accepted=False,
+            ticket_reviews=[],
             findings=[
                 AuditFinding(
                     name="find_unknown_operation",
@@ -288,6 +294,7 @@ def _invalid_audit() -> AIMessage:
                         instruction="Correct the absent operation.",
                         proposed_names=[],
                     ),
+                    related_ticket_ids=[],
                 )
             ],
         )
@@ -311,6 +318,7 @@ def _graph(
     auditor: ScriptedChatModel,
     history_filename: str = "reconstruction.json",
     coder_options: dict[str, Any] | None = None,
+    auditor_options: dict[str, Any] | None = None,
     **overrides: Any,
 ):
     from PIL import Image
@@ -330,7 +338,9 @@ def _graph(
         ),
         operations_agent_builder=_agent("operation_planner", planner, **common),
         coding_agent_builder=_agent("coder", coder, **common | (coder_options or {})),
-        audit_agent_builder=_agent("output_auditor", auditor, **common),
+        audit_agent_builder=_agent(
+            "output_auditor", auditor, **common | (auditor_options or {})
+        ),
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable), default_timeout_s=10
         ),
@@ -805,10 +815,37 @@ def test_a_persisted_interpretation_checkpoint_can_restart_the_graph(monkeypatch
     assert persisted.snapshots[0].last_completed_stage is PipelineStage.CODING
 
 
-def test_an_invalid_audit_is_retried_against_the_same_snapshot(
+def test_an_invalid_audit_is_corrected_before_the_agent_answers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_verification(monkeypatch, _verified())
+    auditor = ScriptedChatModel(responses=(_invalid_audit(), _accepted_audit()))
+
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            interpreter=ScriptedChatModel(responses=_interpretation_script()),
+            planner=ScriptedChatModel(responses=_operations_script()),
+            coder=ScriptedChatModel(responses=(_coding_submission(),)),
+            auditor=auditor,
+            auditor_options={"model_retries": 1},
+            max_stage_validation_retries=0,
+        ).invoke({})
+
+    assert len(auditor.received_messages) == 2
+    correction = _last_instruction(auditor.received_messages[1])
+    assert "op_missing" in correction
+    assert "Audit Validation Error" not in correction
+    assert not any("op_missing" in m.text for m in result["audit_state"]["messages"])
+    assert result["audit_report"].accepted is True
+    assert result["stage_validation_error"] is None
+
+
+def test_the_graph_still_validates_an_audit_that_skipped_the_agent_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_verification(monkeypatch, _verified())
+    monkeypatch.setattr(audit_stage_module, "validate_audit_report", lambda *_: None)
     auditor = ScriptedChatModel(responses=(_invalid_audit(), _accepted_audit()))
 
     with SandboxWorkdir() as workdir:
@@ -886,7 +923,7 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(monkeypat
     assert "round 1" in _last_instruction(planner.received_messages[2])
 
 
-def test_revision_audit_retries_missing_reviews_without_opening_another_round(
+def test_revision_audit_corrects_missing_reviews_without_opening_another_round(
     monkeypatch,
 ):
     _stub_verification(monkeypatch, _verified("000"), _verified("001"))
@@ -920,13 +957,16 @@ def test_revision_audit_retries_missing_reviews_without_opening_another_round(
                 )
             ),
             auditor=auditor,
+            auditor_options={"model_retries": 1},
             max_audit_reject_count=2,
-            max_stage_validation_retries=1,
+            max_stage_validation_retries=0,
         ).invoke({})
 
+    # Round 0 accepts [] for bootstrap work; round 1 checks [] against its ticket.
     assert len(auditor.received_messages) == 3
-    assert _ROUND_ONE_TICKET in _last_instruction(auditor.received_messages[-1])
-    assert "ticket_reviews" in _last_instruction(auditor.received_messages[-1])
+    correction = _last_instruction(auditor.received_messages[-1])
+    assert f"missing=['{_ROUND_ONE_TICKET}']" in correction
+    assert "Audit Validation Error" not in correction
     assert len(result["reconstruction"].snapshots) == 2
     assert result["audit_report"] == audited
     assert result["stage_validation_error"] is None

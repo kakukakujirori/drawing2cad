@@ -377,24 +377,25 @@ def test_a_finding_requires_distinct_evidence_locators(
             evidence=evidence,
             backtrace=backtrace(),
             revision_request=request(),
+            related_ticket_ids=[],
         )
 
 
 def test_an_accepted_report_has_no_findings() -> None:
-    AuditReport(accepted=True, findings=[])
+    AuditReport(accepted=True, ticket_reviews=[], findings=[])
     with pytest.raises(ValidationError, match="accepted must be true"):
-        AuditReport(accepted=True, findings=[finding()])
+        AuditReport(accepted=True, ticket_reviews=[], findings=[finding()])
 
 
 def test_a_rejected_report_has_at_least_one_finding() -> None:
-    AuditReport(accepted=False, findings=[finding()])
+    AuditReport(accepted=False, ticket_reviews=[], findings=[finding()])
     with pytest.raises(ValidationError, match="accepted must be true"):
-        AuditReport(accepted=False, findings=[])
+        AuditReport(accepted=False, ticket_reviews=[], findings=[])
 
 
 def test_finding_names_are_unique_within_a_report() -> None:
     with pytest.raises(ValidationError, match="finding names must be unique"):
-        AuditReport(accepted=False, findings=[finding(), finding()])
+        AuditReport(accepted=False, ticket_reviews=[], findings=[finding(), finding()])
 
 
 def test_separate_findings_cannot_propose_the_same_identity() -> None:
@@ -410,12 +411,13 @@ def test_separate_findings_cannot_propose_the_same_identity() -> None:
         revision_request=request("rename", proposed_names=["sem_new"]),
     )
     with pytest.raises(ValidationError, match="unique across findings"):
-        AuditReport(accepted=False, findings=[first, second])
+        AuditReport(accepted=False, ticket_reviews=[], findings=[first, second])
 
 
 def test_separate_findings_can_propose_distinct_identities() -> None:
     AuditReport(
         accepted=False,
+        ticket_reviews=[],
         findings=[
             finding(
                 f"find_add_{name}",
@@ -453,17 +455,11 @@ def _object_schemas(node: object) -> list[dict]:
         TicketReview,
     ],
 )
-def test_audit_contracts_are_closed_and_only_legacy_lists_are_optional(
+def test_audit_contracts_are_closed_and_require_every_field(
     contract: type[BaseModel],
 ) -> None:
     for schema in _object_schemas(contract.model_json_schema()):
-        legacy_fields = {
-            "AuditFinding": {"related_ticket_ids"},
-            "AuditReport": {"ticket_reviews"},
-        }.get(schema.get("title"), set())
-        assert set(schema.get("required", [])) == (
-            set(schema.get("properties", {})) - legacy_fields
-        )
+        assert set(schema.get("required", [])) == set(schema.get("properties", {}))
         assert schema.get("additionalProperties") is False
 
 
@@ -567,15 +563,10 @@ def test_one_unsolved_ticket_can_require_several_current_findings() -> None:
     assert len(report.findings) == 2
 
 
-def test_legacy_finding_keeps_its_backtrace_and_revision_request() -> None:
-    original = finding()
-    payload = original.model_dump()
-    payload.pop("related_ticket_ids")
-    restored = AuditFinding.model_validate(payload)
-    assert restored == original
-    assert restored.related_ticket_ids == []
-    for field in ("backtrace", "revision_request"):
-        with pytest.raises(ValidationError, match=field):
-            AuditFinding.model_validate(
-                {key: value for key, value in payload.items() if key != field}
-            )
+def test_an_empty_review_list_must_still_be_given() -> None:
+    payload = finding().model_dump()
+    del payload["related_ticket_ids"]
+    with pytest.raises(ValidationError, match="related_ticket_ids\n  Field required"):
+        AuditFinding.model_validate(payload)
+    with pytest.raises(ValidationError, match="ticket_reviews\n  Field required"):
+        AuditReport.model_validate({"accepted": True, "findings": []})

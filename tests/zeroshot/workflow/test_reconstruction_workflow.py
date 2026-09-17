@@ -1,7 +1,5 @@
 """Cross-validation and persistence at the workflow boundary."""
 
-import json
-
 import pytest
 
 from tests.zeroshot.contracts import (
@@ -282,7 +280,9 @@ def test_audit_cannot_accept_without_a_verified_solid(status: ExecutionStatus) -
         status=status, source=_SOURCE, returncode=1
     )
     with pytest.raises(SubmissionValidationError, match="without a verified solid"):
-        validate_submission(AuditReport(accepted=True, findings=[]), snapshot)
+        validate_submission(
+            AuditReport(accepted=True, ticket_reviews=[], findings=[]), snapshot
+        )
 
     # A diagnostic finding remains valid for the same failing program.
     validate_submission(_report(target=_ref("coding", "ret_base")), snapshot)
@@ -363,7 +363,7 @@ def test_audit_new_names_only_reuse_their_own_split_or_merge_targets(
         instruction="Correct the operation identities.",
         proposed_names=proposed,
     )
-    report = AuditReport(accepted=False, findings=[finding])
+    report = AuditReport(accepted=False, ticket_reviews=[], findings=[finding])
     if collision:
         with pytest.raises(SubmissionValidationError, match="already exists"):
             validate_submission(report, _snapshot())
@@ -472,7 +472,11 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     second_finding = first_finding.model_copy(update={"name": "find_second_mismatch"})
     run = open_next_round(
         completed,
-        AuditReport(accepted=False, findings=[first_finding, second_finding]),
+        AuditReport(
+            accepted=False,
+            ticket_reviews=[],
+            findings=[first_finding, second_finding],
+        ),
     )
     current = run.snapshots[-1]
     original_ticket_ids = [ticket.ticket_id for ticket in current.open_tickets]
@@ -511,6 +515,7 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
         completed,
         AuditReport(
             accepted=False,
+            ticket_reviews=[],
             findings=[
                 _report(target=_ref("interpretation", "sem_feature_1")).findings[0]
             ],
@@ -648,7 +653,7 @@ def test_one_request_over_several_members_assigns_their_shared_stage() -> None:
             )
         }
     )
-    report = AuditReport(accepted=False, findings=[two_targets])
+    report = AuditReport(accepted=False, ticket_reviews=[], findings=[two_targets])
 
     run = open_next_round(_completed_run(), report)
 
@@ -721,7 +726,7 @@ def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
 def test_accepted_or_invalid_audit_does_not_open_a_round() -> None:
     run = _completed_run()
     original_json = run.model_dump_json()
-    accepted = AuditReport(accepted=True, findings=[])
+    accepted = AuditReport(accepted=True, ticket_reviews=[], findings=[])
     invalid = _report(_hop("coding", "ret_base", "operations", "op_hole"))
 
     with pytest.raises(ValueError, match="accepted audit"):
@@ -840,7 +845,8 @@ def test_current_findings_replace_old_tickets_and_choose_the_new_revision_root(
     second = first.model_copy(update={"name": "find_second_mismatch"})
     run = _completed_run(
         open_next_round(
-            _completed_run(), AuditReport(accepted=False, findings=[first, second])
+            _completed_run(),
+            AuditReport(accepted=False, ticket_reviews=[], findings=[first, second]),
         )
     )
     old_ids = [ticket.ticket_id for ticket in run.snapshots[-1].open_tickets]
@@ -880,38 +886,4 @@ def test_current_findings_replace_old_tickets_and_choose_the_new_revision_root(
     assert "ticket_reviews" not in current.model_dump()
     assert (
         ReconstructionHistory.model_validate_json(updated.model_dump_json()) == updated
-    )
-
-
-def test_legacy_ticket_history_loads_but_a_new_audit_must_review_it(tmp_path) -> None:
-    run = _completed_run(
-        open_next_round(_completed_run(), _report(target=_ref("coding", "ret_hole")))
-    )
-    payload = run.model_dump(mode="json")
-    for snapshot in payload["snapshots"]:
-        for ticket in snapshot["open_tickets"]:
-            ticket["subject"].pop("related_ticket_ids", None)
-    path = tmp_path / "reconstruction.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    restored = load_reconstruction(path)
-    assert restored == run
-    current = restored.snapshots[-1]
-    assert current.open_tickets[0].subject.related_ticket_ids == []
-    with pytest.raises(
-        SubmissionValidationError, match="missing=.*ticket_001_shape_mismatch"
-    ):
-        validate_submission(AuditReport(accepted=True, findings=[]), current)
-    validate_submission(
-        AuditReport(
-            accepted=True,
-            findings=[],
-            ticket_reviews=[
-                TicketReview(
-                    ticket_id=current.open_tickets[0].ticket_id,
-                    summary="The old defect is resolved.",
-                    solved=True,
-                )
-            ],
-        ),
-        current,
     )

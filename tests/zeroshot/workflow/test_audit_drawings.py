@@ -77,6 +77,7 @@ def report(
     root = backtrace[-1].cause if backtrace else ref("interpretation", target)
     return AuditReport(
         accepted=False,
+        ticket_reviews=[],
         findings=[
             AuditFinding(
                 name="find_bore",
@@ -89,6 +90,7 @@ def report(
                     instruction="Correct the bore.",
                     proposed_names=[add] if add else [],
                 ),
+                related_ticket_ids=[],
             )
         ],
     )

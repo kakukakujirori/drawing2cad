@@ -456,10 +456,9 @@ def _correction_text(error: StructuredOutputError, request: ModelRequest[None]) 
         )
     if isinstance(error, StructuredOutputValidationError):
         return (
-            f"Your previous response could not be parsed as the required "
-            f"{error.tool_name} structured output. Validation error: "
-            f"{error.source}."
-            + _rejected_arguments(error.ai_message, error.source)
+            f"Your previous response was not a valid {error.tool_name} "
+            f"structured output. Validation error: {error.source}."
+            + _rejected_arguments(error.ai_message, error.tool_name, error.source)
             + " You may continue using tools if you need more "
             "information. When you are ready to answer, "
             f"{_answer_wording(request).correct}."
@@ -473,7 +472,9 @@ def _correction_text(error: StructuredOutputError, request: ModelRequest[None]) 
 _REJECTED_BUDGET = 1200
 
 
-def _rejected_arguments(message: AIMessage, source: BaseException | None = None) -> str:
+def _rejected_arguments(
+    message: AIMessage, tool_name: str, source: BaseException | None = None
+) -> str:
     """The answer the model sent, when the model cannot otherwise see it.
 
     A tool-call answer is never replayed as a message -- a tool call with no
@@ -489,9 +490,10 @@ def _rejected_arguments(message: AIMessage, source: BaseException | None = None)
     price -- one auditor, shown a shape alone, rewrote its report from memory
     and broke a different part of it each time.
     """
-    if not message.tool_calls:
-        return ""
-    arguments = message.tool_calls[0].get("args")
+    arguments = next(
+        (call["args"] for call in message.tool_calls if call["name"] == tool_name),
+        None,
+    )
     if not isinstance(arguments, dict):
         return ""
 
