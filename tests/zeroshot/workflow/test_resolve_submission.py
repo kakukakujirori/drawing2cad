@@ -166,7 +166,6 @@ def test_an_operation_error_adds_close_addresses_but_accepts_a_null_one() -> Non
                 name="op_bore",
                 verb=OperationVerb.HOLE,
                 detail="Cut sem_bore.radus to sem_bore.depth.",
-                depends_on=[],
                 semantics=["sem_bore"],
             )
         ],
@@ -195,7 +194,6 @@ def test_whole_answers_are_copied_and_strenum_identity_survives() -> None:
                 name="op_bore",
                 verb=OperationVerb.HOLE,
                 detail="Cut sem_bore.radius at sem_bore.center.",
-                depends_on=[],
                 semantics=["sem_bore"],
             )
         ],

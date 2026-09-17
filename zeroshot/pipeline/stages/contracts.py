@@ -69,7 +69,7 @@ class ReconstructionSnapshot(BaseModel):
     operations: OperationPlan | None = Field(
         ...,
         description=(
-            "The complete operation DAG produced in this round, or null "
+            "The complete operation plan produced in this round, or null "
             "until this round's operations stage completes. Earlier plans "
             "remain available in preceding snapshots."
         ),

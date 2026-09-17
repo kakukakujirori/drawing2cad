@@ -42,26 +42,23 @@ def test_output_names_propagate_syntax_errors() -> None:
         program_output_names("ret_base = (\n")
 
 
-def _operation(name: str, *, depends_on: tuple[str, ...] = ()) -> Operation:
+def _operation(name: str) -> Operation:
     return Operation(
         name=name,
         verb=OperationVerb.EXTRUDE,
         detail=f"build {name}",
-        depends_on=list(depends_on),
         semantics=["sem_feature_1"],
     )
 
 
 def _plan(*operations: Operation) -> OperationPlan:
-    return OperationPlan(
-        proposal=list(operations), rationale="build in dependency order"
-    )
+    return OperationPlan(proposal=list(operations), rationale="build in list order")
 
 
 def test_accepts_one_module_level_result_for_every_planned_operation() -> None:
     plan = _plan(
         _operation("op_base"),
-        _operation("op_hole", depends_on=("op_base",)),
+        _operation("op_hole"),
     )
     source = """\
 part = object()
@@ -77,7 +74,7 @@ result = ret_hole
 
 def test_reports_missing_operations_in_a_stable_order_without_scheduling_them() -> None:
     plan = _plan(
-        _operation("op_a_hole", depends_on=("op_z_base",)),
+        _operation("op_a_hole"),
         _operation("op_z_base"),
     )
 

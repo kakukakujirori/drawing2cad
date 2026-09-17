@@ -38,7 +38,6 @@ def _operations() -> OperationPlan:
                 name="op_base",
                 verb=OperationVerb.EXTRUDE,
                 detail="Extrude the base body.",
-                depends_on=[],
                 semantics=["sem_feature_1"],
             )
         ],

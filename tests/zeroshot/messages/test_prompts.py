@@ -654,30 +654,21 @@ def test_coordinate_markdown_agrees_with_the_projection_contract() -> None:
 
 
 def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes() -> None:
-    """This test was the other way round while Phase 1 was measured: the DAG
-    format was held out of the prompt so that the measurement saw the
-    structured hypothesis and nothing else. The schema now carries it, so the
-    guard becomes its opposite -- the prompt must name the two fields the
-    contract will refuse a plan without."""
     guidelines = _guidelines("operations")
 
-    assert "`depends_on`" in guidelines
+    assert "build order" in guidelines
     assert "`semantics`" in guidelines
     assert "`verb`" in guidelines
     assert set(Operation.model_fields) == {
         "name",
         "verb",
         "detail",
-        "depends_on",
         "semantics",
     }
 
 
-def test_the_coder_is_told_to_follow_the_operation_dag() -> None:
-    guidelines = _guidelines("coding")
-
-    assert "`depends_on`" in guidelines
-    assert "JSON list order is not the build order" in guidelines
+def test_the_coder_is_told_to_build_in_list_order() -> None:
+    assert "Build the operations in list order" in _guidelines("coding")
 
 
 def test_downstream_prompts_use_interpreted_features_and_preserve_the_datum() -> None:

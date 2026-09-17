@@ -58,7 +58,6 @@ def _operations(*, semantics: list[str] | None = None) -> OperationPlan:
                 name="op_base",
                 verb=OperationVerb.EXTRUDE,
                 detail="Extrude the base.",
-                depends_on=[],
                 semantics=(semantics if semantics is not None else ["sem_feature_1"]),
             )
         ],
@@ -77,7 +76,6 @@ def _plan_for(
                 name="op_feature",
                 verb=OperationVerb.EXTRUDE,
                 detail=detail,
-                depends_on=[],
                 semantics=semantics,
             )
         ],

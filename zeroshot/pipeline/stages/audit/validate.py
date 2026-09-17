@@ -219,11 +219,13 @@ def _causal_hop_error(
         effect.stage is PipelineStage.OPERATIONS
         and cause.stage is PipelineStage.OPERATIONS
     ):
-        operation = operations_by_name[effect.name]
-        if cause.name not in operation.depends_on:
+        # Each operation changes what the earlier ones left, so any earlier
+        # operation can be the cause and a later one cannot.
+        order = list(operations_by_name)
+        if order.index(cause.name) >= order.index(effect.name):
             return (
-                f"operations hop {effect.name!r} -> {cause.name!r} is "
-                f"not supported by {effect.name}.depends_on"
+                f"operations hop {effect.name!r} -> {cause.name!r} must name "
+                f"an operation listed before {effect.name}"
             )
 
     elif (

@@ -1,14 +1,6 @@
-"""The planning stage's answer: what to build, and what each step needs first.
-
-A plan is a graph rather than a list because the order a model writes its steps
-in is a guess about sequencing that nothing can check, while a dependency it
-states is a claim that can be. The sequence the coder is given is derived from
-the graph here, by code, so a plan that is right cannot be spoiled by being
-written down in the wrong order.
-"""
+"""The planning stage's answer: the operations to build, listed in build order."""
 
 import re
-from collections.abc import Iterable
 from enum import StrEnum
 from typing import Self
 
@@ -63,14 +55,12 @@ class Operation(BaseModel):
         description=(
             "A name for this step, unique within the plan, beginning op_ and "
             "carrying on in lower_snake_case: op_base_plate, op_bore_through, "
-            "op_fillet_top_edges. The op_ marks it as a step, as sem_ marks a "
+            "op_fillet_top_edges. The op_ marks it as a step, as sem_ marks an "
             "interpreted feature, so that a step named after the feature it "
-            "builds still reads as the step. Name it for what it does rather "
-            "than for where it comes in the order, since the order is worked "
-            "out from the dependencies and the name is what every later stage "
-            "cites it by. Keep a step's name when you revise it, so that a "
-            "reference to it stays true, and give a step you add a new name of "
-            "its own rather than a number in a sequence."
+            "builds still reads as the step. Later stages cite a step by its "
+            "name, and a revision may insert or move steps, so name it for "
+            "what it does, not for its position. Keep a step's name when you "
+            "revise it, and give a step you add a new name of its own."
         ),
     )
     verb: OperationVerb = Field(
@@ -95,23 +85,11 @@ class Operation(BaseModel):
             "Write out only construction choices that the interpretation does not state."
         ),
     )
-    depends_on: list[str] = Field(
-        ...,
-        description=(
-            "The operations whose result this one consumes, by their names -- "
-            '["op_base_plate"]. Empty for an operation that starts from nothing. '
-            "This is what fixes the build order; the order you happen to list "
-            "operations in does not."
-        ),
-    )
     semantics: list[str] = Field(
         ...,
         description=(
             "The interpreted features this operation helps build, by their "
-            "stable sem_ names -- sem_main_bore, for example. Both operations "
-            "and features are named identities: `depends_on` holds op_ names "
-            "and `semantics` holds sem_ names. A "
-            "feature may take several operations, and an operation may serve "
+            "stable sem_ names -- sem_main_bore, for example. A feature may take several operations, and an operation may serve "
             "several features."
         ),
     )
@@ -123,29 +101,23 @@ class OperationPlan(BaseModel):
     proposal: list[Operation] = Field(
         ...,
         description=(
-            "Every operation the part takes. List them in whatever order you "
-            "reason in; `depends_on` is what decides the order they are built "
-            "in."
+            "Every operation the part takes, in build order. Each one changes "
+            "the previous operation's result, unless its `detail` says which "
+            "results it takes instead."
         ),
     )
     rationale: str = Field(
         ...,
         description=(
-            "Why this decomposition, and why the dependencies it states. "
+            "Why this decomposition and this order. "
             "Reasoning about the shape of the plan; measurements and positions "
             "belong to the operations themselves."
         ),
     )
 
     @model_validator(mode="after")
-    def require_a_resolvable_acyclic_plan(self) -> Self:
-        """Everything about the plan that can be checked without the drawing.
-
-        Whether the plan covers the hypothesis cannot be settled here -- the
-        features live in another answer this model never sees -- so that check
-        belongs to the graph. What is checkable here is that the graph is a
-        graph: names that exist, and no step that waits on itself.
-        """
+    def require_well_named_operations(self) -> Self:
+        """Checks that need no drawing; feature coverage belongs to the graph."""
         if not self.proposal:
             raise ValueError("proposal must hold at least one operation")
 
@@ -160,7 +132,6 @@ class OperationPlan(BaseModel):
                 "stage tells them apart"
             )
 
-        known = set(names)
         for operation in self.proposal:
             for semantic in operation.semantics:
                 _check_semantic_name(semantic)
@@ -176,36 +147,26 @@ class OperationPlan(BaseModel):
                     f"{operation.name} lists {', '.join(duplicated_semantics)} "
                     "more than once in semantics"
                 )
-            unknown = sorted(set(operation.depends_on) - known)
-            if unknown:
-                raise ValueError(
-                    f"{operation.name} depends on {', '.join(unknown)}, which "
-                    "no operation in this plan produces"
-                )
-            if operation.name in operation.depends_on:
-                raise ValueError(f"{operation.name} depends on itself")
-
-        cycle = _first_cycle(self.proposal)
-        if cycle:
-            raise ValueError(
-                "operations wait on each other and nothing can start: "
-                + " -> ".join(cycle)
-            )
         return self
 
     def members(self) -> dict[str, Member]:
         """Each operation, and the features and dimensions it cites.
 
+        The previous operation is compared too, since it is the implicit input.
         The pipeline annotates references with values, so compare the text as written.
         """
+        names = [None, *(operation.name for operation in self.proposal)]
         return {
             operation.name: Member(
-                operation.model_copy(
-                    update={"detail": without_annotations(operation.detail)}
+                (
+                    operation.model_copy(
+                        update={"detail": without_annotations(operation.detail)}
+                    ),
+                    previous,
                 ),
                 frozenset({*operation.semantics, *_CITED.findall(operation.detail)}),
             )
-            for operation in self.proposal
+            for operation, previous in zip(self.proposal, names, strict=False)
         }
 
 
@@ -242,56 +203,3 @@ def _check_semantic_name(name: str) -> None:
             "sem_ and carry on in lower_snake_case: sem_base_body, "
             "sem_main_bore."
         )
-
-
-def _first_cycle(operations: Iterable[Operation]) -> list[str]:
-    """Return one closed dependency cycle, or an empty list if none exists."""
-    needs = {operation.name: list(operation.depends_on) for operation in operations}
-    done: set[str] = set()
-    path: list[str] = []
-
-    def walk(name: str) -> list[str]:
-        if name in path:
-            return [*path[path.index(name) :], name]
-        if name in done:
-            return []
-        path.append(name)
-        for needed in needs.get(name, ()):
-            found = walk(needed)
-            if found:
-                return found
-        path.pop()
-        done.add(name)
-        return []
-
-    for name in needs:
-        found = walk(name)
-        if found:
-            return found
-    return []
-
-
-def linearise(plan: OperationPlan) -> list[Operation]:
-    """The plan as the single sequence the coder builds, dependencies first.
-
-    Depth-first rather than breadth-first so that an operation arrives directly
-    after the ones it consumes: a fillet lands beside the edge it rounds
-    instead of in a later band with every other detail. Where the graph leaves
-    two operations free to go in either order, the order they were written in
-    decides, so the same plan always linearises the same way.
-    """
-    by_name = {operation.name: operation for operation in plan.proposal}
-    order: list[Operation] = []
-    placed: set[str] = set()
-
-    def place(operation: Operation) -> None:
-        if operation.name in placed:
-            return
-        for needed in operation.depends_on:
-            place(by_name[needed])
-        placed.add(operation.name)
-        order.append(operation)
-
-    for operation in plan.proposal:
-        place(operation)
-    return order

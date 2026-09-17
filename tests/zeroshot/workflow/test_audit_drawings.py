@@ -48,7 +48,6 @@ def snapshot() -> ReconstructionSnapshot:
                     name="op_bore",
                     verb="hole",
                     detail="Cut the bore.",
-                    depends_on=[],
                     semantics=["sem_bore"],
                 )
             ],

@@ -62,6 +62,17 @@ def test_an_operation_renamed_outside_the_tickets_needs_a_reason() -> None:
     )
 
 
+def test_reordering_operations_outside_the_tickets_needs_a_reason() -> None:
+    run = _revision("interpretation", "sem_feature_1")
+    run = _answer(run, "interpretation", interpretation("the base", "the hole"))
+    reordered = _operations()
+    reordered.proposal.reverse()
+
+    with pytest.raises(SubmissionValidationError, match=r"op_hole \(changed\)"):
+        _answer(run, "operations", reordered)
+    _answer(run, "operations", reordered, unticketed_changes={"op_hole": "Moved."})
+
+
 def test_a_reason_for_a_member_that_did_not_change_is_refused() -> None:
     run = _revision("interpretation", "sem_feature_1")
     run = _answer(run, "interpretation", interpretation("the base", "the hole"))

@@ -155,7 +155,6 @@ def _plan(*, builds: Sequence[int | str] = (1,), detail: str = "extrude"):
                 name="op_step1",
                 verb=OperationVerb.EXTRUDE,
                 detail=detail,
-                depends_on=[],
                 semantics=[
                     f"sem_feature_{value}" if isinstance(value, int) else value
                     for value in builds

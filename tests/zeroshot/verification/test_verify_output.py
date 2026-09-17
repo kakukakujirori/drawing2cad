@@ -1151,7 +1151,6 @@ def test_a_program_that_builds_but_misses_its_operations_is_not_confirmed(
                 name="op_base",
                 verb=OperationVerb.EXTRUDE,
                 detail="build the base",
-                depends_on=[],
                 semantics=["sem_base"],
             )
         ],

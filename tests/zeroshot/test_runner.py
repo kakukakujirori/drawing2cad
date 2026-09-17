@@ -150,7 +150,6 @@ _A_PLAN = OperationPlan(
             name="op_base",
             verb=OperationVerb.EXTRUDE,
             detail="extrude it",
-            depends_on=[],
             semantics=["sem_feature_1"],
         )
     ],

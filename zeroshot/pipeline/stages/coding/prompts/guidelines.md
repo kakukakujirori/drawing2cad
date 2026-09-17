@@ -7,7 +7,7 @@ result = ret_bore_through
 ```
 
 Requirements:
-- The plan is a DAG: build each operation from the `ret_` results named by its `depends_on`, implementing dependencies first. The JSON list order is not the build order.
+- Build the operations in list order. Each `ret_` continues from the previous `ret_` unless its `detail` names the results it takes, or takes none.
 - Store the final completed CadQuery solid in `result`. Normally `result` is the final operation's `ret_` variable, not a fresh reconstruction that bypasses the planned operations.
 - The script must be self-contained and must not load the input drawing or other external files at runtime.
 - The generated geometry must be valid and exportable to STEP format.

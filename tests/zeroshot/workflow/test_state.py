@@ -102,7 +102,6 @@ _A_PLAN = OperationPlan(
             name="op_base",
             verb=OperationVerb.EXTRUDE,
             detail="Extrude the outline 25 mm along +z",
-            depends_on=[],
             semantics=["sem_feature_1"],
         )
     ],

@@ -1,10 +1,4 @@
-"""The plan as a graph: what it refuses, and what the order is derived from.
-
-The point of taking a graph instead of a list is that a dependency can be
-checked and an implied sequence cannot. These tests are that check -- and the
-one that matters most is the last: the same plan must always come out in the
-same order, because the coder builds what comes out, not what was written.
-"""
+"""What the operation plan contract refuses."""
 
 from collections.abc import Sequence
 
@@ -15,14 +9,12 @@ from zeroshot.pipeline.stages.operations.contracts import (
     Operation,
     OperationPlan,
     OperationVerb,
-    linearise,
 )
 
 
 def op(
     name: str,
     *,
-    needs: Sequence[str] = (),
     builds: Sequence[int | str] = (),
     detail: str = "",
     verb: OperationVerb = OperationVerb.EXTRUDE,
@@ -31,7 +23,6 @@ def op(
         name=name,
         verb=verb,
         detail=detail or f"operation {name}",
-        depends_on=list(needs),
         semantics=[
             f"sem_feature_{held}" if isinstance(held, int) else held for held in builds
         ],
@@ -102,99 +93,6 @@ def test_a_name_that_does_not_mark_itself_as_a_step_is_refused(name: str) -> Non
                 name=name,
                 verb=OperationVerb.EXTRUDE,
                 detail="do it",
-                depends_on=[],
                 semantics=[],
             )
         )
-
-
-def test_a_dependency_on_an_operation_that_does_not_exist_is_refused() -> None:
-    """The plan's own naming is the one thing it can be held to on its own,
-    and a reference into nothing would linearise by crashing."""
-    with pytest.raises(ValidationError, match=r"op_b depends on op_g"):
-        plan(op("op_a"), op("op_b", needs=["op_g"]))
-
-
-def test_an_operation_cannot_wait_on_itself() -> None:
-    with pytest.raises(ValidationError, match="op_a depends on itself"):
-        plan(op("op_a", needs=["op_a"]))
-
-
-def test_a_cycle_is_refused_and_named() -> None:
-    """`middleware/agent_retry.py` hands this message back for a free retry, so
-    it has to say which dependency to drop rather than that one exists."""
-    # `->` reads as "waits on", so the chain runs the way the dependencies do.
-    with pytest.raises(ValidationError, match=r"op_a -> op_b -> op_c -> op_a"):
-        plan(
-            op("op_a", needs=["op_b"]),
-            op("op_b", needs=["op_c"]),
-            op("op_c", needs=["op_a"]),
-        )
-
-
-def test_the_build_order_follows_the_dependencies_not_the_writing_order() -> None:
-    """The whole reason for the graph. Written 4, 1, 3, 2 and built 1, 2, 3, 4."""
-    written = plan(
-        op("op_d", needs=["op_b", "op_c"]),
-        op("op_a"),
-        op("op_c", needs=["op_a"]),
-        op("op_b", needs=["op_a"]),
-    )
-
-    assert [held.name for held in linearise(written)] == [
-        "op_a",
-        "op_b",
-        "op_c",
-        "op_d",
-    ]
-
-
-def test_an_operation_lands_beside_the_ones_it_consumes() -> None:
-    """Depth-first, not breadth-first. Two independent chains come out whole
-    rather than interleaved band by band, so a fillet reads next to the edge it
-    rounds instead of in a later heap of details."""
-    two_chains = plan(
-        op("op_a"),
-        op("op_b", needs=["op_a"]),
-        op("op_c", needs=["op_b"]),
-        op("op_d"),
-        op("op_e", needs=["op_d"]),
-    )
-
-    assert [held.name for held in linearise(two_chains)] == [
-        "op_a",
-        "op_b",
-        "op_c",
-        "op_d",
-        "op_e",
-    ]
-
-
-def test_the_same_plan_always_linearises_the_same_way() -> None:
-    """The coder builds the derived order, so an order that moved between two
-    runs of the same plan would be a difference nobody wrote."""
-    written = plan(
-        op("op_c", needs=["op_a"]),
-        op("op_b", needs=["op_a"]),
-        op("op_a"),
-        op("op_d", needs=["op_a"]),
-    )
-
-    assert (
-        len({tuple(held.name for held in linearise(written)) for _ in range(20)}) == 1
-    )
-
-
-def test_every_operation_is_placed_exactly_once() -> None:
-    """A diamond reaches its root twice; the coder must build it once."""
-    diamond = plan(
-        op("op_a"),
-        op("op_b", needs=["op_a"]),
-        op("op_c", needs=["op_a"]),
-        op("op_d", needs=["op_b", "op_c"]),
-    )
-
-    order = [held.name for held in linearise(diamond)]
-
-    assert sorted(order) == ["op_a", "op_b", "op_c", "op_d"]
-    assert len(order) == len(set(order))

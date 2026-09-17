@@ -43,7 +43,6 @@ def _plan(*, builds: str = "sem_feature_1") -> OperationPlan:
                 name="op_base",
                 verb=OperationVerb.EXTRUDE,
                 detail="Extrude the base.",
-                depends_on=[],
                 semantics=[builds],
             )
         ],

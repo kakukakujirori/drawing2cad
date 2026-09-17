@@ -61,14 +61,12 @@ def _operations() -> OperationPlan:
                 name="op_base",
                 verb=OperationVerb.EXTRUDE,
                 detail="Extrude the base.",
-                depends_on=[],
                 semantics=["sem_feature_1"],
             ),
             Operation(
                 name="op_hole",
                 verb=OperationVerb.HOLE,
                 detail="Cut the hole through the base.",
-                depends_on=["op_base"],
                 semantics=["sem_feature_2"],
             ),
         ],
@@ -297,7 +295,7 @@ def test_audit_cannot_accept_without_a_verified_solid(status: ExecutionStatus) -
         ),
         (
             _hop("operations", "op_base", "operations", "op_hole"),
-            "op_base.depends_on",
+            "must name an operation listed before op_base",
         ),
         (
             _hop("operations", "op_hole", "interpretation", "sem_feature_1"),
