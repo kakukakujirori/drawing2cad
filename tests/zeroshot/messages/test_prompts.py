@@ -626,6 +626,7 @@ def test_interpreter_uses_localized_evidence_and_checks_cross_view_ambiguities()
     assert "not a trace of every drawing primitive" in guidelines
     assert "hidden lines and matching projections" in guidelines
     assert "numeric sizes and model positions in parameters" in guidelines
+    assert "convert pixel measurements with the scale" in guidelines
     assert "report the affected parameter and the choice you made" in guidelines
 
 
