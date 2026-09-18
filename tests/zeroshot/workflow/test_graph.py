@@ -15,6 +15,7 @@ from langchain_core.messages.content import ContentBlock
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.contracts import (
+    bootstrap_review,
     drawing,
     interpretation,
     interpreted_feature,
@@ -208,7 +209,12 @@ def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
 
 def _accepted_audit() -> AIMessage:
     return _message(
-        AuditReport(concern_reviews=[], accepted=True, ticket_reviews=[], findings=[])
+        AuditReport(
+            concern_reviews=[],
+            accepted=True,
+            ticket_reviews=[bootstrap_review()],
+            findings=[],
+        )
     )
 
 
@@ -217,7 +223,7 @@ def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
         AuditReport(
             concern_reviews=[],
             accepted=False,
-            ticket_reviews=[],
+            ticket_reviews=[bootstrap_review()],
             findings=[
                 AuditFinding(
                     name="find_missing_hole",
@@ -248,7 +254,7 @@ def _interpretation_rejected_audit() -> AIMessage:
         AuditReport(
             concern_reviews=[],
             accepted=False,
-            ticket_reviews=[],
+            ticket_reviews=[bootstrap_review()],
             findings=[
                 AuditFinding(
                     name="find_wrong_edge",
@@ -278,7 +284,7 @@ def _invalid_audit() -> AIMessage:
         AuditReport(
             concern_reviews=[],
             accepted=False,
-            ticket_reviews=[],
+            ticket_reviews=[bootstrap_review()],
             findings=[
                 AuditFinding(
                     name="find_unknown_operation",

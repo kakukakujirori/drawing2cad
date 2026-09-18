@@ -3,6 +3,7 @@
 import pytest
 
 from tests.zeroshot.contracts import (
+    bootstrap_review,
     drawing,
     interpretation,
     interpreted_feature,
@@ -243,7 +244,9 @@ def _report(
     return AuditReport(
         concern_reviews=[],
         accepted=False,
-        ticket_reviews=ticket_reviews or [],
+        ticket_reviews=[bootstrap_review()]
+        if ticket_reviews is None
+        else ticket_reviews,
         findings=[
             AuditFinding(
                 name="find_shape_mismatch",
@@ -276,7 +279,10 @@ def test_a_concern_left_without_a_disposition_is_refused() -> None:
     with pytest.raises(SubmissionValidationError, match="concern_web_thickness"):
         validate_submission(
             AuditReport(
-                concern_reviews=[], accepted=True, ticket_reviews=[], findings=[]
+                concern_reviews=[],
+                accepted=True,
+                ticket_reviews=[bootstrap_review()],
+                findings=[],
             ),
             _concerned_snapshot(),
         )
@@ -293,7 +299,7 @@ def test_a_settled_concern_lets_an_audit_accept_without_findings() -> None:
                 )
             ],
             accepted=True,
-            ticket_reviews=[],
+            ticket_reviews=[bootstrap_review()],
             findings=[],
         ),
         _concerned_snapshot(),
@@ -354,7 +360,10 @@ def test_audit_cannot_accept_without_a_verified_solid(status: ExecutionStatus) -
     with pytest.raises(SubmissionValidationError, match="without a verified solid"):
         validate_submission(
             AuditReport(
-                concern_reviews=[], accepted=True, ticket_reviews=[], findings=[]
+                concern_reviews=[],
+                accepted=True,
+                ticket_reviews=[bootstrap_review()],
+                findings=[],
             ),
             snapshot,
         )
@@ -439,7 +448,10 @@ def test_audit_new_names_only_reuse_their_own_split_or_merge_targets(
         proposed_names=proposed,
     )
     report = AuditReport(
-        concern_reviews=[], accepted=False, ticket_reviews=[], findings=[finding]
+        concern_reviews=[],
+        accepted=False,
+        ticket_reviews=[bootstrap_review()],
+        findings=[finding],
     )
     if collision:
         with pytest.raises(SubmissionValidationError, match="already exists"):
@@ -552,7 +564,7 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
         AuditReport(
             concern_reviews=[],
             accepted=False,
-            ticket_reviews=[],
+            ticket_reviews=[bootstrap_review()],
             findings=[first_finding, second_finding],
         ),
     )
@@ -594,7 +606,7 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
         AuditReport(
             concern_reviews=[],
             accepted=False,
-            ticket_reviews=[],
+            ticket_reviews=[bootstrap_review()],
             findings=[
                 _report(target=_ref("interpretation", "sem_feature_1")).findings[0]
             ],
@@ -733,7 +745,10 @@ def test_one_request_over_several_members_assigns_their_shared_stage() -> None:
         }
     )
     report = AuditReport(
-        concern_reviews=[], accepted=False, ticket_reviews=[], findings=[two_targets]
+        concern_reviews=[],
+        accepted=False,
+        ticket_reviews=[bootstrap_review()],
+        findings=[two_targets],
     )
 
     run = open_next_round(_completed_run(), report)
@@ -808,7 +823,10 @@ def test_accepted_or_invalid_audit_does_not_open_a_round() -> None:
     run = _completed_run()
     original_json = run.model_dump_json()
     accepted = AuditReport(
-        concern_reviews=[], accepted=True, ticket_reviews=[], findings=[]
+        concern_reviews=[],
+        accepted=True,
+        ticket_reviews=[bootstrap_review()],
+        findings=[],
     )
     invalid = _report(_hop("coding", "ret_base", "operations", "op_hole"))
 
@@ -854,32 +872,29 @@ def test_failed_atomic_save_preserves_the_previous_file(
     assert list(tmp_path.glob(".reconstruction.json.*")) == []
 
 
-@pytest.mark.parametrize("solved", [True, False])
 @pytest.mark.parametrize("ticket_id", ["ticket_initial", "ticket_other_bootstrap"])
-def test_bootstrap_is_read_but_never_reviewed_or_linked(
-    solved: bool, ticket_id: str
-) -> None:
+def test_bootstrap_is_reviewed_like_any_other_open_ticket(ticket_id: str) -> None:
+    """Round 0's audit is the only one whose findings become work, so it disposes."""
     snapshot = _snapshot(ticket_id=ticket_id)
     validate_submission(
-        AuditReport(concern_reviews=[], accepted=True, ticket_reviews=[], findings=[]),
+        _report(
+            target=_ref("coding", "ret_hole"),
+            ticket_reviews=[
+                TicketReview(
+                    ticket_id=ticket_id,
+                    summary="The reconstruction does not answer the order.",
+                    solved=False,
+                )
+            ],
+            related_ticket_ids=[ticket_id],
+        ),
         snapshot,
     )
-    initial = _report(target=_ref("coding", "ret_hole"))
-    validate_submission(initial, snapshot)
-    assert initial.ticket_reviews == initial.findings[0].related_ticket_ids == []
-    report = _report(
-        target=_ref("coding", "ret_hole"),
-        ticket_reviews=[
-            TicketReview(
-                ticket_id=ticket_id,
-                summary="Checked the request.",
-                solved=solved,
-            )
-        ],
-        related_ticket_ids=[] if solved else [ticket_id],
-    )
-    with pytest.raises(SubmissionValidationError, match=f"unexpected=.*{ticket_id}"):
-        validate_submission(report, snapshot)
+
+    with pytest.raises(SubmissionValidationError, match=f"missing=.*{ticket_id}"):
+        validate_submission(
+            _report(target=_ref("coding", "ret_hole"), ticket_reviews=[]), snapshot
+        )
 
 
 @pytest.mark.parametrize(
@@ -892,7 +907,7 @@ def test_bootstrap_is_read_but_never_reviewed_or_linked(
         (["ticket_001_shape_mismatch", "ticket_absent"], False),
     ],
 )
-def test_audit_reviews_cover_current_defect_tickets_even_on_acceptance(
+def test_audit_reviews_cover_every_open_ticket_even_on_acceptance(
     reviewed: list[str], valid: bool
 ) -> None:
     run = _completed_run(
@@ -934,7 +949,7 @@ def test_current_findings_replace_old_tickets_and_choose_the_new_revision_root(
             AuditReport(
                 concern_reviews=[],
                 accepted=False,
-                ticket_reviews=[],
+                ticket_reviews=[bootstrap_review()],
                 findings=[first, second],
             ),
         )

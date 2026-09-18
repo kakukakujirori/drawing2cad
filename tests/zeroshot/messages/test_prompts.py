@@ -378,11 +378,11 @@ def test_the_auditor_role_does_not_repeat_the_api_contract() -> None:
     assert "$output_schema" not in rendered
 
 
-def test_auditor_reviews_defects_but_does_not_carry_bootstrap_work() -> None:
+def test_the_auditor_reviews_every_open_ticket_including_bootstrap_work() -> None:
     rendered = PromptTemplate(ROLE_PATHS["output_auditor"]).render(max_turns="10")
 
-    assert "one `ticket_reviews` entry per current defect ticket" in rendered
-    assert "Read bootstrap work and its responses but exclude it" in rendered
+    assert "one `ticket_reviews` entry per open ticket" in rendered
+    assert "Round 0 holds one: the bootstrap order" in rendered
     assert "Cover every unsolved review" in rendered
     assert "root may have changed" in rendered
 

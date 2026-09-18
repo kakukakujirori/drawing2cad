@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 
 from tests.zeroshot.chat_models import ScriptedChatModel, unanswered_tool_calls
+from tests.zeroshot.contracts import bootstrap_review
 from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _completed_run,
     _ref,
@@ -30,7 +31,7 @@ _REVIEWED = AuditReport(
     findings=[],
 )
 _UNREVIEWED = AuditReport(
-    concern_reviews=[], accepted=True, ticket_reviews=[], findings=[]
+    concern_reviews=[], accepted=True, ticket_reviews=[bootstrap_review()], findings=[]
 )
 
 

@@ -109,21 +109,16 @@ def _validate_ticket_coverage(
     report: AuditReport,
     snapshot: ReconstructionSnapshot,
 ) -> None:
-    """Only current defect tickets are reviewed; bootstrap is a one-round order.
+    """Every open ticket is reviewed, so no round's work closes unexamined.
 
     Report validation already links every unsolved review to current findings.
     Here we check those reviews against the snapshot, including on acceptance.
     """
-    expected = {
-        ticket.ticket_id
-        for ticket in snapshot.open_tickets
-        if isinstance(ticket.subject, AuditFinding)
-    }
+    expected = {ticket.ticket_id for ticket in snapshot.open_tickets}
     reviewed = {review.ticket_id for review in report.ticket_reviews}
     if expected != reviewed:
         raise SubmissionValidationError(
-            "ticket_reviews must cover every current defect ticket exactly once "
-            "and exclude bootstrap work: "
+            "ticket_reviews must cover every open ticket exactly once: "
             f"missing={sorted(expected - reviewed)}, "
             f"unexpected={sorted(reviewed - expected)}"
         )

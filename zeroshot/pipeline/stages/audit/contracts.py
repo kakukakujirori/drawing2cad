@@ -291,7 +291,7 @@ class AuditFinding(BaseModel):
         description=(
             "If this finding describes the remaining problem of a current defect ticket "
             "you reviewed as unsolved, list that ticket's ID. Use [] for a new defect. "
-            "Never cite bootstrap work. Several tickets may share a finding, and "
+            "Several tickets may share a finding, and "
             "one ticket may require several findings. These are review links, "
             "not causal backtrace edges."
         ),
@@ -368,7 +368,7 @@ class TicketReview(BaseModel):
     ticket_id: str = Field(
         ...,
         pattern=r"^ticket_[a-z0-9][a-z0-9_]*$",
-        description="The current defect ticket being checked; never bootstrap work.",
+        description="The open ticket being checked.",
     )
     summary: str = Field(
         ...,
@@ -380,8 +380,8 @@ class TicketReview(BaseModel):
     solved: bool = Field(
         ...,
         description=(
-            "True only if the observed defect is resolved, not merely because "
-            "the requested edit was attempted. If false, a current finding "
+            "True only if the ticket's issue is resolved, not "
+            "merely because the edit was attempted. If false, a current finding "
             "must include this ticket in related_ticket_ids."
         ),
     )
@@ -446,11 +446,7 @@ class AuditReport(BaseModel):
     )
     ticket_reviews: list[TicketReview] = Field(
         ...,
-        description=(
-            "Exactly one review per current defect ticket (subject AuditFinding). "
-            "Initial bootstrap work is read but not reviewed, so round 0 uses []. "
-            "An empty review list is not evidence for acceptance."
-        ),
+        description=("Exactly one review per open ticket."),
     )
     findings: list[AuditFinding] = Field(
         ...,

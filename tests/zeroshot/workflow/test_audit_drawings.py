@@ -2,6 +2,7 @@
 
 import pytest
 
+from tests.zeroshot.contracts import bootstrap_review
 from tests.zeroshot.workflow.test_resolve_submission import interpretation
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.audit.contracts import (
@@ -78,7 +79,7 @@ def report(
     return AuditReport(
         concern_reviews=[],
         accepted=False,
-        ticket_reviews=[],
+        ticket_reviews=[bootstrap_review()],
         findings=[
             AuditFinding(
                 name="find_bore",

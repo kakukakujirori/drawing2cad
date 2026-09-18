@@ -167,8 +167,8 @@ class InterpretationVerifier:
                     ("views",),
                     "A full_page input is an unsplit page. Add at least one DrawingView "
                     "with an orthographic role (front, back, top, bottom, left or right). "
-                    "For a single-view drawing only showing the front or the top, "
-                    "add a new DrawingView that uses the same file with a full-file region.",
+                    "For a single-view drawing, add a new DrawingView that uses "
+                    "the same file with a full-file region.",
                 )
             validated_interpretation, reports = validate_interpretation(
                 submitted_interpretation,

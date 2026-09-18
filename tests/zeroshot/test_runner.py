@@ -68,8 +68,9 @@ def _agent(
 
 _ACCEPTED_AUDIT = AIMessage(
     content=(
-        '{"accepted": true, "ticket_reviews": [], "findings": [], '
-        '"concern_reviews": []}'
+        '{"accepted": true, "ticket_reviews": ['
+        '{"ticket_id": "ticket_initial", "summary": "The reconstruction answers the order.", "solved": true}'
+        '], "findings": [], "concern_reviews": []}'
     )
 )
 
@@ -939,7 +940,13 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         "node": "audit",
         "report": {
             "accepted": True,
-            "ticket_reviews": [],
+            "ticket_reviews": [
+                {
+                    "ticket_id": "ticket_initial",
+                    "summary": "The reconstruction answers the order.",
+                    "solved": True,
+                }
+            ],
             "findings": [],
             "concern_reviews": [],
         },

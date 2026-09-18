@@ -4,6 +4,7 @@ Tests *about* the contract build it explicitly -- see
 `messages/test_interpretation_contracts.py`.
 """
 
+from zeroshot.pipeline.stages.audit.contracts import TicketReview
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
@@ -74,4 +75,15 @@ def interpretation(*descriptions: str, **overrides: object) -> DrawingInterpreta
             ],
             **overrides,
         }
+    )
+
+
+def bootstrap_review(
+    ticket_id: str = "ticket_initial", *, solved: bool = True
+) -> TicketReview:
+    """Round 0's one open ticket, which the audit disposes of like any other."""
+    return TicketReview(
+        ticket_id=ticket_id,
+        summary="The reconstruction answers the order it was given.",
+        solved=solved,
     )
