@@ -1,5 +1,5 @@
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Self
 
 from pydantic import (
@@ -15,6 +15,7 @@ from zeroshot.pipeline.stages.audit.contracts import AuditFinding
 from zeroshot.pipeline.stages.types import REASONING_STAGES, ReasoningStage
 
 _TICKET_ID = re.compile(r"^ticket_[a-z0-9][a-z0-9_]*$")
+_CONCERN_ID = re.compile(r"^concern_[a-z0-9][a-z0-9_]*$")
 
 
 class BootstrapWork(BaseModel):
@@ -53,8 +54,9 @@ class TicketResponse(BaseModel):
             "Answer this assigned ticket: what changed, why no change was "
             "needed, or what prevented resolution. Include upstream concerns "
             "and provisional interpretations needed to explain this ticket's "
-            "outcome; put additional concerns in remark. Do not restate the "
-            "artifact's geometry or measurements: it remains authoritative. "
+            "outcome; put the rest in stage_report.concerns, one entry each. "
+            "Do not restate the artifact's geometry or measurements: it "
+            "remains authoritative. "
             "Cite the concrete stable names examined or changed: "
             "view_..., dim_..., or sem_... in interpretation, op_... in "
             "operations, and ret_... or result in coding."
@@ -146,16 +148,21 @@ class StageReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    remark: str = Field(
-        default="",
+    concerns: dict[str, str] = Field(
+        default_factory=dict,
         description=(
-            "Additional concerns not covered by the assigned-ticket responses; "
-            "empty if none. State the affected subject, reason and how you "
-            "handled it. Include concerns about unassigned tickets here, naming "
-            "their IDs when known. Do not repeat artifact details, ticket "
-            "summaries or recorded questions. A shared explanation may appear "
-            "once here, but each ticket summary must still state its outcome "
-            "and the concern's effect on it."
+            "Additional unresolved issues and important provisional choices "
+            "your assigned-ticket responses do not already explain, one entry "
+            "each, and {} if none. Keep a ticket's own doubts in its "
+            "TicketResponse.summary; do not repeat them here. The key is a stable "
+            "identifier beginning concern_ and carrying on in lower_snake_case: "
+            "concern_web_thickness. The value states the affected subject, the "
+            "doubt and how you handled it. The audit answers each entry by its "
+            "key, so give one concern its own entry rather than several in one. "
+            "Keep an entry's key while the concern stands. Include concerns "
+            "about unassigned tickets, naming their IDs when known. Do not "
+            "repeat artifact details or ticket summaries; a ticket summary "
+            "still states its own outcome."
         ),
     )
     dimension_checks: dict[str, str] | None = Field(
@@ -181,17 +188,32 @@ class StageReport(BaseModel):
         ),
     )
 
-    @field_validator("dimension_checks", "unticketed_changes")
+    @field_validator("concerns", "dimension_checks", "unticketed_changes")
     @classmethod
     def require_explanations(
         cls, explanations: dict[str, str] | None, info: ValidationInfo
     ) -> dict[str, str] | None:
         for name, explanation in (explanations or {}).items():
+            if info.field_name == "concerns" and _CONCERN_ID.fullmatch(name) is None:
+                raise ValueError(
+                    f"concerns key {name!r} must be a concern_... identifier in "
+                    "lower_snake_case, naming the concern rather than describing it"
+                )
             if not explanation.strip():
                 raise ValueError(
                     f"{info.field_name}.{name}: explanation must not be blank"
                 )
         return explanations
+
+
+def reported_concerns(reports: Mapping[ReasoningStage, StageReport]) -> list[str]:
+    """Every reported concern, as the audit answers it: stage.concern_id."""
+    return [
+        f"{stage.value}.{concern}"
+        for stage in REASONING_STAGES
+        if stage in reports
+        for concern in reports[stage].concerns
+    ]
 
 
 class TicketAnswers(BaseModel):

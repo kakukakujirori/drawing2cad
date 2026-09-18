@@ -54,9 +54,7 @@ def _case(
         AttemptStore(workdir, round_source=lambda: 0),
         given,
     )
-    seed = DrawingInterpretation(
-        datum=UNDECIDED, views=given, features=[], questions=[]
-    )
+    seed = DrawingInterpretation(datum=UNDECIDED, views=given, features=[])
     return verifier, DrawingInterpretation.model_validate(data), seed
 
 

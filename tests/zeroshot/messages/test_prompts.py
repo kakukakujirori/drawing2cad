@@ -410,7 +410,10 @@ def test_the_coding_round_keeps_code_in_the_workspace_and_reports_concerns(
     assert "`edits`" not in rendered
     assert "`deleted`" not in rendered
     assert "`rationale`" not in rendered
-    assert "ticket responses, any additional concerns in remark" in rendered
+    assert (
+        "ticket responses, one `stage_report.concerns` entry per remaining "
+        "concern those responses do not explain" in rendered
+    )
     assert "`dimension_checks`" in rendered
     assert "pipeline captures it through verification" in rendered
 
@@ -423,10 +426,24 @@ def test_audit_can_read_concerns_from_both_ticket_summaries_and_stage_reports() 
     ).text
 
     assert "upstream blockers or provisional interpretations" in prompt
-    assert "additional concerns outside those answers" in prompt
-    assert "ticket summaries, stage remarks and `unticketed_changes`" in prompt
+    assert "one `concern_...` entry each" in prompt
+    assert "further unresolved issues" in prompt
+    assert "The auditor reviews each" in prompt
+    assert "ticket summaries, `concerns` and `unticketed_changes`" in prompt
     assert "placement does not determine" in prompt
     assert "missing reports in old snapshots" in prompt
+
+
+def test_the_audit_names_concerns_the_way_its_contract_does(
+    render_stage: Callable[..., str],
+) -> None:
+    """The round prompt and the schema must agree on where an ID comes from."""
+    rendered = render_stage("audit")
+    schema = json.dumps(AuditReport.model_json_schema())
+
+    assert "`<reporting_stage>.<concern_id>`" in rendered
+    assert "<reporting_stage>.<concern_id> in the current stage_reports" in schema
+    assert "round prompt" not in schema
 
 
 def test_coding_receives_all_dimension_readings_even_when_the_plan_omits_them(
@@ -609,7 +626,7 @@ def test_interpreter_uses_localized_evidence_and_checks_cross_view_ambiguities()
     assert "not a trace of every drawing primitive" in guidelines
     assert "hidden lines and matching projections" in guidelines
     assert "numeric sizes and model positions in parameters" in guidelines
-    assert "questions" in guidelines
+    assert "report the affected parameter and the choice you made" in guidelines
 
 
 def test_interpretation_prioritises_a_verified_draft_and_source_pixel_measurements(

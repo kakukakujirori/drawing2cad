@@ -70,7 +70,10 @@ def _agent(
 
 
 _ACCEPTED_AUDIT = AIMessage(
-    content='{"accepted": true, "ticket_reviews": [], "findings": []}'
+    content=(
+        '{"accepted": true, "ticket_reviews": [], "findings": [], '
+        '"concern_reviews": []}'
+    )
 )
 
 
@@ -937,7 +940,12 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     )
     assert audit["data"] == {
         "node": "audit",
-        "report": {"accepted": True, "ticket_reviews": [], "findings": []},
+        "report": {
+            "accepted": True,
+            "ticket_reviews": [],
+            "findings": [],
+            "concern_reviews": [],
+        },
     }
     assert "verify_output" not in {event["data"].get("tool_name") for event in events}
     assert "output" not in {event["event"] for event in events}

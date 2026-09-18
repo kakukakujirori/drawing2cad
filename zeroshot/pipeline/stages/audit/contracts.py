@@ -2,6 +2,7 @@
 
 AuditReport
 ├── ticket_reviews: TicketReview[]
+├── concern_reviews: ConcernReview[]
 └── findings: AuditFinding[]
     ├── backtrace: CausalHop[]
     │   ├── effect: StageOutputRef
@@ -392,6 +393,44 @@ class TicketReview(BaseModel):
         return self
 
 
+class ConcernReview(BaseModel):
+    """How one concern a reasoning stage reported is disposed of."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    concern: str = Field(
+        ...,
+        description=(
+            "The concern being answered, as <reporting_stage>.<concern_id> in "
+            "the current stage_reports: coding.concern_bore_diameter. The "
+            "prefix names the stage that reported the concern, not the stage "
+            "that must change; the finding you link may target another stage."
+        ),
+    )
+    finding_name: str | None = Field(
+        ...,
+        description=(
+            "The finding that takes this concern over, once you judge the "
+            "concern a real defect; null when it needs no correction. One "
+            "concern has one root cause, and several concerns may name one "
+            "finding."
+        ),
+    )
+    disposition: str = Field(
+        ...,
+        description=(
+            "How the concern is settled: what you checked, and why it needs no "
+            "correction or how the named finding corroborates it."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def require_a_disposition(self) -> Self:
+        if not self.disposition.strip():
+            raise ValueError("disposition must not be blank")
+        return self
+
+
 class AuditReport(BaseModel):
     """The auditor's complete acceptance decision and defect analysis.
 
@@ -420,6 +459,14 @@ class AuditReport(BaseModel):
             "is accepted."
         ),
     )
+    concern_reviews: list[ConcernReview] = Field(
+        ...,
+        description=(
+            "One review for every concern the current stage_reports raise, and "
+            "no others. A concern cannot be left out: give each its own entry, "
+            "naming the finding that takes it over or the reason it needs none."
+        ),
+    )
 
     @model_validator(mode="after")
     def require_the_decision_to_match_the_findings(self) -> Self:
@@ -446,6 +493,15 @@ class AuditReport(BaseModel):
         names = [finding.name for finding in self.findings]
         if len(set(names)) != len(names):
             raise ValueError("finding names must be unique within a report")
+        concerns = [review.concern for review in self.concern_reviews]
+        if len(set(concerns)) != len(concerns):
+            raise ValueError("concern_reviews must review each concern once")
+        for review in self.concern_reviews:
+            if review.finding_name is not None and review.finding_name not in names:
+                raise ValueError(
+                    f"concern_reviews for {review.concern} names a finding this "
+                    f"report does not hold: {review.finding_name}"
+                )
         proposed = [
             (finding.revision_request.targets[0].stage, name)
             for finding in self.findings

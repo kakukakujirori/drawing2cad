@@ -129,7 +129,7 @@ def test_a_stage_carries_ticket_answers_and_optional_additional_concerns() -> No
     )
 
     assert submission.responses == responses
-    assert submission.stage_report.remark == ""
+    assert submission.stage_report.concerns == {}
     assert submission.stage_report.dimension_checks == {}
     assert submission.stage_report == StageReport(dimension_checks={})
     assert set(TicketAnswers.model_fields) == {
@@ -183,7 +183,9 @@ def test_dimension_checks_require_nonblank_explanations(explanation):
 
 def test_old_reports_do_not_claim_dimension_checks():
     assert (
-        StageReport.model_validate({"remark": "A prior concern."}).dimension_checks
+        StageReport.model_validate(
+            {"concerns": {"concern_web": "A prior concern."}}
+        ).dimension_checks
         is None
     )
     assert StageReport(dimension_checks={}).dimension_checks == {}
@@ -303,7 +305,7 @@ def test_snapshot_rejects_an_artifact_from_an_unfinished_stage(
 @pytest.mark.parametrize("stage", ["interpretation", "operations", "coding"])
 def test_snapshot_rejects_reports_from_unfinished_stages(stage):
     data = _snapshot().model_dump()
-    data["stage_reports"] = {stage: {"remark": "A concern."}}
+    data["stage_reports"] = {stage: {"concerns": {"concern_web": "A concern."}}}
     with pytest.raises(ValidationError, match="unfinished stages.*stage_reports"):
         ReconstructionSnapshot.model_validate(data)
 

@@ -14,6 +14,7 @@ from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import Operation
 from zeroshot.pipeline.stages.resolve_refs import close_names
+from zeroshot.pipeline.stages.tickets.contracts import reported_concerns
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus
 from zeroshot.pipeline.verification.check_program import program_output_names
@@ -28,6 +29,7 @@ def validate_audit_report(
     if snapshot.last_completed_stage is not PipelineStage.CODING:
         raise SubmissionValidationError("audit requires a completed coding snapshot")
     _validate_ticket_coverage(report, snapshot)
+    _validate_concern_coverage(report, snapshot)
     if report.accepted and (
         snapshot.verification is None
         or snapshot.verification.status is not ExecutionStatus.VERIFIED
@@ -82,6 +84,25 @@ def validate_audit_report(
         # same mechanical contradiction more than once.
         unique_errors = list(dict.fromkeys(errors))
         raise SubmissionValidationError("\n".join(unique_errors))
+
+
+def _validate_concern_coverage(
+    report: AuditReport,
+    snapshot: ReconstructionSnapshot,
+) -> None:
+    """Every concern this round's stages reported is disposed of, and only those."""
+    expected = set(reported_concerns(snapshot.stage_reports))
+    reviewed = {review.concern for review in report.concern_reviews}
+    if missing := sorted(expected - reviewed):
+        raise SubmissionValidationError(
+            "concern_reviews must answer every concern this round's stage "
+            f"reports raise; missing: {', '.join(missing)}"
+        )
+    if unknown := sorted(reviewed - expected):
+        raise SubmissionValidationError(
+            "concern_reviews names concerns no stage report raises this round: "
+            f"{', '.join(unknown)}"
+        )
 
 
 def _validate_ticket_coverage(

@@ -14,5 +14,10 @@ Recorded directory: $intermediate_returns_dir
 
 Expected paths within this directory: `<ret_name>/output.step`, `<ret_name>/projection/` and `<ret_name>/render_3d/`.
 
+## Tasks
+
 Read this round's `open_tickets`, including their subjects and stage responses,
 and `stage_reports` from `.snapshots[-1]` in `$reconstruction_path`.
+
+Review every entry of each stage report's `concerns` exactly once: one
+`concern_reviews` entry each, named `<reporting_stage>.<concern_id>`.

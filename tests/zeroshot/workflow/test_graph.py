@@ -209,12 +209,15 @@ def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
 
 
 def _accepted_audit() -> AIMessage:
-    return _message(AuditReport(accepted=True, ticket_reviews=[], findings=[]))
+    return _message(
+        AuditReport(concern_reviews=[], accepted=True, ticket_reviews=[], findings=[])
+    )
 
 
 def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
     return _message(
         AuditReport(
+            concern_reviews=[],
             accepted=False,
             ticket_reviews=[],
             findings=[
@@ -245,6 +248,7 @@ def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
 def _interpretation_rejected_audit() -> AIMessage:
     return _message(
         AuditReport(
+            concern_reviews=[],
             accepted=False,
             ticket_reviews=[],
             findings=[
@@ -274,6 +278,7 @@ def _interpretation_rejected_audit() -> AIMessage:
 def _invalid_audit() -> AIMessage:
     return _message(
         AuditReport(
+            concern_reviews=[],
             accepted=False,
             ticket_reviews=[],
             findings=[
@@ -927,6 +932,7 @@ def test_revision_audit_corrects_missing_reviews_without_opening_another_round(
 ):
     _stub_verification(monkeypatch, _verified("000"), _verified("001"))
     audited = AuditReport(
+        concern_reviews=[],
         accepted=True,
         findings=[],
         ticket_reviews=[

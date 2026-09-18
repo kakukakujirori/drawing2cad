@@ -75,6 +75,7 @@ def report(
     ]
     root = backtrace[-1].cause if backtrace else ref("interpretation", target)
     return AuditReport(
+        concern_reviews=[],
         accepted=False,
         ticket_reviews=[],
         findings=[

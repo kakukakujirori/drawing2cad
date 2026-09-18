@@ -32,7 +32,7 @@ def validate_dimension_checks(
             f"missing: {missing}; unknown: {unknown}"
             + (
                 ". Unknown IDs are not interpretation dimensions; report a "
-                "printed figure the interpretation lacks in remark instead"
+                "printed figure the interpretation lacks in concerns instead"
                 if unknown
                 else ""
             )

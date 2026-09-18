@@ -270,14 +270,7 @@ class DrawingInterpretation(Contract):
     )
     features: list[SemanticFeature] = Field(
         ...,
-        description="One adopted, consistent model of the part; keep competing interpretations in questions.",
-    )
-    questions: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Only unresolved issues and important estimates or provisional choices; "
-            "name affected features/parameters. No resolved history or routine calculations."
-        ),
+        description="One adopted, consistent model of the part; report competing interpretations in your ticket answers rather than here.",
     )
 
     @property

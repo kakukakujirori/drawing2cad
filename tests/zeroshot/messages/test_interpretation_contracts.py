@@ -66,7 +66,6 @@ def test_pin_roundtrip_preserves_unknowns_zero_and_optional_metadata() -> None:
         "diameter": 4.2,
         "length": None,
     }
-    assert interpretation.questions == []
     sheet = interpretation.views[0]
     assert sheet.image_size is None and sheet.scale is None
     assert sheet.region.view == "view_front"

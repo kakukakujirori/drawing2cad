@@ -13,6 +13,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
     CausalHop,
+    ConcernReview,
     RevisionRequest,
     StageOutputRef,
     TicketReview,
@@ -116,6 +117,13 @@ _VERIFICATION = VerifyOutputResult(
 )
 
 _AUDIT_REPORT = AuditReport(
+    concern_reviews=[
+        ConcernReview(
+            concern="coding.concern_boss",
+            finding_name="find_missing_boss",
+            disposition="The missing-boss finding covers it.",
+        )
+    ],
     accepted=False,
     ticket_reviews=[
         TicketReview(
@@ -213,7 +221,8 @@ _RECONSTRUCTION = ReconstructionHistory(
             verification=_VERIFICATION,
             stage_reports={
                 PipelineStage.CODING: StageReport(
-                    remark="Check the boss.", dimension_checks=_DIMENSION_CHECKS
+                    concerns={"concern_boss": "Check the boss."},
+                    dimension_checks=_DIMENSION_CHECKS,
                 )
             },
         )
@@ -295,6 +304,7 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         VerifyOutputResult,
         AuditFinding,
         AuditReport,
+        ConcernReview,
         TicketReview,
         CausalHop,
         RevisionRequest,

@@ -33,6 +33,7 @@ def test_audit_and_validation_are_recorded_as_their_raw_node_updates(
     accepted: bool,
 ) -> None:
     report = {
+        "concern_reviews": [],
         "accepted": accepted,
         "ticket_reviews": [
             {

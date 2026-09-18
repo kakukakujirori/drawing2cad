@@ -22,13 +22,16 @@ from zeroshot.pipeline.workflow.middleware import VerifyOnSubmitMiddleware
 
 _TICKET = "ticket_001_shape_mismatch"
 _REVIEWED = AuditReport(
+    concern_reviews=[],
     accepted=True,
     ticket_reviews=[
         TicketReview(ticket_id=_TICKET, summary="The hole is restored.", solved=True)
     ],
     findings=[],
 )
-_UNREVIEWED = AuditReport(accepted=True, ticket_reviews=[], findings=[])
+_UNREVIEWED = AuditReport(
+    concern_reviews=[], accepted=True, ticket_reviews=[], findings=[]
+)
 
 
 def _revision_snapshot():

@@ -74,8 +74,8 @@ def validate_interpretation(
     interpretation = DrawingInterpretation.model_validate(interpretation.model_dump())
     if UNDECIDED in interpretation.datum:
         raise ValueError(
-            f"datum still holds {UNDECIDED}: state the model frame, and put "
-            "any question in questions"
+            f"datum still holds {UNDECIDED}: state the model frame, and "
+            "report any doubt as a concern in your stage report"
         )
     data = interpretation.model_dump()
     sizes: dict[tuple[Path, float | None], tuple[float, float]] = {}

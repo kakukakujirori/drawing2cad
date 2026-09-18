@@ -7,6 +7,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
     CausalHop,
+    ConcernReview,
     RevisionRequest,
     StageOutputRef,
     TicketReview,
@@ -382,20 +383,29 @@ def test_a_finding_requires_distinct_evidence_locators(
 
 
 def test_an_accepted_report_has_no_findings() -> None:
-    AuditReport(accepted=True, ticket_reviews=[], findings=[])
+    AuditReport(concern_reviews=[], accepted=True, ticket_reviews=[], findings=[])
     with pytest.raises(ValidationError, match="accepted must be true"):
-        AuditReport(accepted=True, ticket_reviews=[], findings=[finding()])
+        AuditReport(
+            concern_reviews=[], accepted=True, ticket_reviews=[], findings=[finding()]
+        )
 
 
 def test_a_rejected_report_has_at_least_one_finding() -> None:
-    AuditReport(accepted=False, ticket_reviews=[], findings=[finding()])
+    AuditReport(
+        concern_reviews=[], accepted=False, ticket_reviews=[], findings=[finding()]
+    )
     with pytest.raises(ValidationError, match="accepted must be true"):
-        AuditReport(accepted=False, ticket_reviews=[], findings=[])
+        AuditReport(concern_reviews=[], accepted=False, ticket_reviews=[], findings=[])
 
 
 def test_finding_names_are_unique_within_a_report() -> None:
     with pytest.raises(ValidationError, match="finding names must be unique"):
-        AuditReport(accepted=False, ticket_reviews=[], findings=[finding(), finding()])
+        AuditReport(
+            concern_reviews=[],
+            accepted=False,
+            ticket_reviews=[],
+            findings=[finding(), finding()],
+        )
 
 
 def test_separate_findings_cannot_propose_the_same_identity() -> None:
@@ -411,11 +421,17 @@ def test_separate_findings_cannot_propose_the_same_identity() -> None:
         revision_request=request("rename", proposed_names=["sem_new"]),
     )
     with pytest.raises(ValidationError, match="unique across findings"):
-        AuditReport(accepted=False, ticket_reviews=[], findings=[first, second])
+        AuditReport(
+            concern_reviews=[],
+            accepted=False,
+            ticket_reviews=[],
+            findings=[first, second],
+        )
 
 
 def test_separate_findings_can_propose_distinct_identities() -> None:
     AuditReport(
+        concern_reviews=[],
         accepted=False,
         ticket_reviews=[],
         findings=[
@@ -507,7 +523,12 @@ def test_a_ticket_is_reviewed_only_once() -> None:
         ticket_id="ticket_bore", summary="Bore restored.", solved=True
     )
     with pytest.raises(ValidationError, match="duplicate ticket IDs"):
-        AuditReport(accepted=True, ticket_reviews=[review, review], findings=[])
+        AuditReport(
+            concern_reviews=[],
+            accepted=True,
+            ticket_reviews=[review, review],
+            findings=[],
+        )
 
 
 @pytest.mark.parametrize(
@@ -527,6 +548,7 @@ def test_unsolved_reviews_match_exactly_the_tickets_in_current_findings(
     solved: list[bool], related: list[str], valid: bool
 ) -> None:
     values = {
+        "concern_reviews": [],
         "accepted": False,
         "ticket_reviews": [
             TicketReview(
@@ -549,6 +571,7 @@ def test_unsolved_reviews_match_exactly_the_tickets_in_current_findings(
 
 def test_one_unsolved_ticket_can_require_several_current_findings() -> None:
     report = AuditReport(
+        concern_reviews=[],
         accepted=False,
         ticket_reviews=[
             TicketReview(
@@ -570,3 +593,43 @@ def test_an_empty_review_list_must_still_be_given() -> None:
         AuditFinding.model_validate(payload)
     with pytest.raises(ValidationError, match="ticket_reviews\n  Field required"):
         AuditReport.model_validate({"accepted": True, "findings": []})
+
+
+def test_a_concern_needs_a_disposition_in_words() -> None:
+    with pytest.raises(ValidationError, match="disposition must not be blank"):
+        ConcernReview(
+            concern="coding.concern_bore",
+            finding_name=None,
+            disposition="  ",
+        )
+
+
+def test_a_concern_cannot_be_escalated_to_a_finding_the_report_lacks() -> None:
+    with pytest.raises(ValidationError, match="does not hold: find_absent"):
+        AuditReport(
+            concern_reviews=[
+                ConcernReview(
+                    concern="coding.concern_bore",
+                    finding_name="find_absent",
+                    disposition="Escalated as a finding.",
+                )
+            ],
+            accepted=False,
+            ticket_reviews=[],
+            findings=[finding()],
+        )
+
+
+def test_one_concern_is_reviewed_once() -> None:
+    review = ConcernReview(
+        concern="coding.concern_bore",
+        finding_name=None,
+        disposition="The bore needs no correction.",
+    )
+    with pytest.raises(ValidationError, match="review each concern once"):
+        AuditReport(
+            concern_reviews=[review, review],
+            accepted=False,
+            ticket_reviews=[],
+            findings=[finding()],
+        )

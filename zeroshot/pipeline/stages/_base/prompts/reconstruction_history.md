@@ -12,7 +12,7 @@ A revision changes only what its tickets cover: the targets and the proposed nam
 
 ### Stage reports
 A reasoning stage answers with one summary per assigned ticket and a `stage_report`. A summary states the ticket's outcome, including upstream blockers or provisional interpretations needed to explain it.
-- `remark`: additional concerns outside those answers, empty if none. A shared explanation may appear here once.
+- `concerns`: further unresolved issues, suspects on the upstream agent judge, or provisional choices, one `concern_...` entry each, `{}` if none. The auditor reviews each.
 - `dimension_checks`: coding's per-dimension report; null in other stages.
 - `unticketed_changes`: each member changed although no ticket covers it, with the reason. A rename lists both names. `{}` when tickets cover every change, and in round 0.
 Read relevant `stage_reports` too; missing reports in old snapshots mean no report was recorded.

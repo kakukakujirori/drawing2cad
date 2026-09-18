@@ -72,7 +72,6 @@ def interpretation(*descriptions: str, **overrides: object) -> DrawingInterpreta
                 interpreted_feature(index, description)
                 for index, description in enumerate(descriptions, start=1)
             ],
-            "questions": [],
             **overrides,
         }
     )

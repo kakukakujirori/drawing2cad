@@ -116,7 +116,6 @@ def interpretation_baseline(history: ReconstructionHistory) -> DrawingInterpreta
         datum=UNDECIDED,
         views=list(history.input_drawings),
         features=[],
-        questions=[],
     )
 
 

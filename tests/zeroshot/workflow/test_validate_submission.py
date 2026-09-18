@@ -506,7 +506,8 @@ def test_coding_reports_dimension_and_program_faults_together() -> None:
     )
 
     with pytest.raises(
-        SubmissionValidationError, match=r"(?s)unknown: \['dim_r16'\].*remark.*op_base"
+        SubmissionValidationError,
+        match=r"(?s)unknown: \['dim_r16'\].*concerns.*op_base",
     ):
         _verified_and_validate(
             submission,
@@ -595,7 +596,9 @@ def test_coding_checks_all_dimensions_once_across_tickets_even_without_a_program
             for ticket in snapshot.open_tickets
         ],
         stage_report=StageReport(
-            remark="The current program failed before a solid was available.",
+            concerns={
+                "concern_no_solid": "The program failed before a solid was available."
+            },
             dimension_checks={
                 "dim_width": "Not established: ret_base has not produced a solid.",
                 "dim_equal": "Not checked: same intended extent as dim_width, but no final solid.",
@@ -661,7 +664,7 @@ def test_non_coding_stages_cannot_submit_dimension_checks_even_when_empty(stage)
         )
 
 
-def test_coding_saves_remark_and_resolved_dimension_checks_together(tmp_path):
+def test_coding_saves_concerns_and_resolved_dimension_checks_together(tmp_path):
     run = ReconstructionHistory(
         run_id="run_dimension_checks",
         input_drawings=drawing(),
@@ -672,7 +675,9 @@ def test_coding_saves_remark_and_resolved_dimension_checks_together(tmp_path):
     submission = TicketAnswers(
         responses=[_response("ticket_initial", PipelineStage.CODING)],
         stage_report=StageReport(
-            remark="The adopted width remains dim_width.nominal_value despite the failed build.",
+            concerns={
+                "concern_width": "The adopted width remains dim_width.nominal_value."
+            },
             dimension_checks={
                 "dim_width": "Not established: ret_base was intended to span dim_width.nominal_value.",
                 "dim_equal": "Not checked: no solid to compare against dim_equal.nominal_value.",
@@ -689,14 +694,14 @@ def test_coding_saves_remark_and_resolved_dimension_checks_together(tmp_path):
     save_reconstruction(path, committed)
     restored = load_reconstruction(path)
     report = restored.snapshots[-1].stage_reports[PipelineStage.CODING]
-    assert "dim_width.nominal_value (= 10.0)" in report.remark
+    assert "dim_width.nominal_value (= 10.0)" in report.concerns["concern_width"]
     assert "dim_width.nominal_value (= 10.0)" in report.dimension_checks["dim_width"]
     assert (
         "dim_unreadable.nominal_value (= null)"
         in report.dimension_checks["dim_unreadable"]
     )
     assert set(report.model_dump()) == {
-        "remark",
+        "concerns",
         "dimension_checks",
         "unticketed_changes",
     }
@@ -745,7 +750,9 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
             )
         ],
         stage_report=StageReport(
-            remark="The undimensioned height also uses sem_feature_1.width provisionally."
+            concerns={
+                "concern_height": "The height uses sem_feature_1.width provisionally."
+            }
         ),
     )
     with pytest.raises(
@@ -756,12 +763,12 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
     interpreted = advance_reconstruction(run, submission, workspace_output=held)
     snapshot = interpreted.snapshots[-1]
     report = snapshot.stage_reports[PipelineStage.INTERPRETATION]
-    assert "sem_feature_1.width (= 12.0)" in report.remark
+    assert "sem_feature_1.width (= 12.0)" in report.concerns["concern_height"]
     assert (
         "sem_feature_1.width (= 12.0)" in snapshot.open_tickets[0].responses[0].summary
     )
     assert set(report.model_dump()) == {
-        "remark",
+        "concerns",
         "dimension_checks",
         "unticketed_changes",
     }
@@ -778,7 +785,9 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
             interpreted,
             TicketAnswers(
                 responses=[],
-                stage_report=StageReport(remark="This does not answer the ticket."),
+                stage_report=StageReport(
+                    concerns={"concern_other": "This does not answer the ticket."}
+                ),
             ),
             workspace_output=_operations(),
         )
@@ -798,7 +807,9 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
     for reports in (
         {PipelineStage.OPERATIONS: StageReport()},
         {
-            PipelineStage.INTERPRETATION: StageReport(remark="Rewritten upstream."),
+            PipelineStage.INTERPRETATION: StageReport(
+                concerns={"concern_upstream": "Rewritten upstream."}
+            ),
             PipelineStage.OPERATIONS: StageReport(),
         },
     ):

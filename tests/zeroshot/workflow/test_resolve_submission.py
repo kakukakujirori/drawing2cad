@@ -226,7 +226,9 @@ def test_ticket_summary_and_stage_report_references_resolve_without_mutating_sub
             )
         ],
         stage_report=StageReport(
-            remark="Separately check dim_diameter.quantity and sem_bore.center.",
+            concerns={
+                "concern_checks": "Check dim_diameter.quantity and sem_bore.center."
+            },
             dimension_checks={
                 "dim_diameter": "Not checked: compare dim_diameter.nominal_value with sem_bore.radius."
             },
@@ -236,8 +238,9 @@ def test_ticket_summary_and_stage_report_references_resolve_without_mutating_sub
     resolved = resolve_references(submission, interpretation())
 
     assert "sem_bore.radius (= 6.000123456789123)" in resolved.responses[0].summary
-    assert "dim_diameter.quantity (= 2)" in resolved.stage_report.remark
-    assert "sem_bore.center (= [0.0 null 3.0])" in resolved.stage_report.remark
+    concern = resolved.stage_report.concerns["concern_checks"]
+    assert "dim_diameter.quantity (= 2)" in concern
+    assert "sem_bore.center (= [0.0 null 3.0])" in concern
     assert resolved.stage_report.dimension_checks == {
         "dim_diameter": (
             "Not checked: compare dim_diameter.nominal_value (= 12.0) "

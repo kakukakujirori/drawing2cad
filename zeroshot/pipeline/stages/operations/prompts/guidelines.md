@@ -7,7 +7,7 @@ Guidelines:
 - List operations in build order; each one basically changes the previous operation's result. When one does not, its `detail` says which earlier results it takes (e.g., for cut or union), or that it takes none and starts a new body.
 - An operation's `semantics` names every `sem_` feature it helps build. A feature may take several operations and an operation may serve several features. Every interpreted feature needs an operation, and every cited feature must exist in the interpretation.
 - Account for the base volume, additions and cuts, then fillets and chamfers.
-- Review `interpretation.questions` and null parameters. If construction requires a choice the interpretation has not established, make a provisional choice and report the affected `sem_` parameter and choice, following the summary/remark rule. Do not silently replace a stated value. Only the audit can open a ticket.
+- Review the interpretation's concerns in `stage_reports.interpretation.concerns` and its null parameters. If construction requires a choice the interpretation has not established, make a provisional choice and report the affected `sem_` parameter and choice. Do not silently replace a stated value. Only the audit can open a ticket.
 - Use `run_shell` and `load_image` to inspect source views when needed. Address applicable audit feedback and stay within the announced turn budget.
 
 Example `detail`: "Cut a hole of radius sem_main_bore.radius at sem_main_bore.center, along sem_main_bore.axis, through the host plate."

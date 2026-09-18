@@ -11,6 +11,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
     CausalHop,
+    ConcernReview,
     RevisionRequest,
     StageOutputRef,
     TicketReview,
@@ -239,6 +240,7 @@ def _report(
 ) -> AuditReport:
     revision_target = target or hops[-1].cause
     return AuditReport(
+        concern_reviews=[],
         accepted=False,
         ticket_reviews=ticket_reviews or [],
         findings=[
@@ -257,6 +259,77 @@ def _report(
             )
         ],
     )
+
+
+def _concerned_snapshot() -> ReconstructionSnapshot:
+    snapshot = _snapshot()
+    snapshot.stage_reports = {
+        PipelineStage.INTERPRETATION: StageReport(
+            concerns={"concern_web_thickness": "The web thickness is estimated."}
+        )
+    }
+    return snapshot
+
+
+def test_a_concern_left_without_a_disposition_is_refused() -> None:
+    with pytest.raises(SubmissionValidationError, match="concern_web_thickness"):
+        validate_submission(
+            AuditReport(
+                concern_reviews=[], accepted=True, ticket_reviews=[], findings=[]
+            ),
+            _concerned_snapshot(),
+        )
+
+
+def test_a_settled_concern_lets_an_audit_accept_without_findings() -> None:
+    validate_submission(
+        AuditReport(
+            concern_reviews=[
+                ConcernReview(
+                    concern="interpretation.concern_web_thickness",
+                    finding_name=None,
+                    disposition="The front view confirms the estimate.",
+                )
+            ],
+            accepted=True,
+            ticket_reviews=[],
+            findings=[],
+        ),
+        _concerned_snapshot(),
+    )
+
+
+def test_a_concern_may_be_escalated_against_another_stage() -> None:
+    """The prefix names the reporter; the finding may target any stage."""
+    snapshot = _snapshot()
+    snapshot.stage_reports = {
+        PipelineStage.CODING: StageReport(
+            concerns={"concern_bore_diameter": "sem_bore looks too wide."},
+            dimension_checks={},
+        )
+    }
+    report = _report(_hop("operations", "op_base", "interpretation", "sem_feature_1"))
+    report.concern_reviews = [
+        ConcernReview(
+            concern="coding.concern_bore_diameter",
+            finding_name="find_shape_mismatch",
+            disposition="Confirmed; the interpretation is the root.",
+        )
+    ]
+    validate_submission(report, snapshot)
+
+
+def test_a_disposition_for_a_concern_nobody_raised_is_refused() -> None:
+    report = _report(_hop("operations", "op_base", "interpretation", "sem_feature_1"))
+    report.concern_reviews = [
+        ConcernReview(
+            concern="coding.concern_invented",
+            finding_name="find_shape_mismatch",
+            disposition="The mismatch finding covers it.",
+        )
+    ]
+    with pytest.raises(SubmissionValidationError, match="concern_invented"):
+        validate_submission(report, _snapshot())
 
 
 def test_audit_cross_validation_accepts_supported_backtrace_hops() -> None:
@@ -279,7 +352,10 @@ def test_audit_cannot_accept_without_a_verified_solid(status: ExecutionStatus) -
     )
     with pytest.raises(SubmissionValidationError, match="without a verified solid"):
         validate_submission(
-            AuditReport(accepted=True, ticket_reviews=[], findings=[]), snapshot
+            AuditReport(
+                concern_reviews=[], accepted=True, ticket_reviews=[], findings=[]
+            ),
+            snapshot,
         )
 
     # A diagnostic finding remains valid for the same failing program.
@@ -361,7 +437,9 @@ def test_audit_new_names_only_reuse_their_own_split_or_merge_targets(
         instruction="Correct the operation identities.",
         proposed_names=proposed,
     )
-    report = AuditReport(accepted=False, ticket_reviews=[], findings=[finding])
+    report = AuditReport(
+        concern_reviews=[], accepted=False, ticket_reviews=[], findings=[finding]
+    )
     if collision:
         with pytest.raises(SubmissionValidationError, match="already exists"):
             validate_submission(report, _snapshot())
@@ -471,6 +549,7 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     run = open_next_round(
         completed,
         AuditReport(
+            concern_reviews=[],
             accepted=False,
             ticket_reviews=[],
             findings=[first_finding, second_finding],
@@ -512,6 +591,7 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     run = open_next_round(
         completed,
         AuditReport(
+            concern_reviews=[],
             accepted=False,
             ticket_reviews=[],
             findings=[
@@ -651,7 +731,9 @@ def test_one_request_over_several_members_assigns_their_shared_stage() -> None:
             )
         }
     )
-    report = AuditReport(accepted=False, ticket_reviews=[], findings=[two_targets])
+    report = AuditReport(
+        concern_reviews=[], accepted=False, ticket_reviews=[], findings=[two_targets]
+    )
 
     run = open_next_round(_completed_run(), report)
 
@@ -724,7 +806,9 @@ def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
 def test_accepted_or_invalid_audit_does_not_open_a_round() -> None:
     run = _completed_run()
     original_json = run.model_dump_json()
-    accepted = AuditReport(accepted=True, ticket_reviews=[], findings=[])
+    accepted = AuditReport(
+        concern_reviews=[], accepted=True, ticket_reviews=[], findings=[]
+    )
     invalid = _report(_hop("coding", "ret_base", "operations", "op_hole"))
 
     with pytest.raises(ValueError, match="accepted audit"):
@@ -776,7 +860,8 @@ def test_bootstrap_is_read_but_never_reviewed_or_linked(
 ) -> None:
     snapshot = _snapshot(ticket_id=ticket_id)
     validate_submission(
-        AuditReport(accepted=True, ticket_reviews=[], findings=[]), snapshot
+        AuditReport(concern_reviews=[], accepted=True, ticket_reviews=[], findings=[]),
+        snapshot,
     )
     initial = _report(target=_ref("coding", "ret_hole"))
     validate_submission(initial, snapshot)
@@ -813,6 +898,7 @@ def test_audit_reviews_cover_current_defect_tickets_even_on_acceptance(
         open_next_round(_completed_run(), _report(target=_ref("coding", "ret_hole")))
     )
     report = AuditReport(
+        concern_reviews=[],
         accepted=True,
         findings=[],
         ticket_reviews=[
@@ -844,7 +930,12 @@ def test_current_findings_replace_old_tickets_and_choose_the_new_revision_root(
     run = _completed_run(
         open_next_round(
             _completed_run(),
-            AuditReport(accepted=False, ticket_reviews=[], findings=[first, second]),
+            AuditReport(
+                concern_reviews=[],
+                accepted=False,
+                ticket_reviews=[],
+                findings=[first, second],
+            ),
         )
     )
     old_ids = [ticket.ticket_id for ticket in run.snapshots[-1].open_tickets]

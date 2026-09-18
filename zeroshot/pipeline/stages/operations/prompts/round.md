@@ -7,7 +7,7 @@ Maintain the complete plan in `$operations_output_path`. The first round seeds n
 
 After a turn that changes the file, the pipeline validates it against the current interpretation and reports the result. Correct what it rejects and write again.
 
-Once the file validates, finish tool work and return one `TicketAnswers`: exactly one operations-stage response for each assigned ticket and none for any other, each naming the concrete `op_...` entries you established, changed, or examined. Include any additional concerns in remark; do not repeat the plan.
+Once the file validates, finish tool work and return one `TicketAnswers`: exactly one operations-stage response for each assigned ticket and none for any other, each naming the concrete `op_...` entries you established, changed, or examined. Include one `stage_report.concerns` entry per remaining concern those responses do not explain; do not repeat the plan.
 
 OperationPlan JSON schema:
 ```json
