@@ -16,6 +16,7 @@ from zeroshot.pipeline.stages.audit.validate import validate_audit_report
 from zeroshot.pipeline.stages.coding.validate import (
     validate_coding,
 )
+from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
@@ -28,7 +29,6 @@ from zeroshot.pipeline.stages.types import (
     ReasoningStage,
     next_stage,
 )
-from zeroshot.pipeline.verification import VerifyOutputResult
 
 type Submission = TicketAnswers | AuditReport
 type StageDeliverable = DrawingInterpretation | OperationPlan | VerifyOutputResult

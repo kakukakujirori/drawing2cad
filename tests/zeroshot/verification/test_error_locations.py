@@ -5,14 +5,14 @@ from typing import Self
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
-from zeroshot.pipeline.stages._base.validate import (
-    LocatedError,
-    SubmissionValidationError,
-)
-from zeroshot.pipeline.verification.error_locations import (
+from zeroshot.pipeline.stages._base.error_locations import (
     answer_errors,
     file_errors,
     semantic_errors,
+)
+from zeroshot.pipeline.stages._base.validate import (
+    LocatedError,
+    SubmissionValidationError,
 )
 
 _NOT_A_NUMBER = "Input should be a valid number, unable to parse string as a number"

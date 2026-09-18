@@ -9,12 +9,12 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import ValidationError
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages._base.error_locations import file_errors, semantic_errors
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.operations.validate import validate_operations
 from zeroshot.pipeline.verification.attempts import AttemptStore
-from zeroshot.pipeline.verification.error_locations import file_errors, semantic_errors
 
 
 class OperationPlanVerifier:

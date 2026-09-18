@@ -6,6 +6,7 @@ from collections.abc import Sequence
 import pytest
 
 from tests.zeroshot.contracts import drawing, interpretation, interpreted_feature
+from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import (
     ReconstructionHistory,
     ReconstructionSnapshot,
@@ -37,7 +38,7 @@ from zeroshot.pipeline.stages.validate import (
     SubmissionValidationError,
     validate_submission,
 )
-from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
+from zeroshot.pipeline.verification import ExecutionStatus
 from zeroshot.pipeline.workflow.lifecycle import (
     _commit_snapshot,
     advance_reconstruction,

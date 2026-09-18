@@ -22,18 +22,14 @@ from zeroshot.pipeline.stages._base.prompt import (
     StageInstructions,
     build_system_prompt,
 )
+from zeroshot.pipeline.stages.coding.verify import OutputVerifier
 from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.tools.calculate_drawing_scale import (
     create_calculate_drawing_scale_tool,
 )
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
-from zeroshot.pipeline.verification import (
-    AttemptStore,
-    CadQueryExecutor,
-    OutputVerifier,
-    StepRenderer,
-)
+from zeroshot.pipeline.verification import AttemptStore, CadQueryExecutor, StepRenderer
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.components.agent import AgentState

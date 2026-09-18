@@ -10,9 +10,9 @@ from tests.zeroshot.chat_models import ScriptedChatModel
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest, register_view
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.verification.run_cadquery import ExecutionStatus
-from zeroshot.pipeline.verification.verify_output import VerifyOutputResult
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline_single.contracts import (
     CodingReport,

@@ -14,14 +14,14 @@ from zeroshot.pipeline.stages._base.prompt import (
     schema_for_prompt,
 )
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.operations.verify import OperationPlanVerifier
 from zeroshot.pipeline.stages.tickets.contracts import (
     TicketAnswers,
     tickets_assigned_to,
 )
+from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification.attempts import AttemptStore
-from zeroshot.pipeline.verification.verify_operations import OperationPlanVerifier
-from zeroshot.pipeline.verification.verify_tickets import TicketVerifier
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.lifecycle import operations_baseline
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware

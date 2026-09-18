@@ -11,10 +11,6 @@ from .run_render import (
     RenderStatus,
     StepRenderer,
 )
-from .verify_output import (
-    OutputVerifier,
-    VerifyOutputResult,
-)
 
 __all__ = [
     "AttemptStore",
@@ -22,12 +18,10 @@ __all__ = [
     "CadQueryExecutor",
     "ExecutionStatus",
     "IntermediateReturn",
-    "OutputVerifier",
     "ProgramCheck",
     "RenderReport",
     "RenderStatus",
     "StepRenderer",
-    "VerifyOutputResult",
     "attempt_relative_path",
     "check_program",
 ]

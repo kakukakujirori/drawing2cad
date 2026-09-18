@@ -7,6 +7,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     RevisionRequest,
     StageOutputRef,
 )
+from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import (
     ReconstructionHistory,
     ReconstructionSnapshot,
@@ -24,7 +25,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     TicketResponse,
 )
 from zeroshot.pipeline.stages.types import PipelineStage
-from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
+from zeroshot.pipeline.verification import ExecutionStatus
 
 
 def _interpretation():

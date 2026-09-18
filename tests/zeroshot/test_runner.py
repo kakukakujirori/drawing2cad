@@ -29,6 +29,7 @@ from zeroshot.pipeline.runner import (
     _latest_program_source,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner
+from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
     Region,
@@ -44,11 +45,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     TicketAnswers,
     TicketResponse,
 )
-from zeroshot.pipeline.verification import (
-    CadQueryExecutor,
-    ExecutionStatus,
-    VerifyOutputResult,
-)
+from zeroshot.pipeline.verification import CadQueryExecutor, ExecutionStatus
 from zeroshot.pipeline.workflow import (
     StopReason,
     create_agent,

@@ -12,8 +12,8 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     View,
 )
+from zeroshot.pipeline.stages.interpretation.verify import InterpretationVerifier
 from zeroshot.pipeline.verification.attempts import AttemptStore
-from zeroshot.pipeline.verification.verify_interpretation import InterpretationVerifier
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
 

@@ -1,13 +1,10 @@
 from collections.abc import Mapping
 
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.verification import (
-    ExecutionStatus,
-    VerifyOutputResult,
-    check_program,
-)
+from zeroshot.pipeline.verification import ExecutionStatus, check_program
 
 
 def validate_dimension_checks(

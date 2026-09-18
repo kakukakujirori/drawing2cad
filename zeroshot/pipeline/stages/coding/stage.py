@@ -10,16 +10,12 @@ from langgraph.pregel import Pregel
 
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
+from zeroshot.pipeline.stages.coding.verify import OutputVerifier
 from zeroshot.pipeline.stages.interpretation.contracts import ORTHOGRAPHIC_VIEWS
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
+from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
-from zeroshot.pipeline.verification import (
-    AttemptStore,
-    CadQueryExecutor,
-    OutputVerifier,
-    StepRenderer,
-)
-from zeroshot.pipeline.verification.verify_tickets import TicketVerifier
+from zeroshot.pipeline.verification import AttemptStore, CadQueryExecutor, StepRenderer
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot

@@ -8,8 +8,8 @@ from tests.zeroshot.workflow.test_revision_scope import (
 from tests.zeroshot.workflow.test_validate_submission import _response, _snapshot
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.tickets.contracts import StageReport, TicketAnswers
+from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
-from zeroshot.pipeline.verification.verify_tickets import TicketVerifier
 
 
 def test_answers_that_fit_the_round_need_no_feedback() -> None:

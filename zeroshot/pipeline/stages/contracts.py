@@ -10,6 +10,7 @@ from pydantic import (
     model_validator,
 )
 
+from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
@@ -26,7 +27,7 @@ from zeroshot.pipeline.stages.types import (
     PipelineStage,
     ReasoningStage,
 )
-from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
+from zeroshot.pipeline.verification import ExecutionStatus
 
 _RUN_ID = re.compile(r"^run_[a-z0-9][a-z0-9_]*$")
 

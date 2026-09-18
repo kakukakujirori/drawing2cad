@@ -8,10 +8,10 @@ from langchain_core.tools import BaseTool, tool
 
 from zeroshot.pipeline.messages.artifact import View
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages.coding.verify import OutputVerifier
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutor
 from zeroshot.pipeline.verification.run_render import StepRenderer
-from zeroshot.pipeline.verification.verify_output import OutputVerifier
 
 
 def create_verify_output_tool(

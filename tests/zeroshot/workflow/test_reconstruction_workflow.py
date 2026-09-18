@@ -16,6 +16,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     StageOutputRef,
     TicketReview,
 )
+from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import (
     ReconstructionHistory,
     ReconstructionSnapshot,
@@ -37,7 +38,7 @@ from zeroshot.pipeline.stages.validate import (
     SubmissionValidationError,
     validate_submission,
 )
-from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
+from zeroshot.pipeline.verification import ExecutionStatus
 from zeroshot.pipeline.workflow import lifecycle as lifecycle_module
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,

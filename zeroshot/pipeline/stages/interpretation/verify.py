@@ -14,6 +14,7 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import ValidationError
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages._base.error_locations import file_errors, semantic_errors
 from zeroshot.pipeline.stages._base.validate import LocatedError
 from zeroshot.pipeline.stages.interpretation.contracts import (
     ORTHOGRAPHIC_VIEWS,
@@ -24,7 +25,6 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 )
 from zeroshot.pipeline.stages.interpretation.validate import validate_interpretation
 from zeroshot.pipeline.verification.attempts import AttemptStore
-from zeroshot.pipeline.verification.error_locations import file_errors, semantic_errors
 
 
 @dataclass(frozen=True)

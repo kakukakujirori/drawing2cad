@@ -10,6 +10,12 @@ import pytest
 from PIL import Image
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages.coding.verify import (
+    FEEDBACK_PICTORIAL,
+    OutputVerifier,
+    VerifyOutputResult,
+    _census_table,
+)
 from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
@@ -30,12 +36,6 @@ from zeroshot.pipeline.verification.run_render import (
     RenderStatus,
 )
 from zeroshot.pipeline.verification.shape_census import ShapeCensus
-from zeroshot.pipeline.verification.verify_output import (
-    FEEDBACK_PICTORIAL,
-    OutputVerifier,
-    VerifyOutputResult,
-    _census_table,
-)
 
 RENDER3D_STYLES = (
     "hlg_perspective",

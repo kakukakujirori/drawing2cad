@@ -31,6 +31,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     TicketReview,
 )
 from zeroshot.pipeline.stages.coding import stage as coding_stage_module
+from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
@@ -49,10 +50,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     TicketResponse,
 )
 from zeroshot.pipeline.stages.types import PipelineStage
-from zeroshot.pipeline.verification import (
-    ExecutionStatus,
-    VerifyOutputResult,
-)
+from zeroshot.pipeline.verification import ExecutionStatus
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.graph import AgentBuilder, create_reconstruction_graph
 from zeroshot.pipeline.workflow.lifecycle import (

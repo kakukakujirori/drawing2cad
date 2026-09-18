@@ -15,10 +15,10 @@ from zeroshot.pipeline.stages.operations.contracts import (
     OperationVerb,
 )
 from zeroshot.pipeline.stages.operations.stage import create_operation_stage
+from zeroshot.pipeline.stages.operations.verify import OperationPlanVerifier
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification.attempts import AttemptStore
-from zeroshot.pipeline.verification.verify_operations import OperationPlanVerifier
 from zeroshot.pipeline.workflow.components.agent import create_agent
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,

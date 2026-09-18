@@ -12,6 +12,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     StageOutputRef,
 )
 from zeroshot.pipeline.stages.audit.validate import validate_audit_report
+from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
@@ -21,7 +22,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     TicketResponse,
 )
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
-from zeroshot.pipeline.verification import ExecutionStatus, VerifyOutputResult
+from zeroshot.pipeline.verification import ExecutionStatus
 
 
 def snapshot() -> ReconstructionSnapshot:
