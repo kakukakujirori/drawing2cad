@@ -253,7 +253,9 @@ def test_execute_writes_verified_step_to_requested_path(tmp_path: Path) -> None:
         # A 10x20x30 box is six planes and twelve straight edges. The census
         # is here so that a coder handed this report can see when its arcs came
         # back as a hundred of them.
-        census=ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+        census=ShapeCensus(
+            1, 6000.0, (10.0, 20.0, 30.0), Counter({"Plane": 6}), Counter({"Line": 12})
+        ),
     )
     assert output_step_path.is_file()
     assert runner.calls[0][0] == "python /work/_run_program.py /work/model.py"

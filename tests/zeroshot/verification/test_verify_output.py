@@ -99,7 +99,11 @@ class StubCadQueryExecutor:
             step_path=step_path,
             valid=True,
             census=ShapeCensus(
-                1, 100.0 * (index + 1), Counter({"Plane": 6}), Counter({"Line": 12})
+                1,
+                100.0 * (index + 1),
+                (10.0, 20.0, 30.0),
+                Counter({"Plane": 6}),
+                Counter({"Line": 12}),
             ),
         )
 
@@ -828,7 +832,13 @@ def test_the_table_states_each_return_and_its_change() -> None:
         IntermediateReturn(
             "ret_base",
             valid=True,
-            census=ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+            census=ShapeCensus(
+                1,
+                6000.0,
+                (10.0, 20.0, 30.0),
+                Counter({"Plane": 6}),
+                Counter({"Line": 12}),
+            ),
         ),
         IntermediateReturn(
             "ret_hole",
@@ -836,6 +846,7 @@ def test_the_table_states_each_return_and_its_change() -> None:
             census=ShapeCensus(
                 1,
                 5880.0,
+                (10.0, 20.0, 30.0),
                 Counter({"Plane": 10}),
                 Counter({"Line": 20, "Circle": 4}),
             ),
@@ -843,23 +854,25 @@ def test_the_table_states_each_return_and_its_change() -> None:
     )
 
     assert _census_table(returns).splitlines() == [
-        "ret_base  volume 6000.0; faces 6 (Plane 6); edges 12 (Line 12)",
+        "ret_base  volume 6000.0; bbox 10.00 x 20.00 x 30.00; faces 6 (Plane 6); edges 12 (Line 12)",
         (
-            "ret_hole  volume 5880.0 (-120.0); faces 10 (+4: Plane +4); "
+            "ret_hole  volume 5880.0 (-120.0); bbox 10.00 x 20.00 x 30.00; faces 10 (+4: Plane +4); "
             "edges 24 (+12: Line +8, Circle +4)"
         ),
     ]
 
 
 def test_an_operation_that_built_nothing_shows_no_change() -> None:
-    census = ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12}))
+    census = ShapeCensus(
+        1, 6000.0, (10.0, 20.0, 30.0), Counter({"Plane": 6}), Counter({"Line": 12})
+    )
     returns = (
         IntermediateReturn("ret_base", census=census, valid=True),
         IntermediateReturn("ret_cleaned", census=census, valid=True),
     )
 
     assert _census_table(returns).splitlines()[1] == (
-        "ret_cleaned  volume 6000.0 (+0.0); faces 6 (+0); edges 12 (+0)"
+        "ret_cleaned  volume 6000.0 (+0.0); bbox 10.00 x 20.00 x 30.00; faces 6 (+0); edges 12 (+0)"
     )
 
 
@@ -868,13 +881,25 @@ def test_a_return_that_was_not_exported_carries_the_reason() -> None:
         IntermediateReturn(
             "ret_base",
             valid=True,
-            census=ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+            census=ShapeCensus(
+                1,
+                6000.0,
+                (10.0, 20.0, 30.0),
+                Counter({"Plane": 6}),
+                Counter({"Line": 12}),
+            ),
         ),
         IntermediateReturn("ret_count", error="TypeError: not a shape", valid=True),
         IntermediateReturn(
             "ret_grown",
             valid=True,
-            census=ShapeCensus(1, 9000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+            census=ShapeCensus(
+                1,
+                9000.0,
+                (10.0, 20.0, 45.0),
+                Counter({"Plane": 6}),
+                Counter({"Line": 12}),
+            ),
         ),
     )
 
@@ -886,7 +911,9 @@ def test_a_return_that_was_not_exported_carries_the_reason() -> None:
 
 
 def test_an_invalid_or_unchecked_brep_is_flagged_beside_its_census() -> None:
-    census = ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12}))
+    census = ShapeCensus(
+        1, 6000.0, (10.0, 20.0, 30.0), Counter({"Plane": 6}), Counter({"Line": 12})
+    )
     returns = (
         IntermediateReturn(
             "ret_base",
@@ -904,7 +931,7 @@ def test_an_invalid_or_unchecked_brep_is_flagged_beside_its_census() -> None:
     assert _census_table(returns).splitlines() == [
         (
             "ret_base   BRep INVALID before export (shape 1 of 1 is invalid); "
-            "volume 6000.0; faces 6 (Plane 6); edges 12 (Line 12)"
+            "volume 6000.0; bbox 10.00 x 20.00 x 30.00; faces 6 (Plane 6); edges 12 (Line 12)"
         ),
         (
             "ret_count  BRep validity unknown (holds no shape); "
@@ -959,8 +986,8 @@ def test_the_feedback_states_the_returns_and_where_they_were_drawn(
 
     text = _text(verifier.feedback())
 
-    assert "ret_base  volume 100.0; faces 6 (Plane 6); edges 12 (Line 12)" in text
-    assert "ret_hole  volume 200.0 (+100.0); faces 6 (+0); edges 12 (+0)" in text
+    assert "ret_base  volume 100.0; bbox 10.00 x 20.00 x 30.00; faces 6 (Plane 6); edges 12 (Line 12)" in text
+    assert "ret_hole  volume 200.0 (+100.0); bbox 10.00 x 20.00 x 30.00; faces 6 (+0); edges 12 (+0)" in text
     # Sandbox paths, and one sentence for a layout every return shares.
     assert "/work/attempts/round_000/coding/000/intermediate_returns/<name>/" in text
     # The table is a block of its own, not a JSON string full of escapes.
@@ -1055,13 +1082,23 @@ def test_a_part_that_broke_apart_says_how_many_pieces() -> None:
         IntermediateReturn(
             "ret_whole",
             valid=True,
-            census=ShapeCensus(1, 6000.0, Counter({"Plane": 6}), Counter({"Line": 12})),
+            census=ShapeCensus(
+                1,
+                6000.0,
+                (10.0, 20.0, 30.0),
+                Counter({"Plane": 6}),
+                Counter({"Line": 12}),
+            ),
         ),
         IntermediateReturn(
             "ret_split",
             valid=True,
             census=ShapeCensus(
-                3, 5000.0, Counter({"Plane": 18}), Counter({"Line": 36})
+                3,
+                5000.0,
+                (10.0, 20.0, 30.0),
+                Counter({"Plane": 18}),
+                Counter({"Line": 36}),
             ),
         ),
     )

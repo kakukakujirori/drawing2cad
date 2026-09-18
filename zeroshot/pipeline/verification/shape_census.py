@@ -41,11 +41,20 @@ class ShapeCensus:
 
     solids: int
     volume: float
+    extent: tuple[float, float, float]
     faces: Counter[str]
     edges: Counter[str]
 
+    def _describe_extent(self) -> str:
+        """The bounding box of the built solid, as the overall dimensions read.
+
+        Two decimals, because a part that came out 98.75 wide against a printed
+        100 is a real miss and `98.8` reads like agreement.
+        """
+        return "bbox " + " x ".join(f"{length:.2f}" for length in self.extent)
+
     def describe(self) -> str:
-        """Give the volume, then count the faces and edges by kind.
+        """Give the volume and size, then count the faces and edges by kind.
 
         One line, in the report the coder reads every turn: `faces 85 (Cylinder
         42, Plane 33, ...)`. Kinds rather than a total, because a total says a
@@ -59,6 +68,7 @@ class ShapeCensus:
             [
                 *([f"solids {self.solids}"] if self.solids != 1 else []),
                 f"volume {self.volume:.1f}",
+                self._describe_extent(),
                 *(
                     f"{label} {sum(counted.values())} ({_by_kind(counted)})"
                     for label, counted in (("faces", self.faces), ("edges", self.edges))
@@ -81,6 +91,7 @@ class ShapeCensus:
                 else []
             ),
             f"volume {self.volume:.1f} ({self.volume - previous.volume:+.1f})",
+            self._describe_extent(),
         ]
         for label, now, before in (
             ("faces", self.faces, previous.faces),
@@ -110,9 +121,11 @@ def read_census(step_path: Path) -> ShapeCensus | None:
         shape = cq.Compound.makeCompound(
             cq.importers.importStep(str(step_path)).vals()  # type: ignore[arg-type]
         )
+        box = shape.BoundingBox()
         return ShapeCensus(
             solids=len(shape.Solids()),
             volume=shape.Volume(),
+            extent=(box.xlen, box.ylen, box.zlen),
             faces=_kinds(shape.Faces(), BRepAdaptor_Surface),
             edges=_kinds(shape.Edges(), BRepAdaptor_Curve),
         )
