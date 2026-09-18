@@ -1,4 +1,8 @@
-"""Point each Pydantic error at the JSON the model wrote, in one short line."""
+"""Point each error at the JSON the model wrote, in one short line.
+
+A validator raises with a KeyLocation; only the workspace holds the text that
+turns one into a line and column, so the rendering lives on this side.
+"""
 
 import json
 import re
@@ -6,14 +10,43 @@ import re
 from pydantic import ValidationError
 from pydantic_core import ErrorDetails
 
-type JsonPath = tuple[str | int, ...]
+from zeroshot.pipeline.stages._base.validate import KeyLocation, LocatedError
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
+def semantic_errors(error: Exception, filename: str, raw: str | bytes) -> list[str]:
+    """`file:line:col $.path: reason` for each place a check named."""
+    if not isinstance(error, LocatedError):
+        return [f"{type(error).__name__}: {error}"]
+    text = _decoded(raw)
+    starts = _located_starts(text)
+    return [
+        f"{filename}{_where(text, starts.get(at))} {_rendered(at)}: {message}"
+        for at, message in error.found
+    ]
+
+
+def _where(text: str, start: int | None) -> str:
+    return f":{_line_column(text, start)}" if start is not None else ""
+
+
+def _located_starts(text: str) -> dict[KeyLocation, int]:
+    """Empty when the file cannot be indexed; the reasons still reach the agent."""
+    try:
+        json.loads(text)
+        return _starts(text)
+    except (json.JSONDecodeError, RecursionError, ValueError):
+        return {}
+
+
+def _decoded(raw: str | bytes) -> str:
+    return raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+
+
 def file_errors(error: ValidationError, filename: str, raw: str | bytes) -> list[str]:
     """`file:line:col $.path (name): reason` for each error in a written file."""
-    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    text = _decoded(raw)
     try:
         data = json.loads(text)
         starts = _starts(text)
@@ -25,8 +58,8 @@ def file_errors(error: ValidationError, filename: str, raw: str | bytes) -> list
         # Too deep or too long a number to locate; the reasons still reach the agent.
         return [f"{filename} {entry}" for _, entry in _entries(error, None)]
     return [
-        f"{filename}:{_line_column(text, starts[path])} {entry}"
-        for path, entry in _entries(error, data)
+        f"{filename}:{_line_column(text, starts[at])} {entry}"
+        for at, entry in _entries(error, data)
     ]
 
 
@@ -35,28 +68,28 @@ def answer_errors(error: ValidationError, answer: object) -> list[str]:
     return [entry for _, entry in _entries(error, answer)]
 
 
-def _entries(error: ValidationError, data: object) -> list[tuple[JsonPath, str]]:
+def _entries(error: ValidationError, data: object) -> list[tuple[KeyLocation, str]]:
     """Errors at one place, such as one per union branch, share an entry."""
-    reasons: dict[tuple[JsonPath, str | None], list[str]] = {}
+    reasons: dict[tuple[KeyLocation, str | None], list[str]] = {}
     for detail in error.errors(include_url=False, include_context=False):
         where = _located(detail["loc"], detail["input"], data)
         reasons.setdefault(where, []).append(_reason(detail))
     entries = []
-    for (path, name), found in reasons.items():
-        where = f"{_rendered(path)} ({name})" if name else _rendered(path)
-        entries.append((path, f"{where}: {'; '.join(dict.fromkeys(found))}"))
+    for (at, name), found in reasons.items():
+        shown = f"{_rendered(at)} ({name})" if name else _rendered(at)
+        entries.append((at, f"{shown}: {'; '.join(dict.fromkeys(found))}"))
     return entries
 
 
 def _located(
     loc: tuple[int | str, ...], rejected: object, data: object
-) -> tuple[JsonPath, str | None]:
+) -> tuple[KeyLocation, str | None]:
     """The rejected value's place, and the innermost name on the way.
 
     Parts the submission lacks, such as a union branch label or a missing field,
     are skipped. The walk stops at the rejected value, even if a key matches a label.
     """
-    path: list[str | int] = []
+    walked: list[str | int] = []
     node, name = data, _name(data)
     for part in loc:
         if node == rejected:
@@ -68,9 +101,9 @@ def _located(
                 node = node[part]
             case _:
                 continue
-        path.append(part)
+        walked.append(part)
         name = _name(node) or name
-    return tuple(path), name
+    return tuple(walked), name
 
 
 def _name(node: object) -> str | None:
@@ -84,8 +117,8 @@ def _reason(detail: ErrorDetails) -> str:
     return detail["msg"].removeprefix("Value error, ")
 
 
-def _rendered(path: JsonPath) -> str:
-    return "$" + "".join(_step(part) for part in path)
+def _rendered(at: KeyLocation) -> str:
+    return "$" + "".join(_step(part) for part in at)
 
 
 def _step(part: str | int) -> str:
@@ -94,12 +127,12 @@ def _step(part: str | int) -> str:
     return f".{part}" if _IDENTIFIER.fullmatch(part) else f"[{json.dumps(part)}]"
 
 
-def _starts(text: str) -> dict[JsonPath, int]:
+def _starts(text: str) -> dict[KeyLocation, int]:
     """Where each value of valid JSON begins; an object member begins at its key.
 
     A repeated key moves its places to the last copy, the one parsers keep.
     """
-    starts: dict[JsonPath, int] = {}
+    starts: dict[KeyLocation, int] = {}
     decoder = json.JSONDecoder()
 
     def skip(index: int) -> int:
@@ -107,15 +140,15 @@ def _starts(text: str) -> dict[JsonPath, int]:
             index += 1
         return index
 
-    def value(index: int, path: JsonPath) -> int:
+    def value(index: int, at: KeyLocation) -> int:
         index = skip(index)
-        starts[path] = index
+        starts[at] = index
         if text[index] == "{":
             index = skip(index + 1)
             while text[index] != "}":
                 key, after = decoder.raw_decode(text, index)
-                end = value(skip(after) + 1, (*path, key))
-                starts[(*path, key)] = index
+                end = value(skip(after) + 1, (*at, key))
+                starts[(*at, key)] = index
                 index = skip(end)
                 if text[index] == ",":
                     index = skip(index + 1)
@@ -123,7 +156,7 @@ def _starts(text: str) -> dict[JsonPath, int]:
         if text[index] == "[":
             index, item = skip(index + 1), 0
             while text[index] != "]":
-                index = skip(value(index, (*path, item)))
+                index = skip(value(index, (*at, item)))
                 item += 1
                 if text[index] == ",":
                     index = skip(index + 1)

@@ -5,7 +5,7 @@ Your artifact is `$interpretation_output_path`. It is always seeded in full: on 
 
 Successful verification fills the derived fields in that same file. Continue editing it and use the automatic feedback to correct errors and inconsistent measurements.
 
-After the first pass across the views, save a provisional artifact by turn 5. The artifact carries the adopted geometry and its explicit nulls; explain what is still open in your final answer. Use subsequent image inspections to resolve those issues and complete the major geometry, then resubmit. Reserve turns to read the automatic validation and calibration feedback and correct errors. A valid file confirms the contract and scale checks; it does not confirm the 3D interpretation.
+After the first pass across the views, save a provisional artifact. The artifact carries the adopted geometry and its explicit nulls; explain what is still open in your final answer. Use subsequent image inspections to resolve those issues and complete the major geometry, then resubmit. Reserve turns to read the automatic validation and calibration feedback and correct errors. A valid file confirms the contract and scale checks; it does not confirm the 3D interpretation.
 
 After the current artifact validates, finish tool work and return one TicketAnswers with exactly one response per assigned ticket and none for other tickets, plus one `stage_report.concerns` entry per remaining concern those responses do not explain. Claim only changes present in that artifact.
 

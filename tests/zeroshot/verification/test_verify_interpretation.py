@@ -216,6 +216,22 @@ def test_a_schema_error_points_at_its_key_in_the_written_file(tmp_path):
     assert rest == f"$.features[0].center ({name}): Extra inputs are not permitted"
 
 
+def test_a_check_after_parsing_points_at_its_key_in_the_written_file(tmp_path):
+    """The schema is not the only thing that rejects a file; locate the rest too."""
+    verifier, candidate, _ = _case(tmp_path)
+    data = candidate.model_dump(mode="json")
+    data["datum"] = f"origin {UNDECIDED}"
+    text = json.dumps(data, indent=2)
+    verifier.source_path.write_text(text)
+
+    (error,) = json.loads(verifier.feedback()[0]["text"].splitlines()[-1])["errors"]
+
+    position, rest = error.split(" ", 1)
+    _, line, column = position.split(":")
+    assert text.splitlines()[int(line) - 1][int(column) - 1 :].startswith('"datum"')
+    assert rest.startswith(f"$.datum: datum still holds {UNDECIDED}")
+
+
 def test_a_pictorial_input_is_not_required_to_come_back_as_a_full_page(tmp_path):
     """A pictorial fixes no axes, so leaving it undeclared loses no coordinate."""
     verifier, candidate, seed = _case(tmp_path, pictorial="hlg")

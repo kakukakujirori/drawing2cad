@@ -14,6 +14,7 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import ValidationError
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages._base.validate import LocatedError
 from zeroshot.pipeline.stages.interpretation.contracts import (
     ORTHOGRAPHIC_VIEWS,
     PICTORIAL_VIEWS,
@@ -23,7 +24,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 )
 from zeroshot.pipeline.stages.interpretation.validate import validate_interpretation
 from zeroshot.pipeline.verification.attempts import AttemptStore
-from zeroshot.pipeline.verification.validation_errors import file_errors
+from zeroshot.pipeline.verification.error_locations import file_errors, semantic_errors
 
 
 @dataclass(frozen=True)
@@ -136,9 +137,12 @@ class InterpretationVerifier:
             submitted_interpretation = DrawingInterpretation.model_validate_json(
                 payload
             )
-            by_name = {view.name: view for view in submitted_interpretation.views}
+            by_name = {
+                view.name: (index, view)
+                for index, view in enumerate(submitted_interpretation.views)
+            }
             for original in self._original_views:
-                view = by_name.get(original.name)
+                index, view = by_name.get(original.name, (None, None))
                 if view is None and original.role in PICTORIAL_VIEWS:
                     continue
                 if (
@@ -147,10 +151,11 @@ class InterpretationVerifier:
                     or view.role != original.role
                     or not view.region.matches_bounds(original.region)
                 ):
-                    raise ValueError(
+                    raise LocatedError.at(
+                        ("views",) if index is None else ("views", index),
                         "Retain each original input file with its registered name, "
                         f"role and full-file region: {original.name} ({original.role}), "
-                        f"{original.file}. Dimensions may be added."
+                        f"{original.file}. Dimensions may be added.",
                     )
             if any(
                 original.role is View.FULL_PAGE for original in self._original_views
@@ -158,11 +163,12 @@ class InterpretationVerifier:
                 view.role in ORTHOGRAPHIC_VIEWS
                 for view in submitted_interpretation.views
             ):
-                raise ValueError(
+                raise LocatedError.at(
+                    ("views",),
                     "A full_page input is an unsplit page. Add at least one DrawingView "
                     "with an orthographic role (front, back, top, bottom, left or right). "
                     "For a single-view drawing only showing the front or the top, "
-                    "add a new DrawingView that uses the same file with a full-file region."
+                    "add a new DrawingView that uses the same file with a full-file region.",
                 )
             validated_interpretation, reports = validate_interpretation(
                 submitted_interpretation,
@@ -179,7 +185,7 @@ class InterpretationVerifier:
         except ValidationError as error:
             errors.extend(file_errors(error, self.source_filename, payload))
         except Exception as error:  # noqa: BLE001 - return submission errors to the agent
-            errors.append(f"{type(error).__name__}: {error}")
+            errors.extend(semantic_errors(error, self.source_filename, payload))
         (attempt_dir / "_interpretation_validation_log.json").write_text(
             json.dumps({"errors": errors, "reports": reports}, indent=2) + "\n",
             encoding="utf-8",

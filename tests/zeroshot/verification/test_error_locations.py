@@ -5,7 +5,15 @@ from typing import Self
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
-from zeroshot.pipeline.verification.validation_errors import answer_errors, file_errors
+from zeroshot.pipeline.stages._base.validate import (
+    LocatedError,
+    SubmissionValidationError,
+)
+from zeroshot.pipeline.verification.error_locations import (
+    answer_errors,
+    file_errors,
+    semantic_errors,
+)
 
 _NOT_A_NUMBER = "Input should be a valid number, unable to parse string as a number"
 
@@ -101,3 +109,56 @@ def test_a_repeated_key_points_at_the_copy_that_was_validated() -> None:
     assert _file_errors(text) == [
         "sheet.json:2:12 $.parts[0] (part_b): field 'size' is required"
     ]
+
+
+_SHEET = """{
+  "datum": "???",
+  "views": [
+    {
+      "name": "view_front",
+      "dimensions": [
+        {"name": "dim_a"},
+        {"name": "dim_d7"}
+      ]
+    }
+  ]
+}"""
+
+
+def test_a_check_that_runs_after_parsing_points_at_the_place_it_named() -> None:
+    found = LocatedError(
+        [
+            (("datum",), "datum still holds ???"),
+            (("views", 0, "dimensions", 1), "dim_d7: measured_length exceeds"),
+        ]
+    )
+
+    assert semantic_errors(found, "interpretation.json", _SHEET) == [
+        "interpretation.json:2:3 $.datum: datum still holds ???",
+        (
+            "interpretation.json:8:9 $.views[0].dimensions[1]: "
+            "dim_d7: measured_length exceeds"
+        ),
+    ]
+
+
+def test_a_path_the_file_lacks_still_reports_its_reason() -> None:
+    found = LocatedError.at(("views", 0, "scale"), "scale disagrees")
+
+    assert semantic_errors(found, "interpretation.json", _SHEET) == [
+        "interpretation.json $.views[0].scale: scale disagrees"
+    ]
+
+
+def test_an_error_that_named_no_place_keeps_the_type_it_was_reported_under() -> None:
+    assert semantic_errors(OSError("gone"), "interpretation.json", _SHEET) == [
+        "OSError: gone"
+    ]
+
+
+def test_a_located_error_reads_as_its_reasons() -> None:
+    """`raise_together` and the retry middleware both format it as a string."""
+    found = LocatedError([(("a",), "first"), (("b",), "second")])
+
+    assert isinstance(found, SubmissionValidationError)
+    assert str(found) == "first\nsecond"

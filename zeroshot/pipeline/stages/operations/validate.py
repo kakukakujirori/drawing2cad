@@ -1,4 +1,8 @@
-from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages._base.validate import (
+    KeyLocation,
+    LocatedError,
+    SubmissionValidationError,
+)
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.resolve_refs import (
@@ -15,44 +19,50 @@ def validate_operations(
         raise SubmissionValidationError(
             "operations requires an integrated DrawingInterpretation"
         )
-    errors = _operation_plan_errors(operations, interpretation)
-    if errors:
-        raise SubmissionValidationError("\n".join(errors))
+    if errors := _operation_plan_errors(operations, interpretation):
+        raise LocatedError(errors)
 
 
 def _operation_plan_errors(
     plan: OperationPlan,
     interpretation: DrawingInterpretation,
-) -> list[str]:
+) -> list[tuple[KeyLocation, str]]:
     """Cross-stage contradictions that neither artifact can check alone."""
     established = {feature.name for feature in interpretation.features}
+    at = {operation.name: index for index, operation in enumerate(plan.proposal)}
     built = {
-        semantic for operation in plan.proposal for semantic in operation.semantics
+        semantic: ("proposal", at[operation.name], "semantics", position)
+        for operation in plan.proposal
+        for position, semantic in enumerate(operation.semantics)
     }
-    errors: list[str] = []
+    errors: list[tuple[KeyLocation, str]] = []
 
-    if uncovered := sorted(established - built):
+    # A feature no operation builds is missing from the plan, so it has no place in it.
+    if uncovered := sorted(established - built.keys()):
         named = ", ".join(uncovered)
-        errors.append(
+        missing = (
             f"The interpretation establishes {named}, and no operation in the plan "
             "builds them. Add the operations that build them."
         )
+        errors.append((("proposal",), missing))
 
-    if unknown := sorted(built - established):
-        named = ", ".join(unknown)
-        errors.append(
-            f"The plan cites {named}, which the interpretation does not contain. "
+    for unknown in sorted(built.keys() - established):
+        uncited = (
+            f"The plan cites {unknown}, which the interpretation does not contain. "
             "Cite the features it does have."
         )
+        errors.append((built[unknown], uncited))
 
     for operation in sorted(plan.proposal, key=lambda item: item.name):
         for address in dict.fromkeys(
             unresolved_references(operation.detail, interpretation)
         ):
             maybe = reference_suggestions(address, interpretation)
+            unknown_reference = f"{operation.name}: unknown reference {address}." + (
+                f" Maybe: {', '.join(maybe)}?" if maybe else ""
+            )
             errors.append(
-                f"{operation.name}: unknown reference {address}."
-                + (f" Maybe: {', '.join(maybe)}?" if maybe else "")
+                (("proposal", at[operation.name], "detail"), unknown_reference)
             )
 
     return errors

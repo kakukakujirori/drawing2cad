@@ -14,7 +14,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretat
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.operations.validate import validate_operations
 from zeroshot.pipeline.verification.attempts import AttemptStore
-from zeroshot.pipeline.verification.validation_errors import file_errors
+from zeroshot.pipeline.verification.error_locations import file_errors, semantic_errors
 
 
 class OperationPlanVerifier:
@@ -98,7 +98,9 @@ class OperationPlanVerifier:
                 file_errors(invalid, self.source_filename, contents or b"")
             )
         except Exception as invalid:  # noqa: BLE001 - return errors to the agent
-            error = f"{type(invalid).__name__}: {invalid}"
+            error = "\n".join(
+                semantic_errors(invalid, self.source_filename, contents or b"")
+            )
         (attempt_dir / "_operations_validation_log.json").write_text(
             json.dumps({"error": error}, indent=2) + "\n", encoding="utf-8"
         )

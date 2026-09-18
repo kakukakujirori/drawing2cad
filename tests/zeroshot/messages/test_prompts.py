@@ -635,6 +635,9 @@ def test_interpretation_prioritises_a_verified_draft_and_source_pixel_measuremen
 ) -> None:
     rendered = render_stage("interpretation")
     assert "save a provisional artifact" in rendered
+    # Ordered by the pass it follows, not by a turn number picked in advance.
+    assert "save a provisional artifact by turn" not in rendered
+    assert "Reserve turns to read the automatic validation" in rendered
     assert "current artifact validates" in rendered
     assert "top left, x right, y down" in rendered
     assert "native pixels, not a resized display" in rendered

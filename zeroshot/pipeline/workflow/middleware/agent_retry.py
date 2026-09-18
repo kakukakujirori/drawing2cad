@@ -17,7 +17,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from openai import LengthFinishReasonError
 from pydantic import ValidationError
 
-from zeroshot.pipeline.verification.validation_errors import answer_errors
+from zeroshot.pipeline.verification.error_locations import answer_errors
 
 from .connection_retry import ModelConnectionRetry, report_model_retry
 

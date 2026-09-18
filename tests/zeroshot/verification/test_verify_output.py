@@ -986,8 +986,14 @@ def test_the_feedback_states_the_returns_and_where_they_were_drawn(
 
     text = _text(verifier.feedback())
 
-    assert "ret_base  volume 100.0; bbox 10.00 x 20.00 x 30.00; faces 6 (Plane 6); edges 12 (Line 12)" in text
-    assert "ret_hole  volume 200.0 (+100.0); bbox 10.00 x 20.00 x 30.00; faces 6 (+0); edges 12 (+0)" in text
+    assert (
+        "ret_base  volume 100.0; bbox 10.00 x 20.00 x 30.00; faces 6 (Plane 6); edges 12 (Line 12)"
+        in text
+    )
+    assert (
+        "ret_hole  volume 200.0 (+100.0); bbox 10.00 x 20.00 x 30.00; faces 6 (+0); edges 12 (+0)"
+        in text
+    )
     # Sandbox paths, and one sentence for a layout every return shares.
     assert "/work/attempts/round_000/coding/000/intermediate_returns/<name>/" in text
     # The table is a block of its own, not a JSON string full of escapes.

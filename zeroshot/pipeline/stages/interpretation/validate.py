@@ -9,6 +9,7 @@ from PIL import Image
 
 from zeroshot.pipeline.messages.manifest import read_dxf_frame
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages._base.validate import KeyLocation, LocatedError
 from zeroshot.pipeline.stages.interpretation.contracts import (
     UNDECIDED,
     DrawingInterpretation,
@@ -19,6 +20,7 @@ from zeroshot.pipeline.tools.calculate_drawing_scale import calculate_drawing_sc
 def _region(
     region: dict[str, Any],
     subject: str,
+    location: KeyLocation,
     size: tuple[float, float],
     scale: float | None,
     *,
@@ -27,14 +29,18 @@ def _region(
     px, uv = region["box_px"], region["box_uv"]
     if dxf:
         if px is not None or uv is None:
-            raise ValueError(f"{subject}: DXF requires box_uv and forbids box_px")
+            raise LocatedError.at(
+                location, f"{subject}: DXF requires box_uv and forbids box_px"
+            )
         box = uv
     else:
         if px is None:
-            raise ValueError(f"{subject}: raster regions require box_px")
+            raise LocatedError.at(location, f"{subject}: raster regions require box_px")
         box = px
     if box[2] > size[0] + 1e-7 or box[3] > size[1] + 1e-7:
-        raise ValueError(f"{subject}: region exceeds referenced file bounds {size}")
+        raise LocatedError.at(
+            location, f"{subject}: region exceeds referenced file bounds {size}"
+        )
 
     if not dxf:
         # Derived from box_px and the current scale; a submitted value may be stale.
@@ -73,24 +79,26 @@ def validate_interpretation(
     """
     interpretation = DrawingInterpretation.model_validate(interpretation.model_dump())
     if UNDECIDED in interpretation.datum:
-        raise ValueError(
+        raise LocatedError.at(
+            ("datum",),
             f"datum still holds {UNDECIDED}: state the model frame, and "
-            "report any doubt as a concern in your stage report"
+            "report any doubt as a concern in your stage report",
         )
     # A readable printed length is what calibrates a file, so its measurement
     # is required; an unreadable one cannot calibrate and stays optional.
     if unmeasured := [
-        dim.name
-        for view in interpretation.views
-        for dim in view.dimensions
+        (("views", v, "dimensions", d), dim.name)
+        for v, view in enumerate(interpretation.views)
+        for d, dim in enumerate(view.dimensions)
         if dim.kind == "linear"
         and dim.nominal_value is not None
         and dim.nominal_value > 0
         and dim.measured_length is None
     ]:
-        raise ValueError(
+        raise LocatedError.at(
+            unmeasured[0][0],
             "measure every linear dimension whose printed value you read, in "
-            f"its own view file's units: {', '.join(unmeasured)}"
+            f"its own view file's units: {', '.join(n for _, n in unmeasured)}",
         )
     data = interpretation.model_dump()
     sizes: dict[tuple[Path, float | None], tuple[float, float]] = {}
@@ -98,24 +106,30 @@ def validate_interpretation(
     reports: dict[str, dict[str, Any]] = {}
     contexts: dict[str, tuple[tuple[float, float], float | None, bool]] = {}
 
-    for view, output in zip(interpretation.views, data["views"]):
+    for index, (view, output) in enumerate(zip(interpretation.views, data["views"])):
+        location: KeyLocation = ("views", index)
         path = workdir.sandbox_to_host_path(view.file)
         if path.is_symlink() or not path.resolve().is_relative_to(
             workdir.host_bind_dir.resolve()
         ):
-            raise ValueError(
-                f"{view.name}.file must stay inside the workspace without symlinks"
+            raise LocatedError.at(
+                (*location, "file"),
+                f"{view.name}.file must stay inside the workspace without symlinks",
             )
         if not path.is_file():
-            raise ValueError(f"{view.name}.file is not a regular file: {view.file}")
+            raise LocatedError.at(
+                (*location, "file"),
+                f"{view.name}.file is not a regular file: {view.file}",
+            )
         path = path.resolve()
         dxf = path.suffix.lower() == ".dxf"
         factor = None
         if dxf:
             factor = (dxf_mm_per_unit or {}).get(view.name)
             if factor is None:
-                raise ValueError(
-                    f"{view.name}: supply explicit DXF mm_per_unit input metadata"
+                raise LocatedError.at(
+                    location,
+                    f"{view.name}: supply explicit DXF mm_per_unit input metadata",
                 )
         key = (path, factor)
         if key not in sizes:
@@ -129,17 +143,19 @@ def validate_interpretation(
         size = sizes[key]
         if dxf:
             if view.image_size is not None or view.scale is not None:
-                raise ValueError(
-                    f"{view.name}: native DXF cannot have image_size or pixel scale"
+                raise LocatedError.at(
+                    (*location, "image_size"),
+                    f"{view.name}: native DXF cannot have image_size or pixel scale",
                 )
             scale = None
             reports[view.name] = {"status": "native_dxf", **dxf_frames[key]}
         else:
             if view.image_size is not None and view.image_size != size:
-                raise ValueError(
-                    f"{view.name}: image_size disagrees with the source file"
+                raise LocatedError.at(
+                    (*location, "image_size"),
+                    f"{view.name}: image_size disagrees with the source file",
                 )
-            for dim in view.dimensions:
+            for position, dim in enumerate(view.dimensions):
                 # A fitted radius of a partial arc can exceed the image bounds;
                 # a directly measured linear segment cannot.
                 if (
@@ -147,8 +163,9 @@ def validate_interpretation(
                     and dim.measured_length is not None
                     and dim.measured_length > math.hypot(*size)
                 ):
-                    raise ValueError(
-                        f"{dim.name}: measured_length exceeds sheet image diagonal"
+                    raise LocatedError.at(
+                        (*location, "dimensions", position, "measured_length"),
+                        f"{dim.name}: measured_length exceeds sheet image diagonal",
                     )
             report = calculate_drawing_scale(
                 [
@@ -170,26 +187,39 @@ def validate_interpretation(
             output.update(image_size=size, scale=scale)
         contexts[view.name] = (size, scale, dxf)
 
-    for output in data["views"]:
+    for index, output in enumerate(data["views"]):
         region = output["region"]
         size, scale, dxf = contexts[region["view"]]
         output["region"] = _region(
-            region, f"{output['name']}.region", size, scale, dxf=dxf
+            region,
+            f"{output['name']}.region",
+            ("views", index, "region"),
+            size,
+            scale,
+            dxf=dxf,
         )
-        for dim in output["dimensions"]:
+        for position, dim in enumerate(output["dimensions"]):
             size, scale, dxf = contexts[dim["region"]["view"]]
             dim["region"] = _region(
-                dim["region"], f"{dim['name']}.region", size, scale, dxf=dxf
+                dim["region"],
+                f"{dim['name']}.region",
+                ("views", index, "dimensions", position, "region"),
+                size,
+                scale,
+                dxf=dxf,
             )
 
-    for feature, output in zip(interpretation.features, data["features"]):
+    for index, (feature, output) in enumerate(
+        zip(interpretation.features, data["features"])
+    ):
         output["evidence"] = []
-        for index, region in enumerate(feature.evidence):
+        for position, region in enumerate(feature.evidence):
             size, scale, dxf = contexts[region.view]
             output["evidence"].append(
                 _region(
                     region.model_dump(),
-                    f"{feature.name}.evidence[{index}]",
+                    f"{feature.name}.evidence[{position}]",
+                    ("features", index, "evidence", position),
                     size,
                     scale,
                     dxf=dxf,
