@@ -87,14 +87,23 @@ def _keep(namespace: dict[str, object], names: Sequence[str]) -> None:
     is kept as last assigned. One never assigned leaves no file.
     """
     directory = Path(INTERMEDIATE_RETURNS_DIR)
-    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        print(f"no outputs kept: {error}", file=sys.stderr)
+        return
     for name in names:
         if name not in namespace:
             continue
-        metadata = _keep_one(namespace[name], name, directory)
-        (directory / f"{name}{METADATA_SUFFIX}").write_text(
-            json.dumps(metadata), encoding="utf-8"
-        )
+        # Per output: one that cannot be saved must not cost the others their
+        # diagnostics, and must not raise over the failure being reported.
+        try:
+            metadata = _keep_one(namespace[name], name, directory)
+            (directory / f"{name}{METADATA_SUFFIX}").write_text(
+                json.dumps(metadata), encoding="utf-8"
+            )
+        except Exception as error:  # noqa: BLE001 - reported and the next output tried
+            print(f"{name}: not kept: {type(error).__name__}: {error}", file=sys.stderr)
 
 
 def main(argv: Sequence[str]) -> int:

@@ -14,6 +14,10 @@ from zeroshot.pipeline.sandbox import (
     SandboxStatus,
     SandboxWorkdir,
 )
+from zeroshot.pipeline.verification._run_program import (
+    INTERMEDIATE_RETURNS_DIR,
+    _keep,
+)
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
@@ -828,3 +832,75 @@ ret_nested = cq.Compound.makeCompound([cq.Compound.makeCompound([]), result.val(
     output = report.intermediate_returns[0]
     assert output.step_path is not None and output.step_path.is_file()
     assert output.census is None
+
+
+def test_a_partial_step_left_by_a_failed_export_is_not_a_kept_output(
+    tmp_path: Path,
+) -> None:
+    """The writer can create the file and then raise; the reason outranks the file."""
+    sandbox_dir = tmp_path / "sandbox"
+    sandbox_dir.mkdir()
+    (sandbox_dir / "ret_base.json").write_text(
+        '{"valid": true, "validity_reason": null, '
+        '"export_error": "RuntimeError: ran out of disk"}',
+        encoding="utf-8",
+    )
+    (sandbox_dir / "ret_base.step").write_text("ISO-10303-21;\n", encoding="utf-8")
+
+    (base,) = _read_returns(["ret_base"], sandbox_dir, tmp_path / "host")
+
+    assert base.error == "RuntimeError: ran out of disk"
+    assert base.step_path is None
+    assert base.census is None
+    assert base.valid is True
+
+
+def test_an_output_whose_metadata_cannot_be_saved_does_not_cost_the_rest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    write_text = Path.write_text
+
+    def refuse_the_first(self: Path, *args: object, **kwargs: object) -> int:
+        if self.name == "ret_a.json":
+            raise PermissionError("no room for diagnostics")
+        return write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", refuse_the_first)
+
+    _keep({"ret_a": 1, "ret_b": 2}, ["ret_a", "ret_b"])
+
+    kept = tmp_path / INTERMEDIATE_RETURNS_DIR
+    assert not (kept / "ret_a.json").exists()
+    assert (kept / "ret_b.json").is_file()
+    assert "ret_a: not kept: PermissionError" in capsys.readouterr().err
+
+
+def test_a_host_directory_that_cannot_be_made_costs_only_that_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caller has yet to read the CAD result, so saving must not raise over it."""
+    sandbox_dir = tmp_path / "sandbox"
+    sandbox_dir.mkdir()
+    (sandbox_dir / "ret_base.json").write_text(
+        '{"valid": true, "validity_reason": null, "export_error": null}',
+        encoding="utf-8",
+    )
+    _write_valid_box_step(sandbox_dir / "ret_base.step")
+    mkdir = Path.mkdir
+
+    def refuse_the_host(self: Path, *args: object, **kwargs: object) -> None:
+        if "host" in self.parts:
+            raise PermissionError("read-only artifact root")
+        mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "mkdir", refuse_the_host)
+
+    (base,) = _read_returns(["ret_base"], sandbox_dir, tmp_path / "host")
+
+    assert base.error == "not kept: read-only artifact root"
+    assert base.step_path is None
+    assert base.valid is True

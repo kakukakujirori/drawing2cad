@@ -101,11 +101,13 @@ def _read_one_return(
         "validity_reason": metadata.get("validity_reason"),
     }
 
-    # STEP check
+    # STEP check. A partial file the failed export left behind is not an output,
+    # so the reason comes first: a readable STEP would otherwise hide it.
+    if export_error := metadata.get("export_error"):
+        return IntermediateReturn(name, error=export_error, **validity)
     built = sandbox_temp_returns_dir / f"{name}.step"
     if not built.is_file():
-        error = metadata.get("export_error") or "no step file was written"
-        return IntermediateReturn(name, error=error, **validity)
+        return IntermediateReturn(name, error="no step file was written", **validity)
 
     # STEP copy to host (One directory per return, laid out like the attempt that holds it)
     kept = host_dest_returns_dir / name / "output.step"
@@ -131,7 +133,8 @@ def _read_returns(
     """
     if not sandbox_temp_returns_dir.is_dir():
         return ()
-    host_dest_returns_dir.mkdir(parents=True, exist_ok=True)
+    # No mkdir here: each kept return makes its own directory and reports its own
+    # failure. Raising would lose the CAD result the caller has yet to read.
     return tuple(
         _read_one_return(name, sandbox_temp_returns_dir, host_dest_returns_dir)
         for name in ret_names

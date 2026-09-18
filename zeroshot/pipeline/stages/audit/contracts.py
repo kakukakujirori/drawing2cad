@@ -289,7 +289,7 @@ class AuditFinding(BaseModel):
     related_ticket_ids: list[str] = Field(
         ...,
         description=(
-            "If this finding describes the remaining problem of a current defect ticket "
+            "If this finding describes the remaining problem of an open ticket "
             "you reviewed as unsolved, list that ticket's ID. Use [] for a new defect. "
             "Several tickets may share a finding, and "
             "one ticket may require several findings. These are review links, "
@@ -361,7 +361,7 @@ class AuditFinding(BaseModel):
 
 
 class TicketReview(BaseModel):
-    """Whether a previously observed defect is resolved in the current artifacts."""
+    """Whether an open ticket's issue is settled in the current artifacts."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -373,7 +373,7 @@ class TicketReview(BaseModel):
     summary: str = Field(
         ...,
         description=(
-            "The current check and why the old defect is resolved or remains. "
+            "The current check and why the ticket's issue is settled or remains. "
             "Do not repeat a finding's backtrace or revision request here."
         ),
     )
