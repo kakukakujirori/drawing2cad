@@ -77,6 +77,21 @@ def validate_interpretation(
             f"datum still holds {UNDECIDED}: state the model frame, and "
             "report any doubt as a concern in your stage report"
         )
+    # A readable printed length is what calibrates a file, so its measurement
+    # is required; an unreadable one cannot calibrate and stays optional.
+    if unmeasured := [
+        dim.name
+        for view in interpretation.views
+        for dim in view.dimensions
+        if dim.kind == "linear"
+        and dim.nominal_value is not None
+        and dim.nominal_value > 0
+        and dim.measured_length is None
+    ]:
+        raise ValueError(
+            "measure every linear dimension whose printed value you read, in "
+            f"its own view file's units: {', '.join(unmeasured)}"
+        )
     data = interpretation.model_dump()
     sizes: dict[tuple[Path, float | None], tuple[float, float]] = {}
     dxf_frames: dict[tuple[Path, float | None], dict[str, Any]] = {}

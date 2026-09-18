@@ -136,7 +136,7 @@ class Dimension(Contract):
     measured_length: float | None = Field(
         default=None,
         gt=0,
-        description="Independently measured length in the containing DrawingView.file: pixels at that file's resolution for raster images, native drawing units for DXF. Match nominal_value's extent (diameter with diameter, radius with radius). Null for angles or unmeasured lengths; never infer it from nominal_value or calibration scale.",
+        description="Independently measured length in the containing DrawingView.file: pixels at that file's resolution for raster images, native drawing units for DXF. Required for every linear dimension whose nominal_value is readable, since those calibrate the pixel-to-mm scale. Optional for radius and diameter, and for a linear callout whose printed value is unreadable; any measurement you supply joins the same calibration. Match nominal_value's extent (diameter with diameter, radius with radius). Angles never carry one, and never infer a measurement from nominal_value or calibration scale.",
     )
     region: Region = Field(
         ...,

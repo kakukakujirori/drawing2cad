@@ -207,7 +207,7 @@ def test_unconfirmed_calibration_does_not_publish_scale_or_uv(
     assert stale.features[0].evidence[0].box_uv is None
 
 
-def test_calibration_ignores_angles_unreadable_zero_and_unmeasured_figures(
+def test_calibration_ignores_angles_and_unreadable_or_zero_figures(
     tmp_path: Path,
 ) -> None:
     data = raster_case(tmp_path).model_dump()
@@ -216,7 +216,6 @@ def test_calibration_ignores_angles_unreadable_zero_and_unmeasured_figures(
         ("angle", "angular", 90, None),
         ("unreadable", "linear", None, 100),
         ("zero", "linear", 0, 100),
-        ("unmeasured", "linear", 10, None),
     ]:
         dimensions.append(
             dimensions[0]
@@ -229,6 +228,44 @@ def test_calibration_ignores_angles_unreadable_zero_and_unmeasured_figures(
         )
     accepted, diagnostics = validate_interpretation(
         DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
+    )
+    assert accepted.views[0].scale == pytest.approx(0.1)
+    assert len(diagnostics["view_front"]["measurements"]) == 3
+
+
+def _with_dimensions(tmp_path: Path, extra) -> DrawingInterpretation:
+    data = raster_case(tmp_path).model_dump()
+    dimensions = data["views"][0]["dimensions"]
+    for name, kind, nominal, measured in extra:
+        dimensions.append(
+            dimensions[0]
+            | {
+                "name": f"dim_{name}",
+                "kind": kind,
+                "nominal_value": nominal,
+                "measured_length": measured,
+            }
+        )
+    return DrawingInterpretation.model_validate(data)
+
+
+def test_a_readable_linear_figure_must_carry_its_measurement(tmp_path: Path) -> None:
+    submitted = _with_dimensions(tmp_path, [("slot_width", "linear", 10, None)])
+    with pytest.raises(ValueError, match="dim_slot_width"):
+        validate_interpretation(submitted, workdir=SandboxWorkdir(tmp_path))
+
+
+def test_arcs_and_unreadable_lengths_may_stay_unmeasured(tmp_path: Path) -> None:
+    submitted = _with_dimensions(
+        tmp_path,
+        [
+            ("fillet", "radius", 16, None),
+            ("bore", "diameter", 8, None),
+            ("illegible", "linear", None, None),
+        ],
+    )
+    accepted, diagnostics = validate_interpretation(
+        submitted, workdir=SandboxWorkdir(tmp_path)
     )
     assert accepted.views[0].scale == pytest.approx(0.1)
     assert len(diagnostics["view_front"]["measurements"]) == 3
