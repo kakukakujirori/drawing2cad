@@ -270,6 +270,8 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "audit_agent_builder",
         "max_audit_reject_count",
         "max_stage_validation_retries",
+        "hypothesis_comparison_enabled",
+        "hypothesis_max_model_calls_per_round",
         "show_intermediate_returns",
     }
 

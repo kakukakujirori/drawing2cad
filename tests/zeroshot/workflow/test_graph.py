@@ -658,6 +658,26 @@ def test_only_the_interpretation_stage_receives_the_scale_tool(monkeypatch):
         assert model.bound_tool_names == ("run_shell", "load_image")
 
 
+def test_the_interpreter_alone_may_have_candidates_checked(monkeypatch):
+    _stub_verification(monkeypatch, _verified())
+    interpreter = ScriptedChatModel(responses=_interpretation_script())
+    planner = ScriptedChatModel(responses=_operations_script())
+    coder = ScriptedChatModel(responses=(_coding_submission(),))
+    auditor = ScriptedChatModel(responses=(_accepted_audit(),))
+    with SandboxWorkdir() as workdir:
+        _graph(
+            workdir,
+            interpreter=interpreter,
+            planner=planner,
+            coder=coder,
+            auditor=auditor,
+            hypothesis_comparison_enabled=True,
+        ).invoke({})
+    assert "check_candidates" in interpreter.bound_tool_names
+    for model in (planner, coder, auditor):
+        assert "check_candidates" not in model.bound_tool_names
+
+
 def test_invalid_operations_retry_without_reaching_coding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

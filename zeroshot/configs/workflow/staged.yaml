@@ -71,6 +71,11 @@ workflow:
   # validator's exact feedback. This bounds those graph-level retries.
   max_stage_validation_retries: 3
 
+  # Give the interpreter check_candidates: one read-only reviewer per competing
+  # reading. The limit counts reserved reviewer turns across one round.
+  hypothesis_comparison_enabled: false
+  hypothesis_max_model_calls_per_round: 12
+
   # Show the coder what every ret_xxx came out as: one census line per return,
   # and a drawing and renders beside its STEP. Costs a render per return, run
   # `renderer.max_workers` at a time: one measured attempt of twenty returns

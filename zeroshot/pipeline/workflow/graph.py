@@ -31,6 +31,11 @@ from zeroshot.pipeline.stages.types import (
     next_stage,
 )
 from zeroshot.pipeline.stages.validate import validate_submission
+from zeroshot.pipeline.tools.check_candidates import (
+    CandidateCheck,
+    RoundBudget,
+    create_check_candidates_tool,
+)
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore
@@ -54,6 +59,8 @@ from zeroshot.pipeline.workflow.state import (
 type CompiledGraph = Pregel[Any, Any, Any, Any]
 type AgentBuilder = partial[CompiledGraph]
 
+_REVIEWER_TURNS = 3
+
 
 def create_reconstruction_graph(
     interpretation_agent_builder: AgentBuilder,
@@ -72,6 +79,8 @@ def create_reconstruction_graph(
     reconstruction_history_filename: str = "reconstruction.json",
     max_audit_reject_count: int = 3,
     max_stage_validation_retries: int = 3,
+    hypothesis_comparison_enabled: bool = False,
+    hypothesis_max_model_calls_per_round: int = 12,
     show_intermediate_returns: bool = True,
     share_thread: bool = False,
     compact_between_stages: BaseChatModel | None = None,
@@ -134,9 +143,37 @@ def create_reconstruction_graph(
         / "stages/_base/prompts/cad_reconstructor.md"
     )
 
+    interpretation_tools = list(basic_tools)
+    if hypothesis_comparison_enabled:
+        stages_dir = Path(__file__).resolve().parents[1] / "stages"
+        reviewer_prompt = "\n\n".join(
+            (stages_dir / name).read_text()
+            for name in (
+                "interpretation/prompts/candidate_check.md",
+                "_base/prompts/coordinate_frames.md",
+            )
+        )
+        load_image = basic_tools[1]
+        interpretation_tools.append(
+            create_check_candidates_tool(
+                worker=interpretation_agent_builder(
+                    role="candidate_checker",
+                    tools=[load_image],
+                    system_prompt=reviewer_prompt,
+                    output_schema=CandidateCheck,
+                    max_turns=_REVIEWER_TURNS,
+                    model_retries=1,
+                ),
+                worker_turns=_REVIEWER_TURNS,
+                load_image=load_image,
+                current_round=current_round,
+                budget=RoundBudget(hypothesis_max_model_calls_per_round),
+            )
+        )
+
     interpretation_stage = stage_factory(PipelineStage.INTERPRETATION)(
         interpretation_agent_builder,
-        tools=basic_tools,
+        tools=interpretation_tools,
         system_prompt_path=share_thread_system_prompt if share_thread else None,
         instructions=stage_instructions,
         prompt_context=prompt_context,
