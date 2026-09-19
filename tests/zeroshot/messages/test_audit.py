@@ -383,27 +383,27 @@ def test_a_finding_requires_distinct_evidence_locators(
 
 
 def test_an_accepted_report_has_no_findings() -> None:
-    AuditReport(concern_reviews=[], accepted=True, ticket_reviews=[], findings=[])
+    AuditReport(concern_reviews={}, accepted=True, ticket_reviews={}, findings=[])
     with pytest.raises(ValidationError, match="accepted must be true"):
         AuditReport(
-            concern_reviews=[], accepted=True, ticket_reviews=[], findings=[finding()]
+            concern_reviews={}, accepted=True, ticket_reviews={}, findings=[finding()]
         )
 
 
 def test_a_rejected_report_has_at_least_one_finding() -> None:
     AuditReport(
-        concern_reviews=[], accepted=False, ticket_reviews=[], findings=[finding()]
+        concern_reviews={}, accepted=False, ticket_reviews={}, findings=[finding()]
     )
     with pytest.raises(ValidationError, match="accepted must be true"):
-        AuditReport(concern_reviews=[], accepted=False, ticket_reviews=[], findings=[])
+        AuditReport(concern_reviews={}, accepted=False, ticket_reviews={}, findings=[])
 
 
 def test_finding_names_are_unique_within_a_report() -> None:
     with pytest.raises(ValidationError, match="finding names must be unique"):
         AuditReport(
-            concern_reviews=[],
+            concern_reviews={},
             accepted=False,
-            ticket_reviews=[],
+            ticket_reviews={},
             findings=[finding(), finding()],
         )
 
@@ -422,18 +422,18 @@ def test_separate_findings_cannot_propose_the_same_identity() -> None:
     )
     with pytest.raises(ValidationError, match="unique across findings"):
         AuditReport(
-            concern_reviews=[],
+            concern_reviews={},
             accepted=False,
-            ticket_reviews=[],
+            ticket_reviews={},
             findings=[first, second],
         )
 
 
 def test_separate_findings_can_propose_distinct_identities() -> None:
     AuditReport(
-        concern_reviews=[],
+        concern_reviews={},
         accepted=False,
-        ticket_reviews=[],
+        ticket_reviews={},
         findings=[
             finding(
                 f"find_add_{name}",
@@ -450,8 +450,10 @@ def test_separate_findings_can_propose_distinct_identities() -> None:
 
 
 def _object_schemas(node: object) -> list[dict]:
+    """Every model in the schema. A keyed map is an object too, but its keys are
+    ticket IDs and concern names, so it is open by design."""
     if isinstance(node, dict):
-        found = [node] if node.get("type") == "object" else []
+        found = [node] if node.get("type") == "object" and "properties" in node else []
         for held in node.values():
             found.extend(_object_schemas(held))
         return found
@@ -518,19 +520,6 @@ def test_related_ticket_ids_are_unique_within_each_finding() -> None:
         finding(related_ticket_ids=["ticket_bore", "ticket_bore"])
 
 
-def test_a_ticket_is_reviewed_only_once() -> None:
-    review = TicketReview(
-        ticket_id="ticket_bore", summary="Bore restored.", solved=True
-    )
-    with pytest.raises(ValidationError, match="duplicate ticket IDs"):
-        AuditReport(
-            concern_reviews=[],
-            accepted=True,
-            ticket_reviews=[review, review],
-            findings=[],
-        )
-
-
 @pytest.mark.parametrize(
     ("solved", "related", "valid"),
     [
@@ -548,14 +537,12 @@ def test_unsolved_reviews_match_exactly_the_tickets_in_current_findings(
     solved: list[bool], related: list[str], valid: bool
 ) -> None:
     values = {
-        "concern_reviews": [],
+        "concern_reviews": {},
         "accepted": False,
-        "ticket_reviews": [
-            TicketReview(
-                ticket_id=f"ticket_{index}", summary="Checked the bore.", solved=value
-            )
+        "ticket_reviews": {
+            f"ticket_{index}": TicketReview(summary="Checked the bore.", solved=value)
             for index, value in enumerate(solved)
-        ],
+        },
         "findings": [finding(related_ticket_ids=related)],
     }
     if valid:
@@ -571,13 +558,11 @@ def test_unsolved_reviews_match_exactly_the_tickets_in_current_findings(
 
 def test_one_unsolved_ticket_can_require_several_current_findings() -> None:
     report = AuditReport(
-        concern_reviews=[],
+        concern_reviews={},
         accepted=False,
-        ticket_reviews=[
-            TicketReview(
-                ticket_id="ticket_bore", summary="Two defects remain.", solved=False
-            )
-        ],
+        ticket_reviews={
+            "ticket_bore": TicketReview(summary="Two defects remain.", solved=False)
+        },
         findings=[
             finding(name, related_ticket_ids=["ticket_bore"])
             for name in ("find_wrong_bore", "find_wrong_boss")
@@ -597,39 +582,19 @@ def test_an_empty_review_list_must_still_be_given() -> None:
 
 def test_a_concern_needs_a_disposition_in_words() -> None:
     with pytest.raises(ValidationError, match="disposition must not be blank"):
-        ConcernReview(
-            concern="coding.concern_bore",
-            finding_name=None,
-            disposition="  ",
-        )
+        ConcernReview(finding_name=None, disposition="  ")
 
 
 def test_a_concern_cannot_be_escalated_to_a_finding_the_report_lacks() -> None:
     with pytest.raises(ValidationError, match="does not hold: find_absent"):
         AuditReport(
-            concern_reviews=[
-                ConcernReview(
-                    concern="coding.concern_bore",
+            concern_reviews={
+                "coding.concern_bore": ConcernReview(
                     finding_name="find_absent",
                     disposition="Escalated as a finding.",
                 )
-            ],
+            },
             accepted=False,
-            ticket_reviews=[],
-            findings=[finding()],
-        )
-
-
-def test_one_concern_is_reviewed_once() -> None:
-    review = ConcernReview(
-        concern="coding.concern_bore",
-        finding_name=None,
-        disposition="The bore needs no correction.",
-    )
-    with pytest.raises(ValidationError, match="review each concern once"):
-        AuditReport(
-            concern_reviews=[review, review],
-            accepted=False,
-            ticket_reviews=[],
+            ticket_reviews={},
             findings=[finding()],
         )

@@ -230,8 +230,7 @@ def test_reasoning_states_end_with_the_same_latest_thread(
     assert threads[0] == threads[1] == threads[2]
     # The answer itself, as its own JSON rather than wrapped in a tool call.
     assert any(
-        "TicketAnswers" not in text and '"stage":"coding"' in text
-        for text in threads[0]
+        "TicketAnswers" not in text and "in coding." in text for text in threads[0]
     )
 
 

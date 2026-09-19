@@ -159,16 +159,12 @@ def _advance_snapshot(
 def _stage_responses(
     history: ReconstructionHistory,
     stage: str,
-) -> list[TicketResponse]:
-    return [
-        TicketResponse(
-            ticket_id=ticket.ticket_id,
-            stage=stage,  # type: ignore[arg-type]
-            summary=f"Reviewed the ticket during {stage}.",
-        )
+) -> dict[str, str]:
+    return {
+        ticket.ticket_id: f"Reviewed the ticket during {stage}."
         for ticket in history.snapshots[-1].open_tickets
         if stage in ticket.assigned_stages
-    ]
+    }
 
 
 def _reread(history: ReconstructionHistory) -> ReconstructionHistory:
@@ -242,11 +238,9 @@ def _report(
 ) -> AuditReport:
     revision_target = target or hops[-1].cause
     return AuditReport(
-        concern_reviews=[],
+        concern_reviews={},
         accepted=False,
-        ticket_reviews=[bootstrap_review()]
-        if ticket_reviews is None
-        else ticket_reviews,
+        ticket_reviews=bootstrap_review() if ticket_reviews is None else ticket_reviews,
         findings=[
             AuditFinding(
                 name="find_shape_mismatch",
@@ -279,9 +273,9 @@ def test_a_concern_left_without_a_disposition_is_refused() -> None:
     with pytest.raises(SubmissionValidationError, match="concern_web_thickness"):
         validate_submission(
             AuditReport(
-                concern_reviews=[],
+                concern_reviews={},
                 accepted=True,
-                ticket_reviews=[bootstrap_review()],
+                ticket_reviews=bootstrap_review(),
                 findings=[],
             ),
             _concerned_snapshot(),
@@ -291,15 +285,14 @@ def test_a_concern_left_without_a_disposition_is_refused() -> None:
 def test_a_settled_concern_lets_an_audit_accept_without_findings() -> None:
     validate_submission(
         AuditReport(
-            concern_reviews=[
-                ConcernReview(
-                    concern="interpretation.concern_web_thickness",
+            concern_reviews={
+                "interpretation.concern_web_thickness": ConcernReview(
                     finding_name=None,
                     disposition="The front view confirms the estimate.",
                 )
-            ],
+            },
             accepted=True,
-            ticket_reviews=[bootstrap_review()],
+            ticket_reviews=bootstrap_review(),
             findings=[],
         ),
         _concerned_snapshot(),
@@ -316,25 +309,23 @@ def test_a_concern_may_be_escalated_against_another_stage() -> None:
         )
     }
     report = _report(_hop("operations", "op_base", "interpretation", "sem_feature_1"))
-    report.concern_reviews = [
-        ConcernReview(
-            concern="coding.concern_bore_diameter",
+    report.concern_reviews = {
+        "coding.concern_bore_diameter": ConcernReview(
             finding_name="find_shape_mismatch",
             disposition="Confirmed; the interpretation is the root.",
         )
-    ]
+    }
     validate_submission(report, snapshot)
 
 
 def test_a_disposition_for_a_concern_nobody_raised_is_refused() -> None:
     report = _report(_hop("operations", "op_base", "interpretation", "sem_feature_1"))
-    report.concern_reviews = [
-        ConcernReview(
-            concern="coding.concern_invented",
+    report.concern_reviews = {
+        "coding.concern_invented": ConcernReview(
             finding_name="find_shape_mismatch",
             disposition="The mismatch finding covers it.",
         )
-    ]
+    }
     with pytest.raises(SubmissionValidationError, match="concern_invented"):
         validate_submission(report, _snapshot())
 
@@ -360,9 +351,9 @@ def test_audit_cannot_accept_without_a_verified_solid(status: ExecutionStatus) -
     with pytest.raises(SubmissionValidationError, match="without a verified solid"):
         validate_submission(
             AuditReport(
-                concern_reviews=[],
+                concern_reviews={},
                 accepted=True,
-                ticket_reviews=[bootstrap_review()],
+                ticket_reviews=bootstrap_review(),
                 findings=[],
             ),
             snapshot,
@@ -448,9 +439,9 @@ def test_audit_new_names_only_reuse_their_own_split_or_merge_targets(
         proposed_names=proposed,
     )
     report = AuditReport(
-        concern_reviews=[],
+        concern_reviews={},
         accepted=False,
-        ticket_reviews=[bootstrap_review()],
+        ticket_reviews=bootstrap_review(),
         findings=[finding],
     )
     if collision:
@@ -562,22 +553,18 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     run = open_next_round(
         completed,
         AuditReport(
-            concern_reviews=[],
+            concern_reviews={},
             accepted=False,
-            ticket_reviews=[bootstrap_review()],
+            ticket_reviews=bootstrap_review(),
             findings=[first_finding, second_finding],
         ),
     )
     current = run.snapshots[-1]
     original_ticket_ids = [ticket.ticket_id for ticket in current.open_tickets]
-    responses = [
-        TicketResponse(
-            ticket_id=ticket.ticket_id,
-            stage=PipelineStage.INTERPRETATION,
-            summary=f"Addressed {ticket.ticket_id}.",
-        )
+    responses = {
+        ticket.ticket_id: f"Addressed {ticket.ticket_id}."
         for ticket in reversed(current.open_tickets)
-    ]
+    }
 
     advanced = advance_reconstruction(
         run,
@@ -604,9 +591,9 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     run = open_next_round(
         completed,
         AuditReport(
-            concern_reviews=[],
+            concern_reviews={},
             accepted=False,
-            ticket_reviews=[bootstrap_review()],
+            ticket_reviews=bootstrap_review(),
             findings=[
                 _report(target=_ref("interpretation", "sem_feature_1")).findings[0]
             ],
@@ -623,14 +610,10 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     advanced = advance_reconstruction(
         run,
         TicketAnswers(
-            responses=[
-                TicketResponse(
-                    ticket_id=ticket.ticket_id,
-                    stage="interpretation",  # type: ignore[arg-type]
-                    summary="Restated sem_feature_1.radius.",
-                )
+            responses={
+                ticket.ticket_id: "Restated sem_feature_1.radius."
                 for ticket in current.open_tickets
-            ],
+            },
         ),
         workspace_output=held,
     )
@@ -745,9 +728,9 @@ def test_one_request_over_several_members_assigns_their_shared_stage() -> None:
         }
     )
     report = AuditReport(
-        concern_reviews=[],
+        concern_reviews={},
         accepted=False,
-        ticket_reviews=[bootstrap_review()],
+        ticket_reviews=bootstrap_review(),
         findings=[two_targets],
     )
 
@@ -823,9 +806,9 @@ def test_accepted_or_invalid_audit_does_not_open_a_round() -> None:
     run = _completed_run()
     original_json = run.model_dump_json()
     accepted = AuditReport(
-        concern_reviews=[],
+        concern_reviews={},
         accepted=True,
-        ticket_reviews=[bootstrap_review()],
+        ticket_reviews=bootstrap_review(),
         findings=[],
     )
     invalid = _report(_hop("coding", "ret_base", "operations", "op_hole"))
@@ -879,13 +862,12 @@ def test_bootstrap_is_reviewed_like_any_other_open_ticket(ticket_id: str) -> Non
     validate_submission(
         _report(
             target=_ref("coding", "ret_hole"),
-            ticket_reviews=[
-                TicketReview(
-                    ticket_id=ticket_id,
+            ticket_reviews={
+                ticket_id: TicketReview(
                     summary="The reconstruction does not answer the order.",
                     solved=False,
                 )
-            ],
+            },
             related_ticket_ids=[ticket_id],
         ),
         snapshot,
@@ -893,7 +875,7 @@ def test_bootstrap_is_reviewed_like_any_other_open_ticket(ticket_id: str) -> Non
 
     with pytest.raises(SubmissionValidationError, match=f"missing=.*{ticket_id}"):
         validate_submission(
-            _report(target=_ref("coding", "ret_hole"), ticket_reviews=[]), snapshot
+            _report(target=_ref("coding", "ret_hole"), ticket_reviews={}), snapshot
         )
 
 
@@ -914,13 +896,13 @@ def test_audit_reviews_cover_every_open_ticket_even_on_acceptance(
         open_next_round(_completed_run(), _report(target=_ref("coding", "ret_hole")))
     )
     report = AuditReport(
-        concern_reviews=[],
+        concern_reviews={},
         accepted=True,
         findings=[],
-        ticket_reviews=[
-            TicketReview(ticket_id=name, summary="The hole is restored.", solved=True)
+        ticket_reviews={
+            name: TicketReview(summary="The hole is restored.", solved=True)
             for name in reviewed
-        ],
+        },
     )
     if valid:
         validate_submission(report, run.snapshots[-1])
@@ -947,28 +929,27 @@ def test_current_findings_replace_old_tickets_and_choose_the_new_revision_root(
         open_next_round(
             _completed_run(),
             AuditReport(
-                concern_reviews=[],
+                concern_reviews={},
                 accepted=False,
-                ticket_reviews=[bootstrap_review()],
+                ticket_reviews=bootstrap_review(),
                 findings=[first, second],
             ),
         )
     )
     old_ids = [ticket.ticket_id for ticket in run.snapshots[-1].open_tickets]
-    reviews = [
-        TicketReview(
-            ticket_id=name,
+    reviews = {
+        name: TicketReview(
             summary="Checked the current solid.",
             solved=solved_second if index else False,
         )
         for index, name in enumerate(old_ids)
-    ]
+    }
     report = _report(
         _hop("coding", "ret_hole", "operations", "op_hole"),
         _hop("operations", "op_hole", "interpretation", "sem_feature_2"),
         ticket_reviews=reviews,
         related_ticket_ids=[
-            review.ticket_id for review in reviews if not review.solved
+            name for name, review in reviews.items() if not review.solved
         ],
     )
     previous = run.model_dump_json()

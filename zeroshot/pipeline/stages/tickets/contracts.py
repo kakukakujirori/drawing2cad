@@ -11,6 +11,7 @@ from pydantic import (
     model_validator,
 )
 
+from zeroshot.pipeline.stages._base.contracts import Submission
 from zeroshot.pipeline.stages.audit.contracts import AuditFinding
 from zeroshot.pipeline.stages.types import REASONING_STAGES, ReasoningStage
 
@@ -37,7 +38,26 @@ class BootstrapWork(BaseModel):
         return value
 
 
+_ANSWER_A_TICKET = (
+    "Say what changed, why no change was "
+    "needed, or what prevented resolution. Include upstream concerns "
+    "and provisional interpretations needed to explain this ticket's "
+    "outcome; put the rest in stage_report.concerns, one entry each. "
+    "Do not restate the artifact's geometry or measurements: it "
+    "remains authoritative. "
+    "Cite the concrete stable names examined or changed: "
+    "view_..., dim_..., or sem_... in interpretation, op_... in "
+    "operations, and ret_... or result in coding."
+)
+
+
 class TicketResponse(BaseModel):
+    """One stage's answer to one ticket, as the snapshot keeps it.
+
+    The stage is stamped by the pipeline, which already knows which one
+    answered; a submission carries the answers keyed by ticket instead.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     ticket_id: str = Field(
@@ -48,20 +68,7 @@ class TicketResponse(BaseModel):
         ...,
         description="The reasoning stage that produced this response.",
     )
-    summary: str = Field(
-        ...,
-        description=(
-            "Answer this assigned ticket: what changed, why no change was "
-            "needed, or what prevented resolution. Include upstream concerns "
-            "and provisional interpretations needed to explain this ticket's "
-            "outcome; put the rest in stage_report.concerns, one entry each. "
-            "Do not restate the artifact's geometry or measurements: it "
-            "remains authoritative. "
-            "Cite the concrete stable names examined or changed: "
-            "view_..., dim_..., or sem_... in interpretation, op_... in "
-            "operations, and ret_... or result in coding."
-        ),
-    )
+    summary: str = Field(..., description=_ANSWER_A_TICKET)
 
     @model_validator(mode="after")
     def require_valid_content(self) -> Self:
@@ -154,7 +161,7 @@ class StageReport(BaseModel):
             "Additional unresolved issues and important provisional choices "
             "your assigned-ticket responses do not already explain, one entry "
             "each, and {} if none. Keep a ticket's own doubts in its "
-            "TicketResponse.summary; do not repeat them here. The key is a stable "
+            "`responses` answer; do not repeat them here. The key is a stable "
             "identifier beginning concern_ and carrying on in lower_snake_case: "
             "concern_web_thickness. The value states the affected subject, the "
             "doubt and how you handled it. The audit answers each entry by its "
@@ -216,24 +223,31 @@ def reported_concerns(reports: Mapping[ReasoningStage, StageReport]) -> list[str
     ]
 
 
-class TicketAnswers(BaseModel):
+class TicketAnswers(Submission):
     """Your assigned-ticket answers and stage-wide observations.
 
     Every reasoning stage revises its artifact in its workspace file, which
     the pipeline verifies and reads back, so no artifact belongs in here.
     """
 
-    model_config = ConfigDict(extra="forbid")
-
-    responses: list[TicketResponse] = Field(
+    responses: dict[str, str] = Field(
         ...,
         description=(
-            "Exactly one response for every open ticket this stage is assigned "
-            "to, and none for the others. The pipeline validates the ticket IDs "
-            "and the assignment against the current snapshot."
+            "Your answer to each open ticket this stage is assigned to, keyed "
+            "by ticket ID: exactly those tickets and no others. " + _ANSWER_A_TICKET
         ),
     )
     stage_report: StageReport = Field(
         default_factory=StageReport,
         description="Stage-wide observations and dimension checks.",
     )
+
+    @field_validator("responses")
+    @classmethod
+    def require_an_answer(cls, answers: dict[str, str]) -> dict[str, str]:
+        """A key that is not a ticket is left to the round's own check, which
+        knows the open tickets and can name them."""
+        for ticket_id, summary in answers.items():
+            if not summary.strip():
+                raise ValueError(f"{ticket_id}: the answer must not be blank")
+        return answers

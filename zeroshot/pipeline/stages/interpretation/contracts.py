@@ -14,9 +14,16 @@ from zeroshot.pipeline.stages.types import Member
 def require_name(name: str, prefix: str) -> None:
     if re.fullmatch(rf"{prefix}[a-z0-9_]+", name):
         return
+    subject = prefix.removesuffix("_")
+    # A drawing labels a radius R16, so dim_R16 is the name that arrives here.
+    # Deleting the R loses the label; give the name it should have been.
+    if re.fullmatch(rf"{prefix}[a-z0-9_]+", name.lower()):
+        raise ValueError(
+            f"{name!r} is not a usable {subject} name. Use {name.lower()!r}."
+        )
     stray = dict.fromkeys(re.findall(r"[^a-z0-9_]", name.removeprefix(prefix)))
     raise ValueError(
-        f"{name!r} is not a usable {prefix.removesuffix('_')} name. "
+        f"{name!r} is not a usable {subject} name. "
         f"Begin with {prefix} and carry on in lower_snake_case."
         + (f" Remove {', '.join(map(repr, stray))}." if stray else "")
     )

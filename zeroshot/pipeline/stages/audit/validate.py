@@ -92,7 +92,7 @@ def _validate_concern_coverage(
 ) -> None:
     """Every concern this round's stages reported is disposed of, and only those."""
     expected = set(reported_concerns(snapshot.stage_reports))
-    reviewed = {review.concern for review in report.concern_reviews}
+    reviewed = set(report.concern_reviews)
     if missing := sorted(expected - reviewed):
         raise SubmissionValidationError(
             "concern_reviews must answer every concern this round's stage "
@@ -101,7 +101,8 @@ def _validate_concern_coverage(
     if unknown := sorted(reviewed - expected):
         raise SubmissionValidationError(
             "concern_reviews names concerns no stage report raises this round: "
-            f"{', '.join(unknown)}"
+            f"{', '.join(unknown)}. This round raises: "
+            f"{', '.join(sorted(expected)) or 'none'}"
         )
 
 
@@ -115,7 +116,7 @@ def _validate_ticket_coverage(
     Here we check those reviews against the snapshot, including on acceptance.
     """
     expected = {ticket.ticket_id for ticket in snapshot.open_tickets}
-    reviewed = {review.ticket_id for review in report.ticket_reviews}
+    reviewed = set(report.ticket_reviews)
     if expected != reviewed:
         raise SubmissionValidationError(
             "ticket_reviews must cover every open ticket exactly once: "

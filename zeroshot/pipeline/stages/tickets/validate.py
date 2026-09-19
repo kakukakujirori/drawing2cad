@@ -1,7 +1,6 @@
 """Check a stage's ticket answers against its round and the round it revises."""
 
-from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import partial
 
 from zeroshot.pipeline.stages._base.validate import (
@@ -20,7 +19,6 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
     Ticket,
     TicketAnswers,
-    TicketResponse,
     tickets_assigned_to,
 )
 from zeroshot.pipeline.stages.types import (
@@ -198,32 +196,27 @@ def _cites(
 
 
 def _validate_responses(
-    responses: Sequence[TicketResponse],
+    responses: Mapping[str, str],
     tickets: Sequence[Ticket],
     *,
     expected_stage: ReasoningStage,
 ) -> None:
-    """Require one response for every ticket assigned to this stage, and no other."""
+    """Require one answer for every ticket assigned to this stage, and no other.
+
+    Keying the answers by ticket makes a duplicate or a stage disagreement
+    unrepresentable, so only the three membership errors remain.
+    """
     known_ids = {ticket.ticket_id for ticket in tickets}
     expected_ids = {
         ticket.ticket_id for ticket in tickets_assigned_to(tickets, expected_stage)
     }
-    response_counts = Counter(response.ticket_id for response in responses)
-    submitted_ids = set(response_counts)
+    submitted_ids = set(responses)
 
-    duplicated = sorted(
-        ticket_id for ticket_id, count in response_counts.items() if count > 1
-    )
     missing = sorted(expected_ids - submitted_ids)
     unassigned = sorted(submitted_ids & (known_ids - expected_ids))
     unknown = sorted(submitted_ids - known_ids)
-    wrong_stage = sorted(
-        response.ticket_id for response in responses if response.stage != expected_stage
-    )
 
     errors: list[str] = []
-    if duplicated:
-        errors.append("duplicate ticket responses: " + ", ".join(duplicated))
     if missing:
         errors.append("missing ticket responses: " + ", ".join(missing))
     if unassigned:
@@ -232,11 +225,11 @@ def _validate_responses(
             "respond to them: " + ", ".join(unassigned)
         )
     if unknown:
-        errors.append("unknown ticket responses: " + ", ".join(unknown))
-    if wrong_stage:
         errors.append(
-            f"ticket responses must belong to {expected_stage}: "
-            + ", ".join(wrong_stage)
+            "unknown ticket responses: "
+            + ", ".join(unknown)
+            + ". Open tickets for this stage: "
+            + (", ".join(sorted(expected_ids)) or "none")
         )
 
     if errors:

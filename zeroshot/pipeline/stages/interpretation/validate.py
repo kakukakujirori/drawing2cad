@@ -38,8 +38,11 @@ def _region(
             raise LocatedError.at(location, f"{subject}: raster regions require box_px")
         box = px
     if box[2] > size[0] + 1e-7 or box[3] > size[1] + 1e-7:
+        # Naming the view it is measured against: the box is usually the whole
+        # page's coordinates left on a region that cites a crop.
         raise LocatedError.at(
-            location, f"{subject}: region exceeds referenced file bounds {size}"
+            location,
+            f"{subject}: region {tuple(box)} exceeds {region['view']} bounds {size}",
         )
 
     if not dxf:

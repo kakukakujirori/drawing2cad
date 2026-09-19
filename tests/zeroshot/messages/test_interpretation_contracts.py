@@ -147,6 +147,20 @@ def test_names_are_stable_prefixed_addresses(collection: str, name: str) -> None
         DrawingInterpretation.model_validate(data)
 
 
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("sem_R16_fillet", "'sem_r16_fillet'"), ("sem_Ø7_bore", "Remove")],
+)
+def test_a_name_that_only_needs_lowercasing_is_told_what_to_use(
+    name: str, expected: str
+) -> None:
+    """A drawing labels a radius R16, so deleting the R is the wrong advice."""
+    data = pin_interpretation()
+    data["features"][0]["name"] = name
+    with pytest.raises(ValidationError, match=expected):
+        DrawingInterpretation.model_validate(data)
+
+
 @pytest.mark.parametrize("collection", ["views", "features"])
 def test_named_entries_are_unique(collection: str) -> None:
     data = pin_interpretation()

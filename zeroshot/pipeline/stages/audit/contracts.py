@@ -1,8 +1,8 @@
 """The audit stage's answer.
 
 AuditReport
-├── ticket_reviews: TicketReview[]
-├── concern_reviews: ConcernReview[]
+├── ticket_reviews: {ticket_id: TicketReview}
+├── concern_reviews: {concern: ConcernReview}
 └── findings: AuditFinding[]
     ├── backtrace: CausalHop[]
     │   ├── effect: StageOutputRef
@@ -16,6 +16,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from zeroshot.pipeline.stages._base.contracts import Submission
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     PipelineStage,
@@ -361,15 +362,13 @@ class AuditFinding(BaseModel):
 
 
 class TicketReview(BaseModel):
-    """Whether an open ticket's issue is settled in the current artifacts."""
+    """Whether an open ticket's issue is settled in the current artifacts.
+
+    Keyed by the ticket it checks, so the ticket cannot be left out.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    ticket_id: str = Field(
-        ...,
-        pattern=r"^ticket_[a-z0-9][a-z0-9_]*$",
-        description="The open ticket being checked.",
-    )
     summary: str = Field(
         ...,
         description=(
@@ -394,19 +393,13 @@ class TicketReview(BaseModel):
 
 
 class ConcernReview(BaseModel):
-    """How one concern a reasoning stage reported is disposed of."""
+    """How one concern a reasoning stage reported is disposed of.
+
+    Keyed by the concern it answers, so the concern cannot be left out.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    concern: str = Field(
-        ...,
-        description=(
-            "The concern being answered, as <reporting_stage>.<concern_id> in "
-            "the current stage_reports: coding.concern_bore_diameter. The "
-            "prefix names the stage that reported the concern, not the stage "
-            "that must change; the finding you link may target another stage."
-        ),
-    )
     finding_name: str | None = Field(
         ...,
         description=(
@@ -431,22 +424,23 @@ class ConcernReview(BaseModel):
         return self
 
 
-class AuditReport(BaseModel):
+class AuditReport(Submission):
     """The auditor's complete acceptance decision and defect analysis.
 
     This ends the audit: give it once, after the analysis behind it is
     complete.
     """
 
-    model_config = ConfigDict(extra="forbid")
-
     accepted: bool = Field(
         ...,
         description=("True only when no reasoning-stage output requires correction."),
     )
-    ticket_reviews: list[TicketReview] = Field(
+    ticket_reviews: dict[str, TicketReview] = Field(
         ...,
-        description=("Exactly one review per open ticket."),
+        description=(
+            "Your check of each open ticket, keyed by ticket ID: exactly those "
+            "tickets and no others."
+        ),
     )
     findings: list[AuditFinding] = Field(
         ...,
@@ -455,12 +449,15 @@ class AuditReport(BaseModel):
             "is accepted."
         ),
     )
-    concern_reviews: list[ConcernReview] = Field(
+    concern_reviews: dict[str, ConcernReview] = Field(
         ...,
         description=(
-            "One review for every concern the current stage_reports raise, and "
-            "no others. A concern cannot be left out: give each its own entry, "
-            "naming the finding that takes it over or the reason it needs none."
+            "Your answer to every concern the current stage_reports raise and "
+            "no others, keyed by <reporting_stage>.<concern_id> as they appear "
+            "there: coding.concern_bore_diameter. The prefix names the stage "
+            "that reported the concern, not the stage that must change. A "
+            "concern cannot be left out: name the finding that takes it over, "
+            "or the reason it needs none."
         ),
     )
 
@@ -469,11 +466,10 @@ class AuditReport(BaseModel):
         """Require one decision and unambiguous finding and proposed identities."""
         if self.accepted == bool(self.findings):
             raise ValueError("accepted must be true exactly when findings is empty")
-        review_ids = [review.ticket_id for review in self.ticket_reviews]
-        if len(set(review_ids)) != len(review_ids):
-            raise ValueError("ticket_reviews must not contain duplicate ticket IDs")
         unsolved = {
-            review.ticket_id for review in self.ticket_reviews if not review.solved
+            ticket_id
+            for ticket_id, review in self.ticket_reviews.items()
+            if not review.solved
         }
         related = {
             ticket_id
@@ -489,13 +485,10 @@ class AuditReport(BaseModel):
         names = [finding.name for finding in self.findings]
         if len(set(names)) != len(names):
             raise ValueError("finding names must be unique within a report")
-        concerns = [review.concern for review in self.concern_reviews]
-        if len(set(concerns)) != len(concerns):
-            raise ValueError("concern_reviews must review each concern once")
-        for review in self.concern_reviews:
+        for concern, review in self.concern_reviews.items():
             if review.finding_name is not None and review.finding_name not in names:
                 raise ValueError(
-                    f"concern_reviews for {review.concern} names a finding this "
+                    f"concern_reviews for {concern} names a finding this "
                     f"report does not hold: {review.finding_name}"
                 )
         proposed = [

@@ -55,7 +55,7 @@ class OperationStage:
             )
             self.middleware.reset()
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.OPERATIONS):
-            return {"stage_submission": TicketAnswers(responses=[])}
+            return {"stage_submission": TicketAnswers(responses={})}
         self.ticket_verifier.reset(state["reconstruction"])
 
         previous = state.get("operations_state") or {}

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from tests.zeroshot.contracts import drawing, interpretation
+from tests.zeroshot.contracts import answered, drawing, interpretation
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     RevisionRequest,
@@ -122,7 +122,7 @@ def test_a_stage_carries_ticket_answers_and_optional_additional_concerns() -> No
     """A field a stage must leave empty is a field it can get wrong: four of ten
     GLM runs died sending `rationale` a string against a validator that refused
     it. Every artifact now lives in a workspace file instead."""
-    responses = _responses("ticket_bootstrap", "coding")
+    responses = answered(_responses("ticket_bootstrap", "coding"))
 
     submission = TicketAnswers(
         responses=responses,
@@ -142,10 +142,26 @@ def test_a_stage_carries_ticket_answers_and_optional_additional_concerns() -> No
             TicketAnswers.model_validate({"responses": responses, revision: "anything"})
 
 
+def test_a_member_the_provider_stringified_is_read_rather_than_refused() -> None:
+    """GLM sent `stage_report` as JSON text; the answer was whole, its encoding was not."""
+    responses = answered(_responses("ticket_bootstrap", "coding"))
+    report = StageReport(concerns={"concern_waist": "the profile must change"})
+
+    submission = TicketAnswers.model_validate(
+        {"responses": responses, "stage_report": report.model_dump_json()}
+    )
+
+    assert submission.stage_report == report
+    assert submission.responses == responses
+    # A member that is genuinely wrong still fails as itself.
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        TicketAnswers.model_validate({"responses": responses, "edits": '{"a": 1}'})
+
+
 def test_interpretation_carries_ticket_answers_while_json_carries_the_artifact() -> (
     None
 ):
-    responses = _responses("ticket_bootstrap", "interpretation")
+    responses = answered(_responses("ticket_bootstrap", "interpretation"))
 
     submission = TicketAnswers(responses=responses)
 
@@ -161,7 +177,7 @@ def test_a_stage_submission_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         TicketAnswers.model_validate(
             {
-                "responses": _responses("ticket_bootstrap", "interpretation"),
+                "responses": answered(_responses("ticket_bootstrap", "interpretation")),
                 "artifact": _interpretation(),
             }
         )
@@ -177,7 +193,7 @@ def test_the_shared_submission_schema_is_provider_safe() -> None:
 def test_dimension_checks_require_nonblank_explanations(explanation):
     with pytest.raises(ValidationError, match="dim_width.*must not be blank"):
         TicketAnswers(
-            responses=[],
+            responses={},
             stage_report=StageReport(dimension_checks={"dim_width": explanation}),
         )
 
@@ -423,4 +439,4 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
 
 
 def test_a_stage_with_no_ticket_of_its_own_answers_nothing() -> None:
-    assert TicketAnswers(responses=[]).responses == []
+    assert TicketAnswers(responses={}).responses == {}

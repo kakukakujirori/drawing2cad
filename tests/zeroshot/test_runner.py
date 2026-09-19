@@ -43,7 +43,6 @@ from zeroshot.pipeline.stages.operations.contracts import (
 from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
     TicketAnswers,
-    TicketResponse,
 )
 from zeroshot.pipeline.verification import CadQueryExecutor, ExecutionStatus
 from zeroshot.pipeline.workflow import (
@@ -68,24 +67,21 @@ def _agent(
 
 _ACCEPTED_AUDIT = AIMessage(
     content=(
-        '{"accepted": true, "ticket_reviews": ['
-        '{"ticket_id": "ticket_initial", "summary": "The reconstruction answers the order.", "solved": true}'
-        '], "findings": [], "concern_reviews": []}'
+        '{"accepted": true, "ticket_reviews": {"ticket_initial": '
+        '{"summary": "The reconstruction answers the order.", "solved": true}'
+        '}, "findings": [], "concern_reviews": {}}'
     )
 )
 
 
-def _ticket_response(stage: str, summary: str) -> TicketResponse:
-    return TicketResponse(
-        ticket_id="ticket_initial",
-        stage=stage,  # type: ignore[arg-type]
-        summary=summary,
-    )
+def _ticket_response(stage: str, summary: str) -> dict[str, str]:
+    del stage  # the pipeline stamps it; a submission is keyed by ticket
+    return {"ticket_initial": summary}
 
 
 _A_READING = AIMessage(
     content=TicketAnswers(
-        responses=[_ticket_response("interpretation", "Established sem_feature_1.")],
+        responses=_ticket_response("interpretation", "Established sem_feature_1."),
     ).model_dump_json()
 )
 
@@ -177,7 +173,7 @@ def _operations_stage():
         ],
     )
     submission = TicketAnswers(
-        responses=[_ticket_response("operations", "Established op_base.")],
+        responses=_ticket_response("operations", "Established op_base."),
     )
     return _agent(
         "operation_planner",
@@ -209,7 +205,7 @@ def _writing_model(call_id: str = "call-write-model") -> AIMessage:
 
 _CODING_ANSWER = AIMessage(
     content=TicketAnswers(
-        responses=[_ticket_response("coding", "Implemented ret_base and result.")],
+        responses=_ticket_response("coding", "Implemented ret_base and result."),
         stage_report=StageReport(dimension_checks={}),
     ).model_dump_json()
 )
@@ -251,23 +247,21 @@ def _verified_resume_run():
     run = advance_reconstruction(
         run,
         TicketAnswers(
-            responses=[
-                _ticket_response("interpretation", "Established sem_feature_1.")
-            ],
+            responses=_ticket_response("interpretation", "Established sem_feature_1."),
         ),
         workspace_output=interpretation("a box"),
     )
     run = advance_reconstruction(
         run,
         TicketAnswers(
-            responses=[_ticket_response("operations", "Established op_base.")],
+            responses=_ticket_response("operations", "Established op_base."),
         ),
         workspace_output=_A_PLAN,
     )
     run = advance_reconstruction(
         run,
         TicketAnswers(
-            responses=[_ticket_response("coding", "Implemented ret_base and result.")],
+            responses=_ticket_response("coding", "Implemented ret_base and result."),
             stage_report=StageReport(dimension_checks={}),
         ),
         workspace_output=VerifyOutputResult(
@@ -436,7 +430,7 @@ def test_resume_restores_drawing_stage_crops(
     run = advance_reconstruction(
         run,
         TicketAnswers(
-            responses=[_ticket_response("interpretation", "Read view_front.")],
+            responses=_ticket_response("interpretation", "Read view_front."),
         ),
         workspace_output=interpretation(
             views=[page, crop, relative_crop, temporary_crop]
@@ -940,15 +934,14 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         "node": "audit",
         "report": {
             "accepted": True,
-            "ticket_reviews": [
-                {
-                    "ticket_id": "ticket_initial",
+            "ticket_reviews": {
+                "ticket_initial": {
                     "summary": "The reconstruction answers the order.",
                     "solved": True,
                 }
-            ],
+            },
             "findings": [],
-            "concern_reviews": [],
+            "concern_reviews": {},
         },
     }
     assert "verify_output" not in {event["data"].get("tool_name") for event in events}

@@ -48,7 +48,6 @@ from zeroshot.pipeline.stages.operations.contracts import (
 from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
     TicketAnswers,
-    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus
@@ -68,16 +67,12 @@ def _message(answer: object) -> AIMessage:
     return AIMessage(content=answer.model_dump_json())  # type: ignore[attr-defined]
 
 
-def _response(ticket_id: str, stage: PipelineStage) -> TicketResponse:
-    return TicketResponse(
-        ticket_id=ticket_id,
-        stage=stage,  # type: ignore[arg-type]
-        summary=f"Addressed {ticket_id} in {stage.value}.",
-    )
+def _response(ticket_id: str, stage: PipelineStage) -> dict[str, str]:
+    return {ticket_id: f"Addressed {ticket_id} in {stage.value}."}
 
 
-def _responses(ticket_id: str | None, stage: PipelineStage) -> list[TicketResponse]:
-    return [_response(ticket_id, stage)] if ticket_id is not None else []
+def _responses(ticket_id: str | None, stage: PipelineStage) -> dict[str, str]:
+    return _response(ticket_id, stage) if ticket_id is not None else {}
 
 
 def _interpretation_submission(
@@ -210,9 +205,9 @@ def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
 def _accepted_audit() -> AIMessage:
     return _message(
         AuditReport(
-            concern_reviews=[],
+            concern_reviews={},
             accepted=True,
-            ticket_reviews=[bootstrap_review()],
+            ticket_reviews=bootstrap_review(),
             findings=[],
         )
     )
@@ -221,9 +216,9 @@ def _accepted_audit() -> AIMessage:
 def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
     return _message(
         AuditReport(
-            concern_reviews=[],
+            concern_reviews={},
             accepted=False,
-            ticket_reviews=[bootstrap_review()],
+            ticket_reviews=bootstrap_review(),
             findings=[
                 AuditFinding(
                     name="find_missing_hole",
@@ -252,9 +247,9 @@ def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
 def _interpretation_rejected_audit() -> AIMessage:
     return _message(
         AuditReport(
-            concern_reviews=[],
+            concern_reviews={},
             accepted=False,
-            ticket_reviews=[bootstrap_review()],
+            ticket_reviews=bootstrap_review(),
             findings=[
                 AuditFinding(
                     name="find_wrong_edge",
@@ -282,9 +277,9 @@ def _interpretation_rejected_audit() -> AIMessage:
 def _invalid_audit() -> AIMessage:
     return _message(
         AuditReport(
-            concern_reviews=[],
+            concern_reviews={},
             accepted=False,
-            ticket_reviews=[bootstrap_review()],
+            ticket_reviews=bootstrap_review(),
             findings=[
                 AuditFinding(
                     name="find_unknown_operation",
@@ -425,7 +420,7 @@ def _interpretation_seed() -> ReconstructionHistory:
     return advance_reconstruction(
         start_reconstruction("run_test", "Reconstruct the drawing.", drawing()),
         TicketAnswers(
-            responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.INTERPRETATION)]
+            responses=_response(_ROUND_ZERO_TICKET, PipelineStage.INTERPRETATION)
         ),
         workspace_output=interpretation("a plate"),
     )
@@ -435,7 +430,7 @@ def _operations_resume() -> ReconstructionHistory:
     return advance_reconstruction(
         _interpretation_seed(),
         TicketAnswers(
-            responses=[_response(_ROUND_ZERO_TICKET, PipelineStage.OPERATIONS)]
+            responses=_response(_ROUND_ZERO_TICKET, PipelineStage.OPERATIONS)
         ),
         workspace_output=_plan(),
     )
@@ -936,16 +931,15 @@ def test_revision_audit_corrects_missing_reviews_without_opening_another_round(
 ):
     _stub_verification(monkeypatch, _verified("000"), _verified("001"))
     audited = AuditReport(
-        concern_reviews=[],
+        concern_reviews={},
         accepted=True,
         findings=[],
-        ticket_reviews=[
-            TicketReview(
-                ticket_id=_ROUND_ONE_TICKET,
+        ticket_reviews={
+            _ROUND_ONE_TICKET: TicketReview(
                 solved=True,
                 summary="The previously missing hole is present in the current solid.",
             )
-        ],
+        },
     )
     auditor = ScriptedChatModel(
         responses=(

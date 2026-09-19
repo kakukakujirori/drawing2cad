@@ -5,7 +5,7 @@ The program is at `$coding_output_path`.
 
 Built artifacts are in $attempt_dir:
 - `output.step`: the built solid.
-- `projection/<view>.dxf` and `.png`: projections for the orthographic views identified in the interpretation.
+- `projection/<view>.dxf` and `projection/<view>.png`: projections for the orthographic views identified in the interpretation.
 - `render_3d/*.png`: perspective renders. List the directory for their names.
 
 ## Intermediate operation outputs
@@ -20,4 +20,4 @@ Read this round's `open_tickets`, including their subjects and stage responses,
 and `stage_reports` from `.snapshots[-1]` in `$reconstruction_path`.
 
 Review every entry of each stage report's `concerns` exactly once: one
-`concern_reviews` entry each, named `<reporting_stage>.<concern_id>`.
+`concern_reviews` entry each, keyed `<reporting_stage>.<concern_id>`.

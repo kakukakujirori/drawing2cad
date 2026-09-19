@@ -19,7 +19,7 @@ Final Response Format:
 Finish tool work and submit one `AuditReport` using the configured structured response format.
 
 Requirements:
-- Give one `ticket_reviews` entry per open ticket, with the check result and a reason. Round 0 holds one: the bootstrap order. Every ticket ends with its round; an unsolved one carries on only as the findings naming it in `related_ticket_ids`, and several findings may name one ticket.
+- Give one `ticket_reviews` entry per open ticket, keyed by its ticket ID, with the check result and a reason. Round 0 holds one: the bootstrap order. Every ticket ends with its round; an unsolved one carries on only as the findings naming it in `related_ticket_ids`, and several findings may name one ticket.
 - Cover every unsolved review with a current finding's `related_ticket_ids`. Merge overlapping defects into one finding where appropriate; one ticket may also relate to several findings. New defects have no related ticket IDs. Recompute the backtrace from current artifacts: the root may have changed since the old ticket. Do not repeat the backtrace or revision request inside the review.
 - Each finding contains one observed defect, exact evidence locators, one backtrace and one revision request. Roots in different stages are separate findings. Several members of one stage sharing the same defect may be requested together.
 - Report all material defects, largest first. Quantify the discrepancy when the source supports a measurement; do not invent a number when it does not.

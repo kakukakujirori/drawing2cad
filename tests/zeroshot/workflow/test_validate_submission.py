@@ -92,6 +92,11 @@ def _response(ticket_id: str, stage: ReasoningStage) -> TicketResponse:
     )
 
 
+def _answer_for(ticket_id: str, stage: ReasoningStage) -> dict[str, str]:
+    """The submitted shape: answers keyed by ticket, with no stage to disagree."""
+    return {ticket_id: f"Reviewed {ticket_id} during {stage}."}
+
+
 def _ticket(
     ticket_id: str,
     *completed_stages: ReasoningStage,
@@ -154,19 +159,19 @@ def _verified_and_validate(output, snapshot, *, workspace_output=None):
 def test_every_reasoning_stage_accepts_its_expected_deliverable() -> None:
     _verified_and_validate(
         TicketAnswers(
-            responses=[_response("ticket_initial", PipelineStage.INTERPRETATION)],
+            responses=_answer_for("ticket_initial", PipelineStage.INTERPRETATION),
         ),
         _snapshot(None),
     )
     _verified_and_validate(
         TicketAnswers(
-            responses=[_response("ticket_initial", PipelineStage.OPERATIONS)],
+            responses=_answer_for("ticket_initial", PipelineStage.OPERATIONS),
         ),
         _snapshot(PipelineStage.INTERPRETATION),
     )
     _verified_and_validate(
         TicketAnswers(
-            responses=[_response("ticket_initial", PipelineStage.CODING)],
+            responses=_answer_for("ticket_initial", PipelineStage.CODING),
             stage_report=StageReport(dimension_checks={}),
         ),
         _snapshot(PipelineStage.OPERATIONS),
@@ -178,36 +183,32 @@ def test_every_reasoning_stage_accepts_its_expected_deliverable() -> None:
     ("responses", "message"),
     [
         (
-            [_response("ticket_one", PipelineStage.INTERPRETATION)],
+            _answer_for("ticket_one", PipelineStage.INTERPRETATION),
             "missing.*ticket_two",
         ),
         (
-            [
-                _response("ticket_one", PipelineStage.INTERPRETATION),
-                _response("ticket_unknown", PipelineStage.INTERPRETATION),
-            ],
+            _answer_for("ticket_one", PipelineStage.INTERPRETATION)
+            | _answer_for("ticket_unknown", PipelineStage.INTERPRETATION),
             "unknown.*ticket_unknown",
         ),
+        # GLM left the old field name behind as a key; the answer is a key
+        # short, so the check that knows the open tickets names them.
         (
-            [
-                _response("ticket_one", PipelineStage.INTERPRETATION),
-                _response("ticket_one", PipelineStage.INTERPRETATION),
-            ],
-            "duplicate.*ticket_one",
-        ),
-        (
-            [
-                _response("ticket_one", PipelineStage.OPERATIONS),
-                _response("ticket_two", PipelineStage.OPERATIONS),
-            ],
-            "must belong to interpretation",
+            _answer_for("ticket_one", PipelineStage.INTERPRETATION)
+            | {"summary": "a leftover field name"},
+            (
+                r"unknown ticket responses: summary\. Open tickets for this "
+                r"stage: ticket_one, ticket_two"
+            ),
         ),
     ],
 )
 def test_ticket_responses_must_cover_the_current_snapshot_exactly_once(
-    responses: list[TicketResponse],
+    responses: dict[str, str],
     message: str,
 ) -> None:
+    """Keying by ticket leaves only membership to check: a duplicate ticket or a
+    response belonging to another stage cannot be written down."""
     snapshot = _snapshot(
         None,
         tickets=[
@@ -234,7 +235,7 @@ def test_a_stage_answers_its_assigned_tickets_and_only_those() -> None:
 
     _verified_and_validate(
         TicketAnswers(
-            responses=[_response("ticket_one", PipelineStage.INTERPRETATION)],
+            responses=_answer_for("ticket_one", PipelineStage.INTERPRETATION),
         ),
         snapshot,
     )
@@ -242,10 +243,8 @@ def test_a_stage_answers_its_assigned_tickets_and_only_those() -> None:
     with pytest.raises(SubmissionValidationError, match="not assigned.*ticket_two"):
         _verified_and_validate(
             TicketAnswers(
-                responses=[
-                    _response("ticket_one", PipelineStage.INTERPRETATION),
-                    _response("ticket_two", PipelineStage.INTERPRETATION),
-                ],
+                responses=_answer_for("ticket_one", PipelineStage.INTERPRETATION)
+                | _answer_for("ticket_two", PipelineStage.INTERPRETATION),
             ),
             snapshot,
         )
@@ -258,14 +257,14 @@ def test_a_stage_assigned_nothing_answers_nothing() -> None:
     )
 
     _verified_and_validate(
-        TicketAnswers(responses=[]),
+        TicketAnswers(responses={}),
         snapshot,
     )
 
 
 def test_the_current_snapshot_decides_which_deliverable_type_is_valid() -> None:
     answers = TicketAnswers(
-        responses=[_response("ticket_initial", PipelineStage.INTERPRETATION)],
+        responses=_answer_for("ticket_initial", PipelineStage.INTERPRETATION),
     )
 
     with pytest.raises(
@@ -276,7 +275,7 @@ def test_the_current_snapshot_decides_which_deliverable_type_is_valid() -> None:
 
 def test_operations_must_cover_only_current_semantic_features() -> None:
     submission = TicketAnswers(
-        responses=[_response("ticket_initial", PipelineStage.OPERATIONS)],
+        responses=_answer_for("ticket_initial", PipelineStage.OPERATIONS),
     )
 
     with pytest.raises(SubmissionValidationError, match="sem_feature_1"):
@@ -307,7 +306,7 @@ def test_interpretation_rejects_an_evidence_view_absent_from_the_artifact() -> N
 def _validate_plan(plan: OperationPlan, held: DrawingInterpretation) -> None:
     _verified_and_validate(
         TicketAnswers(
-            responses=[_response("ticket_initial", PipelineStage.OPERATIONS)],
+            responses=_answer_for("ticket_initial", PipelineStage.OPERATIONS),
         ),
         _snapshot(PipelineStage.INTERPRETATION, held=held),
         workspace_output=plan,
@@ -460,10 +459,10 @@ def test_operation_validation_accepts_a_reference_with_its_resolved_value() -> N
 
 def test_only_coding_accepts_a_separate_terminal_verification() -> None:
     interpretation_submission = TicketAnswers(
-        responses=[_response("ticket_initial", PipelineStage.INTERPRETATION)],
+        responses=_answer_for("ticket_initial", PipelineStage.INTERPRETATION),
     )
     coding_submission = TicketAnswers(
-        responses=[_response("ticket_initial", PipelineStage.CODING)],
+        responses=_answer_for("ticket_initial", PipelineStage.CODING),
         stage_report=StageReport(dimension_checks={}),
     )
 
@@ -485,7 +484,7 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
 
 def test_coding_checks_the_submitted_program_against_current_round_operations() -> None:
     submission = TicketAnswers(
-        responses=[_response("ticket_initial", PipelineStage.CODING)],
+        responses=_answer_for("ticket_initial", PipelineStage.CODING),
         stage_report=StageReport(dimension_checks={}),
     )
 
@@ -502,7 +501,7 @@ def test_coding_checks_the_submitted_program_against_current_round_operations() 
 
 def test_coding_reports_dimension_and_program_faults_together() -> None:
     submission = TicketAnswers(
-        responses=[_response("ticket_initial", PipelineStage.CODING)],
+        responses=_answer_for("ticket_initial", PipelineStage.CODING),
         stage_report=StageReport(dimension_checks={"dim_r16": "from the leader"}),
     )
 
@@ -522,7 +521,7 @@ def test_coding_reports_dimension_and_program_faults_together() -> None:
 
 def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
     submission = TicketAnswers(
-        responses=[_response("ticket_initial", PipelineStage.CODING)],
+        responses=_answer_for("ticket_initial", PipelineStage.CODING),
         stage_report=StageReport(dimension_checks={}),
     )
 
@@ -592,10 +591,10 @@ def test_coding_checks_all_dimensions_once_across_tickets_even_without_a_program
         ],
     )
     submission = TicketAnswers(
-        responses=[
-            _response(ticket.ticket_id, PipelineStage.CODING)
+        responses={
+            ticket.ticket_id: "Addressed during coding."
             for ticket in snapshot.open_tickets
-        ],
+        },
         stage_report=StageReport(
             concerns={
                 "concern_no_solid": "The program failed before a solid was available."
@@ -631,7 +630,7 @@ def test_coding_dimension_coverage_uses_ids_including_equal_and_unreadable_value
     names, message
 ):
     submission = TicketAnswers(
-        responses=[_response("ticket_initial", PipelineStage.CODING)],
+        responses=_answer_for("ticket_initial", PipelineStage.CODING),
         stage_report=StageReport(
             dimension_checks=None
             if names is None
@@ -658,7 +657,7 @@ def test_non_coding_stages_cannot_submit_dimension_checks_even_when_empty(stage)
     ):
         _verified_and_validate(
             TicketAnswers(
-                responses=[_response("ticket_initial", stage)],
+                responses=_answer_for("ticket_initial", stage),
                 stage_report=StageReport(dimension_checks={}),
             ),
             snapshot,
@@ -674,7 +673,7 @@ def test_coding_saves_concerns_and_resolved_dimension_checks_together(tmp_path):
         ],
     )
     submission = TicketAnswers(
-        responses=[_response("ticket_initial", PipelineStage.CODING)],
+        responses=_answer_for("ticket_initial", PipelineStage.CODING),
         stage_report=StageReport(
             concerns={
                 "concern_width": "The adopted width remains dim_width.nominal_value."
@@ -714,7 +713,7 @@ def test_coding_saves_concerns_and_resolved_dimension_checks_together(tmp_path):
 
 def test_completed_coding_accepts_only_an_audit_report() -> None:
     submission = TicketAnswers(
-        responses=[_response("ticket_initial", PipelineStage.CODING)],
+        responses=_answer_for("ticket_initial", PipelineStage.CODING),
         stage_report=StageReport(dimension_checks={}),
     )
 
@@ -730,7 +729,7 @@ def test_interpretation_cannot_submit_ticket_answers_without_a_verified_artifact
     None
 ):
     submission = TicketAnswers(
-        responses=[_response("ticket_initial", PipelineStage.INTERPRETATION)]
+        responses=_answer_for("ticket_initial", PipelineStage.INTERPRETATION)
     )
     with pytest.raises(
         SubmissionValidationError, match="verified DrawingInterpretation"
@@ -743,13 +742,7 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
     held = _interpretation()
     held.features[0].parameters["width"] = 12.0
     submission = TicketAnswers(
-        responses=[
-            TicketResponse(
-                ticket_id="ticket_initial",
-                stage=PipelineStage.INTERPRETATION,
-                summary="Established sem_feature_1.width.",
-            )
-        ],
+        responses={"ticket_initial": "Established sem_feature_1.width."},
         stage_report=StageReport(
             concerns={
                 "concern_height": "The height uses sem_feature_1.width provisionally."
@@ -785,7 +778,7 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
         advance_reconstruction(
             interpreted,
             TicketAnswers(
-                responses=[],
+                responses={},
                 stage_report=StageReport(
                     concerns={"concern_other": "This does not answer the ticket."}
                 ),
@@ -796,7 +789,7 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
     planned = advance_reconstruction(
         interpreted,
         TicketAnswers(
-            responses=[_response("ticket_initial", PipelineStage.OPERATIONS)]
+            responses=_answer_for("ticket_initial", PipelineStage.OPERATIONS)
         ),
         workspace_output=_operations(),
     )

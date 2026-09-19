@@ -218,13 +218,9 @@ def test_whole_answers_are_copied_and_strenum_identity_survives() -> None:
 
 def test_ticket_summary_and_stage_report_references_resolve_without_mutating_submission():
     submission = TicketAnswers(
-        responses=[
-            TicketResponse(
-                ticket_id="ticket_initial",
-                stage="coding",
-                summary="Kept sem_bore.radius despite the ticket's ambiguity.",
-            )
-        ],
+        responses={
+            "ticket_initial": "Kept sem_bore.radius despite the ticket's ambiguity."
+        },
         stage_report=StageReport(
             concerns={
                 "concern_checks": "Check dim_diameter.quantity and sem_bore.center."
@@ -237,7 +233,9 @@ def test_ticket_summary_and_stage_report_references_resolve_without_mutating_sub
     before = submission.model_dump_json()
     resolved = resolve_references(submission, interpretation())
 
-    assert "sem_bore.radius (= 6.000123456789123)" in resolved.responses[0].summary
+    assert (
+        "sem_bore.radius (= 6.000123456789123)" in resolved.responses["ticket_initial"]
+    )
     concern = resolved.stage_report.concerns["concern_checks"]
     assert "dim_diameter.quantity (= 2)" in concern
     assert "sem_bore.center (= [0.0 null 3.0])" in concern

@@ -128,7 +128,7 @@ def _describe_returns(
             "",
             (
                 f"Each is written to {sandbox_returns_dir}/<name>/ as output.step, "
-                "projection/<view>.dxf with a .png of it alongside, and "
+                "projection/<view>.dxf, projection/<view>.png and "
                 "render_3d/<style>.png. Open them with `run_shell` and "
                 "`load_image` to see whether an operation built what it was "
                 "meant to."

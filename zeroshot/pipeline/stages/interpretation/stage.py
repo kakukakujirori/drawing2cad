@@ -55,7 +55,7 @@ class InterpretationStage:
             )
             self.middleware.reset()
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.INTERPRETATION):
-            return {"stage_submission": TicketAnswers(responses=[])}
+            return {"stage_submission": TicketAnswers(responses={})}
         self.ticket_verifier.reset(state["reconstruction"])
         previous = state.get("interpretation_state") or {}
         instruction = self.instructions.build(

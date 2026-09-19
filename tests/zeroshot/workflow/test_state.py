@@ -118,21 +118,19 @@ _VERIFICATION = VerifyOutputResult(
 )
 
 _AUDIT_REPORT = AuditReport(
-    concern_reviews=[
-        ConcernReview(
-            concern="coding.concern_boss",
+    concern_reviews={
+        "coding.concern_boss": ConcernReview(
             finding_name="find_missing_boss",
             disposition="The missing-boss finding covers it.",
         )
-    ],
+    },
     accepted=False,
-    ticket_reviews=[
-        TicketReview(
-            ticket_id="ticket_missing_boss",
+    ticket_reviews={
+        "ticket_missing_boss": TicketReview(
             summary="The boss is still absent from the current solid.",
             solved=False,
         )
-    ],
+    },
     findings=[
         AuditFinding(
             name="find_missing_boss",
@@ -231,32 +229,14 @@ _RECONSTRUCTION = ReconstructionHistory(
 )
 
 _INTERPRETATION_SUBMISSION = TicketAnswers(
-    responses=[
-        TicketResponse(
-            ticket_id="ticket_initial",
-            stage=PipelineStage.INTERPRETATION,
-            summary="established sem_feature_1 and sem_feature_2",
-        )
-    ],
+    responses={"ticket_initial": "established sem_feature_1 and sem_feature_2"},
 )
 _OPERATION_SUBMISSION = TicketAnswers(
-    responses=[
-        TicketResponse(
-            ticket_id="ticket_initial",
-            stage=PipelineStage.OPERATIONS,
-            summary="established op_base",
-        )
-    ],
+    responses={"ticket_initial": "established op_base"},
 )
 _CODING_SUBMISSION = TicketAnswers(
     stage_report=StageReport(dimension_checks=_DIMENSION_CHECKS),
-    responses=[
-        TicketResponse(
-            ticket_id="ticket_initial",
-            stage=PipelineStage.CODING,
-            summary="implemented ret_base and result",
-        )
-    ],
+    responses={"ticket_initial": "implemented ret_base and result"},
 )
 
 _ARTIFACTS: dict[str, object] = {
@@ -365,7 +345,8 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
 
     graph.invoke(ReconstructionState(), config)
     restored = graph.get_state(config).values
-    assert type(restored["audit_report"].ticket_reviews[0]) is TicketReview
+    reviews = restored["audit_report"].ticket_reviews
+    assert type(reviews["ticket_missing_boss"]) is TicketReview
     assert (
         type(
             restored["reconstruction"].snapshots[-1].stage_reports[PipelineStage.CODING]

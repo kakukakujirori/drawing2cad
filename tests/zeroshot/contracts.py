@@ -4,6 +4,8 @@ Tests *about* the contract build it explicitly -- see
 `messages/test_interpretation_contracts.py`.
 """
 
+from collections.abc import Iterable
+
 from zeroshot.pipeline.stages.audit.contracts import TicketReview
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
@@ -14,6 +16,12 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 from zeroshot.pipeline.stages.interpretation.contracts import (
     SemanticFeature as InterpretedFeature,
 )
+from zeroshot.pipeline.stages.tickets.contracts import TicketResponse
+
+
+def answered(responses: Iterable[TicketResponse]) -> dict[str, str]:
+    """The submitted shape of responses a test built as the stored ones."""
+    return {response.ticket_id: response.summary for response in responses}
 
 
 def view(role: str = "front", **overrides: object) -> DrawingView:
@@ -80,10 +88,11 @@ def interpretation(*descriptions: str, **overrides: object) -> DrawingInterpreta
 
 def bootstrap_review(
     ticket_id: str = "ticket_initial", *, solved: bool = True
-) -> TicketReview:
+) -> dict[str, TicketReview]:
     """Round 0's one open ticket, which the audit disposes of like any other."""
-    return TicketReview(
-        ticket_id=ticket_id,
-        summary="The reconstruction answers the order it was given.",
-        solved=solved,
-    )
+    return {
+        ticket_id: TicketReview(
+            summary="The reconstruction answers the order it was given.",
+            solved=solved,
+        )
+    }

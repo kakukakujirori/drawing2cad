@@ -84,7 +84,12 @@ def build_snapshot_update(
 
     return SnapshotUpdate(
         artifacts=artifacts,
-        responses=submission.responses,
+        # The stage is stamped here rather than asked for: this is the stage
+        # that ran, and a submitted one could only ever agree or be rejected.
+        responses=[
+            TicketResponse(ticket_id=ticket_id, stage=stage, summary=summary)
+            for ticket_id, summary in submission.responses.items()
+        ],
         report=submission.stage_report,
     )
 

@@ -33,6 +33,15 @@ class TextWithoutToolCall(UnansweredModelCall):
     """
 
 
+class MalformedToolCall(UnansweredModelCall):
+    """A call whose arguments did not parse, so LangChain dropped it.
+
+    The provider reports the turn as finished, so the work exists and only its
+    arguments are unreadable. Without this it reads as an empty turn and the
+    author is told to write less, which costs the work it has already done.
+    """
+
+
 class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     """Retry incomplete model calls, and transport failures beside them.
 
@@ -155,17 +164,20 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     ),
                 ]
             )
+        if isinstance(error, MalformedToolCall):
+            unparsed = _unparsed_calls(response)
+            content = _REWRITE_CALL.format(
+                names=", ".join(sorted({str(call.get("name")) for call in unparsed})),
+                reason="; ".join(sorted({str(call.get("error")) for call in unparsed})),
+            )
+        else:
+            content = (
+                _CUT_OFF_CALL
+                if _visible_output_tokens(response) >= _CUT_OFF_CALL_TOKENS
+                else _THOUGHT_TOO_LONG
+            )
         return request.override(
-            messages=[
-                *request.messages,
-                HumanMessage(
-                    content=(
-                        _CUT_OFF_CALL
-                        if _visible_output_tokens(response) >= _CUT_OFF_CALL_TOKENS
-                        else _THOUGHT_TOO_LONG
-                    )
-                ),
-            ]
+            messages=[*request.messages, HumanMessage(content=content)]
         )
 
     @override
@@ -340,6 +352,13 @@ def _gave_up_answering(
 
 _UNANSWERED = "the model returned no tool call, no text and no structured output"
 _TEXT_WITHOUT_CALL = "the model returned text without a tool call"
+_MALFORMED = "the arguments of {names} did not parse: {reason}"
+_REWRITE_CALL = (
+    "Your last call to {names} could not be read: its arguments were not valid "
+    "JSON ({reason}), so nothing ran. Send the same call again with the "
+    "arguments as one well-formed JSON object. The analysis you have already "
+    "done is above; keep it."
+)
 _CALL_A_TOOL = (
     "Your last turn was text without a tool call, so nothing ran and no answer "
     "was submitted. Call a tool to keep working, or {submit}."
@@ -366,6 +385,15 @@ def _visible_output_tokens(response: ModelResponse[Any]) -> int:
     return (usage.get("output_tokens") or 0) - reasoning
 
 
+def _unparsed_calls(response: ModelResponse[Any]) -> list[dict[str, Any]]:
+    """The calls whose arguments did not parse, which LangChain leaves here."""
+    return [
+        call
+        for message in response.result
+        for call in getattr(message, "invalid_tool_calls", None) or ()
+    ]
+
+
 def _unanswered(
     request: ModelRequest[None], response: ModelResponse[Any]
 ) -> UnansweredModelCall | None:
@@ -377,6 +405,15 @@ def _unanswered(
         getattr(message, "tool_calls", None) for message in response.result
     ):
         return None
+    # Before the empty check: an unparsed call carries no text and no tool call,
+    # so it reads as silence while the provider reports the turn as finished.
+    if unparsed := _unparsed_calls(response):
+        return MalformedToolCall(
+            _MALFORMED.format(
+                names=", ".join(sorted({str(call.get("name")) for call in unparsed})),
+                reason="; ".join(sorted({str(call.get("error")) for call in unparsed})),
+            )
+        )
     if not any(message.text.strip() for message in response.result):
         return UnansweredModelCall(_UNANSWERED)
     if isinstance(request.response_format, ToolStrategy):

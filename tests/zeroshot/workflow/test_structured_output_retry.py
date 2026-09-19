@@ -221,6 +221,33 @@ def test_a_cut_off_tool_answer_is_asked_for_again_as_a_shorter_call() -> None:
     assert "Do not call tools" not in correction
 
 
+def test_a_call_whose_arguments_did_not_parse_is_asked_for_again_whole() -> None:
+    """Together finished the call and LangChain dropped it; an empty turn it is not."""
+    unparsed = AIMessage(
+        content="",
+        invalid_tool_calls=[
+            {
+                "name": "Answer",
+                "args": '{"ticket_id": "ticket_initial"',
+                "id": "call_1",
+                "error": "Expecting ',' delimiter",
+                "type": "invalid_tool_call",
+            }
+        ],
+    )
+    model = ScriptedChatModel(
+        responses=(unparsed, _answering("ticket_initial", "call_2"))
+    )
+
+    result = _agent(model).invoke({"messages": []})
+
+    correction = model.received_messages[1][-1].text
+    assert "arguments were not valid JSON" in correction
+    assert "Expecting ',' delimiter" in correction
+    assert "concise arguments" not in correction
+    assert result["structured_response"] == Answer(ticket_id="ticket_initial")
+
+
 def test_a_model_that_never_answers_ends_the_stage_without_failing_the_run() -> None:
     """The graph re-asks a stage that submitted nothing, so raising here would
     end a run the pipeline can still recover."""
