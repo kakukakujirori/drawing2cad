@@ -115,7 +115,7 @@ def interpretation_baseline(history: ReconstructionHistory) -> DrawingInterpreta
     return accepted or DrawingInterpretation(
         datum=UNDECIDED,
         views=list(history.input_drawings),
-        features=[],
+        hypotheses=[],
     )
 
 

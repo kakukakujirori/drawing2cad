@@ -54,7 +54,7 @@ def _case(
         AttemptStore(workdir, round_source=lambda: 0),
         given,
     )
-    seed = DrawingInterpretation(datum=UNDECIDED, views=given, features=[])
+    seed = DrawingInterpretation(datum=UNDECIDED, views=given, hypotheses=[])
     return verifier, DrawingInterpretation.model_validate(data), seed
 
 
@@ -205,7 +205,7 @@ def test_invalid_json_and_missing_original_page_are_rejected_and_recorded(tmp_pa
 def test_a_schema_error_points_at_its_key_in_the_written_file(tmp_path):
     verifier, candidate, _ = _case(tmp_path)
     data = candidate.model_dump(mode="json")
-    data["features"][0]["center"] = [0, 0]
+    data["hypotheses"][0]["candidates"][0]["center"] = [0, 0]
     text = json.dumps(data, indent=2)
     verifier.source_path.write_text(text)
     (error,) = json.loads(verifier.feedback()[0]["text"].splitlines()[-1])["errors"]
@@ -213,7 +213,10 @@ def test_a_schema_error_points_at_its_key_in_the_written_file(tmp_path):
     _, line, column = position.split(":")
     assert text.splitlines()[int(line) - 1][int(column) - 1 :].startswith('"center"')
     name = candidate.features[0].name
-    assert rest == f"$.features[0].center ({name}): Extra inputs are not permitted"
+    assert (
+        rest
+        == f"$.hypotheses[0].candidates[0].center ({name}): Extra inputs are not permitted"
+    )
 
 
 def test_a_check_after_parsing_points_at_its_key_in_the_written_file(tmp_path):

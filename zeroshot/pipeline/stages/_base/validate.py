@@ -2,8 +2,8 @@ from collections.abc import Callable, Sequence
 from typing import Self
 
 # pointer to a JSON element, e.g.
-# key_location = ("features", 0, "evidence", 1)
-# means data["features"][0]["evidence"][1]
+# key_location = ("views", 0, "dimensions", 1)
+# means data["views"][0]["dimensions"][1]
 type KeyLocation = tuple[str | int, ...]
 
 

@@ -601,7 +601,7 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     )
     current = run.snapshots[-1]
     held = interpretation(
-        features=[
+        hypotheses=[
             interpreted_feature(1, "the base", parameters={"radius": 4.25}),
             interpreted_feature(2, "the hole"),
         ]
@@ -756,9 +756,9 @@ def test_a_revision_round_replaces_the_complete_interpretation() -> None:
     assert previous is not None
     revised = previous.model_copy(
         update={
-            "features": [
+            "hypotheses": [
                 interpreted_feature("sem_feature_1", "the base, corrected"),
-                previous.features[1],
+                previous.hypotheses[1],
             ]
         }
     )

@@ -982,7 +982,7 @@ def test_an_interpretation_revision_refreshes_parameter_values_and_preserves_his
 
     def measured(value):
         return interpretation(
-            features=[interpreted_feature(1, "plate", parameters={"offset": value})]
+            hypotheses=[interpreted_feature(1, "plate", parameters={"offset": value})]
         )
 
     calls = _stub_verification(monkeypatch, _verified("000"), _verified("001"))

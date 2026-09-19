@@ -1,3 +1,5 @@
+import re
+
 from zeroshot.pipeline.stages._base.validate import (
     KeyLocation,
     LocatedError,
@@ -46,14 +48,30 @@ def _operation_plan_errors(
         )
         errors.append((("proposal",), missing))
 
+    adopted_in = {
+        candidate.name: hypothesis.adopted.name
+        for hypothesis, candidate in interpretation.candidates
+    }
     for unknown in sorted(built.keys() - established):
         uncited = (
-            f"The plan cites {unknown}, which the interpretation does not contain. "
-            "Cite the features it does have."
+            f"The plan cites {unknown}, a candidate the interpretation did not "
+            f"adopt. Build the adopted {adopted_in[unknown]} instead."
+            if unknown in adopted_in
+            else f"The plan cites {unknown}, which the interpretation does not "
+            "contain. Cite the features it does have."
         )
         errors.append((built[unknown], uncited))
 
     for operation in sorted(plan.proposal, key=lambda item: item.name):
+        for member in dict.fromkeys(
+            re.findall(r"\b(sem_[a-z0-9_]+)\.", operation.detail)
+        ):
+            if member in adopted_in and member not in established:
+                rejected = (
+                    f"{operation.name}: {member} is a candidate the interpretation "
+                    f"did not adopt. Use {adopted_in[member]}."
+                )
+                errors.append((("proposal", at[operation.name], "detail"), rejected))
         for address in dict.fromkeys(
             unresolved_references(operation.detail, interpretation)
         ):

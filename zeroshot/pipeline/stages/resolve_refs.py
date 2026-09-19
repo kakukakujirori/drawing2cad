@@ -141,12 +141,12 @@ def _values_by_member(
     Parameter keys are free-form, but only reference-shaped ones are addressable.
     """
     values: dict[str, dict[str, object]] = {
-        feature.name: {
+        candidate.name: {
             key: value
-            for key, value in feature.parameters.items()
+            for key, value in candidate.parameters.items()
             if re.fullmatch(_PARAMETER, key)
         }
-        for feature in interpretation.features
+        for _, candidate in interpretation.candidates
     }
     for view in interpretation.views:
         for dimension in view.dimensions:

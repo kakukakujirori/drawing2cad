@@ -116,7 +116,7 @@ def _writing_interpretation() -> AIMessage:
         shutil.copyfile(views[0]['file'], front['file'])
         views.append(front)
         artifact['views'] = views
-        artifact['features'][0]['evidence'] = [dict(front['region'], view='view_front')]
+        artifact['hypotheses'][0]['candidates'][0]['evidence'] = [dict(front['region'], view='view_front')]
         Path('/work/interpretation.json').write_text(json.dumps(artifact))
         """
     )

@@ -41,17 +41,24 @@ def pin_interpretation() -> dict:
                 ],
             }
         ],
-        "features": [
+        "hypotheses": [
             {
-                "name": "sem_pin_upper_left",
-                "description": "Solid cylinder pointing toward the open front from the rear inner wall. base_center is the attachment-face center; axis is the protrusion direction.",
-                "parameters": {
-                    "base_center": [29, None, 43.9],
-                    "axis": [0, -1, 0],
-                    "diameter": 4.2,
-                    "length": None,
-                },
-                "evidence": [{"view": "view_front", "box_px": [560, 944, 642, 1011]}],
+                "candidates": [
+                    {
+                        "name": "sem_pin_upper_left",
+                        "description": "Solid cylinder pointing toward the open front from the rear inner wall. base_center is the attachment-face center; axis is the protrusion direction.",
+                        "parameters": {
+                            "base_center": [29, None, 43.9],
+                            "axis": [0, -1, 0],
+                            "diameter": 4.2,
+                            "length": None,
+                        },
+                        "evidence": [
+                            {"view": "view_front", "box_px": [560, 944, 642, 1011]}
+                        ],
+                        "confidence": 1.0,
+                    }
+                ],
                 "dimension_refs": ["dim_pin_diameter"],
             }
         ],
@@ -82,7 +89,7 @@ def test_nonfinite_numbers_are_rejected_in_parameters_regions_and_measurements(
 ) -> None:
     for parameters in [{"radius": value}, {"origin": [0, None, value]}]:
         data = pin_interpretation()
-        data["features"][0]["parameters"] = parameters
+        data["hypotheses"][0]["candidates"][0]["parameters"] = parameters
         with pytest.raises(ValidationError, match="finite number"):
             DrawingInterpretation.model_validate(data)
     for field in ["box_px", "box_uv"]:
@@ -122,9 +129,11 @@ def test_removed_source_crop_and_legacy_fields_are_rejected(target: str) -> None
     if target == "interpretation":
         data["sheets"] = []
     elif target == "sheet":
-        data["views"][0]["crop_of"] = data["features"][0]["evidence"][0]
+        data["views"][0]["crop_of"] = data["hypotheses"][0]["candidates"][0][
+            "evidence"
+        ][0]
     elif target == "region":
-        data["features"][0]["evidence"][0]["source"] = "source_png"
+        data["hypotheses"][0]["candidates"][0]["evidence"][0]["source"] = "source_png"
     else:
         data["views"][0]["dimensions"][0]["measured_px"] = 42
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
@@ -136,13 +145,14 @@ def test_removed_source_crop_and_legacy_fields_are_rejected(target: str) -> None
     [
         ("views", "sheet_front"),
         ("views", "view_"),
-        ("features", "pin"),
-        ("features", "sem_Upper"),
+        ("hypotheses", "pin"),
+        ("hypotheses", "sem_Upper"),
     ],
 )
 def test_names_are_stable_prefixed_addresses(collection: str, name: str) -> None:
     data = pin_interpretation()
-    data[collection][0]["name"] = name
+    entry = data[collection][0]
+    (entry["candidates"][0] if collection == "hypotheses" else entry)["name"] = name
     with pytest.raises(ValidationError, match="usable"):
         DrawingInterpretation.model_validate(data)
 
@@ -156,12 +166,12 @@ def test_a_name_that_only_needs_lowercasing_is_told_what_to_use(
 ) -> None:
     """A drawing labels a radius R16, so deleting the R is the wrong advice."""
     data = pin_interpretation()
-    data["features"][0]["name"] = name
+    data["hypotheses"][0]["candidates"][0]["name"] = name
     with pytest.raises(ValidationError, match=expected):
         DrawingInterpretation.model_validate(data)
 
 
-@pytest.mark.parametrize("collection", ["views", "features"])
+@pytest.mark.parametrize("collection", ["views", "hypotheses"])
 def test_named_entries_are_unique(collection: str) -> None:
     data = pin_interpretation()
     data[collection].append(deepcopy(data[collection][0]))
@@ -169,13 +179,49 @@ def test_named_entries_are_unique(collection: str) -> None:
         DrawingInterpretation.model_validate(data)
 
 
+def _hole_or_boss(hole: float, boss: float) -> dict:
+    data = pin_interpretation()
+    pin = data["hypotheses"][0]["candidates"][0]
+    pin["confidence"] = boss
+    hole_reading = deepcopy(pin) | {
+        "name": "sem_hole_upper_left",
+        "description": "A blind hole into the rear inner wall.",
+        "refuting": [{"view": "view_front", "box_px": [560, 944, 642, 1011]}],
+        "confidence": hole,
+    }
+    data["hypotheses"][0]["candidates"].insert(0, hole_reading)
+    return data
+
+
+def test_the_most_confident_candidate_is_adopted_wherever_it_is_listed() -> None:
+    interpretation = DrawingInterpretation.model_validate(_hole_or_boss(0.3, 0.7))
+    assert [f.name for f in interpretation.features] == ["sem_pin_upper_left"]
+    assert {
+        "sem_hole_upper_left",
+        "sem_pin_upper_left",
+    } <= interpretation.members().keys()
+
+
+def test_candidates_tied_for_the_lead_are_refused() -> None:
+    with pytest.raises(ValidationError, match="tie for the highest confidence"):
+        DrawingInterpretation.model_validate(_hole_or_boss(0.5, 0.5))
+
+
+def test_a_candidate_name_is_unique_across_hypotheses() -> None:
+    data = _hole_or_boss(0.3, 0.7)
+    data["hypotheses"].append(deepcopy(data["hypotheses"][0]))
+    data["hypotheses"][1]["dimension_refs"] = []
+    with pytest.raises(ValidationError, match="duplicate names in candidates"):
+        DrawingInterpretation.model_validate(data)
+
+
 def test_feature_requires_evidence_and_unknown_view_error_names_its_location() -> None:
     data = pin_interpretation()
-    data["features"][0]["evidence"] = []
+    data["hypotheses"][0]["candidates"][0]["evidence"] = []
     with pytest.raises(ValidationError):
         DrawingInterpretation.model_validate(data)
     data = pin_interpretation()
-    data["features"][0]["evidence"][0]["view"] = "view_missing"
+    data["hypotheses"][0]["candidates"][0]["evidence"][0]["view"] = "view_missing"
     with pytest.raises(ValidationError) as error:
         DrawingInterpretation.model_validate(data)
     message = str(error.value)
@@ -195,7 +241,7 @@ def test_dimension_names_and_referenced_views_are_checked() -> None:
         DrawingInterpretation.model_validate(data)
     for refs in [["dim_missing"], ["dim_pin_diameter", "dim_pin_diameter"]]:
         data = pin_interpretation()
-        data["features"][0]["dimension_refs"] = refs
+        data["hypotheses"][0]["dimension_refs"] = refs
         with pytest.raises(ValidationError):
             DrawingInterpretation.model_validate(data)
     data = pin_interpretation()
@@ -213,7 +259,7 @@ def test_angular_dimensions_do_not_accept_measured_lengths() -> None:
 
 def test_schema_describes_fields_and_preserves_file_backed_views() -> None:
     schema = DrawingInterpretation.model_json_schema()
-    assert set(schema["required"]) == {"datum", "views", "features"}
+    assert set(schema["required"]) == {"datum", "views", "hypotheses"}
     view_schema = schema["$defs"]["DrawingView"]
     assert set(view_schema["properties"]) == {
         "name",

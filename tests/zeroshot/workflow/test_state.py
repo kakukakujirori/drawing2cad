@@ -30,7 +30,8 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
     Region,
-    SemanticFeature,
+    SemanticCandidate,
+    SemanticHypothesis,
     View,
 )
 from zeroshot.pipeline.stages.interpretation.contracts import (
@@ -65,7 +66,8 @@ from zeroshot.pipeline.workflow.state import (
     "contract",
     [
         DrawingInterpretation,
-        SemanticFeature,
+        SemanticHypothesis,
+        SemanticCandidate,
         DrawingView,
     ],
 )
@@ -95,7 +97,7 @@ _A_INTERPRETATION.views[0].dimensions = [
         note=None,
     )
 ]
-_A_INTERPRETATION.features[1].dimension_refs = ["dim_bore"]
+_A_INTERPRETATION.hypotheses[1].dimension_refs = ["dim_bore"]
 _DIMENSION_CHECKS = {"dim_bore": "Unconfirmed: ret_base omits the interpreted bore."}
 
 _A_PLAN = OperationPlan(
@@ -275,7 +277,8 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         OperationPlan,
         OperationVerb,
         DrawingInterpretation,
-        SemanticFeature,
+        SemanticHypothesis,
+        SemanticCandidate,
         # The contract's enums ride in state too. An enum missing from the
         # allowlist restores as a bare string, which still compares equal and
         # so fails nowhere until something asks it for `.value`.

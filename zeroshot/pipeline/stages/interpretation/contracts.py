@@ -2,7 +2,7 @@ import json
 import math
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from enum import StrEnum
 from typing import Literal, Self
 
@@ -228,8 +228,11 @@ class DrawingView(Contract):
         return self
 
 
-class SemanticFeature(Contract):
-    name: str = Field(..., description="Stable sem_ name, kept across revisions.")
+class SemanticCandidate(Contract):
+    name: str = Field(
+        ...,
+        description="Stable sem_ name for this reading, kept across revisions.",
+    )
     description: str = Field(
         ...,
         min_length=1,
@@ -249,19 +252,59 @@ class SemanticFeature(Contract):
     evidence: list[Region] = Field(
         ...,
         min_length=1,
-        description="Source regions supporting this feature; no primitive or calculation transcript.",
+        description="Source regions supporting this reading; no primitive or calculation transcript.",
     )
-    dimension_refs: list[str] = Field(
+    refuting: list[Region] = Field(
+        default_factory=list,
+        description="Source regions that contradict this reading; empty if none.",
+    )
+    confidence: float = Field(
         ...,
-        description="Supporting dim_ names, stored once in views[].dimensions. Empty if no printed dimension supports this feature; no calculation transcript.",
+        ge=0,
+        le=1,
+        description=(
+            "How well this reading explains every view, against the other "
+            "candidates of the same hypothesis. Set it after the evidence."
+        ),
     )
 
     @model_validator(mode="after")
     def require_stable_name(self) -> Self:
         require_name(self.name, "sem_")
+        return self
+
+
+class SemanticHypothesis(Contract):
+    candidates: list[SemanticCandidate] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "One candidate when the drawing is unambiguous. Add a candidate only "
+            "for a reading the views genuinely leave open, such as hole or boss."
+        ),
+    )
+    dimension_refs: list[str] = Field(
+        ...,
+        description="Supporting dim_ names, stored once in views[].dimensions. Empty if no printed dimension supports this part; no calculation transcript.",
+    )
+
+    @property
+    def adopted(self) -> SemanticCandidate:
+        return max(self.candidates, key=lambda candidate: candidate.confidence)
+
+    @model_validator(mode="after")
+    def require_one_adopted(self) -> Self:
         require_unique(self.dimension_refs, "dimension_refs")
         for ref in self.dimension_refs:
             require_name(ref, "dim_")
+        top = [
+            c.name for c in self.candidates if c.confidence == self.adopted.confidence
+        ]
+        if len(top) > 1:
+            raise ValueError(
+                f"{', '.join(top)} tie for the highest confidence; "
+                "the most confident candidate is adopted, so give one the edge"
+            )
         return self
 
 
@@ -275,10 +318,23 @@ class DrawingInterpretation(Contract):
         ...,
         description="Registered input files with their existing names, roles and full-file Regions, plus every newly identified view. A FULL_PAGE input requires at least one new view with an orthographic role (e.g, front or top). Add printed dimensions to the appropriate views.",
     )
-    features: list[SemanticFeature] = Field(
+    hypotheses: list[SemanticHypothesis] = Field(
         ...,
-        description="One adopted, consistent model of the part; report competing interpretations in your ticket answers rather than here.",
+        description="The part's features. The adopted candidates together form one consistent model of the part.",
     )
+
+    @property
+    def features(self) -> list[SemanticCandidate]:
+        """The adopted candidates: what the downstream stages build."""
+        return [hypothesis.adopted for hypothesis in self.hypotheses]
+
+    @property
+    def candidates(self) -> Iterator[tuple[SemanticHypothesis, SemanticCandidate]]:
+        return (
+            (hypothesis, candidate)
+            for hypothesis in self.hypotheses
+            for candidate in hypothesis.candidates
+        )
 
     @property
     def all_dimensions(self) -> tuple[Dimension, ...]:
@@ -312,17 +368,16 @@ class DrawingInterpretation(Contract):
                     ),
                     frozenset({view.name, dimension.region.view}),
                 )
-        for feature in self.features:
-            members[feature.name] = Member(
+        for hypothesis, candidate in self.candidates:
+            regions = [*candidate.evidence, *candidate.refuting]
+            members[candidate.name] = Member(
                 (
-                    feature.model_dump(exclude={"evidence"}),
-                    [_as_written(region) for region in feature.evidence],
+                    candidate.model_dump(exclude={"evidence", "refuting"}),
+                    [_as_written(region) for region in regions],
+                    hypothesis.dimension_refs,
                 ),
                 frozenset(
-                    {
-                        *(region.view for region in feature.evidence),
-                        *feature.dimension_refs,
-                    }
+                    {*(region.view for region in regions), *hypothesis.dimension_refs}
                 ),
             )
         return members
@@ -337,7 +392,9 @@ class DrawingInterpretation(Contract):
     @model_validator(mode="after")
     def require_unique_names(self) -> Self:
         require_unique((view.name for view in self.views), "views")
-        require_unique((feature.name for feature in self.features), "features")
+        require_unique(
+            (candidate.name for _, candidate in self.candidates), "candidates"
+        )
         dimensions = [dim.name for dim in self.all_dimensions]
         require_unique(dimensions, "dimensions")
         return self
@@ -356,17 +413,17 @@ class DrawingInterpretation(Contract):
                     raise ValueError(
                         f"{dim.name}.region.view: unknown view {dim.region.view}"
                     )
-        for feature in self.features:
-            missing = set(feature.dimension_refs) - dimensions
-            if missing:
-                raise ValueError(
-                    f"{feature.name}: unknown dimensions {sorted(missing)}"
-                )
-            for index, region in enumerate(feature.evidence):
-                if region.view not in names:
-                    raise ValueError(
-                        f"{feature.name}.evidence[{index}].view: unknown view {region.view}"
-                    )
+        for hypothesis in self.hypotheses:
+            subject = hypothesis.adopted.name
+            if missing := set(hypothesis.dimension_refs) - dimensions:
+                raise ValueError(f"{subject}: unknown dimensions {sorted(missing)}")
+        for _, candidate in self.candidates:
+            for field in ("evidence", "refuting"):
+                for index, region in enumerate(getattr(candidate, field)):
+                    if region.view not in names:
+                        raise ValueError(
+                            f"{candidate.name}.{field}[{index}].view: unknown view {region.view}"
+                        )
         return self
 
 

@@ -212,20 +212,21 @@ def validate_interpretation(
                 dxf=dxf,
             )
 
-    for index, (feature, output) in enumerate(
-        zip(interpretation.features, data["features"])
-    ):
-        output["evidence"] = []
-        for position, region in enumerate(feature.evidence):
-            size, scale, dxf = contexts[region.view]
-            output["evidence"].append(
-                _region(
-                    region.model_dump(),
-                    f"{feature.name}.evidence[{position}]",
-                    ("features", index, "evidence", position),
-                    size,
-                    scale,
-                    dxf=dxf,
-                )
-            )
+    for h, hypothesis in enumerate(interpretation.hypotheses):
+        for c, candidate in enumerate(hypothesis.candidates):
+            output = data["hypotheses"][h]["candidates"][c]
+            for field in ("evidence", "refuting"):
+                output[field] = []
+                for position, region in enumerate(getattr(candidate, field)):
+                    size, scale, dxf = contexts[region.view]
+                    output[field].append(
+                        _region(
+                            region.model_dump(),
+                            f"{candidate.name}.{field}[{position}]",
+                            ("hypotheses", h, "candidates", c, field, position),
+                            size,
+                            scale,
+                            dxf=dxf,
+                        )
+                    )
     return DrawingInterpretation.model_validate(data), reports

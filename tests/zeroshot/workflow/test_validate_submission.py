@@ -293,7 +293,7 @@ def test_interpretation_rejects_an_evidence_view_absent_from_the_artifact() -> N
         ValidationError, match=r"sem_bore.evidence\[0\].view: unknown view view_absent"
     ):
         interpretation(
-            features=[
+            hypotheses=[
                 interpreted_feature(
                     "sem_bore",
                     "bore",
@@ -330,9 +330,29 @@ def test_operation_validation_names_both_missing_and_invented_features() -> None
     assert len(message.splitlines()) == 2
 
 
+def test_a_plan_builds_the_adopted_candidate_not_the_one_rejected() -> None:
+    boss = interpreted_feature("sem_boss", "boss", parameters={"radius": 4.0})
+    hole = boss.candidates[0].model_copy(
+        update={"name": "sem_hole", "description": "hole", "confidence": 0.2}
+    )
+    held = interpretation(
+        hypotheses=[boss.model_copy(update={"candidates": [hole, *boss.candidates]})]
+    )
+    plan = _plan_for(["sem_hole"], detail="Cut sem_hole.radius deep.")
+
+    with pytest.raises(SubmissionValidationError) as caught:
+        _validate_plan(plan, held)
+
+    message = str(caught.value)
+    assert "sem_hole, a candidate the interpretation did not adopt" in message
+    assert "op_feature: sem_hole is a candidate" in message
+    assert "Use sem_boss" in message
+    _validate_plan(_plan_for(["sem_boss"], detail="Add sem_boss.radius."), held)
+
+
 def _measured_blend() -> DrawingInterpretation:
     return interpretation(
-        features=[
+        hypotheses=[
             interpreted_feature(
                 "sem_shoulder_blend",
                 "shoulder blend",
@@ -369,7 +389,7 @@ def test_operation_validation_accepts_derived_and_short_numbers() -> None:
     _validate_plan(
         _plan_for(["sem_boss"], detail="Extrude 25 mm."),
         interpretation(
-            features=[
+            hypotheses=[
                 interpreted_feature("sem_boss", "boss", parameters={"radius": 25.0})
             ]
         ),
@@ -391,7 +411,7 @@ def test_operation_validation_rejects_a_nonexistent_parameter_address() -> None:
 
 def test_operation_validation_accepts_a_whole_position_parameter() -> None:
     held = interpretation(
-        features=[
+        hypotheses=[
             interpreted_feature(
                 "sem_main_bore", "main bore", parameters={"center": [1.5, 2.5, 0.0]}
             )
@@ -415,7 +435,7 @@ def test_operation_validation_rejects_a_coordinate_of_a_single_number() -> None:
 
 def test_operation_validation_accepts_a_printed_dimension_reference() -> None:
     held = interpretation(
-        features=[
+        hypotheses=[
             interpreted_feature(
                 "sem_main_bore", "main bore", dimension_refs=["dim_depth"]
             )
@@ -608,7 +628,7 @@ def test_coding_checks_all_dimensions_once_across_tickets_even_without_a_program
     )
     terminal = VerifyOutputResult(status=ExecutionStatus.REJECTED, source=source)
     validate_submission(submission, snapshot, deliverable=terminal)
-    assert held.features[0].dimension_refs == []
+    assert held.hypotheses[0].dimension_refs == []
     del submission.stage_report.dimension_checks["dim_unreadable"]
     with pytest.raises(SubmissionValidationError, match="missing.*dim_unreadable"):
         validate_submission(submission, snapshot, deliverable=terminal)

@@ -11,10 +11,8 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
     Region,
+    SemanticHypothesis,
     View,
-)
-from zeroshot.pipeline.stages.interpretation.contracts import (
-    SemanticFeature as InterpretedFeature,
 )
 from zeroshot.pipeline.stages.tickets.contracts import TicketResponse
 
@@ -48,18 +46,21 @@ def drawing(*roles: str) -> list[DrawingView]:
 
 def interpreted_feature(
     identifier: int | str, description: str, **overrides: object
-) -> InterpretedFeature:
-    return InterpretedFeature.model_validate(
-        {
-            "name": f"sem_feature_{identifier}"
-            if isinstance(identifier, int)
-            else identifier,
-            "description": description,
-            "parameters": {},
-            "evidence": [Region(view="view_front", box_px=(0, 0, 10, 10))],
-            "dimension_refs": [],
-            **overrides,
-        }
+) -> SemanticHypothesis:
+    """A feature the drawing leaves unambiguous: one candidate, adopted."""
+    dimension_refs = overrides.pop("dimension_refs", [])
+    candidate = {
+        "name": f"sem_feature_{identifier}"
+        if isinstance(identifier, int)
+        else identifier,
+        "description": description,
+        "parameters": {},
+        "evidence": [Region(view="view_front", box_px=(0, 0, 10, 10))],
+        "confidence": 1.0,
+        **overrides,
+    }
+    return SemanticHypothesis.model_validate(
+        {"candidates": [candidate], "dimension_refs": dimension_refs}
     )
 
 
@@ -77,7 +78,7 @@ def interpretation(*descriptions: str, **overrides: object) -> DrawingInterpreta
                     dimensions=[],
                 )
             ],
-            "features": [
+            "hypotheses": [
                 interpreted_feature(index, description)
                 for index, description in enumerate(descriptions, start=1)
             ],

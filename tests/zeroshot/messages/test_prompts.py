@@ -203,9 +203,9 @@ def test_interpretation_prompt_exposes_the_runtime_schema(
     assert len(examples) == 1
     schema = json.loads(examples[0])
     assert schema == DrawingInterpretation.model_json_schema()
-    assert "parameters" in schema["$defs"]["SemanticFeature"]["properties"]
+    assert "parameters" in schema["$defs"]["SemanticCandidate"]["properties"]
     assert "Region" in schema["$defs"]
-    assert "geometry" not in schema["$defs"]["SemanticFeature"]["properties"]
+    assert "geometry" not in schema["$defs"]["SemanticCandidate"]["properties"]
 
 
 @pytest.mark.parametrize("stage", list(PipelineStage))

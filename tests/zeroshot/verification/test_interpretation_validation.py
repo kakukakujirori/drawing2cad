@@ -32,7 +32,7 @@ def raster_case(workdir: Path, measurements=MEASUREMENTS):
         dimensions.append(dimension)
     data["views"][0]["dimensions"] = dimensions
     if not dimensions:
-        data["features"][0]["dimension_refs"] = []
+        data["hypotheses"][0]["dimension_refs"] = []
     return DrawingInterpretation.model_validate(data)
 
 
@@ -76,7 +76,7 @@ def test_shared_png_views_keep_independent_scales(tmp_path: Path) -> None:
         dimension["measured_length"] /= 2
         dimension["region"]["view"] = "view_top"
     data["views"].append(top)
-    data["features"][0]["evidence"].append(
+    data["hypotheses"][0]["candidates"][0]["evidence"].append(
         {"view": "view_top", "box_px": (100, 100, 300, 200)}
     )
     accepted, _ = validate_interpretation(
@@ -121,7 +121,7 @@ def test_full_page_and_separate_files_use_referenced_regions_and_own_measurement
         "dimensions": page_dimensions,
     }
     data["views"] = [full_page, front, top]
-    data["features"][0]["evidence"].extend(
+    data["hypotheses"][0]["candidates"][0]["evidence"].extend(
         [
             {"view": "view_top", "box_px": (100, 100, 300, 200)},
             {"view": "view_full_page", "box_px": (100, 200, 200, 300)},
@@ -159,7 +159,7 @@ def test_submitted_scale_and_uv_are_replaced_by_calculated_values(
 ) -> None:
     data = raster_case(tmp_path).model_dump()
     data["views"][0]["scale"] = 0.25
-    data["features"][0]["evidence"][0]["box_uv"] = (0, 0, 1, 1)
+    data["hypotheses"][0]["candidates"][0]["evidence"][0]["box_uv"] = (0, 0, 1, 1)
     accepted, _ = validate_interpretation(
         DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
     )
@@ -199,7 +199,12 @@ def test_unconfirmed_calibration_does_not_publish_scale_or_uv(
     assert accepted.views[0].image_size == (1200, 1400)
     data = original.model_dump()
     data["views"][0]["scale"] = 0.1
-    data["features"][0]["evidence"][0]["box_uv"] = (56, 38.9, 64.2, 45.6)
+    data["hypotheses"][0]["candidates"][0]["evidence"][0]["box_uv"] = (
+        56,
+        38.9,
+        64.2,
+        45.6,
+    )
     stale, _ = validate_interpretation(
         DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
     )
@@ -279,9 +284,16 @@ def test_raster_rejects_inconsistent_metadata_and_regions(
     if defect == "image_size":
         data["views"][0]["image_size"] = (1201, 1400)
     elif defect == "pixel_bounds":
-        data["features"][0]["evidence"][0]["box_px"] = (0, 0, 1201, 1400)
+        data["hypotheses"][0]["candidates"][0]["evidence"][0]["box_px"] = (
+            0,
+            0,
+            1201,
+            1400,
+        )
     else:
-        data["features"][0]["evidence"][0].update(box_px=None, box_uv=(0, 0, 1, 1))
+        data["hypotheses"][0]["candidates"][0]["evidence"][0].update(
+            box_px=None, box_uv=(0, 0, 1, 1)
+        )
     with pytest.raises(ValueError):
         validate_interpretation(
             DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
@@ -348,13 +360,22 @@ def dxf_case(workdir: Path):
                     ],
                 }
             ],
-            "features": [
+            "hypotheses": [
                 {
-                    "name": "sem_plate",
-                    "description": "Rectangular plate, thickness unknown.",
-                    "parameters": {"width": 101.6, "height": 76.2, "thickness": None},
+                    "candidates": [
+                        {
+                            "name": "sem_plate",
+                            "description": "Rectangular plate, thickness unknown.",
+                            "parameters": {
+                                "width": 101.6,
+                                "height": 76.2,
+                                "thickness": None,
+                            },
+                            "evidence": [region],
+                            "confidence": 1.0,
+                        }
+                    ],
                     "dimension_refs": ["dim_width"],
-                    "evidence": [region],
                 }
             ],
         }
@@ -404,9 +425,19 @@ def test_native_dxf_rejects_raster_metadata_and_out_of_bounds_uv(
     elif defect == "scale":
         data["views"][0]["scale"] = 0.1
     elif defect == "pixel_box":
-        data["features"][0]["evidence"][0]["box_px"] = (0, 0, 100, 100)
+        data["hypotheses"][0]["candidates"][0]["evidence"][0]["box_px"] = (
+            0,
+            0,
+            100,
+            100,
+        )
     else:
-        data["features"][0]["evidence"][0]["box_uv"] = (0, 0, 120, 76.2)
+        data["hypotheses"][0]["candidates"][0]["evidence"][0]["box_uv"] = (
+            0,
+            0,
+            120,
+            76.2,
+        )
     with pytest.raises(ValueError):
         validate_interpretation(
             DrawingInterpretation.model_validate(data),
@@ -425,7 +456,8 @@ def test_validation_uses_revalidated_numeric_types_without_mutating_input(
         original.features[0].evidence[0].model_copy(update={"box_px": pixel_strings})
     )
     feature = original.features[0].model_copy(update={"evidence": [region]})
-    submitted = original.model_copy(update={"features": [feature]})
+    hypothesis = original.hypotheses[0].model_copy(update={"candidates": [feature]})
+    submitted = original.model_copy(update={"hypotheses": [hypothesis]})
     accepted, _ = validate_interpretation(submitted, workdir=SandboxWorkdir(tmp_path))
     assert accepted.features[0].evidence[0].box_px == (560, 944, 642, 1011)
     assert accepted.features[0].evidence[0].box_uv == pytest.approx(
@@ -440,7 +472,7 @@ def test_image_diagonal_limits_linear_measurements_only(
 ) -> None:
     data = raster_case(tmp_path, [(10, 1000), (20, 2000), (30, 3000)]).model_dump()
     Image.new("RGB", (100, 100), "white").save(tmp_path / "front.png")
-    data["features"][0]["evidence"][0]["box_px"] = (0, 0, 100, 100)
+    data["hypotheses"][0]["candidates"][0]["evidence"][0]["box_px"] = (0, 0, 100, 100)
     data["views"][0]["region"]["box_px"] = (0, 0, 100, 100)
     for dimension in data["views"][0]["dimensions"]:
         dimension["kind"] = kind

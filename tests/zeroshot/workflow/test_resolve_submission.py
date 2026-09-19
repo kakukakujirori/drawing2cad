@@ -46,18 +46,25 @@ def interpretation() -> DrawingInterpretation:
                     ],
                 }
             ],
-            "features": [
+            "hypotheses": [
                 {
-                    "name": "sem_bore",
-                    "description": "A bore through the base.",
-                    "parameters": {
-                        "radius": 6.000123456789123,
-                        "center": [0, None, 3],
-                        "depth": None,
-                        "zero": 0,
-                        "empty": [],
-                    },
-                    "evidence": [{"view": "view_front", "box_px": [20, 20, 40, 40]}],
+                    "candidates": [
+                        {
+                            "name": "sem_bore",
+                            "description": "A bore through the base.",
+                            "parameters": {
+                                "radius": 6.000123456789123,
+                                "center": [0, None, 3],
+                                "depth": None,
+                                "zero": 0,
+                                "empty": [],
+                            },
+                            "evidence": [
+                                {"view": "view_front", "box_px": [20, 20, 40, 40]}
+                            ],
+                            "confidence": 1.0,
+                        }
+                    ],
                     "dimension_refs": ["dim_diameter"],
                 }
             ],
