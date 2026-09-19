@@ -370,6 +370,8 @@ class DrawingInterpretation(Contract):
                 )
         for hypothesis, candidate in self.candidates:
             regions = [*candidate.evidence, *candidate.refuting]
+            # Rivals cite each other: adopting one changes the other's confidence.
+            rivals = {c.name for c in hypothesis.candidates} - {candidate.name}
             members[candidate.name] = Member(
                 (
                     candidate.model_dump(exclude={"evidence", "refuting"}),
@@ -377,7 +379,11 @@ class DrawingInterpretation(Contract):
                     hypothesis.dimension_refs,
                 ),
                 frozenset(
-                    {*(region.view for region in regions), *hypothesis.dimension_refs}
+                    {
+                        *(region.view for region in regions),
+                        *hypothesis.dimension_refs,
+                        *rivals,
+                    }
                 ),
             )
         return members
