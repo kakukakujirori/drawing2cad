@@ -34,6 +34,12 @@ from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
+
+_CHECK_CANDIDATES = (
+    "check_candidates is available. Before you set the confidences of a "
+    "hypothesis with two or more candidates, call it once for that hypothesis "
+    "and weigh its reports."
+)
 type AgentBuilder = partial[CompiledGraph]
 
 
@@ -46,6 +52,7 @@ class InterpretationStage:
     middleware: VerifyOnWriteMiddleware
     input_after_compaction: bool
     dxf_context: str | None = None
+    tool_notes: tuple[str, ...] = ()
 
     def run(self, state: ReconstructionState, config: RunnableConfig) -> dict[str, Any]:
         snapshot = current_snapshot(state)
@@ -68,10 +75,11 @@ class InterpretationStage:
             ),
             interpretation_schema=schema_for_prompt(DrawingInterpretation),
         )
-        if self.dxf_context is not None and state.get("stage_validation_error") is None:
+        notes = [n for n in (self.dxf_context, *self.tool_notes) if n is not None]
+        if notes and state.get("stage_validation_error") is None:
             instruction.content = [
                 *instruction.content_blocks,
-                create_text_block(self.dxf_context),
+                *(create_text_block(note) for note in notes),
             ]
         result = self.agent.invoke(
             {
@@ -183,4 +191,5 @@ def create_interpretation_stage(
         middleware,
         input_after_compaction,
         dxf_context,
+        tuple(_CHECK_CANDIDATES for tool in tools if tool.name == "check_candidates"),
     )

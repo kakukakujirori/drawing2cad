@@ -674,6 +674,8 @@ def test_the_interpreter_alone_may_have_candidates_checked(monkeypatch):
             hypothesis_comparison_enabled=True,
         ).invoke({})
     assert "check_candidates" in interpreter.bound_tool_names
+    told = "\n".join(m.text for m in interpreter.received_messages[0])
+    assert "Before you set the confidences" in told
     for model in (planner, coder, auditor):
         assert "check_candidates" not in model.bound_tool_names
 
