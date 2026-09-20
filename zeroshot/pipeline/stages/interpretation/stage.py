@@ -1,5 +1,5 @@
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -86,29 +86,18 @@ class InterpretationStage:
         }
 
 
-def _dxf_context(
-    instructions: StageInstructions, factors: Mapping[str, float] | None
-) -> str | None:
+def _dxf_context(instructions: StageInstructions) -> str | None:
     originals = []
     for view in instructions.input_artifact:
         if Path(view.file).suffix.lower() != ".dxf":
             continue
 
-        name = view.name
-        factor = (factors or {}).get(name)
-        if factor is None:
-            raise ValueError(
-                f"DXF input {name} requires dxf_mm_per_unit[{name!r}]; "
-                "configure its actual millimetres per native drawing unit."
-            )
         file = instructions.workdir.host_to_sandbox_path(view.file)
         originals.append(
             {
-                "view": name,
+                "view": view.name,
                 "file": str(file),
-                **read_dxf_frame(
-                    instructions.workdir.sandbox_to_host_path(file), factor
-                ),
+                **read_dxf_frame(instructions.workdir.sandbox_to_host_path(file)),
             }
         )
     if not originals:
@@ -117,16 +106,9 @@ def _dxf_context(
         "[Native DXF coordinates]\n"
         "The original DXFs below are already registered. Keep their names, "
         "files, roles and full-file regions; add dimension readings. "
-        "Native (x, y) becomes normalized millimetres: "
-        "u = (x - origin_native[0]) * mm_per_unit; "
-        "v = (y - origin_native[1]) * mm_per_unit. "
-        "The full-file box_uv is [0, 0, size_mm[0], size_mm[1]]. "
-        "For additional DXF files use a configured view name and its factor; "
-        "compute that file's own geometry-bbox origin rather than reusing "
-        "the original file's origin.\n"
-        + json.dumps(
-            {"originals": originals, "configured_mm_per_unit": dict(factors or {})}
-        )
+        "A drawing unit is a millimetre and nothing is moved, so box_uv is "
+        "what you read out of the file. box_mm is that file's full extent.\n"
+        + json.dumps({"originals": originals})
     )
 
 
@@ -139,9 +121,8 @@ def create_interpretation_stage(
     attempt_store: AttemptStore,
     interpretation_filename: str = "interpretation.json",
     input_after_compaction: bool = False,
-    dxf_mm_per_unit: Mapping[str, float] | None = None,
 ) -> InterpretationStage:
-    dxf_context = _dxf_context(instructions, dxf_mm_per_unit)
+    dxf_context = _dxf_context(instructions)
     if system_prompt_path is None:
         system_prompt_path = Path(__file__).parent / "prompts" / "role.md"
     interpretation_verifier = InterpretationVerifier(
@@ -149,7 +130,6 @@ def create_interpretation_stage(
         attempt_store=attempt_store,
         input_artifact=instructions.input_artifact,
         source_filename=interpretation_filename,
-        dxf_mm_per_unit=dxf_mm_per_unit,
     )
     ticket_verifier = TicketVerifier(
         lambda: interpretation_verifier.accepted_interpretation

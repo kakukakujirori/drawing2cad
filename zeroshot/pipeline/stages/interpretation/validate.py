@@ -1,7 +1,6 @@
 """Read sheet files and calibrate the Regions in a submitted interpretation."""
 
 import math
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +23,7 @@ def _region(
     region: dict[str, Any],
     subject: str,
     location: KeyLocation,
-    size: tuple[float, float],
+    sheet: tuple[float, float, float, float],
     scale: float | None,
     *,
     dxf: bool,
@@ -40,12 +39,17 @@ def _region(
         if px is None:
             raise LocatedError.at(location, f"{subject}: raster regions require box_px")
         box = px
-    if box[2] > size[0] + 1e-7 or box[3] > size[1] + 1e-7:
+    if any(
+        edge < bound - 1e-7 for edge, bound in zip(box[:2], sheet[:2], strict=True)
+    ) or any(
+        edge > bound + 1e-7 for edge, bound in zip(box[2:], sheet[2:], strict=True)
+    ):
         # Naming the view it is measured against: the box is usually the whole
         # page's coordinates left on a region that cites a crop.
         raise LocatedError.at(
             location,
-            f"{subject}: region {tuple(box)} exceeds {region['view']} bounds {size}",
+            f"{subject}: region {tuple(box)} lies outside {region['view']}, "
+            f"which spans {tuple(round(edge, 3) for edge in sheet)}",
         )
 
     if not dxf:
@@ -55,9 +59,9 @@ def _region(
             x0, y0, x1, y1 = px
             uv = (
                 x0 * scale,
-                (size[1] - y1) * scale,
+                (sheet[3] - y1) * scale,
                 x1 * scale,
-                (size[1] - y0) * scale,
+                (sheet[3] - y0) * scale,
             )
     return {**region, "box_uv": uv}
 
@@ -101,7 +105,6 @@ def validate_interpretation(
     interpretation: DrawingInterpretation,
     *,
     workdir: SandboxWorkdir,
-    dxf_mm_per_unit: Mapping[str, float] | None = None,
 ) -> tuple[DrawingInterpretation, dict[str, dict[str, Any]]]:
     """Validate and enrich without mutating model output or the input files.
 
@@ -111,12 +114,9 @@ def validate_interpretation(
     a resized sheet. No consensus (including one measurement) leaves scale/UV
     null; return diagnostics to the interpreter instead of guessing a scale.
 
-    Native DXF uses normalized, sheet-relative UV in mm, never preview pixels.
-    dxf_mm_per_unit is authoritative input metadata, not an LLM-submitted field.
-    Keys are DrawingView names. DXF measured_length uses native drawing units
-    and is retained; it is not passed to RANSAC with pixel tolerances.
-    Supply 1.0 only when the dataset guarantees 1:1 millimetre drawing units.
-    Use read_dxf_frame to expose the origin and conversion at input preparation.
+    A DXF keeps its own millimetre coordinates, never preview pixels, so its
+    measured_length is already a length and is retained rather than passed to
+    RANSAC with pixel tolerances.
     """
     interpretation = DrawingInterpretation.model_validate(interpretation.model_dump())
     if UNDECIDED in interpretation.datum:
@@ -143,10 +143,13 @@ def validate_interpretation(
         )
     _require_third_angle_placement(interpretation.views)
     data = interpretation.model_dump()
-    sizes: dict[tuple[Path, float | None], tuple[float, float]] = {}
-    dxf_frames: dict[tuple[Path, float | None], dict[str, Any]] = {}
+    # The bounds a region must fall inside: a DXF's own extent, a raster's pixels.
+    sheets: dict[Path, tuple[float, float, float, float]] = {}
+    dxf_frames: dict[Path, dict[str, Any]] = {}
     reports: dict[str, dict[str, Any]] = {}
-    contexts: dict[str, tuple[tuple[float, float], float | None, bool]] = {}
+    contexts: dict[
+        str, tuple[tuple[float, float, float, float], float | None, bool]
+    ] = {}
 
     for index, (view, output) in enumerate(zip(interpretation.views, data["views"])):
         location: KeyLocation = ("views", index)
@@ -165,24 +168,16 @@ def validate_interpretation(
             )
         path = path.resolve()
         dxf = path.suffix.lower() == ".dxf"
-        factor = None
-        if dxf:
-            factor = (dxf_mm_per_unit or {}).get(view.name)
-            if factor is None:
-                raise LocatedError.at(
-                    location,
-                    f"{view.name}: supply explicit DXF mm_per_unit input metadata",
-                )
-        key = (path, factor)
-        if key not in sizes:
+        if path not in sheets:
             if dxf:
-                dxf_frames[key] = read_dxf_frame(path, factor)
-                sizes[key] = dxf_frames[key]["size_mm"]
+                dxf_frames[path] = read_dxf_frame(path)
+                sheets[path] = dxf_frames[path]["box_mm"]
             else:
                 with Image.open(path) as image:
-                    sizes[key] = image.size
+                    sheets[path] = (0, 0, *image.size)
                     image.verify()
-        size = sizes[key]
+        sheet = sheets[path]
+        size = (sheet[2] - sheet[0], sheet[3] - sheet[1])
         if dxf:
             if view.image_size is not None or view.scale is not None:
                 raise LocatedError.at(
@@ -190,7 +185,7 @@ def validate_interpretation(
                     f"{view.name}: native DXF cannot have image_size or pixel scale",
                 )
             scale = None
-            reports[view.name] = {"status": "native_dxf", **dxf_frames[key]}
+            reports[view.name] = {"status": "native_dxf", **dxf_frames[path]}
         else:
             if view.image_size is not None and view.image_size != size:
                 raise LocatedError.at(
@@ -227,26 +222,26 @@ def validate_interpretation(
             scale = report["scale"] if report["status"] == "ok" else None
             reports[view.name] = report
             output.update(image_size=size, scale=scale)
-        contexts[view.name] = (size, scale, dxf)
+        contexts[view.name] = (sheet, scale, dxf)
 
     for index, output in enumerate(data["views"]):
         region = output["region"]
-        size, scale, dxf = contexts[region["view"]]
+        sheet, scale, dxf = contexts[region["view"]]
         output["region"] = _region(
             region,
             f"{output['name']}.region",
             ("views", index, "region"),
-            size,
+            sheet,
             scale,
             dxf=dxf,
         )
         for position, dim in enumerate(output["dimensions"]):
-            size, scale, dxf = contexts[dim["region"]["view"]]
+            sheet, scale, dxf = contexts[dim["region"]["view"]]
             dim["region"] = _region(
                 dim["region"],
                 f"{dim['name']}.region",
                 ("views", index, "dimensions", position, "region"),
-                size,
+                sheet,
                 scale,
                 dxf=dxf,
             )
@@ -256,13 +251,13 @@ def validate_interpretation(
     ):
         output["evidence"] = []
         for position, region in enumerate(feature.evidence):
-            size, scale, dxf = contexts[region.view]
+            sheet, scale, dxf = contexts[region.view]
             output["evidence"].append(
                 _region(
                     region.model_dump(),
                     f"{feature.name}.evidence[{position}]",
                     ("features", index, "evidence", position),
-                    size,
+                    sheet,
                     scale,
                     dxf=dxf,
                 )

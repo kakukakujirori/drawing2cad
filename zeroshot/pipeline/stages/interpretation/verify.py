@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
@@ -47,8 +47,6 @@ class InterpretationVerifier:
         attempt_store: AttemptStore,
         input_artifact: Sequence[DrawingView],
         source_filename: str = "interpretation.json",
-        *,
-        dxf_mm_per_unit: Mapping[str, float] | None = None,
     ) -> None:
         source = PurePosixPath(source_filename)
         if source.is_absolute() or len(source.parts) != 1 or source.suffix != ".json":
@@ -56,7 +54,6 @@ class InterpretationVerifier:
         self.workdir = workdir
         self.attempt_store = attempt_store
         self.source_filename = source_filename
-        self.dxf_mm_per_unit = dxf_mm_per_unit
         self._original_views = [
             view.model_copy(
                 update={"file": str(workdir.host_to_sandbox_path(view.file))},
@@ -173,7 +170,6 @@ class InterpretationVerifier:
             validated_interpretation, reports = validate_interpretation(
                 submitted_interpretation,
                 workdir=self.workdir,
-                dxf_mm_per_unit=self.dxf_mm_per_unit,
             )
             enriched = validated_interpretation.model_dump_json(indent=2) + "\n"
             (attempt_dir / self.source_filename).write_text(enriched, encoding="utf-8")

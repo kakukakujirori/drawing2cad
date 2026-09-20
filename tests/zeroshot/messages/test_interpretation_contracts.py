@@ -108,14 +108,15 @@ def test_region_requires_positive_width_and_height(box: tuple, field: str) -> No
         Region(view="view_front", **{field: box})
 
 
-def test_region_requires_a_sheet_and_nonnegative_box_and_is_immutable() -> None:
+def test_region_requires_a_sheet_and_a_pixel_origin_and_is_immutable() -> None:
     with pytest.raises(ValidationError):
         Region(box_px=(0, 0, 10, 20))
     with pytest.raises(ValidationError, match="at least one"):
         Region(view="view_front")
-    for field in ["box_px", "box_uv"]:
-        with pytest.raises(ValidationError):
-            Region(view="view_front", **{field: (-20, -10, -5, -1)})
+    with pytest.raises(ValidationError, match="file's origin"):
+        Region(view="view_front", box_px=(-20, -10, -5, -1))
+    # A DXF is drawn where its author put it, which may be left of the origin.
+    Region(view="view_front", box_uv=(-20.0, -10.0, -5.0, -1.0))
     region = Region(view="view_front", box_px=(0, 0, 10, 20))
     with pytest.raises(ValidationError, match="frozen"):
         region.box_uv = (0, 0, 1, 2)

@@ -75,11 +75,9 @@ def create_single_graph(
     projection_views: Sequence[str] = ("front", "top", "right"),
     max_audit_reject_count: int = 1,
     max_stage_validation_retries: int = 3,
-    dxf_mm_per_unit: dict[str, float] | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ):
     """Code the part from the drawing, audit it, and recode from the findings."""
-    del dxf_mm_per_unit  # read by run_pipeline, not by this graph
     run_shell = create_run_shell_tool(sandbox_runner, sandbox_workdir)
     load_image = create_load_image_tool(sandbox_workdir)
 

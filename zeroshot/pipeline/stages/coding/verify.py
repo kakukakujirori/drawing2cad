@@ -356,23 +356,20 @@ class OutputVerifier:
             name: str,
             role: View,
             path: Path,
-            mm_per_unit: float | None,
             axes: tuple[Axis, Axis] | None = None,
         ) -> None:
             """Announce a drawing, or explain it: an unreadable one is not fatal."""
             try:
-                sheets.append(
-                    register_view(_projected(name), role, path, mm_per_unit, axes)
-                )
+                sheets.append(register_view(_projected(name), role, path, axes))
             except Exception as why:  # noqa: BLE001 - report it where it would have been
                 failed[name] = f"{type(why).__name__}: {why}"
 
-        # A projection is written at 1:1 in model millimetres, so its own frame
-        # is already the sheet coordinates the contract uses.
+        # A projection is written at 1:1 in model millimetres, which is the
+        # frame a region measured on it is read in.
         for view, path in render_report.projection_paths.as_mapping().items():
-            offer(view, View(view), path, 1.0, self.views[View(view)])
+            offer(view, View(view), path, self.views[View(view)])
         if pictorial:
-            offer(FEEDBACK_PICTORIAL, View.PERSPECTIVE, pictorial, None)
+            offer(FEEDBACK_PICTORIAL, View.PERSPECTIVE, pictorial)
         if why := render_report.render3d_errors.get(FEEDBACK_PICTORIAL):
             failed[FEEDBACK_PICTORIAL] = why
         manifest = FeedbackManifest(

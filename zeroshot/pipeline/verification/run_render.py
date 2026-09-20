@@ -35,7 +35,7 @@ from zeroshot.pipeline.verification.render.project import (
     ViewFrames,
     load_shape,
     project_views,
-    to_own_corner,
+    require_drawable,
 )
 
 
@@ -80,7 +80,8 @@ def _render_projections(
         projections = project_views(load_shape(step_path), wanted)
         for view in wanted:
             path = requested[view.value]
-            export_view(path, to_own_corner(projections[view], view.value), view.value)
+            require_drawable(projections[view], view.value)
+            export_view(path, projections[view], view.value)
             export_to_png(path)
 
     for view, path in requested.items():

@@ -114,7 +114,7 @@ class Region(Contract):
     )
     box_uv: tuple[float, float, float, float] | None = Field(
         default=None,
-        description="u0, v0, u1, v1 in mm, u right and v up, from the lower left of the referenced DrawingView.file (geometry bbox for DXF), using that sheet's scale. Supply normalized UV for DXF; leave null for raster calibration from box_px.",
+        description="u0, v0, u1, v1 in mm, u right and v up. A DXF region gives the coordinates the file carries. A raster region leaves this null: it is derived from box_px and the sheet's calibrated scale, measured from the file's lower left.",
     )
 
     @model_validator(mode="after")
@@ -122,12 +122,11 @@ class Region(Contract):
         if self.box_px is None and self.box_uv is None:
             raise ValueError("at least one of box_px or box_uv is required")
         for name, box in (("box_px", self.box_px), ("box_uv", self.box_uv)):
-            if box is not None:
-                x0, y0, x1, y1 = box
-                if x0 >= x1 or y0 >= y1:
-                    raise ValueError(f"{name} must satisfy x0 < x1 and y0 < y1")
-                if x0 < 0 or y0 < 0:
-                    raise ValueError(f"{name} must use the referenced file's origin")
+            if box is not None and (box[0] >= box[2] or box[1] >= box[3]):
+                raise ValueError(f"{name} must satisfy x0 < x1 and y0 < y1")
+        # A DXF may be drawn anywhere, but a picture starts at its own corner.
+        if self.box_px is not None and min(self.box_px[:2]) < 0:
+            raise ValueError("box_px must use the referenced file's origin")
         require_name(self.view, "view_")
         return self
 

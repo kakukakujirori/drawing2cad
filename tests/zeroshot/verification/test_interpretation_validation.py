@@ -324,12 +324,12 @@ def test_sheet_file_must_be_an_existing_regular_file_inside_workdir(
 
 def dxf_case(workdir: Path):
     doc = ezdxf.new()
-    doc.units = 1  # Inches: physical conversion is explicit sheet metadata.
+    # Drawn away from the origin, so a region has to cite the file's own frame.
     doc.modelspace().add_lwpolyline(
-        [(10, 20), (14, 20), (14, 23), (10, 23)], close=True
+        [(10, 20), (111.6, 20), (111.6, 96.2), (10, 96.2)], close=True
     )
     doc.saveas(workdir / "front.dxf")
-    region = {"view": "view_front", "box_uv": [0, 0, 101.6, 76.2]}
+    region = {"view": "view_front", "box_uv": [10.0, 20.0, 111.6, 96.2]}
     return DrawingInterpretation.model_validate(
         {
             "datum": "mm; lower-left input-file point defines the planar reference.",
@@ -347,7 +347,7 @@ def dxf_case(workdir: Path):
                             "kind": "linear",
                             "text": "101.6",
                             "nominal_value": 101.6,
-                            "measured_length": 4,
+                            "measured_length": 101.6,
                             "quantity": 1,
                             "note": None,
                             "region": region,
@@ -375,30 +375,25 @@ def test_native_dxf_preserves_native_measurements_and_normalized_uv_without_muta
     before = original.model_dump()
     contents = (tmp_path / "front.dxf").read_bytes()
     accepted, diagnostics = validate_interpretation(
-        original,
-        workdir=SandboxWorkdir(tmp_path),
-        dxf_mm_per_unit={"view_front": 25.4},
+        original, workdir=SandboxWorkdir(tmp_path)
     )
     assert diagnostics["view_front"]["status"] == "native_dxf"
-    assert diagnostics["view_front"]["origin_native"] == pytest.approx((10, 20))
-    assert diagnostics["view_front"]["mm_per_unit"] == 25.4
-    assert diagnostics["view_front"]["size_mm"] == pytest.approx((101.6, 76.2))
+    assert diagnostics["view_front"]["box_mm"] == pytest.approx(
+        (10.0, 20.0, 111.6, 96.2)
+    )
     sheet = accepted.views[0]
     assert sheet.image_size is None and sheet.scale is None
-    assert sheet.dimensions[0].measured_length == 4
-    assert accepted.features[0].evidence[0].box_uv == pytest.approx((0, 0, 101.6, 76.2))
+    # A drawing unit is a millimetre, so the drawn length is the printed one.
+    assert sheet.dimensions[0].measured_length == 101.6
+    assert accepted.features[0].evidence[0].box_uv == pytest.approx(
+        (10.0, 20.0, 111.6, 96.2)
+    )
     assert (
         original.model_dump() == before
         and (tmp_path / "front.dxf").read_bytes() == contents
     )
-    revalidated, _ = validate_interpretation(
-        accepted,
-        workdir=SandboxWorkdir(tmp_path),
-        dxf_mm_per_unit={"view_front": 25.4},
-    )
+    revalidated, _ = validate_interpretation(accepted, workdir=SandboxWorkdir(tmp_path))
     assert revalidated == accepted
-    with pytest.raises(ValueError):
-        validate_interpretation(original, workdir=SandboxWorkdir(tmp_path))
 
 
 @pytest.mark.parametrize("defect", ["image_size", "scale", "pixel_box", "uv_bounds"])
@@ -413,12 +408,11 @@ def test_native_dxf_rejects_raster_metadata_and_out_of_bounds_uv(
     elif defect == "pixel_box":
         data["features"][0]["evidence"][0]["box_px"] = (0, 0, 100, 100)
     else:
-        data["features"][0]["evidence"][0]["box_uv"] = (0, 0, 120, 76.2)
+        data["features"][0]["evidence"][0]["box_uv"] = (10.0, 20.0, 200.0, 96.2)
     with pytest.raises(ValueError):
         validate_interpretation(
             DrawingInterpretation.model_validate(data),
             workdir=SandboxWorkdir(tmp_path),
-            dxf_mm_per_unit={"view_front": 25.4},
         )
 
 

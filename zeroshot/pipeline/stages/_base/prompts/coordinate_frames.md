@@ -3,7 +3,8 @@
 Model XY is the horizontal plane, and +Z points upward.
 Region coordinates are relative to the file of the DrawingView identified by Region.view.
 Region.box_px uses pixel boundaries: origin at the file's top left, +x right, +y down.
-Region.box_uv uses millimetres: origin at the file's lower left, +U right, +V up. For DXF the origin is the geometry bounding box's lower left.
+Region.box_uv uses millimetres, +U right and +V up: a DXF gives the coordinates it already carries.
+A projection this pipeline drew carries model coordinates, so it does not sit on top of an input drawing; compare shapes and lengths, not positions.
 
 Orthographic view directions:
 

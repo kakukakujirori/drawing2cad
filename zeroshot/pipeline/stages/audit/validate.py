@@ -135,13 +135,15 @@ def _region_error(region: AuditRegion, workdir: SandboxWorkdir) -> str | None:
     if not path.is_file():
         return f"{file} does not exist in the workspace"
     if suffix == ".dxf":
-        # Native units, which is millimetres for everything the pipeline draws.
-        size = read_dxf_frame(path, 1.0)["size_mm"]
+        # Its own coordinates: a projection carries the model's, not a sheet's.
+        sheet = read_dxf_frame(path)["box_mm"]
     else:
         with Image.open(path) as image:
-            size = image.size
-    if region.box[2] > size[0] + 1e-7 or region.box[3] > size[1] + 1e-7:
-        return f"box {region.box} exceeds the bounds of {file}, {size}"
+            sheet = (0, 0, *image.size)
+    if any(
+        edge < bound - 1e-7 for edge, bound in zip(region.box[:2], sheet[:2])
+    ) or any(edge > bound + 1e-7 for edge, bound in zip(region.box[2:], sheet[2:])):
+        return f"box {region.box} lies outside {file}, which spans {sheet}"
     return None
 
 

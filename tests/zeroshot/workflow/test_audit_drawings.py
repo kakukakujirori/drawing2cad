@@ -235,7 +235,7 @@ def test_evidence_is_measured_on_the_files_it_names(
     ("cited", "message"),
     [
         (cite("projection/absent.dxf", (0, 0, 1, 1)), "does not exist"),
-        (cite("projection/front.dxf", (0, 0, 21, 1)), "exceeds the bounds"),
+        (cite("projection/front.dxf", (0, 0, 21, 1)), "lies outside"),
         (cite("../escaped/projection/front.dxf", (0, 0, 1, 1)), "must not escape"),
         (cite("projection/front.step", (0, 0, 1, 1)), "is not a drawing"),
     ],

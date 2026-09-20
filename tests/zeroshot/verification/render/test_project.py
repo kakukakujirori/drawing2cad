@@ -14,7 +14,6 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     View,
 )
 from zeroshot.pipeline.verification.render._hlr import (
-    Circle,
     ProjectedEdges,
     Segment,
     ViewProjection,
@@ -25,7 +24,7 @@ from zeroshot.pipeline.verification.render.project import (
     frame_of,
     load_shape,
     project_views,
-    to_own_corner,
+    require_drawable,
 )
 
 BOX_X, BOX_Y, BOX_Z = 30.0, 20.0, 10.0
@@ -188,27 +187,13 @@ def test_projection_is_reproducible(box_step):
         assert a.hidden.count() == b.hidden.count()
 
 
-def test_a_view_is_moved_onto_its_own_corner_without_being_resized(box_views):
-    """The contract measures a sheet from its bottom-left; a size must survive."""
-    before = box_views[View.FRONT].bbox(include_hidden=True)
+def test_a_projection_is_drawn_where_the_model_put_it(box_views):
+    """Model coordinates, not a sheet: a view may sit left of the origin."""
+    x, _, z = BOX_CENTER
 
-    after = to_own_corner(box_views[View.FRONT], "front").bbox(include_hidden=True)
-
-    assert after[:2] == pytest.approx((0.0, 0.0))
-    assert after[2] - after[0] == pytest.approx(before[2] - before[0])
-    assert after[3] - after[1] == pytest.approx(before[3] - before[1])
-
-
-def test_a_circle_keeps_its_radius_and_follows_its_centre():
-    projection = ViewProjection(
-        visible=ProjectedEdges(circles=[Circle((15.0, 25.0), 4.0)]),
-        hidden=ProjectedEdges(),
+    assert box_views[View.FRONT].bbox(include_hidden=True) == pytest.approx(
+        (x - BOX_X / 2, z - BOX_Z / 2, x + BOX_X / 2, z + BOX_Z / 2)
     )
-
-    (circle,) = to_own_corner(projection, "front").visible.circles
-
-    assert circle.radius == pytest.approx(4.0)
-    assert circle.center == pytest.approx((4.0, 4.0))
 
 
 @pytest.mark.parametrize(
@@ -224,4 +209,4 @@ def test_a_circle_keeps_its_radius_and_follows_its_centre():
 )
 def test_a_view_with_no_area_is_refused_by_name(projection):
     with pytest.raises(DegenerateDrawingError, match="right"):
-        to_own_corner(projection, "right")
+        require_drawable(projection, "right")

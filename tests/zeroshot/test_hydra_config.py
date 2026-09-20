@@ -180,7 +180,6 @@ def test_a_sweep_overriding_sample_id_with_dxf_input(input_config: str) -> None:
     assert config.sample.sample_id == "000405"
     assert config.sample.drawing.sheets[0].file.endswith("/000405.dxf")
     assert config.sample.target_step_path.endswith("/000405.step")
-    assert config.workflow.dxf_mm_per_unit == {"view_drawing": 1.0}
     assert all(
         sheet.file.endswith("/000405.png") for sheet in config.sample.drawing.sheets[1:]
     )

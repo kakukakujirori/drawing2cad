@@ -1,9 +1,9 @@
 """STEP -> the orthographic projections a drawing asks for.
 
 Reads the solid, runs hidden-line removal once per view frame, and returns the
-projected 2D primitives in model units. `to_own_corner` then reads each view
-from its own bottom-left corner, which is where the drawing contract measures a
-sheet from.
+projected 2D primitives in model units, which is what the view is written in:
+a coordinate on a projection is a model measurement, not a sheet position, so
+it does not line up with an input drawing's own coordinates.
 """
 
 from __future__ import annotations
@@ -25,12 +25,6 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     cross_axis,
 )
 from zeroshot.pipeline.verification.render._hlr import (
-    Arc,
-    Circle,
-    Ellipse,
-    Polyline,
-    ProjectedEdges,
-    Segment,
     ViewProjection,
     project,
 )
@@ -154,26 +148,8 @@ def project_views(
     }
 
 
-def _translated(edges: ProjectedEdges, dx: float, dy: float) -> ProjectedEdges:
-    """Move every primitive. No scale or rotation, so angles carry over."""
-
-    def point(p: tuple[float, float]) -> tuple[float, float]:
-        return (p[0] + dx, p[1] + dy)
-
-    return ProjectedEdges(
-        segments=[Segment(point(e.p0), point(e.p1)) for e in edges.segments],
-        arcs=[Arc(point(e.center), e.radius, e.a0, e.a1, e.ccw) for e in edges.arcs],
-        circles=[Circle(point(e.center), e.radius) for e in edges.circles],
-        ellipses=[
-            Ellipse(point(e.center), e.rmaj, e.rmin, e.rot, e.a0, e.a1)
-            for e in edges.ellipses
-        ],
-        polylines=[Polyline([point(p) for p in e.pts]) for e in edges.polylines],
-    )
-
-
-def to_own_corner(projection: ViewProjection, name: str) -> ViewProjection:
-    """The same view read from its own bottom-left corner, at 1:1.
+def require_drawable(projection: ViewProjection, name: str) -> None:
+    """Refuse a view with no finite extent worth drawing.
 
     `name` only exists to say which view was refused.
     """
@@ -187,7 +163,3 @@ def to_own_corner(projection: ViewProjection, name: str) -> ViewProjection:
         raise DegenerateDrawingError(
             f"view {name!r} has near-zero extent (w={width:.4f}, h={height:.4f} mm)"
         )
-    return ViewProjection(
-        visible=_translated(projection.visible, -x_min, -y_min),
-        hidden=_translated(projection.hidden, -x_min, -y_min),
-    )

@@ -55,7 +55,6 @@ def run(config: DictConfig) -> ReconstructionState | None:
         ),
     )
 
-    mm_per_unit = config.workflow.get("dxf_mm_per_unit") or {}
     manifest = InputManifest(
         sample_id=config.sample.sample_id,
         drawing=[
@@ -63,7 +62,6 @@ def run(config: DictConfig) -> ReconstructionState | None:
                 name=sheet.name,
                 role=sheet.role,
                 file=to_absolute_path(sheet.file),
-                mm_per_unit=mm_per_unit.get(sheet.name),
             )
             for sheet in config.sample.drawing.sheets
         ],

@@ -222,7 +222,6 @@ def _graph_factory(
     return partial(
         create_reconstruction_graph,
         interpretation_agent_builder=_interpretation_stage(),
-        dxf_mm_per_unit={"view_drawing": 1.0, "view_front": 1.0},
         operations_agent_builder=_operations_stage(),
         coding_agent_builder=_agent("coder", model, **agent_overrides),
         audit_agent_builder=_agent(
@@ -707,7 +706,7 @@ def _manifest_without_renders(tmp_path: Path, sample_id: str) -> InputManifest:
     _write_fixture_dxf(dxf_path)
     return InputManifest(
         sample_id=sample_id,
-        drawing=[register_view("view_drawing", View.FULL_PAGE, dxf_path, 1.0)],
+        drawing=[register_view("view_drawing", View.FULL_PAGE, dxf_path)],
     )
 
 
@@ -736,7 +735,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     manifest = InputManifest(
         sample_id="sample-1",
         drawing=[
-            register_view("view_drawing", View.FULL_PAGE, dxf_path, 1.0),
+            register_view("view_drawing", View.FULL_PAGE, dxf_path),
             register_view("view_style_a", View.PERSPECTIVE, selected_render_path),
         ],
     )
@@ -1285,7 +1284,6 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
         # already bound; only what the runner adds is under test here.
         return create_reconstruction_graph(
             interpretation_agent_builder=_interpretation_stage(),
-            dxf_mm_per_unit={"view_drawing": 1.0, "view_front": 1.0},
             operations_agent_builder=_operations_stage(),
             coding_agent_builder=_agent(
                 "coder",

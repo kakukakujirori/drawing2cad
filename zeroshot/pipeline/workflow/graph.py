@@ -67,7 +67,6 @@ def create_reconstruction_graph(
     output_filename: str = "model.py",
     interpretation_filename: str = "interpretation.json",
     operations_filename: str = "operations.json",
-    dxf_mm_per_unit: dict[str, float] | None = None,
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     reconstruction_history_filename: str = "reconstruction.json",
     max_audit_reject_count: int = 3,
@@ -142,7 +141,6 @@ def create_reconstruction_graph(
         prompt_context=prompt_context,
         attempt_store=attempt_store,
         interpretation_filename=interpretation_filename,
-        dxf_mm_per_unit=dxf_mm_per_unit,
         input_after_compaction=compact_between_stages is not None,
     )
     operation_stage = stage_factory(PipelineStage.OPERATIONS)(

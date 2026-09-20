@@ -1,7 +1,6 @@
 import json
 import shutil
 from functools import partial
-from unittest.mock import Mock
 
 import pytest
 from langchain_core.tools import tool
@@ -99,9 +98,7 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
 def _dxf_input(tmp_path):
     candidate = dxf_case(tmp_path)
     drawing = [
-        register_view(
-            "view_front", View.FRONT, tmp_path / "front.dxf", 25.4, ("+x", "+z")
-        )
+        register_view("view_front", View.FRONT, tmp_path / "front.dxf", ("+x", "+z"))
     ]
     workdir = SandboxWorkdir(tmp_path)
     return candidate, drawing, workdir
@@ -154,7 +151,6 @@ def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
         instructions=StageInstructions(drawing, "path", {}, workdir),
         prompt_context={},
         attempt_store=AttemptStore(workdir, lambda: 0),
-        dxf_mm_per_unit={"view_front": 25.4, "view_detail": 25.4},
     )
     run = start_reconstruction(
         "run_dxf", "Reconstruct the part.", drawing_for_model(drawing, workdir)
@@ -164,51 +160,25 @@ def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
     text = model.received_messages[0][-1].text
     assert "The original DXFs below are already registered" in text
     assert "using role full_page" not in text
-    assert "u = (x - origin_native[0]) * mm_per_unit" in text
-    assert "v = (y - origin_native[1]) * mm_per_unit" in text
+    assert "box_uv is what you read out of the file" in text
     metadata = json.loads(text.splitlines()[-1])
     assert metadata["originals"] == [
         {
             "view": "view_front",
             "file": "/work/front.dxf",
-            "origin_native": [10, 20],
-            "mm_per_unit": 25.4,
-            "size_mm": pytest.approx([101.6, 76.2]),
+            "box_mm": pytest.approx([10.0, 20.0, 111.6, 96.2]),
         }
     ]
-    assert metadata["configured_mm_per_unit"] == {
-        "view_front": 25.4,
-        "view_detail": 25.4,
-    }
     accepted = stage.interpretation_verifier.accepted_interpretation
     assert accepted is not None and len(accepted.views) == 2
     assert accepted.views[0].role == View.FRONT
-    assert accepted.views[0].region.box_uv == pytest.approx((0, 0, 101.6, 76.2))
+    assert accepted.views[0].region.box_uv == pytest.approx((10.0, 20.0, 111.6, 96.2))
     reports = stage.interpretation_verifier.verify().reports
     assert reports["view_front"]["status"] == "native_dxf"
-    assert reports["view_detail"]["mm_per_unit"] == 25.4
+    assert reports["view_detail"]["status"] == "native_dxf"
     data = accepted.model_dump()
     data["views"][0]["region"]["box_uv"] = [0, 0, 50, 50]
     stage.interpretation_verifier.source_path.write_text(json.dumps(data))
     rejected = stage.interpretation_verifier.verify()
     assert not rejected.confirmed
     assert "full-file region" in rejected.errors[0]
-
-
-@pytest.mark.parametrize("factors", [None, {"view_detail": 25.4}])
-def test_dxf_missing_original_factor_fails_before_building_agent(tmp_path, factors):
-    _, drawing, workdir = _dxf_input(tmp_path)
-    builder = Mock(side_effect=AssertionError("agent construction must not start"))
-    with pytest.raises(
-        ValueError, match="DXF input view_front requires dxf_mm_per_unit"
-    ):
-        create_interpretation_stage(
-            builder=builder,
-            tools=[],
-            system_prompt_path=None,
-            instructions=StageInstructions(drawing, "path", {}, workdir),
-            prompt_context={},
-            attempt_store=AttemptStore(workdir, lambda: 0),
-            dxf_mm_per_unit=factors,
-        )
-    builder.assert_not_called()

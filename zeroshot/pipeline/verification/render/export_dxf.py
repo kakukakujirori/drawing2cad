@@ -1,8 +1,8 @@
 """Export one projected view as a DXF of its own, and a picture of it.
 
-The view is written at 1:1 in model millimetres, read from its own bottom-left
-corner, so it lines up with the sheet coordinates the drawing contract uses.
-The picture is the same linework rasterised, so a reader can look at a view
+The view is written at 1:1 in model millimetres, in the U and V the view was
+drawn in, so a coordinate read off it is a measurement of the solid. The
+picture is the same linework rasterised, so a reader can look at a view
 without rasterising it first.
 """
 

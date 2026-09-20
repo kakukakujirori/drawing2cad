@@ -25,7 +25,6 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
             "_target_": "zeroshot.pipeline.workflow.graph.create_reconstruction_graph",
             "_partial_": True,
             "max_audit_reject_count": 7,
-            "dxf_mm_per_unit": {"view_drawing": 1.0},
         },
         "console": None,
         "artifact_presenter": {
@@ -100,7 +99,6 @@ def test_run_composes_dependencies_and_manifest(
                 ),
                 "_partial_": True,
                 "max_audit_reject_count": 7,
-                "dxf_mm_per_unit": {"view_drawing": 1.0},
             },
             "console": None,
             "artifact_presenter": {
@@ -151,7 +149,6 @@ def test_run_composes_dependencies_and_manifest(
     assert graph_factory.func is create_reconstruction_graph
     assert graph_factory.keywords == {
         "max_audit_reject_count": 7,
-        "dxf_mm_per_unit": {"view_drawing": 1.0},
     }
     assert captured["sandbox_options"] == {
         "python_executable": Path(sys.executable),
@@ -161,7 +158,7 @@ def test_run_composes_dependencies_and_manifest(
     }
     assert captured["manifest"] == InputManifest(
         sample_id="sample-1",
-        drawing=[register_view("view_drawing", View.FULL_PAGE, dxf_path, 1.0)],
+        drawing=[register_view("view_drawing", View.FULL_PAGE, dxf_path)],
     )
     assert result is not None
     assert result == {}

@@ -24,16 +24,12 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 DRAWING_SUFFIXES = frozenset({".dxf", ".png", ".jpg", ".jpeg"})
 
 
-def read_dxf_frame(path: Path, mm_per_unit: float) -> dict[str, Any]:
+def read_dxf_frame(path: Path) -> dict[str, Any]:
     """Input metadata to expose before asking a model for native-DXF regions.
 
-    A DXF unit need not be a millimetre. The input adapter must supply its
-    physical conversion, accounting for the dataset's drawing-scale convention.
-    For a native point (x, y), u = (x - origin_x) * mm_per_unit, and likewise v.
-    The source file itself is preserved; its entity order is irrelevant.
+    A drawing unit is a millimetre and nothing is moved, so a region cites the
+    coordinates the file already carries.
     """
-    if not math.isfinite(mm_per_unit) or mm_per_unit <= 0:
-        raise ValueError("DXF mm_per_unit must be finite and positive")
     bounds = bbox.extents(ezdxf.readfile(path).modelspace())
     if not bounds.has_data:
         raise ValueError(f"{path}: DXF has no measurable sheet bounds")
@@ -45,15 +41,20 @@ def read_dxf_frame(path: Path, mm_per_unit: float) -> dict[str, Any]:
         raise ValueError(f"{path}: DXF bounds must be finite")
     if abs(bounds.extmin.z) > 1e-6 or abs(bounds.extmax.z) > 1e-6:
         raise ValueError(f"{path}: expected a planar XY drawing")
-    size = (bounds.size.x * mm_per_unit, bounds.size.y * mm_per_unit)
-    if any(not math.isfinite(value) or value <= 0 for value in size):
+    if any(
+        not math.isfinite(value) or value <= 0
+        for value in (bounds.size.x, bounds.size.y)
+    ):
         raise ValueError(
             f"{path}: DXF must have positive finite sheet width and height"
         )
     return {
-        "origin_native": (bounds.extmin.x, bounds.extmin.y),
-        "mm_per_unit": mm_per_unit,
-        "size_mm": size,
+        "box_mm": (
+            bounds.extmin.x,
+            bounds.extmin.y,
+            bounds.extmax.x,
+            bounds.extmax.y,
+        )
     }
 
 
@@ -61,7 +62,6 @@ def register_view(
     name: str,
     role: View,
     file: str | PurePath,
-    mm_per_unit: float | None = None,
     axes: tuple[Axis, Axis] | None = None,
 ) -> DrawingView:
     """Address one drawing file as a view, its region covering the whole of it.
@@ -74,10 +74,7 @@ def register_view(
     if path.suffix.lower() not in DRAWING_SUFFIXES:
         raise ValueError(f"unsupported drawing file: {path}")
     if path.suffix.lower() == ".dxf":
-        if mm_per_unit is None:
-            raise ValueError(f"{name}: a native DXF input needs its mm_per_unit")
-        width, height = read_dxf_frame(path, mm_per_unit)["size_mm"]
-        region = Region(view=name, box_uv=(0.0, 0.0, width, height))
+        region = Region(view=name, box_uv=read_dxf_frame(path)["box_mm"])
     else:
         with Image.open(path) as image:
             width, height = image.size

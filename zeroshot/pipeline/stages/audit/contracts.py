@@ -252,18 +252,16 @@ class AuditRegion(BaseModel):
         ...,
         description=(
             "x0, y0, x1, y1 around what was measured, in the file's own frame: "
-            "pixels from the top left for a raster, millimetres from the lower "
-            "left for a DXF."
+            "pixels from the top left for a raster, and the millimetre "
+            "coordinates the file carries for a DXF."
         ),
     )
 
     @model_validator(mode="after")
-    def require_a_box_inside_the_file(self) -> Self:
+    def require_an_ordered_box(self) -> Self:
         x0, y0, x1, y1 = self.box
         if x0 >= x1 or y0 >= y1:
             raise ValueError("box must satisfy x0 < x1 and y0 < y1")
-        if x0 < 0 or y0 < 0:
-            raise ValueError("box must use the file's own origin")
         return self
 
 
