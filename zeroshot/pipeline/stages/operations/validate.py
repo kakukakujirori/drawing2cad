@@ -1,5 +1,3 @@
-import re
-
 from zeroshot.pipeline.stages._base.validate import (
     KeyLocation,
     LocatedError,
@@ -63,15 +61,6 @@ def _operation_plan_errors(
         errors.append((built[unknown], uncited))
 
     for operation in sorted(plan.proposal, key=lambda item: item.name):
-        for member in dict.fromkeys(
-            re.findall(r"\b(sem_[a-z0-9_]+)\.", operation.detail)
-        ):
-            if member in adopted_in and member not in established:
-                rejected = (
-                    f"{operation.name}: {member} is a candidate the interpretation "
-                    f"did not adopt. Use {adopted_in[member]}."
-                )
-                errors.append((("proposal", at[operation.name], "detail"), rejected))
         for address in dict.fromkeys(
             unresolved_references(operation.detail, interpretation)
         ):

@@ -340,6 +340,36 @@ def test_audit_cross_validation_accepts_supported_backtrace_hops() -> None:
     validate_submission(report, _snapshot())
 
 
+def test_an_operation_traces_to_the_candidate_it_was_adopted_against() -> None:
+    """The plan builds the adopted reading, so the defect is the rejected one."""
+    snapshot = _snapshot()
+    held = snapshot.interpretation
+    assert held is not None
+    hypothesis = held.hypotheses[0]
+    adopted = hypothesis.candidates[0]
+    rival = adopted.model_copy(
+        update={
+            "name": "sem_feature_1_hole",
+            "description": "a hole",
+            "confidence": 0.2,
+        }
+    )
+    snapshot.interpretation = held.model_copy(
+        update={
+            "hypotheses": [
+                hypothesis.model_copy(update={"candidates": [adopted, rival]}),
+                *held.hypotheses[1:],
+            ]
+        }
+    )
+
+    report = _report(
+        _hop("operations", "op_base", "interpretation", "sem_feature_1_hole")
+    )
+
+    validate_submission(report, snapshot)
+
+
 @pytest.mark.parametrize(
     "status", [s for s in ExecutionStatus if s is not ExecutionStatus.VERIFIED]
 )

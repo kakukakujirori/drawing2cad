@@ -345,9 +345,16 @@ def test_a_plan_builds_the_adopted_candidate_not_the_one_rejected() -> None:
 
     message = str(caught.value)
     assert "sem_hole, a candidate the interpretation did not adopt" in message
-    assert "op_feature: sem_hole is a candidate" in message
-    assert "Use sem_boss" in message
-    _validate_plan(_plan_for(["sem_boss"], detail="Add sem_boss.radius."), held)
+    assert "Build the adopted sem_boss" in message
+    # The rejected reading is not an address, and naming it in prose is not a claim.
+    assert "unknown reference sem_hole.radius" in message
+    _validate_plan(
+        _plan_for(
+            ["sem_boss"],
+            detail="Add sem_boss.radius, not the rejected sem_hole. It is context.",
+        ),
+        held,
+    )
 
 
 def _measured_blend() -> DrawingInterpretation:

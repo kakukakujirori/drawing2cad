@@ -56,6 +56,10 @@ def validate_audit_report(
     interpretation_links = {
         name: member.cites for name, member in interpretation.members().items()
     }
+    rivals = {
+        candidate.name: frozenset(c.name for c in hypothesis.candidates)
+        for hypothesis, candidate in interpretation.candidates
+    }
     known_members = {
         PipelineStage.INTERPRETATION: set(interpretation_links),
         PipelineStage.OPERATIONS: set(operations_by_name),
@@ -75,6 +79,7 @@ def validate_audit_report(
                 known_members=known_members,
                 operations_by_name=operations_by_name,
                 interpretation_links=interpretation_links,
+                rivals=rivals,
             )
             if error is not None:
                 errors.append(error)
@@ -209,6 +214,7 @@ def _causal_hop_error(
     known_members: Mapping[PipelineStage, set[str]],
     operations_by_name: Mapping[str, Operation],
     interpretation_links: Mapping[str, frozenset[str]],
+    rivals: Mapping[str, frozenset[str]],
 ) -> str | None:
     """Validate only causal relations represented by an explicit contract."""
     effect = hop.effect
@@ -250,10 +256,12 @@ def _causal_hop_error(
         and cause.stage is PipelineStage.INTERPRETATION
     ):
         operation = operations_by_name[effect.name]
-        if cause.name not in operation.semantics:
+        # A rival of a built candidate is the reading that operation rejected.
+        if not rivals.get(cause.name, {cause.name}) & set(operation.semantics):
             return (
                 f"operations-to-interpretation hop {effect.name!r} -> "
-                f"{cause.name!r} is not supported by {effect.name}.semantics"
+                f"{cause.name!r} is not supported by {effect.name}.semantics "
+                "or by a candidate it was adopted against"
             )
 
     elif (
