@@ -1,4 +1,3 @@
-from collections.abc import Sequence
 from inspect import cleandoc
 from pathlib import PurePosixPath
 from typing import Literal
@@ -6,10 +5,10 @@ from typing import Literal
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, tool
 
-from zeroshot.pipeline.messages.artifact import View
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import OutputVerifier
 from zeroshot.pipeline.verification.attempts import AttemptStore
+from zeroshot.pipeline.verification.render.project import ViewFrames
 from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutor
 from zeroshot.pipeline.verification.run_render import StepRenderer
 
@@ -19,7 +18,7 @@ def create_verify_output_tool(
     workdir: SandboxWorkdir,
     renderer: StepRenderer,
     feedback_presentation_mode: Literal["none", "path", "image"],
-    views: Sequence[View],
+    views: ViewFrames,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
     show_intermediate_returns: bool = True,

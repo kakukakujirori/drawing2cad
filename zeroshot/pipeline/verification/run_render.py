@@ -32,6 +32,7 @@ from zeroshot.pipeline.verification.render.constants import (
 )
 from zeroshot.pipeline.verification.render.export_dxf import export_to_png, export_view
 from zeroshot.pipeline.verification.render.project import (
+    ViewFrames,
     load_shape,
     project_views,
     to_own_corner,
@@ -58,22 +59,24 @@ class RenderReport:
 
 @dataclass(frozen=True)
 class RenderRequest:
-    """One STEP and the paths its views are to be written to."""
+    """One STEP, the paths its views are written to, and the axes to draw them in."""
 
     step_path: Path
     projection_paths: ProjectionPaths
     render3d_paths: Render3dPaths
+    frames: ViewFrames
 
 
 def _render_projections(
     step_path: Path,
     projection_paths: ProjectionPaths,
+    frames: ViewFrames,
 ) -> tuple[ProjectionPaths, dict[str, str]]:
     """Draw each requested orthographic view into a DXF of its own."""
     errors: dict[str, str] = {}
     requested = projection_paths.as_mapping()
     if requested:
-        wanted = [View(name) for name in requested]
+        wanted = {View(name): frames[View(name)] for name in requested}
         projections = project_views(load_shape(step_path), wanted)
         for view in wanted:
             path = requested[view.value]
@@ -130,6 +133,7 @@ def _render_once(
     input_step_path: Path,
     output_projection_paths: ProjectionPaths,
     output_render3d_paths: Render3dPaths,
+    frames: ViewFrames,
 ) -> RenderReport:
     """Run each component once and retain paths for successful outputs only."""
     requested_render_num = _get_render_num(output_projection_paths) + _get_render_num(
@@ -139,7 +143,7 @@ def _render_once(
     # projections
     try:
         output_projection_paths, projection_errors = _render_projections(
-            input_step_path, output_projection_paths
+            input_step_path, output_projection_paths, frames
         )
     except Exception as error:  # noqa: BLE001
         for path_field in fields(output_projection_paths):
@@ -195,6 +199,7 @@ def _worker(
     input_step_path: Path,
     output_projection_paths: ProjectionPaths,
     output_render3d_paths: Render3dPaths,
+    frames: ViewFrames,
     connection: Connection,
 ) -> None:
     try:
@@ -203,6 +208,7 @@ def _worker(
                 input_step_path,
                 output_projection_paths,
                 output_render3d_paths,
+                frames,
             )
         )
     finally:
@@ -240,6 +246,7 @@ class StepRenderer:
         input_step_path: Path,
         output_projection_paths: ProjectionPaths,
         output_render3d_paths: Render3dPaths,
+        frames: ViewFrames,
     ) -> RenderReport:
         """Render one STEP while supervising native-code hangs."""
         (report,) = self.render_many(
@@ -248,6 +255,7 @@ class StepRenderer:
                     input_step_path,
                     output_projection_paths,
                     output_render3d_paths,
+                    frames,
                 )
             ]
         )
@@ -317,6 +325,7 @@ class StepRenderer:
                 request.step_path,
                 request.projection_paths,
                 request.render3d_paths,
+                dict(request.frames),
                 sender,
             ),
             daemon=True,

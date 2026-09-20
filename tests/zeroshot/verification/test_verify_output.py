@@ -1,6 +1,6 @@
 import json
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -9,6 +9,7 @@ import ezdxf
 import pytest
 from PIL import Image
 
+from tests.zeroshot.contracts import UNTURNED
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import (
     FEEDBACK_PICTORIAL,
@@ -16,7 +17,7 @@ from zeroshot.pipeline.stages.coding.verify import (
     VerifyOutputResult,
     _census_table,
 )
-from zeroshot.pipeline.stages.interpretation.contracts import View
+from zeroshot.pipeline.stages.interpretation.contracts import Axis, View
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
 from zeroshot.pipeline.verification.attempts import AttemptStore
@@ -133,7 +134,7 @@ def _create_verifier(
     *,
     renderer: object | None = None,  # defaults to a StubRenderer
     feedback_presentation_mode: Literal["none", "path", "image"] = "none",
-    views: Sequence[View] = THIRD_ANGLE,
+    views: Mapping[View, tuple[str, str]] = THIRD_ANGLE,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
     attempt_store: AttemptStore | None = None,
@@ -164,6 +165,9 @@ def _coding_attempt(
     return workdir / "attempts" / f"round_{round_number:03d}" / "coding" / attempt_id
 
 
+type Frames = Mapping[View, tuple[Axis, Axis]]
+
+
 class StubRenderer:
     """A ``StepRenderer`` that writes placeholder artifacts instead of rendering.
 
@@ -180,7 +184,7 @@ class StubRenderer:
     ) -> None:
         self.skip_styles = skip_styles
         self.corrupt_views = corrupt_views
-        self.calls: list[tuple[Path, ProjectionPaths, Render3dPaths]] = []
+        self.calls: list[tuple[Path, ProjectionPaths, Render3dPaths, Frames]] = []
 
     def render_many(self, requests: Sequence[RenderRequest]) -> list[RenderReport]:
         return [
@@ -188,6 +192,7 @@ class StubRenderer:
                 request.step_path,
                 request.projection_paths,
                 request.render3d_paths,
+                request.frames,
             )
             for request in requests
         ]
@@ -197,9 +202,10 @@ class StubRenderer:
         input_step_path: Path,
         output_projection_paths: ProjectionPaths,
         output_render3d_paths: Render3dPaths,
+        frames: Frames,
     ) -> RenderReport:
         self.calls.append(
-            (input_step_path, output_projection_paths, output_render3d_paths)
+            (input_step_path, output_projection_paths, output_render3d_paths, frames)
         )
         for view, path in output_projection_paths.as_mapping().items():
             if view in self.corrupt_views:
@@ -634,7 +640,7 @@ def test_verified_output_is_rendered_and_offered_to_the_model(tmp_path: Path) ->
     text = _text(verifier.feedback())
 
     verification_dir = _coding_attempt(tmp_path)
-    (rendered_step, _, _) = renderer.calls[0]
+    (rendered_step, _, _, _) = renderer.calls[0]
     assert rendered_step == verification_dir / "output.step"
     sandbox_dir = f"{workdir.sandbox_bind_dir}/attempts/round_000/coding/000"
     for view in VIEWS:
@@ -1263,14 +1269,15 @@ def test_the_verifier_asks_for_exactly_the_views_it_was_given(
         executor,
         workdir,
         renderer=renderer,
-        views=(View.LEFT, View.BOTTOM),
+        views={view: UNTURNED[view] for view in (View.LEFT, View.BOTTOM)},
         feedback_presentation_mode="path",
     )
 
     text = _text(verifier.feedback())
 
-    (_, projection_paths, _) = renderer.calls[0]
+    (_, projection_paths, _, frames) = renderer.calls[0]
     assert set(projection_paths.as_mapping()) == {"left", "bottom"}
+    assert frames == {view: UNTURNED[view] for view in (View.LEFT, View.BOTTOM)}
     sandbox_dir = f"{workdir.sandbox_bind_dir}/attempts/round_000/coding/000"
     assert f"{sandbox_dir}/projection/left.dxf" in text
     assert "view_projected_left (left)" in text

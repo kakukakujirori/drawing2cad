@@ -9,8 +9,8 @@ all axes, so both the axis mapping and its sign are observable.
 import cadquery as cq
 import pytest
 
+from tests.zeroshot.contracts import UNTURNED
 from zeroshot.pipeline.stages.interpretation.contracts import (
-    VIEW_FRAME,
     View,
 )
 from zeroshot.pipeline.verification.render._hlr import (
@@ -42,7 +42,7 @@ def box_step(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def box_views(box_step):
-    return project_views(load_shape(box_step), VIEW_FRAME)
+    return project_views(load_shape(box_step), UNTURNED)
 
 
 def _extents(projection):
@@ -68,36 +68,61 @@ def test_bbox_diagonal_matches_the_box(box_step):
 
 
 def test_every_view_the_contract_names_can_be_projected(box_views):
-    assert set(box_views) == set(VIEW_FRAME)
+    assert set(box_views) == set(UNTURNED)
     for view, projection in box_views.items():
         assert projection.visible.count() > 0, f"{view} has no visible edges"
 
 
 def test_only_the_views_asked_for_are_projected(box_step):
     """A drawing is redrawn view for view, so a run pays for no more than it."""
-    projections = project_views(load_shape(box_step), (View.LEFT, View.BOTTOM))
+    projections = project_views(
+        load_shape(box_step),
+        {view: UNTURNED[view] for view in (View.LEFT, View.BOTTOM)},
+    )
 
     assert set(projections) == {View.LEFT, View.BOTTOM}
 
 
-def test_a_frame_puts_screen_x_where_the_contract_says(view=None):
-    """screen +X is up x eye, and the contract states it as the frame's first axis."""
-    axis = {
-        (1.0, 0.0, 0.0): "+x",
-        (-1.0, 0.0, 0.0): "-x",
-        (0.0, 1.0, 0.0): "+y",
-        (0.0, -1.0, 0.0): "-y",
-        (0.0, 0.0, 1.0): "+z",
-        (0.0, 0.0, -1.0): "-z",
-    }
-    for named, (right, _, _) in VIEW_FRAME.items():
-        eye, up = frame_of(named)
-        screen_x = (
+AXIS_NAME = {
+    (1.0, 0.0, 0.0): "+x",
+    (-1.0, 0.0, 0.0): "-x",
+    (0.0, 1.0, 0.0): "+y",
+    (0.0, -1.0, 0.0): "-y",
+    (0.0, 0.0, 1.0): "+z",
+    (0.0, 0.0, -1.0): "-z",
+}
+
+
+def _screen_x(u_axis: str, v_axis: str) -> str:
+    """What frame_of's (eye, up) puts rightwards on the sheet: up x eye."""
+    eye, up = frame_of(u_axis, v_axis)
+    return AXIS_NAME[
+        (
             up[1] * eye[2] - up[2] * eye[1],
             up[2] * eye[0] - up[0] * eye[2],
             up[0] * eye[1] - up[1] * eye[0],
         )
-        assert axis[screen_x] == right, named
+    ]
+
+
+def test_a_frame_puts_the_declared_u_axis_rightwards():
+    """A sheet is drawn with its own +U to the right, turned or not."""
+    for u_axis, v_axis in [*UNTURNED.values(), ("+z", "-y"), ("-x", "-z")]:
+        assert _screen_x(u_axis, v_axis) == u_axis, (u_axis, v_axis)
+
+
+def test_a_frame_needs_two_axes_that_span_a_plane():
+    with pytest.raises(ValueError, match="span no plane"):
+        frame_of("+x", "-x")
+
+
+def test_a_turned_side_view_is_the_unturned_one_rotated(box_views, box_step):
+    """The right view drawn beside a top view: +U is +Z, so the sheet turns."""
+    turned = project_views(load_shape(box_step), {View.RIGHT: ("+z", "-y")})[View.RIGHT]
+    upright = box_views[View.RIGHT]
+
+    assert _extents(turned) == pytest.approx(_extents(upright)[::-1])
+    assert turned.visible.count() == upright.visible.count()
 
 
 def _model_range(size, center=0.0):

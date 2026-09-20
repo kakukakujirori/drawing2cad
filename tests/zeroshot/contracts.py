@@ -18,6 +18,18 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 )
 from zeroshot.pipeline.stages.tickets.contracts import TicketResponse
 
+# How each role is drawn on a page that turns no view. Fixtures that are not
+# about a turned view take these; the contract itself keeps no such default,
+# because a real sheet is what says how its views are drawn.
+UNTURNED: dict[View, tuple[str, str]] = {
+    View.FRONT: ("+x", "+z"),
+    View.BACK: ("-x", "+z"),
+    View.TOP: ("+x", "+y"),
+    View.BOTTOM: ("+x", "-y"),
+    View.RIGHT: ("+y", "+z"),
+    View.LEFT: ("-y", "+z"),
+}
+
 
 def answered(responses: Iterable[TicketResponse]) -> dict[str, str]:
     """The submitted shape of responses a test built as the stored ones."""
@@ -30,12 +42,15 @@ def view(role: str = "front", **overrides: object) -> DrawingView:
     Its file is relative, so it reads the same from either side of a sandbox.
     """
     name = str(overrides.pop("name", f"view_{role}"))
+    axes = UNTURNED.get(View(role), (None, None))
     fields: dict[str, object] = {
         "name": name,
         "role": View(role),
         "file": f"inputs/{role}.dxf",
         "region": Region(view=name, box_uv=(0.0, 0.0, 100.0, 100.0)),
         "dimensions": [],
+        "u_axis": axes[0],
+        "v_axis": axes[1],
         **overrides,
     }
     return DrawingView(**fields)  # type: ignore[arg-type]
@@ -75,6 +90,8 @@ def interpretation(*descriptions: str, **overrides: object) -> DrawingInterpreta
                     file="inputs/front.png",
                     region=Region(view="view_front", box_px=(0, 0, 10, 10)),
                     dimensions=[],
+                    u_axis="+x",
+                    v_axis="+z",
                 )
             ],
             "features": [

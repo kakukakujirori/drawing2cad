@@ -7,9 +7,14 @@ import ezdxf
 import pytest
 from PIL import Image
 
+from tests.zeroshot.contracts import UNTURNED
 from tests.zeroshot.messages.test_interpretation_contracts import pin_interpretation
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
+from zeroshot.pipeline.stages._base.validate import LocatedError
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    DrawingInterpretation,
+    View,
+)
 from zeroshot.pipeline.stages.interpretation.validate import validate_interpretation
 
 MEASUREMENTS = [(4.2, 42), (10, 100), (20, 200)]
@@ -69,7 +74,7 @@ def test_raster_consensus_enriches_a_copy_and_revalidates_idempotently(
 def test_shared_png_views_keep_independent_scales(tmp_path: Path) -> None:
     data = raster_case(tmp_path).model_dump()
     top = deepcopy(data["views"][0])
-    top.update(name="view_top", role="top")
+    top.update(name="view_top", role="top", v_axis="+y")
     top["region"].update(view="view_top", box_px=(50, 50, 350, 250))
     for index, dimension in enumerate(top["dimensions"]):
         dimension["name"] = f"dim_top_{index}"
@@ -99,7 +104,7 @@ def test_full_page_and_separate_files_use_referenced_regions_and_own_measurement
     front = data["views"][0]
     front["region"].update(view="view_full_page", box_px=(100, 200, 1300, 1600))
     top = deepcopy(front)
-    top.update(name="view_top", role="top", file="/work/top.png")
+    top.update(name="view_top", role="top", file="/work/top.png", v_axis="+y")
     top["region"]["box_px"] = (1500, 100, 2100, 900)
     for index, dimension in enumerate(top["dimensions"]):
         dimension["name"] = f"dim_top_{index}"
@@ -334,6 +339,8 @@ def dxf_case(workdir: Path):
                     "role": "front",
                     "file": "front.dxf",
                     "region": region,
+                    "u_axis": "+x",
+                    "v_axis": "+z",
                     "dimensions": [
                         {
                             "name": "dim_width",
@@ -454,3 +461,105 @@ def test_image_diagonal_limits_linear_measurements_only(
             submitted, workdir=SandboxWorkdir(tmp_path)
         )
         assert accepted.views[0].scale == pytest.approx(0.01)
+
+
+def _page_layout(workdir: Path, *others: dict) -> DrawingInterpretation:
+    """A page carrying the front view at its lower left, plus `others`."""
+    Image.new("RGB", (2400, 3000), "white").save(workdir / "page.png")
+    data = raster_case(workdir).model_dump()
+    front = data["views"][0]
+    front["region"].update(view="view_page", box_px=(100, 1800, 1300, 2800))
+    views = [
+        {
+            "name": "view_page",
+            "role": "full_page",
+            "file": "page.png",
+            "region": {"view": "view_page", "box_px": (0, 0, 2400, 3000)},
+            "dimensions": [],
+        },
+        front,
+    ]
+    for other in others:
+        role = other["role"]
+        crop = deepcopy(front)
+        crop.update(
+            name=f"view_{role}",
+            dimensions=[],
+            u_axis=UNTURNED[View(role)][0],
+            v_axis=UNTURNED[View(role)][1],
+            **other,
+        )
+        crop["region"] = {"view": "view_page", "box_px": other["box_px"]}
+        del crop["box_px"]
+        views.append(crop)
+    data["views"] = views
+    return DrawingInterpretation.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    ("role", "box_px"),
+    [
+        ("top", (100, 300, 1300, 1300)),
+        ("right", (1500, 1800, 2300, 2800)),
+        # The arrangement ditech 005 draws: a right view beside the top row.
+        ("right", (1500, 300, 2300, 1300)),
+    ],
+)
+def test_a_view_off_its_row_or_column_is_still_placed_correctly(
+    tmp_path: Path, role: str, box_px: tuple
+) -> None:
+    accepted, _ = validate_interpretation(
+        _page_layout(tmp_path, {"role": role, "box_px": box_px}),
+        workdir=SandboxWorkdir(tmp_path),
+    )
+    assert [view.role for view in accepted.views] == [
+        View.FULL_PAGE,
+        View.FRONT,
+        View(role),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("role", "box_px"),
+    [
+        ("top", (100, 2850, 1300, 2950)),
+        ("bottom", (100, 300, 1300, 1300)),
+        ("right", (0, 1800, 400, 2800)),
+        ("left", (1500, 1800, 2300, 2800)),
+    ],
+)
+def test_a_role_drawn_on_the_far_side_of_front_is_refused(
+    tmp_path: Path, role: str, box_px: tuple
+) -> None:
+    with pytest.raises(LocatedError, match="far side of view_front"):
+        validate_interpretation(
+            _page_layout(tmp_path, {"role": role, "box_px": box_px}),
+            workdir=SandboxWorkdir(tmp_path),
+        )
+
+
+def test_a_page_without_a_front_view_is_placed_against_nothing(tmp_path: Path) -> None:
+    """ditech 005 reads as top, bottom and an end view: no view plays front."""
+    layout = _page_layout(
+        tmp_path,
+        {"role": "top", "box_px": (100, 300, 1300, 1300)},
+        {"role": "right", "box_px": (1500, 300, 2300, 1300)},
+    )
+    data = layout.model_dump()
+    front = data["views"].pop(1)
+    data["views"][1]["dimensions"] = front["dimensions"]
+    for dimension in front["dimensions"]:
+        dimension["region"]["view"] = "view_top"
+    for feature in data["features"]:
+        for region in feature["evidence"]:
+            region["view"] = "view_top"
+
+    accepted, _ = validate_interpretation(
+        DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
+    )
+
+    assert [view.role for view in accepted.views] == [
+        View.FULL_PAGE,
+        View.TOP,
+        View.RIGHT,
+    ]

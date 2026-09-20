@@ -11,7 +11,6 @@ from langgraph.pregel import Pregel
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
 from zeroshot.pipeline.stages.coding.verify import OutputVerifier
-from zeroshot.pipeline.stages.interpretation.contracts import ORTHOGRAPHIC_VIEWS
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
@@ -51,13 +50,7 @@ class CodingStage:
         # here because both the build inside the agent and the one at
         # integration belong to this stage of this round.
         self.output_verifier.operations = snapshot.operations
-        self.output_verifier.views = list(
-            dict.fromkeys(
-                view.role
-                for view in interpretation.views
-                if view.role in ORTHOGRAPHIC_VIEWS
-            )
-        )
+        self.output_verifier.views = interpretation.view_frames()
 
         previous = state.get("coding_state") or {}
         messages = [

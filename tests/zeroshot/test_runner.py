@@ -111,7 +111,7 @@ def _writing_interpretation() -> AIMessage:
                     width, height = image.size
                 region = {{'view': name, 'box_px': [0, 0, width, height]}}
             views.append(dict(name=name, file=file, role=given['role'], region=region, dimensions=[]))
-        front = dict(views[0], name='view_front', role='front')
+        front = dict(views[0], name='view_front', role='front', u_axis='+x', v_axis='+z')
         front['file'] = '/work/view_front' + Path(front['file']).suffix
         shutil.copyfile(views[0]['file'], front['file'])
         views.append(front)
@@ -407,12 +407,16 @@ def test_resume_restores_drawing_stage_crops(
         file="/work/derived/sheet_front.dxf",
         region=Region(view="view_drawing", box_uv=(0, 0, 20, 10)),
         dimensions=[],
+        u_axis="+x",
+        v_axis="+z",
     )
     relative_crop = crop.model_copy(
         update={
             "name": "view_detail",
             "role": View.DETAIL,
             "file": "views/sheet_detail.png",
+            "u_axis": None,
+            "v_axis": None,
         }
     )
     temporary_crop = crop.model_copy(
@@ -420,6 +424,8 @@ def test_resume_restores_drawing_stage_crops(
             "name": "view_section",
             "role": View.SECTION,
             "file": "/tmp/sheet_section.png",
+            "u_axis": None,
+            "v_axis": None,
         }
     )
     run = start_reconstruction(

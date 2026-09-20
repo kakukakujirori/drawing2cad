@@ -21,10 +21,12 @@ from zeroshot.pipeline.stages._base.prompt import (
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.coding.stage import CodingStage
 from zeroshot.pipeline.stages.interpretation.contracts import (
-    VIEW_FRAME,
+    TOWARD_VIEWER,
     DrawingInterpretation,
     DrawingView,
     Region,
+    View,
+    cross_axis,
 )
 from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
 from zeroshot.pipeline.stages.types import PipelineStage
@@ -668,10 +670,13 @@ def test_coordinate_markdown_agrees_with_the_projection_contract() -> None:
         re.MULTILINE,
     )
     actual = {
-        view.lower(): tuple(axis.lower() for axis in axes) for view, *axes in rows
+        View(view.lower()): tuple(axis.lower() for axis in axes) for view, *axes in rows
     }
-    expected = {view.value: axes for view, axes in VIEW_FRAME.items()}
-    assert actual == expected
+    assert set(actual) == set(TOWARD_VIEWER)
+    for view, (u_axis, v_axis, out) in actual.items():
+        assert out == TOWARD_VIEWER[view], view
+        # The printed columns must be a frame the contract would accept.
+        assert cross_axis(u_axis, v_axis) == out, view
 
 
 def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes() -> None:

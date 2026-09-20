@@ -13,6 +13,9 @@ from zeroshot.pipeline.stages._base.validate import KeyLocation, LocatedError
 from zeroshot.pipeline.stages.interpretation.contracts import (
     UNDECIDED,
     DrawingInterpretation,
+    DrawingView,
+    Region,
+    View,
 )
 from zeroshot.pipeline.tools.calculate_drawing_scale import calculate_drawing_scale
 
@@ -59,6 +62,41 @@ def _region(
     return {**region, "box_uv": uv}
 
 
+def _require_third_angle_placement(views: list[DrawingView]) -> None:
+    """Refuse wrong configurations such as top view being placed below the front view, etc."""
+
+    def _page_centre(region: Region) -> tuple[float, float]:
+        """The region's middle on its parent sheet, x rightwards and y upwards."""
+        if region.box_px is not None:  # pixel y runs down the page, UV runs up
+            x0, y0, x1, y1 = region.box_px
+            return ((x0 + x1) / 2, -(y0 + y1) / 2)
+        if region.box_uv is not None:
+            x0, y0, x1, y1 = region.box_uv
+            return ((x0 + x1) / 2, (y0 + y1) / 2)
+        raise ValueError(f"{region.view}: region has neither box_px nor box_uv")
+
+    front = next((view for view in views if view.role is View.FRONT), None)
+    if front is None:
+        return
+    fx, fy = _page_centre(front.region)
+    for index, view in enumerate(views):
+        step = {
+            View.TOP: (0, 1),
+            View.BOTTOM: (0, -1),
+            View.RIGHT: (1, 0),
+            View.LEFT: (-1, 0),
+        }.get(view.role)
+        if step is None or view.region.view != front.region.view:
+            continue
+        x, y = _page_centre(view.region)
+        if (x - fx) * step[0] + (y - fy) * step[1] < 0:
+            raise LocatedError.at(
+                ("views", index, "role"),
+                f"{view.name} is drawn on the far side of {front.name} from where a "
+                f"{view.role.value} view belongs; re-read the roles or the arrangement",
+            )
+
+
 def validate_interpretation(
     interpretation: DrawingInterpretation,
     *,
@@ -103,6 +141,7 @@ def validate_interpretation(
             "measure every linear dimension whose printed value you read, in "
             f"its own view file's units: {', '.join(n for _, n in unmeasured)}",
         )
+    _require_third_angle_placement(interpretation.views)
     data = interpretation.model_dump()
     sizes: dict[tuple[Path, float | None], tuple[float, float]] = {}
     dxf_frames: dict[tuple[Path, float | None], dict[str, Any]] = {}

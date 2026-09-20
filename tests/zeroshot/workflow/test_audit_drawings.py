@@ -161,6 +161,7 @@ def test_feature_can_trace_through_a_dimension_to_another_view() -> None:
             "name": "view_top",
             "role": "top",
             "file": "top.png",
+            "v_axis": "+y",
             "region": {**front["region"], "view": "view_top"},
             "dimensions": front["dimensions"],
         }

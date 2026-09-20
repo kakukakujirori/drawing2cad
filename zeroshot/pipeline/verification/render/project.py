@@ -9,8 +9,9 @@ sheet from.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
@@ -18,8 +19,10 @@ from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Core.TopoDS import TopoDS_Shape
 
 from zeroshot.pipeline.stages.interpretation.contracts import (
-    VIEW_FRAME,
+    AXIS_VECTOR,
+    Axis,
     View,
+    cross_axis,
 )
 from zeroshot.pipeline.verification.render._hlr import (
     Arc,
@@ -34,33 +37,31 @@ from zeroshot.pipeline.verification.render._hlr import (
 
 type _Direction = tuple[float, float, float]
 
-_AXES: Mapping[str, _Direction] = {
-    "+x": (1.0, 0.0, 0.0),
-    "-x": (-1.0, 0.0, 0.0),
-    "+y": (0.0, 1.0, 0.0),
-    "-y": (0.0, -1.0, 0.0),
-    "+z": (0.0, 0.0, 1.0),
-    "-z": (0.0, 0.0, -1.0),
-}
+# The sheet axes to draw each view in, as a drawing declared them.
+type ViewFrames = Mapping[View, tuple[Axis, Axis]]
 
-# What a third-angle drawing shows, and what this module draws when a caller
-# does not say. Verified against GT by raster-IoU.
-THIRD_ANGLE: tuple[View, ...] = (View.FRONT, View.TOP, View.RIGHT)
+# What a third-angle drawing shows, drawn the way a page that turns no view
+# lays it out. This is what a caller that read no drawing has to fall back on.
+# Verified against GT by raster-IoU.
+THIRD_ANGLE: ViewFrames = MappingProxyType(
+    {
+        View.FRONT: ("+x", "+z"),
+        View.TOP: ("+x", "+y"),
+        View.RIGHT: ("+y", "+z"),
+    }
+)
 
 
-def frame_of(view: View) -> tuple[_Direction, _Direction]:
-    """The (eye_dir, up_dir) the contract fixes for `view`.
+def frame_of(u_axis: Axis, v_axis: Axis) -> tuple[_Direction, _Direction]:
+    """The (eye_dir, up_dir) drawing a sheet whose +U and +V are these axes.
 
-    A frame's `out` axis is the projection plane's outward normal, so it points
-    from the model toward the viewer and the gaze runs the other way. `up`
-    becomes screen +Y, and screen +X is then up x eye, which is the frame's
-    `right`. Model XY is horizontal and +Z is vertical; in particular, top
-    reads (+X, +Y), front reads (+X, +Z), and right reads (+Y, +Z).
+    `up` becomes screen +Y and screen +X is up x eye, so gazing along -(u x v)
+    with up = v puts +U rightwards, which is what the drawing declared.
     """
-    if view not in VIEW_FRAME:
-        raise ValueError(f"{view.value} is not an orthographic view")
-    _, up, out = VIEW_FRAME[view]
-    return _AXES[out], _AXES[up]
+    out = cross_axis(u_axis, v_axis)
+    if out is None:
+        raise ValueError(f"u_axis {u_axis} and v_axis {v_axis} span no plane")
+    return AXIS_VECTOR[out], AXIS_VECTOR[v_axis]
 
 
 # Curve discretisation and edge-merge tolerance, expressed as fractions of the
@@ -134,10 +135,10 @@ def _project_nonempty(
 
 def project_views(
     shape: TopoDS_Shape,
-    views: Iterable[View] = THIRD_ANGLE,
+    views: ViewFrames = THIRD_ANGLE,
     include_smooth: bool = False,
 ) -> dict[View, ViewProjection]:
-    """Project ``shape`` for each of ``views``.
+    """Project ``shape`` into each view, in the sheet axes that view declared.
 
     ``include_smooth`` adds tangent (Rg1) edges, which GT suppresses.
     """
@@ -147,7 +148,10 @@ def project_views(
         "include_smooth": include_smooth,
         "merge_tol": MERGE_TOL_FRAC * diagonal,
     }
-    return {view: _project_nonempty(shape, frame_of(view), **kwargs) for view in views}
+    return {
+        view: _project_nonempty(shape, frame_of(*axes), **kwargs)
+        for view, axes in views.items()
+    }
 
 
 def _translated(edges: ProjectedEdges, dx: float, dy: float) -> ProjectedEdges:

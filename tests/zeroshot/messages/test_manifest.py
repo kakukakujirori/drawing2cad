@@ -51,6 +51,8 @@ def _rendered(*files: Path) -> list[DrawingView]:
                 view=f"view_projected_{index}", box_uv=(0.0, 0.0, 10.0, 10.0)
             ),
             dimensions=[],
+            u_axis="+x",
+            v_axis="+z",
         )
         for index, file in enumerate(files)
     ]

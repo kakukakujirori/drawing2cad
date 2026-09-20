@@ -6,13 +6,16 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
+from tests.zeroshot.contracts import UNTURNED
 from zeroshot.pipeline.stages.interpretation.contracts import (
     ORTHOGRAPHIC_VIEWS,
-    VIEW_FRAME,
+    TOWARD_VIEWER,
     DimensionSummary,
     DrawingInterpretation,
+    DrawingView,
     Region,
     View,
+    cross_axis,
 )
 
 
@@ -25,6 +28,8 @@ def pin_interpretation() -> dict:
                 "role": "front",
                 "file": "front.png",
                 "region": {"view": "view_front", "box_px": [370, 845, 1165, 1330]},
+                "u_axis": "+x",
+                "v_axis": "+z",
                 "dimensions": [
                     {
                         "name": "dim_pin_diameter",
@@ -223,6 +228,8 @@ def test_schema_describes_fields_and_preserves_file_backed_views() -> None:
         "dimensions",
         "image_size",
         "scale",
+        "u_axis",
+        "v_axis",
     }
     assert {"file", "region"} <= set(view_schema["required"])
     assert set(schema["$defs"]["Region"]["properties"]) == {"view", "box_px", "box_uv"}
@@ -237,12 +244,10 @@ def test_schema_describes_fields_and_preserves_file_backed_views() -> None:
 
 def test_every_orthographic_view_has_a_frame() -> None:
     """Sections, details, pictorials, and an unsplit page establish no global axes."""
-    assert set(VIEW_FRAME) == set(ORTHOGRAPHIC_VIEWS)
-    assert set(VIEW_FRAME) < set(View)
-    axes = {axis for frame in VIEW_FRAME.values() for axis in frame}
-    assert axes <= {"+x", "-x", "+y", "-y", "+z", "-z"}
-    for view, frame in VIEW_FRAME.items():
-        assert len({axis.lstrip("+-") for axis in frame}) == 3, view
+    assert set(TOWARD_VIEWER) == set(ORTHOGRAPHIC_VIEWS) == set(UNTURNED)
+    assert set(TOWARD_VIEWER) < set(View)
+    for view, axes in UNTURNED.items():
+        assert cross_axis(*axes) == TOWARD_VIEWER[view], view
 
 
 def test_region_matches_bounds() -> None:
@@ -301,3 +306,60 @@ def test_interpretation_all_dimensions_and_inventory() -> None:
             "quantity": 1,
         }
     ]
+
+
+def _view(role: str, u_axis: str, v_axis: str) -> dict:
+    return {
+        "name": f"view_{role}",
+        "role": role,
+        "file": f"{role}.png",
+        "region": {"view": f"view_{role}", "box_px": [0, 0, 100, 100]},
+        "dimensions": [],
+        "u_axis": u_axis,
+        "v_axis": v_axis,
+    }
+
+
+def test_a_side_view_drawn_turned_states_its_own_sheet_axes() -> None:
+    """A right view beside a top view reads +U up the model's +Z."""
+    turned = DrawingView.model_validate(_view("right", "+z", "-y"))
+
+    assert (turned.u_axis, turned.v_axis) == ("+z", "-y")
+
+
+@pytest.mark.parametrize(
+    ("role", "u_axis", "v_axis", "refused"),
+    [
+        # The gaze of a left view, under the name of a right one.
+        ("right", "-y", "+z", "must be \\+x"),
+        # A top view flipped about its own +U: a mirror, not a turn.
+        ("top", "+x", "-y", "must be \\+z"),
+        # Parallel axes name no plane at all.
+        ("top", "+x", "-x", "must be \\+z"),
+        ("front", "+z", "-x", "front view is drawn"),
+    ],
+)
+def test_sheet_axes_must_be_the_right_handed_frame_of_their_role(
+    role, u_axis, v_axis, refused
+) -> None:
+    with pytest.raises(ValidationError, match=refused):
+        DrawingView.model_validate(_view(role, u_axis, v_axis))
+
+
+def test_only_an_orthographic_view_carries_sheet_axes() -> None:
+    orthographic = _view("top", "+x", "+y")
+    del orthographic["u_axis"]
+    with pytest.raises(ValidationError, match="states u_axis and v_axis"):
+        DrawingView.model_validate(orthographic)
+
+    with pytest.raises(ValidationError, match="belong to an orthographic view"):
+        DrawingView.model_validate(_view("perspective", "+x", "+z"))
+
+
+def test_the_frames_to_redraw_in_are_the_declared_ones() -> None:
+    data = pin_interpretation()
+    data["views"].append(_view("right", "+z", "-y"))
+
+    frames = DrawingInterpretation.model_validate(data).view_frames()
+
+    assert frames == {View.FRONT: ("+x", "+z"), View.RIGHT: ("+z", "-y")}

@@ -4,12 +4,14 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from tests.zeroshot.contracts import UNTURNED
 from tests.zeroshot.verification.test_interpretation_validation import raster_case
 from zeroshot.pipeline.messages.manifest import register_view
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.interpretation.contracts import (
     UNDECIDED,
     DrawingInterpretation,
+    DrawingView,
     View,
 )
 from zeroshot.pipeline.stages.interpretation.verify import InterpretationVerifier
@@ -38,9 +40,18 @@ def _case(
             "file": "/work/source.png",
             "region": {"view": "view_page", "box_px": [0, 0, 1200, 1400]},
             "dimensions": [],
+            "u_axis": UNTURNED.get(input_role, (None, None))[0],
+            "v_axis": UNTURNED.get(input_role, (None, None))[1],
         },
     )
-    given = [register_view("view_page", input_role, tmp_path / "source.png")]
+    given = [
+        register_view(
+            "view_page",
+            input_role,
+            tmp_path / "source.png",
+            axes=UNTURNED.get(input_role),
+        )
+    ]
     if pictorial is not None:
         Image.new("RGB", (60, 40), "white").save(tmp_path / f"{pictorial}.png")
         given.append(
@@ -56,6 +67,12 @@ def _case(
     )
     seed = DrawingInterpretation(datum=UNDECIDED, views=given, features=[])
     return verifier, DrawingInterpretation.model_validate(data), seed
+
+
+def _as_role(view: DrawingView, role: View) -> DrawingView:
+    """The same sheet under another role, with that role's own axes."""
+    u_axis, v_axis = UNTURNED.get(role, (None, None))
+    return view.model_copy(update={"role": role, "u_axis": u_axis, "v_axis": v_axis})
 
 
 def test_first_round_seeds_the_input_and_revisions_keep_the_complete_baseline(tmp_path):
@@ -269,7 +286,7 @@ def test_original_identity_and_full_file_region_cannot_be_rewritten(tmp_path, ch
     elif changed == "file":
         original["file"] = "/work/front.png"
     elif changed == "role":
-        original["role"] = "full_page"
+        original.update(role="full_page", u_axis=None, v_axis=None)
     elif changed == "reference":
         original["region"]["view"] = "view_front"
     else:
@@ -293,7 +310,7 @@ def test_original_identity_and_full_file_region_cannot_be_rewritten(tmp_path, ch
 )
 def test_a_full_page_input_requires_an_orthographic_view(tmp_path, role, accepted):
     verifier, candidate, _ = _case(tmp_path)
-    candidate.views[1].role = role
+    candidate.views[1] = _as_role(candidate.views[1], role)
     verifier.source_path.write_text(candidate.model_dump_json())
 
     text = verifier.feedback()[0]["text"]
@@ -304,7 +321,7 @@ def test_a_full_page_input_requires_an_orthographic_view(tmp_path, role, accepte
 
 def test_a_single_view_may_reuse_the_full_page_file_and_bounds(tmp_path):
     verifier, candidate, _ = _case(tmp_path)
-    candidate.views[1].role = View.SECTION
+    candidate.views[1] = _as_role(candidate.views[1], View.SECTION)
     data = candidate.model_dump()
     data["views"].append(
         {
@@ -313,6 +330,8 @@ def test_a_single_view_may_reuse_the_full_page_file_and_bounds(tmp_path):
             "file": "/work/source.png",
             "region": {"view": "view_page", "box_px": [0, 0, 1200, 1400]},
             "dimensions": [],
+            "u_axis": "+x",
+            "v_axis": "+z",
         }
     )
     verifier.source_path.write_text(json.dumps(data))
@@ -324,7 +343,7 @@ def test_a_single_view_may_reuse_the_full_page_file_and_bounds(tmp_path):
 
 def test_the_full_page_cannot_be_relabelled_as_the_view(tmp_path):
     verifier, candidate, _ = _case(tmp_path)
-    candidate.views[0].role = View.FRONT
+    candidate.views[0] = _as_role(candidate.views[0], View.FRONT)
     verifier.source_path.write_text(candidate.model_dump_json())
 
     assert "Retain each original input file" in verifier.feedback()[0]["text"]

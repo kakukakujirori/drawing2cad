@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -57,15 +58,40 @@ class View(StrEnum):
     UNKNOWN = "unknown"
 
 
-VIEW_FRAME: Mapping[View, tuple[str, str, str]] = {
-    View.FRONT: ("+x", "+z", "-y"),
-    View.BACK: ("-x", "+z", "+y"),
-    View.TOP: ("+x", "+y", "+z"),
-    View.BOTTOM: ("+x", "-y", "-z"),
-    View.RIGHT: ("+y", "+z", "+x"),
-    View.LEFT: ("-y", "+z", "-x"),
+type Axis = Literal["+x", "-x", "+y", "-y", "+z", "-z"]
+
+AXIS_VECTOR: Mapping[Axis, tuple[float, float, float]] = {
+    "+x": (1.0, 0.0, 0.0),
+    "-x": (-1.0, 0.0, 0.0),
+    "+y": (0.0, 1.0, 0.0),
+    "-y": (0.0, -1.0, 0.0),
+    "+z": (0.0, 0.0, 1.0),
+    "-z": (0.0, 0.0, -1.0),
 }
-ORTHOGRAPHIC_VIEWS = tuple(VIEW_FRAME)
+
+
+def cross_axis(u: Axis, v: Axis) -> Axis | None:
+    """The axis u x v names, or None when u and v are parallel."""
+    (ux, uy, uz), (vx, vy, vz) = AXIS_VECTOR[u], AXIS_VECTOR[v]
+    product = (uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx)
+    return next(
+        (axis for axis, vector in AXIS_VECTOR.items() if vector == product), None
+    )
+
+
+# What each orthographic role means: the axis running from the part to whoever
+# reads that view. Turning a view on the page does not change it.
+TOWARD_VIEWER: Mapping[View, Axis] = MappingProxyType(
+    {
+        View.FRONT: "-y",
+        View.BACK: "+y",
+        View.TOP: "+z",
+        View.BOTTOM: "-z",
+        View.RIGHT: "+x",
+        View.LEFT: "-x",
+    }
+)
+ORTHOGRAPHIC_VIEWS = tuple(TOWARD_VIEWER)
 
 # A pictorial is offered for context: it fixes no axes, so nothing lifts a coordinate from one.
 PICTORIAL_VIEWS = frozenset({View.PERSPECTIVE, View.ISOMETRIC})
@@ -219,12 +245,43 @@ class DrawingView(Contract):
         gt=0,
         description="Millimetres per pixel for this view. Submit null; filled only when independent dimension measurements reach consensus. Null for native DXF or unavailable calibration.",
     )
+    u_axis: Axis | None = Field(
+        default=None,
+        description="Model axis this sheet's +U (rightwards) points along, for an orthographic view; null for any other. The front view is +x.",
+    )
+    v_axis: Axis | None = Field(
+        default=None,
+        description="Model axis this sheet's +V (upwards) points along, for an orthographic view; null for any other. The front view is +z.",
+    )
 
     @model_validator(mode="after")
     def require_stable_name(self) -> Self:
         require_name(self.name, "view_")
         if self.image_size is not None and min(self.image_size) <= 0:
             raise ValueError("image_size must contain positive width and height")
+        return self
+
+    @model_validator(mode="after")
+    def require_sheet_axes(self) -> Self:
+        u, v = self.u_axis, self.v_axis
+        if self.role not in TOWARD_VIEWER:
+            if u is not None or v is not None:
+                raise ValueError(
+                    f"{self.name}: u_axis and v_axis belong to an orthographic view"
+                )
+            return self
+        if u is None or v is None:
+            raise ValueError(
+                f"{self.name}: an orthographic view states u_axis and v_axis"
+            )
+        out = TOWARD_VIEWER[self.role]
+        if cross_axis(u, v) != out:
+            raise ValueError(
+                f"{self.name}: u_axis {u} cross v_axis {v} must be {out}, "
+                f"the axis pointing at the viewer of a {self.role.value} view"
+            )
+        if self.role is View.FRONT and (u, v) != ("+x", "+z"):
+            raise ValueError(f"{self.name}: the front view is drawn u=+x, v=+z")
         return self
 
 
@@ -283,6 +340,17 @@ class DrawingInterpretation(Contract):
     @property
     def all_dimensions(self) -> tuple[Dimension, ...]:
         return tuple(dim for view in self.views for dim in view.dimensions)
+
+    def view_frames(self) -> dict[View, tuple[Axis, Axis]]:
+        """The (u_axis, v_axis) to redraw each orthographic role in.
+
+        The first view of a repeated role wins.
+        """
+        frames: dict[View, tuple[Axis, Axis]] = {}
+        for view in self.views:
+            if view.u_axis is not None and view.v_axis is not None:
+                frames.setdefault(view.role, (view.u_axis, view.v_axis))
+        return frames
 
     def dimension_inventory(self) -> list[DimensionSummary]:
         return [dim.to_summary() for dim in self.all_dimensions]

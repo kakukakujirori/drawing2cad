@@ -12,6 +12,7 @@ from typing import Literal
 import pytest
 from langchain_core.messages.content import ContentBlock
 
+from tests.zeroshot.contracts import UNTURNED
 from zeroshot.pipeline.messages.artifact import (
     ArtifactPresenter,
     build_feedback_message_blocks,
@@ -39,6 +40,8 @@ def _view(name: str, role: View, file: Path) -> DrawingView:
         file=str(file),
         region=Region(view=name, box_uv=(0.0, 0.0, 10.0, 10.0)),
         dimensions=[],
+        u_axis=UNTURNED[role][0] if role in UNTURNED else None,
+        v_axis=UNTURNED[role][1] if role in UNTURNED else None,
     )
 
 
@@ -207,6 +210,8 @@ def test_a_sheet_cut_out_of_another_is_named_like_any_other(
         file=str(_write(tmp_path / "front.png", b"FRONT")),
         region=Region(view=page.name, box_uv=(0.0, 0.0, 10.0, 10.0)),
         dimensions=[],
+        u_axis="+x",
+        v_axis="+z",
     )
     manifest = _input_manifest(tmp_path, page, crop)
 

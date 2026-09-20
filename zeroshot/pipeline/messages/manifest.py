@@ -14,6 +14,7 @@ from ezdxf import bbox
 from PIL import Image
 
 from zeroshot.pipeline.stages.interpretation.contracts import (
+    Axis,
     DrawingView,
     Region,
     View,
@@ -61,8 +62,14 @@ def register_view(
     role: View,
     file: str | PurePath,
     mm_per_unit: float | None = None,
+    axes: tuple[Axis, Axis] | None = None,
 ) -> DrawingView:
-    """Address one drawing file as a view, its region covering the whole of it."""
+    """Address one drawing file as a view, its region covering the whole of it.
+
+    An orthographic sheet states the (u_axis, v_axis) it is drawn in, which
+    DrawingView requires: a side view split out of a page may be turned, and
+    no default can know.
+    """
     path = Path(file)
     if path.suffix.lower() not in DRAWING_SUFFIXES:
         raise ValueError(f"unsupported drawing file: {path}")
@@ -75,8 +82,15 @@ def register_view(
         with Image.open(path) as image:
             width, height = image.size
         region = Region(view=name, box_px=(0, 0, width, height))
+    u_axis, v_axis = axes or (None, None)
     return DrawingView(
-        name=name, role=role, file=str(file), region=region, dimensions=[]
+        name=name,
+        role=role,
+        file=str(file),
+        region=region,
+        dimensions=[],
+        u_axis=u_axis,
+        v_axis=v_axis,
     )
 
 

@@ -7,6 +7,7 @@ import cadquery as cq
 import pytest
 from PIL import Image
 
+from tests.zeroshot.contracts import UNTURNED
 from zeroshot.pipeline.verification import run_render
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
@@ -35,6 +36,7 @@ def _projection_paths(base: Path) -> ProjectionPaths:
 def _write_projections(
     _step_path: Path,
     paths: ProjectionPaths,
+    _frames=None,
 ) -> tuple[ProjectionPaths, dict[str, str]]:
     for path in paths.as_mapping().values():
         path.write_text("DXF", encoding="utf-8")
@@ -78,6 +80,7 @@ def test_partial_render_reports_only_successful_paths(tmp_path, monkeypatch):
         tmp_path / "input.step",
         projection_paths,
         paths,
+        UNTURNED,
     )
 
     assert report.status is RenderStatus.PARTIAL
@@ -94,7 +97,7 @@ def test_partial_render_reports_only_successful_paths(tmp_path, monkeypatch):
 
 
 def test_degenerate_projection_keeps_the_reason(tmp_path, monkeypatch):
-    def reject_projection(_step_path, _paths):
+    def reject_projection(_step_path, _paths, _frames=None):
         raise DegenerateDrawingError("right view has near-zero extent")
 
     def reject_render3d(_step_path, _paths):
@@ -107,6 +110,7 @@ def test_degenerate_projection_keeps_the_reason(tmp_path, monkeypatch):
         tmp_path / "input.step",
         _projection_paths(tmp_path),
         _paths(tmp_path),
+        UNTURNED,
     )
 
     assert report.status is RenderStatus.FAILED
@@ -179,6 +183,7 @@ def test_timeout_is_distinct_and_kills_a_stuck_process(tmp_path, monkeypatch):
         tmp_path / "input.step",
         projection_paths,
         paths,
+        UNTURNED,
     )
 
     assert report.status is RenderStatus.TIMEOUT
@@ -211,6 +216,7 @@ def test_real_box_renders_to_caller_assigned_paths(tmp_path):
         step_path,
         projection_paths,
         paths,
+        UNTURNED,
     )
 
     assert report.status is RenderStatus.OK
@@ -243,7 +249,10 @@ def test_every_error_key_names_a_field_of_its_paths_dto(tmp_path, monkeypatch):
     monkeypatch.setattr(run_render, "_render_projections", reject)
     monkeypatch.setattr(run_render, "_render_3d", reject)
     report = run_render._render_once(
-        tmp_path / "input.step", _projection_paths(tmp_path), _paths(tmp_path)
+        tmp_path / "input.step",
+        _projection_paths(tmp_path),
+        _paths(tmp_path),
+        UNTURNED,
     )
 
     assert set(report.projection_errors) <= projection_fields
@@ -265,6 +274,7 @@ def test_batch_renders_every_request_in_order_within_the_worker_limit(tmp_path):
                 step_path,
                 _projection_paths(directory),
                 _paths(directory),
+                UNTURNED,
             )
         )
 
@@ -340,6 +350,7 @@ def test_a_batch_that_cannot_start_ends_the_renders_it_already_started(
             tmp_path / f"shape{index}.step",
             _projection_paths(tmp_path),
             _paths(tmp_path),
+            UNTURNED,
         )
         for index in range(3)
     ]

@@ -33,6 +33,8 @@ def interpretation() -> DrawingInterpretation:
                     "role": "front",
                     "file": "front.png",
                     "region": {"view": "view_front", "box_px": [0, 0, 100, 100]},
+                    "u_axis": "+x",
+                    "v_axis": "+z",
                     "dimensions": [
                         {
                             "name": "dim_diameter",

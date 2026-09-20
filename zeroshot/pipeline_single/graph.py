@@ -30,6 +30,7 @@ from zeroshot.pipeline.tools.calculate_drawing_scale import (
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore, CadQueryExecutor, StepRenderer
+from zeroshot.pipeline.verification.render.project import THIRD_ANGLE
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.components.agent import AgentState
@@ -108,7 +109,9 @@ def create_single_graph(
         renderer=StepRenderer(),
         feedback_presentation_mode=artifact_presenter.feedback_mode,
         attempt_store=attempt_store,
-        views=[View(view) for view in projection_views],
+        # No interpretation reads a drawing here, so nothing declares a turn,
+        # and only the views a third-angle page shows can be asked for.
+        views={View(view): THIRD_ANGLE[View(view)] for view in projection_views},
         source_filename=output_filename,
         # `ret_` returns name planned operations; there is no plan here.
         show_intermediate_returns=False,

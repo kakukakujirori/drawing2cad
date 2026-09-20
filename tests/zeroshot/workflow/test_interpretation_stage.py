@@ -98,7 +98,11 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
 
 def _dxf_input(tmp_path):
     candidate = dxf_case(tmp_path)
-    drawing = [register_view("view_front", View.FRONT, tmp_path / "front.dxf", 25.4)]
+    drawing = [
+        register_view(
+            "view_front", View.FRONT, tmp_path / "front.dxf", 25.4, ("+x", "+z")
+        )
+    ]
     workdir = SandboxWorkdir(tmp_path)
     return candidate, drawing, workdir
 

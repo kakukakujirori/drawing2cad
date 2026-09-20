@@ -13,7 +13,7 @@ from zeroshot.pipeline.messages.artifact import (
 )
 from zeroshot.pipeline.messages.manifest import FeedbackManifest, register_view
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages.interpretation.contracts import DrawingView
+from zeroshot.pipeline.stages.interpretation.contracts import Axis, DrawingView
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.attempts import AttemptStore
@@ -22,6 +22,7 @@ from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
 )
+from zeroshot.pipeline.verification.render.project import ViewFrames
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
@@ -186,7 +187,7 @@ class OutputVerifier:
         renderer: StepRenderer,
         feedback_presentation_mode: Literal["none", "path", "image"],
         attempt_store: AttemptStore,
-        views: Sequence[View] = (),
+        views: ViewFrames | None = None,
         source_filename: str = "model.py",
         show_intermediate_returns: bool = True,
     ) -> None:
@@ -201,10 +202,11 @@ class OutputVerifier:
         self.workdir = workdir
         self.renderer = renderer
         self.feedback_presentation_mode = feedback_presentation_mode
-        # The orthographic views to redraw the solid in. A caller that reads a
-        # drawing sets this per round; nothing is drawn until one does, because
-        # a guessed view has nothing to be compared against.
-        self.views: Sequence[View] = tuple(views)
+        # The orthographic views to redraw the solid in, each with the sheet
+        # axes the drawing declared. A caller that reads a drawing sets this
+        # per round; nothing is drawn until one does, because a guessed view
+        # has nothing to be compared against.
+        self.views: ViewFrames = dict(views or {})
         # The round's operations, set like `views`; the program must implement them.
         self.operations: OperationPlan | None = None
         self.source_filename = source_filename
@@ -350,17 +352,25 @@ class OutputVerifier:
         sheets: list[DrawingView] = []
         failed = dict(render_report.projection_errors)
 
-        def offer(name: str, role: View, path: Path, mm_per_unit: float | None) -> None:
+        def offer(
+            name: str,
+            role: View,
+            path: Path,
+            mm_per_unit: float | None,
+            axes: tuple[Axis, Axis] | None = None,
+        ) -> None:
             """Announce a drawing, or explain it: an unreadable one is not fatal."""
             try:
-                sheets.append(register_view(_projected(name), role, path, mm_per_unit))
+                sheets.append(
+                    register_view(_projected(name), role, path, mm_per_unit, axes)
+                )
             except Exception as why:  # noqa: BLE001 - report it where it would have been
                 failed[name] = f"{type(why).__name__}: {why}"
 
         # A projection is written at 1:1 in model millimetres, so its own frame
         # is already the sheet coordinates the contract uses.
         for view, path in render_report.projection_paths.as_mapping().items():
-            offer(view, View(view), path, 1.0)
+            offer(view, View(view), path, 1.0, self.views[View(view)])
         if pictorial:
             offer(FEEDBACK_PICTORIAL, View.PERSPECTIVE, pictorial, None)
         if why := render_report.render3d_errors.get(FEEDBACK_PICTORIAL):
@@ -387,7 +397,7 @@ class OutputVerifier:
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
 
-        return RenderRequest(step_path, projection_paths, render3d_paths)
+        return RenderRequest(step_path, projection_paths, render3d_paths, self.views)
 
     @property
     def confirmed(self) -> bool:
