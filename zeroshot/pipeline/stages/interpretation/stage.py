@@ -38,7 +38,8 @@ type CompiledGraph = Pregel[Any, Any, Any, Any]
 _CHECK_CANDIDATES = (
     "check_candidates is available. Before you set the confidences of a "
     "hypothesis with two or more candidates, call it once for that hypothesis "
-    "and weigh its reports."
+    "and weigh its reports. The round's reviewers are limited, so spend them "
+    "on the readings that decide the most geometry."
 )
 type AgentBuilder = partial[CompiledGraph]
 
@@ -191,5 +192,7 @@ def create_interpretation_stage(
         middleware,
         input_after_compaction,
         dxf_context,
-        tuple(_CHECK_CANDIDATES for tool in tools if tool.name == "check_candidates"),
+        (_CHECK_CANDIDATES,)
+        if any(tool.name == "check_candidates" for tool in tools)
+        else (),
     )

@@ -13,6 +13,7 @@ from tests.zeroshot.workflow.test_reconstruction_workflow import (
 )
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.tickets.contracts import StageReport, TicketAnswers
 from zeroshot.pipeline.stages.tickets.validate import StageArtifact
@@ -72,6 +73,50 @@ def test_reordering_operations_outside_the_tickets_needs_a_reason() -> None:
     with pytest.raises(SubmissionValidationError, match=r"op_hole \(changed\)"):
         _answer(run, "operations", reordered)
     _answer(run, "operations", reordered, unticketed_changes={"op_hole": "Moved."})
+
+
+def _with_rival(held: DrawingInterpretation) -> DrawingInterpretation:
+    """The first feature gains a rival reading that wins the adoption."""
+    hypothesis = held.hypotheses[0]
+    adopted = hypothesis.candidates[0]
+    rival = adopted.model_copy(
+        update={
+            "name": "sem_feature_1_boss",
+            "description": "a boss",
+            "confidence": 0.9,
+        }
+    )
+    demoted = adopted.model_copy(update={"confidence": 0.1})
+    return held.model_copy(
+        update={
+            "hypotheses": [
+                hypothesis.model_copy(update={"candidates": [demoted, rival]}),
+                *held.hypotheses[1:],
+            ]
+        }
+    )
+
+
+def test_a_ticket_on_one_candidate_covers_the_rival_it_is_adopted_against() -> None:
+    run = _revision("interpretation", "sem_feature_1")
+    _answer(run, "interpretation", _with_rival(interpretation("the base", "the hole")))
+
+
+def test_swapping_the_adopted_candidate_outside_the_tickets_needs_a_reason() -> None:
+    run = _revision("interpretation", "sem_feature_2")
+    revised = _with_rival(interpretation("the base", "the hole"))
+
+    with pytest.raises(SubmissionValidationError, match="sem_feature_1_boss"):
+        _answer(run, "interpretation", revised)
+    _answer(
+        run,
+        "interpretation",
+        revised,
+        unticketed_changes={
+            "sem_feature_1": "Demoted.",
+            "sem_feature_1_boss": "The drawing shows material.",
+        },
+    )
 
 
 def test_a_reason_for_a_member_that_did_not_change_is_refused() -> None:

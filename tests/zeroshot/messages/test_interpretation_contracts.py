@@ -202,11 +202,12 @@ def test_the_most_confident_candidate_is_adopted_wherever_it_is_listed() -> None
     } <= interpretation.members().keys()
 
 
-def test_rival_candidates_cite_each_other_so_a_ticket_on_one_covers_both() -> None:
-    """Adopting a rival changes both confidences; the ticket names only one."""
-    members = DrawingInterpretation.model_validate(_hole_or_boss(0.3, 0.7)).members()
-    assert "sem_pin_upper_left" in members["sem_hole_upper_left"].cites
-    assert "sem_hole_upper_left" in members["sem_pin_upper_left"].cites
+def test_a_candidate_is_named_together_with_its_rivals() -> None:
+    """Adopting a rival changes both confidences; a ticket names only one."""
+    interpretation = DrawingInterpretation.model_validate(_hole_or_boss(0.3, 0.7))
+    both = {"sem_hole_upper_left", "sem_pin_upper_left"}
+    assert interpretation.rivals_of({"sem_pin_upper_left"}) == both
+    assert interpretation.rivals_of({"view_front"}) == set()
 
 
 def test_candidates_tied_for_the_lead_are_refused() -> None:

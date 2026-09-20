@@ -2,7 +2,7 @@ import json
 import math
 import re
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Container, Iterable, Iterator, Mapping
 from enum import StrEnum
 from typing import Literal, Self
 
@@ -336,6 +336,19 @@ class DrawingInterpretation(Contract):
             for candidate in hypothesis.candidates
         )
 
+    def rivals_of(self, names: Container[str]) -> set[str]:
+        """Candidates sharing a hypothesis with one of `names`, and those names.
+
+        Adopting a rival changes the confidence of both, so a ticket on one
+        covers the other.
+        """
+        return {
+            candidate.name
+            for hypothesis in self.hypotheses
+            if any(candidate.name in names for candidate in hypothesis.candidates)
+            for candidate in hypothesis.candidates
+        }
+
     @property
     def all_dimensions(self) -> tuple[Dimension, ...]:
         return tuple(dim for view in self.views for dim in view.dimensions)
@@ -370,8 +383,6 @@ class DrawingInterpretation(Contract):
                 )
         for hypothesis, candidate in self.candidates:
             regions = [*candidate.evidence, *candidate.refuting]
-            # Rivals cite each other: adopting one changes the other's confidence.
-            rivals = {c.name for c in hypothesis.candidates} - {candidate.name}
             members[candidate.name] = Member(
                 (
                     candidate.model_dump(exclude={"evidence", "refuting"}),
@@ -379,11 +390,7 @@ class DrawingInterpretation(Contract):
                     hypothesis.dimension_refs,
                 ),
                 frozenset(
-                    {
-                        *(region.view for region in regions),
-                        *hypothesis.dimension_refs,
-                        *rivals,
-                    }
+                    {*(region.view for region in regions), *hypothesis.dimension_refs}
                 ),
             )
         return members

@@ -106,6 +106,8 @@ def validate_revision_scope(
         )
         if name is not None
     }
+    if isinstance(artifact, DrawingInterpretation):
+        named |= artifact.rivals_of(named)
     upstream = [
         (_members(_artifact(previous, earlier)), _members(_artifact(current, earlier)))
         for earlier in REASONING_STAGES[: REASONING_STAGES.index(stage)]
