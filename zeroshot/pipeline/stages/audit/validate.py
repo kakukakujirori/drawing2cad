@@ -1,11 +1,17 @@
 """Check an audit against committed outputs; report-only rules live in contracts."""
 
 from collections.abc import Iterable, Iterator, Mapping
+from pathlib import PurePosixPath
 from typing import cast
 
+from PIL import Image
+
+from zeroshot.pipeline.messages.manifest import DRAWING_SUFFIXES, read_dxf_frame
+from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
+    AuditRegion,
     AuditReport,
     CausalHop,
     StageOutputRef,
@@ -23,8 +29,12 @@ from zeroshot.pipeline.verification.check_program import program_output_names
 def validate_audit_report(
     report: AuditReport,
     snapshot: ReconstructionSnapshot,
+    workdir: SandboxWorkdir | None = None,
 ) -> None:
-    """Check ticket coverage, verification, members and declared causal links."""
+    """Check ticket coverage, verification, members, causal links and evidence.
+
+    Evidence is checked against the files themselves, so it needs `workdir`.
+    """
     # Acceptance requires a completed, successful build.
     if snapshot.last_completed_stage is not PipelineStage.CODING:
         raise SubmissionValidationError("audit requires a completed coding snapshot")
@@ -62,6 +72,11 @@ def validate_audit_report(
         PipelineStage.CODING: coding_names,
     }
     errors = [coding_error] if coding_error is not None else []
+    if workdir is not None:
+        # A build that failed drew nothing, and then there is nothing to measure.
+        drawn = any(workdir.host_bind_dir.glob("**/projection/*.dxf"))
+        for finding in report.findings:
+            errors.extend(_evidence_errors(finding, workdir, drawn))
 
     # Existing references must resolve; proposed identities must not collide.
     errors.extend(_missing_reference_errors(references, known_members))
@@ -84,6 +99,50 @@ def validate_audit_report(
         # same mechanical contradiction more than once.
         unique_errors = list(dict.fromkeys(errors))
         raise SubmissionValidationError("\n".join(unique_errors))
+
+
+def _evidence_errors(
+    finding: AuditFinding, workdir: SandboxWorkdir, drawn: bool
+) -> list[str]:
+    """Every region names a readable workspace drawing and lies inside it."""
+    errors = []
+    measured = False
+    for index, region in enumerate(finding.evidence):
+        cited = PurePosixPath(region.file)
+        measured |= cited.suffix.lower() == ".dxf" and "projection" in cited.parts
+        if error := _region_error(region, workdir) is not None:
+            errors.append(f"{finding.name}.evidence[{index}]: {error}")
+    if drawn and not measured:
+        errors.append(
+            f"{finding.name}: cite at least one .dxf under a projection/ "
+            "directory, so the discrepancy is measured rather than eyeballed"
+        )
+    return errors
+
+
+def _region_error(region: AuditRegion, workdir: SandboxWorkdir) -> str | None:
+    file = region.file
+    suffix = PurePosixPath(file).suffix.lower()
+    if suffix not in DRAWING_SUFFIXES:
+        return (
+            f"{file} is not a drawing; evidence is measured on "
+            f"{', '.join(sorted(DRAWING_SUFFIXES))}"
+        )
+    try:
+        path = workdir.sandbox_to_host_path(file)
+    except ValueError as error:
+        return str(error)
+    if not path.is_file():
+        return f"{file} does not exist in the workspace"
+    if suffix == ".dxf":
+        # Native units, which is millimetres for everything the pipeline draws.
+        size = read_dxf_frame(path, 1.0)["size_mm"]
+    else:
+        with Image.open(path) as image:
+            size = image.size
+    if region.box[2] > size[0] + 1e-7 or region.box[3] > size[1] + 1e-7:
+        return f"box {region.box} exceeds the bounds of {file}, {size}"
+    return None
 
 
 def _validate_concern_coverage(

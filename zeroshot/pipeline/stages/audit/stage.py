@@ -91,7 +91,11 @@ def create_audit_stage(
             AuditReport,
         ),
         output_schema=AuditReport,
-        extra_middleware=[VerifyOnSubmitMiddleware(validate_audit_report)],
+        extra_middleware=[
+            VerifyOnSubmitMiddleware(
+                partial(validate_audit_report, workdir=instructions.workdir)
+            )
+        ],
     )
     return AuditStage(
         agent=audit_agent,

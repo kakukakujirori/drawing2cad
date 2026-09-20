@@ -5,6 +5,7 @@ from pydantic import BaseModel, ValidationError
 
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
+    AuditRegion,
     AuditReport,
     CausalHop,
     ConcernReview,
@@ -47,6 +48,10 @@ def backtrace() -> list[CausalHop]:
     ]
 
 
+def _region(file: str) -> AuditRegion:
+    return AuditRegion(file=file, box=(0.0, 0.0, 10.0, 10.0))
+
+
 def finding(
     name: str = "find_wrong_bore",
     *,
@@ -57,7 +62,7 @@ def finding(
     return AuditFinding(
         name=name,
         observation="The reconstructed bore is too wide.",
-        evidence=["render_3d/hlg_front.png", "sem_bore.radius"],
+        evidence=[_region("render_3d/hlg_front.png")],
         backtrace=backtrace() if hops is None else hops,
         revision_request=revision_request or request(),
         related_ticket_ids=related_ticket_ids or [],
@@ -364,12 +369,11 @@ def test_find_names_are_canonical_and_other_prefixes_are_rejected(
     ("evidence", "message"),
     [
         ([], "must not be empty"),
-        (["  "], "must not be blank"),
-        (["same", "same"], "duplicates"),
+        ([_region("front.png"), _region("front.png")], "duplicates"),
     ],
 )
-def test_a_finding_requires_distinct_evidence_locators(
-    evidence: list[str], message: str
+def test_a_finding_requires_distinct_evidence_regions(
+    evidence: list[AuditRegion], message: str
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         AuditFinding(
@@ -470,6 +474,7 @@ def _object_schemas(node: object) -> list[dict]:
         CausalHop,
         AuditFinding,
         AuditReport,
+        AuditRegion,
         TicketReview,
     ],
 )

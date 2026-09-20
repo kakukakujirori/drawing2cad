@@ -5,6 +5,7 @@ import pytest
 from tests.zeroshot.contracts import (
     bootstrap_review,
     drawing,
+    evidence,
     interpretation,
     interpreted_feature,
 )
@@ -245,7 +246,7 @@ def _report(
             AuditFinding(
                 name="find_shape_mismatch",
                 observation="The rendered shape differs from the drawing.",
-                evidence=["render_3d/hlg_front.png"],
+                evidence=evidence("render_3d/hlg_front.png"),
                 backtrace=list(hops),
                 related_ticket_ids=related_ticket_ids or [],
                 revision_request=RevisionRequest(

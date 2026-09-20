@@ -8,9 +8,10 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
-from tests.zeroshot.contracts import interpretation, view
+from tests.zeroshot.contracts import evidence, interpretation, view
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
+    AuditRegion,
     AuditReport,
     CausalHop,
     ConcernReview,
@@ -135,7 +136,7 @@ _AUDIT_REPORT = AuditReport(
         AuditFinding(
             name="find_missing_boss",
             observation="the boss is missing",
-            evidence=["attempts/v1/techdraw.dxf"],
+            evidence=evidence("attempts/v1/techdraw.dxf"),
             related_ticket_ids=["ticket_missing_boss"],
             backtrace=[
                 CausalHop(
@@ -286,6 +287,7 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         AuditFinding,
         AuditReport,
         ConcernReview,
+        AuditRegion,
         TicketReview,
         CausalHop,
         RevisionRequest,

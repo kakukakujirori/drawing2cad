@@ -235,6 +235,38 @@ class CausalHop(BaseModel):
         return self
 
 
+class AuditRegion(BaseModel):
+    """Where a defect is visible: one drawing in the workspace, and where to look."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    file: str = Field(
+        ...,
+        description=(
+            "The workspace path of the drawing this was measured on. Use the "
+            "projection and render files of the built solid, the input drawing, "
+            "and the projections under intermediate_returns/."
+        ),
+    )
+    box: tuple[float, float, float, float] = Field(
+        ...,
+        description=(
+            "x0, y0, x1, y1 around what was measured, in the file's own frame: "
+            "pixels from the top left for a raster, millimetres from the lower "
+            "left for a DXF."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def require_a_box_inside_the_file(self) -> Self:
+        x0, y0, x1, y1 = self.box
+        if x0 >= x1 or y0 >= y1:
+            raise ValueError("box must satisfy x0 < x1 and y0 < y1")
+        if x0 < 0 or y0 < 0:
+            raise ValueError("box must use the file's own origin")
+        return self
+
+
 class AuditFinding(BaseModel):
     """One material defect, its evidence, and the revision it requires."""
 
@@ -254,14 +286,12 @@ class AuditFinding(BaseModel):
             "assigning it to a root cause."
         ),
     )
-    evidence: list[str] = Field(
+    evidence: list[AuditRegion] = Field(
         ...,
         description=(
-            "Exact locators for the evidence supporting the observation, such as "
-            "an original artifact path, view_ name and pixel/UV region, "
-            "dim_ name, sem_ parameter reference, operation name or "
-            "field, code result variable, or verification-report field. These are "
-            "references only, not explanations."
+            "Where the observation is visible, as files and boxes rather than "
+            "prose. At least one must be a .dxf under a projection/ directory, "
+            "so the mismatch is measured and not only seen."
         ),
     )
     backtrace: list[CausalHop] = Field(
@@ -307,10 +337,8 @@ class AuditFinding(BaseModel):
             raise ValueError("observation must not be blank")
         if not self.evidence:
             raise ValueError("evidence must not be empty")
-        if any(not locator.strip() for locator in self.evidence):
-            raise ValueError("evidence locators must not be blank")
         if len(set(self.evidence)) != len(self.evidence):
-            raise ValueError("evidence locators must not contain duplicates")
+            raise ValueError("evidence regions must not contain duplicates")
         if len(set(self.related_ticket_ids)) != len(self.related_ticket_ids):
             raise ValueError("related_ticket_ids must not contain duplicates")
 

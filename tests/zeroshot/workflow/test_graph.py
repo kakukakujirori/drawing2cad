@@ -17,6 +17,7 @@ from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.contracts import (
     bootstrap_review,
     drawing,
+    evidence,
     interpretation,
     interpreted_feature,
 )
@@ -223,7 +224,7 @@ def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
                 AuditFinding(
                     name="find_missing_hole",
                     observation="The drawing contains a hole that the model omits.",
-                    evidence=["render_3d/hlg_front.png"],
+                    evidence=evidence("projection/front.dxf"),
                     backtrace=[],
                     revision_request=RevisionRequest(
                         action="modify",
@@ -254,7 +255,7 @@ def _interpretation_rejected_audit() -> AIMessage:
                 AuditFinding(
                     name="find_wrong_edge",
                     observation="The front edge starts at the wrong coordinate.",
-                    evidence=["view_front", "sem_feature_1.offset"],
+                    evidence=evidence("front.png", "projection/front.dxf"),
                     backtrace=[],
                     revision_request=RevisionRequest(
                         action="modify",
@@ -284,7 +285,7 @@ def _invalid_audit() -> AIMessage:
                 AuditFinding(
                     name="find_unknown_operation",
                     observation="The model is incorrect.",
-                    evidence=["verification.status"],
+                    evidence=evidence("projection/front.dxf"),
                     backtrace=[],
                     revision_request=RevisionRequest(
                         action="modify",
@@ -312,6 +313,18 @@ def _artifact_presenter() -> ArtifactPresenter:
     return ArtifactPresenter(input_mode="path", feedback_mode="none")
 
 
+def _write_projection_dxf(path: Path) -> None:
+    """The measurable projection every audit finding must cite."""
+    import ezdxf
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = ezdxf.new()
+    document.modelspace().add_lwpolyline(
+        [(0, 0), (20, 0), (20, 20), (0, 20)], close=True
+    )
+    document.saveas(path)
+
+
 def _graph(
     workdir: SandboxWorkdir,
     *,
@@ -329,6 +342,7 @@ def _graph(
     path = workdir.host_bind_dir / "drawing.png"
     Image.new("RGB", (20, 20), "white").save(path)
     Image.new("RGB", (20, 20), "white").save(workdir.host_bind_dir / "front.png")
+    _write_projection_dxf(workdir.host_bind_dir / "projection" / "front.dxf")
     common = {
         "announce_turns": False,
         "model_retries": 0,
@@ -848,7 +862,9 @@ def test_the_graph_still_validates_an_audit_that_skipped_the_agent_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_verification(monkeypatch, _verified())
-    monkeypatch.setattr(audit_stage_module, "validate_audit_report", lambda *_: None)
+    monkeypatch.setattr(
+        audit_stage_module, "validate_audit_report", lambda *_, **__: None
+    )
     auditor = ScriptedChatModel(responses=(_invalid_audit(), _accepted_audit()))
 
     with SandboxWorkdir() as workdir:

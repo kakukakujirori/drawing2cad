@@ -47,7 +47,7 @@ def test_audit_and_validation_are_recorded_as_their_raw_node_updates(
             {
                 "name": "find_bore",
                 "observation": "The bore is still missing.",
-                "evidence": ["view_front"],
+                "evidence": [{"file": "projection/front.dxf", "box": [0, 0, 10, 10]}],
                 "backtrace": [],
                 "revision_request": {
                     "action": "modify",

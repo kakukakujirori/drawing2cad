@@ -1,12 +1,18 @@
 """Audit links through the interpretation, including direct missing-member tickets."""
 
-import pytest
+from collections.abc import Iterator
 
-from tests.zeroshot.contracts import bootstrap_review
+import ezdxf
+import pytest
+from PIL import Image
+
+from tests.zeroshot.contracts import bootstrap_review, evidence
 from tests.zeroshot.workflow.test_resolve_submission import interpretation
+from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
+    AuditRegion,
     AuditReport,
     CausalHop,
     RevisionRequest,
@@ -65,7 +71,10 @@ def ref(stage: str, name: str | None) -> StageOutputRef:
 
 
 def report(
-    *hops: tuple[str, str, str, str], target: str | None = None, add: str | None = None
+    *hops: tuple[str, str, str, str],
+    target: str | None = None,
+    add: str | None = None,
+    cites: list[AuditRegion] | None = None,
 ) -> AuditReport:
     backtrace = [
         CausalHop(
@@ -84,7 +93,7 @@ def report(
             AuditFinding(
                 name="find_bore",
                 observation="The drawn bore is missing or incorrect.",
-                evidence=["front.png"],
+                evidence=cites or evidence("front.png"),
                 backtrace=backtrace,
                 revision_request=RevisionRequest(
                     action="add" if add else "modify",
@@ -184,4 +193,78 @@ def test_feature_can_trace_through_a_dimension_to_another_view() -> None:
         validate_audit_report(
             report(("interpretation", "sem_bore", "interpretation", "view_top")),
             current,
+        )
+
+
+@pytest.fixture
+def workspace() -> Iterator[SandboxWorkdir]:
+    """A 20x20 input raster and a 20x20 projection of what was built."""
+    with SandboxWorkdir() as workdir:
+        Image.new("RGB", (20, 20), "white").save(workdir.host_bind_dir / "front.png")
+        projection = workdir.host_bind_dir / "projection"
+        projection.mkdir()
+        document = ezdxf.new()
+        document.modelspace().add_lwpolyline(
+            [(0, 0), (20, 0), (20, 20), (0, 20)], close=True
+        )
+        document.saveas(projection / "front.dxf")
+        yield workdir
+
+
+def cite(file: str, box: tuple[float, float, float, float]) -> AuditRegion:
+    return AuditRegion(file=file, box=box)
+
+
+def test_evidence_is_measured_on_the_files_it_names(
+    workspace: SandboxWorkdir,
+) -> None:
+    validate_audit_report(
+        report(
+            cites=[
+                cite("front.png", (2, 2, 8, 8)),
+                cite("projection/front.dxf", (2.0, 2.0, 8.0, 8.0)),
+            ],
+            target="sem_bore",
+        ),
+        snapshot(),
+        workspace,
+    )
+
+
+@pytest.mark.parametrize(
+    ("cited", "message"),
+    [
+        (cite("projection/absent.dxf", (0, 0, 1, 1)), "does not exist"),
+        (cite("projection/front.dxf", (0, 0, 21, 1)), "exceeds the bounds"),
+        (cite("../escaped/projection/front.dxf", (0, 0, 1, 1)), "must not escape"),
+        (cite("projection/front.step", (0, 0, 1, 1)), "is not a drawing"),
+    ],
+)
+def test_evidence_that_cannot_be_opened_and_measured_is_refused(
+    workspace: SandboxWorkdir, cited: AuditRegion, message: str
+) -> None:
+    with pytest.raises(SubmissionValidationError, match=message):
+        validate_audit_report(
+            report(cites=[cited], target="sem_bore"), snapshot(), workspace
+        )
+
+
+def test_a_finding_measures_at_least_one_projection_dxf(
+    workspace: SandboxWorkdir,
+) -> None:
+    with pytest.raises(SubmissionValidationError, match="under a projection/"):
+        validate_audit_report(
+            report(cites=[cite("front.png", (0, 0, 10, 10))], target="sem_bore"),
+            snapshot(),
+            workspace,
+        )
+
+
+def test_an_audit_of_a_build_that_drew_nothing_still_reports_it() -> None:
+    with SandboxWorkdir() as bare:
+        Image.new("RGB", (20, 20), "white").save(bare.host_bind_dir / "front.png")
+        validate_audit_report(
+            report(cites=[cite("front.png", (0, 0, 10, 10))], target="sem_bore"),
+            snapshot(),
+            bare,
         )

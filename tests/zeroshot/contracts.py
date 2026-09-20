@@ -6,7 +6,7 @@ Tests *about* the contract build it explicitly -- see
 
 from collections.abc import Iterable
 
-from zeroshot.pipeline.stages.audit.contracts import TicketReview
+from zeroshot.pipeline.stages.audit.contracts import AuditRegion, TicketReview
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
@@ -29,6 +29,11 @@ UNTURNED: dict[View, tuple[str, str]] = {
     View.RIGHT: ("+y", "+z"),
     View.LEFT: ("-y", "+z"),
 }
+
+
+def evidence(*files: str) -> list[AuditRegion]:
+    """Whole-file regions, for tests not about what a finding points at."""
+    return [AuditRegion(file=file, box=(0.0, 0.0, 10.0, 10.0)) for file in files]
 
 
 def answered(responses: Iterable[TicketResponse]) -> dict[str, str]:

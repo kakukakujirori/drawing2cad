@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from tests.zeroshot.contracts import answered, drawing, interpretation
+from tests.zeroshot.contracts import answered, drawing, evidence, interpretation
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     RevisionRequest,
@@ -54,7 +54,7 @@ def _finding() -> AuditFinding:
     return AuditFinding(
         name="find_wrong_base",
         observation="The reconstructed base is too wide.",
-        evidence=["render_3d/hlg_front.png"],
+        evidence=evidence("render_3d/hlg_front.png"),
         backtrace=[],
         revision_request=RevisionRequest(
             action="modify",
