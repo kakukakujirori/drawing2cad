@@ -89,9 +89,9 @@ def export_view(dxf_path: Path, projection: ViewProjection, layer: str) -> None:
     doc.saveas(Path(dxf_path))
 
 
-def export_to_png(dxf_path: Path) -> Path:
-    """Rasterise a written view beside itself, black on white."""
-    image_path = Path(dxf_path).with_suffix(".png")
+def export_to_png(dxf_path: Path, image_path: Path | None = None) -> Path:
+    """Rasterise a written view, beside itself by default, black on white."""
+    image_path = image_path or Path(dxf_path).with_suffix(".png")
     qsave(
         ezdxf.readfile(dxf_path).modelspace(),
         image_path,

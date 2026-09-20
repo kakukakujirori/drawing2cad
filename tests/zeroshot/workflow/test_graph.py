@@ -926,6 +926,9 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(monkeypat
             auditor=auditor,
             max_audit_reject_count=1,
         ).invoke({})
+        # The finding's evidence is cut out for the stages that must fix it.
+        crop = workdir.host_bind_dir / "tickets" / _ROUND_ONE_TICKET / "evidence_0.png"
+        assert crop.is_file()
     first, second = result["reconstruction"].snapshots
     assert calls == ["verify", "verify"]
     assert first.open_tickets[0].ticket_id == _ROUND_ZERO_TICKET
@@ -935,6 +938,9 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(monkeypat
     assert first.operations == _plan()
     assert second.operations == _plan(detail="extrude revised plate")
     assert len(second.open_tickets[0].responses) == 3
+    assert second.open_tickets[0].evidence_crops == [
+        f"/work/tickets/{_ROUND_ONE_TICKET}/evidence_0.png"
+    ]
     assert len(interpreter.received_messages) == 4
     assert len(planner.received_messages) == 4
     assert len(coder.received_messages) == 2

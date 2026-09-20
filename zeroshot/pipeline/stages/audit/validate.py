@@ -110,7 +110,7 @@ def _evidence_errors(
     for index, region in enumerate(finding.evidence):
         cited = PurePosixPath(region.file)
         measured |= cited.suffix.lower() == ".dxf" and "projection" in cited.parts
-        if error := _region_error(region, workdir) is not None:
+        if (error := _region_error(region, workdir)) is not None:
             errors.append(f"{finding.name}.evidence[{index}]: {error}")
     if drawn and not measured:
         errors.append(

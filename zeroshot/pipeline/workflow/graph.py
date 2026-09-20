@@ -362,7 +362,7 @@ def create_reconstruction_graph(
             reconstruction = state.get("reconstruction")
             if reconstruction is None:
                 raise RuntimeError("audit integration requires reconstruction")
-            updated = open_next_round(reconstruction, report)
+            updated = open_next_round(reconstruction, report, sandbox_workdir)
             save_history(updated)
             return {
                 "reconstruction": updated,
