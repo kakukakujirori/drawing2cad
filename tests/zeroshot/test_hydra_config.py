@@ -108,7 +108,7 @@ def test_glm5_3_flash_openrouter_config_instantiates_chat_openrouter(
 
     assert isinstance(model, ChatOpenRouter)
     assert model.model_name == "z-ai/glm-5.3-flash"
-    assert model.request_timeout == 60000
+    assert model.request_timeout == 600.0  # seconds
     assert model.max_retries == 0
 
 

@@ -23,5 +23,7 @@ model:
   # Hard turns reason for ~30k tokens; the rest leaves room for a whole program.
   max_tokens: 60000
 
-  timeout: 60000  # milliseconds
+  # Seconds, as httpx reads it. A stalled OpenRouter request once held one
+  # call for six hours; 10 of 2233 measured calls ran past this.
+  timeout: 600.0
   max_retries: 0
