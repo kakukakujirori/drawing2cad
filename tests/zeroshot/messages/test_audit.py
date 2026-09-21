@@ -13,6 +13,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     StageOutputRef,
     TicketReview,
 )
+from zeroshot.pipeline.stages.tickets.contracts import StageReport, TicketAnswers
 
 
 def ref(stage: str, name: str | None) -> StageOutputRef:
@@ -476,14 +477,49 @@ def _object_schemas(node: object) -> list[dict]:
         AuditReport,
         AuditRegion,
         TicketReview,
+        ConcernReview,
+        TicketAnswers,
+        StageReport,
     ],
 )
-def test_audit_contracts_are_closed_and_require_every_field(
+def test_requested_answer_schemas_are_closed_and_require_every_field(
     contract: type[BaseModel],
 ) -> None:
     for schema in _object_schemas(contract.model_json_schema()):
         assert set(schema.get("required", [])) == set(schema.get("properties", {}))
         assert schema.get("additionalProperties") is False
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        ref("coding", "ret_bore"),
+        request(),
+        backtrace()[0],
+        finding(),
+        _region("front.png"),
+        TicketReview(summary="Checked.", solved=True),
+        ConcernReview(finding_name=None, disposition="No correction needed."),
+        AuditReport(accepted=True, ticket_reviews={}, concern_reviews={}, findings=[]),
+    ],
+)
+def test_audit_models_ignore_extra_labels_but_still_require_each_field(value):
+    contract = type(value)
+    payload = {
+        **value.model_dump(),
+        "type": "unrequested label",
+        "extra_note": "unused",
+    }
+    assert contract.model_validate(payload) == value
+    for name in contract.model_fields:
+        misspelled = dict(payload)
+        misspelled[name + "_typo"] = misspelled.pop(name)
+        with pytest.raises(ValidationError) as raised:
+            contract.model_validate(misspelled)
+        assert any(
+            e["type"] == "missing" and e["loc"] == (name,)
+            for e in raised.value.errors()
+        )
 
 
 @pytest.mark.parametrize("name", ["view_front", "dim_diameter", "sem_bore"])
@@ -502,13 +538,11 @@ def test_interpretation_members_support_direct_add_without_a_backtrace(
 @pytest.mark.parametrize(
     "change",
     [
-        {"ticket_id": "not_a_ticket"},
         {"summary": "  "},
-        {"stage": "audit"},
-        {"revision_request": {}},
+        {"solved": "unknown"},
     ],
 )
-def test_ticket_review_requires_a_named_check_without_another_revision(change) -> None:
+def test_ticket_review_requires_a_nonblank_check_and_boolean_decision(change) -> None:
     with pytest.raises(ValidationError):
         TicketReview.model_validate(
             {

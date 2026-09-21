@@ -81,6 +81,9 @@ def _interpretation_submission(
 ) -> AIMessage:
     return _message(
         TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
             responses=_responses(ticket_id, PipelineStage.INTERPRETATION),
         )
     )
@@ -89,6 +92,9 @@ def _interpretation_submission(
 def _invalid_interpretation_submission() -> AIMessage:
     return _message(
         TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
             responses=_responses("ticket_absent", PipelineStage.INTERPRETATION),
         )
     )
@@ -164,7 +170,12 @@ def _operation_submission(
     ticket_id: str | None = _ROUND_ZERO_TICKET,
 ) -> AIMessage:
     return _message(
-        TicketAnswers(responses=_responses(ticket_id, PipelineStage.OPERATIONS))
+        TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
+            responses=_responses(ticket_id, PipelineStage.OPERATIONS),
+        )
     )
 
 
@@ -198,7 +209,9 @@ def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
     return _message(
         TicketAnswers(
             responses=_responses(ticket_id, PipelineStage.CODING),
-            stage_report=StageReport(dimension_checks={}),
+            stage_report=StageReport(
+                concerns={}, unticketed_changes={}, dimension_checks={}
+            ),
         )
     )
 
@@ -434,7 +447,10 @@ def _interpretation_seed() -> ReconstructionHistory:
     return advance_reconstruction(
         start_reconstruction("run_test", "Reconstruct the drawing.", drawing()),
         TicketAnswers(
-            responses=_response(_ROUND_ZERO_TICKET, PipelineStage.INTERPRETATION)
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
+            responses=_response(_ROUND_ZERO_TICKET, PipelineStage.INTERPRETATION),
         ),
         workspace_output=interpretation("a plate"),
     )
@@ -444,7 +460,10 @@ def _operations_resume() -> ReconstructionHistory:
     return advance_reconstruction(
         _interpretation_seed(),
         TicketAnswers(
-            responses=_response(_ROUND_ZERO_TICKET, PipelineStage.OPERATIONS)
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
+            responses=_response(_ROUND_ZERO_TICKET, PipelineStage.OPERATIONS),
         ),
         workspace_output=_plan(),
     )
@@ -588,9 +607,17 @@ def test_a_coding_answer_that_contradicts_its_round_is_refused_inside_the_agent(
 ) -> None:
     calls = _stub_verification(monkeypatch, _verified())
     responses = _responses(_ROUND_ZERO_TICKET, PipelineStage.CODING)
-    unchecked = TicketAnswers(responses=responses)
+    unchecked = TicketAnswers(
+        stage_report=StageReport(
+            concerns={}, dimension_checks=None, unticketed_changes={}
+        ),
+        responses=responses,
+    )
     checked = TicketAnswers(
-        responses=responses, stage_report=StageReport(dimension_checks={})
+        responses=responses,
+        stage_report=StageReport(
+            concerns={}, unticketed_changes={}, dimension_checks={}
+        ),
     )
     coder = ScriptedChatModel(
         responses=(

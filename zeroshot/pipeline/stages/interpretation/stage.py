@@ -19,6 +19,7 @@ from zeroshot.pipeline.stages._base.prompt import (
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.interpretation.verify import InterpretationVerifier
 from zeroshot.pipeline.stages.tickets.contracts import (
+    StageReport,
     TicketAnswers,
     tickets_assigned_to,
 )
@@ -55,7 +56,14 @@ class InterpretationStage:
             )
             self.middleware.reset()
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.INTERPRETATION):
-            return {"stage_submission": TicketAnswers(responses={})}
+            return {
+                "stage_submission": TicketAnswers(
+                    stage_report=StageReport(
+                        concerns={}, dimension_checks=None, unticketed_changes={}
+                    ),
+                    responses={},
+                )
+            }
         self.ticket_verifier.reset(state["reconstruction"])
         previous = state.get("interpretation_state") or {}
         instruction = self.instructions.build(

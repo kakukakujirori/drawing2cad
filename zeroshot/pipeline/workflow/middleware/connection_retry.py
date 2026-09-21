@@ -98,25 +98,22 @@ def report_model_retry(
     )
     if status is not None:
         payload["status_code"] = status
-    if isinstance(error, OpenRouterError):
-        data = getattr(error, "data", None)
-        metadata = getattr(getattr(data, "error", None), "metadata", None)
-        if isinstance(metadata, dict):
-            provider_error = {}
-            for name in ("provider_name", "raw"):
-                value = metadata.get(name)
-                if value is None:
-                    continue
-                if isinstance(value, str):
-                    try:
-                        value = json.loads(value)
-                    except ValueError:
-                        pass
-                value = _provider_error_detail(value)
-                text = value if isinstance(value, str) else json.dumps(value)
-                provider_error[name] = text[:4000]
-            if provider_error:
-                payload["provider_error"] = provider_error
+    if isinstance(error, OpenRouterError) and (metadata := _openrouter_metadata(error)):
+        provider_error = {}
+        for name in ("provider_name", "error_type", "provider_code", "raw"):
+            value = metadata.get(name)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    pass
+            value = _provider_error_detail(value)
+            text = value if isinstance(value, str) else json.dumps(value)
+            provider_error[name] = text[:4000]
+        if provider_error:
+            payload["provider_error"] = provider_error
     payload.update(details or {})
     if stream_writer is None:
         try:
@@ -188,6 +185,25 @@ def _openrouter_stream_status(exception: Exception) -> int | None:
     return int(match[1]) if match else None
 
 
+# These failures can clear without changing the request.
+# https://openrouter.ai/docs/api_reference/errors-and-debugging#typed-error-codes
+_RETRYABLE_OPENROUTER_TYPES = frozenset(
+    {
+        "rate_limit_exceeded",
+        "provider_overloaded",
+        "provider_unavailable",
+        "server",
+        "timeout",
+    }
+)
+
+
+def _openrouter_metadata(error: OpenRouterError) -> dict[str, Any]:
+    data = getattr(error, "data", None)
+    metadata = getattr(getattr(data, "error", None), "metadata", None)
+    return metadata if isinstance(metadata, dict) else {}
+
+
 def is_retryable_model_error(exception: Exception) -> bool:
     """Whether to re-issue this call. SDK retries are off, so this is the policy.
 
@@ -201,7 +217,14 @@ def is_retryable_model_error(exception: Exception) -> bool:
         return True
     if isinstance(exception, APIConnectionError):
         return True
+    if isinstance(exception, OpenRouterError):
+        error_type = _openrouter_metadata(exception).get("error_type")
+        if isinstance(error_type, str) and error_type and error_type != "unmapped":
+            # Known permanent failures and unfamiliar types must not be retried
+            # merely because their HTTP status suggests a transient failure.
+            return error_type in _RETRYABLE_OPENROUTER_TYPES
     if isinstance(exception, (APIStatusError, OpenRouterError)):
+        # Missing/unmapped classification retains the HTTP policy, including no 400 retry.
         return exception.status_code == 429 or exception.status_code >= 500
     return isinstance(
         exception,

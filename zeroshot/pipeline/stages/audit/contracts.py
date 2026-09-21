@@ -54,7 +54,9 @@ def _valid_member_name(stage: ReasoningStage, name: str) -> bool:
 class StageOutputRef(BaseModel):
     """A whole reasoning-stage output or one stable named member within it."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
     stage: ReasoningStage = Field(
         ...,
@@ -82,7 +84,9 @@ class StageOutputRef(BaseModel):
 class RevisionRequest(BaseModel):
     """The change one finding requires at the root its backtrace reaches."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
     action: RevisionAction = Field(
         ...,
@@ -202,7 +206,9 @@ class RevisionRequest(BaseModel):
 class CausalHop(BaseModel):
     """One reverse step from an observed downstream effect to its cause."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
     effect: StageOutputRef = Field(
         ...,
@@ -238,7 +244,12 @@ class CausalHop(BaseModel):
 class AuditRegion(BaseModel):
     """Where a defect is visible: one drawing in the workspace, and where to look."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+    model_config = ConfigDict(
+        extra="ignore",
+        frozen=True,
+        allow_inf_nan=False,
+        json_schema_extra={"additionalProperties": False},
+    )
 
     file: str = Field(
         ...,
@@ -268,7 +279,9 @@ class AuditRegion(BaseModel):
 class AuditFinding(BaseModel):
     """One material defect, its evidence, and the revision it requires."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
     name: str = Field(
         ...,
@@ -393,7 +406,9 @@ class TicketReview(BaseModel):
     Keyed by the ticket it checks, so the ticket cannot be left out.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
     summary: str = Field(
         ...,
@@ -424,7 +439,9 @@ class ConcernReview(BaseModel):
     Keyed by the concern it answers, so the concern cannot be left out.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
     finding_name: str | None = Field(
         ...,

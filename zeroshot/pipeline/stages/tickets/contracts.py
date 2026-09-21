@@ -161,10 +161,12 @@ def tickets_assigned_to(
 class StageReport(BaseModel):
     """Stage-wide observations stored once, separately from ticket responses."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
     concerns: dict[str, str] = Field(
-        default_factory=dict,
+        ...,
         description=(
             "Additional unresolved issues and important provisional choices "
             "your assigned-ticket responses do not already explain, one entry "
@@ -181,7 +183,7 @@ class StageReport(BaseModel):
         ),
     )
     dimension_checks: dict[str, str] | None = Field(
-        default=None,
+        ...,
         description=(
             "Coding only: one entry for every dim_ name in the current "
             "interpretation, including unreadable values and equal values under "
@@ -194,7 +196,7 @@ class StageReport(BaseModel):
         ),
     )
     unticketed_changes: dict[str, str] = Field(
-        default_factory=dict,
+        ...,
         description=(
             "Changes your tickets did not ask for, each with its reason. Use a "
             "member name as the key: datum, view_..., dim_..., sem_..., op_... or "
@@ -246,8 +248,12 @@ class TicketAnswers(Submission):
         ),
     )
     stage_report: StageReport = Field(
-        default_factory=StageReport,
-        description="Stage-wide observations and dimension checks.",
+        ...,
+        description=(
+            "Stage-wide observations and dimension checks. Include every field "
+            "even when empty: concerns={}, unticketed_changes={}, and "
+            "dimension_checks=null outside coding."
+        ),
     )
 
     @field_validator("responses")

@@ -221,6 +221,7 @@ _RECONSTRUCTION = ReconstructionHistory(
             verification=_VERIFICATION,
             stage_reports={
                 PipelineStage.CODING: StageReport(
+                    unticketed_changes={},
                     concerns={"concern_boss": "Check the boss."},
                     dimension_checks=_DIMENSION_CHECKS,
                 )
@@ -230,13 +231,17 @@ _RECONSTRUCTION = ReconstructionHistory(
 )
 
 _INTERPRETATION_SUBMISSION = TicketAnswers(
+    stage_report=StageReport(concerns={}, dimension_checks=None, unticketed_changes={}),
     responses={"ticket_initial": "established sem_feature_1 and sem_feature_2"},
 )
 _OPERATION_SUBMISSION = TicketAnswers(
+    stage_report=StageReport(concerns={}, dimension_checks=None, unticketed_changes={}),
     responses={"ticket_initial": "established op_base"},
 )
 _CODING_SUBMISSION = TicketAnswers(
-    stage_report=StageReport(dimension_checks=_DIMENSION_CHECKS),
+    stage_report=StageReport(
+        concerns={}, unticketed_changes={}, dimension_checks=_DIMENSION_CHECKS
+    ),
     responses={"ticket_initial": "implemented ret_base and result"},
 )
 

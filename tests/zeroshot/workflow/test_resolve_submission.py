@@ -224,6 +224,7 @@ def test_ticket_summary_and_stage_report_references_resolve_without_mutating_sub
             "ticket_initial": "Kept sem_bore.radius despite the ticket's ambiguity."
         },
         stage_report=StageReport(
+            unticketed_changes={},
             concerns={
                 "concern_checks": "Check dim_diameter.quantity and sem_bore.center."
             },

@@ -16,7 +16,7 @@ from zeroshot.pipeline.stages.operations.contracts import (
 )
 from zeroshot.pipeline.stages.operations.stage import create_operation_stage
 from zeroshot.pipeline.stages.operations.verify import OperationPlanVerifier
-from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
+from zeroshot.pipeline.stages.tickets.contracts import StageReport, TicketAnswers
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.workflow.components.agent import create_agent
@@ -25,7 +25,14 @@ from zeroshot.pipeline.workflow.lifecycle import (
     start_reconstruction,
 )
 
-_ANSWER = {"responses": {"ticket_initial": "Established op_base."}}
+_ANSWER = {
+    "stage_report": {
+        "concerns": {},
+        "dimension_checks": None,
+        "unticketed_changes": {},
+    },
+    "responses": {"ticket_initial": "Established op_base."},
+}
 
 
 def _plan(*, builds: str = "sem_feature_1") -> OperationPlan:
@@ -49,7 +56,14 @@ def _interpreted_run(tmp_path):
     return source, advance_reconstruction(
         start_reconstruction("run_plan", "Reconstruct the part.", source),
         TicketAnswers.model_validate(
-            {"responses": {"ticket_initial": "Established sem_feature_1."}}
+            {
+                "stage_report": {
+                    "concerns": {},
+                    "dimension_checks": None,
+                    "unticketed_changes": {},
+                },
+                "responses": {"ticket_initial": "Established sem_feature_1."},
+            }
         ),
         workspace_output=interpretation("a plate"),
     )
@@ -154,7 +168,12 @@ def test_an_unassigned_stage_answers_nothing_and_writes_no_plan(tmp_path):
     stage = _stage([], workdir, source, model)
 
     assert stage.run({"reconstruction": run}, {}) == {
-        "stage_submission": TicketAnswers(responses={})
+        "stage_submission": TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
+            responses={},
+        )
     }
     assert model.received_messages == []
     # Round zero has no preceding plan to seed, so the model creates the file.

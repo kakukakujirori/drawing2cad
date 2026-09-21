@@ -16,6 +16,7 @@ from zeroshot.pipeline.stages._base.prompt import (
 from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.operations.verify import OperationPlanVerifier
 from zeroshot.pipeline.stages.tickets.contracts import (
+    StageReport,
     TicketAnswers,
     tickets_assigned_to,
 )
@@ -55,7 +56,14 @@ class OperationStage:
             )
             self.middleware.reset()
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.OPERATIONS):
-            return {"stage_submission": TicketAnswers(responses={})}
+            return {
+                "stage_submission": TicketAnswers(
+                    stage_report=StageReport(
+                        concerns={}, dimension_checks=None, unticketed_changes={}
+                    ),
+                    responses={},
+                )
+            }
         self.ticket_verifier.reset(state["reconstruction"])
 
         previous = state.get("operations_state") or {}

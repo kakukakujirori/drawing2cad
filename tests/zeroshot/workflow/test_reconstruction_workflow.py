@@ -171,7 +171,12 @@ def _stage_responses(
 def _reread(history: ReconstructionHistory) -> ReconstructionHistory:
     return advance_reconstruction(
         history,
-        TicketAnswers(responses=_stage_responses(history, "interpretation")),
+        TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
+            responses=_stage_responses(history, "interpretation"),
+        ),
         workspace_output=interpretation_baseline(history)
         or interpretation("the base", "the hole"),
     )
@@ -186,12 +191,22 @@ def _completed_run(
     )
     history = advance_reconstruction(
         history,
-        TicketAnswers(responses=_stage_responses(history, "interpretation")),
+        TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
+            responses=_stage_responses(history, "interpretation"),
+        ),
         workspace_output=interpretation("the base", "the hole"),
     )
     history = advance_reconstruction(
         history,
-        TicketAnswers(responses=_stage_responses(history, "operations")),
+        TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
+            responses=_stage_responses(history, "operations"),
+        ),
         workspace_output=_operations(),
     )
     verification = verification or VerifyOutputResult(
@@ -203,7 +218,9 @@ def _completed_run(
         history,
         TicketAnswers(
             responses=_stage_responses(history, "coding"),
-            stage_report=StageReport(dimension_checks={}),
+            stage_report=StageReport(
+                concerns={}, unticketed_changes={}, dimension_checks={}
+            ),
         ),
         workspace_output=verification,
     )
@@ -264,7 +281,9 @@ def _concerned_snapshot() -> ReconstructionSnapshot:
     snapshot = _snapshot()
     snapshot.stage_reports = {
         PipelineStage.INTERPRETATION: StageReport(
-            concerns={"concern_web_thickness": "The web thickness is estimated."}
+            dimension_checks=None,
+            unticketed_changes={},
+            concerns={"concern_web_thickness": "The web thickness is estimated."},
         )
     }
     return snapshot
@@ -305,6 +324,7 @@ def test_a_concern_may_be_escalated_against_another_stage() -> None:
     snapshot = _snapshot()
     snapshot.stage_reports = {
         PipelineStage.CODING: StageReport(
+            unticketed_changes={},
             concerns={"concern_bore_diameter": "sem_bore looks too wide."},
             dimension_checks={},
         )
@@ -537,7 +557,12 @@ def test_coding_without_readable_source_still_completes_the_round() -> None:
 def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
     original_json = run.model_dump_json()
-    answers = TicketAnswers(responses=_stage_responses(run, "interpretation"))
+    answers = TicketAnswers(
+        stage_report=StageReport(
+            concerns={}, dimension_checks=None, unticketed_changes={}
+        ),
+        responses=_stage_responses(run, "interpretation"),
+    )
 
     with pytest.raises(
         SubmissionValidationError, match="verified DrawingInterpretation"
@@ -570,6 +595,9 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     advanced = advance_reconstruction(
         run,
         TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
             responses=responses,
         ),
         workspace_output=interpretation("the base", "the hole"),
@@ -611,6 +639,9 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     advanced = advance_reconstruction(
         run,
         TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
             responses={
                 ticket.ticket_id: "Restated sem_feature_1.radius."
                 for ticket in current.open_tickets
@@ -765,7 +796,12 @@ def test_a_revision_round_replaces_the_complete_interpretation() -> None:
     )
     advanced = advance_reconstruction(
         run,
-        TicketAnswers(responses=_stage_responses(run, "interpretation")),
+        TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
+            responses=_stage_responses(run, "interpretation"),
+        ),
         workspace_output=revised,
     )
     current = advanced.snapshots[-1].interpretation

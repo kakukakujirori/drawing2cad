@@ -81,6 +81,9 @@ def _ticket_response(stage: str, summary: str) -> dict[str, str]:
 
 _A_READING = AIMessage(
     content=TicketAnswers(
+        stage_report=StageReport(
+            concerns={}, dimension_checks=None, unticketed_changes={}
+        ),
         responses=_ticket_response("interpretation", "Established sem_feature_1."),
     ).model_dump_json()
 )
@@ -173,6 +176,9 @@ def _operations_stage():
         ],
     )
     submission = TicketAnswers(
+        stage_report=StageReport(
+            concerns={}, dimension_checks=None, unticketed_changes={}
+        ),
         responses=_ticket_response("operations", "Established op_base."),
     )
     return _agent(
@@ -206,7 +212,9 @@ def _writing_model(call_id: str = "call-write-model") -> AIMessage:
 _CODING_ANSWER = AIMessage(
     content=TicketAnswers(
         responses=_ticket_response("coding", "Implemented ret_base and result."),
-        stage_report=StageReport(dimension_checks={}),
+        stage_report=StageReport(
+            concerns={}, unticketed_changes={}, dimension_checks={}
+        ),
     ).model_dump_json()
 )
 
@@ -246,6 +254,9 @@ def _verified_resume_run():
     run = advance_reconstruction(
         run,
         TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
             responses=_ticket_response("interpretation", "Established sem_feature_1."),
         ),
         workspace_output=interpretation("a box"),
@@ -253,6 +264,9 @@ def _verified_resume_run():
     run = advance_reconstruction(
         run,
         TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
             responses=_ticket_response("operations", "Established op_base."),
         ),
         workspace_output=_A_PLAN,
@@ -261,7 +275,9 @@ def _verified_resume_run():
         run,
         TicketAnswers(
             responses=_ticket_response("coding", "Implemented ret_base and result."),
-            stage_report=StageReport(dimension_checks={}),
+            stage_report=StageReport(
+                concerns={}, unticketed_changes={}, dimension_checks={}
+            ),
         ),
         workspace_output=VerifyOutputResult(
             verification_id="007",
@@ -435,6 +451,9 @@ def test_resume_restores_drawing_stage_crops(
     run = advance_reconstruction(
         run,
         TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
             responses=_ticket_response("interpretation", "Read view_front."),
         ),
         workspace_output=interpretation(

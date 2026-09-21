@@ -21,13 +21,15 @@ def _decoded(value: object) -> object:
 class Submission(BaseModel):
     """A stage's structured answer, parsed from what the provider delivered.
 
-    A tool call arrives with a nested member stringified often enough to
-    matter: the answer is whole and only its encoding is wrong. Rejecting it
-    costs a round trip, and an author shown its own report back rewrites it
-    from memory and breaks a different part.
+    Unknown fields are ignored; declared fields remain required and validated.
+    A stringified JSON member is decoded without asking the model to rewrite
+    the whole answer.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    # Request only declared fields; tolerate extras in the returned answer.
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
     @model_validator(mode="wrap")
     @classmethod

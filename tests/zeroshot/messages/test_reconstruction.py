@@ -1,11 +1,16 @@
+import json
+from copy import deepcopy
+
 import pytest
 from pydantic import ValidationError
 
 from tests.zeroshot.contracts import answered, drawing, evidence, interpretation
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
+    AuditReport,
     RevisionRequest,
     StageOutputRef,
+    TicketReview,
 )
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import (
@@ -126,26 +131,38 @@ def test_a_stage_carries_ticket_answers_and_optional_additional_concerns() -> No
 
     submission = TicketAnswers(
         responses=responses,
-        stage_report=StageReport(dimension_checks={}),
+        stage_report=StageReport(
+            concerns={}, unticketed_changes={}, dimension_checks={}
+        ),
     )
 
     assert submission.responses == responses
     assert submission.stage_report.concerns == {}
     assert submission.stage_report.dimension_checks == {}
-    assert submission.stage_report == StageReport(dimension_checks={})
+    assert submission.stage_report == StageReport(
+        concerns={}, unticketed_changes={}, dimension_checks={}
+    )
     assert set(TicketAnswers.model_fields) == {
         "responses",
         "stage_report",
     }
     for revision in ("edits", "deleted", "rationale"):
-        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-            TicketAnswers.model_validate({"responses": responses, revision: "anything"})
+        assert (
+            TicketAnswers.model_validate(
+                {**submission.model_dump(), revision: "anything"}
+            )
+            == submission
+        )
 
 
 def test_a_member_the_provider_stringified_is_read_rather_than_refused() -> None:
     """GLM sent `stage_report` as JSON text; the answer was whole, its encoding was not."""
     responses = answered(_responses("ticket_bootstrap", "coding"))
-    report = StageReport(concerns={"concern_waist": "the profile must change"})
+    report = StageReport(
+        dimension_checks=None,
+        unticketed_changes={},
+        concerns={"concern_waist": "the profile must change"},
+    )
 
     submission = TicketAnswers.model_validate(
         {"responses": responses, "stage_report": report.model_dump_json()}
@@ -154,8 +171,63 @@ def test_a_member_the_provider_stringified_is_read_rather_than_refused() -> None
     assert submission.stage_report == report
     assert submission.responses == responses
     # A member that is genuinely wrong still fails as itself.
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        TicketAnswers.model_validate({"responses": responses, "edits": '{"a": 1}'})
+    with pytest.raises(ValidationError, match="dictionary"):
+        TicketAnswers.model_validate({"responses": responses, "stage_report": "[]"})
+
+
+@pytest.mark.parametrize("stringified", [False, True])
+def test_extra_audit_fields_are_ignored_without_changing_declared_content(
+    stringified: bool,
+) -> None:
+    """GLM adds type labels to findings and null type fields to references."""
+    report = AuditReport(
+        concern_reviews={},
+        accepted=False,
+        ticket_reviews={"ticket_initial": TicketReview(summary="Wrong.", solved=False)},
+        findings=[
+            _finding().model_copy(update={"related_ticket_ids": ["ticket_initial"]})
+        ],
+    )
+    submitted = report.model_dump()
+    submitted["findings"][0]["type"] = "wrong_geometry"
+    submitted["findings"][0]["revision_request"]["type"] = "object"
+    submitted["findings"][0]["revision_request"]["targets"][0]["type"] = None
+    if stringified:
+        submitted["findings"] = json.dumps(submitted["findings"])
+    original = deepcopy(submitted)
+
+    assert AuditReport.model_validate(submitted) == report
+    assert submitted == original
+
+    submitted["accepted"] = True
+    with pytest.raises(ValidationError, match="accepted must be true"):
+        AuditReport.model_validate(submitted)
+    submitted["accepted"] = False
+
+    if stringified:
+        submitted["findings"] = json.loads(submitted["findings"])
+    submitted["findings"][0]["severity"] = "high"
+    assert AuditReport.model_validate(submitted) == report
+
+    target = submitted["findings"][0]["revision_request"]["targets"][0]
+    target["nmae"] = target.pop("name")
+    with pytest.raises(ValidationError, match="Field required"):
+        AuditReport.model_validate(submitted)
+
+
+def test_schema_words_used_as_dictionary_keys_are_preserved() -> None:
+    submission = TicketAnswers.model_validate(
+        {
+            "type": "object",
+            "responses": {"type": "Keep this response."},
+            "stage_report": {
+                "concerns": {},
+                "dimension_checks": None,
+                "unticketed_changes": {},
+            },
+        }
+    )
+    assert submission.responses == {"type": "Keep this response."}
 
 
 def test_interpretation_carries_ticket_answers_while_json_carries_the_artifact() -> (
@@ -163,7 +235,12 @@ def test_interpretation_carries_ticket_answers_while_json_carries_the_artifact()
 ):
     responses = answered(_responses("ticket_bootstrap", "interpretation"))
 
-    submission = TicketAnswers(responses=responses)
+    submission = TicketAnswers(
+        stage_report=StageReport(
+            concerns={}, dimension_checks=None, unticketed_changes={}
+        ),
+        responses=responses,
+    )
 
     assert submission.responses == responses
     assert submission.stage_report.dimension_checks is None
@@ -173,14 +250,21 @@ def test_interpretation_carries_ticket_answers_while_json_carries_the_artifact()
     }
 
 
-def test_a_stage_submission_rejects_extra_fields() -> None:
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        TicketAnswers.model_validate(
-            {
-                "responses": answered(_responses("ticket_bootstrap", "interpretation")),
-                "artifact": _interpretation(),
-            }
-        )
+def test_a_stage_submission_does_not_keep_extra_fields() -> None:
+    submission = TicketAnswers.model_validate(
+        {
+            "responses": answered(_responses("ticket_bootstrap", "interpretation")),
+            "stage_report": {
+                "concerns": {},
+                "dimension_checks": None,
+                "unticketed_changes": {},
+                "type": "empty",
+            },
+            "artifact": _interpretation(),
+        }
+    )
+    assert "artifact" not in submission.model_dump()
+    assert "type" not in submission.stage_report.model_dump()
 
 
 def test_the_shared_submission_schema_is_provider_safe() -> None:
@@ -194,18 +278,34 @@ def test_dimension_checks_require_nonblank_explanations(explanation):
     with pytest.raises(ValidationError, match="dim_width.*must not be blank"):
         TicketAnswers(
             responses={},
-            stage_report=StageReport(dimension_checks={"dim_width": explanation}),
+            stage_report=StageReport(
+                concerns={},
+                unticketed_changes={},
+                dimension_checks={"dim_width": explanation},
+            ),
         )
 
 
-def test_old_reports_do_not_claim_dimension_checks():
-    assert (
-        StageReport.model_validate(
-            {"concerns": {"concern_web": "A prior concern."}}
-        ).dimension_checks
-        is None
+@pytest.mark.parametrize(
+    "missing", ["stage_report", "concerns", "dimension_checks", "unticketed_changes"]
+)
+def test_missing_or_misspelled_reports_are_not_silently_empty(missing):
+    payload = {
+        "responses": {},
+        "stage_report": {
+            "concerns": {},
+            "dimension_checks": None,
+            "unticketed_changes": {},
+        },
+    }
+    holder = payload if missing == "stage_report" else payload["stage_report"]
+    holder[missing + "_typo"] = holder.pop(missing)
+    with pytest.raises(ValidationError) as raised:
+        TicketAnswers.model_validate(payload)
+    assert any(
+        e["type"] == "missing" and e["loc"][-1] == missing
+        for e in raised.value.errors()
     )
-    assert StageReport(dimension_checks={}).dimension_checks == {}
 
 
 def test_a_round_checkpoint_requires_every_ticket_response_in_stage_order() -> None:
@@ -322,7 +422,13 @@ def test_snapshot_rejects_an_artifact_from_an_unfinished_stage(
 @pytest.mark.parametrize("stage", ["interpretation", "operations", "coding"])
 def test_snapshot_rejects_reports_from_unfinished_stages(stage):
     data = _snapshot().model_dump()
-    data["stage_reports"] = {stage: {"concerns": {"concern_web": "A concern."}}}
+    data["stage_reports"] = {
+        stage: {
+            "concerns": {"concern_web": "A concern."},
+            "dimension_checks": None,
+            "unticketed_changes": {},
+        }
+    }
     with pytest.raises(ValidationError, match="unfinished stages.*stage_reports"):
         ReconstructionSnapshot.model_validate(data)
 
@@ -439,4 +545,12 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
 
 
 def test_a_stage_with_no_ticket_of_its_own_answers_nothing() -> None:
-    assert TicketAnswers(responses={}).responses == {}
+    assert (
+        TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
+            responses={},
+        ).responses
+        == {}
+    )

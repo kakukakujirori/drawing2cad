@@ -17,7 +17,9 @@ def test_answers_that_fit_the_round_need_no_feedback() -> None:
     verifier.reset(_planned_run())
     answers = TicketAnswers(
         responses=_answer_for("ticket_initial", PipelineStage.CODING),
-        stage_report=StageReport(dimension_checks={}),
+        stage_report=StageReport(
+            concerns={}, unticketed_changes={}, dimension_checks={}
+        ),
     )
 
     assert verifier.feedback(answers) == []
@@ -27,8 +29,11 @@ def test_every_contradiction_in_the_answers_is_explained_at_once() -> None:
     verifier = TicketVerifier(lambda: None)
     verifier.reset(_planned_run())
     copied = TicketAnswers(
+        stage_report=StageReport(
+            concerns={}, dimension_checks=None, unticketed_changes={}
+        ),
         responses=_answer_for("ticket_initial", PipelineStage.CODING)
-        | _answer_for("ticket_absent", PipelineStage.CODING)
+        | _answer_for("ticket_absent", PipelineStage.CODING),
     )
 
     (block,) = verifier.feedback(copied)
@@ -44,7 +49,12 @@ def test_changes_outside_the_tickets_are_explained_against_the_artifact() -> Non
     verifier.reset(run)
 
     (block,) = verifier.feedback(
-        TicketAnswers(responses=_stage_responses(run, "operations"))
+        TicketAnswers(
+            stage_report=StageReport(
+                concerns={}, dimension_checks=None, unticketed_changes={}
+            ),
+            responses=_stage_responses(run, "operations"),
+        )
     )
 
     assert "op_bore (added), op_hole (removed)" in block["text"]

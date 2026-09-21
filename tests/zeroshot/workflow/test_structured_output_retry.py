@@ -11,6 +11,7 @@ import json
 import httpx
 import pytest
 from langchain_core.messages import AIMessage
+from openai import APIStatusError
 from openrouter.errors.badrequestresponse_error import (
     BadRequestResponseError,
     BadRequestResponseErrorData,
@@ -294,7 +295,11 @@ def test_a_non_valueerror_carrying_the_same_text_is_not_matched() -> None:
     )
 
 
-def test_openrouter_400_records_bounded_provider_details_without_retrying():
+def test_openrouter_400_records_bounded_provider_details(monkeypatch):
+    monkeypatch.setattr(
+        "zeroshot.pipeline.workflow.middleware.connection_retry.time.sleep",
+        lambda _: None,
+    )
     data = BadRequestResponseErrorData.model_validate(
         {
             "error": {
@@ -302,6 +307,8 @@ def test_openrouter_400_records_bounded_provider_details_without_retrying():
                 "message": "Provider returned error",
                 "metadata": {
                     "provider_name": "ExampleProvider",
+                    "error_type": "invalid_request",
+                    "provider_code": "tool_call_mismatch",
                     "raw": json.dumps(
                         {
                             "authorization": "provider-secret",
@@ -329,10 +336,14 @@ def test_openrouter_400_records_bounded_provider_details_without_retrying():
         ModelConnectionRetry(5, "interpreter", events.append).invoke(fail)
 
     assert calls == 1
+    assert len(events) == 1
+    assert not events[-1]["model_retry"]["retrying"]
     event = events[0]["model_retry"]
     assert event["status_code"] == 400 and not event["retrying"]
     assert event["error"] == "Provider returned error"
     assert event["provider_error"]["provider_name"] == "ExampleProvider"
+    assert event["provider_error"]["error_type"] == "invalid_request"
+    assert event["provider_error"]["provider_code"] == "tool_call_mismatch"
     raw = event["provider_error"]["raw"]
     assert "Unmatched tool call" in raw and len(raw) == 4000
     assert not any(
@@ -345,6 +356,167 @@ def test_openrouter_400_records_bounded_provider_details_without_retrying():
             "header-secret",
             "private-body",
         )
+    )
+
+
+def _bad_request(
+    message: str,
+    raw: str = "{}",
+    *,
+    error_type: object = None,
+    status: int = 400,
+) -> BadRequestResponseError:
+    data = BadRequestResponseErrorData.model_validate(
+        {
+            "error": {
+                "code": status,
+                "message": message,
+                "metadata": {"raw": raw, "error_type": error_type},
+            }
+        }
+    )
+    return BadRequestResponseError(data, httpx.Response(status))
+
+
+def test_an_unclassified_400_is_not_assumed_transient() -> None:
+    """ditech 015 has no classification or evidence that a resend would recover."""
+    relayed = _bad_request(
+        "Provider returned error",
+        '{"errors": [{"message": "AiError: mean must have 1 elements", "code": 8007}]}',
+    )
+
+    assert not is_retryable_model_error(relayed)
+    # A 400 OpenRouter raised about the request itself is still ours to fix.
+    assert not is_retryable_model_error(_bad_request("messages: invalid role 'tool'"))
+    assert not is_retryable_model_error(
+        _bad_request("Invalid request: provider returned error in messages")
+    )
+    assert not is_retryable_model_error(
+        APIStatusError(
+            "Provider returned error",
+            response=httpx.Response(
+                400, request=httpx.Request("POST", "https://example.com")
+            ),
+            body=None,
+        )
+    )
+
+
+@pytest.mark.parametrize("status", [400, 429, 503])
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        "rate_limit_exceeded",
+        "provider_overloaded",
+        "provider_unavailable",
+        "server",
+        "timeout",
+    ],
+)
+def test_transient_provider_types_are_retried_independent_of_wording(
+    status, error_type
+):
+    assert is_retryable_model_error(
+        _bad_request("Wording may change", error_type=error_type, status=status)
+    )
+
+
+@pytest.mark.parametrize("status", [400, 503])
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        "context_length_exceeded",
+        "max_tokens_exceeded",
+        "token_limit_exceeded",
+        "string_too_long",
+        "authentication",
+        "permission_denied",
+        "payment_required",
+        "invalid_request",
+        "invalid_prompt",
+        "not_found",
+        "precondition_failed",
+        "payload_too_large",
+        "unprocessable",
+        "content_policy_violation",
+        "refusal",
+        "invalid_image",
+        "image_too_large",
+        "image_too_small",
+        "unsupported_image_format",
+        "image_not_found",
+        "image_download_failed",
+        "future_unknown_type",
+    ],
+)
+def test_other_provider_types_are_not_retried_even_with_a_server_status(
+    status, error_type
+):
+    assert not is_retryable_model_error(
+        _bad_request("Provider returned error", error_type=error_type, status=status)
+    )
+
+
+@pytest.mark.parametrize("error_type", [None, "", "unmapped", {}, []])
+@pytest.mark.parametrize(
+    ("status", "retryable"), [(400, False), (429, True), (503, True)]
+)
+def test_missing_or_unmapped_provider_types_use_the_http_status(
+    error_type, status, retryable
+):
+    assert (
+        is_retryable_model_error(
+            _bad_request(
+                "Provider returned error", error_type=error_type, status=status
+            )
+        )
+        is retryable
+    )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("recovers", [False, True])
+def test_transient_400_retries_recover_or_stop_at_the_budget(
+    monkeypatch, asynchronous, recovers
+) -> None:
+    import asyncio
+
+    monkeypatch.setattr(
+        "zeroshot.pipeline.workflow.middleware.connection_retry._backoff_delay",
+        lambda _: 0,
+    )
+    events = []
+    calls = 0
+
+    def call():
+        nonlocal calls
+        calls += 1
+        if calls == 1 or not recovers:
+            raise _bad_request(
+                "Upstream temporarily unavailable", error_type="provider_unavailable"
+            )
+        return "answer"
+
+    async def acall():
+        return call()
+
+    retry = ModelConnectionRetry(1, "auditor", events.append)
+
+    def invoke():
+        return asyncio.run(retry.ainvoke(acall)) if asynchronous else retry.invoke(call)
+
+    if recovers:
+        assert invoke() == "answer"
+        assert len(events) == 1
+    else:
+        with pytest.raises(BadRequestResponseError):
+            invoke()
+        assert len(events) == 2 and not events[-1]["model_retry"]["retrying"]
+    assert calls == 2
+    assert events[0]["model_retry"]["retrying"]
+    assert (
+        events[0]["model_retry"]["provider_error"]["error_type"]
+        == "provider_unavailable"
     )
 
 

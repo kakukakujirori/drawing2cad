@@ -27,9 +27,14 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
     verifier, candidate, _ = _case(tmp_path)
     drawing = [register_view("view_page", View.FULL_PAGE, tmp_path / "source.png")]
     response = {
+        "stage_report": {
+            "concerns": {},
+            "dimension_checks": None,
+            "unticketed_changes": {},
+        },
         "responses": {
             "ticket_initial": "Read view_front and localized sem_pin_upper_left."
-        }
+        },
     }
 
     @tool("write_interpretation")
@@ -118,9 +123,14 @@ def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
     )
     candidate = DrawingInterpretation.model_validate(data)
     response = {
+        "stage_report": {
+            "concerns": {},
+            "dimension_checks": None,
+            "unticketed_changes": {},
+        },
         "responses": {
             "ticket_initial": "Interpreted view_front and view_detail in millimetres."
-        }
+        },
     }
 
     @tool("write_dxf_interpretation")

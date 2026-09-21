@@ -35,7 +35,14 @@ def _answer(
         history,
         TicketAnswers(
             responses=_stage_responses(history, stage),
-            stage_report=StageReport.model_validate(report),
+            stage_report=StageReport.model_validate(
+                {
+                    "concerns": {},
+                    "dimension_checks": None,
+                    "unticketed_changes": {},
+                    **report,
+                }
+            ),
         ),
         workspace_output=artifact,  # type: ignore[arg-type]
     )
