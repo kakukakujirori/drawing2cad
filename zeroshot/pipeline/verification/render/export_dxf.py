@@ -12,8 +12,13 @@ import math
 from pathlib import Path
 
 import ezdxf
-from ezdxf.addons.drawing.matplotlib import qsave
+from ezdxf import bbox
+from ezdxf.addons.drawing import Frontend, RenderContext
+from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+from ezdxf.addons.drawing.properties import LayoutProperties
 from ezdxf.layouts import Modelspace
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 
 from zeroshot.pipeline.verification.render._hlr import ProjectedEdges, ViewProjection
 
@@ -22,6 +27,8 @@ _TEMPLATE = Path(__file__).with_name("techdraw_template.dxf")
 # Enough to read a hole from, and small enough that several views in a message
 # stay affordable.
 _PNG_DPI = 100
+_PNG_SHORT_SIDE = 480
+_PNG_LONG_SIDE = 1600
 
 
 def _add_edges(
@@ -90,14 +97,31 @@ def export_view(dxf_path: Path, projection: ViewProjection, layer: str) -> None:
 
 
 def export_to_png(dxf_path: Path, image_path: Path | None = None) -> Path:
-    """Rasterise a written view, beside itself by default, black on white."""
+    """Rasterise a written view, beside itself by default, black on white.
+
+    The picture spans exactly the drawing's extents, so a pixel is one
+    coordinate. Matplotlib's own autoscale would pad that by 5% instead.
+    """
     image_path = image_path or Path(dxf_path).with_suffix(".png")
-    qsave(
-        ezdxf.readfile(dxf_path).modelspace(),
-        image_path,
-        bg="#FFFFFF",
-        fg="#000000",
-        dpi=_PNG_DPI,
-        backend="agg",
+    modelspace = ezdxf.readfile(dxf_path).modelspace()
+    extents = bbox.extents(modelspace)
+    width, height = extents.size.x, extents.size.y
+    pixels = min(
+        _PNG_SHORT_SIDE / min(width, height), _PNG_LONG_SIDE / max(width, height)
     )
+    figure = Figure(
+        figsize=(width * pixels / _PNG_DPI, height * pixels / _PNG_DPI),
+        dpi=_PNG_DPI,
+    )
+    FigureCanvasAgg(figure)
+    axes = figure.add_axes((0, 0, 1, 1))
+    axes.set_axis_off()
+    properties = LayoutProperties.from_layout(modelspace)
+    properties.set_colors("#FFFFFF", "#000000")
+    Frontend(
+        RenderContext(modelspace.doc), MatplotlibBackend(axes, adjust_figure=False)
+    ).draw_layout(modelspace, layout_properties=properties)
+    axes.set_xlim(extents.extmin.x, extents.extmax.x)
+    axes.set_ylim(extents.extmin.y, extents.extmax.y)
+    figure.savefig(image_path, dpi=_PNG_DPI, facecolor=axes.get_facecolor())
     return image_path

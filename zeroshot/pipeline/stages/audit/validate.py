@@ -22,18 +22,18 @@ from zeroshot.pipeline.stages.operations.contracts import Operation
 from zeroshot.pipeline.stages.resolve_refs import close_names
 from zeroshot.pipeline.stages.tickets.contracts import reported_concerns
 from zeroshot.pipeline.stages.types import PipelineStage
-from zeroshot.pipeline.verification import ExecutionStatus
+from zeroshot.pipeline.verification import AttemptStore, ExecutionStatus
 from zeroshot.pipeline.verification.check_program import program_output_names
 
 
 def validate_audit_report(
     report: AuditReport,
     snapshot: ReconstructionSnapshot,
-    workdir: SandboxWorkdir | None = None,
+    attempts: AttemptStore | None = None,
 ) -> None:
     """Check ticket coverage, verification, members, causal links and evidence.
 
-    Evidence is checked against the files themselves, so it needs `workdir`.
+    Evidence is checked against the files themselves, so it needs `attempts`.
     """
     # Acceptance requires a completed, successful build.
     if snapshot.last_completed_stage is not PipelineStage.CODING:
@@ -72,11 +72,10 @@ def validate_audit_report(
         PipelineStage.CODING: coding_names,
     }
     errors = [coding_error] if coding_error is not None else []
-    if workdir is not None:
-        # A build that failed drew nothing, and then there is nothing to measure.
-        drawn = any(workdir.host_bind_dir.glob("**/projection/*.dxf"))
+    if attempts is not None:
+        drawn = _drawings_of(snapshot, attempts)
         for finding in report.findings:
-            errors.extend(_evidence_errors(finding, workdir, drawn))
+            errors.extend(_evidence_errors(finding, attempts.workdir, drawn))
 
     # Existing references must resolve; proposed identities must not collide.
     errors.extend(_missing_reference_errors(references, known_members))
@@ -101,23 +100,50 @@ def validate_audit_report(
         raise SubmissionValidationError("\n".join(unique_errors))
 
 
+def _drawings_of(
+    snapshot: ReconstructionSnapshot, attempts: AttemptStore
+) -> PurePosixPath | None:
+    """Where this verification drew, or None when it drew nothing to measure."""
+    verification = snapshot.verification
+    if verification is None or verification.verification_id is None:
+        return None
+    attempt = attempts.sandbox_attempt_dir(
+        snapshot.round, "coding", verification.verification_id
+    )
+    host = attempts.workdir.sandbox_to_host_path(attempt)
+    return attempt if any(host.glob("**/projection/*.dxf")) else None
+
+
 def _evidence_errors(
-    finding: AuditFinding, workdir: SandboxWorkdir, drawn: bool
+    finding: AuditFinding, workdir: SandboxWorkdir, drawn: PurePosixPath | None
 ) -> list[str]:
     """Every region names a readable workspace drawing and lies inside it."""
     errors = []
     measured = False
     for index, region in enumerate(finding.evidence):
-        cited = PurePosixPath(region.file)
-        measured |= cited.suffix.lower() == ".dxf" and "projection" in cited.parts
+        # Whether the file was opened, which a misplaced box does not undo.
+        measured |= drawn is not None and _measures(region.file, workdir, drawn)
         if (error := _region_error(region, workdir)) is not None:
             errors.append(f"{finding.name}.evidence[{index}]: {error}")
-    if drawn and not measured:
+    if drawn is not None and not measured:
         errors.append(
             f"{finding.name}: cite at least one .dxf under a projection/ "
-            "directory, so the discrepancy is measured rather than eyeballed"
+            f"directory of {drawn}, so the discrepancy is measured on what "
+            "this build drew"
         )
     return errors
+
+
+def _measures(file: str, workdir: SandboxWorkdir, drawn: PurePosixPath) -> bool:
+    """A drawing this verification made, not an input or an older attempt."""
+    cited = PurePosixPath(file)
+    if not cited.is_absolute():
+        cited = workdir.sandbox_bind_dir / cited
+    return (
+        cited.suffix.lower() == ".dxf"
+        and cited.is_relative_to(drawn)
+        and "projection" in cited.parts
+    )
 
 
 def _region_error(region: AuditRegion, workdir: SandboxWorkdir) -> str | None:

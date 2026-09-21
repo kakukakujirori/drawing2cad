@@ -218,7 +218,7 @@ def _bounds_of(path: Path) -> _Box:
     if path.suffix.lower() == ".dxf":
         return read_dxf_frame(path)["box_mm"]
     with Image.open(path) as image:
-        bounds = (0.0, 0.0, *image.size)
+        bounds = (0, 0, *image.size)
         image.verify()
     return bounds
 

@@ -78,3 +78,36 @@ def test_every_region_keeps_the_findings_order(workspace: SandboxWorkdir) -> Non
         "evidence_0.png",
         "evidence_1.png",
     ]
+
+
+def test_a_dxf_crop_holds_the_shape_its_region_surrounds(
+    workspace: SandboxWorkdir,
+) -> None:
+    """The picture's frame is the drawing's own, not matplotlib's padded one."""
+    source = workspace.host_bind_dir / "projection" / "front.dxf"
+    document = ezdxf.readfile(source)
+    document.modelspace().add_circle((2, 10), 1.0)
+    document.saveas(source)
+
+    written = crop_evidence(
+        _finding(cite("projection/front.dxf", (0.5, 8.5, 3.5, 11.5))),
+        workspace.host_bind_dir / "tickets" / "ticket_001_bore",
+        workspace,
+    )
+
+    with Image.open(workspace.sandbox_to_host_path(written[0])) as crop:
+        darkest = min(crop.convert("L").tobytes())  # one byte per grey pixel
+    assert darkest < 128, "the circle the region surrounds is missing from the crop"
+
+
+def test_a_region_thinner_than_a_pixel_still_makes_a_picture(
+    workspace: SandboxWorkdir,
+) -> None:
+    written = crop_evidence(
+        _finding(cite("front.png", (5.1, 5.1, 5.4, 5.4))),
+        workspace.host_bind_dir / "tickets" / "ticket_001_bore",
+        workspace,
+    )
+
+    with Image.open(workspace.sandbox_to_host_path(written[0])) as crop:
+        assert crop.size == (1, 1)

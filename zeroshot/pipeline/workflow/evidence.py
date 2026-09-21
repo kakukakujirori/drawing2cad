@@ -4,6 +4,7 @@ The paths go on the ticket; the images themselves are never attached to a
 prompt, because every round would then pay for every ticket's pixels.
 """
 
+from math import ceil, floor
 from pathlib import Path
 
 import ezdxf
@@ -44,20 +45,24 @@ def _write_crop(source: Path, region: AuditRegion, destination: Path) -> None:
 def _pixels_of(
     region: AuditRegion, source: Path, size: tuple[int, int]
 ) -> tuple[int, int, int, int]:
-    """The region as pixels of its picture; a raster box is already in them.
+    """The region as whole pixels of its picture, never thinner than one.
 
-    A DXF is measured in millimetres up from its lower left, and its raster
-    spans exactly the extents, so the picture's own size gives the scale.
+    A raster box is already in pixels. A DXF is measured in the millimetres it
+    carries, and its picture spans exactly its extents.
     """
     x0, y0, x1, y1 = region.box
-    if source.suffix.lower() != ".dxf":
-        return (round(x0), round(y0), round(x1), round(y1))
-    extents = bbox.extents(ezdxf.readfile(source).modelspace())
-    x_scale = size[0] / extents.size.x
-    y_scale = size[1] / extents.size.y
+    if source.suffix.lower() == ".dxf":
+        extents = bbox.extents(ezdxf.readfile(source).modelspace())
+        x_scale = size[0] / extents.size.x
+        y_scale = size[1] / extents.size.y
+        x0, x1 = (x0 - extents.extmin.x) * x_scale, (x1 - extents.extmin.x) * x_scale
+        y0, y1 = (  # picture y runs down
+            size[1] - (y1 - extents.extmin.y) * y_scale,
+            size[1] - (y0 - extents.extmin.y) * y_scale,
+        )
     return (
-        round((x0 - extents.extmin.x) * x_scale),
-        round(size[1] - (y1 - extents.extmin.y) * y_scale),  # picture y runs down
-        round((x1 - extents.extmin.x) * x_scale),
-        round(size[1] - (y0 - extents.extmin.y) * y_scale),
+        max(floor(x0), 0),
+        max(floor(y0), 0),
+        min(ceil(x1), size[0]),
+        min(ceil(y1), size[1]),
     )

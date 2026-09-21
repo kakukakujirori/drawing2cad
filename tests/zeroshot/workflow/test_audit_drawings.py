@@ -1,6 +1,7 @@
 """Audit links through the interpretation, including direct missing-member tickets."""
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import ezdxf
 import pytest
@@ -29,7 +30,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     TicketResponse,
 )
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
-from zeroshot.pipeline.verification import ExecutionStatus
+from zeroshot.pipeline.verification import AttemptStore, ExecutionStatus
 
 
 def snapshot() -> ReconstructionSnapshot:
@@ -62,7 +63,9 @@ def snapshot() -> ReconstructionSnapshot:
             rationale="One bore.",
         ),
         program_source="ret_bore = object()\nresult = ret_bore\n",
-        verification=VerifyOutputResult(status=ExecutionStatus.VERIFIED, returncode=0),
+        verification=VerifyOutputResult(
+            verification_id="000", status=ExecutionStatus.VERIFIED, returncode=0
+        ),
     )
 
 
@@ -196,19 +199,27 @@ def test_feature_can_trace_through_a_dimension_to_another_view() -> None:
         )
 
 
+DRAWN = "attempts/round_000/coding/000/projection/front.dxf"
+
+
+def _draw_square(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = ezdxf.new()
+    document.modelspace().add_lwpolyline(
+        [(0, 0), (20, 0), (20, 20), (0, 20)], close=True
+    )
+    document.saveas(path)
+
+
 @pytest.fixture
-def workspace() -> Iterator[SandboxWorkdir]:
-    """A 20x20 input raster and a 20x20 projection of what was built."""
+def workspace() -> Iterator[AttemptStore]:
+    """A 20x20 input raster, and a 20x20 projection of what this build drew."""
     with SandboxWorkdir() as workdir:
         Image.new("RGB", (20, 20), "white").save(workdir.host_bind_dir / "front.png")
-        projection = workdir.host_bind_dir / "projection"
-        projection.mkdir()
-        document = ezdxf.new()
-        document.modelspace().add_lwpolyline(
-            [(0, 0), (20, 0), (20, 20), (0, 20)], close=True
-        )
-        document.saveas(projection / "front.dxf")
-        yield workdir
+        attempts = AttemptStore(workdir, lambda: 0)
+        attempts.issue("coding")
+        _draw_square(workdir.host_bind_dir / DRAWN)
+        yield attempts
 
 
 def cite(file: str, box: tuple[float, float, float, float]) -> AuditRegion:
@@ -216,13 +227,13 @@ def cite(file: str, box: tuple[float, float, float, float]) -> AuditRegion:
 
 
 def test_evidence_is_measured_on_the_files_it_names(
-    workspace: SandboxWorkdir,
+    workspace: AttemptStore,
 ) -> None:
     validate_audit_report(
         report(
             cites=[
                 cite("front.png", (2, 2, 8, 8)),
-                cite("projection/front.dxf", (2.0, 2.0, 8.0, 8.0)),
+                cite(DRAWN, (2.0, 2.0, 8.0, 8.0)),
             ],
             target="sem_bore",
         ),
@@ -234,14 +245,14 @@ def test_evidence_is_measured_on_the_files_it_names(
 @pytest.mark.parametrize(
     ("cited", "message"),
     [
-        (cite("projection/absent.dxf", (0, 0, 1, 1)), "does not exist"),
-        (cite("projection/front.dxf", (0, 0, 21, 1)), "lies outside"),
-        (cite("../escaped/projection/front.dxf", (0, 0, 1, 1)), "must not escape"),
-        (cite("projection/front.step", (0, 0, 1, 1)), "is not a drawing"),
+        (cite(DRAWN.replace("front", "absent"), (0, 0, 1, 1)), "does not exist"),
+        (cite(DRAWN, (0, 0, 21, 1)), "lies outside"),
+        (cite("../escaped/" + DRAWN, (0, 0, 1, 1)), "must not escape"),
+        (cite(DRAWN.replace(".dxf", ".step"), (0, 0, 1, 1)), "is not a drawing"),
     ],
 )
 def test_evidence_that_cannot_be_opened_and_measured_is_refused(
-    workspace: SandboxWorkdir, cited: AuditRegion, message: str
+    workspace: AttemptStore, cited: AuditRegion, message: str
 ) -> None:
     with pytest.raises(SubmissionValidationError, match=message):
         validate_audit_report(
@@ -250,7 +261,7 @@ def test_evidence_that_cannot_be_opened_and_measured_is_refused(
 
 
 def test_a_finding_measures_at_least_one_projection_dxf(
-    workspace: SandboxWorkdir,
+    workspace: AttemptStore,
 ) -> None:
     with pytest.raises(SubmissionValidationError, match="under a projection/"):
         validate_audit_report(
@@ -261,10 +272,41 @@ def test_a_finding_measures_at_least_one_projection_dxf(
 
 
 def test_an_audit_of_a_build_that_drew_nothing_still_reports_it() -> None:
-    with SandboxWorkdir() as bare:
-        Image.new("RGB", (20, 20), "white").save(bare.host_bind_dir / "front.png")
+    with SandboxWorkdir() as workdir:
+        Image.new("RGB", (20, 20), "white").save(workdir.host_bind_dir / "front.png")
+        attempts = AttemptStore(workdir, lambda: 0)
+        attempts.issue("coding")
         validate_audit_report(
             report(cites=[cite("front.png", (0, 0, 10, 10))], target="sem_bore"),
             snapshot(),
-            bare,
+            attempts,
         )
+
+
+def test_a_projection_of_an_earlier_attempt_does_not_measure_this_build(
+    workspace: AttemptStore,
+) -> None:
+    """Its shapes are a solid this audit is not reviewing."""
+    stale = DRAWN.replace("coding/000", "coding/001")
+    _draw_square(workspace.workdir.host_bind_dir / stale)
+    with pytest.raises(SubmissionValidationError, match="coding/000"):
+        validate_audit_report(
+            report(cites=[cite(stale, (2.0, 2.0, 8.0, 8.0))], target="sem_bore"),
+            snapshot(),
+            workspace,
+        )
+
+
+def test_a_misplaced_box_does_not_also_demand_the_projection_it_cites(
+    workspace: AttemptStore,
+) -> None:
+    """Citing the drawing and measuring it wrongly are two different mistakes."""
+    with pytest.raises(SubmissionValidationError) as refusal:
+        validate_audit_report(
+            report(cites=[cite(DRAWN, (0.0, 0.0, 21.0, 1.0))], target="sem_bore"),
+            snapshot(),
+            workspace,
+        )
+
+    assert "lies outside" in str(refusal.value)
+    assert "cite at least one" not in str(refusal.value)

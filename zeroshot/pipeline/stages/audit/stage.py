@@ -93,7 +93,7 @@ def create_audit_stage(
         output_schema=AuditReport,
         extra_middleware=[
             VerifyOnSubmitMiddleware(
-                partial(validate_audit_report, workdir=instructions.workdir)
+                partial(validate_audit_report, attempts=attempt_store)
             )
         ],
     )

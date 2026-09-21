@@ -238,7 +238,7 @@ class CausalHop(BaseModel):
 class AuditRegion(BaseModel):
     """Where a defect is visible: one drawing in the workspace, and where to look."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     file: str = Field(
         ...,
