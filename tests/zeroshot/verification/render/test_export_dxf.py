@@ -7,6 +7,7 @@ import math
 
 import ezdxf
 import pytest
+from PIL import Image, ImageChops
 
 from zeroshot.pipeline.verification.render._hlr import (
     Arc,
@@ -17,7 +18,7 @@ from zeroshot.pipeline.verification.render._hlr import (
     Segment,
     ViewProjection,
 )
-from zeroshot.pipeline.verification.render.export_dxf import export_view
+from zeroshot.pipeline.verification.render.export_dxf import export_to_png, export_view
 
 
 def _view(
@@ -111,3 +112,23 @@ def test_the_extents_header_reports_the_view_and_not_a_sheet(tmp_path):
 
     assert tuple(doc.header["$EXTMIN"])[:2] == pytest.approx((0.0, 0.0))
     assert tuple(doc.header["$EXTMAX"])[:2] == pytest.approx((40.0, 25.0))
+
+
+def test_png_keeps_all_four_border_lines_inside_white_margins(tmp_path):
+    path = tmp_path / "rectangle.dxf"
+    doc = ezdxf.new()
+    doc.modelspace().add_lwpolyline(
+        [(-30, 10), (10, 10), (10, 30), (-30, 30)], close=True
+    )
+    doc.saveas(path)
+
+    with Image.open(export_to_png(path)) as image:
+        ink = ImageChops.invert(image.convert("L")).point(lambda p: 255 if p > 127 else 0)
+        left, top, right, bottom = ink.getbbox()
+        assert 5 < left < right < image.width - 5
+        assert 5 < top < bottom < image.height - 5
+        # Each edge is present along its length, not just at its corners.
+        assert ink.getpixel(((left + right) // 2, top))
+        assert ink.getpixel(((left + right) // 2, bottom - 1))
+        assert ink.getpixel((left, (top + bottom) // 2))
+        assert ink.getpixel((right - 1, (top + bottom) // 2))

@@ -5,11 +5,12 @@ from pathlib import Path
 
 import ezdxf
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops
 
 from tests.zeroshot.workflow.test_audit_drawings import cite, report
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.workflow.evidence import crop_evidence
+from zeroshot.pipeline.verification.render.export_dxf import export_to_png
+from zeroshot.pipeline.workflow.evidence import _pixels_of, crop_evidence
 
 
 @pytest.fixture
@@ -80,10 +81,12 @@ def test_every_region_keeps_the_findings_order(workspace: SandboxWorkdir) -> Non
     ]
 
 
+@pytest.mark.parametrize("margin_ratio", [0.0, 0.04, 0.2])
 def test_a_dxf_crop_holds_the_shape_its_region_surrounds(
     workspace: SandboxWorkdir,
+    margin_ratio: float,
 ) -> None:
-    """The picture's frame is the drawing's own, not matplotlib's padded one."""
+    """Raster margins must not shift a region away from its DXF coordinates."""
     source = workspace.host_bind_dir / "projection" / "front.dxf"
     document = ezdxf.readfile(source)
     document.modelspace().add_circle((2, 10), 1.0)
@@ -93,11 +96,39 @@ def test_a_dxf_crop_holds_the_shape_its_region_surrounds(
         _finding(cite("projection/front.dxf", (0.5, 8.5, 3.5, 11.5))),
         workspace.host_bind_dir / "tickets" / "ticket_001_bore",
         workspace,
+        margin_ratio=margin_ratio,
     )
 
     with Image.open(workspace.sandbox_to_host_path(written[0])) as crop:
         darkest = min(crop.convert("L").tobytes())  # one byte per grey pixel
+        ink = ImageChops.invert(crop.convert("L")).point(
+            lambda p: 255 if p > 127 else 0
+        )
+        left, top, right, bottom = ink.getbbox()
+        assert (left + right) / 2 == pytest.approx(crop.width / 2, abs=1)
+        assert (top + bottom) / 2 == pytest.approx(crop.height / 2, abs=1)
     assert darkest < 128, "the circle the region surrounds is missing from the crop"
+
+
+@pytest.mark.parametrize("margin_ratio", [0.04, 0.2])
+def test_dxf_box_matches_rendered_edges_with_margins(tmp_path, margin_ratio):
+    source = tmp_path / "offset.dxf"
+    document = ezdxf.new()
+    document.modelspace().add_lwpolyline(
+        [(-30, 10), (10, 10), (10, 30), (-30, 30)], close=True
+    )
+    document.saveas(source)
+    with Image.open(export_to_png(source, margin_ratio=margin_ratio)) as image:
+        ink = ImageChops.invert(image.convert("L")).point(
+            lambda p: 255 if p > 127 else 0
+        )
+        box = _pixels_of(
+            cite(str(source), (-30, 10, 10, 30)),
+            source,
+            image.size,
+            margin_ratio=margin_ratio,
+        )
+        assert box == pytest.approx(ink.getbbox(), abs=1)
 
 
 def test_a_single_pixel_region_makes_a_picture(

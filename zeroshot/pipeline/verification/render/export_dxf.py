@@ -29,6 +29,7 @@ _TEMPLATE = Path(__file__).with_name("techdraw_template.dxf")
 _PNG_DPI = 100
 _PNG_SHORT_SIDE = 480
 _PNG_LONG_SIDE = 1600
+DEFAULT_PNG_MARGIN_RATIO = 0.04
 
 
 def _add_edges(
@@ -96,16 +97,33 @@ def export_view(dxf_path: Path, projection: ViewProjection, layer: str) -> None:
     doc.saveas(Path(dxf_path))
 
 
-def export_to_png(dxf_path: Path, image_path: Path | None = None) -> Path:
-    """Rasterise a written view, beside itself by default, black on white.
+def png_bounds(
+    modelspace: Modelspace, *, margin_ratio: float,
+) -> tuple[float, float, float, float]:
+    """UV bounds, with each margin a fraction of the drawing's short side."""
+    if not math.isfinite(margin_ratio) or margin_ratio < 0:
+        raise ValueError("margin_ratio must be finite and non-negative")
+    extents = bbox.extents(modelspace)
+    margin = min(extents.size.x, extents.size.y) * margin_ratio
+    return (
+        extents.extmin.x - margin,
+        extents.extmin.y - margin,
+        extents.extmax.x + margin,
+        extents.extmax.y + margin,
+    )
 
-    The picture spans exactly the drawing's extents, so a pixel is one
-    coordinate. Matplotlib's own autoscale would pad that by 5% instead.
-    """
+
+def export_to_png(
+    dxf_path: Path,
+    image_path: Path | None = None,
+    *,
+    margin_ratio: float = DEFAULT_PNG_MARGIN_RATIO,
+) -> Path:
+    """Rasterise black on white, with space around all four silhouette edges."""
     image_path = image_path or Path(dxf_path).with_suffix(".png")
     modelspace = ezdxf.readfile(dxf_path).modelspace()
-    extents = bbox.extents(modelspace)
-    width, height = extents.size.x, extents.size.y
+    x_min, y_min, x_max, y_max = png_bounds(modelspace, margin_ratio=margin_ratio)
+    width, height = x_max - x_min, y_max - y_min
     pixels = min(
         _PNG_SHORT_SIDE / min(width, height), _PNG_LONG_SIDE / max(width, height)
     )
@@ -121,7 +139,7 @@ def export_to_png(dxf_path: Path, image_path: Path | None = None) -> Path:
     Frontend(
         RenderContext(modelspace.doc), MatplotlibBackend(axes, adjust_figure=False)
     ).draw_layout(modelspace, layout_properties=properties)
-    axes.set_xlim(extents.extmin.x, extents.extmax.x)
-    axes.set_ylim(extents.extmin.y, extents.extmax.y)
+    axes.set_xlim(x_min, x_max)
+    axes.set_ylim(y_min, y_max)
     figure.savefig(image_path, dpi=_PNG_DPI, facecolor=axes.get_facecolor())
     return image_path
