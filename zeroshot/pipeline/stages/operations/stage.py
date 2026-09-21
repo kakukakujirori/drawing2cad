@@ -107,7 +107,6 @@ def create_operation_stage(
         system_prompt_path = Path(__file__).parent / "prompts" / "role.md"
 
     operation_verifier = OperationPlanVerifier(
-        workdir=instructions.workdir,
         attempt_store=attempt_store,
         source_filename=operations_filename,
     )

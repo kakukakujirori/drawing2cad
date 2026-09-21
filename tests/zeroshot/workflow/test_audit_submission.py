@@ -24,14 +24,13 @@ from zeroshot.pipeline.workflow.middleware import VerifyOnSubmitMiddleware
 _TICKET = "ticket_001_shape_mismatch"
 _REVIEWED = AuditReport(
     concern_reviews={},
-    accepted=True,
     ticket_reviews={
         _TICKET: TicketReview(summary="The hole is restored.", solved=True)
     },
     findings=[],
 )
 _UNREVIEWED = AuditReport(
-    concern_reviews={}, accepted=True, ticket_reviews=bootstrap_review(), findings=[]
+    concern_reviews={}, ticket_reviews=bootstrap_review(), findings=[]
 )
 
 

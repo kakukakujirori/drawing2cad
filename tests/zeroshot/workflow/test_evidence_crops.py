@@ -100,11 +100,11 @@ def test_a_dxf_crop_holds_the_shape_its_region_surrounds(
     assert darkest < 128, "the circle the region surrounds is missing from the crop"
 
 
-def test_a_region_thinner_than_a_pixel_still_makes_a_picture(
+def test_a_single_pixel_region_makes_a_picture(
     workspace: SandboxWorkdir,
 ) -> None:
     written = crop_evidence(
-        _finding(cite("front.png", (5.1, 5.1, 5.4, 5.4))),
+        _finding(cite("front.png", (5, 5, 6, 6))),
         workspace.host_bind_dir / "tickets" / "ticket_001_bore",
         workspace,
     )

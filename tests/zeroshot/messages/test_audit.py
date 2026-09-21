@@ -7,6 +7,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditRegion,
     AuditReport,
+    AuditSubmission,
     CausalHop,
     ConcernReview,
     RevisionRequest,
@@ -50,7 +51,7 @@ def backtrace() -> list[CausalHop]:
 
 
 def _region(file: str) -> AuditRegion:
-    return AuditRegion(file=file, box=(0.0, 0.0, 10.0, 10.0))
+    return AuditRegion(file=file, box=(0, 0, 10, 10))
 
 
 def finding(
@@ -387,27 +388,19 @@ def test_a_finding_requires_distinct_evidence_regions(
         )
 
 
-def test_an_accepted_report_has_no_findings() -> None:
-    AuditReport(concern_reviews={}, accepted=True, ticket_reviews={}, findings=[])
-    with pytest.raises(ValidationError, match="accepted must be true"):
-        AuditReport(
-            concern_reviews={}, accepted=True, ticket_reviews={}, findings=[finding()]
-        )
-
-
-def test_a_rejected_report_has_at_least_one_finding() -> None:
-    AuditReport(
-        concern_reviews={}, accepted=False, ticket_reviews={}, findings=[finding()]
-    )
-    with pytest.raises(ValidationError, match="accepted must be true"):
-        AuditReport(concern_reviews={}, accepted=False, ticket_reviews={}, findings=[])
+def test_the_decision_belongs_only_to_the_final_submission() -> None:
+    report = AuditReport(concern_reviews={}, ticket_reviews={}, findings=[])
+    assert "accepted" not in report.model_dump()
+    assert "accepted" not in AuditReport.model_json_schema()["properties"]
+    assert AuditSubmission(accepted=False).model_dump() == {"accepted": False}
+    with pytest.raises(ValidationError):
+        AuditSubmission.model_validate({"reviewed": True})
 
 
 def test_finding_names_are_unique_within_a_report() -> None:
     with pytest.raises(ValidationError, match="finding names must be unique"):
         AuditReport(
             concern_reviews={},
-            accepted=False,
             ticket_reviews={},
             findings=[finding(), finding()],
         )
@@ -428,7 +421,6 @@ def test_separate_findings_cannot_propose_the_same_identity() -> None:
     with pytest.raises(ValidationError, match="unique across findings"):
         AuditReport(
             concern_reviews={},
-            accepted=False,
             ticket_reviews={},
             findings=[first, second],
         )
@@ -437,7 +429,6 @@ def test_separate_findings_cannot_propose_the_same_identity() -> None:
 def test_separate_findings_can_propose_distinct_identities() -> None:
     AuditReport(
         concern_reviews={},
-        accepted=False,
         ticket_reviews={},
         findings=[
             finding(
@@ -475,6 +466,7 @@ def _object_schemas(node: object) -> list[dict]:
         CausalHop,
         AuditFinding,
         AuditReport,
+        AuditSubmission,
         AuditRegion,
         TicketReview,
         ConcernReview,
@@ -500,7 +492,7 @@ def test_requested_answer_schemas_are_closed_and_require_every_field(
         _region("front.png"),
         TicketReview(summary="Checked.", solved=True),
         ConcernReview(finding_name=None, disposition="No correction needed."),
-        AuditReport(accepted=True, ticket_reviews={}, concern_reviews={}, findings=[]),
+        AuditReport(ticket_reviews={}, concern_reviews={}, findings=[]),
     ],
 )
 def test_audit_models_ignore_extra_labels_but_still_require_each_field(value):
@@ -577,7 +569,6 @@ def test_unsolved_reviews_match_exactly_the_tickets_in_current_findings(
 ) -> None:
     values = {
         "concern_reviews": {},
-        "accepted": False,
         "ticket_reviews": {
             f"ticket_{index}": TicketReview(summary="Checked the bore.", solved=value)
             for index, value in enumerate(solved)
@@ -586,9 +577,7 @@ def test_unsolved_reviews_match_exactly_the_tickets_in_current_findings(
     }
     if valid:
         report = AuditReport(**values)
-        assert (
-            not report.accepted
-        )  # New defects still reject when every old ticket is solved.
+        assert report.findings  # New defects remain even when old tickets are solved.
     else:
         with pytest.raises(ValidationError, match="unsolved ticket IDs") as caught:
             AuditReport(**values)
@@ -598,7 +587,6 @@ def test_unsolved_reviews_match_exactly_the_tickets_in_current_findings(
 def test_one_unsolved_ticket_can_require_several_current_findings() -> None:
     report = AuditReport(
         concern_reviews={},
-        accepted=False,
         ticket_reviews={
             "ticket_bore": TicketReview(summary="Two defects remain.", solved=False)
         },
@@ -633,7 +621,27 @@ def test_a_concern_cannot_be_escalated_to_a_finding_the_report_lacks() -> None:
                     disposition="Escalated as a finding.",
                 )
             },
-            accepted=False,
             ticket_reviews={},
             findings=[finding()],
         )
+
+
+@pytest.mark.parametrize(
+    "file", ["input.png", "projection/front.PNG", "render_3d/iso.jpg"]
+)
+def test_raster_boxes_require_json_integers(file):
+    region = AuditRegion(file=file, box=(0, 1, 10, 20))
+    assert AuditRegion.model_validate_json(region.model_dump_json()) == region
+    assert all(type(edge) is int for edge in region.box)
+    for edge in [0.5, 0.0, "0", False]:
+        with pytest.raises(ValidationError):
+            AuditRegion(file=file, box=(edge, 1, 10, 20))
+
+
+def test_dxf_boxes_allow_fractional_and_negative_millimetres():
+    region = AuditRegion(file="projection/front.DXF", box=(-5.5, 0, 10.25, 20))
+    assert region.box == (-5.5, 0, 10.25, 20)
+    assert AuditRegion.model_validate_json(region.model_dump_json()) == region
+    for box in [(0, 0, 10), (0, 0, 10, 20, 30), (0, 0, float("inf"), 20)]:
+        with pytest.raises(ValidationError):
+            AuditRegion(file="front.dxf", box=box)

@@ -13,6 +13,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditRegion,
     AuditReport,
+    AuditSubmission,
     CausalHop,
     ConcernReview,
     RevisionRequest,
@@ -125,7 +126,6 @@ _AUDIT_REPORT = AuditReport(
             disposition="The missing-boss finding covers it.",
         )
     },
-    accepted=False,
     ticket_reviews={
         "ticket_missing_boss": TicketReview(
             summary="The boss is still absent from the current solid.",
@@ -246,6 +246,9 @@ _CODING_SUBMISSION = TicketAnswers(
 )
 
 _ARTIFACTS: dict[str, object] = {
+    "audit_state": {
+        "structured_response": AuditSubmission(accepted=True),
+    },
     "interpretation_state": {
         "messages": [HumanMessage(content="interpret the drawing")],
         "structured_response": _INTERPRETATION_SUBMISSION,
@@ -272,6 +275,13 @@ _ARTIFACTS: dict[str, object] = {
     "stage_validation_failure_count": 0,
     "reconstruction": _RECONSTRUCTION,
     "audit_report": _AUDIT_REPORT,
+    "audit_evidence": {
+        finding.name: [
+            f"/work/attempts/round_000/audit/000/{finding.name}/evidence_{i}.png"
+            for i in range(len(finding.evidence))
+        ]
+        for finding in _AUDIT_REPORT.findings
+    },
 }
 
 
@@ -291,6 +301,7 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         VerifyOutputResult,
         AuditFinding,
         AuditReport,
+        AuditSubmission,
         ConcernReview,
         AuditRegion,
         TicketReview,

@@ -19,7 +19,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     RevisionRequest,
     StageOutputRef,
 )
-from zeroshot.pipeline.stages.audit.validate import validate_audit_report
+from zeroshot.pipeline.stages.audit.validate import _region_error, validate_audit_report
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
@@ -90,7 +90,6 @@ def report(
     root = backtrace[-1].cause if backtrace else ref("interpretation", target)
     return AuditReport(
         concern_reviews={},
-        accepted=False,
         ticket_reviews=bootstrap_review(),
         findings=[
             AuditFinding(
@@ -310,3 +309,13 @@ def test_a_misplaced_box_does_not_also_demand_the_projection_it_cites(
 
     assert "lies outside" in str(refusal.value)
     assert "cite at least one" not in str(refusal.value)
+
+
+@pytest.mark.parametrize("folder", ["projection", "render_3d"])
+def test_generated_png_evidence_is_allowed_in_integer_pixels(folder):
+    with SandboxWorkdir() as workdir:
+        directory = workdir.host_bind_dir / folder
+        directory.mkdir()
+        Image.new("RGB", (1248, 480), "white").save(directory / "front.png")
+        region = AuditRegion(file=f"{folder}/front.png", box=(0, 12, 52, 20))
+        assert _region_error(region, workdir) is None

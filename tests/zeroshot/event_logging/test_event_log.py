@@ -10,7 +10,7 @@ from zeroshot.pipeline.event_logging.projections import (
     RunEventTransformer,
     _safe_value,
 )
-from zeroshot.pipeline.stages.audit.contracts import AuditReport
+from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
 
 
 def test_event_serialization_redacts_images_and_secrets() -> None:
@@ -34,7 +34,6 @@ def test_audit_and_validation_are_recorded_as_their_raw_node_updates(
 ) -> None:
     report = {
         "concern_reviews": {},
-        "accepted": accepted,
         "ticket_reviews": {
             "ticket_bore": {
                 "summary": "Checked the current bore.",
@@ -74,6 +73,9 @@ def test_audit_and_validation_are_recorded_as_their_raw_node_updates(
                 "data": {
                     "audit": {
                         "audit_report": AuditReport.model_validate(report),
+                        "audit_state": {
+                            "structured_response": AuditSubmission(accepted=accepted)
+                        },
                     }
                 },
             },
@@ -104,6 +106,7 @@ def test_audit_and_validation_are_recorded_as_their_raw_node_updates(
             "data": {
                 "node": "audit",
                 "report": report,
+                "submission": {"accepted": accepted},
             },
         },
         {

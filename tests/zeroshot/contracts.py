@@ -33,7 +33,7 @@ UNTURNED: dict[View, tuple[str, str]] = {
 
 def evidence(*files: str) -> list[AuditRegion]:
     """Whole-file regions, for tests not about what a finding points at."""
-    return [AuditRegion(file=file, box=(0.0, 0.0, 10.0, 10.0)) for file in files]
+    return [AuditRegion(file=file, box=(0, 0, 10, 10)) for file in files]
 
 
 def answered(responses: Iterable[TicketResponse]) -> dict[str, str]:

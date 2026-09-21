@@ -202,7 +202,7 @@ class PipelineRunner:
                 resume_attempts[relative] = source
 
             for round_number in range(snapshot.round + 1):
-                for stage in ("interpretation", "operations"):
+                for stage in ("interpretation", "operations", "audit"):
                     relative = PurePosixPath(f"round_{round_number:03d}/{stage}")
                     source = resume_root / self.verification_dirname / relative
                     if source.is_dir():

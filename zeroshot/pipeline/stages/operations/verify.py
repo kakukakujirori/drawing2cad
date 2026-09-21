@@ -8,7 +8,6 @@ from pathlib import Path, PurePosixPath
 from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import ValidationError
 
-from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.error_locations import file_errors, semantic_errors
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
@@ -26,14 +25,12 @@ class OperationPlanVerifier:
 
     def __init__(
         self,
-        workdir: SandboxWorkdir,
         attempt_store: AttemptStore,
         source_filename: str = "operations.json",
     ) -> None:
         source = PurePosixPath(source_filename)
         if source.is_absolute() or len(source.parts) != 1 or source.suffix != ".json":
             raise ValueError("source_filename must be a JSON file basename")
-        self.workdir = workdir
         self.attempt_store = attempt_store
         self.source_filename = source_filename
         self._interpretation: DrawingInterpretation | None = None
@@ -42,7 +39,7 @@ class OperationPlanVerifier:
 
     @property
     def source_path(self) -> Path:
-        return self.workdir.host_bind_dir / self.source_filename
+        return self.attempt_store.workdir.host_bind_dir / self.source_filename
 
     def reset(
         self,
@@ -108,7 +105,7 @@ class OperationPlanVerifier:
         return [
             create_text_block(
                 f"[Operation plan verification]\n"
-                f"{self.workdir.sandbox_bind_dir / self.source_filename}: "
+                f"{self.attempt_store.workdir.sandbox_bind_dir / self.source_filename}: "
                 + (f"invalid.\n{error}" if error else "valid.")
             )
         ]

@@ -2,9 +2,9 @@
 
 import os
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
-from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
@@ -37,7 +37,6 @@ from zeroshot.pipeline.stages.types import (
     next_stage,
 )
 from zeroshot.pipeline.stages.validate import validate_submission
-from zeroshot.pipeline.workflow.evidence import crop_evidence
 
 # ---------------------------------------------------------------------------
 # Pure lifecycle transitions
@@ -76,17 +75,29 @@ def start_reconstruction(
 def open_next_round(
     history: ReconstructionHistory,
     report: AuditReport,
-    workdir: SandboxWorkdir | None = None,
+    evidence_crops: Mapping[str, list[str]] | None = None,
 ) -> ReconstructionHistory:
     """Create the next round from a rejected, cross-validated audit report.
 
-    `workdir` is where each finding's evidence is cut out for its ticket.
+    Evidence paths refer to the already reviewed, immutable audit attempt.
+    Omit them only for transitions that do not involve workspace artifacts.
     """
     current = history.snapshots[-1]
     validate_submission(report, current)
 
-    if report.accepted:
+    if not report.findings:
         raise ValueError("an accepted audit does not open another round")
+
+    if evidence_crops is not None and (
+        set(evidence_crops) != {finding.name for finding in report.findings}
+        or any(
+            len(evidence_crops[finding.name]) != len(finding.evidence)
+            for finding in report.findings
+        )
+    ):
+        raise ValueError(
+            "evidence_crops must contain one path per region of every finding"
+        )
 
     # As for a reasoning stage: the tickets this opens carry the finding's own
     # words into the next round, so the addresses in them are resolved here.
@@ -97,7 +108,11 @@ def open_next_round(
 
     next_round = current.round + 1
     tickets = [
-        _ticket_from_finding(next_round, finding, workdir)
+        _ticket_from_finding(
+            next_round,
+            finding,
+            evidence_crops[finding.name] if evidence_crops is not None else [],
+        )
         for finding in report.findings
     ]
     snapshot = ReconstructionSnapshot(
@@ -136,7 +151,7 @@ def operations_baseline(history: ReconstructionHistory) -> OperationPlan | None:
 def _ticket_from_finding(
     round_number: int,
     finding: AuditFinding,
-    workdir: SandboxWorkdir | None,
+    evidence_crops: list[str],
 ) -> Ticket:
     ticket_id = f"ticket_{round_number:03d}_{finding.name.removeprefix('find_')}"
     return Ticket(
@@ -144,13 +159,7 @@ def _ticket_from_finding(
         subject=finding,
         assigned_stages=_assigned_stages(finding),
         responses=[],
-        evidence_crops=(
-            []
-            if workdir is None
-            else crop_evidence(
-                finding, workdir.host_bind_dir / "tickets" / ticket_id, workdir
-            )
-        ),
+        evidence_crops=evidence_crops,
     )
 
 

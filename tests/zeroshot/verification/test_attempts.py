@@ -16,7 +16,11 @@ def test_attempts_are_numbered_independently_by_round_and_stage(
     assert store.issue("interpretation")[0] == "000"
     assert store.issue("interpretation")[0] == "001"
     assert store.issue("coding")[0] == "000"
+    assert store.issue("audit")[0] == "000"
+    resumed = AttemptStore(workdir, round_source=lambda: current_round[0])
+    assert resumed.issue("audit")[0] == "001"
     current_round[0] = 1
+    assert resumed.issue("audit")[0] == "000"
     assert store.issue("interpretation")[0] == "000"
     assert store.sandbox_attempt_dir(1, "coding", "007") == PurePosixPath(
         "/work/attempts/round_001/coding/007"

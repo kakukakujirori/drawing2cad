@@ -11,7 +11,7 @@ from typing import (
 from langchain_core.messages import AnyMessage
 from typing_extensions import is_typeddict
 
-from zeroshot.pipeline.stages.audit.contracts import AuditReport
+from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
 from zeroshot.pipeline.stages.contracts import (
     ReconstructionHistory,
     ReconstructionSnapshot,
@@ -35,6 +35,7 @@ class ReconstructionState(TypedDict):
     stage_validation_error: NotRequired[str | None]
     stage_validation_failure_count: NotRequired[int]
     audit_report: NotRequired[AuditReport | None]
+    audit_evidence: NotRequired[dict[str, list[str]]]
 
 
 # Where each reasoning stage keeps the transcript of the agent that carried
@@ -112,4 +113,7 @@ def _custom_state_types(*root_schemas: type) -> tuple[type, ...]:
 
 # ReasoningStage is a Literal of enum members, which generic annotation
 # traversal cannot discover as a class by itself.
-CUSTOM_STATE_TYPES = _custom_state_types(ReconstructionState, PipelineStage)
+# AuditSubmission lives under AgentState's untyped structured_response field.
+CUSTOM_STATE_TYPES = _custom_state_types(
+    ReconstructionState, PipelineStage, AuditSubmission
+)

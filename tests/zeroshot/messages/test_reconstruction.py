@@ -182,7 +182,6 @@ def test_extra_audit_fields_are_ignored_without_changing_declared_content(
     """GLM adds type labels to findings and null type fields to references."""
     report = AuditReport(
         concern_reviews={},
-        accepted=False,
         ticket_reviews={"ticket_initial": TicketReview(summary="Wrong.", solved=False)},
         findings=[
             _finding().model_copy(update={"related_ticket_ids": ["ticket_initial"]})
@@ -200,8 +199,7 @@ def test_extra_audit_fields_are_ignored_without_changing_declared_content(
     assert submitted == original
 
     submitted["accepted"] = True
-    with pytest.raises(ValidationError, match="accepted must be true"):
-        AuditReport.model_validate(submitted)
+    assert AuditReport.model_validate(submitted) == report  # Legacy field is ignored.
     submitted["accepted"] = False
 
     if stringified:

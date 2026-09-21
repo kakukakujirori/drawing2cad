@@ -120,11 +120,19 @@ def _assigned_ticket_ids(
     snapshot: ReconstructionSnapshot,
     stage: PipelineStage,
 ) -> str:
-    """Name the tickets this stage owns, so it never has to go looking."""
+    """Expose crop paths even when a stage's jq query omits evidence_crops."""
     if stage not in REASONING_STAGES:
         return "none"
-    assigned = tickets_assigned_to(snapshot.open_tickets, stage)
-    return ", ".join(ticket.ticket_id for ticket in assigned) or "none"
+    named = [
+        ticket.ticket_id
+        + (
+            f" (evidence: {', '.join(ticket.evidence_crops)})"
+            if ticket.evidence_crops
+            else ""
+        )
+        for ticket in tickets_assigned_to(snapshot.open_tickets, stage)
+    ]
+    return ", ".join(named) or "none"
 
 
 def schema_for_prompt(contract: type[BaseModel]) -> str:

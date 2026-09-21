@@ -291,6 +291,11 @@ class RunEventTransformer(StreamTransformer):
                         {
                             "node": str(node),
                             "report": _safe_value(update.get("audit_report")),
+                            "submission": _safe_value(
+                                (update.get("audit_state") or {}).get(
+                                    "structured_response"
+                                )
+                            ),
                         },
                     )
                 # `lc_agent_name` arrives on the task-start event, while the

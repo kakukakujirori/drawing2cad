@@ -40,7 +40,7 @@ def validate_audit_report(
         raise SubmissionValidationError("audit requires a completed coding snapshot")
     _validate_ticket_coverage(report, snapshot)
     _validate_concern_coverage(report, snapshot)
-    if report.accepted and (
+    if not report.findings and (  # i.e., accepted
         snapshot.verification is None
         or snapshot.verification.status is not ExecutionStatus.VERIFIED
         or snapshot.verification.returncode != 0

@@ -215,7 +215,14 @@ class ConsoleReporter:
                 self._render_value(error)
         elif name == "audit":
             if (report := data.get("report")) is not None:
-                verdict = "accepted" if report.get("accepted") else "rejected"
+                decision = (data.get("submission") or report).get("accepted")
+                verdict = (
+                    "awaiting decision"
+                    if decision is None
+                    else "accepted"
+                    if decision
+                    else "rejected"
+                )
                 self.console.print(
                     f"\n[audit] {verdict}", style="bold yellow", markup=False
                 )

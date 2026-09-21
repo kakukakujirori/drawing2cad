@@ -121,7 +121,7 @@ def test_an_invalid_plan_is_refused_until_the_file_validates(tmp_path):
 
 def test_a_schema_error_points_at_its_key_in_the_plan_file(tmp_path):
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    verifier = OperationPlanVerifier(workdir, AttemptStore(workdir, lambda: 0))
+    verifier = OperationPlanVerifier(AttemptStore(workdir, lambda: 0))
     verifier.reset(None, interpretation("a plate"))
     data = _plan().model_dump(mode="json")
     data["proposal"][0]["revision_note"] = "x"
@@ -141,7 +141,7 @@ def test_a_schema_error_points_at_its_key_in_the_plan_file(tmp_path):
 def test_a_plan_citing_an_absent_feature_points_at_the_citation(tmp_path):
     """A cross-stage contradiction sits somewhere in the plan; say where."""
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    verifier = OperationPlanVerifier(workdir, AttemptStore(workdir, lambda: 0))
+    verifier = OperationPlanVerifier(AttemptStore(workdir, lambda: 0))
     verifier.reset(None, interpretation("a plate"))
     data = _plan(builds="sem_absent").model_dump(mode="json")
     text = json.dumps(data, indent=2)

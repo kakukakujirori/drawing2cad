@@ -201,9 +201,17 @@ def test_the_lifecycle_events_a_stage_reports_are_rendered_not_dumped() -> None:
         },
         {"event": "stage_submission", "node": "semantics", "submission": {"edits": []}},
         {"event": "audit", "node": "audit", "report": {"accepted": False}},
+        {
+            "event": "audit",
+            "node": "audit",
+            "report": {"findings": []},
+            "submission": {"accepted": True},
+        },
     )
 
     assert "[unhandled" not in rendered
+    assert "[audit] accepted" in rendered
+    assert "[audit] rejected" in rendered
     assert "[invalid] integrate_stage_submission — failure 2" in rendered
     assert "did not return a StageSubmission" in rendered
     assert "[submission] semantics" in rendered

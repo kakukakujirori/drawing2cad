@@ -257,7 +257,6 @@ def _report(
     revision_target = target or hops[-1].cause
     return AuditReport(
         concern_reviews={},
-        accepted=False,
         ticket_reviews=bootstrap_review() if ticket_reviews is None else ticket_reviews,
         findings=[
             AuditFinding(
@@ -294,7 +293,6 @@ def test_a_concern_left_without_a_disposition_is_refused() -> None:
         validate_submission(
             AuditReport(
                 concern_reviews={},
-                accepted=True,
                 ticket_reviews=bootstrap_review(),
                 findings=[],
             ),
@@ -311,7 +309,6 @@ def test_a_settled_concern_lets_an_audit_accept_without_findings() -> None:
                     disposition="The front view confirms the estimate.",
                 )
             },
-            accepted=True,
             ticket_reviews=bootstrap_review(),
             findings=[],
         ),
@@ -373,7 +370,6 @@ def test_audit_cannot_accept_without_a_verified_solid(status: ExecutionStatus) -
         validate_submission(
             AuditReport(
                 concern_reviews={},
-                accepted=True,
                 ticket_reviews=bootstrap_review(),
                 findings=[],
             ),
@@ -461,7 +457,6 @@ def test_audit_new_names_only_reuse_their_own_split_or_merge_targets(
     )
     report = AuditReport(
         concern_reviews={},
-        accepted=False,
         ticket_reviews=bootstrap_review(),
         findings=[finding],
     )
@@ -580,7 +575,6 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
         completed,
         AuditReport(
             concern_reviews={},
-            accepted=False,
             ticket_reviews=bootstrap_review(),
             findings=[first_finding, second_finding],
         ),
@@ -621,7 +615,6 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
         completed,
         AuditReport(
             concern_reviews={},
-            accepted=False,
             ticket_reviews=bootstrap_review(),
             findings=[
                 _report(target=_ref("interpretation", "sem_feature_1")).findings[0]
@@ -761,7 +754,6 @@ def test_one_request_over_several_members_assigns_their_shared_stage() -> None:
     )
     report = AuditReport(
         concern_reviews={},
-        accepted=False,
         ticket_reviews=bootstrap_review(),
         findings=[two_targets],
     )
@@ -839,12 +831,28 @@ def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
     assert current.open_tickets[0].responses == []
 
 
+@pytest.mark.parametrize(
+    "crops",
+    [
+        {},
+        {"find_shape_mismatch": []},
+        {"find_shape_mismatch": ["a.png", "b.png"]},
+        {"find_other": ["a.png"]},
+    ],
+)
+def test_supplied_evidence_must_cover_every_finding_region(crops) -> None:
+    run = _completed_run()
+    original = run.model_dump_json()
+    with pytest.raises(ValueError, match="one path per region"):
+        open_next_round(run, _report(target=_ref("coding", "ret_hole")), crops)
+    assert run.model_dump_json() == original
+
+
 def test_accepted_or_invalid_audit_does_not_open_a_round() -> None:
     run = _completed_run()
     original_json = run.model_dump_json()
     accepted = AuditReport(
         concern_reviews={},
-        accepted=True,
         ticket_reviews=bootstrap_review(),
         findings=[],
     )
@@ -934,7 +942,6 @@ def test_audit_reviews_cover_every_open_ticket_even_on_acceptance(
     )
     report = AuditReport(
         concern_reviews={},
-        accepted=True,
         findings=[],
         ticket_reviews={
             name: TicketReview(summary="The hole is restored.", solved=True)
@@ -967,7 +974,6 @@ def test_current_findings_replace_old_tickets_and_choose_the_new_revision_root(
             _completed_run(),
             AuditReport(
                 concern_reviews={},
-                accepted=False,
                 ticket_reviews=bootstrap_review(),
                 findings=[first, second],
             ),

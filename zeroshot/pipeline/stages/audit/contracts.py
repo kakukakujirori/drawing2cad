@@ -1,4 +1,4 @@
-"""The audit stage's answer.
+"""The audit report file and its completion signal.
 
 AuditReport
 ├── ticket_reviews: {ticket_id: TicketReview}
@@ -12,9 +12,17 @@ AuditReport
 """
 
 import re
+from pathlib import PurePosixPath
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    StrictInt,
+    model_validator,
+)
 
 from zeroshot.pipeline.stages._base.contracts import Submission
 from zeroshot.pipeline.stages.types import (
@@ -255,25 +263,45 @@ class AuditRegion(BaseModel):
         ...,
         description=(
             "The workspace path of the drawing this was measured on. Use the "
-            "projection and render files of the built solid, the input drawing, "
-            "and the projections under intermediate_returns/."
+            "input drawing, projection DXF or PNG, or perspective image of the "
+            "built solid, including files under intermediate_returns/."
         ),
     )
-    box: tuple[float, float, float, float] = Field(
+    box: tuple[StrictInt | StrictFloat, ...] = Field(
         ...,
+        min_length=4,
+        max_length=4,
         description=(
-            "x0, y0, x1, y1 around what was measured, in the file's own frame: "
-            "pixels from the top left for a raster, and the millimetre "
-            "coordinates the file carries for a DXF."
+            "For a DXF: u0, v0, u1, v1 in its own millimetre coordinates; "
+            "decimals are allowed. For a raster (PNG/JPG etc.): x0, y0, x1, y1 "
+            "as integer pixels from the top left, with y increasing downwards. "
+            "Raster coordinates must be JSON integers, not decimals or strings."
         ),
     )
 
     @model_validator(mode="after")
     def require_an_ordered_box(self) -> Self:
+        if PurePosixPath(self.file).suffix.lower() != ".dxf" and any(
+            type(edge) is not int for edge in self.box
+        ):
+            raise ValueError("raster box must contain integer pixel coordinates")
         x0, y0, x1, y1 = self.box
         if x0 >= x1 or y0 >= y1:
             raise ValueError("box must satisfy x0 < x1 and y0 < y1")
         return self
+
+
+class AuditSubmission(Submission):
+    """Finish after reviewing the current report and its generated evidence."""
+
+    accepted: bool = Field(
+        ...,
+        description=(
+            "After reviewing AuditReport and its evidence crops, accept only when "
+            "the reconstruction needs no correction. True exactly when the "
+            "validated report's findings are empty."
+        ),
+    )
 
 
 class AuditFinding(BaseModel):
@@ -468,16 +496,8 @@ class ConcernReview(BaseModel):
 
 
 class AuditReport(Submission):
-    """The auditor's complete acceptance decision and defect analysis.
+    """The audit.json artifact; the final decision belongs to AuditSubmission."""
 
-    This ends the audit: give it once, after the analysis behind it is
-    complete.
-    """
-
-    accepted: bool = Field(
-        ...,
-        description=("True only when no reasoning-stage output requires correction."),
-    )
     ticket_reviews: dict[str, TicketReview] = Field(
         ...,
         description=(
@@ -505,10 +525,8 @@ class AuditReport(Submission):
     )
 
     @model_validator(mode="after")
-    def require_the_decision_to_match_the_findings(self) -> Self:
-        """Require one decision and unambiguous finding and proposed identities."""
-        if self.accepted == bool(self.findings):
-            raise ValueError("accepted must be true exactly when findings is empty")
+    def require_consistent_findings(self) -> Self:
+        """Require unambiguous reviews, finding names and proposed identities."""
         unsolved = {
             ticket_id
             for ticket_id, review in self.ticket_reviews.items()

@@ -13,6 +13,7 @@ from tests.zeroshot.chat_models import ScriptedChatModel
 from tests.zeroshot.prompt_paths import ROLE_PATHS
 from tests.zeroshot.workflow.test_graph import (
     _accepted_audit,
+    _audit_script,
     _coding_submission,
     _interpretation_script,
     _interpretation_submission,
@@ -115,7 +116,7 @@ def models() -> _Models:
         "interpreter": ScriptedChatModel(responses=_interpretation_script()),
         "planner": ScriptedChatModel(responses=_operations_script()),
         "coder": ScriptedChatModel(responses=(_coding_submission(),)),
-        "auditor": ScriptedChatModel(responses=(_accepted_audit(),)),
+        "auditor": ScriptedChatModel(responses=_audit_script(_accepted_audit())),
     }
 
 

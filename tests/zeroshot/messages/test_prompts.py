@@ -58,6 +58,8 @@ _AN_UNREAD_PAGE = [
 # Stable run paths; round and ticket ownership come from state at build time.
 _RUN_PATHS = {
     "coding_output_path": "/work/model.py",
+    "audit_output_path": "/work/audit.json",
+    "audit_schema": json.dumps(AuditReport.model_json_schema()),
     "interpretation_output_path": "/work/interpretation.json",
     "interpretation_schema": json.dumps(DrawingInterpretation.model_json_schema()),
     "operations_output_path": "/work/operations.json",
@@ -152,6 +154,33 @@ def test_a_reused_builder_reads_the_latest_round_and_ticket_ownership(
     assert "ticket_initial" not in coding + interpreted
 
 
+@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding"])
+def test_assigned_evidence_paths_reach_the_round_instruction(
+    instructions: StageInstructions,
+    state: ReconstructionState,
+    stage: str,
+) -> None:
+    state["reconstruction"] = open_next_round(
+        _completed_run(), _report(target=_ref(stage, None))
+    )
+    ticket = state["reconstruction"].snapshots[-1].open_tickets[0]
+    ticket.evidence_crops = [
+        "/work/tickets/evidence_0.png",
+        "/work/tickets/evidence_1.png",
+    ]
+
+    for recipient in ("interpretation", "operations", "coding"):
+        text = instructions.build(
+            state, PipelineStage(recipient), include_artifact=False
+        ).text
+        for path in ticket.evidence_crops:
+            assert (path in text) == (
+                PipelineStage(recipient) in ticket.assigned_stages
+            )
+        if recipient == stage:
+            assert "(evidence: " in text
+
+
 @pytest.mark.parametrize("stage", list(PipelineStage))
 def test_a_validation_retry_needs_only_the_error_from_state(
     instructions: StageInstructions,
@@ -218,7 +247,7 @@ def test_stage_instructions_resolve_all_template_placeholders(
     rendered = render_stage(stage.value)
 
     assert rendered
-    for schema in ("interpretation_schema", "operations_schema"):
+    for schema in ("interpretation_schema", "operations_schema", "audit_schema"):
         rendered = rendered.replace(_RUN_PATHS[schema], "")
     assert not re.search(r"\$[a-zA-Z_][a-zA-Z_0-9]*|\$\{", rendered)
 
@@ -269,10 +298,10 @@ def test_round_instructions_do_not_repeat_the_reconstruction_guide(
     assert "ReconstructionHistory" not in rendered
 
 
-def test_audit_explains_how_to_report_a_missing_semantic_feature() -> None:
-    rendered = PromptTemplate(ROLE_PATHS["output_auditor"]).render(
-        output_schema="{}", max_turns="10"
-    )
+def test_audit_explains_how_to_report_a_missing_semantic_feature(
+    render_stage: Callable[..., str],
+) -> None:
+    rendered = render_stage("audit")
 
     assert "leave the `backtrace` empty" in rendered
     assert "whole interpretation stage (`name: null`)" in rendered
@@ -285,13 +314,10 @@ def test_the_returns_section_says_what_the_directory_is_for(
     """The layout line alone does not say which `ret_` a defect belongs to."""
     returns_dir = f"/work/attempts/001/{INTERMEDIATE_RETURNS_DIR}"
     section = render_stage("audit", intermediate_returns_dir=returns_dir)
-    role = PromptTemplate(ROLE_PATHS["output_auditor"]).render(
-        output_schema="{}", max_turns="10"
-    )
 
     assert INTERMEDIATE_RETURNS_DIR in section
     assert "ret_" in section
-    assert "what the plan meant it to" in role
+    assert "what the plan meant it to" in section
 
 
 def test_the_audit_reads_the_attempt_directory_the_build_actually_wrote(
@@ -325,12 +351,10 @@ def test_audit_reads_ticket_bodies_from_history_without_echoing_them(
     assert "BODY_MUST_NOT_BE_ECHOED" not in rendered
 
 
-def test_auditor_keeps_result_out_of_the_backtrace_graph() -> None:
-    rendered = build_system_prompt(
-        ROLE_PATHS["output_auditor"],
-        {**_RUN_PATHS, "max_turns": "10"},
-        AuditReport,
-    ).text
+def test_auditor_keeps_result_out_of_the_backtrace_graph(
+    render_stage: Callable[..., str],
+) -> None:
+    rendered = render_stage("audit")
 
     assert "`result` is the terminal export, not a causal member" in rendered
     assert "whole coding stage with `name: null`" in rendered
@@ -358,14 +382,13 @@ def test_the_coding_round_carries_the_history_and_result_contract(
     assert "Lxx-Lyy" not in rendered
 
 
-def test_the_auditor_is_told_the_walk_rule_the_pipeline_would_reject_it_for() -> None:
-    """A validator-only rule costs a retry the auditor cannot learn from."""
-    rendered = PromptTemplate(ROLE_PATHS["output_auditor"]).render(
-        output_schema="{}", max_turns="10"
-    )
-
-    assert "at most one same-prefix hop per prefix" in rendered
-    assert "sem_... -> dim_... -> view_..." in rendered
+def test_the_auditor_is_told_the_walk_rule_the_pipeline_would_reject_it_for(
+    render_stage: Callable[..., str],
+) -> None:
+    """Mechanical walk rules reach the model through the report schema."""
+    rendered = render_stage("audit")
+    assert "at most one named-to-named hop within each prefix" in rendered
+    assert "sem_ -> dim_ -> view_" in rendered
 
 
 def test_the_auditor_role_does_not_repeat_the_api_contract() -> None:
@@ -375,17 +398,20 @@ def test_the_auditor_role_does_not_repeat_the_api_contract() -> None:
         AuditReport,
     ).text
 
-    assert "`AuditReport`" in rendered
+    assert "`AuditReport`" not in rendered
     assert json.dumps(AuditReport.model_json_schema(), indent=2) not in rendered
     assert "$output_schema" not in rendered
 
 
-def test_the_auditor_reviews_every_open_ticket_including_bootstrap_work() -> None:
-    rendered = PromptTemplate(ROLE_PATHS["output_auditor"]).render(max_turns="10")
+def test_the_auditor_reviews_every_open_ticket_including_bootstrap_work(
+    render_stage: Callable[..., str],
+) -> None:
+    rendered = render_stage("audit")
+    guide = build_system_prompt(ROLE_PATHS["output_auditor"], _RUN_PATHS).text
 
-    assert "one `ticket_reviews` entry per open ticket" in rendered
-    assert "Round 0 holds one: the bootstrap order" in rendered
-    assert "Cover every unsolved review" in rendered
+    assert "one `ticket_reviews` entry per ticket" in rendered
+    assert "Round 0 has one ticket" in guide
+    assert "Cover every unsolved ticket" in rendered
     assert "root may have changed" in rendered
 
 
@@ -420,7 +446,9 @@ def test_the_coding_round_keeps_code_in_the_workspace_and_reports_concerns(
     assert "pipeline captures it through verification" in rendered
 
 
-def test_audit_can_read_concerns_from_both_ticket_summaries_and_stage_reports() -> None:
+def test_audit_can_read_concerns_from_both_ticket_summaries_and_stage_reports(
+    render_stage: Callable[..., str],
+) -> None:
     prompt = build_system_prompt(
         ROLE_PATHS["output_auditor"],
         {**_RUN_PATHS, "max_turns": "10"},
@@ -431,8 +459,9 @@ def test_audit_can_read_concerns_from_both_ticket_summaries_and_stage_reports() 
     assert "one `concern_...` entry each" in prompt
     assert "further unresolved issues" in prompt
     assert "The auditor reviews each" in prompt
-    assert "ticket summaries, `concerns` and `unticketed_changes`" in prompt
-    assert "placement does not determine" in prompt
+    instruction = render_stage("audit")
+    assert "ticket summaries, `concerns` and `unticketed_changes`" in instruction
+    assert "placement does not determine" in instruction
     assert "missing reports in old snapshots" in prompt
 
 
@@ -504,7 +533,7 @@ def test_the_interpretation_round_uses_json_for_the_artifact_and_answer_for_tick
     assert "`edits`" not in rendered
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding"])
+@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding", "audit"])
 def test_every_reasoning_round_carries_that_stage_s_guidelines(
     render_stage: Callable[..., str], stage: str
 ) -> None:
@@ -516,7 +545,13 @@ def test_every_reasoning_round_carries_that_stage_s_guidelines(
 
 @pytest.mark.parametrize(
     "role",
-    ["drawing_interpreter", "operation_planner", "coder", "cad_reconstructor"],
+    [
+        "drawing_interpreter",
+        "operation_planner",
+        "coder",
+        "cad_reconstructor",
+        "output_auditor",
+    ],
 )
 def test_a_proposer_role_says_who_it_is_and_leaves_the_rest_to_the_instruction(
     role: str,
@@ -546,18 +581,24 @@ def test_the_merged_role_renders_the_same_text_for_every_stage_that_shares_it() 
     stage_contexts = [
         {
             "coding_output_path": "/work/model.py",
+            "audit_output_path": "/work/audit.json",
+            "audit_schema": json.dumps(AuditReport.model_json_schema()),
             "verification_dir": "/work/attempts",
         },
         # What `create_agent` adds for a stage that answers structurally, and
         # what it adds for the coder, which does not.
         {
             "coding_output_path": "/work/model.py",
+            "audit_output_path": "/work/audit.json",
+            "audit_schema": json.dumps(AuditReport.model_json_schema()),
             "verification_dir": "/work/attempts",
             "output_schema": "SENTINEL_SCHEMA",
             "max_turns": "20",
         },
         {
             "coding_output_path": "/work/model.py",
+            "audit_output_path": "/work/audit.json",
+            "audit_schema": json.dumps(AuditReport.model_json_schema()),
             "verification_dir": "/work/attempts",
             "max_turns": "10",
         },

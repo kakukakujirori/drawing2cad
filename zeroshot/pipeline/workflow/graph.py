@@ -14,7 +14,7 @@ from zeroshot.pipeline.messages.manifest import InputManifest
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
-from zeroshot.pipeline.stages.audit.contracts import AuditReport
+from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
 from zeroshot.pipeline.stages.contracts import (
     ReconstructionHistory,
     ReconstructionSnapshot,
@@ -203,6 +203,7 @@ def create_reconstruction_graph(
             "stage_validation_error": None,
             "stage_validation_failure_count": 0,
             "audit_report": None,
+            "audit_evidence": {},
         }
 
     def after_initialize(state: ReconstructionState) -> str:
@@ -343,24 +344,33 @@ def create_reconstruction_graph(
     def integrate_audit_report(state: ReconstructionState) -> dict[str, Any]:
         """Validate an audit and atomically open its requested next round."""
         report = state.get("audit_report")
-        if not isinstance(report, AuditReport):
+        answer = (state.get("audit_state") or {}).get("structured_response")
+        if not isinstance(report, AuditReport) or not isinstance(
+            answer, AuditSubmission
+        ):
             return _validation_failure(
                 state,
-                "the auditor did not return an AuditReport",
+                "the auditor did not finish a validated audit report file with AuditSubmission",
             )
         try:
             validate_submission(report, current_snapshot(state))
+            if answer.accepted == bool(report.findings):
+                raise SubmissionValidationError(
+                    "AuditSubmission.accepted must be true exactly when the report's "
+                    "findings list is empty. Recheck the report and evidence; correct "
+                    "the audit report file or your final decision before submitting again."
+                )
         except SubmissionValidationError as error:
             return _validation_failure(state, str(error))
 
         if (
-            not report.accepted
+            not answer.accepted
             and current_snapshot(state).round < max_audit_reject_count
         ):
             reconstruction = state.get("reconstruction")
             if reconstruction is None:
                 raise RuntimeError("audit integration requires reconstruction")
-            updated = open_next_round(reconstruction, report, sandbox_workdir)
+            updated = open_next_round(reconstruction, report, state["audit_evidence"])
             save_history(updated)
             return {
                 "reconstruction": updated,
@@ -368,6 +378,7 @@ def create_reconstruction_graph(
                 "stage_validation_error": None,
                 "stage_validation_failure_count": 0,
                 "audit_report": None,
+                "audit_evidence": {},
             }
 
         return {

@@ -19,6 +19,7 @@ from rich.console import Console
 
 from tests.zeroshot.chat_models import ScriptedChatModel
 from tests.zeroshot.contracts import drawing, interpretation
+from tests.zeroshot.workflow.test_graph import _audit_script
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
@@ -67,7 +68,7 @@ def _agent(
 
 _ACCEPTED_AUDIT = AIMessage(
     content=(
-        '{"accepted": true, "ticket_reviews": {"ticket_initial": '
+        '{"ticket_reviews": {"ticket_initial": '
         '{"summary": "The reconstruction answers the order.", "solved": true}'
         '}, "findings": [], "concern_reviews": {}}'
     )
@@ -234,7 +235,7 @@ def _graph_factory(
         coding_agent_builder=_agent("coder", model, **agent_overrides),
         audit_agent_builder=_agent(
             "output_auditor",
-            ScriptedChatModel(responses=(_ACCEPTED_AUDIT,)),
+            ScriptedChatModel(responses=_audit_script(_ACCEPTED_AUDIT)),
             announce_turns=False,
         ),
         max_stage_validation_retries=max_stage_validation_retries,
@@ -290,7 +291,7 @@ def _verified_resume_run():
     return run
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "operations"])
+@pytest.mark.parametrize("stage", ["interpretation", "operations", "audit"])
 def test_resume_copies_an_external_attempt_directly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
 ) -> None:
@@ -307,13 +308,18 @@ def test_resume_copies_an_external_attempt_directly(
     )
     artifact = diagnostic.parent / f"{stage}.json"
     (source_workspace / artifact).write_text(
-        getattr(run.snapshots[-1], stage).model_dump_json()
+        "{}"
+        if stage == "audit"
+        else getattr(run.snapshots[-1], stage).model_dump_json()
     )
     future_diagnostic = Path(
         f"attempts/round_001/{stage}/000/_{stage}_validation_log.json"
     )
     (source_workspace / future_diagnostic).parent.mkdir(parents=True)
     (source_workspace / future_diagnostic).write_text('{"reports": {}}')
+    evidence = diagnostic.parent / "find_shape" / "evidence_0.png"
+    (source_workspace / evidence).parent.mkdir()
+    (source_workspace / evidence).write_bytes(b"crop")
     resume_path = source_workspace / "reconstruction.json"
     save_reconstruction(resume_path, run)
 
@@ -350,11 +356,12 @@ def test_resume_copies_an_external_attempt_directly(
     assert (workspace / artifact).read_bytes() == (
         source_workspace / artifact
     ).read_bytes()
+    assert (workspace / evidence).read_bytes() == b"crop"
     assert not (workspace / future_diagnostic).exists()
     assert (source_workspace / future_diagnostic).is_file()
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "operations"])
+@pytest.mark.parametrize("stage", ["interpretation", "operations", "audit"])
 def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     tmp_path: Path, stage: str
 ) -> None:
@@ -371,8 +378,15 @@ def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     diagnostic_bytes = b'{"reports": {"view_front": {"status": "ok"}}}'
     (workspace / diagnostic).write_bytes(diagnostic_bytes)
     artifact = diagnostic.parent / f"{stage}.json"
-    artifact_json = getattr(run.snapshots[-1], stage).model_dump_json()
+    artifact_json = (
+        "{}"
+        if stage == "audit"
+        else getattr(run.snapshots[-1], stage).model_dump_json()
+    )
     (workspace / artifact).write_text(artifact_json)
+    evidence = diagnostic.parent / "find_shape" / "evidence_0.png"
+    (workspace / evidence).parent.mkdir()
+    (workspace / evidence).write_bytes(b"reviewed crop")
     resume_path = workspace / "reconstruction.json"
     save_reconstruction(resume_path, run)
     events_path = sample_root / "events.jsonl"
@@ -392,6 +406,7 @@ def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     ).read_bytes() == b"STEP"
     assert (prepared / diagnostic).read_bytes() == diagnostic_bytes
     assert (prepared / artifact).read_text() == artifact_json
+    assert (prepared / evidence).read_bytes() == b"reviewed crop"
 
 
 @pytest.mark.parametrize("same_workspace", [False, True])
@@ -957,7 +972,6 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert audit["data"] == {
         "node": "audit",
         "report": {
-            "accepted": True,
             "ticket_reviews": {
                 "ticket_initial": {
                     "summary": "The reconstruction answers the order.",
@@ -967,6 +981,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
             "findings": [],
             "concern_reviews": {},
         },
+        "submission": {"accepted": True},
     }
     assert "verify_output" not in {event["data"].get("tool_name") for event in events}
     assert "output" not in {event["event"] for event in events}
@@ -1089,6 +1104,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     assert [path.name for path in attempts.iterdir()] == ["round_000"]
     round_attempts = attempts / "round_000"
     assert sorted(path.name for path in round_attempts.iterdir()) == [
+        "audit",
         "coding",
         "interpretation",
         "operations",
@@ -1309,7 +1325,8 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
                 ScriptedChatModel(responses=(_writing_model(), _CODING_ANSWER)),
             ),
             audit_agent_builder=_agent(
-                "output_auditor", ScriptedChatModel(responses=(_ACCEPTED_AUDIT,))
+                "output_auditor",
+                ScriptedChatModel(responses=_audit_script(_ACCEPTED_AUDIT)),
             ),
             max_stage_validation_retries=0,
             **kwargs,
