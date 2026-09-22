@@ -145,6 +145,8 @@ def _identity_returns(tree: ast.Module) -> tuple[str, ...]:
 
     Cleaning its own completed shape keeps an operation's work. Replacing it
     with another return discards that work, even if an earlier assignment built.
+    A conditional/loop write makes the final value uncertain, not a proven
+    identity. Only unconditional assignments can establish that fault again.
     """
     builds: dict[str, bool] = {}
     for statement in tree.body:
@@ -152,6 +154,11 @@ def _identity_returns(tree: ast.Module) -> tuple[str, ...]:
             not isinstance(statement, ast.Assign | ast.AnnAssign)
             or statement.value is None
         ):
+            # A block may update an initialized return, even if it runs zero times.
+            # True means "not proven passthrough", not "CAD work definitely ran".
+            for name in _possible_stores(statement):
+                if name in builds:
+                    builds[name] = True
             continue
         preserved = _preserve_input(statement.value)
         for name in assigned_names(statement):
@@ -160,6 +167,28 @@ def _identity_returns(tree: ast.Module) -> tuple[str, ...]:
                     builds.get(name, False) if preserved == name else preserved is None
                 )
     return tuple(sorted(name for name, built in builds.items() if not built))
+
+
+def _possible_stores(node: ast.AST) -> set[str]:
+    """Names a statement may rebind, excluding nested local-scope assignments."""
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        return {node.name}  # The definition binds its name, but its locals do not.
+    if isinstance(node, ast.Lambda):
+        return set()
+    names = (
+        {node.id}
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del)
+        else set()
+    )
+    # Comprehension targets are local; walrus assignments in their expressions are not.
+    children = (
+        (node.iter, *node.ifs)
+        if isinstance(node, ast.comprehension)
+        else ast.iter_child_nodes(node)
+    )
+    for child in children:
+        names.update(_possible_stores(child))
+    return names
 
 
 def _preserve_input(value: ast.expr) -> str | None:
