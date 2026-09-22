@@ -35,6 +35,7 @@ from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.workflow.components import compact_transcript
+from zeroshot.pipeline.workflow.evidence import EvidenceMode
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
     interpretation_baseline,
@@ -75,6 +76,7 @@ def create_reconstruction_graph(
     share_thread: bool = False,
     compact_between_stages: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
+    audit_evidence_mode: EvidenceMode = "mark",
 ):
     """Interpret and plan the part, implement it, then verify and audit it."""
     if max_audit_reject_count < 0:
@@ -173,6 +175,7 @@ def create_reconstruction_graph(
         instructions=stage_instructions,
         prompt_context=prompt_context,
         attempt_store=attempt_store,
+        evidence_mode=audit_evidence_mode,
     )
 
     def save_history(history: ReconstructionHistory) -> None:

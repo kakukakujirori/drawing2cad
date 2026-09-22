@@ -10,7 +10,7 @@ from PIL import Image, ImageChops
 from tests.zeroshot.workflow.test_audit_drawings import cite, report
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.verification.render.export_dxf import export_to_png
-from zeroshot.pipeline.workflow.evidence import _pixels_of, crop_evidence
+from zeroshot.pipeline.workflow.evidence import _pixels_of, render_evidence
 
 
 @pytest.fixture
@@ -35,10 +35,11 @@ def _finding(*regions):
 def test_a_raster_region_is_cut_out_at_its_own_pixels(
     workspace: SandboxWorkdir,
 ) -> None:
-    written = crop_evidence(
+    written = render_evidence(
         _finding(cite("front.png", (5, 4, 25, 16))),
         workspace.host_bind_dir / "tickets" / "ticket_001_bore",
         workspace,
+        mode="crop",
     )
 
     assert written == ["/work/tickets/ticket_001_bore/evidence_0.png"]
@@ -50,10 +51,11 @@ def test_a_dxf_region_is_rasterised_and_cut_out_at_its_millimetres(
     workspace: SandboxWorkdir,
 ) -> None:
     """The left half, measured up from the bottom as UV does."""
-    written = crop_evidence(
+    written = render_evidence(
         _finding(cite("projection/front.dxf", (0.0, 0.0, 20.0, 20.0))),
         workspace.host_bind_dir / "tickets" / "ticket_001_bore",
         workspace,
+        mode="crop",
     )
 
     crop_path = workspace.sandbox_to_host_path(written[0])
@@ -66,7 +68,7 @@ def test_a_dxf_region_is_rasterised_and_cut_out_at_its_millimetres(
 
 
 def test_every_region_keeps_the_findings_order(workspace: SandboxWorkdir) -> None:
-    written = crop_evidence(
+    written = render_evidence(
         _finding(
             cite("projection/front.dxf", (0.0, 0.0, 20.0, 20.0)),
             cite("front.png", (0, 0, 10, 10)),
@@ -92,11 +94,12 @@ def test_a_dxf_crop_holds_the_shape_its_region_surrounds(
     document.modelspace().add_circle((2, 10), 1.0)
     document.saveas(source)
 
-    written = crop_evidence(
+    written = render_evidence(
         _finding(cite("projection/front.dxf", (0.5, 8.5, 3.5, 11.5))),
         workspace.host_bind_dir / "tickets" / "ticket_001_bore",
         workspace,
         margin_ratio=margin_ratio,
+        mode="crop",
     )
 
     with Image.open(workspace.sandbox_to_host_path(written[0])) as crop:
@@ -134,11 +137,49 @@ def test_dxf_box_matches_rendered_edges_with_margins(tmp_path, margin_ratio):
 def test_a_single_pixel_region_makes_a_picture(
     workspace: SandboxWorkdir,
 ) -> None:
-    written = crop_evidence(
+    written = render_evidence(
         _finding(cite("front.png", (5, 5, 6, 6))),
         workspace.host_bind_dir / "tickets" / "ticket_001_bore",
         workspace,
+        mode="crop",
     )
 
     with Image.open(workspace.sandbox_to_host_path(written[0])) as crop:
         assert crop.size == (1, 1)
+
+
+@pytest.mark.parametrize("box", [(5, 4, 25, 16), (5, 5, 6, 6)])
+def test_default_mark_keeps_raster_context_and_source(workspace, box):
+    source = workspace.host_bind_dir / "front.png"
+    original = source.read_bytes()
+    written = render_evidence(
+        _finding(cite("front.png", box)), workspace.host_bind_dir / "marked",
+        workspace,
+    )
+    with Image.open(workspace.sandbox_to_host_path(written[0])) as image:
+        assert image.size == (40, 20)
+        assert image.getpixel(box[:2]) == (255, 0, 0)
+        assert image.getpixel((box[2] - 1, box[3] - 1)) == (255, 0, 0)
+        assert image.getpixel((0, 0)) == (255, 255, 255)
+    assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("margin_ratio", [0.04, 0.2])
+def test_mark_uses_padded_dxf_frame_and_flips_vertical_axis(workspace, margin_ratio):
+    source = workspace.host_bind_dir / "projection/front.dxf"
+    region = cite("projection/front.dxf", (10, 2, 30, 8))
+    sheet = export_to_png(source, margin_ratio=margin_ratio)
+    with Image.open(sheet) as image:
+        size = image.size
+    written = render_evidence(
+        _finding(region), workspace.host_bind_dir / "marked", workspace,
+        mode="mark", margin_ratio=margin_ratio,
+    )
+    with Image.open(workspace.sandbox_to_host_path(written[0])) as image:
+        assert image.size == size
+        box = _pixels_of(region, source, size, margin_ratio=margin_ratio)
+        assert box[1] > size[1] / 2
+        assert image.getpixel(box[:2]) == (255, 0, 0)
+        assert image.getpixel((box[2] - 1, box[3] - 1)) == (255, 0, 0)
+        assert image.getpixel((size[0] // 2, size[1] // 4)) == (255, 255, 255)
+    assert not list((workspace.host_bind_dir / "marked").glob("*_sheet.png"))

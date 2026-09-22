@@ -18,7 +18,7 @@ Expected paths within this directory: `<ret_name>/output.step`, `<ret_name>/proj
 
 Write the complete `AuditReport` to `$audit_output_path`. Do not modify the program, reconstruction history, input files, verification report or generated artifacts.
 
-After a turn that changes the file, the pipeline validates it and generates evidence crops. Use `load_image` to check that each crop supports your findings. Correct the report and inspect the new crops if necessary. With no findings, review the report itself.
+After a turn that changes the file, the pipeline validates it and returns paths to evidence images. Each image displays the file named in an evidence entry, with that entry's `box` outlined in red. Open each evidence image with `load_image`: check that the red box covers the intended feature and any dimensions or edges needed to support the claim, and compare the input drawing with the built projections or renders to confirm the stated mismatch. Correct misplaced or insufficient boxes and unsupported findings in the report, then inspect the regenerated images. With no findings, review the report itself.
 
 Once the file validates and you have checked the evidence, finish with one `AuditSubmission`: `accepted` is true exactly when findings is empty. The decision belongs only in the final response; do not put it in the report or repeat the report in your answer. Stay within the announced turn budget.
 

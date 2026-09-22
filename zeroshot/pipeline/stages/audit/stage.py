@@ -19,6 +19,7 @@ from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.workflow._config import _child_graph_config
+from zeroshot.pipeline.workflow.evidence import EvidenceMode
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
@@ -98,11 +99,14 @@ def create_audit_stage(
     prompt_context: dict[str, str],
     attempt_store: AttemptStore,
     audit_filename: str = "audit.json",
+    evidence_mode: EvidenceMode = "mark",
 ) -> AuditStage:
     if system_prompt_path is None:
         system_prompt_path = Path(__file__).parent / "prompts" / "role.md"
 
-    audit_verifier = AuditVerifier(attempt_store, source_filename=audit_filename)
+    audit_verifier = AuditVerifier(
+        attempt_store, source_filename=audit_filename, evidence_mode=evidence_mode
+    )
     middleware = VerifyOnWriteMiddleware(
         audit_verifier,
         require_feedback_before_submit=True,

@@ -1,4 +1,4 @@
-"""Validate an audit file and let its author review immutable evidence crops."""
+"""Validate an audit file and let its author review immutable evidence images."""
 
 import json
 from pathlib import Path, PurePosixPath
@@ -12,7 +12,7 @@ from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.audit.validate import validate_audit_report
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.verification import AttemptStore
-from zeroshot.pipeline.workflow.evidence import crop_evidence
+from zeroshot.pipeline.workflow.evidence import EvidenceMode, render_evidence
 
 
 class AuditVerifier:
@@ -20,12 +20,15 @@ class AuditVerifier:
         self,
         attempt_store: AttemptStore,
         source_filename: str = "audit.json",
+        *,
+        evidence_mode: EvidenceMode = "mark",
     ) -> None:
         source = PurePosixPath(source_filename)
         if source.is_absolute() or len(source.parts) != 1 or source.suffix != ".json":
             raise ValueError("source_filename must be a JSON file basename")
         self.attempt_store = attempt_store
         self.source_filename = source_filename
+        self.evidence_mode = evidence_mode
         self._snapshot: ReconstructionSnapshot | None = None
         self._checked: bytes | None = None
         self._accepted: AuditReport | None = None
@@ -75,8 +78,9 @@ class AuditVerifier:
             report = AuditReport.model_validate_json(contents)
             validate_audit_report(report, self._snapshot, self.attempt_store)
             crops = {
-                finding.name: crop_evidence(
-                    finding, directory / finding.name, self.attempt_store.workdir
+                finding.name: render_evidence(
+                    finding, directory / finding.name, self.attempt_store.workdir,
+                    mode=self.evidence_mode,
                 )
                 for finding in report.findings
             }
@@ -103,5 +107,5 @@ class AuditVerifier:
             for name, paths in self.evidence_crops.items():
                 text += f"{name}: {', '.join(paths)}\n"
             if self.evidence_crops:
-                text += "Check these crops with load_image against the findings and source drawing."
+                text += "Check these evidence images with load_image against the findings and source drawing."
         return [create_text_block(text)]

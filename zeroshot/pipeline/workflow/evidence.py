@@ -6,9 +6,10 @@ prompt, because every round would then pay for every ticket's pixels.
 
 from math import ceil, floor
 from pathlib import Path
+from typing import Literal
 
 import ezdxf
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.audit.contracts import AuditFinding, AuditRegion
@@ -18,31 +19,38 @@ from zeroshot.pipeline.verification.render.export_dxf import (
     png_bounds,
 )
 
+type EvidenceMode = Literal["crop", "mark"]
 
-def crop_evidence(
+
+def render_evidence(
     finding: AuditFinding,
     into: Path,
     workdir: SandboxWorkdir,
     *,
+    mode: EvidenceMode = "mark",
     margin_ratio: float = DEFAULT_PNG_MARGIN_RATIO,
 ) -> list[str]:
-    """Write each evidence region as its own picture, in the finding's order."""
+    """Crop regions or mark them on the whole source, in the finding's order."""
+    if mode not in ("crop", "mark"):
+        raise ValueError(f"unknown evidence mode: {mode!r}")
     into.mkdir(parents=True, exist_ok=True)
     written = []
     for index, region in enumerate(finding.evidence):
-        crop = into / f"evidence_{index}.png"
-        _write_crop(
-            workdir.sandbox_to_host_path(region.file), region, crop,
+        picture = into / f"evidence_{index}.png"
+        _write_evidence(
+            workdir.sandbox_to_host_path(region.file), region, picture,
+            mode=mode,
             margin_ratio=margin_ratio,
         )
-        written.append(str(workdir.host_to_sandbox_path(crop)))
+        written.append(str(workdir.host_to_sandbox_path(picture)))
     return written
 
 
-def _write_crop(
-    source: Path, region: AuditRegion, destination: Path, *, margin_ratio: float
+def _write_evidence(
+    source: Path, region: AuditRegion, destination: Path, *,
+    mode: EvidenceMode, margin_ratio: float
 ) -> None:
-    """Cut the region out of its own file, rasterising a DXF whole first."""
+    """Rasterise DXFs and use the same pixel bounds for either presentation."""
     sheet = (
         export_to_png(
             source, destination.with_stem(f"{destination.stem}_sheet"),
@@ -52,9 +60,16 @@ def _write_crop(
         else None
     )
     with Image.open(sheet or source) as image:
-        image.crop(
-            _pixels_of(region, source, image.size, margin_ratio=margin_ratio)
-        ).save(destination)
+        box = _pixels_of(region, source, image.size, margin_ratio=margin_ratio)
+        if mode == "crop":
+            evidence = image.crop(box)
+        else:
+            evidence = image.convert("RGB")
+            x0, y0, x1, y1 = box
+            ImageDraw.Draw(evidence).rectangle(
+                (x0, y0, x1 - 1, y1 - 1), outline="red", width=3
+            )
+        evidence.save(destination)
     if sheet is not None:
         sheet.unlink()
 

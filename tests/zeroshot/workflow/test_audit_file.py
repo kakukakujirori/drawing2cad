@@ -91,7 +91,8 @@ def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving():
 
 
 @pytest.mark.parametrize("strategy", ["tool", "provider"])
-def test_write_validate_review_rewrite_and_confirm_only_current_attempt(strategy):
+@pytest.mark.parametrize("mode", ["crop", "mark"])
+def test_write_validate_review_rewrite_and_confirm_only_current_attempt(strategy, mode):
     history = _completed_run()
     snapshot = history.snapshots[-1]
     report = _report(target=_ref("coding", "ret_hole"))
@@ -103,7 +104,9 @@ def test_write_validate_review_rewrite_and_confirm_only_current_attempt(strategy
     viewed = []
     with SandboxWorkdir() as workdir:
         Image.new("RGB", (20, 20), "white").save(workdir.host_bind_dir / "input.png")
-        verifier = AuditVerifier(AttemptStore(workdir, lambda: snapshot.round))
+        verifier = AuditVerifier(
+            AttemptStore(workdir, lambda: snapshot.round), evidence_mode=mode
+        )
         verifier.reset(snapshot)
 
         @tool
@@ -154,9 +157,10 @@ def test_write_validate_review_rewrite_and_confirm_only_current_attempt(strategy
         )
         assert result["structured_response"] == AuditSubmission(accepted=False)
         assert verifier.accepted_report == corrected
-        assert viewed == [(attempt0 + crop, (10, 10)), (attempt1 + crop, (10, 10))]
+        size = (10, 10) if mode == "crop" else (20, 20)
+        assert viewed == [(attempt0 + crop, size), (attempt1 + crop, size)]
         assert (
-            "Check these crops with load_image" in model.received_messages[1][-1].text
+            "Check these evidence images with load_image" in model.received_messages[1][-1].text
         )
         assert unanswered_tool_calls(result["messages"]) == []
         next_round = open_next_round(history, corrected, verifier.evidence_crops)
@@ -198,11 +202,11 @@ def test_invalid_report_and_crop_failure_cannot_leave_an_accepted_audit(monkeypa
         Image.new("RGB", (20, 20)).save(workdir.host_bind_dir / "input.png")
         verifier.source_path.write_text(report.model_dump_json())
 
-        def broken_crop(*args):
+        def broken_crop(*args, **kwargs):
             raise OSError("render failed")
 
         monkeypatch.setattr(
-            "zeroshot.pipeline.stages.audit.verify.crop_evidence", broken_crop
+            "zeroshot.pipeline.stages.audit.verify.render_evidence", broken_crop
         )
         assert "render failed" in str(verifier.feedback())
         assert verifier.accepted_report is None
