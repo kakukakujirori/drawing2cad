@@ -127,7 +127,10 @@ def _require_third_angle_placement(views: list[DrawingView]) -> None:
             raise LocatedError.at(
                 ("views", index, "role"),
                 f"{view.name} is drawn on the far side of {front.name} from where a "
-                f"{view.role.value} view belongs; re-read the roles or the arrangement",
+                f"{view.role.value} view belongs; re-read the roles or the arrangement, "
+                "and if you change the u/v-axis assignment, update any inconsistencies in "
+                "the affected feature descriptions, XYZ positions, direction parameters, "
+                "and evidence as well.",
             )
 
 
