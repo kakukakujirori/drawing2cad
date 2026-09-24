@@ -1,5 +1,5 @@
 from collections import Counter
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -7,7 +7,9 @@ import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
+from PIL import Image, ImageDraw
 from pydantic import BaseModel
 
 from tests.zeroshot.contracts import evidence, interpretation, view
@@ -60,6 +62,7 @@ from zeroshot.pipeline.verification.run_cadquery import (
 )
 from zeroshot.pipeline.verification.run_drawing_diff import (
     AlignmentResult,
+    DrawingDiffExecutor,
     DrawingDiffReport,
 )
 from zeroshot.pipeline.verification.run_render import (
@@ -442,6 +445,65 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
 
     operations_state = restored["operations_state"]
     assert type(operations_state["structured_response"]) is TicketAnswers
+
+
+def test_real_drawing_diff_survives_a_sqlite_checkpoint(tmp_path: Path) -> None:
+    """JSON accepts NumPy float64 diagnostics that msgpack cannot encode."""
+    drawing_path, projection_path = tmp_path / "drawing.png", tmp_path / "front.png"
+    image = Image.new("RGB", (96, 112), "white")
+    pen = ImageDraw.Draw(image)
+    pen.rectangle((15, 20, 75, 90), outline="black", width=2)
+    pen.ellipse((25, 30, 45, 50), outline="black", width=2)
+    image.save(drawing_path)
+    image.save(projection_path)
+    (diff,) = DrawingDiffExecutor(
+        alignment_options={
+            "maxiter": 2,
+            "popsize": 4,
+            "restarts": 1,
+            "max_points": 80,
+            "top_k": 1,
+            "pyramid": (1.0,),
+        },
+    ).execute([(drawing_path, projection_path)])
+    assert diff.error is None
+    assert diff.alignment is not None and diff.alignment.status != "failed"
+    snapshot = _RECONSTRUCTION.snapshots[-1].model_copy(
+        update={
+            "verification": replace(
+                _VERIFICATION, drawing_diff_report={"view_front": diff}
+            ),
+        }
+    )
+    history = _RECONSTRUCTION.model_copy(update={"snapshots": [snapshot]})
+
+    def store(_: ReconstructionState) -> ReconstructionState:
+        return {"reconstruction": history}
+
+    workflow = StateGraph(ReconstructionState)
+    workflow.add_node("store", store)
+    workflow.add_edge(START, "store")
+    workflow.add_edge("store", END)
+    with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
+        saver.serde = JsonPlusSerializer(
+            allowed_msgpack_modules=list(CUSTOM_STATE_TYPES)
+        )
+        graph = workflow.compile(checkpointer=saver)
+        config = {"configurable": {"thread_id": "real-drawing-diff"}}
+        graph.invoke(ReconstructionState(), config)
+        restored = graph.get_state(config).values["reconstruction"]
+
+    assert isinstance(restored, ReconstructionHistory)
+    assert isinstance(
+        restored.snapshots[-1].verification.drawing_diff_report["view_front"].alignment,
+        AlignmentResult,
+    )
+    # Untyped diagnostic tuples are restored as lists; their values must survive.
+    assert restored.model_dump(mode="json") == history.model_dump(mode="json")
+    assert (
+        type(diff.alignment.diagnostics["chamfer"]["visible_source_ink_fraction"])
+        is float
+    )
 
 
 def _threaded_state(**stages: object) -> ReconstructionState:

@@ -475,8 +475,10 @@ def register(
         "fraction_within_2px": float(np.mean(geometric_distance <= 2)),
         "outside_fraction": float(1 - inside.mean()),
         "source_visibility_applied": source_visibility is not None,
-        "visible_source_ink_fraction": len(objective.visible_points)
-        / np.count_nonzero(source),
+        # Keep diagnostics checkpointable: msgpack cannot encode NumPy scalars.
+        "visible_source_ink_fraction": float(
+            len(objective.visible_points) / np.count_nonzero(source)
+        ),
         "seconds": time.perf_counter() - start,
         "config": asdict(cfg),
         "optimizer_runs": optimizer_runs,
