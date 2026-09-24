@@ -23,14 +23,12 @@ from zeroshot.pipeline.stages._base.prompt import (
     build_system_prompt,
 )
 from zeroshot.pipeline.stages.coding.verify import OutputVerifier
-from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.tools.calculate_drawing_scale import (
     create_calculate_drawing_scale_tool,
 )
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore, CadQueryExecutor, StepRenderer
-from zeroshot.pipeline.verification.render.project import THIRD_ANGLE
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.components.agent import AgentState
@@ -72,7 +70,6 @@ def create_single_graph(
     input_manifest: InputManifest,
     output_filename: str = "model.py",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
-    projection_views: Sequence[str] = ("front", "top", "right"),
     max_audit_reject_count: int = 1,
     max_stage_validation_retries: int = 3,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
@@ -105,14 +102,14 @@ def create_single_graph(
         executor=CadQueryExecutor(sandbox_runner=sandbox_runner),
         workdir=sandbox_workdir,
         renderer=StepRenderer(),
+        diff_drawer=None,
         feedback_presentation_mode=artifact_presenter.feedback_mode,
         attempt_store=attempt_store,
-        # No interpretation reads a drawing here, so nothing declares a turn,
-        # and only the views a third-angle page shows can be asked for.
-        views={View(view): THIRD_ANGLE[View(view)] for view in projection_views},
         source_filename=output_filename,
         # `ret_` returns name planned operations; there is no plan here.
         show_intermediate_returns=False,
+        # No interpretation names the drawing's views, so all six are drawn.
+        projection_view_mode="standard",
     )
     coding_middleware = VerifyOnWriteMiddleware(
         output_verifier,
@@ -200,13 +197,14 @@ def create_single_graph(
             config=_child_graph_config(config),
         )
         report = result.get("structured_response")
-        verification, _ = output_verifier.verify()
+        verification = output_verifier.verify()
+        assert verification.exec_report is not None
         update = {
             "coding_state": _without_answer(result),
             "stage_submission": None if report is None else report.model_dump(),
             "verification": {
                 "verification_id": verification.verification_id,
-                "status": verification.status.value,
+                "status": verification.exec_report.status.value,
             },
         }
         if report is None:
@@ -250,7 +248,7 @@ def create_single_graph(
         message = instruction(
             state,
             "audit",
-            [_PROMPTS / "audit_round.md"],
+            [_COORDINATE_FRAMES, _PROMPTS / "audit_round.md"],
             attempt_dir=str(attempt_dir),
             verification_status=verification["status"],
             coding_report=json.dumps(state.get("stage_submission"), indent=2),

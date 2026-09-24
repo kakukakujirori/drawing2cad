@@ -31,6 +31,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
+from zeroshot.pipeline.verification.render.project import STANDARD_VIEW_FRAMES
 from zeroshot.pipeline.workflow.lifecycle import (
     open_next_round,
     start_reconstruction,
@@ -724,6 +725,8 @@ def test_coordinate_markdown_agrees_with_the_projection_contract() -> None:
         assert out == TOWARD_VIEWER[view], view
         # The printed columns must be a frame the contract would accept.
         assert cross_axis(u_axis, v_axis) == out, view
+        # The standard projections are drawn in the frames the table teaches.
+        assert STANDARD_VIEW_FRAMES[view] == (u_axis, v_axis), view
 
 
 def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes() -> None:

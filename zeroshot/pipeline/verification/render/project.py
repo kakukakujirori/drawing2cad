@@ -34,13 +34,14 @@ type _Direction = tuple[float, float, float]
 # The sheet axes to draw each view in, as a drawing declared them.
 type ViewFrames = Mapping[View, tuple[Axis, Axis]]
 
-# What a third-angle drawing shows, drawn the way a page that turns no view
-# lays it out. This is what a caller that read no drawing has to fall back on.
-# Verified against GT by raster-IoU.
-THIRD_ANGLE: ViewFrames = MappingProxyType(
+# Every orthographic view, drawn the way a page that turns no view lays it out.
+STANDARD_VIEW_FRAMES: ViewFrames = MappingProxyType(
     {
         View.FRONT: ("+x", "+z"),
+        View.BACK: ("-x", "+z"),
         View.TOP: ("+x", "+y"),
+        View.BOTTOM: ("+x", "-y"),
+        View.LEFT: ("-y", "+z"),
         View.RIGHT: ("+y", "+z"),
     }
 )
@@ -129,7 +130,7 @@ def _project_nonempty(
 
 def project_views(
     shape: TopoDS_Shape,
-    views: ViewFrames = THIRD_ANGLE,
+    views: ViewFrames = STANDARD_VIEW_FRAMES,
     include_smooth: bool = False,
 ) -> dict[View, ViewProjection]:
     """Project ``shape`` into each view, in the sheet axes that view declared.

@@ -41,9 +41,5 @@ workflow:
   # each handover, so round 1 starts from notes rather than 60 raw turns.
   compact_between_stages: ${model}
 
-  # The staged coder draws the views the interpretation names; with no
-  # interpretation, draw the three views every sample sheet carries.
-  projection_views: [front, top, right]
-
   max_audit_reject_count: 1
   max_stage_validation_retries: 3

@@ -28,7 +28,7 @@ from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
 )
-from zeroshot.pipeline.verification.render.project import THIRD_ANGLE
+from zeroshot.pipeline.verification.render.project import STANDARD_VIEW_FRAMES
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     ExecutionStatus,
@@ -49,6 +49,7 @@ RENDER3D_STYLES = (
 )
 
 VIEWS = ("front", "top", "right")
+VIEW_FRAMES = {View(view): STANDARD_VIEW_FRAMES[View(view)] for view in VIEWS}
 
 VALID_SOURCE = """\
 import cadquery as cq
@@ -140,12 +141,13 @@ def _create_verifier(
     *,
     renderer: object | None = None,  # defaults to a StubRenderer
     feedback_presentation_mode: Literal["none", "path", "image"] = "none",
-    views: Mapping[View, tuple[str, str]] = THIRD_ANGLE,
+    views: Mapping[View, tuple[str, str]] = VIEW_FRAMES,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
     attempt_store: AttemptStore | None = None,
     show_intermediate_returns: bool = True,
     diff_drawer: object | None = None,
+    projection_view_mode: Literal["interpreted", "standard"] = "interpreted",
 ) -> OutputVerifier:
     verifier = OutputVerifier(
         executor,  # type: ignore[arg-type]
@@ -161,13 +163,15 @@ def _create_verifier(
         source_filename=source_filename,
         show_intermediate_returns=show_intermediate_returns,
         diff_drawer=diff_drawer,  # type: ignore[arg-type]
+        projection_view_mode=projection_view_mode,
     )
-    verifier.interpretation = interpretation(
-        views=[
-            drawing_view(role.value, u_axis=axes[0], v_axis=axes[1])
-            for role, axes in views.items()
-        ]
-    )
+    if projection_view_mode == "interpreted":
+        verifier.interpretation = interpretation(
+            views=[
+                drawing_view(role.value, u_axis=axes[0], v_axis=axes[1])
+                for role, axes in views.items()
+            ]
+        )
     return verifier
 
 
@@ -1509,3 +1513,114 @@ def test_the_verifier_asks_for_exactly_the_views_it_was_given(
     assert f"{sandbox_dir}/projection/left.dxf" in text
     assert "view_projected_left (left)" in text
     assert "front.dxf" not in text
+
+
+def test_standard_projections_draw_all_six_views_without_an_interpretation(
+    tmp_path: Path,
+) -> None:
+    executor = StubCadQueryExecutor(_execution_report())
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
+    renderer = StubRenderer()
+    verifier = _create_verifier(
+        executor,
+        workdir,
+        renderer=renderer,
+        feedback_presentation_mode="path",
+        projection_view_mode="standard",
+    )
+
+    text = _text(verifier.feedback())
+
+    assert verifier.interpretation is None
+    (_, projection_paths, _, frames) = renderer.calls[0]
+    assert frames == STANDARD_VIEW_FRAMES
+    assert set(projection_paths.as_mapping()) == set(STANDARD_VIEW_FRAMES)
+    sandbox_dir = f"{workdir.sandbox_bind_dir}/attempts/round_000/coding/000"
+    for view in STANDARD_VIEW_FRAMES:
+        # Listed, not unavailable: each sheet registered under its own axes.
+        assert (
+            f"- view_projected_{view} ({view}): {sandbox_dir}/projection/{view}.dxf"
+            in text
+        )
+        assert f"- {sandbox_dir}/projection/{view}.png" in text
+
+
+@pytest.mark.parametrize(
+    ("projection_view_mode", "diff_drawer"),
+    [("third_angle", None), ("standard", object())],
+)
+def test_a_projection_view_mode_the_verifier_cannot_serve_is_refused(
+    tmp_path: Path, projection_view_mode: str, diff_drawer: object | None
+) -> None:
+    with pytest.raises(ValueError, match="projection_view_mode"):
+        _create_verifier(
+            StubCadQueryExecutor(_execution_report()),
+            SandboxWorkdir(host_bind_dir=tmp_path),
+            projection_view_mode=projection_view_mode,  # type: ignore[arg-type]
+            diff_drawer=diff_drawer,
+        )
+
+
+# An L-shaped block in the positive octant, so no two standard views share extents.
+ASYMMETRIC_SOURCE = """\
+import cadquery as cq
+
+block = cq.Workplane("XY").box(30, 20, 10, centered=False)
+notch = cq.Workplane("XY").box(12, 20, 5, centered=False).translate((18, 0, 5))
+result = block.cut(notch)
+"""
+
+# (u_min, v_min, u_max, v_max) of each standard view of that block.
+ASYMMETRIC_EXTENTS = {
+    "front": (0, 0, 30, 10),
+    "back": (-30, 0, 0, 10),
+    "top": (0, 0, 30, 20),
+    "bottom": (0, -20, 30, 0),
+    "left": (-20, 0, 0, 10),
+    "right": (0, 0, 20, 10),
+}
+
+
+def test_real_cadquery_render_reaches_feedback_in_six_standard_views(
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    from zeroshot.pipeline.sandbox import SandboxRunner
+    from zeroshot.pipeline.verification import CadQueryExecutor, StepRenderer
+
+    (tmp_path / "model.py").write_text(ASYMMETRIC_SOURCE)
+    with SandboxWorkdir(host_bind_dir=tmp_path) as workdir:
+        verifier = OutputVerifier(
+            executor=CadQueryExecutor(
+                sandbox_runner=SandboxRunner(
+                    python_executable=Path(sys.executable), default_timeout_s=30
+                )
+            ),
+            workdir=workdir,
+            renderer=StepRenderer(max_workers=1),
+            diff_drawer=None,
+            feedback_presentation_mode="path",
+            attempt_store=AttemptStore(workdir, round_source=lambda: 0),
+            show_intermediate_returns=False,
+            projection_view_mode="standard",
+        )
+        text = _text(verifier.feedback())
+        report = verifier.verify()
+
+    assert report.exec_report.status is ExecutionStatus.VERIFIED
+    render = report.render_report[RESULT_NAME]
+    assert render.status is RenderStatus.OK
+    projections = render.projection_paths.as_mapping()
+    assert set(projections) == set(ASYMMETRIC_EXTENTS)
+    sandbox_dir = "/work/attempts/round_000/coding/000"
+    for view, extents in ASYMMETRIC_EXTENTS.items():
+        header = ezdxf.readfile(projections[view]).header
+        low, high = header["$EXTMIN"], header["$EXTMAX"]
+        assert (low[0], low[1], high[0], high[1]) == pytest.approx(extents, abs=1e-3)
+        with Image.open(projections[view].with_suffix(".png")) as png:
+            assert png.convert("L").getextrema()[0] < 128, f"{view}.png is blank"
+        assert f"{sandbox_dir}/projection/{view}.png" in text
+    assert render.render3d_paths.hlg_translucent_faces_perspective.is_file()
+    assert f"{sandbox_dir}/render_3d/{FEEDBACK_PICTORIAL}.png" in text

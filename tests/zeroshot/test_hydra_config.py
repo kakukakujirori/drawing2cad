@@ -18,6 +18,7 @@ from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffExecutor
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
+from zeroshot.pipeline_single.graph import create_single_graph
 
 CONFIG_DIR = Path(__file__).parents[2] / "zeroshot" / "configs"
 
@@ -350,6 +351,19 @@ def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None
     )
     # Inherited from staged rather than restated here.
     assert "max_audit_reject_count" in graph_factory.keywords
+
+
+def test_the_single_workflow_config_fits_its_graph_factory() -> None:
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(config_name="default", overrides=["workflow=single"])
+
+    graph_factory = instantiate(config.workflow)
+
+    assert graph_factory.func is create_single_graph
+    signature(create_single_graph).bind_partial(**graph_factory.keywords)
 
 
 @pytest.mark.parametrize("workflow", ["staged", "continued"])

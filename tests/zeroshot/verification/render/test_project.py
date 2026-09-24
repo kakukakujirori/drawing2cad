@@ -1,4 +1,4 @@
-"""STEP loading and the third-angle frame convention.
+"""STEP loading and the standard view frames.
 
 The frames decide which model axis becomes which screen axis in every view, and
 with what sign; a silent change there would still produce a plausible-looking
@@ -9,9 +9,10 @@ all axes, so both the axis mapping and its sign are observable.
 import cadquery as cq
 import pytest
 
-from tests.zeroshot.contracts import UNTURNED
 from zeroshot.pipeline.stages.interpretation.contracts import (
+    TOWARD_VIEWER,
     View,
+    cross_axis,
 )
 from zeroshot.pipeline.verification.render._hlr import (
     ProjectedEdges,
@@ -19,6 +20,7 @@ from zeroshot.pipeline.verification.render._hlr import (
     ViewProjection,
 )
 from zeroshot.pipeline.verification.render.project import (
+    STANDARD_VIEW_FRAMES,
     DegenerateDrawingError,
     bbox_diagonal,
     frame_of,
@@ -41,7 +43,7 @@ def box_step(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def box_views(box_step):
-    return project_views(load_shape(box_step), UNTURNED)
+    return project_views(load_shape(box_step))
 
 
 def _extents(projection):
@@ -67,7 +69,7 @@ def test_bbox_diagonal_matches_the_box(box_step):
 
 
 def test_every_view_the_contract_names_can_be_projected(box_views):
-    assert set(box_views) == set(UNTURNED)
+    assert set(box_views) == set(TOWARD_VIEWER)
     for view, projection in box_views.items():
         assert projection.visible.count() > 0, f"{view} has no visible edges"
 
@@ -76,7 +78,7 @@ def test_only_the_views_asked_for_are_projected(box_step):
     """A drawing is redrawn view for view, so a run pays for no more than it."""
     projections = project_views(
         load_shape(box_step),
-        {view: UNTURNED[view] for view in (View.LEFT, View.BOTTOM)},
+        {view: STANDARD_VIEW_FRAMES[view] for view in (View.LEFT, View.BOTTOM)},
     )
 
     assert set(projections) == {View.LEFT, View.BOTTOM}
@@ -106,13 +108,23 @@ def _screen_x(u_axis: str, v_axis: str) -> str:
 
 def test_a_frame_puts_the_declared_u_axis_rightwards():
     """A sheet is drawn with its own +U to the right, turned or not."""
-    for u_axis, v_axis in [*UNTURNED.values(), ("+z", "-y"), ("-x", "-z")]:
+    for u_axis, v_axis in [
+        *STANDARD_VIEW_FRAMES.values(),
+        ("+z", "-y"),
+        ("-x", "-z"),
+    ]:
         assert _screen_x(u_axis, v_axis) == u_axis, (u_axis, v_axis)
 
 
 def test_a_frame_needs_two_axes_that_span_a_plane():
     with pytest.raises(ValueError, match="span no plane"):
         frame_of("+x", "-x")
+
+
+def test_each_standard_view_faces_the_viewer_its_role_names():
+    assert set(STANDARD_VIEW_FRAMES) == set(TOWARD_VIEWER)
+    for view, axes in STANDARD_VIEW_FRAMES.items():
+        assert cross_axis(*axes) == TOWARD_VIEWER[view], view
 
 
 def test_a_turned_side_view_is_the_unturned_one_rotated(box_views, box_step):

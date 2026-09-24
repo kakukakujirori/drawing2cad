@@ -27,6 +27,10 @@ from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
 )
+from zeroshot.pipeline.verification.render.project import (
+    STANDARD_VIEW_FRAMES,
+    ViewFrames,
+)
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
@@ -88,6 +92,7 @@ class OutputVerifier:
         attempt_store: AttemptStore,
         source_filename: str = "model.py",
         show_intermediate_returns: bool = True,
+        projection_view_mode: Literal["interpreted", "standard"] = "interpreted",
     ) -> None:
         source_path = PurePosixPath(source_filename)
         if (
@@ -96,6 +101,10 @@ class OutputVerifier:
             or source_path.suffix != ".py"
         ):
             raise ValueError("source_filename must be a Python file basename")
+        if projection_view_mode not in ("interpreted", "standard"):
+            raise ValueError(f"unknown projection_view_mode: {projection_view_mode!r}")
+        if projection_view_mode == "standard" and diff_drawer is not None:
+            raise ValueError("diff_drawer requires projection_view_mode='interpreted'")
         self.executor = executor
         self.workdir = workdir
         self.renderer = renderer
@@ -107,6 +116,7 @@ class OutputVerifier:
         self.source_filename = source_filename
         self.attempt_store = attempt_store
         self.show_intermediate_returns = show_intermediate_returns
+        self.projection_view_mode = projection_view_mode
 
         self._last_feedback_report: VerifyOutputResult | None = None
         # What the last build returned, and the digest of the program it ran
@@ -217,14 +227,19 @@ class OutputVerifier:
 
         return cq_report
 
+    def _projection_frames(self) -> ViewFrames:
+        if self.projection_view_mode == "standard":
+            return STANDARD_VIEW_FRAMES
+        assert self.interpretation is not None
+        return self.interpretation.view_frames()
+
     def _issue_render_request(
         self, step_path: Path, verification_dir: Path
     ) -> RenderRequest:
         """Name the feedback artifacts one STEP is to be drawn into."""
         # Flat: one file per view and per style, named as the inputs are, so
         # the model does not have to guess a second convention.
-        assert self.interpretation is not None
-        view_frames = self.interpretation.view_frames()
+        view_frames = self._projection_frames()
 
         projection_paths = ProjectionPaths.flat(
             verification_dir / "projection", view_frames
@@ -396,8 +411,7 @@ class OutputVerifier:
 
         # A projection is written at 1:1 in model millimetres, which is the
         # frame a region measured on it is read in.
-        assert self.interpretation is not None
-        view_frames = self.interpretation.view_frames()
+        view_frames = self._projection_frames()
         for view, path in render_report.projection_paths.as_mapping().items():
             offer(view, View(view), path, view_frames[View(view)])
         if pictorial:
