@@ -624,18 +624,21 @@ def describe_intermediates(
         )
     ]
 
-    msg = cleandoc(f"""
+    msg = cleandoc("""
         [Intermediate results]
         Each line describes a `ret_*` solid in the program in a built order.
         The first line is the first solid built, and each line after it is the difference from the line above.
         Refer to these values for debugging.
 
-        {_census_table(intermediate_returns)}
+        {table}
 
         Corresponding artifacts are saved in {sandbox_returns_dir}/<name>/ with the following files:
         output.step, projection/<view>.dxf, projection/<view>.png, render_3d/<style>.png.
         Inspect relevant views with load_image.
-    """)
+    """).format(
+        table=_census_table(intermediate_returns),
+        sandbox_returns_dir=sandbox_returns_dir,
+    )
     if failures:
         msg += "\n\nRender failures:\n" + "\n".join(failures)
 
@@ -697,18 +700,22 @@ def describe_drawing_diffs(
 
         For available comparison images, the input is transformed into
         projection pixel coordinates to help locate possible mismatches.
-        Refer to the resulting images for refining your deliverables.
 
         - overlay: aligned input in pale gray; projection lines colored blue→red
-          by increasing distance to the nearest aligned input line.
-          Medium-gray projection lines fall outside the transformed input crop;
-          their mismatch is not evaluated.
-        - residual: aligned input lines, darker where farther from the nearest projection line.
-          Dark regions can indicate missing or misplaced CAD features; drawing annotations also contribute.
+            by the distance from the nearest aligned input line.
+            Medium-gray projection lines fall outside the transformed input crop;
+            their mismatch is not evaluated.
+        - residual: projection in pale gray; aligned input lines drawn over it,
+            pale gray at agreement and increasingly red farther from the nearest
+            projection line. Red can reveal missing or misplaced CAD features;
+            drawing annotations also contribute.
 
-        Note that alignment can be wrong or hide size errors.
+        Blue only means a nearby input line; it suggests, but does not guarantee,
+        correct shape, material side, or completeness. Check residual for missing
+        input boundaries. Note that alignment is heuristic and can be wrong or hide size errors.
 
         {views}
 
-        Open images with load_image; confirm mismatches against originals.
+        Open available overlay and residual with load_image. Confirm suspected
+        mismatches against the input drawing crop and original STEP projection.
     """).format(views="\n\n".join(view_blocks))

@@ -2,6 +2,7 @@
 
 import math
 from dataclasses import dataclass, replace
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from zeroshot.pipeline.messages.manifest import read_dxf_frame
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.validate import KeyLocation, LocatedError
 from zeroshot.pipeline.stages.interpretation.contracts import (
+    ORTHOGRAPHIC_VIEWS,
     UNDECIDED,
     DrawingInterpretation,
     DrawingView,
@@ -161,23 +163,57 @@ def _require_a_readable_submission(interpretation: DrawingInterpretation) -> Non
     _require_third_angle_placement(interpretation.views)
 
 
+def _require_distinct_view_files(
+    views: list[DrawingView], paths: dict[str, Path]
+) -> None:
+    """Different roles need separate files, except a full-page drawing."""
+    for (i, first), (j, second) in combinations(enumerate(views), 2):
+        if paths[first.name] != paths[second.name] or first.role is second.role:
+            # different roles have different paths. Okay.
+            continue
+
+        # FULL_PAGE can share the same path with other roles.
+        if first.role is View.FULL_PAGE:
+            page, child, child_index = first, second, j
+        elif second.role is View.FULL_PAGE:
+            page, child, child_index = second, first, i
+        else:
+            raise LocatedError.at(
+                ("views", j, "file"),
+                f"{second.name} ({second.role.value}) shares a file with "
+                f"{first.name} ({first.role.value}); different roles must use different files. "
+                "Save separate crops and update their evidence coordinates.",
+            )
+
+        # If so, the child must be a whole-page orthographic view.
+        if child.role not in ORTHOGRAPHIC_VIEWS or not child.region.matches_bounds(
+            page.region
+        ):
+            raise LocatedError.at(
+                ("views", child_index, "file"),
+                f"{child.name} ({child.role.value}) reuses {page.name}.file "
+                "without being a full-page orthographic view. "
+                "Save a crop and update file and evidence coordinates.",
+            )
+
+
 def _calibrate_sheets(
     interpretation: DrawingInterpretation,
     data: dict[str, Any],
-    workdir: SandboxWorkdir,
+    paths: dict[str, Path],
 ) -> tuple[dict[str, _Sheet], dict[str, dict[str, Any]]]:
     """Open each view's file, fit a raster's scale, and write both back.
 
     Returns the frame each view is read in, and the diagnostics for the model.
     """
-    # One file may carry several views, and is opened once for all of them.
+    # Full-page aliases and repeated roles may share a file, which is opened once.
     bounds: dict[Path, _Box] = {}
     reports: dict[str, dict[str, Any]] = {}
     sheets: dict[str, _Sheet] = {}
 
     for index, (view, output) in enumerate(zip(interpretation.views, data["views"])):
         location: KeyLocation = ("views", index)
-        path = _readable_path(view, location, workdir)
+        path = paths[view.name]
         if path not in bounds:
             bounds[path] = _bounds_of(path)
         sheet = _Sheet(bounds[path], scale=None, dxf=path.suffix.lower() == ".dxf")
@@ -327,7 +363,12 @@ def validate_interpretation(
     """
     interpretation = DrawingInterpretation.model_validate(interpretation.model_dump())
     _require_a_readable_submission(interpretation)
+    paths = {
+        view.name: _readable_path(view, ("views", index), workdir)
+        for index, view in enumerate(interpretation.views)
+    }
+    _require_distinct_view_files(interpretation.views, paths)
     data = interpretation.model_dump()
-    sheets, reports = _calibrate_sheets(interpretation, data, workdir)
+    sheets, reports = _calibrate_sheets(interpretation, data, paths)
     _calibrate_regions(interpretation, data, sheets)
     return DrawingInterpretation.model_validate(data), reports

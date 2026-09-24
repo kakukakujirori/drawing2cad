@@ -486,12 +486,8 @@ def register(
             {"loss": objective(v), "H": objective.matrix(v).tolist()}
             for v in candidates
         ],
-        "warnings": [
-            "Heuristic search, not certified globally optimal.",
-            "Matching input annotations can create deceptively low scores.",
-            "Hypothesis list is not exhaustive; its score gap is not calibrated confidence.",
-            "Visibility/omission and CAD correctness cannot be inferred from residuals alone.",
-        ],
+        # General alignment caveats belong in the shared feedback legend, once per batch.
+        "warnings": [],
     }
 
 

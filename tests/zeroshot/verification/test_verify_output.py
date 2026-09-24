@@ -466,6 +466,9 @@ def test_the_returns_block_says_what_to_do_with_the_drawings_it_lists(
 
     assert "load_image" in text
     assert "[Intermediate results]" in text
+    assert "\nret_base " in text
+    assert "\nret_hole " in text
+    assert "\nCorresponding artifacts are saved in " in text
 
 
 def test_a_run_with_the_returns_switched_off_says_nothing_about_them(
@@ -704,6 +707,7 @@ def test_pair_failure_is_feedback_and_does_not_reject_step(tmp_path, enabled):
     assert verifier.confirmed
     assert ("alignment failed" in text) is enabled
     assert ("[Drawing comparison]" in text) is enabled
+    assert ("Open available overlay and residual" in text) is enabled
     assert "projection/front.png" in text
     assert (report.drawing_diff_report is not None) is enabled
 

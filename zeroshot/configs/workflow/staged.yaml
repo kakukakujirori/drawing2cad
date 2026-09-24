@@ -15,9 +15,17 @@ workflow:
   diff_drawer_config:
     backend: directional_chamfer
     model: similarity
-    timeout_seconds: 90.0
+    timeout_seconds: 180.0
     distance_clip_px: 12.0  # null: normalize colors by each image's maximum distance
-    alignment_options: {}
+    alignment_options:
+      relative_scale: [0.45, 0.90]
+      rotation_degrees: 10.0
+
+      pyramid: [0.5, 1.0]
+      restarts: 8
+      maxiter: 180
+      popsize: 18
+      top_k: 4
 
   interpretation_agent_builder:
     _target_: zeroshot.pipeline.workflow.create_agent

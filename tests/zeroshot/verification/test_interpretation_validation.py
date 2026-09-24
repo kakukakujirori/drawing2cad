@@ -71,10 +71,11 @@ def test_raster_consensus_enriches_a_copy_and_revalidates_idempotently(
     assert revalidated == accepted
 
 
-def test_shared_png_views_keep_independent_scales(tmp_path: Path) -> None:
+@pytest.mark.parametrize("file", ["front.png", "/work/front.png", "./front.png"])
+def test_different_roles_cannot_share_a_png(tmp_path: Path, file: str) -> None:
     data = raster_case(tmp_path).model_dump()
     top = deepcopy(data["views"][0])
-    top.update(name="view_top", role="top", v_axis="+y")
+    top.update(name="view_top", role="top", file=file, v_axis="+y")
     top["region"].update(view="view_top", box_px=(50, 50, 350, 250))
     for index, dimension in enumerate(top["dimensions"]):
         dimension["name"] = f"dim_top_{index}"
@@ -84,14 +85,24 @@ def test_shared_png_views_keep_independent_scales(tmp_path: Path) -> None:
     data["features"][0]["evidence"].append(
         {"view": "view_top", "box_px": (100, 100, 300, 200)}
     )
-    accepted, _ = validate_interpretation(
-        DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
+    with pytest.raises(
+        LocatedError, match="different roles must use different files"
+    ) as error:
+        validate_interpretation(
+            DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
+        )
+    assert error.value.found[0][0] == ("views", 1, "file")
+    assert "view_top (top)" in str(error.value)
+    assert "view_front (front)" in str(error.value)
+
+
+def test_repeated_role_may_still_reference_the_same_file(tmp_path: Path) -> None:
+    submitted = raster_case(tmp_path)
+    submitted.views.append(
+        submitted.views[0].model_copy(update={"name": "view_detail", "dimensions": []})
     )
-    assert accepted.views[0].file == accepted.views[1].file
-    assert [view.image_size for view in accepted.views] == [(1200, 1400), (1200, 1400)]
-    assert [view.scale for view in accepted.views] == pytest.approx([0.1, 0.2])
-    assert accepted.views[1].region.box_uv == pytest.approx((10, 230, 70, 270))
-    assert accepted.features[0].evidence[1].box_uv == pytest.approx((20, 240, 60, 260))
+    accepted, _ = validate_interpretation(submitted, workdir=SandboxWorkdir(tmp_path))
+    assert len(accepted.views) == 2
 
 
 def test_full_page_and_separate_files_use_referenced_regions_and_own_measurements(
@@ -475,9 +486,11 @@ def _page_layout(workdir: Path, *others: dict) -> DrawingInterpretation:
     ]
     for other in others:
         role = other["role"]
+        Image.new("RGB", (1200, 1400), "white").save(workdir / f"{role}.png")
         crop = deepcopy(front)
         crop.update(
             name=f"view_{role}",
+            file=f"{role}.png",
             dimensions=[],
             u_axis=UNTURNED[View(role)][0],
             v_axis=UNTURNED[View(role)][1],

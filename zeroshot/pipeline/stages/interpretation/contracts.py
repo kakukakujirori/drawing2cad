@@ -226,7 +226,7 @@ class DrawingView(Contract):
     file: str = Field(
         ...,
         min_length=1,
-        description="Path to this view's image or DXF in the workspace. Keep registered input files. Save a crop for a new view identified within another file; a single-view drawing may reuse that file instead.",
+        description="Path to this view's image or DXF in the workspace. Keep registered input files. Different roles require separate files; save each identified view as a crop. A single orthographic view may reuse its full_page parent's file only with a full-file Region.",
     )
     region: Region = Field(
         ...,

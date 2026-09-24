@@ -32,9 +32,14 @@ def test_every_shifted_line_pixel_is_colored():
         "p95_px": 4.0,
         "max_px": 4.0,
     }
-    assert np.all(diff.overlay[10:55, 24] == [0, 212, 255])
+    assert np.all(diff.overlay[10:55, 24] == [0, 168, 255])
+    assert np.all(diff.overlay[20, 22:27] == [0, 168, 255])
+    assert np.all(diff.overlay[20, [21, 27]] == 255)
     assert np.all(diff.overlay[10:55, 20] == 225)
-    assert np.all(diff.residual[10:55, 20] == 150)
+    assert np.all(diff.residual[10:55, 20] == [235, 150, 150])
+    assert np.all(diff.residual[10:55, 24] == 200)
+    assert np.all(diff.residual[20, 22:27] == 200)
+    assert np.all(diff.residual[20, [19, 21, 27]] == 255)
     assert diff.stats["outside_fraction"] == 0
 
 
@@ -48,8 +53,8 @@ def test_missing_hole_only_appears_in_reverse_residual():
     assert diff.stats["output_to_input"]["max_px"] == 0
     assert diff.stats["input_to_output"]["max_px"] >= 30
     np.testing.assert_array_equal(diff.overlay[10, 50], [0, 0, 128])
-    assert diff.residual[10, 50] == 225
-    assert diff.residual[40, 50] == 0
+    np.testing.assert_array_equal(diff.residual[10, 50], [225, 225, 225])
+    np.testing.assert_array_equal(diff.residual[40, 50], [255, 0, 0])
 
 
 def test_output_outside_input_is_neutral_and_excluded():
@@ -113,15 +118,15 @@ def test_automatic_range_preserves_gradient_and_raw_distances():
 
     assert automatic.stats["color_normalization"] == "image_max"
     assert automatic.stats["red_distance_px"] == 6
-    assert automatic.stats["black_distance_px"] == 2
+    assert automatic.stats["residual_red_distance_px"] == 2
     assert automatic.stats["output_to_input"] == fixed.stats["output_to_input"]
     assert automatic.stats["input_to_output"] == fixed.stats["input_to_output"]
-    assert np.all(automatic.overlay[10:55, 22] == [0, 212, 255])
-    assert np.all(automatic.overlay[10:55, 26] == [128, 0, 0])
-    assert np.all(fixed.overlay[10:55, 22] == [0, 40, 255])
-    assert np.all(clipped.overlay[10:55, [22, 26]] == [128, 0, 0])
+    assert np.all(automatic.overlay[10:55, 22] == [0, 168, 255])
+    assert np.all(automatic.overlay[10:55, 26] == [255, 0, 0])
+    assert np.all(fixed.overlay[10:55, 22] == [0, 20, 255])
+    assert np.all(clipped.overlay[10:55, [22, 26]] == [255, 0, 0])
     assert clipped.stats["output_to_input"] == fixed.stats["output_to_input"]
-    assert np.all(automatic.residual[10:55, 20] == 0)
+    assert np.all(automatic.residual[10:55, 20] == [255, 0, 0])
     assert automatic.warnings == fixed.warnings == ()
 
 
@@ -131,20 +136,22 @@ def test_automatic_zero_range_and_reverse_range_are_independent():
     drawing[:] = output
     identical = compute_diff(drawing, output, _alignment(), distance_clip_px=None)
     assert (
-        identical.stats["red_distance_px"] == identical.stats["black_distance_px"] == 0
+        identical.stats["red_distance_px"]
+        == identical.stats["residual_red_distance_px"]
+        == 0
     )
     np.testing.assert_array_equal(identical.overlay[10, 50], [0, 0, 128])
-    assert identical.residual[10, 50] == 225
+    np.testing.assert_array_equal(identical.residual[10, 50], [225, 225, 225])
 
     cv2.circle(drawing, (50, 50), 10, (0, 0, 0), 1)
     missing_hole = compute_diff(drawing, output, _alignment(), distance_clip_px=None)
     assert missing_hole.stats["red_distance_px"] == 0
-    assert missing_hole.stats["black_distance_px"] >= 30
-    assert missing_hole.residual.ndim == 2
+    assert missing_hole.stats["residual_red_distance_px"] >= 30
+    assert missing_hole.residual.shape == drawing.shape
     np.testing.assert_array_equal(missing_hole.overlay[10, 50], [0, 0, 128])
-    assert missing_hole.residual[10, 50] == 225
-    assert missing_hole.residual.min() == 0
-    assert 0 < missing_hole.residual[40, 50] < 225
+    np.testing.assert_array_equal(missing_hole.residual[10, 50], [225, 225, 225])
+    red, green, blue = missing_hole.residual[40, 50]
+    assert red > 225 and 0 < green == blue < 225
 
 
 def test_automatic_range_is_unknown_when_no_output_lines_are_observed():
@@ -162,4 +169,20 @@ def test_automatic_range_is_unknown_when_no_output_lines_are_observed():
         "max_px": None,
     }
     assert np.all(diff.overlay[8:24, 50] == 128)
-    assert diff.stats["black_distance_px"] == 40
+    assert diff.stats["residual_red_distance_px"] == 40
+
+
+def test_thickening_keeps_original_measurements_where_strokes_overlap():
+    drawing, output = _white(), _white()
+    drawing[10:55, 20] = 0
+    output[:] = drawing
+    output[10:55, 22] = 0
+    diff = compute_diff(drawing, output, _alignment(), distance_clip_px=2)
+
+    # The high-error halo must not turn the adjacent matching line red.
+    np.testing.assert_array_equal(diff.overlay[30, 20], [0, 0, 128])
+    np.testing.assert_array_equal(diff.overlay[30, 22], [255, 0, 0])
+    np.testing.assert_array_equal(diff.overlay[30, 21], [255, 0, 0])
+    assert diff.stats["output_to_input"]["count"] == 90
+    assert diff.stats["output_to_input"]["max_px"] == 2
+    assert diff.stats["input_to_output"]["max_px"] == 0

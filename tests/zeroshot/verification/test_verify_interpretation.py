@@ -319,7 +319,14 @@ def test_a_full_page_input_requires_an_orthographic_view(tmp_path, role, accepte
     assert ("full_page input is an unsplit page" in text) is not accepted
 
 
-def test_a_single_view_may_reuse_the_full_page_file_and_bounds(tmp_path):
+@pytest.mark.parametrize(
+    ("box_px", "accepted"),
+    [([0, 0, 1200, 1400], True), ([100, 100, 900, 1100], False)],
+)
+@pytest.mark.parametrize("page_first", [True, False])
+def test_full_page_file_reuse_requires_full_page_bounds(
+    tmp_path, box_px, accepted, page_first
+):
     verifier, candidate, _ = _case(tmp_path)
     candidate.views[1] = _as_role(candidate.views[1], View.SECTION)
     data = candidate.model_dump()
@@ -328,17 +335,24 @@ def test_a_single_view_may_reuse_the_full_page_file_and_bounds(tmp_path):
             "name": "view_single",
             "role": "front",
             "file": "/work/source.png",
-            "region": {"view": "view_page", "box_px": [0, 0, 1200, 1400]},
+            "region": {"view": "view_page", "box_px": box_px},
             "dimensions": [],
             "u_axis": "+x",
             "v_axis": "+z",
         }
     )
+    if not page_first:
+        data["views"] = data["views"][1:] + data["views"][:1]
     verifier.source_path.write_text(json.dumps(data))
 
-    verifier.feedback()
+    text = verifier.feedback()[0]["text"]
 
-    assert verifier.confirmed
+    assert verifier.confirmed is accepted
+    if not accepted:
+        child_index = 2 if page_first else 1
+        assert f"$.views[{child_index}].file: view_single (front)" in text
+        assert "whole-page orthographic view" in text
+        assert "Save a crop" in text
 
 
 def test_the_full_page_cannot_be_relabelled_as_the_view(tmp_path):

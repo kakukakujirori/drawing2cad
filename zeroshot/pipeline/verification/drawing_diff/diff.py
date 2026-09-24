@@ -12,6 +12,8 @@ import numpy as np
 from .align import AlignmentResult, _validate_rgb, opencv_transform
 from .image_ops import distance_map, foreground_mask
 
+_DISPLAY_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+
 
 @dataclass(frozen=True)
 class DiffResult:
@@ -59,10 +61,11 @@ def _normalized(distances: np.ndarray, clip: float | None) -> np.ndarray:
 
 
 def _colors(distances: np.ndarray, clip: float | None) -> np.ndarray:
-    """Map distances through OpenCV's 256-color JET table, returning RGB pixels."""
+    """Map distances through JET up to its brightest red, returning RGB pixels."""
     if not distances.size:
         return np.empty((0, 3), dtype=np.uint8)
-    indices = np.rint(_normalized(distances, clip) * 255).astype(np.uint8)
+    # JET peaks at RGB (255, 0, 0) at index 223; later entries darken the red.
+    indices = np.rint(_normalized(distances, clip) * 223).astype(np.uint8)
     # OpenCV returns BGR; image arrays elsewhere in this module use RGB.
     return cv2.applyColorMap(indices[:, None], cv2.COLORMAP_JET)[:, 0, ::-1]
 
@@ -97,6 +100,19 @@ def _warp_drawing(
     return aligned_ink, valid, aligned_gray
 
 
+def _thicken_lines(
+    ink: np.ndarray, distances: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Expand display strokes by 2px without changing the measured line pixels."""
+    field = np.full(ink.shape, -1.0, dtype=np.float64)
+    field[ink] = distances
+    # Expand scalar distances, not RGB channels: overlapping strokes keep a real color.
+    expanded = cv2.dilate(field, _DISPLAY_KERNEL)
+    expanded[ink] = distances  # Preserve each original line pixel's own measurement.
+    shown = expanded >= 0
+    return shown, expanded[shown]
+
+
 def _render_overlay(
     aligned_gray: np.ndarray,
     observed: np.ndarray,
@@ -107,17 +123,27 @@ def _render_overlay(
     """Draw measured output lines in color over the pale aligned input drawing."""
     gray = np.rint(225 + aligned_gray.astype(float) * (30 / 255)).astype(np.uint8)
     overlay = np.repeat(gray[..., None], 3, axis=2)
-    overlay[observed] = _colors(distances, clip)
+    # Unknown coverage stays neutral; measured strokes are thickened only for display.
+    overlay[cv2.dilate(outside.astype(np.uint8), _DISPLAY_KERNEL).astype(bool)] = 128
+    shown, display_distances = _thicken_lines(observed, distances)
+    overlay[shown] = _colors(display_distances, clip)
     overlay[outside] = 128  # Unknown input coverage is neutral, not a large error.
     return overlay
 
 
 def _render_residual(
-    aligned_ink: np.ndarray, distances: np.ndarray, clip: float | None
+    aligned_ink: np.ndarray,
+    projection_gray: np.ndarray,
+    distances: np.ndarray,
+    clip: float | None,
 ) -> np.ndarray:
-    """Darken input lines absent from the output; agreement remains pale gray."""
-    residual = np.full(aligned_ink.shape, 255, dtype=np.uint8)
-    residual[aligned_ink] = np.rint(225 - 225 * _normalized(distances, clip)).astype(
+    """Color input lines gray→red over a pale projection for spatial context."""
+    # Expand dark projection strokes for display, preserving antialiasing at their edges.
+    thick_projection = cv2.erode(projection_gray, _DISPLAY_KERNEL)
+    gray = np.rint(200 + thick_projection.astype(float) * (55 / 255)).astype(np.uint8)
+    residual = np.repeat(gray[..., None], 3, axis=2)
+    strength = _normalized(distances, clip)[:, None]
+    residual[aligned_ink] = np.rint(225 + strength * np.array([30, -225, -225])).astype(
         np.uint8
     )
     return residual
@@ -133,10 +159,11 @@ def compute_diff(
     """Color every observed output ink pixel by distance to aligned input ink.
 
     JET maps zero distance to dark blue and ``distance_clip_px`` or above to
-    dark red. None uses each direction's observed maximum independently;
+    bright red. None uses each direction's observed maximum independently;
     perfect agreement stays dark blue or pale gray.
     Unsupported output pixels are medium gray, excluded from distance statistics.
-    The reverse residual is grayscale: larger missing-input distances are darker.
+    The reverse residual colors input lines pale gray→red over the pale projection.
+    Projection strokes expand by 2px in both images; measurements use the original lines.
     Distances are raw output pixels, independent of optimizer sampling/loss.
 
     Invalid arguments raise ValueError. Unusable image content or a failed
@@ -157,7 +184,7 @@ def compute_diff(
         "color_normalization": "image_max" if distance_clip_px is None else "fixed",
         "distance_clip_px": distance_clip_px,
         "red_distance_px": distance_clip_px,
-        "black_distance_px": distance_clip_px,
+        "residual_red_distance_px": distance_clip_px,
         "unobserved_color_rgb": [128, 128, 128],
     }
     warnings = list(alignment.warnings)
@@ -180,7 +207,7 @@ def compute_diff(
         # Automatic display scales are per direction; unavailable maxima stay null.
         if distance_clip_px is None:
             stats["red_distance_px"] = stats["output_to_input"]["max_px"]
-            stats["black_distance_px"] = stats["input_to_output"]["max_px"]
+            stats["residual_red_distance_px"] = stats["input_to_output"]["max_px"]
         overlay = _render_overlay(
             aligned_gray,
             output_ink & valid,
@@ -189,7 +216,10 @@ def compute_diff(
             stats["red_distance_px"],
         )
         residual = _render_residual(
-            aligned_ink, input_distances, stats["black_distance_px"]
+            aligned_ink,
+            projection_gray,
+            input_distances,
+            stats["residual_red_distance_px"],
         )
         # Warn about missing observation coverage, not a global residual threshold.
         if stats["outside_count"]:

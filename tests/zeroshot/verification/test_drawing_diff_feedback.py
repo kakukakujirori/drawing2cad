@@ -64,7 +64,12 @@ error: projection unavailable"""
     assert "original drawing crop" in text
     assert "orthographic line rendering of the generated STEP" in text
     assert "annotations" in text
-    assert "load_image" in text
+    assert "increasingly red" in text
+    assert "residual: projection in pale gray" in text
+    assert "Blue only means a nearby input line" in text
+    assert text.lower().count("alignment is heuristic") == 1
+    assert "Open available overlay and residual with load_image" in text
+    assert "input drawing crop and original STEP projection" in text
     for unwanted in (str(tmp_path), "/work/unavailable", "p95_px", "red_distance_px"):
         assert unwanted not in text
     assert set(tmp_path.rglob("*")) == files_before
@@ -89,13 +94,23 @@ def test_failed_alignment_can_have_warnings_without_an_error_or_images(tmp_path)
 
 
 @pytest.mark.parametrize("stage", ["coding", "audit"])
-def test_comparison_guidelines_do_not_promise_removed_artifacts(stage):
+def test_fixed_guidelines_do_not_require_optional_comparison_images(stage):
     stages = Path(__file__).parents[3] / "zeroshot/pipeline/stages"
     text = (stages / stage / "prompts/guidelines.md").read_text()
 
     assert "load_image" in text
-    assert "input drawing crop" in text
-    assert "original STEP projection" in text
-    assert "annotations" in text
+    assert "overlay" not in text
+    assert "residual" not in text
     assert "distance scales" not in text
     assert "linked JSON" not in text
+
+
+def test_coding_can_correct_geometry_without_overwriting_upstream_artifacts():
+    stages = Path(__file__).parents[3] / "zeroshot/pipeline/stages"
+    system = (stages / "_base/prompts/cad_reconstructor.md").read_text()
+    coding = (stages / "coding/prompts/guidelines.md").read_text()
+
+    assert "source drawing takes precedence" in system
+    assert "do not edit upstream JSON files" in system
+    assert "Leave upstream JSON files unchanged" in coding
+    assert "state the unresolved mismatch" in coding

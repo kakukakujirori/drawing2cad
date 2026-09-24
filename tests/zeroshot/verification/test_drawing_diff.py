@@ -188,6 +188,8 @@ def test_chamfer_optimizer_recovers_a_transformed_line_drawing():
         options={"maxiter": 60, "popsize": 10, "restarts": 1, "top_k": 2},
     )
     assert result.status != "failed", result.diagnostics
+    # General caveats are in the feedback legend, not repeated per view.
+    assert result.diagnostics["chamfer"]["warnings"] == []
     points = np.array([[15, 12], [95, 12], [75, 75], [37, 31]])
     restored = _transform(
         result.H_drawing_to_projection, _transform(matrix, points) + 0.5
