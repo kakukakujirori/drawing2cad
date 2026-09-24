@@ -31,6 +31,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
 )
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus
+from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
 
 
 def _interpretation():
@@ -118,7 +119,9 @@ def _snapshot(
         last_completed_stage=last_completed_stage,  # type: ignore[arg-type]
         interpretation=interpreted,
         operations=operations,
-        program_source=verification.source if verification is not None else None,
+        program_source=verification.exec_report.source
+        if verification is not None and verification.exec_report is not None
+        else None,
         verification=verification,
     )
 
@@ -357,8 +360,9 @@ def test_a_ticket_rejects_a_response_for_another_ticket() -> None:
 
 def test_a_failed_verification_is_a_valid_completed_coding_checkpoint() -> None:
     report = VerifyOutputResult(
-        status=ExecutionStatus.REJECTED,
-        executor_error="model.py was not found",
+        exec_report=CadQueryExecutionReport(
+            status=ExecutionStatus.REJECTED, executor_error="model.py was not found"
+        )
     )
     ticket = _ticket(stages=("interpretation", "operations", "coding"))
 
@@ -379,7 +383,11 @@ def test_an_uninitialized_verification_does_not_complete_coding() -> None:
         _snapshot(
             ticket=ticket,
             last_completed_stage="coding",
-            verification=VerifyOutputResult(),
+            verification=VerifyOutputResult(
+                exec_report=CadQueryExecutionReport(
+                    status=ExecutionStatus.UNINITIALIZED
+                )
+            ),
         )
 
 
@@ -392,7 +400,9 @@ def test_an_uninitialized_verification_does_not_complete_coding() -> None:
         (
             "operations",
             "verification",
-            VerifyOutputResult(status=ExecutionStatus.REJECTED),
+            VerifyOutputResult(
+                exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+            ),
         ),
     ],
 )
@@ -478,7 +488,9 @@ def test_later_rounds_reject_bootstrap_tickets() -> None:
     first = _snapshot(
         ticket=_ticket(stages=("interpretation", "operations", "coding")),
         last_completed_stage="coding",
-        verification=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+        verification=VerifyOutputResult(
+            exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+        ),
     )
     second = _snapshot(
         round=1,
@@ -508,9 +520,11 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
         last_completed_stage="coding",
         verification=VerifyOutputResult(
             verification_id="000",
-            status=ExecutionStatus.VERIFIED,
-            source="result = object()",
-            returncode=0,
+            exec_report=CadQueryExecutionReport(
+                status=ExecutionStatus.VERIFIED,
+                source="result = object()",
+                returncode=0,
+            ),
         ),
     )
     second = ReconstructionSnapshot(
@@ -538,7 +552,10 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
     assert restored == run
     assert isinstance(restored.snapshots[0].verification, VerifyOutputResult)
     assert restored.snapshots[0].verification is not None
-    assert restored.snapshots[0].verification.status is ExecutionStatus.VERIFIED
+    assert (
+        restored.snapshots[0].verification.exec_report.status
+        is ExecutionStatus.VERIFIED
+    )
     assert isinstance(restored.snapshots[1].open_tickets[0].subject, AuditFinding)
 
 

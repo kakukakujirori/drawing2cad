@@ -199,10 +199,9 @@ class PipelineRunner:
                 source = resume_root / self.verification_dirname / relative
                 if not source.is_dir():
                     raise FileNotFoundError(f"resume attempt is missing: {source}")
-                resume_attempts[relative] = source
 
             for round_number in range(snapshot.round + 1):
-                for stage in ("interpretation", "operations", "audit"):
+                for stage in ("interpretation", "operations", "coding", "audit"):
                     relative = PurePosixPath(f"round_{round_number:03d}/{stage}")
                     source = resume_root / self.verification_dirname / relative
                     if source.is_dir():
@@ -369,7 +368,12 @@ class PipelineRunner:
             # run the graph
             initial_state = ReconstructionState()
             if reconstruction_resume is not None:
-                initial_state["reconstruction"] = reconstruction_resume
+                assert self.resume_from is not None
+                initial_state["reconstruction"] = _relocate_reconstruction(
+                    reconstruction_resume,
+                    self.resume_from.parent,
+                    workdir.host_bind_dir,
+                )
 
             stream = graph.stream_events(
                 initial_state,
@@ -419,3 +423,22 @@ class PipelineRunner:
             sample_id=manifest.sample_id,
             drawing=[staged(view) for view in manifest.drawing],
         )
+
+
+def _relocate_reconstruction(
+    reconstruction: ReconstructionHistory,
+    source_workspace: Path,
+    destination_workspace: Path,
+) -> ReconstructionHistory:
+    """Update host paths after copying a reconstruction's workspace."""
+
+    def relocate(value: Any) -> Any:
+        if isinstance(value, Path) and value.is_relative_to(source_workspace):
+            return destination_workspace / value.relative_to(source_workspace)
+        if isinstance(value, dict):
+            return {key: relocate(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return type(value)(relocate(item) for item in value)
+        return value
+
+    return ReconstructionHistory.model_validate(relocate(reconstruction.model_dump()))

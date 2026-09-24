@@ -38,7 +38,9 @@ def render_evidence(
     for index, region in enumerate(finding.evidence):
         picture = into / f"evidence_{index}.png"
         _write_evidence(
-            workdir.sandbox_to_host_path(region.file), region, picture,
+            workdir.sandbox_to_host_path(region.file),
+            region,
+            picture,
             mode=mode,
             margin_ratio=margin_ratio,
         )
@@ -47,13 +49,18 @@ def render_evidence(
 
 
 def _write_evidence(
-    source: Path, region: AuditRegion, destination: Path, *,
-    mode: EvidenceMode, margin_ratio: float
+    source: Path,
+    region: AuditRegion,
+    destination: Path,
+    *,
+    mode: EvidenceMode,
+    margin_ratio: float,
 ) -> None:
     """Rasterise DXFs and use the same pixel bounds for either presentation."""
     sheet = (
         export_to_png(
-            source, destination.with_stem(f"{destination.stem}_sheet"),
+            source,
+            destination.with_stem(f"{destination.stem}_sheet"),
             margin_ratio=margin_ratio,
         )
         if source.suffix.lower() == ".dxf"

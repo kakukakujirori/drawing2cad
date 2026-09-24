@@ -39,6 +39,7 @@ from zeroshot.pipeline.stages.validate import (
     validate_submission,
 )
 from zeroshot.pipeline.verification import ExecutionStatus
+from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
 from zeroshot.pipeline.workflow.lifecycle import (
     _commit_snapshot,
     advance_reconstruction,
@@ -123,9 +124,11 @@ def _snapshot(
     )
     verification = (
         VerifyOutputResult(
-            status=ExecutionStatus.VERIFIED,
-            source="ret_base = object()\nresult = ret_base\n",
-            returncode=0,
+            exec_report=CadQueryExecutionReport(
+                status=ExecutionStatus.VERIFIED,
+                source="ret_base = object()\nresult = ret_base\n",
+                returncode=0,
+            )
         )
         if completed_stage is PipelineStage.CODING
         else None
@@ -140,7 +143,9 @@ def _snapshot(
         operations=_operations()
         if completed_stage in (PipelineStage.OPERATIONS, PipelineStage.CODING)
         else None,
-        program_source=verification.source if verification is not None else None,
+        program_source=verification.exec_report.source
+        if verification is not None and verification.exec_report is not None
+        else None,
         verification=verification,
     )
 
@@ -183,7 +188,9 @@ def test_every_reasoning_stage_accepts_its_expected_deliverable() -> None:
             ),
         ),
         _snapshot(PipelineStage.OPERATIONS),
-        workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+        workspace_output=VerifyOutputResult(
+            exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+        ),
     )
 
 
@@ -506,11 +513,13 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
         _verified_and_validate(
             interpretation_submission,
             _snapshot(None),
-            workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+            workspace_output=VerifyOutputResult(
+                exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+            ),
         )
     with pytest.raises(SubmissionValidationError, match="requires"):
         _verified_and_validate(coding_submission, _snapshot(PipelineStage.OPERATIONS))
-    with pytest.raises(SubmissionValidationError, match="must be terminal"):
+    with pytest.raises(SubmissionValidationError, match="not complete"):
         _verified_and_validate(
             coding_submission,
             _snapshot(PipelineStage.OPERATIONS),
@@ -531,8 +540,10 @@ def test_coding_checks_the_submitted_program_against_current_round_operations() 
             submission,
             _snapshot(PipelineStage.OPERATIONS),
             workspace_output=VerifyOutputResult(
-                status=ExecutionStatus.REJECTED,
-                source="ret_other = object()\nresult = ret_other\n",
+                exec_report=CadQueryExecutionReport(
+                    status=ExecutionStatus.REJECTED,
+                    source="ret_other = object()\nresult = ret_other\n",
+                )
             ),
         )
 
@@ -555,8 +566,10 @@ def test_coding_reports_dimension_and_program_faults_together() -> None:
             submission,
             _snapshot(PipelineStage.OPERATIONS),
             workspace_output=VerifyOutputResult(
-                status=ExecutionStatus.REJECTED,
-                source="ret_other = object()\nresult = ret_other\n",
+                exec_report=CadQueryExecutionReport(
+                    status=ExecutionStatus.REJECTED,
+                    source="ret_other = object()\nresult = ret_other\n",
+                )
             ),
         )
 
@@ -572,7 +585,9 @@ def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
     _verified_and_validate(
         submission,
         _snapshot(PipelineStage.OPERATIONS),
-        workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+        workspace_output=VerifyOutputResult(
+            exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+        ),
     )
 
     with pytest.raises(SubmissionValidationError, match="requires dimension_checks"):
@@ -585,7 +600,9 @@ def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
                 }
             ),
             _snapshot(PipelineStage.OPERATIONS),
-            workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+            workspace_output=VerifyOutputResult(
+                exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+            ),
         )
 
 
@@ -655,7 +672,11 @@ def test_coding_checks_all_dimensions_once_across_tickets_even_without_a_program
             },
         ),
     )
-    terminal = VerifyOutputResult(status=ExecutionStatus.REJECTED, source=source)
+    terminal = VerifyOutputResult(
+        exec_report=CadQueryExecutionReport(
+            status=ExecutionStatus.REJECTED, source=source
+        )
+    )
     validate_submission(submission, snapshot, deliverable=terminal)
     assert held.features[0].dimension_refs == []
     del submission.stage_report.dimension_checks["dim_unreadable"]
@@ -692,7 +713,9 @@ def test_coding_dimension_coverage_uses_ids_including_equal_and_unreadable_value
         validate_submission(
             submission,
             _snapshot(PipelineStage.OPERATIONS, held=_dimensioned_interpretation()),
-            deliverable=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+            deliverable=VerifyOutputResult(
+                exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+            ),
         )
 
 
@@ -742,7 +765,9 @@ def test_coding_saves_concerns_and_resolved_dimension_checks_together(tmp_path):
     committed = advance_reconstruction(
         run,
         submission,
-        workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+        workspace_output=VerifyOutputResult(
+            exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+        ),
     )
     path = tmp_path / "reconstruction.json"
     save_reconstruction(path, committed)
@@ -777,7 +802,9 @@ def test_completed_coding_accepts_only_an_audit_report() -> None:
         _verified_and_validate(
             submission,
             _snapshot(PipelineStage.CODING),
-            workspace_output=VerifyOutputResult(status=ExecutionStatus.REJECTED),
+            workspace_output=VerifyOutputResult(
+                exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+            ),
         )
 
 

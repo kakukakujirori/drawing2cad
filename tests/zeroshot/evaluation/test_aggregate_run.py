@@ -110,6 +110,32 @@ def test_a_backend_that_reports_no_usage_is_not_recorded_as_free(
     assert row.tokens.output is None
 
 
+def test_read_events_counts_nested_execution_report_as_verified(tmp_path: Path) -> None:
+    from zeroshot.pipeline.event_logging.projections import _safe_value
+    from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
+    from zeroshot.pipeline.verification.run_cadquery import (
+        CadQueryExecutionReport,
+        ExecutionStatus,
+    )
+
+    report = VerifyOutputResult(
+        exec_report=CadQueryExecutionReport(status=ExecutionStatus.VERIFIED)
+    )
+    sample = _write_sample(
+        tmp_path,
+        "nested",
+        [
+            _event("verification", report=_safe_value(report)),
+            _event("run_completed", duration_ms=100),
+        ],
+    )
+
+    row = read_events(sample / "events.jsonl", "nested")
+
+    assert row.verify == "VERIFIED"
+    assert summarize([row]).execution_success == 1
+
+
 def test_a_crashed_sample_is_a_row_not_an_omission(tmp_path: Path) -> None:
     """Dropping it would let every rate flatter itself by shrinking its own
     denominator."""

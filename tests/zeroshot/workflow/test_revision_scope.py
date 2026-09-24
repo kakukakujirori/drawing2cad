@@ -18,6 +18,7 @@ from zeroshot.pipeline.stages.tickets.contracts import StageReport, TicketAnswer
 from zeroshot.pipeline.stages.tickets.validate import StageArtifact
 from zeroshot.pipeline.stages.validate import SubmissionValidationError
 from zeroshot.pipeline.verification import ExecutionStatus
+from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
 from zeroshot.pipeline.workflow.lifecycle import advance_reconstruction, open_next_round
 
 
@@ -154,7 +155,9 @@ def test_fields_validation_derives_are_not_changes() -> None:
 
 def _verified(source: str) -> VerifyOutputResult:
     return VerifyOutputResult(
-        status=ExecutionStatus.VERIFIED, source=source, returncode=0
+        exec_report=CadQueryExecutionReport(
+            status=ExecutionStatus.VERIFIED, source=source, returncode=0
+        )
     )
 
 

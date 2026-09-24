@@ -50,6 +50,7 @@ class CadQueryExecutionReport:
     status: ExecutionStatus = ExecutionStatus.INFRA_ERROR
     executor_error: str | None = None
     returncode: int | None = None
+    step_path: Path | None = None
     stdout: str = ""
     stderr: str = ""
     census: ShapeCensus | None = None
@@ -300,6 +301,7 @@ class CadQueryExecutor:
             source=source,
             status=ExecutionStatus.VERIFIED,
             returncode=sandbox_result.returncode,
+            step_path=output_step_path,
             stdout=sandbox_result.stdout,
             stderr=sandbox_result.stderr,
             intermediate_returns=intermediate_returns,

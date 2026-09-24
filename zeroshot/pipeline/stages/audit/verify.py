@@ -79,7 +79,9 @@ class AuditVerifier:
             validate_audit_report(report, self._snapshot, self.attempt_store)
             crops = {
                 finding.name: render_evidence(
-                    finding, directory / finding.name, self.attempt_store.workdir,
+                    finding,
+                    directory / finding.name,
+                    self.attempt_store.workdir,
                     mode=self.evidence_mode,
                 )
                 for finding in report.findings

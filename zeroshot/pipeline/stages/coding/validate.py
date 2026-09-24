@@ -40,7 +40,10 @@ def validate_coding(
     snapshot: ReconstructionSnapshot,
     verification: VerifyOutputResult,
 ) -> None:
-    if verification.status is ExecutionStatus.UNINITIALIZED:
+    exec_report = verification.exec_report
+    if exec_report is None:
+        raise SubmissionValidationError("coding verification is not complete")
+    if exec_report.status is ExecutionStatus.UNINITIALIZED:
         raise SubmissionValidationError("coding verification must be terminal")
     if snapshot.operations is None:
         raise SubmissionValidationError("coding requires an integrated OperationPlan")
@@ -48,10 +51,10 @@ def validate_coding(
     # A missing or syntactically invalid source is already represented by a
     # terminal verification failure and must remain auditable. When readable
     # source exists, reject plan-to-code identity drift as early as possible.
-    if verification.source is None:
+    if exec_report.source is None:
         return
     try:
-        program_check = check_program(verification.source, snapshot.operations)
+        program_check = check_program(exec_report.source, snapshot.operations)
     except SyntaxError:
         return
     if program_check.faults:

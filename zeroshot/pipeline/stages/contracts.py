@@ -163,7 +163,9 @@ class ReconstructionSnapshot(BaseModel):
         if self.last_completed_stage is PipelineStage.CODING:
             if self.verification is None:
                 raise ValueError("verification must exist after coding")
-            if self.verification.status is ExecutionStatus.UNINITIALIZED:
+            if self.verification.exec_report is None:
+                raise ValueError("verification result must be available after coding")
+            if self.verification.exec_report.status is ExecutionStatus.UNINITIALIZED:
                 raise ValueError("verification must be completed after coding")
         return self
 

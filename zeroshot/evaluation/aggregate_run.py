@@ -128,7 +128,9 @@ def read_events(events_path: Path, sample_id: str) -> SampleRow:
             elif name == "tool_started":
                 tool_calls[f"{data.get('tool_name')}:{data.get('caller')}"] += 1
             elif name == "verification":
-                row = replace(row, verify=data["report"].get("status"))
+                report = data["report"]
+                execution = report.get("exec_report", report) or {}
+                row = replace(row, verify=execution.get("status"))
             elif name == "stop_reason" and (role := data.get("role")):
                 row = replace(
                     row, stop_reasons={**row.stop_reasons, role: data["reason"]}

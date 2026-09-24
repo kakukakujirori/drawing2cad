@@ -224,6 +224,48 @@ ret_hole = ret_base.cut(object())
 
 
 @pytest.mark.parametrize(
+    "update",
+    [
+        "for cutter in cutters:\n    ret_hole = ret_hole.cut(cutter)",
+        "while cutters:\n    ret_hole = ret_hole.cut(cutters.pop())",
+        "if cutters:\n    ret_hole = ret_hole.cut(cutters[0])",
+        "for cutter in cutters:\n    if cutter:\n        ret_hole = ret_hole.cut(cutter)",
+        "for ret_hole in shapes:\n    pass",
+        "ret_hole += cutter",
+        "[(ret_hole := ret_hole.cut(cutter)) for cutter in cutters]",
+    ],
+)
+def test_control_flow_updates_do_not_leave_a_stale_identity_fault(update: str) -> None:
+    plan = _plan(_operation("op_base"), _operation("op_hole"), _operation("op_alias"))
+    source = (
+        "ret_base = object()\nret_hole = ret_base\nret_alias = ret_base\n"
+        f"{update}\nret_hole = ret_hole.clean()\nresult = ret_hole\n"
+    )
+    # The update may run zero times: no proof of identity or geometric correctness.
+    assert check_program(source, plan).identity_operations == ("ret_alias",)
+    reset = source + "ret_hole = ret_base.copy().clean()\n"
+    assert check_program(reset, plan).identity_operations == ("ret_alias", "ret_hole")
+
+
+@pytest.mark.parametrize(
+    "local_work",
+    [
+        "def helper():\n    ret_hole = object()",
+        "if enabled:\n    def helper():\n        ret_hole = object()",
+        "class Helper:\n    ret_hole = object()",
+        "helper = lambda: (ret_hole := object())",
+        "[ret_hole for ret_hole in shapes]",
+    ],
+)
+def test_local_assignments_do_not_hide_a_module_identity(local_work: str) -> None:
+    plan = _plan(_operation("op_base"), _operation("op_hole"))
+    source = (
+        f"ret_base = object()\nret_hole = ret_base\n{local_work}\nresult = ret_hole\n"
+    )
+    assert check_program(source, plan).identity_operations == ("ret_hole",)
+
+
+@pytest.mark.parametrize(
     "replacement",
     [
         "ret_hole = ret_base",

@@ -31,6 +31,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
 )
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.verification import AttemptStore, ExecutionStatus
+from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
 
 
 def snapshot() -> ReconstructionSnapshot:
@@ -64,7 +65,10 @@ def snapshot() -> ReconstructionSnapshot:
         ),
         program_source="ret_bore = object()\nresult = ret_bore\n",
         verification=VerifyOutputResult(
-            verification_id="000", status=ExecutionStatus.VERIFIED, returncode=0
+            verification_id="000",
+            exec_report=CadQueryExecutionReport(
+                status=ExecutionStatus.VERIFIED, returncode=0
+            ),
         ),
     )
 

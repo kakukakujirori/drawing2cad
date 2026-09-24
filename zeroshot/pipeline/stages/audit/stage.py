@@ -15,6 +15,7 @@ from zeroshot.pipeline.stages._base.prompt import (
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
 from zeroshot.pipeline.stages.audit.verify import AuditVerifier
+from zeroshot.pipeline.stages.coding.verify import describe_drawing_diffs
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
@@ -66,8 +67,17 @@ class AuditStage:
             attempt_dir=attempt_dir,
             intermediate_returns_dir=(
                 str(PurePosixPath(attempt_dir) / INTERMEDIATE_RETURNS_DIR)
-                if verification.intermediate_returns
+                if verification.exec_report
+                and verification.exec_report.intermediate_returns
                 else "unavailable"
+            ),
+            drawing_diff_summary=(
+                describe_drawing_diffs(
+                    verification.drawing_diff_report,
+                    self.instructions.workdir,
+                )
+                if verification.drawing_diff_report is not None
+                else "No automatic drawing comparison was recorded."
             ),
         )
         result = self.agent.invoke(

@@ -6,6 +6,10 @@ from .run_cadquery import (
     ExecutionStatus,
     IntermediateReturn,
 )
+from .run_drawing_diff import (
+    DrawingDiffExecutor,
+    DrawingDiffReport,
+)
 from .run_render import (
     RenderReport,
     RenderStatus,
@@ -16,6 +20,8 @@ __all__ = [
     "AttemptStore",
     "CadQueryExecutionReport",
     "CadQueryExecutor",
+    "DrawingDiffExecutor",
+    "DrawingDiffReport",
     "ExecutionStatus",
     "IntermediateReturn",
     "ProgramCheck",

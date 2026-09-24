@@ -2,10 +2,11 @@ import json
 import shlex
 import sys
 from collections.abc import Mapping
+from dataclasses import replace
 from functools import partial
 from inspect import cleandoc
 from io import StringIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any
 
@@ -30,7 +31,7 @@ from zeroshot.pipeline.runner import (
     _latest_program_source,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner
-from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
+from zeroshot.pipeline.stages.coding.verify import RESULT_NAME, VerifyOutputResult
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
     Region,
@@ -46,6 +47,20 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     TicketAnswers,
 )
 from zeroshot.pipeline.verification import CadQueryExecutor, ExecutionStatus
+from zeroshot.pipeline.verification.run_cadquery import (
+    CadQueryExecutionReport,
+    IntermediateReturn,
+)
+from zeroshot.pipeline.verification.run_drawing_diff import (
+    AlignmentResult,
+    DrawingDiffReport,
+)
+from zeroshot.pipeline.verification.run_render import (
+    ProjectionPaths,
+    Render3dPaths,
+    RenderReport,
+    RenderStatus,
+)
 from zeroshot.pipeline.workflow import (
     StopReason,
     create_agent,
@@ -282,16 +297,18 @@ def _verified_resume_run():
         ),
         workspace_output=VerifyOutputResult(
             verification_id="007",
-            status=ExecutionStatus.VERIFIED,
-            source=VALID_BOX_SOURCE,
-            returncode=0,
+            exec_report=CadQueryExecutionReport(
+                status=ExecutionStatus.VERIFIED,
+                source=VALID_BOX_SOURCE,
+                returncode=0,
+            ),
         ),
     )
 
     return run
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "operations", "audit"])
+@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding", "audit"])
 def test_resume_copies_an_external_attempt_directly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
 ) -> None:
@@ -309,7 +326,7 @@ def test_resume_copies_an_external_attempt_directly(
     artifact = diagnostic.parent / f"{stage}.json"
     (source_workspace / artifact).write_text(
         "{}"
-        if stage == "audit"
+        if stage in {"coding", "audit"}
         else getattr(run.snapshots[-1], stage).model_dump_json()
     )
     future_diagnostic = Path(
@@ -361,7 +378,7 @@ def test_resume_copies_an_external_attempt_directly(
     assert (source_workspace / future_diagnostic).is_file()
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "operations", "audit"])
+@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding", "audit"])
 def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     tmp_path: Path, stage: str
 ) -> None:
@@ -380,7 +397,7 @@ def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     artifact = diagnostic.parent / f"{stage}.json"
     artifact_json = (
         "{}"
-        if stage == "audit"
+        if stage in {"coding", "audit"}
         else getattr(run.snapshots[-1], stage).model_dump_json()
     )
     (workspace / artifact).write_text(artifact_json)
@@ -582,6 +599,97 @@ def test_public_resume_accepts_the_same_input_at_another_path_and_sample_name(
     restored = destination / "workspace" / "inputs" / "view_drawing.png"
     assert restored.read_bytes() == Path(manifest.drawing[0].file).read_bytes()
     assert (destination / "workspace" / "model.py").read_text() == VALID_BOX_SOURCE
+
+
+@pytest.mark.parametrize("same_workspace", [False, True])
+def test_public_resume_relocates_nested_verification_paths(
+    tmp_path: Path, same_workspace: bool
+) -> None:
+    runner, manifest, original, saved_input = _resume_input_case(
+        tmp_path, same_workspace
+    )
+    source = runner.resume_from.parent
+    relative = Path("attempts/round_000/coding/007")
+    attempt = source / relative
+    projection = attempt / "projection/front.png"
+    overlay = projection.with_stem("front_overlay")
+    residual = projection.with_stem("front_residual")
+    intermediate = attempt / "intermediate_returns/ret_base.step"
+    for path in (projection, overlay, residual, intermediate):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"preserved artifact")
+    verification = original.snapshots[-1].verification
+    original.snapshots[-1].verification = replace(
+        verification,
+        host_verification_dir=attempt,
+        sandbox_verification_dir=str(PurePosixPath("/work") / relative),
+        exec_report=replace(
+            verification.exec_report,
+            step_path=attempt / "output.step",
+            intermediate_returns=(IntermediateReturn("ret_base", intermediate),),
+        ),
+        render_report={
+            RESULT_NAME: RenderReport(
+                status=RenderStatus.OK,
+                projection_paths=ProjectionPaths(front=projection.with_suffix(".dxf")),
+                render3d_paths=Render3dPaths(),
+            ),
+        },
+        drawing_diff_report={
+            "view_front": DrawingDiffReport(
+                drawing_path=saved_input,
+                projection_path=projection,
+                alignment=AlignmentResult(
+                    backend="directional_chamfer",
+                    model="similarity",
+                    status="ok",
+                    H_drawing_to_projection=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                    diagnostics={"description": str(source)},
+                ),
+                paths={"overlay_path": overlay, "residual_path": residual},
+            ),
+            "view_top": DrawingDiffReport(
+                drawing_path=saved_input,
+                projection_path=None,
+                error="No projection was produced",
+            ),
+        },
+    )
+    save_reconstruction(runner.resume_from, original)
+
+    result = runner.run_sample(manifest)
+
+    destination = runner.artifact_root / manifest.sample_id / "workspace"
+    restored = result["reconstruction"].snapshots[-1].verification
+    assert restored.host_verification_dir == destination / relative
+    assert restored.sandbox_verification_dir == str(PurePosixPath("/work") / relative)
+    assert restored.exec_report.status is ExecutionStatus.VERIFIED
+    assert restored.exec_report.source is None
+    assert result["reconstruction"].snapshots[-1].program_source == VALID_BOX_SOURCE
+    assert restored.exec_report.step_path == destination / relative / "output.step"
+    assert restored.exec_report.intermediate_returns[0].step_path == (
+        destination / intermediate.relative_to(source)
+    )
+    assert restored.render_report[RESULT_NAME].projection_paths.front == (
+        destination / projection.relative_to(source).with_suffix(".dxf")
+    )
+    diff = restored.drawing_diff_report["view_front"]
+    assert diff.drawing_path == destination / saved_input.relative_to(source)
+    assert diff.projection_path == destination / projection.relative_to(source)
+    assert diff.paths == {
+        "overlay_path": destination / overlay.relative_to(source),
+        "residual_path": destination / residual.relative_to(source),
+    }
+    assert isinstance(diff.alignment, AlignmentResult)
+    assert diff.alignment.H_drawing_to_projection == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    assert diff.alignment.diagnostics == {"description": str(source)}
+    assert restored.drawing_diff_report["view_top"].projection_path is None
+    for path in (
+        *diff.paths.values(),
+        restored.exec_report.intermediate_returns[0].step_path,
+    ):
+        assert path.read_bytes() == b"preserved artifact"
+    assert original.snapshots[-1].verification.host_verification_dir == attempt
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -1089,7 +1197,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     assert result is not None
     report = _final_verification(result)
     assert report is not None
-    assert report.status == "VERIFIED"
+    assert report.exec_report.status == "VERIFIED"
     # One build: the coder's write triggered it without being asked, and the
     # workflow's own final verification found the same source already built.
     assert report.verification_id == "000"
@@ -1120,9 +1228,9 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
         .splitlines()
     ]
     verification = next(event for event in events if event["event"] == "verification")
-    assert verification["data"]["report"]["status"] == "VERIFIED"
+    assert verification["data"]["report"]["exec_report"]["status"] == "VERIFIED"
     assert verification["data"]["report"]["verification_id"] == "000"
-    assert verification["data"]["report"]["source"] is None
+    assert verification["data"]["report"]["exec_report"]["source"] is None
 
 
 def test_run_sample_repairs_model_after_intermediate_verification_failure(
@@ -1189,7 +1297,7 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
 
     final_report = _final_verification(result)
     assert final_report is not None
-    assert final_report.status == "VERIFIED"
+    assert final_report.exec_report.status == "VERIFIED"
     assert final_report.verification_id == "001"
 
     # One attempt per program: the broken one, then the repair the workflow's

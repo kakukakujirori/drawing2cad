@@ -67,6 +67,7 @@ _RUN_PATHS = {
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
     "dimension_inventory": "[]",
+    "drawing_diff_summary": "No automatic drawing comparison was recorded.",
 }
 
 
@@ -507,6 +508,11 @@ def test_coding_receives_all_dimension_readings_even_when_the_plan_omits_them(
         middleware=Mock(),
         input_after_compaction=False,
     )
+
+    def check_baseline_context():
+        assert stage.output_verifier.interpretation is held
+
+    stage.middleware.reset.side_effect = check_baseline_context
     stage.run(state, {})
     instruction = agent.invoke.call_args.args[0]["messages"][-1].text
     (inventory,) = re.findall(r"```json\n(.*?)\n```", instruction, re.DOTALL)

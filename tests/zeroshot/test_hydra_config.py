@@ -8,12 +8,14 @@ from hydra.utils import instantiate
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.codex import _ChatOpenAICodex
 from langchain_openrouter import ChatOpenRouter
+from omegaconf import OmegaConf
 
 from tests.zeroshot.prompt_paths import ROLE_PATHS
 from zeroshot.pipeline.event_logging import ConsoleReporter
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
+from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffExecutor
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
 
@@ -270,7 +272,12 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "max_audit_reject_count",
         "max_stage_validation_retries",
         "show_intermediate_returns",
+        "diff_drawer_config",
     }
+    assert (
+        graph_factory.keywords["diff_drawer_config"]["backend"] == "directional_chamfer"
+    )
+    assert graph_factory.keywords["diff_drawer_config"]["model"] == "similarity"
 
     coder = graph_factory.keywords["coding_agent_builder"]
     assert coder.func is create_agent
@@ -343,6 +350,47 @@ def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None
     )
     # Inherited from staged rather than restated here.
     assert "max_audit_reject_count" in graph_factory.keywords
+
+
+@pytest.mark.parametrize("workflow", ["staged", "continued"])
+def test_drawing_diff_accepts_null_color_scale_without_a_separate_mode(workflow):
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(
+            config_name="default",
+            overrides=[
+                f"workflow={workflow}",
+                "workflow.diff_drawer_config.backend=match_anything",
+                "workflow.diff_drawer_config.distance_clip_px=null",
+            ],
+        )
+
+    settings = config.workflow.diff_drawer_config
+    assert settings.backend == "match_anything"
+    assert settings.distance_clip_px is None
+    assert "color_normalization" not in settings
+    assert "distance_tolerance_px" not in settings
+    # Reject drift at construction, before a worker or model is launched.
+    assert (
+        DrawingDiffExecutor(**OmegaConf.to_container(settings)).distance_clip_px is None
+    )
+
+
+@pytest.mark.parametrize("workflow", ["staged", "continued"])
+def test_drawing_diff_can_be_disabled_with_null_config(workflow: str) -> None:
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()),
+        version_base="1.3",
+    ):
+        config = compose(
+            config_name="default",
+            overrides=[f"workflow={workflow}", "workflow.diff_drawer_config=null"],
+        )
+
+    graph_factory = instantiate(config.workflow)
+    assert graph_factory.keywords["diff_drawer_config"] is None
 
 
 def test_every_rerun_policy_the_config_documents_is_accepted() -> None:

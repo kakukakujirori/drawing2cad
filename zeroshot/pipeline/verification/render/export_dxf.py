@@ -98,7 +98,9 @@ def export_view(dxf_path: Path, projection: ViewProjection, layer: str) -> None:
 
 
 def png_bounds(
-    modelspace: Modelspace, *, margin_ratio: float,
+    modelspace: Modelspace,
+    *,
+    margin_ratio: float,
 ) -> tuple[float, float, float, float]:
     """UV bounds, with each margin a fraction of the drawing's short side."""
     if not math.isfinite(margin_ratio) or margin_ratio < 0:

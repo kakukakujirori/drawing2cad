@@ -153,7 +153,8 @@ def test_default_mark_keeps_raster_context_and_source(workspace, box):
     source = workspace.host_bind_dir / "front.png"
     original = source.read_bytes()
     written = render_evidence(
-        _finding(cite("front.png", box)), workspace.host_bind_dir / "marked",
+        _finding(cite("front.png", box)),
+        workspace.host_bind_dir / "marked",
         workspace,
     )
     with Image.open(workspace.sandbox_to_host_path(written[0])) as image:
@@ -172,8 +173,11 @@ def test_mark_uses_padded_dxf_frame_and_flips_vertical_axis(workspace, margin_ra
     with Image.open(sheet) as image:
         size = image.size
     written = render_evidence(
-        _finding(region), workspace.host_bind_dir / "marked", workspace,
-        mode="mark", margin_ratio=margin_ratio,
+        _finding(region),
+        workspace.host_bind_dir / "marked",
+        workspace,
+        mode="mark",
+        margin_ratio=margin_ratio,
     )
     with Image.open(workspace.sandbox_to_host_path(written[0])) as image:
         assert image.size == size

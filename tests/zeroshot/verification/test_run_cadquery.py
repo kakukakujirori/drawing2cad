@@ -252,6 +252,7 @@ def test_execute_writes_verified_step_to_requested_path(tmp_path: Path) -> None:
         source=VALID_BOX_SOURCE,
         status=ExecutionStatus.VERIFIED,
         returncode=0,
+        step_path=output_step_path,
         stdout="construction log",
         stderr="construction warning",
         # A 10x20x30 box is six planes and twelve straight edges. The census

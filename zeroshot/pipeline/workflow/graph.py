@@ -1,4 +1,5 @@
 import re
+from collections.abc import Mapping
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -77,6 +78,7 @@ def create_reconstruction_graph(
     compact_between_stages: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     audit_evidence_mode: EvidenceMode = "mark",
+    diff_drawer_config: Mapping[str, Any] | None = None,
 ):
     """Interpret and plan the part, implement it, then verify and audit it."""
     if max_audit_reject_count < 0:
@@ -164,6 +166,7 @@ def create_reconstruction_graph(
         attempt_store=attempt_store,
         sandbox_runner=sandbox_runner,
         feedback_presentation_mode=artifact_presenter.feedback_mode,
+        diff_drawer_config=diff_drawer_config,
         output_filename=output_filename,
         show_intermediate_returns=show_intermediate_returns,
         input_after_compaction=compact_between_stages is not None,
@@ -267,7 +270,7 @@ def create_reconstruction_graph(
                 accepted = operation_stage.operation_verifier.accepted_plan
                 filename = operations_filename
             case PipelineStage.CODING:
-                return coding_stage.output_verifier.verify()[0]
+                return coding_stage.output_verifier.verify()
             case _:
                 raise RuntimeError(f"{stage} is not a reasoning stage")
         if accepted is None:

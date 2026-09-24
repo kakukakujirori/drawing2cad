@@ -46,15 +46,22 @@ def build_snapshot_update(
     """
     current = history.snapshots[-1]
     deliverable = workspace_output
+    artifact = (
+        (
+            deliverable.exec_report.source
+            if deliverable.exec_report is not None
+            else None
+        )
+        if isinstance(deliverable, VerifyOutputResult)
+        else deliverable
+    )
     raise_together(
         partial(validate_submission, submission, current, deliverable=deliverable),
         partial(
             validate_revision_scope,
             submission.stage_report,
             history,
-            deliverable.source
-            if isinstance(deliverable, VerifyOutputResult)
-            else deliverable,
+            artifact,
         ),
     )
 
@@ -77,8 +84,9 @@ def build_snapshot_update(
             artifacts = {"operations": deliverable}
         case PipelineStage.CODING:
             terminal = cast(VerifyOutputResult, deliverable)
+            assert terminal.exec_report is not None
             artifacts = {
-                "program_source": terminal.source,
+                "program_source": terminal.exec_report.source,
                 "verification": _verification_for_snapshot(terminal),
             }
 
@@ -96,11 +104,17 @@ def build_snapshot_update(
 
 def _verification_for_snapshot(verification: VerifyOutputResult) -> VerifyOutputResult:
     """Keep source in program_source only, and bound the persisted logs."""
+    exec_report = verification.exec_report
+    assert exec_report is not None
+
     return replace(
         verification,
-        source=None,
-        stdout=_clip_log(verification.stdout),
-        stderr=_clip_log(verification.stderr),
+        exec_report=replace(
+            exec_report,
+            source=None,
+            stdout=_clip_log(exec_report.stdout),
+            stderr=_clip_log(exec_report.stderr),
+        ),
     )
 
 

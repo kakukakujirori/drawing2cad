@@ -123,7 +123,9 @@ def test_png_keeps_all_four_border_lines_inside_white_margins(tmp_path):
     doc.saveas(path)
 
     with Image.open(export_to_png(path)) as image:
-        ink = ImageChops.invert(image.convert("L")).point(lambda p: 255 if p > 127 else 0)
+        ink = ImageChops.invert(image.convert("L")).point(
+            lambda p: 255 if p > 127 else 0
+        )
         left, top, right, bottom = ink.getbbox()
         assert 5 < left < right < image.width - 5
         assert 5 < top < bottom < image.height - 5

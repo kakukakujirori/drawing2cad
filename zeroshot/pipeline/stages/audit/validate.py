@@ -42,8 +42,9 @@ def validate_audit_report(
     _validate_concern_coverage(report, snapshot)
     if not report.findings and (  # i.e., accepted
         snapshot.verification is None
-        or snapshot.verification.status is not ExecutionStatus.VERIFIED
-        or snapshot.verification.returncode != 0
+        or snapshot.verification.exec_report is None
+        or snapshot.verification.exec_report.status is not ExecutionStatus.VERIFIED
+        or snapshot.verification.exec_report.returncode != 0
     ):
         raise SubmissionValidationError(
             "audit cannot accept a reconstruction without a verified solid; "

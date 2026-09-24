@@ -41,6 +41,7 @@ from zeroshot.pipeline.stages.validate import (
     validate_submission,
 )
 from zeroshot.pipeline.verification import ExecutionStatus
+from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
 from zeroshot.pipeline.workflow import lifecycle as lifecycle_module
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
@@ -90,11 +91,15 @@ def _snapshot(
         for stage in REASONING_STAGES
     ]
     verification = VerifyOutputResult(
-        status=(
-            ExecutionStatus.VERIFIED if source is not None else ExecutionStatus.REJECTED
-        ),
-        source=source,
-        returncode=0 if source is not None else None,
+        exec_report=CadQueryExecutionReport(
+            status=(
+                ExecutionStatus.VERIFIED
+                if source is not None
+                else ExecutionStatus.REJECTED
+            ),
+            source=source,
+            returncode=0 if source is not None else None,
+        )
     )
     return ReconstructionSnapshot(
         open_tickets=[
@@ -147,9 +152,9 @@ def _advance_snapshot(
         program_source=_SOURCE if stage == "coding" else current.program_source,
         verification=(
             VerifyOutputResult(
-                status=ExecutionStatus.VERIFIED,
-                source=_SOURCE,
-                returncode=0,
+                exec_report=CadQueryExecutionReport(
+                    status=ExecutionStatus.VERIFIED, source=_SOURCE, returncode=0
+                )
             )
             if stage == "coding"
             else None
@@ -210,9 +215,9 @@ def _completed_run(
         workspace_output=_operations(),
     )
     verification = verification or VerifyOutputResult(
-        status=ExecutionStatus.VERIFIED,
-        source=_SOURCE,
-        returncode=0,
+        exec_report=CadQueryExecutionReport(
+            status=ExecutionStatus.VERIFIED, source=_SOURCE, returncode=0
+        )
     )
     history = advance_reconstruction(
         history,
@@ -364,7 +369,7 @@ def test_audit_cross_validation_accepts_supported_backtrace_hops() -> None:
 def test_audit_cannot_accept_without_a_verified_solid(status: ExecutionStatus) -> None:
     snapshot = _snapshot()
     snapshot.verification = VerifyOutputResult(
-        status=status, source=_SOURCE, returncode=1
+        exec_report=CadQueryExecutionReport(status=status, source=_SOURCE, returncode=1)
     )
     with pytest.raises(SubmissionValidationError, match="without a verified solid"):
         validate_submission(
@@ -511,30 +516,32 @@ def test_advance_reconstruction_integrates_each_stage_without_mutating_the_run()
 
 def test_coding_stores_the_program_once_and_clips_long_logs() -> None:
     noisy = VerifyOutputResult(
-        status=ExecutionStatus.VERIFIED,
-        source=_SOURCE,
-        returncode=0,
-        stdout="x" * 10_000,
-        stderr="short",
+        exec_report=CadQueryExecutionReport(
+            status=ExecutionStatus.VERIFIED,
+            source=_SOURCE,
+            returncode=0,
+            stdout="x" * 10_000,
+            stderr="short",
+        )
     )
 
     snapshot = _completed_run(verification=noisy).snapshots[-1]
 
     assert snapshot.program_source == _SOURCE
     assert snapshot.verification is not None
-    assert snapshot.verification.source is None
-    assert "characters omitted" in snapshot.verification.stdout
-    assert len(snapshot.verification.stdout) < len(noisy.stdout)
-    assert snapshot.verification.stderr == "short"
-    assert noisy.source == _SOURCE
-    assert noisy.stdout == "x" * 10_000
+    assert snapshot.verification.exec_report.source is None
+    assert "characters omitted" in snapshot.verification.exec_report.stdout
+    assert len(snapshot.verification.exec_report.stdout) < len(noisy.exec_report.stdout)
+    assert snapshot.verification.exec_report.stderr == "short"
+    assert noisy.exec_report.source == _SOURCE
+    assert noisy.exec_report.stdout == "x" * 10_000
 
 
 def test_coding_without_readable_source_still_completes_the_round() -> None:
     failed = VerifyOutputResult(
-        status=ExecutionStatus.REJECTED,
-        source=None,
-        stderr="model.py is missing",
+        exec_report=CadQueryExecutionReport(
+            status=ExecutionStatus.REJECTED, source=None, stderr="model.py is missing"
+        )
     )
 
     run = _completed_run(verification=failed)
@@ -543,8 +550,8 @@ def test_coding_without_readable_source_still_completes_the_round() -> None:
     assert snapshot.last_completed_stage is PipelineStage.CODING
     assert snapshot.program_source is None
     assert snapshot.verification is not None
-    assert snapshot.verification.status is ExecutionStatus.REJECTED
-    assert snapshot.verification.stderr == failed.stderr
+    assert snapshot.verification.exec_report.status is ExecutionStatus.REJECTED
+    assert snapshot.verification.exec_report.stderr == failed.exec_report.stderr
     assert snapshot.open_tickets[0].responses[-1].stage is PipelineStage.CODING
     assert ReconstructionHistory.model_validate_json(run.model_dump_json()) == run
 
@@ -703,7 +710,12 @@ def test_snapshot_commit_preserves_prior_responses() -> None:
     ("field", "value"),
     [
         ("interpretation", interpretation("a replacement from the wrong stage")),
-        ("verification", VerifyOutputResult(status=ExecutionStatus.REJECTED)),
+        (
+            "verification",
+            VerifyOutputResult(
+                exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+            ),
+        ),
     ],
 )
 def test_snapshot_commit_preserves_artifacts_owned_by_other_stages(

@@ -8,19 +8,22 @@ from typing import Literal
 import ezdxf
 import pytest
 from PIL import Image
+from pydantic import TypeAdapter
 
-from tests.zeroshot.contracts import UNTURNED
+from tests.zeroshot.contracts import UNTURNED, interpretation
+from tests.zeroshot.contracts import view as drawing_view
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import (
     FEEDBACK_PICTORIAL,
+    RESULT_NAME,
     OutputVerifier,
     VerifyOutputResult,
     _census_table,
 )
-from zeroshot.pipeline.stages.interpretation.contracts import Axis, View
+from zeroshot.pipeline.stages.interpretation.contracts import Axis, Region, View
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
-from zeroshot.pipeline.tools.verify_output import create_verify_output_tool
 from zeroshot.pipeline.verification.attempts import AttemptStore
+from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
@@ -31,6 +34,7 @@ from zeroshot.pipeline.verification.run_cadquery import (
     ExecutionStatus,
     IntermediateReturn,
 )
+from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 from zeroshot.pipeline.verification.run_render import (
     RenderReport,
     RenderRequest,
@@ -72,18 +76,20 @@ class StubCadQueryExecutor:
     ) -> CadQueryExecutionReport:
         self.calls.append((model_path, output_step_path))
         self.intermediate_returns_dirs.append(intermediate_returns_dir)
+        report = self.report
         # A verified run leaves the STEP behind, which is what gets rendered.
         if (
             output_step_path is not None
             and self.report.status is ExecutionStatus.VERIFIED
         ):
             output_step_path.write_text("ISO-10303-21;\nEND-ISO-10303-21;\n")
+            report = replace(report, step_path=output_step_path)
         # Kept whenever the program ran, as the real executor does: a
         # `result` that fails to verify still leaves every ret_xxx behind.
         if intermediate_returns_dir is None or not self.return_names:
-            return self.report
+            return report
         return replace(
-            self.report,
+            report,
             intermediate_returns=tuple(
                 self._keep(intermediate_returns_dir, index, name)
                 for index, name in enumerate(self.return_names)
@@ -139,8 +145,9 @@ def _create_verifier(
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
     attempt_store: AttemptStore | None = None,
     show_intermediate_returns: bool = True,
+    diff_drawer: object | None = None,
 ) -> OutputVerifier:
-    return OutputVerifier(
+    verifier = OutputVerifier(
         executor,  # type: ignore[arg-type]
         workdir,
         renderer=renderer or StubRenderer(),  # type: ignore[arg-type]
@@ -151,10 +158,17 @@ def _create_verifier(
             round_source=lambda: 0,
             root_dirname=output_dirname,
         ),
-        views=views,
         source_filename=source_filename,
         show_intermediate_returns=show_intermediate_returns,
+        diff_drawer=diff_drawer,  # type: ignore[arg-type]
     )
+    verifier.interpretation = interpretation(
+        views=[
+            drawing_view(role.value, u_axis=axes[0], v_axis=axes[1])
+            for role, axes in views.items()
+        ]
+    )
+    return verifier
 
 
 def _coding_attempt(
@@ -163,6 +177,75 @@ def _coding_attempt(
     round_number: int = 0,
 ) -> Path:
     return workdir / "attempts" / f"round_{round_number:03d}" / "coding" / attempt_id
+
+
+def test_real_cadquery_render_and_drawing_diff_reach_feedback(tmp_path: Path) -> None:
+    import sys
+
+    from PIL import ImageDraw
+
+    from zeroshot.pipeline.sandbox import SandboxRunner
+    from zeroshot.pipeline.verification import (
+        CadQueryExecutor,
+        DrawingDiffExecutor,
+        StepRenderer,
+    )
+
+    (tmp_path / "model.py").write_text(VALID_SOURCE)
+    drawing_path = tmp_path / "front.png"
+    image = Image.new("RGB", (140, 340), "white")
+    ImageDraw.Draw(image).rectangle((20, 20, 120, 320), outline="black", width=2)
+    image.save(drawing_path)
+    with SandboxWorkdir(host_bind_dir=tmp_path) as workdir:
+        verifier = OutputVerifier(
+            executor=CadQueryExecutor(
+                sandbox_runner=SandboxRunner(
+                    python_executable=Path(sys.executable), default_timeout_s=30
+                )
+            ),
+            workdir=workdir,
+            renderer=StepRenderer(max_workers=1),
+            diff_drawer=DrawingDiffExecutor(),
+            feedback_presentation_mode="path",
+            attempt_store=AttemptStore(workdir, round_source=lambda: 0),
+            show_intermediate_returns=False,
+        )
+        verifier.interpretation = interpretation(
+            views=[
+                drawing_view(
+                    file="/work/front.png",
+                    image_size=image.size,
+                    region=Region(view="view_front", box_px=(0, 0, *image.size)),
+                )
+            ],
+        )
+
+        blocks = verifier.feedback()
+        report = verifier.verify()
+
+    assert report.exec_report.status is ExecutionStatus.VERIFIED
+    assert report.exec_report.step_path.is_file()
+    assert report.render_report[RESULT_NAME].projection_paths.front.is_file()
+    diff = report.drawing_diff_report["view_front"]
+    assert diff.error is None
+    assert diff.alignment.H_drawing_to_projection is not None
+    assert diff.drawing_path == drawing_path
+    assert set(diff.paths) == {"overlay_path", "residual_path"}
+    adapter = TypeAdapter(VerifyOutputResult)
+    restored = adapter.validate_json(adapter.dump_json(report))
+    assert restored.exec_report == report.exec_report
+    assert restored.render_report == report.render_report
+    assert restored.drawing_diff_report["view_front"].paths == diff.paths
+    # Untyped diagnostic tuples become JSON arrays; their values must survive.
+    assert adapter.dump_json(restored) == adapter.dump_json(report)
+    for path in diff.paths.values():
+        assert path.parent == diff.projection_path.parent
+        with Image.open(path) as saved, Image.open(diff.projection_path) as projection:
+            assert saved.size == projection.size
+    text = "\n".join(block["text"] for block in blocks if block["type"] == "text")
+    assert "[Drawing comparison]" in text
+    assert "/work/attempts/round_000/coding/000/projection/front_overlay.png" in text
+    assert "/work/attempts/round_000/coding/000/projection/front_residual.png" in text
 
 
 type Frames = Mapping[View, tuple[Axis, Axis]]
@@ -217,6 +300,7 @@ class StubRenderer:
                 [(-5, -5), (10, -5), (10, 10), (-5, 10)], close=True
             )
             doc.saveas(path)
+            Image.new("RGB", (20, 20), "white").save(path.with_suffix(".png"))
 
         errors: dict[str, str] = {}
         for style in self.skip_styles:
@@ -275,48 +359,6 @@ def test_rejects_a_source_filename_outside_the_workdir_root_or_not_python(
         ValueError, match="source_filename must be a Python file basename"
     ):
         _create_verifier(executor, workdir, source_filename=source_filename)
-
-
-def test_the_tool_takes_no_arguments_and_names_the_file_it_builds(
-    tmp_path: Path,
-) -> None:
-    """An agent that must ask needs no parameters: the program is on disk."""
-    executor = StubCadQueryExecutor(_execution_report())
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-
-    verify_output = create_verify_output_tool(
-        executor,  # type: ignore[arg-type]
-        workdir,
-        renderer=StubRenderer(),  # type: ignore[arg-type]
-        feedback_presentation_mode="none",
-        views=THIRD_ANGLE,
-        source_filename="candidate.py",
-    )
-
-    assert verify_output.name == "verify_output"
-    assert verify_output.get_input_jsonschema()["properties"] == {}
-    assert "/work/candidate.py" in verify_output.description
-    assert (tmp_path / "attempts").is_dir()
-
-
-def test_the_tool_result_is_what_the_model_reads(tmp_path: Path) -> None:
-    executor = StubCadQueryExecutor(_execution_report())
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    verify_output = create_verify_output_tool(
-        executor,  # type: ignore[arg-type]
-        workdir,
-        renderer=StubRenderer(),  # type: ignore[arg-type]
-        feedback_presentation_mode="path",
-        views=THIRD_ANGLE,
-    )
-
-    result = verify_output.invoke({})
-
-    assert _report_json(result)["status"] == "VERIFIED"
-    # The source stays in the report the workflow keeps, never in the context.
-    assert "source" not in _report_json(result)
-    assert "projection/front.dxf" in _text(result)
 
 
 def test_delegates_paths_and_returns_json_safe_mapping(tmp_path: Path) -> None:
@@ -394,7 +436,7 @@ def test_the_intermediate_returns_are_kept_beside_their_attempt(
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir)
 
-    report, _ = verifier.verify()
+    report = verifier.verify()
 
     assert report.verification_id is not None
     assert executor.intermediate_returns_dirs == [
@@ -416,10 +458,10 @@ def test_the_returns_block_says_what_to_do_with_the_drawings_it_lists(
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
 
-    report, _ = _create_verifier(executor, workdir).verify()
+    text = _text(_create_verifier(executor, workdir).feedback())
 
-    assert "load_image" in report.intermediate_returns
-    assert "what it was meant to" in report.intermediate_returns
+    assert "load_image" in text
+    assert "[Intermediate results]" in text
 
 
 def test_a_run_with_the_returns_switched_off_says_nothing_about_them(
@@ -432,9 +474,11 @@ def test_a_run_with_the_returns_switched_off_says_nothing_about_them(
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir, show_intermediate_returns=False)
 
-    report, _ = verifier.verify()
+    report = verifier.verify()
 
-    assert report.intermediate_returns == ""
+    assert report.exec_report.intermediate_returns == ()
+    assert set(report.render_report) == {RESULT_NAME}
+    assert "[Intermediate results]" not in _text(verifier.feedback())
 
 
 def test_assigns_incrementing_verification_ids(tmp_path: Path) -> None:
@@ -464,11 +508,11 @@ def test_a_new_round_restarts_coding_attempt_ids_without_overwriting_history(
     store = AttemptStore(workdir, round_source=lambda: current_round[0])
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir, attempt_store=store)
-    first, _ = verifier.verify()
+    first = verifier.verify()
 
     current_round[0] = 1
     verifier.reset()
-    second, _ = verifier.verify()
+    second = verifier.verify()
 
     assert first.verification_id == second.verification_id == "000"
     assert _coding_attempt(tmp_path, round_number=0).is_dir()
@@ -482,14 +526,195 @@ def test_an_unchanged_program_is_not_built_twice(tmp_path: Path) -> None:
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir)
 
-    first, first_manifest = verifier.verify()
-    second, second_manifest = verifier.verify()
+    first = verifier.verify()
+    second = verifier.verify()
 
     assert len(executor.calls) == 1
     assert first == second
-    assert first_manifest == second_manifest
     assert [path.name for path in (tmp_path / "attempts").iterdir()] == ["round_000"]
     assert [path.name for path in _coding_attempt(tmp_path).parent.iterdir()] == ["000"]
+
+
+class StubDiffDrawer:
+    def __init__(self, *, error=None, fatal=False):
+        self.error = error
+        self.fatal = fatal
+        self.calls = []
+
+    def execute(self, pairs):
+        self.calls.append(list(pairs))
+        if self.fatal:
+            raise RuntimeError("comparison worker failed")
+        return [
+            DrawingDiffReport(
+                drawing_path=drawing,
+                projection_path=projection,
+                error=self.error,
+                alignment=None
+                if self.error
+                else AlignmentResult(
+                    "directional_chamfer",
+                    "similarity",
+                    "ok",
+                    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    {},
+                ),
+                paths={}
+                if self.error
+                else {
+                    "overlay_path": projection.with_name(
+                        f"{projection.stem}_overlay.png"
+                    ),
+                    "residual_path": projection.with_name(
+                        f"{projection.stem}_residual.png"
+                    ),
+                },
+            )
+            for drawing, projection in pairs
+        ]
+
+
+def _set_input_crop(verifier, tmp_path):
+    Image.new("RGB", (20, 20), "white").save(tmp_path / "front.png")
+    verifier.interpretation = interpretation(
+        views=[
+            drawing_view(
+                "full_page",
+                name="view_page",
+                file="/work/page.png",
+                region=Region(view="view_page", box_px=(0, 0, 1000, 1000)),
+            ),
+            drawing_view(
+                "front",
+                file="/work/front.png",
+                # DrawingView.file is already cropped; this box locates it on the page.
+                region=Region(view="view_page", box_px=(800, 600, 820, 620)),
+            ),
+        ]
+    )
+
+
+def test_diff_uses_final_render_and_feedback_formats_the_stored_reports(tmp_path):
+    workdir = SandboxWorkdir(tmp_path)
+    (tmp_path / "model.py").write_text(VALID_SOURCE)
+    executor = StubCadQueryExecutor(_execution_report(), return_names=("ret_base",))
+    drawer = StubDiffDrawer()
+    verifier = _create_verifier(executor, workdir, diff_drawer=drawer)
+    _set_input_crop(verifier, tmp_path)
+
+    report = verifier.verify()
+    assert set(report.render_report) == {"ret_base", RESULT_NAME}
+    assert isinstance(report.drawing_diff_report["view_front"], DrawingDiffReport)
+    assert drawer.calls == [
+        [(tmp_path / "front.png", _coding_attempt(tmp_path) / "projection/front.png")]
+    ]
+    assert not verifier.confirmed  # Only feedback confirms the inspected build.
+
+    text = _text(verifier.feedback())
+    assert verifier.confirmed
+    assert "view_front" in text
+    assert "projection/front_overlay.png" in text
+    assert "projection/front_residual.png" in text
+    assert "drawing_diff.json" not in text
+    assert str(tmp_path) not in text
+    assert len(executor.calls) == len(drawer.calls) == 1
+    assert verifier.verify() is report
+
+    # All three nested reports retain their types and values through JSON.
+    adapter = TypeAdapter(VerifyOutputResult)
+    restored = adapter.validate_json(adapter.dump_json(report))
+    assert restored == report
+    assert isinstance(
+        restored.drawing_diff_report["view_front"].alignment, AlignmentResult
+    )
+    assert isinstance(restored.exec_report.step_path, Path)
+    assert _text(verifier.feedback()).count("[Drawing comparison]") == 1
+
+    # A new stage invocation resets cached builds, even if model.py is unchanged.
+    verifier.reset()
+    verifier.feedback()
+    assert len(executor.calls) == len(drawer.calls) == 2
+
+
+def test_unavailable_views_keep_reasons_without_entering_the_worker(tmp_path):
+    (tmp_path / "model.py").write_text(VALID_SOURCE)
+    drawer = StubDiffDrawer()
+    verifier = _create_verifier(
+        StubCadQueryExecutor(_execution_report()),
+        SandboxWorkdir(tmp_path),
+        renderer=StubRenderer(corrupt_views=("top",)),
+        diff_drawer=drawer,
+    )
+    _set_input_crop(verifier, tmp_path)
+    (tmp_path / "right.dxf").write_text("native drawing")
+    page, front = verifier.interpretation.views
+    verifier.interpretation = interpretation(
+        views=[
+            page,
+            front,
+            front.model_copy(update={"name": "view_front_detail"}),
+            drawing_view("top", file="/work/front.png"),
+            drawing_view("right", file="/work/right.dxf"),
+            drawing_view("left", file="/work/missing.png"),
+        ]
+    )
+
+    reports = verifier.verify().drawing_diff_report
+
+    assert len(drawer.calls) == 1 and len(drawer.calls[0]) == 1
+    assert "view_page" not in reports
+    assert reports["view_front"].error is None
+    assert "already uses this role" in reports["view_front_detail"].error
+    assert "projection PNG unavailable" in reports["view_top"].error
+    assert "native DXF" in reports["view_right"].error
+    assert "input drawing unavailable" in reports["view_left"].error
+
+
+def test_source_digest_reads_only_model_source(tmp_path):
+    verifier = _create_verifier(
+        StubCadQueryExecutor(_execution_report()), SandboxWorkdir(tmp_path)
+    )
+    assert verifier.source_digest() is None
+    verifier.source_path.write_text(VALID_SOURCE)
+    original = verifier.source_digest()
+    _set_input_crop(verifier, tmp_path)
+    assert verifier.source_digest() == original
+    verifier.source_path.write_text(VALID_SOURCE + "\n# changed program\n")
+    assert verifier.source_digest() != original
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_pair_failure_is_feedback_and_does_not_reject_step(tmp_path, enabled):
+    (tmp_path / "model.py").write_text(VALID_SOURCE)
+    drawer = StubDiffDrawer(error="alignment failed") if enabled else None
+    verifier = _create_verifier(
+        StubCadQueryExecutor(_execution_report()),
+        SandboxWorkdir(tmp_path),
+        diff_drawer=drawer,
+    )
+    _set_input_crop(verifier, tmp_path)
+
+    text = _text(verifier.feedback())
+    report = verifier.verify()
+    assert report.exec_report.status is ExecutionStatus.VERIFIED
+    assert verifier.confirmed
+    assert ("alignment failed" in text) is enabled
+    assert ("[Drawing comparison]" in text) is enabled
+    assert "projection/front.png" in text
+    assert (report.drawing_diff_report is not None) is enabled
+
+
+def test_fatal_worker_failure_is_not_hidden_as_a_pair_warning(tmp_path):
+    (tmp_path / "model.py").write_text(VALID_SOURCE)
+    verifier = _create_verifier(
+        StubCadQueryExecutor(_execution_report()),
+        SandboxWorkdir(tmp_path),
+        diff_drawer=StubDiffDrawer(fatal=True),
+    )
+    _set_input_crop(verifier, tmp_path)
+    with pytest.raises(RuntimeError, match="comparison worker failed"):
+        verifier.feedback()
+    assert not verifier.confirmed
 
 
 def test_a_program_written_after_a_failed_verification_is_built(
@@ -500,12 +725,12 @@ def test_a_program_written_after_a_failed_verification_is_built(
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     verifier = _create_verifier(executor, workdir)
 
-    missing, _ = verifier.verify()
+    missing = verifier.verify()
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    written, _ = verifier.verify()
+    written = verifier.verify()
 
-    assert missing.status is ExecutionStatus.REJECTED
-    assert written.status is ExecutionStatus.VERIFIED
+    assert missing.exec_report.status is ExecutionStatus.REJECTED
+    assert written.exec_report.status is ExecutionStatus.VERIFIED
     assert len(executor.calls) == 1
 
 
@@ -579,15 +804,17 @@ def test_the_report_keeps_the_source_that_feedback_leaves_out(tmp_path: Path) ->
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir)
 
-    report, _ = verifier.verify()
+    report = verifier.verify()
 
-    assert report == VerifyOutputResult(
-        verification_id="000",
-        status=ExecutionStatus.VERIFIED,
-        source=VALID_SOURCE,
-        returncode=0,
-        stdout="construction log",
+    assert report.verification_id == "000"
+    assert report.host_verification_dir == _coding_attempt(tmp_path)
+    assert report.sandbox_verification_dir == "/work/attempts/round_000/coding/000"
+    assert report.exec_report == replace(
+        executor.report, step_path=_coding_attempt(tmp_path) / "output.step"
     )
+    assert set(report.render_report) == {RESULT_NAME}
+    assert report.drawing_diff_report is None
+    assert "source" not in _report_json(verifier.feedback())
 
 
 @pytest.mark.parametrize(
@@ -675,6 +902,7 @@ def test_rendered_artifacts_stay_inside_the_verification_directory(
         verification_dir / "model.py",
         verification_dir / "output.step",
         *(verification_dir / "projection" / f"{view}.dxf" for view in VIEWS),
+        *(verification_dir / "projection" / f"{view}.png" for view in VIEWS),
         *(verification_dir / "render_3d" / f"{style}.png" for style in RENDER3D_STYLES),
     }
 
@@ -817,10 +1045,10 @@ def test_images_are_embedded_only_when_the_presenter_asks_for_them(
     assert "image" not in block_types("none")
 
 
-def test_without_visual_feedback_the_model_sees_only_the_report(
+def test_without_image_attachments_the_model_still_sees_orthographic_pngs(
     tmp_path: Path,
 ) -> None:
-    """Rendering for later evaluation must not leak artifacts into the context."""
+    """Both A/B conditions offer the same ordinary projections to inspect."""
     executor = StubCadQueryExecutor(_execution_report())
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
@@ -830,6 +1058,7 @@ def test_without_visual_feedback_the_model_sees_only_the_report(
 
     assert _report_json(result)["status"] == "VERIFIED"
     assert "projection/front.dxf" not in _text(result)
+    assert "/work/attempts/round_000/coding/000/projection/front.png" in _text(result)
     assert (_coding_attempt(tmp_path) / "projection" / "front.dxf").is_file()
 
 
@@ -966,7 +1195,7 @@ def test_every_kept_return_is_drawn_beside_its_step(tmp_path: Path) -> None:
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir)
 
-    report, _ = verifier.verify()
+    report = verifier.verify()
 
     assert report.verification_id is not None
     returns_dir = (
@@ -1018,7 +1247,7 @@ def test_a_return_whose_views_failed_is_named(tmp_path: Path) -> None:
 
     text = _text(verifier.feedback())
 
-    assert "Views that could not be drawn:" in text
+    assert "\nRender failures:\n" in text
     assert "ret_base: RuntimeError: hlg_perspective failed" in text
 
 
@@ -1030,7 +1259,7 @@ def test_a_program_that_kept_nothing_says_nothing_about_returns(
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir)
 
-    assert "Intermediate returns" not in _text(verifier.feedback())
+    assert "[Intermediate results]" not in _text(verifier.feedback())
 
 
 def test_the_returns_are_neither_kept_nor_drawn_when_switched_off(
@@ -1042,14 +1271,8 @@ def test_the_returns_are_neither_kept_nor_drawn_when_switched_off(
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     renderer = StubRenderer()
-    verifier = OutputVerifier(
-        executor,  # type: ignore[arg-type]
-        workdir,
-        renderer=renderer,  # type: ignore[arg-type]
-        feedback_presentation_mode="none",
-        attempt_store=AttemptStore(workdir, round_source=lambda: 0),
-        views=THIRD_ANGLE,
-        show_intermediate_returns=False,
+    verifier = _create_verifier(
+        executor, workdir, renderer=renderer, show_intermediate_returns=False
     )
 
     text = _text(verifier.feedback())
@@ -1057,7 +1280,7 @@ def test_the_returns_are_neither_kept_nor_drawn_when_switched_off(
     # The executor is never asked for them, so nothing downstream can run.
     assert executor.intermediate_returns_dirs == [None]
     assert not (_coding_attempt(tmp_path) / "intermediate_returns").exists()
-    assert "Intermediate returns" not in text
+    assert "[Intermediate results]" not in text
     # One render, for the attempt itself.
     assert len(renderer.calls) == 1
 
@@ -1176,7 +1399,7 @@ def test_only_verified_program_outcomes_are_confirmed(
     assert not verifier.confirmed
     verifier.feedback()
     assert verifier.confirmed is ready
-    assert verifier.verify()[0].status is status
+    assert verifier.verify().exec_report.status is status
     verifier.reset()
     assert not verifier.confirmed
 
@@ -1229,7 +1452,11 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir)
     answer = {
-        "stage_report": {"dimension_checks": {}},
+        "stage_report": {
+            "dimension_checks": {},
+            "concerns": {},
+            "unticketed_changes": {},
+        },
         "responses": {
             "ticket_initial": "The program still fails; audit must diagnose the operation."
         },
@@ -1254,7 +1481,7 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
     assert result.get("structured_response") is None
     assert len(model.received_messages) == 2
     assert any("FAILED" in m.text for m in model.received_messages[1])
-    assert verifier.verify()[0].status is ExecutionStatus.FAILED
+    assert verifier.verify().exec_report.status is ExecutionStatus.FAILED
     assert len(executor.calls) == 1
 
 

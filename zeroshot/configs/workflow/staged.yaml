@@ -11,6 +11,14 @@ workflow:
   _target_: zeroshot.pipeline.workflow.graph.create_reconstruction_graph
   _partial_: true
 
+  # Set diff_drawer_config: null to disable drawing comparison.
+  diff_drawer_config:
+    backend: directional_chamfer
+    model: similarity
+    timeout_seconds: 90.0
+    distance_clip_px: 12.0  # null: normalize colors by each image's maximum distance
+    alignment_options: {}
+
   interpretation_agent_builder:
     _target_: zeroshot.pipeline.workflow.create_agent
     _partial_: true

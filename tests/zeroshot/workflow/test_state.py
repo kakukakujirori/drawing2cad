@@ -1,4 +1,6 @@
+from collections import Counter
 from dataclasses import fields, is_dataclass
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -52,6 +54,21 @@ from zeroshot.pipeline.stages.tickets.contracts import (
 )
 from zeroshot.pipeline.stages.types import PipelineStage, ReasoningStage
 from zeroshot.pipeline.verification import ExecutionStatus
+from zeroshot.pipeline.verification.run_cadquery import (
+    CadQueryExecutionReport,
+    IntermediateReturn,
+)
+from zeroshot.pipeline.verification.run_drawing_diff import (
+    AlignmentResult,
+    DrawingDiffReport,
+)
+from zeroshot.pipeline.verification.run_render import (
+    ProjectionPaths,
+    Render3dPaths,
+    RenderReport,
+    RenderStatus,
+)
+from zeroshot.pipeline.verification.shape_census import ShapeCensus
 from zeroshot.pipeline.workflow import (
     CUSTOM_STATE_TYPES,
 )
@@ -114,9 +131,43 @@ _A_PLAN = OperationPlan(
 
 _VERIFICATION = VerifyOutputResult(
     verification_id="v1",
-    status=ExecutionStatus.VERIFIED,
-    source="ret_base = object()\nresult = ret_base\n",
-    returncode=0,
+    host_verification_dir=Path("/tmp/workspace/attempts/v1"),
+    sandbox_verification_dir="/work/attempts/v1",
+    exec_report=CadQueryExecutionReport(
+        status=ExecutionStatus.VERIFIED,
+        source="ret_base = object()\nresult = ret_base\n",
+        returncode=0,
+        step_path=Path("/tmp/workspace/attempts/v1/output.step"),
+        intermediate_returns=(IntermediateReturn("ret_base"),),
+        census=ShapeCensus(1, 1.0, (1.0, 1.0, 1.0), Counter(Plane=6), Counter(Line=12)),
+    ),
+    render_report={
+        "result": RenderReport(
+            RenderStatus.OK,
+            ProjectionPaths(
+                front=Path("/tmp/workspace/attempts/v1/projection/front.dxf")
+            ),
+            Render3dPaths(),
+        ),
+    },
+    drawing_diff_report={
+        "view_front": DrawingDiffReport(
+            drawing_path=Path("/tmp/workspace/view_front.png"),
+            projection_path=Path("/tmp/workspace/attempts/v1/projection/front.png"),
+            alignment=AlignmentResult(
+                backend="directional_chamfer",
+                model="similarity",
+                status="uncertain",
+                H_drawing_to_projection=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                diagnostics={},
+            ),
+            paths={
+                "overlay_path": Path(
+                    "/tmp/workspace/attempts/v1/projection/front_overlay.png"
+                )
+            },
+        ),
+    },
 )
 
 _AUDIT_REPORT = AuditReport(
@@ -217,7 +268,7 @@ _RECONSTRUCTION = ReconstructionHistory(
             last_completed_stage=PipelineStage.CODING,
             interpretation=_A_INTERPRETATION,
             operations=_A_PLAN,
-            program_source=_VERIFICATION.source,
+            program_source=_VERIFICATION.exec_report.source,
             verification=_VERIFICATION,
             stage_reports={
                 PipelineStage.CODING: StageReport(
@@ -299,6 +350,15 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         ExecutionStatus,
         StopReason,
         VerifyOutputResult,
+        CadQueryExecutionReport,
+        IntermediateReturn,
+        ShapeCensus,
+        RenderReport,
+        RenderStatus,
+        ProjectionPaths,
+        Render3dPaths,
+        DrawingDiffReport,
+        AlignmentResult,
         AuditFinding,
         AuditReport,
         AuditSubmission,

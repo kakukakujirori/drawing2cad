@@ -160,7 +160,8 @@ def test_write_validate_review_rewrite_and_confirm_only_current_attempt(strategy
         size = (10, 10) if mode == "crop" else (20, 20)
         assert viewed == [(attempt0 + crop, size), (attempt1 + crop, size)]
         assert (
-            "Check these evidence images with load_image" in model.received_messages[1][-1].text
+            "Check these evidence images with load_image"
+            in model.received_messages[1][-1].text
         )
         assert unanswered_tool_calls(result["messages"]) == []
         next_round = open_next_round(history, corrected, verifier.evidence_crops)

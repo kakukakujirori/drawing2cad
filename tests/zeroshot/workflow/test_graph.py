@@ -6,6 +6,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import replace
 from functools import partial
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.messages.content import ContentBlock
+from omegaconf import OmegaConf
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.contracts import (
@@ -54,6 +56,11 @@ from zeroshot.pipeline.stages.tickets.contracts import (
 )
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus
+from zeroshot.pipeline.verification.run_cadquery import (
+    CadQueryExecutionReport,
+    IntermediateReturn,
+)
+from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.graph import AgentBuilder, create_reconstruction_graph
 from zeroshot.pipeline.workflow.lifecycle import (
@@ -420,11 +427,18 @@ def _stub_verification(
         def reset(self) -> None:
             pass
 
-        def verify(self) -> tuple[VerifyOutputResult, None]:
+        def source_digest(self) -> str | None:
+            return (
+                sha256(self.source_path.read_bytes()).hexdigest()
+                if self.source_path.is_file()
+                else None
+            )
+
+        def verify(self) -> VerifyOutputResult:
             calls.append("verify")
             if views_seen is not None:
-                views_seen.append(list(self.views))
-            return remaining.pop(0), None
+                views_seen.append(list(self.interpretation.view_frames()))
+            return remaining.pop(0)
 
         def feedback(self) -> list[ContentBlock]:
             return []
@@ -443,9 +457,9 @@ def _stub_verification(
 def _verified(identifier: str = "000", source: str = _PROGRAM) -> VerifyOutputResult:
     return VerifyOutputResult(
         verification_id=identifier,
-        status=ExecutionStatus.VERIFIED,
-        source=source,
-        returncode=0,
+        exec_report=CadQueryExecutionReport(
+            status=ExecutionStatus.VERIFIED, source=source, returncode=0
+        ),
     )
 
 
@@ -489,25 +503,50 @@ def test_an_accepted_round_is_integrated_and_persisted(
     has_returns: bool,
 ) -> None:
     views_seen: list[list[View]] = []
-    calls = _stub_verification(
-        monkeypatch,
-        replace(
-            _verified(), intermediate_returns="ret_step1: solid" if has_returns else ""
-        ),
-        views_seen=views_seen,
-    )
     interpreter = ScriptedChatModel(responses=_interpretation_script())
     planner = ScriptedChatModel(responses=_operations_script())
     coder = ScriptedChatModel(responses=(_coding_submission(),))
     auditor = ScriptedChatModel(responses=_audit_script(_accepted_audit()))
 
     with SandboxWorkdir() as workdir:
+        projection_dir = (
+            workdir.host_bind_dir / "attempts/round_000/coding/000/projection"
+        )
+        diff_reports = {
+            "view_front": DrawingDiffReport(
+                drawing_path=workdir.host_bind_dir / "view_front.png",
+                projection_path=projection_dir / "front.png",
+                paths={
+                    "overlay_path": projection_dir / "front_overlay.png",
+                    "residual_path": projection_dir / "front_residual.png",
+                },
+                warnings=("Alignment may be inaccurate",),
+            ),
+        }
+        verified = _verified()
+        calls = _stub_verification(
+            monkeypatch,
+            replace(
+                verified,
+                exec_report=replace(
+                    verified.exec_report,
+                    intermediate_returns=(IntermediateReturn("ret_step1"),)
+                    if has_returns
+                    else (),
+                ),
+                drawing_diff_report=diff_reports,
+            ),
+            views_seen=views_seen,
+        )
         result = _graph(
             workdir,
             interpreter=interpreter,
             planner=planner,
             coder=coder,
             auditor=auditor,
+            diff_drawer_config=OmegaConf.create(
+                {"backend": "directional_chamfer", "alignment_options": {}}
+            ),
         ).invoke({})
         persisted = ReconstructionHistory.model_validate_json(
             (workdir.host_bind_dir / "reconstruction.json").read_text(encoding="utf-8")
@@ -538,6 +577,7 @@ def test_an_accepted_round_is_integrated_and_persisted(
     assert snapshot.interpretation == working_interpretation
     assert snapshot.interpretation.views[0].image_size == (20, 20)
     assert snapshot.program_source == _PROGRAM
+    assert snapshot.verification.drawing_diff_report == diff_reports
     assert [response.stage for response in snapshot.open_tickets[0].responses] == [
         PipelineStage.INTERPRETATION,
         PipelineStage.OPERATIONS,
@@ -551,6 +591,17 @@ def test_an_accepted_round_is_integrated_and_persisted(
     assert "/work/attempts/round_000/interpretation/000" not in audit_instruction
     assert "Addressed ticket_initial in coding." not in audit_instruction
     assert "open_tickets" in audit_instruction
+    assert "Alignment may be inaccurate" in audit_instruction
+    assert (
+        audit_instruction.count(
+            "/work/attempts/round_000/coding/000/projection/front_overlay.png"
+        )
+        == 1
+    )
+    assert (
+        "/work/attempts/round_000/coding/000/projection/front_residual.png"
+        in audit_instruction
+    )
     returns_dir = "/work/attempts/round_000/coding/000/intermediate_returns"
     assert (returns_dir in audit_instruction) is has_returns
     assert ("Recorded directory: unavailable" in audit_instruction) is not has_returns
