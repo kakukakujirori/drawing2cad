@@ -9,7 +9,7 @@ model:
   model: z-ai/glm-5.3-flash
   # Effort is a share of max_tokens; OpenRouter takes no `summary`.
   reasoning:
-    effort: medium
+    effort: max
   output_version: v1
   api_key: ${oc.env:OPENROUTER_API_KEY}
 
@@ -25,3 +25,5 @@ model:
 
   timeout: 60000  # milliseconds
   max_retries: 0
+
+  temperature: 1.0  # 1.0 is the default

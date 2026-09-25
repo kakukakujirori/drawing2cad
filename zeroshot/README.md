@@ -54,3 +54,12 @@ python -m zeroshot.run_pipeline --multirun \
     workflow=single \
     sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
 ```
+
+## Interactive Debug
+
+```bash
+python -m interactive_debug \
+  --run outputs/glm5.3_flash/xxx/checkpoints.sqlite \
+  --stage {interpretation, operations, coding, audit} \
+  --round 000
+```
