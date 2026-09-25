@@ -27,7 +27,7 @@ from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
 )
-from zeroshot.pipeline.verification.render.project import (
+from zeroshot.pipeline.verification.render.orthographic import (
     STANDARD_VIEW_FRAMES,
     ViewFrames,
 )

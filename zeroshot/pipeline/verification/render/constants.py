@@ -7,7 +7,7 @@ not exposed as Hydra config.  Runtime knobs such as render timeouts live in
 zeroshot/configs instead.
 
 Constants used by exactly one module live in that module: the degeneracy floor
-in project.py.
+in export_dxf.py.
 """
 
 from __future__ import annotations

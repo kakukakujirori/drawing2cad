@@ -31,7 +31,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
-from zeroshot.pipeline.verification.render.project import STANDARD_VIEW_FRAMES
+from zeroshot.pipeline.verification.render.orthographic import STANDARD_VIEW_FRAMES
 from zeroshot.pipeline.workflow.lifecycle import (
     open_next_round,
     start_reconstruction,

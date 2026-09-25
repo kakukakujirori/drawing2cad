@@ -9,9 +9,12 @@ without rasterising it first.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from pathlib import Path
 
+import cadquery as cq
 import ezdxf
+from cadquery.occ_impl.exporters.dxf import DxfDocument
 from ezdxf import bbox
 from ezdxf.addons.drawing import Frontend, RenderContext
 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
@@ -19,8 +22,6 @@ from ezdxf.addons.drawing.properties import LayoutProperties
 from ezdxf.layouts import Modelspace
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
-
-from zeroshot.pipeline.verification.render._hlr import ProjectedEdges, ViewProjection
 
 _TEMPLATE = Path(__file__).with_name("techdraw_template.dxf")
 
@@ -31,69 +32,46 @@ _PNG_SHORT_SIDE = 480
 _PNG_LONG_SIDE = 1600
 DEFAULT_PNG_MARGIN_RATIO = 0.04
 
+# A view narrower than this on either axis carries no recoverable shape. It
+# only fires on pathological inputs: an empty projection, or a knife-edge view
+# of a near-zero-thickness plate that collapses to a single line.
+MIN_VIEW_EXTENT_MM = 0.05
 
-def _add_edges(
-    modelspace: Modelspace, edges: ProjectedEdges, linetype: str, layer: str
+
+class DegenerateDrawingError(RuntimeError):
+    """A view holds nothing a drawing could be made of."""
+
+
+def write_view_dxf(
+    dxf_path: Path, visible: Sequence[cq.Edge], hidden: Sequence[cq.Edge], layer: str
 ) -> None:
-    attribs = {"layer": layer, "linetype": linetype}
-    for segment in edges.segments:
-        modelspace.add_line(segment.p0, segment.p1, dxfattribs=attribs)
-    for arc in edges.arcs:
-        if arc.ccw:
-            start_angle, end_angle = math.degrees(arc.a0), math.degrees(arc.a1)
-        else:
-            start_angle, end_angle = math.degrees(arc.a1), math.degrees(arc.a0)
-        # DXF ARC traversal is always counter-clockwise.  Some readers interpret
-        # negative or multi-turn angles as full circles, so normalise both.
-        modelspace.add_arc(
-            arc.center,
-            arc.radius,
-            start_angle % 360.0,
-            end_angle % 360.0,
-            dxfattribs=attribs,
-        )
-    for circle in edges.circles:
-        modelspace.add_circle(circle.center, circle.radius, dxfattribs=attribs)
-    for ellipse in edges.ellipses:
-        major_axis = (
-            ellipse.rmaj * math.cos(ellipse.rot),
-            ellipse.rmaj * math.sin(ellipse.rot),
-            0.0,
-        )
-        ratio = ellipse.rmin / ellipse.rmaj if ellipse.rmaj else 1.0
-        modelspace.add_ellipse(
-            (ellipse.center[0], ellipse.center[1], 0.0),
-            major_axis,
-            ratio,
-            ellipse.a0,
-            ellipse.a1,
-            dxfattribs=attribs,
-        )
-    for polyline in edges.polylines:
-        if len(polyline.pts) >= 4:
-            # GT represents curved silhouettes as SPLINE.  Degenerate fit-point
-            # sets can still be rejected by ezdxf, in which case retain the
-            # geometry as an LWPOLYLINE instead of dropping it.
-            try:
-                modelspace.add_spline(fit_points=polyline.pts, dxfattribs=attribs)
-            except Exception:  # noqa: BLE001
-                modelspace.add_lwpolyline(polyline.pts, dxfattribs=attribs)
-        elif len(polyline.pts) >= 2:
-            modelspace.add_lwpolyline(polyline.pts, dxfattribs=attribs)
+    """Write one view's edges, hidden ones dashed, to an existing output directory.
 
-
-def export_view(dxf_path: Path, projection: ViewProjection, layer: str) -> None:
-    """Serialise one view to an existing output directory."""
+    `layer` names the view, and says which one was refused when it has no area.
+    """
     doc = ezdxf.readfile(_TEMPLATE)
     modelspace = doc.modelspace()
     if layer not in doc.layers:
         doc.layers.add(layer)
-    _add_edges(modelspace, projection.visible, "Continuous", layer)
-    _add_edges(modelspace, projection.hidden, "HIDDEN", layer)
+    for edges, linetype in ((visible, "Continuous"), (hidden, "HIDDEN")):
+        if not edges:
+            continue
+        # Refit splines: ezdxf refuses the high-degree ones HLR can return.
+        converted = DxfDocument(approx="spline").add_shape(cq.Workplane().add(edges))
+        for entity in converted.msp:
+            entity.dxf.layer, entity.dxf.linetype = layer, linetype
+            modelspace.add_foreign_entity(entity)
 
-    x_min, y_min, x_max, y_max = projection.bbox(include_hidden=True)
-    doc.header["$EXTMIN"] = (x_min, y_min, 0.0)
-    doc.header["$EXTMAX"] = (x_max, y_max, 0.0)
+    extents = bbox.extents(modelspace)
+    if not extents.has_data:
+        raise DegenerateDrawingError(f"view {layer!r} has no edges")
+    width, height = extents.size.x, extents.size.y
+    if width < MIN_VIEW_EXTENT_MM or height < MIN_VIEW_EXTENT_MM:
+        raise DegenerateDrawingError(
+            f"view {layer!r} has near-zero extent (w={width:.4f}, h={height:.4f} mm)"
+        )
+    doc.header["$EXTMIN"] = (extents.extmin.x, extents.extmin.y, 0.0)
+    doc.header["$EXTMAX"] = (extents.extmax.x, extents.extmax.y, 0.0)
     doc.saveas(Path(dxf_path))
 
 

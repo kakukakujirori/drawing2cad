@@ -13,7 +13,7 @@ from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
 )
-from zeroshot.pipeline.verification.render.project import DegenerateDrawingError
+from zeroshot.pipeline.verification.render.export_dxf import DegenerateDrawingError
 from zeroshot.pipeline.verification.run_render import RenderStatus, StepRenderer
 
 

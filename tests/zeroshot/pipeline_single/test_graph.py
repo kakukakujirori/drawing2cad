@@ -13,7 +13,7 @@ from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import PromptTemplate
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.interpretation.contracts import View
-from zeroshot.pipeline.verification.render.project import STANDARD_VIEW_FRAMES
+from zeroshot.pipeline.verification.render.orthographic import STANDARD_VIEW_FRAMES
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     ExecutionStatus,

@@ -30,12 +30,14 @@ from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
 )
-from zeroshot.pipeline.verification.render.export_dxf import export_to_png, export_view
-from zeroshot.pipeline.verification.render.project import (
+from zeroshot.pipeline.verification.render.export_dxf import (
+    export_to_png,
+    write_view_dxf,
+)
+from zeroshot.pipeline.verification.render.orthographic import (
     ViewFrames,
     load_shape,
-    project_views,
-    require_drawable,
+    project,
 )
 
 
@@ -76,12 +78,10 @@ def _render_projections(
     errors: dict[str, str] = {}
     requested = projection_paths.as_mapping()
     if requested:
-        wanted = {View(name): frames[View(name)] for name in requested}
-        projections = project_views(load_shape(step_path), wanted)
-        for view in wanted:
-            path = requested[view.value]
-            require_drawable(projections[view], view.value)
-            export_view(path, projections[view], view.value)
+        shape = load_shape(step_path)
+        for view, path in requested.items():
+            visible, hidden = project(shape, *frames[View(view)])
+            write_view_dxf(path, visible, hidden, view)
             export_to_png(path)
 
     for view, path in requested.items():

@@ -28,7 +28,7 @@ from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
 )
-from zeroshot.pipeline.verification.render.project import STANDARD_VIEW_FRAMES
+from zeroshot.pipeline.verification.render.orthographic import STANDARD_VIEW_FRAMES
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     ExecutionStatus,
