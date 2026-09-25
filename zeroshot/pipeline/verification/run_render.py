@@ -97,6 +97,8 @@ def _render_3d(
 ) -> tuple[Render3dPaths, dict[str, str]]:
     """Render all perspective styles and interpret their component results."""
     errors: dict[str, str] = {}
+    if not render3d_paths.as_mapping():
+        return render3d_paths, errors
 
     # NOTE: generate_render3d requires all paths for now
     assert all(

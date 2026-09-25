@@ -126,6 +126,18 @@ def test_degenerate_projection_keeps_the_reason(tmp_path, monkeypatch):
     }
 
 
+def test_a_projection_only_request_starts_no_perspective_render(tmp_path, monkeypatch):
+    def render3d(_step_path, _paths):
+        raise AssertionError("no perspective was requested")
+
+    monkeypatch.setattr(run_render, "generate_render3d", render3d)
+
+    assert run_render._render_3d(tmp_path / "input.step", Render3dPaths()) == (
+        Render3dPaths(),
+        {},
+    )
+
+
 class _ClosedConnection:
     def poll(self, timeout=None):
         del timeout

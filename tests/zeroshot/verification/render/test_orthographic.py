@@ -77,8 +77,8 @@ Z_LO, Z_HI = _model_range(BOX_Z, BOX_CENTER[2])
         (STANDARD_VIEW_FRAMES[View.BOTTOM], (X_LO, -Y_HI, X_HI, -Y_LO)),
         (STANDARD_VIEW_FRAMES[View.RIGHT], (Y_LO, Z_LO, Y_HI, Z_HI)),
         (STANDARD_VIEW_FRAMES[View.LEFT], (-Y_HI, Z_LO, -Y_LO, Z_HI)),
-        # A right view turned to sit beside a top view: +U is +Z.
-        (("+z", "-y"), (Z_LO, -Y_HI, Z_HI, -Y_LO)),
+        # A right view beside the top view shares its +Y, so +U is -Z.
+        (("-z", "+y"), (-Z_HI, Y_LO, -Z_LO, Y_HI)),
     ],
     ids=["front", "back", "top", "bottom", "right", "left", "right_turned"],
 )

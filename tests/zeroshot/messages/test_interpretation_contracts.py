@@ -322,10 +322,10 @@ def _view(role: str, u_axis: str, v_axis: str) -> dict:
 
 
 def test_a_side_view_drawn_turned_states_its_own_sheet_axes() -> None:
-    """A right view beside a top view reads +U up the model's +Z."""
-    turned = DrawingView.model_validate(_view("right", "+z", "-y"))
+    """A right view beside the top view shares its +Y, so +U runs along -Z."""
+    turned = DrawingView.model_validate(_view("right", "-z", "+y"))
 
-    assert (turned.u_axis, turned.v_axis) == ("+z", "-y")
+    assert (turned.u_axis, turned.v_axis) == ("-z", "+y")
 
 
 @pytest.mark.parametrize(
