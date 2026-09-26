@@ -132,15 +132,14 @@ def create_reconstruction_graph(
         workdir=sandbox_workdir,
     )
 
-    share_thread_system_prompt = (
-        Path(__file__).resolve().parents[1]
-        / "stages/_base/prompts/cad_reconstructor.md"
-    )
+    stages_dir = Path(__file__).resolve().parents[1] / "stages"
 
     interpretation_stage = stage_factory(PipelineStage.INTERPRETATION)(
         interpretation_agent_builder,
         tools=basic_tools,
-        system_prompt_path=share_thread_system_prompt if share_thread else None,
+        role_path=(
+            None if share_thread else stages_dir / "interpretation/prompts/role.md"
+        ),
         instructions=stage_instructions,
         prompt_context=prompt_context,
         attempt_store=attempt_store,
@@ -150,7 +149,7 @@ def create_reconstruction_graph(
     operation_stage = stage_factory(PipelineStage.OPERATIONS)(
         operations_agent_builder,
         tools=basic_tools,
-        system_prompt_path=share_thread_system_prompt if share_thread else None,
+        role_path=(None if share_thread else stages_dir / "operations/prompts/role.md"),
         instructions=stage_instructions,
         prompt_context=prompt_context,
         attempt_store=attempt_store,
@@ -160,7 +159,7 @@ def create_reconstruction_graph(
     coding_stage = stage_factory(PipelineStage.CODING)(
         coding_agent_builder,
         tools=basic_tools,
-        system_prompt_path=share_thread_system_prompt if share_thread else None,
+        role_path=(None if share_thread else stages_dir / "coding/prompts/role.md"),
         instructions=stage_instructions,
         prompt_context=prompt_context,
         attempt_store=attempt_store,
@@ -174,7 +173,7 @@ def create_reconstruction_graph(
     audit_stage = stage_factory(PipelineStage.AUDIT)(
         audit_agent_builder,
         tools=basic_tools,
-        system_prompt_path=None,
+        role_path=stages_dir / "audit/prompts/role.md",
         instructions=stage_instructions,
         prompt_context=prompt_context,
         attempt_store=attempt_store,

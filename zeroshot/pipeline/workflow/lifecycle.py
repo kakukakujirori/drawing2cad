@@ -75,7 +75,7 @@ def start_reconstruction(
 def open_next_round(
     history: ReconstructionHistory,
     report: AuditReport,
-    evidence_crops: Mapping[str, list[str]] | None = None,
+    evidence_renders: Mapping[str, list[str]] | None = None,
 ) -> ReconstructionHistory:
     """Create the next round from a rejected, cross-validated audit report.
 
@@ -88,15 +88,15 @@ def open_next_round(
     if not report.findings:
         raise ValueError("an accepted audit does not open another round")
 
-    if evidence_crops is not None and (
-        set(evidence_crops) != {finding.name for finding in report.findings}
+    if evidence_renders is not None and (
+        set(evidence_renders) != {finding.name for finding in report.findings}
         or any(
-            len(evidence_crops[finding.name]) != len(finding.evidence)
+            len(evidence_renders[finding.name]) != len(finding.evidence)
             for finding in report.findings
         )
     ):
         raise ValueError(
-            "evidence_crops must contain one path per region of every finding"
+            "evidence_renders must contain one path per region of every finding"
         )
 
     # As for a reasoning stage: the tickets this opens carry the finding's own
@@ -111,7 +111,7 @@ def open_next_round(
         _ticket_from_finding(
             next_round,
             finding,
-            evidence_crops[finding.name] if evidence_crops is not None else [],
+            evidence_renders[finding.name] if evidence_renders is not None else [],
         )
         for finding in report.findings
     ]
@@ -151,7 +151,7 @@ def operations_baseline(history: ReconstructionHistory) -> OperationPlan | None:
 def _ticket_from_finding(
     round_number: int,
     finding: AuditFinding,
-    evidence_crops: list[str],
+    evidence_renders: list[str],
 ) -> Ticket:
     ticket_id = f"ticket_{round_number:03d}_{finding.name.removeprefix('find_')}"
     return Ticket(
@@ -159,7 +159,7 @@ def _ticket_from_finding(
         subject=finding,
         assigned_stages=_assigned_stages(finding),
         responses=[],
-        evidence_crops=evidence_crops,
+        evidence_renders=evidence_renders,
     )
 
 
@@ -207,7 +207,7 @@ def advance_reconstruction(
                     *ticket.responses,
                     responses_by_ticket[ticket.ticket_id],
                 ],
-                evidence_crops=ticket.evidence_crops,
+                evidence_renders=ticket.evidence_renders,
             )
             if stage in ticket.assigned_stages
             else ticket

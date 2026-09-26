@@ -14,6 +14,7 @@ from tests.zeroshot.chat_models import (
     unanswered_tool_calls,
 )
 from tests.zeroshot.contracts import bootstrap_review
+from tests.zeroshot.prompt_paths import ROLE_PATHS
 from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _completed_run,
     _ref,
@@ -72,7 +73,7 @@ def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving():
                 response_format_strategy="tool",
             ),
             tools=[write_report],
-            system_prompt_path=None,
+            role_path=ROLE_PATHS["output_auditor"],
             instructions=StageInstructions([], "path", context, workdir),
             prompt_context=context,
             attempt_store=AttemptStore(workdir, lambda: 0),
@@ -164,8 +165,8 @@ def test_write_validate_review_rewrite_and_confirm_only_current_attempt(strategy
             in model.received_messages[1][-1].text
         )
         assert unanswered_tool_calls(result["messages"]) == []
-        next_round = open_next_round(history, corrected, verifier.evidence_crops)
-        assert next_round.snapshots[-1].open_tickets[0].evidence_crops == [
+        next_round = open_next_round(history, corrected, verifier.evidence_renders)
+        assert next_round.snapshots[-1].open_tickets[0].evidence_renders == [
             attempt1 + crop
         ]
         assert not (workdir.host_bind_dir / "tickets").exists()
@@ -176,7 +177,7 @@ def test_write_validate_review_rewrite_and_confirm_only_current_attempt(strategy
         assert not verifier.confirmed
         verifier.feedback()
         assert verifier.accepted_report is None
-        assert verifier.evidence_crops == {}
+        assert verifier.evidence_renders == {}
 
 
 def test_invalid_report_and_crop_failure_cannot_leave_an_accepted_audit(monkeypatch):

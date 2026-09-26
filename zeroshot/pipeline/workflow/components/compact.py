@@ -32,8 +32,10 @@ What is being asked of you overall, and what would count as having done it.
 ## FINDINGS
 What you established, and the evidence that settled it: the measurements,
 values and identifiers you arrived at, and the observations they came from.
-Include the conclusions you considered and rejected, and why, so that you do
-not reopen them.
+Separate direct observations and measurements from untested predictions.
+For rejected alternatives, retain the evidence and artifact paths supporting
+the rejection; mark untested alternatives as untested. Reconsider a rejection
+when new evidence undermines its basis.
 
 ## WORK DONE
 The commands you ran, the files you read or wrote, and what came back. Enough

@@ -96,15 +96,13 @@ class OperationStage:
 def create_operation_stage(
     operation_agent_builder: AgentBuilder,
     tools: Sequence[BaseTool],
-    system_prompt_path: Path | None,
+    role_path: Path | None,
     instructions: StageInstructions,
     prompt_context: dict[str, str],
     attempt_store: AttemptStore,
     operations_filename: str = "operations.json",
     input_after_compaction: bool = False,
 ) -> OperationStage:
-    if system_prompt_path is None:
-        system_prompt_path = Path(__file__).parent / "prompts" / "role.md"
 
     operation_verifier = OperationPlanVerifier(
         attempt_store=attempt_store,
@@ -122,7 +120,7 @@ def create_operation_stage(
     agent = operation_agent_builder(
         tools=tools,
         system_prompt=build_system_prompt(
-            system_prompt_path,
+            role_path,
             prompt_context
             | {"max_turns": operation_agent_builder.keywords["max_turns"]},
             TicketAnswers,

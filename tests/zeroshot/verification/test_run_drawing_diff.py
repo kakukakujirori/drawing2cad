@@ -174,7 +174,7 @@ def test_worker_saves_diff_pngs_beside_projection(tmp_path, monkeypatch):
         "residual_path": tmp_path / "front_residual.png",
     }
     with Image.open(report.paths["overlay_path"]) as image:
-        assert np.all(np.asarray(image)[10:55, 24] == [0, 212, 255])
+        assert np.all(np.asarray(image)[10:55, 24] == [0, 168, 255])
     with Image.open(report.paths["residual_path"]) as image:
         assert image.mode == "RGB"
         assert np.all(np.asarray(image)[10:55, 20] == [235, 150, 150])

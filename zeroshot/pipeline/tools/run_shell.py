@@ -44,6 +44,9 @@ def create_run_shell_tool(
         between calls, but shell variables and process state do not. The command can use
         bash commands, file read/write, and Python (CadQuery, ezdxf, Pillow, and NumPy included).
 
+        Parallelize only independent tool calls. After a call creates or changes
+        a file, wait for its result before reading, loading or measuring that file.
+
         Returns status, returncode, stdout, and stderr. Long stdout/stderr is saved
         to a file; the response contains its beginning, end, and file path. Filter
         searches and file reads to the information you need.

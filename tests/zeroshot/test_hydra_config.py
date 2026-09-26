@@ -10,7 +10,7 @@ from langchain_openai.chat_models.codex import _ChatOpenAICodex
 from langchain_openrouter import ChatOpenRouter
 from omegaconf import OmegaConf
 
-from tests.zeroshot.prompt_paths import ROLE_PATHS
+from tests.zeroshot.prompt_paths import RECONSTRUCTION_CONTEXT_PATH, ROLE_PATHS
 from zeroshot.pipeline.event_logging import ConsoleReporter
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.runner import PipelineRunner
@@ -330,7 +330,7 @@ def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None
         graph_factory.keywords["coding_agent_builder"].keywords["role"],
     }
     assert roles == {"cad_reconstructor"}
-    assert ROLE_PATHS["cad_reconstructor"].is_file()
+    assert RECONSTRUCTION_CONTEXT_PATH.is_file()
 
     # Hydra partials accept unknown keywords and otherwise defer this failure
     # until the first sample builds its graph. Check every configured builder
@@ -377,6 +377,8 @@ def test_drawing_diff_accepts_null_color_scale_without_a_separate_mode(workflow)
             overrides=[
                 f"workflow={workflow}",
                 "workflow.diff_drawer_config.backend=match_anything",
+                # Switching backends also replaces backend-specific options.
+                "workflow.diff_drawer_config.alignment_options=null",
                 "workflow.diff_drawer_config.distance_clip_px=null",
             ],
         )

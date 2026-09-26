@@ -97,22 +97,20 @@ class AuditStage:
                 if isinstance(result.get("structured_response"), AuditSubmission)
                 else None
             ),
-            "audit_evidence": self.audit_verifier.evidence_crops,
+            "audit_evidence": self.audit_verifier.evidence_renders,
         }
 
 
 def create_audit_stage(
     audit_agent_builder: AgentBuilder,
     tools: Sequence[BaseTool],
-    system_prompt_path: Path | None,
+    role_path: Path | None,
     instructions: StageInstructions,
     prompt_context: dict[str, str],
     attempt_store: AttemptStore,
     audit_filename: str = "audit.json",
     evidence_mode: EvidenceMode = "mark",
 ) -> AuditStage:
-    if system_prompt_path is None:
-        system_prompt_path = Path(__file__).parent / "prompts" / "role.md"
 
     audit_verifier = AuditVerifier(
         attempt_store, source_filename=audit_filename, evidence_mode=evidence_mode
@@ -125,7 +123,7 @@ def create_audit_stage(
     audit_agent = audit_agent_builder(
         tools=tools,
         system_prompt=build_system_prompt(
-            system_prompt_path,
+            role_path,
             prompt_context | {"max_turns": audit_agent_builder.keywords["max_turns"]},
             AuditSubmission,
         ),

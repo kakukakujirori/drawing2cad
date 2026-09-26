@@ -94,9 +94,9 @@ def test_failed_alignment_can_have_warnings_without_an_error_or_images(tmp_path)
 
 
 @pytest.mark.parametrize("stage", ["coding", "audit"])
-def test_fixed_guidelines_do_not_require_optional_comparison_images(stage):
+def test_fixed_instructions_do_not_require_optional_comparison_images(stage):
     stages = Path(__file__).parents[3] / "zeroshot/pipeline/stages"
-    text = (stages / stage / "prompts/guidelines.md").read_text()
+    text = (stages / stage / "prompts/round.md").read_text()
 
     assert "load_image" in text
     assert "overlay" not in text
@@ -107,10 +107,8 @@ def test_fixed_guidelines_do_not_require_optional_comparison_images(stage):
 
 def test_coding_can_correct_geometry_without_overwriting_upstream_artifacts():
     stages = Path(__file__).parents[3] / "zeroshot/pipeline/stages"
-    system = (stages / "_base/prompts/cad_reconstructor.md").read_text()
-    coding = (stages / "coding/prompts/guidelines.md").read_text()
+    coding = (stages / "coding/prompts/round.md").read_text()
 
-    assert "source drawing takes precedence" in system
-    assert "do not edit upstream JSON files" in system
+    assert "source drawing takes precedence" in coding
     assert "Leave upstream JSON files unchanged" in coding
     assert "state the unresolved mismatch" in coding

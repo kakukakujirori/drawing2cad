@@ -342,3 +342,17 @@ def test_compaction_retries_reach_the_existing_event_log(
         assert report["retrying"] is (attempt == 1)
         assert report["request_adjusted"] is False
     assert retry_sleeps == [2.0]
+
+
+def test_compaction_keeps_observations_distinct_from_untested_predictions() -> None:
+    model = _notes()
+    compact_transcript(_worked_transcript(), model=model)
+    instruction = model.received_messages[0][-1].text
+
+    assert (
+        "Separate direct observations and measurements from untested predictions"
+        in instruction
+    )
+    assert "artifact paths supporting" in instruction
+    assert "Reconsider a rejection" in instruction
+    assert "do not reopen" not in instruction

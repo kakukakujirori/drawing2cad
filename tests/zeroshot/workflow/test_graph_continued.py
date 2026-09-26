@@ -10,7 +10,7 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 
 from tests.zeroshot.chat_models import ScriptedChatModel
-from tests.zeroshot.prompt_paths import ROLE_PATHS
+from tests.zeroshot.prompt_paths import RECONSTRUCTION_CONTEXT_PATH, ROLE_PATHS
 from tests.zeroshot.workflow.test_graph import (
     _accepted_audit,
     _audit_script,
@@ -26,6 +26,7 @@ from tests.zeroshot.workflow.test_graph import (
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest, register_view
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages._base.prompt import PromptTemplate
 from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.workflow import create_agent
@@ -138,21 +139,29 @@ def _lead_thread(result: dict[str, Any], stage: PipelineStage) -> list[BaseMessa
     return list(result["coding_state"]["messages"])
 
 
-def test_reasoning_stages_share_one_system_prompt(
+@pytest.mark.parametrize("share_thread", [True, False])
+def test_system_context_precedes_only_the_roles_assigned_by_the_graph(
     monkeypatch: pytest.MonkeyPatch,
     models: _Models,
+    share_thread: bool,
 ) -> None:
     _stub_verification(monkeypatch, _verified())
     with SandboxWorkdir() as workdir:
-        _continued_graph(workdir, **models).invoke({})
+        _continued_graph(workdir, **models, share_thread=share_thread).invoke({})
+        context = PromptTemplate(RECONSTRUCTION_CONTEXT_PATH).render(
+            reconstruction_path=str(workdir.sandbox_bind_dir / "reconstruction.json")
+        )
 
-    prompts = {
-        _system_prompt(models[name]) for name in ("interpreter", "planner", "coder")
-    }
-    assert len(prompts) == 1
-    (shared_prompt,) = prompts
-    assert ROLE_PATHS["cad_reconstructor"].read_text().strip() in shared_prompt
-    assert _system_prompt(models["auditor"]) != shared_prompt
+    for name, role in (
+        ("interpreter", "drawing_interpreter"),
+        ("planner", "operation_planner"),
+        ("coder", "coder"),
+        ("auditor", "output_auditor"),
+    ):
+        expected = context
+        if not share_thread or name == "auditor":
+            expected += "\n\n" + ROLE_PATHS[role].read_text().strip()
+        assert _system_prompt(models[name]) == expected
 
 
 def test_handover_nodes_follow_successful_integration(

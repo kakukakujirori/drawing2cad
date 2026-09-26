@@ -6,6 +6,7 @@ import pytest
 from langchain_core.tools import tool
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
+from tests.zeroshot.prompt_paths import ROLE_PATHS
 from tests.zeroshot.verification.test_interpretation_validation import dxf_case
 from tests.zeroshot.verification.test_verify_interpretation import _case
 from zeroshot.pipeline.messages.artifact import drawing_for_model
@@ -61,7 +62,7 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
             response_format_strategy="tool",
         ),
         tools=[write_interpretation],
-        system_prompt_path=None,
+        role_path=ROLE_PATHS["drawing_interpreter"],
         instructions=StageInstructions(drawing, "path", {}, verifier.workdir),
         prompt_context={},
         attempt_store=verifier.attempt_store,
@@ -157,7 +158,7 @@ def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
             response_format_strategy="tool",
         ),
         tools=[write_dxf_interpretation],
-        system_prompt_path=None,
+        role_path=ROLE_PATHS["drawing_interpreter"],
         instructions=StageInstructions(drawing, "path", {}, workdir),
         prompt_context={},
         attempt_store=AttemptStore(workdir, lambda: 0),

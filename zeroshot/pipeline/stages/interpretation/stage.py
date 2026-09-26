@@ -123,7 +123,7 @@ def _dxf_context(instructions: StageInstructions) -> str | None:
 def create_interpretation_stage(
     builder: AgentBuilder,
     tools: Sequence[BaseTool],
-    system_prompt_path: Path | None,
+    role_path: Path | None,
     instructions: StageInstructions,
     prompt_context: dict[str, str],
     attempt_store: AttemptStore,
@@ -131,8 +131,6 @@ def create_interpretation_stage(
     input_after_compaction: bool = False,
 ) -> InterpretationStage:
     dxf_context = _dxf_context(instructions)
-    if system_prompt_path is None:
-        system_prompt_path = Path(__file__).parent / "prompts" / "role.md"
     interpretation_verifier = InterpretationVerifier(
         workdir=instructions.workdir,
         attempt_store=attempt_store,
@@ -156,7 +154,7 @@ def create_interpretation_stage(
     agent = builder(
         tools=[*tools, create_calculate_drawing_scale_tool()],
         system_prompt=build_system_prompt(
-            system_prompt_path,
+            role_path,
             prompt_context | {"max_turns": builder.keywords["max_turns"]},
             TicketAnswers,
         ),

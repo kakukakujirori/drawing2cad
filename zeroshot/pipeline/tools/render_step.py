@@ -42,10 +42,11 @@ def create_render_step_tool(
     description = cleandoc(
         f"""Draw orthographic views of a STEP file, as verification draws them.
 
-        Use it to look at a trial shape: build it with run_shell, export it to STEP,
-        and draw the views that decide your question. Each call writes a DXF and a
-        PNG per view to a new directory under
-        {workdir.sandbox_bind_dir / RENDERS_DIRNAME}. Open a PNG with load_image.
+        Use it to look at a trial shape: build and export a CAD model to STEP with
+        run_shell, and draw its orthographic views from your specified direction.
+        Each call writes a DXF and a PNG per view to a new directory under
+        {workdir.sandbox_bind_dir / RENDERS_DIRNAME}. Open a PNG with load_image,
+        or analyze the primitives in the DXF with ezdxf.
 
         A view the drawing shows is drawn in the drawing's axes, and any other view
         in standard axes. Each view reports the model axes that point right (u_axis)

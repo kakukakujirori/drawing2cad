@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from omegaconf import OmegaConf
 
@@ -740,7 +740,7 @@ def test_every_stage_reads_the_same_history_path_and_current_round(
         assert "round 0" in prompt
 
 
-def test_only_the_interpretation_stage_receives_the_scale_tool(monkeypatch):
+def test_stage_specific_tools_stay_with_their_assigned_stage(monkeypatch):
     _stub_verification(monkeypatch, _verified())
     interpreter = ScriptedChatModel(responses=_interpretation_script())
     planner = ScriptedChatModel(responses=_operations_script())
@@ -759,8 +759,77 @@ def test_only_the_interpretation_stage_receives_the_scale_tool(monkeypatch):
         "load_image",
         "calculate_drawing_scale",
     )
-    for model in (planner, coder, auditor):
+    for model in (planner, auditor):
         assert model.bound_tool_names == ("run_shell", "load_image")
+    assert coder.bound_tool_names == ("run_shell", "load_image", "render_step")
+
+
+def test_coder_can_build_render_and_inspect_a_scratch_trial(monkeypatch):
+    calls = _stub_verification(monkeypatch, _verified())
+    drawing = interpretation("a plate")
+    drawing.views[0].role = View.RIGHT
+    drawing.views[0].u_axis, drawing.views[0].v_axis = "-z", "+y"
+    build = """python - <<'PY'
+import cadquery as cq
+from pathlib import Path
+p = Path('/work')
+(p / 'tmp/history_before.json').write_bytes((p / 'reconstruction.json').read_bytes())
+cq.exporters.export(cq.Workplane().box(30, 20, 10), '/work/tmp/trial.step')
+PY"""
+    unchanged = """python - <<'PY'
+from pathlib import Path
+p = Path('/work')
+assert (p / 'reconstruction.json').read_bytes() == (p / 'tmp/history_before.json').read_bytes()
+print('history unchanged')
+PY"""
+    coder = ScriptedChatModel(
+        responses=(
+            tool_call("run_shell", {"command": build}, "build-trial"),
+            tool_call(
+                "render_step",
+                {"step_path": "/work/tmp/trial.step", "views": ["right", "left"]},
+                "render-trial",
+            ),
+            tool_call(
+                "load_image",
+                {"image_path": "/work/renders/000/right.png"},
+                "inspect-trial",
+            ),
+            tool_call("run_shell", {"command": unchanged}, "check-history"),
+            _coding_submission(),  # An unchanged baseline still needs verification.
+            _coding_submission(),  # Read that feedback before the final submission.
+        )
+    )
+    with SandboxWorkdir() as workdir:
+        (workdir.host_bind_dir / "model.py").write_text(_PROGRAM)
+        _graph(
+            workdir,
+            interpreter=ScriptedChatModel(
+                responses=_interpretation_script(artifact=drawing)
+            ),
+            planner=ScriptedChatModel(responses=_operations_script()),
+            coder=coder,
+            auditor=ScriptedChatModel(responses=_audit_script(_accepted_audit())),
+            coder_options={"max_turns": 6},
+        ).invoke({})
+        assert (workdir.host_bind_dir / "model.py").read_text() == _PROGRAM
+        assert (workdir.host_bind_dir / "renders/000/shape.step").is_file()
+
+    results = {
+        message.tool_call_id: message
+        for message in coder.received_messages[-1]
+        if isinstance(message, ToolMessage)
+    }
+    rendered = json.loads(results["render-trial"].text)
+    assert rendered["status"] == "OK"
+    assert rendered["views"]["right"]["u_axis"] == "-z"
+    assert rendered["views"]["right"]["v_axis"] == "+y"
+    assert rendered["views"]["left"]["u_axis"] == "-y"
+    assert any(
+        block["type"] == "image" for block in results["inspect-trial"].content_blocks
+    )
+    assert "history unchanged" in results["check-history"].text
+    assert calls == ["verify"]  # Only normal stage integration verifies a submission.
 
 
 def test_invalid_operations_retry_without_reaching_coding(
@@ -1028,7 +1097,7 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(monkeypat
         ).invoke({})
         # Tickets reuse the evidence the auditor was asked to review.
         evidence_path = (
-            result["reconstruction"].snapshots[-1].open_tickets[0].evidence_crops[0]
+            result["reconstruction"].snapshots[-1].open_tickets[0].evidence_renders[0]
         )
         crop = workdir.sandbox_to_host_path(evidence_path)
         assert "/round_000/audit/000/find_missing_hole/" in evidence_path
@@ -1042,7 +1111,7 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(monkeypat
     assert first.operations == _plan()
     assert second.operations == _plan(detail="extrude revised plate")
     assert len(second.open_tickets[0].responses) == 3
-    assert second.open_tickets[0].evidence_crops == [
+    assert second.open_tickets[0].evidence_renders == [
         "/work/attempts/round_000/audit/000/find_missing_hole/evidence_0.png"
     ]
     assert len(interpreter.received_messages) == 4

@@ -32,7 +32,7 @@ class AuditVerifier:
         self._snapshot: ReconstructionSnapshot | None = None
         self._checked: bytes | None = None
         self._accepted: AuditReport | None = None
-        self.evidence_crops: dict[str, list[str]] = {}
+        self.evidence_renders: dict[str, list[str]] = {}
 
     @property
     def source_path(self) -> Path:
@@ -45,7 +45,7 @@ class AuditVerifier:
         self._snapshot = snapshot
         self._checked = None
         self._accepted = None
-        self.evidence_crops = {}
+        self.evidence_renders = {}
 
     def _contents(self) -> bytes | None:
         path = self.source_path
@@ -63,7 +63,7 @@ class AuditVerifier:
         contents = self._contents()
         self._checked = contents
         self._accepted = None
-        self.evidence_crops = {}
+        self.evidence_renders = {}
         _, directory, sandbox_directory = self.attempt_store.issue("audit")
         if contents is not None:
             (directory / self.source_filename).write_bytes(contents)
@@ -77,7 +77,7 @@ class AuditVerifier:
                 )
             report = AuditReport.model_validate_json(contents)
             validate_audit_report(report, self._snapshot, self.attempt_store)
-            crops = {
+            renders = {
                 finding.name: render_evidence(
                     finding,
                     directory / finding.name,
@@ -87,7 +87,7 @@ class AuditVerifier:
                 for finding in report.findings
             }
             self._accepted = report
-            self.evidence_crops = crops
+            self.evidence_renders = renders
         except ValidationError as invalid:
             error = "\n".join(
                 file_errors(invalid, self.source_filename, contents or b"")
@@ -96,7 +96,7 @@ class AuditVerifier:
             error = str(invalid)
         (directory / "_audit_validation_log.json").write_text(
             json.dumps(
-                {"error": error, "evidence_crops": self.evidence_crops}, indent=2
+                {"error": error, "evidence_renders": self.evidence_renders}, indent=2
             )
             + "\n",
             encoding="utf-8",
@@ -106,8 +106,8 @@ class AuditVerifier:
             text += f"{self.source_filename}: invalid.\n{error}"
         else:
             text += f"{self.source_filename}: valid.\n"
-            for name, paths in self.evidence_crops.items():
+            for name, paths in self.evidence_renders.items():
                 text += f"{name}: {', '.join(paths)}\n"
-            if self.evidence_crops:
+            if self.evidence_renders:
                 text += "Check these evidence images with load_image against the findings and source drawing."
         return [create_text_block(text)]

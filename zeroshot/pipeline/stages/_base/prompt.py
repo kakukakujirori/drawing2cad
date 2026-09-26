@@ -66,7 +66,7 @@ class StageInstructions:
         **extra_context: str,
     ) -> HumanMessage:
         if validation_error := state.get("stage_validation_error"):
-            # A re-ask, so the round's terms and guidelines already stand in
+            # A re-ask, so the round's instructions already stand in
             # the transcript and only the rejection is new.
             return HumanMessage(
                 content_blocks=[
@@ -90,7 +90,6 @@ class StageInstructions:
         text_templates = [
             PromptTemplate(stages_dir / "_base" / "prompts" / "coordinate_frames.md"),
             PromptTemplate(stages_dir / stage.value / "prompts" / "round.md"),
-            PromptTemplate(stages_dir / stage.value / "prompts" / "guidelines.md"),
         ]
         texts = "\n\n".join(template.render(**context) for template in text_templates)
         instruction = HumanMessage(content_blocks=[create_text_block(texts)])
@@ -120,14 +119,14 @@ def _assigned_ticket_ids(
     snapshot: ReconstructionSnapshot,
     stage: PipelineStage,
 ) -> str:
-    """Expose crop paths even when a stage's jq query omits evidence_crops."""
+    """Expose evidence image paths even when a stage's jq query omits evidence_renders."""
     if stage not in REASONING_STAGES:
         return "none"
     named = [
         ticket.ticket_id
         + (
-            f" (evidence: {', '.join(ticket.evidence_crops)})"
-            if ticket.evidence_crops
+            f" (evidence: {', '.join(ticket.evidence_renders)})"
+            if ticket.evidence_renders
             else ""
         )
         for ticket in tickets_assigned_to(snapshot.open_tickets, stage)
@@ -154,23 +153,29 @@ def schema_for_prompt(contract: type[BaseModel]) -> str:
 
 
 def build_system_prompt(
-    prompt_path: Path,
+    role_path: Path | None,
     context: Mapping[str, str],
     output_schema: type[BaseModel] | None = None,
 ) -> SystemMessage:
+    """Load shared reconstruction context, then role_path when supplied.
+
+    role_path=None omits only the stage role, not the shared context.
+    A baseline without reconstruction_path receives only its own role.
+    """
     context = dict(context)
 
     if output_schema is not None:
         context["output_schema"] = schema_for_prompt(output_schema)
 
-    sections_templates = [PromptTemplate(prompt_path)]
+    sections_templates = []
     if "reconstruction_path" in context:
-        stages_dir = Path(__file__).parent.parent
         sections_templates.append(
             PromptTemplate(
-                stages_dir / "_base" / "prompts" / "reconstruction_history.md"
+                Path(__file__).parent / "prompts" / "reconstruction_context.md"
             )
         )
+    if role_path is not None:
+        sections_templates.append(PromptTemplate(role_path))
     system_texts = "\n\n".join(
         template.render(**context) for template in sections_templates
     )

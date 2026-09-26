@@ -351,7 +351,7 @@ def test_full_page_file_reuse_requires_full_page_bounds(
     if not accepted:
         child_index = 2 if page_first else 1
         assert f"$.views[{child_index}].file: view_single (front)" in text
-        assert "whole-page orthographic view" in text
+        assert "full-page orthographic view" in text
         assert "Save a crop" in text
 
 

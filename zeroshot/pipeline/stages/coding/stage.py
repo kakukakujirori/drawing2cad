@@ -15,6 +15,7 @@ from zeroshot.pipeline.stages.coding.verify import OutputVerifier
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
+from zeroshot.pipeline.tools.render_step import create_render_step_tool
 from zeroshot.pipeline.verification import (
     AttemptStore,
     CadQueryExecutor,
@@ -22,7 +23,10 @@ from zeroshot.pipeline.verification import (
     StepRenderer,
 )
 from zeroshot.pipeline.workflow._config import _child_graph_config
-from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
+from zeroshot.pipeline.workflow.middleware import (
+    CodingTrialMiddleware,
+    VerifyOnWriteMiddleware,
+)
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
@@ -53,7 +57,7 @@ class CodingStage:
         self.output_verifier.interpretation = interpretation
         self.output_verifier.operations = snapshot.operations
 
-        # The baseline fingerprint includes this round's drawing context.
+        # Start verification against this round's interpretation and operations.
         if state.get("stage_validation_error") is None:
             self.output_verifier.reset()
             self.middleware.reset()  # NOTE: must be after attributes are assigned
@@ -85,7 +89,7 @@ class CodingStage:
 def create_coding_stage(
     coding_agent_builder: AgentBuilder,
     tools: Sequence[BaseTool],
-    system_prompt_path: Path | None,
+    role_path: Path | None,
     instructions: StageInstructions,
     prompt_context: dict[str, str],
     attempt_store: AttemptStore,
@@ -96,8 +100,6 @@ def create_coding_stage(
     show_intermediate_returns: bool = False,
     input_after_compaction: bool = False,
 ) -> CodingStage:
-    if system_prompt_path is None:
-        system_prompt_path = Path(__file__).parent / "prompts" / "role.md"
     if isinstance(diff_drawer_config, DictConfig):
         diff_drawer_config = cast(
             dict[str, Any], OmegaConf.to_container(diff_drawer_config, resolve=True)
@@ -126,22 +128,41 @@ def create_coding_stage(
         ticket_verifier=ticket_verifier,
         fingerprint=output_verifier.source_digest,
         refusal=(
-            "The current program must produce a verified solid that implements "
-            "the operation plan, and its verification feedback must be shown "
+            "The current program must produce a verified solid, preserve the "
+            "required operation identities, and have its verification feedback shown "
             "before submission. Read the feedback, correct model.py, and submit "
             "only after verification succeeds."
         ),
         require_feedback_before_submit=True,
     )
+    # Resolve frames on each call so a later round uses its updated interpretation.
+    coding_tools = [
+        *tools,
+        create_render_step_tool(
+            instructions.workdir,
+            renderer,
+            drawing_frames=lambda: (
+                output_verifier.interpretation.view_frames()
+                if output_verifier.interpretation is not None
+                else {}
+            ),
+        ),
+    ]
     coding_agent = coding_agent_builder(
-        tools=tools,
+        tools=coding_tools,
         system_prompt=build_system_prompt(
-            system_prompt_path,
+            role_path,
             prompt_context | {"max_turns": coding_agent_builder.keywords["max_turns"]},
             TicketAnswers,
         ),
         output_schema=TicketAnswers,
-        extra_middleware=[coding_middleware],
+        extra_middleware=[
+            coding_middleware,
+            CodingTrialMiddleware(
+                tool_names=[tool.name for tool in coding_tools],
+                max_turns=coding_agent_builder.keywords["max_turns"],
+            ),
+        ],
     )
     return CodingStage(
         agent=coding_agent,

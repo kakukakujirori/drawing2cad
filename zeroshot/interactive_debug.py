@@ -24,11 +24,11 @@ from functools import partial
 from itertools import count
 from pathlib import Path, PurePosixPath
 from string import Template
-from typing import Any
+from typing import Any, cast
 
 from hydra.utils import instantiate
 from langchain.agents import create_agent
-from langchain.agents.middleware import ToolErrorMiddleware
+from langchain.agents.middleware import AgentMiddleware, ToolErrorMiddleware
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -47,6 +47,7 @@ from zeroshot.pipeline.tools.calculate_drawing_scale import (
     create_calculate_drawing_scale_tool,
 )
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
+from zeroshot.pipeline.tools.render_step import create_render_step_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import (
     AttemptStore,
@@ -148,8 +149,8 @@ def select_checkpoint(
 
 def load_system_prompt(
     run_dir: Path, stage: str, config: DictConfig
-) -> tuple[str, str]:
-    """Prefer the recorded system prompt, including a shared upstream role."""
+) -> tuple[str, list[Path]]:
+    """Return the system prompt and every file read to obtain its text."""
     shared = stage != "audit" and config.workflow.get("share_thread", False)
     events = run_dir / "events.jsonl"
     if events.is_file():
@@ -170,7 +171,7 @@ def load_system_prompt(
                         if isinstance(system, dict)
                         else system
                     )
-                    return SystemMessage(content=content).text, str(events)
+                    return SystemMessage(content=content).text, [events]
 
     # Resumed runs may omit the already-reported system prompt. Use their frozen
     # prompt files where available, otherwise identify the local-file fallback.
@@ -178,14 +179,13 @@ def load_system_prompt(
     stages_dir = (
         frozen if frozen.is_dir() else Path(__file__).parent / "pipeline" / "stages"
     )
-    role = stages_dir / (
-        "_base/prompts/cad_reconstructor.md" if shared else f"{stage}/prompts/role.md"
-    )
-    history = stages_dir / "_base/prompts/reconstruction_history.md"
-    text = "\n\n".join(path.read_text().strip() for path in (role, history))
+    paths = [stages_dir / "_base/prompts/reconstruction_context.md"]
+    if not shared:
+        paths.append(stages_dir / f"{stage}/prompts/role.md")
+    text = "\n\n".join(path.read_text().strip() for path in paths)
     return Template(text).substitute(
         reconstruction_path="/work/reconstruction.json"
-    ), str(role)
+    ), paths
 
 
 def strings(value: Any) -> Iterator[str]:
@@ -267,15 +267,17 @@ def build_agent(
     system: str,
     checkpointer: SqliteSaver,
 ):
-    """Keep the original model/tools, with free answers and no turn-budget middleware."""
+    """Use the source model and current stage tools, without submission/turn limits."""
     settings = config.workflow[f"{stage}_agent_builder"]
-    runner_config = OmegaConf.to_container(config.sandbox_runner, resolve=True)
+    runner_config = cast(
+        dict[str, Any], OmegaConf.to_container(config.sandbox_runner, resolve=True)
+    )
     runner_config["python_executable"] = Path(runner_config["python_executable"])
     runner = SandboxRunner(**runner_config)
     tools = [create_run_shell_tool(runner, workdir), create_load_image_tool(workdir)]
     if stage == "interpretation":
         tools.append(create_calculate_drawing_scale_tool())
-    middleware = [
+    middleware: list[AgentMiddleware[Any, None, Any]] = [
         ToolErrorMiddleware(on_error=_handle_tool_error),
         PromptLogMiddleware(settings.role),
         ModelCallRetryMiddleware(
@@ -286,12 +288,15 @@ def build_agent(
     if stage == "coding":
         snapshot = source.values["reconstruction"].snapshots[-1]
         diff_config = config.workflow.get("diff_drawer_config")
+        renderer = StepRenderer()
         verifier = OutputVerifier(
             executor=CadQueryExecutor(sandbox_runner=runner),
             workdir=workdir,
-            renderer=StepRenderer(),
+            renderer=renderer,
             diff_drawer=DrawingDiffExecutor(
-                **OmegaConf.to_container(diff_config, resolve=True)
+                **cast(
+                    dict[str, Any], OmegaConf.to_container(diff_config, resolve=True)
+                )
             )
             if diff_config
             else None,
@@ -307,6 +312,17 @@ def build_agent(
         restored = ReconstructionHistory.model_validate(record).snapshots[-1]
         verifier.interpretation = restored.interpretation
         verifier.operations = restored.operations
+        tools.append(
+            create_render_step_tool(
+                workdir,
+                renderer,
+                drawing_frames=lambda: (
+                    verifier.interpretation.view_frames()
+                    if verifier.interpretation is not None
+                    else {}
+                ),
+            )
+        )
         middleware.append(
             VerifyOnWriteMiddleware(verifier, fingerprint=verifier.source_digest)
         )
@@ -334,12 +350,10 @@ def converse(
     initial = copy.deepcopy(source.values[f"{stage}_state"]["messages"])
     introduction = INTRODUCTION
     if source.values.get("audit_report") is not None:
-        introduction += (
-            "\n監査の提出内容は /work/audit_report.json に保存されています。"
-        )
+        introduction += "\nAudit submission are saved at /work/audit_report.json."
     if missing:
-        introduction += (
-            "\n次の参照ファイルは保存されておらず利用できません:\n" + "\n".join(missing)
+        introduction += "\nMissing reference files are not available:\n" + "\n".join(
+            missing
         )
     initial.append(HumanMessage(content=introduction))
     first = True
@@ -427,7 +441,9 @@ def main(argv: list[str] | None = None) -> None:
     source = select_checkpoint(database, stage, args.round_number, args.checkpoint_id)
     run_dir = database.parent
     config = OmegaConf.load(run_dir / ".hydra/config.yaml")
-    system, system_source = load_system_prompt(run_dir, stage, config)
+    if not isinstance(config, DictConfig):
+        raise TypeError("Run config must be a YAML mapping")
+    system, prompt_files = load_system_prompt(run_dir, stage, config)
     started_at = datetime.now(UTC).astimezone().strftime("%Y%m%d_%H%M%S")
     session = (
         args.output_dir
@@ -445,13 +461,14 @@ def main(argv: list[str] | None = None) -> None:
         "source_timestamp": source.timestamp,
         "stage": stage,
         "round": args.round_number,
-        "system_prompt_source": system_source,
+        "system_prompt_files": [str(path) for path in prompt_files],
         "message_count": len(source.values[f"{stage}_state"]["messages"]),
         "source_config": str(run_dir / ".hydra/config.yaml"),
     }
     (session / "session.json").write_text(json.dumps(metadata, indent=2) + "\n")
     print(f"Checkpoint: {source.checkpoint_id}; {metadata['message_count']} messages")
-    print(f"System prompt: {system_source}\nSession: {session}")
+    print("System prompt files: " + ", ".join(map(str, prompt_files)))
+    print(f"Session: {session}")
     for index in count():
         branch = session / f"branch_{index:03d}"
         workspace = branch / "workspace"

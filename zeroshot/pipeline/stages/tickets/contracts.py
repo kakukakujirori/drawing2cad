@@ -112,12 +112,13 @@ class Ticket(BaseModel):
             "stage order. A newly opened ticket has an empty list."
         ),
     )
-    evidence_crops: list[str] = Field(
+    evidence_renders: list[str] = Field(
         default_factory=list,
         description=(
-            "One picture per region of the subject's evidence, in the same "
-            "order, cut out by the pipeline. Open these to see what the audit "
-            "measured. No agent writes this field."
+            "Paths to images, one per region of the subject's evidence, "
+            "in the same order. Regions are marked with red boxes or cropped "
+            "in crop mode. Open these images to inspect the audit evidence. "
+            "No agent writes this field."
         ),
     )
 

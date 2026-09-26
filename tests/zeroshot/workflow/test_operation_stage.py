@@ -7,6 +7,7 @@ from langchain_core.tools import tool
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.contracts import interpretation, view
+from tests.zeroshot.prompt_paths import ROLE_PATHS
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.operations.contracts import (
@@ -81,7 +82,7 @@ def _stage(tools, workdir, source, model):
             response_format_strategy="tool",
         ),
         tools=tools,
-        system_prompt_path=None,
+        role_path=ROLE_PATHS["operation_planner"],
         instructions=StageInstructions(source, "path", {}, workdir),
         prompt_context={},
         attempt_store=AttemptStore(workdir, lambda: 0),

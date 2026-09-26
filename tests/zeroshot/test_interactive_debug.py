@@ -285,6 +285,24 @@ def test_dialogue_tools_history_and_reset_without_submission_or_turn_limit(
                 },
                 "trial",
             ),
+            tool_call(
+                "run_shell",
+                {
+                    "command": "python - <<'PY'\nimport cadquery as cq\n"
+                    "cq.exporters.export(cq.Workplane('XY').box(8, 6, 4), '/work/trial.step')\nPY"
+                },
+                "export_trial",
+            ),
+            tool_call(
+                "render_step",
+                {"step_path": "/work/trial.step", "views": ["front"]},
+                "render_trial",
+            ),
+            tool_call(
+                "load_image",
+                {"image_path": "/work/renders/000/front.png"},
+                "inspect_trial",
+            ),
             tool_call("run_shell", {"command": "cp trial.py model.py"}, "candidate"),
             AIMessage(content="First answer"),
             AIMessage(content="Follow-up answer"),
@@ -323,6 +341,8 @@ def test_dialogue_tools_history_and_reset_without_submission_or_turn_limit(
             str(output),
         ]
     )
+    metadata = json.loads((output / "session.json").read_text())
+    assert metadata["system_prompt_files"] == [str(database.parent / "events.jsonl")]
     assert first.received_messages[0][0].text == "Original system prompt"
     restored = first.received_messages[0][1 : 1 + len(messages)]
     assert [m.model_dump(exclude={"id"}) for m in restored] == [
@@ -330,6 +350,15 @@ def test_dialogue_tools_history_and_reset_without_submission_or_turn_limit(
     ]
     assert not unanswered_tool_calls(first.received_messages[-1])
     assert all("TicketAnswers" not in names for names in first.bound_tool_name_history)
+    assert all("render_step" in names for names in first.bound_tool_name_history)
+    render_result = next(
+        m
+        for m in first.received_messages[-1]
+        if isinstance(m, ToolMessage) and m.tool_call_id == "render_trial"
+    )
+    assert json.loads(render_result.text)["status"] == "OK"
+    assert (output / "branch_000/workspace/renders/000/front.png").is_file()
+    assert not (output / "branch_001/workspace/renders/000").exists()
     assert not any(
         m.text.startswith("[turn ") for call in first.received_messages for m in call
     )
@@ -381,3 +410,54 @@ def test_source_asset_symlink_cannot_copy_files_outside_workspace(tmp_path):
     image.symlink_to(outside)
     with pytest.raises(ValueError, match="escapes"):
         debug.prepare_workspace(source, database.parent / "workspace", tmp_path / "new")
+
+
+@pytest.mark.parametrize(
+    "stage, shared", [("coding", True), ("coding", False), ("audit", True)]
+)
+def test_system_fallback_reads_merged_context_before_the_frozen_role(
+    tmp_path, stage, shared
+):
+    run = tmp_path / "run" / "000364"
+    run.mkdir(parents=True)
+    stages = run.parent / "code/zeroshot/pipeline/stages"
+    base = stages / "_base/prompts"
+    base.mkdir(parents=True)
+    (base / "reconstruction_context.md").write_text(
+        "FROZEN CONTEXT $reconstruction_path"
+    )
+    role = stages / stage / "prompts/role.md"
+    role.parent.mkdir(parents=True)
+    role.write_text("FROZEN ROLE")
+    config = OmegaConf.create({"workflow": {"share_thread": shared}})
+
+    prompt, prompt_files = debug.load_system_prompt(run, stage, config)
+    expected = "FROZEN CONTEXT /work/reconstruction.json"
+    expected_files = [base / "reconstruction_context.md"]
+    if not shared or stage == "audit":
+        expected += "\n\nFROZEN ROLE"
+        expected_files.append(role)
+    assert prompt == expected
+    assert prompt_files == expected_files
+
+
+@pytest.mark.parametrize(
+    "stage, shared", [("coding", True), ("coding", False), ("audit", True)]
+)
+def test_local_system_fallback_matches_pipeline_composition(tmp_path, stage, shared):
+    from tests.zeroshot.prompt_paths import STAGES_DIR
+    from zeroshot.pipeline.stages._base.prompt import build_system_prompt
+
+    config = OmegaConf.create({"workflow": {"share_thread": shared}})
+    role = (
+        None if shared and stage != "audit" else STAGES_DIR / stage / "prompts/role.md"
+    )
+    expected = build_system_prompt(
+        role, {"reconstruction_path": "/work/reconstruction.json"}
+    )
+    actual, prompt_files = debug.load_system_prompt(tmp_path / "000364", stage, config)
+    assert actual == expected.text
+    assert prompt_files == [
+        STAGES_DIR / "_base/prompts/reconstruction_context.md",
+        *([role] if role is not None else []),
+    ]

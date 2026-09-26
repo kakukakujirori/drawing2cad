@@ -20,6 +20,7 @@ from rich.console import Console
 
 from tests.zeroshot.chat_models import ScriptedChatModel
 from tests.zeroshot.contracts import drawing, interpretation
+from tests.zeroshot.prompt_paths import ROLE_PATHS
 from tests.zeroshot.workflow.test_graph import _audit_script
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
@@ -949,6 +950,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert model.bound_tool_names == (
         "run_shell",
         "load_image",
+        "render_step",
     )
     # Two inspections, the write, and the answer.
     assert len(model.received_messages) == 4
@@ -972,7 +974,15 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
 
     # The transcript belongs to the agent, so what the model was last handed is
     # where the run's conversation is read back from.
-    messages = model.received_messages[-1]
+    # Reminder placement is covered by test_coding_trial; inspect tool results here.
+    messages = [
+        message
+        for message in model.received_messages[-1]
+        if not (
+            isinstance(message, HumanMessage)
+            and message.name == "coding_trial_reminder"
+        )
+    ]
     assert [type(message) for message in messages] == [
         *[type(message) for message in initial_messages],
         AIMessage,
@@ -1650,7 +1660,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
     ]
 
     coder = next(prompt for prompt in prompts if prompt["role"] == "coder")
-    assert "expert CAD engineer" in coder["system"]
+    assert ROLE_PATHS["coder"].read_text().strip() in coder["system"]
     instruction = "\n".join(
         str(block.get("text", ""))
         for message in coder["messages"]

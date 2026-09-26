@@ -6,7 +6,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from tests.zeroshot.prompt_paths import ROLE_PATHS, STAGES_DIR
+from tests.zeroshot.prompt_paths import (
+    RECONSTRUCTION_CONTEXT_PATH,
+    ROLE_PATHS,
+    STAGES_DIR,
+)
 from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _completed_run,
     _ref,
@@ -112,12 +116,6 @@ def render_stage(
     return render
 
 
-def _guidelines(stage: str) -> str:
-    return PromptTemplate(STAGES_DIR / stage / "prompts/guidelines.md").render(
-        **_RUN_PATHS
-    )
-
-
 def test_a_prompt_path_survives_a_change_of_working_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -166,7 +164,7 @@ def test_assigned_evidence_paths_reach_the_round_instruction(
         _completed_run(), _report(target=_ref(stage, None))
     )
     ticket = state["reconstruction"].snapshots[-1].open_tickets[0]
-    ticket.evidence_crops = [
+    ticket.evidence_renders = [
         "/work/tickets/evidence_0.png",
         "/work/tickets/evidence_1.png",
     ]
@@ -175,7 +173,7 @@ def test_assigned_evidence_paths_reach_the_round_instruction(
         text = instructions.build(
             state, PipelineStage(recipient), include_artifact=False
         ).text
-        for path in ticket.evidence_crops:
+        for path in ticket.evidence_renders:
             assert (path in text) == (
                 PipelineStage(recipient) in ticket.assigned_stages
             )
@@ -255,9 +253,7 @@ def test_stage_instructions_resolve_all_template_placeholders(
 
 
 def test_reconstruction_guide_keeps_only_the_working_contract() -> None:
-    guide = PromptTemplate(
-        STAGES_DIR / "_base/prompts/reconstruction_history.md"
-    ).render(**_RUN_PATHS)
+    guide = PromptTemplate(RECONSTRUCTION_CONTEXT_PATH).render(**_RUN_PATHS)
 
     for field in (
         "input_drawings",
@@ -272,23 +268,22 @@ def test_reconstruction_guide_keeps_only_the_working_contract() -> None:
     ):
         assert field in guide
     assert "exactly one response per assigned ticket" not in guide
-    assert len(guide.split()) < 450
+    assert len(guide.split()) < 650
 
 
 def test_the_system_prompt_explains_selective_history_navigation() -> None:
     rendered = build_system_prompt(ROLE_PATHS["coder"], _RUN_PATHS).text
-    guide = PromptTemplate(
-        STAGES_DIR / "_base/prompts/reconstruction_history.md"
-    ).render(**_RUN_PATHS)
+    guide = PromptTemplate(RECONSTRUCTION_CONTEXT_PATH).render(**_RUN_PATHS)
 
     assert guide in rendered
-    assert "interpretation -> operations -> coding + verification -> audit" in rendered
-    assert "never edit or print the whole file" in rendered
+    assert rendered.startswith(guide + "\n\n")
+    assert rendered.endswith(ROLE_PATHS["coder"].read_text().strip())
+    assert "Never edit it or print the whole file" in rendered
     assert ".snapshots[-2]" in rendered
 
     assert "jq -c" in rendered
     assert "members by name" in rendered
-    assert len(rendered.split()) < 500
+    assert len(rendered.split()) < 700
 
 
 def test_round_instructions_do_not_repeat_the_reconstruction_guide(
@@ -365,7 +360,7 @@ def test_auditor_keeps_result_out_of_the_backtrace_graph(
 def test_placeholders_are_filled_from_the_context(
     render_stage: Callable[..., str],
 ) -> None:
-    """The run's paths reach the guidelines the coding instruction carries."""
+    """The run's paths reach the composed coding instruction."""
     rendered = render_stage("coding")
 
     assert "/work/model.py" in rendered
@@ -464,7 +459,6 @@ def test_audit_can_read_concerns_from_both_ticket_summaries_and_stage_reports(
     instruction = render_stage("audit")
     assert "ticket summaries, `concerns` and `unticketed_changes`" in instruction
     assert "placement does not determine" in instruction
-    assert "missing reports in old snapshots" in prompt
 
 
 def test_the_audit_names_concerns_the_way_its_contract_does(
@@ -541,13 +535,16 @@ def test_the_interpretation_round_uses_json_for_the_artifact_and_answer_for_tick
 
 
 @pytest.mark.parametrize("stage", ["interpretation", "operations", "coding", "audit"])
-def test_every_reasoning_round_carries_that_stage_s_guidelines(
+def test_every_round_has_explicit_instruction_sections(
     render_stage: Callable[..., str], stage: str
 ) -> None:
-    guidelines = _guidelines(stage)
-
     rendered = render_stage(stage)
-    assert guidelines in rendered
+    assert re.findall(r"^### (.+)$", rendered, re.MULTILINE)[-4:] == [
+        "Task and inputs",
+        "Artifact contract",
+        "Work cycle",
+        "Submission",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -556,7 +553,6 @@ def test_every_reasoning_round_carries_that_stage_s_guidelines(
         "drawing_interpreter",
         "operation_planner",
         "coder",
-        "cad_reconstructor",
         "output_auditor",
     ],
 )
@@ -574,49 +570,20 @@ def test_a_proposer_role_says_who_it_is_and_leaves_the_rest_to_the_instruction(
     assert "try-except" not in body
 
 
-def test_the_merged_role_renders_the_same_text_for_every_stage_that_shares_it() -> None:
-    """One thread of thought needs one system prompt: the stages differ in
-    turn budget and answer contract, so a prompt that took either as a
-    placeholder would come out different for each of them."""
-    body = PromptTemplate(ROLE_PATHS["cad_reconstructor"]).path.read_text(
-        encoding="utf-8"
-    )
+def test_shared_system_is_context_only_regardless_of_stage_budget_and_schema() -> None:
+    guide = PromptTemplate(RECONSTRUCTION_CONTEXT_PATH).render(**_RUN_PATHS)
+    for turns in (10, 20, 30):
+        rendered = build_system_prompt(
+            None,
+            _RUN_PATHS | {"max_turns": str(turns), "output_schema": "SENTINEL_SCHEMA"},
+        ).text
+        assert rendered == guide
+        assert "$" not in rendered
 
-    assert "$output_schema" not in body
-    assert "$max_turns" not in body
 
-    stage_contexts = [
-        {
-            "coding_output_path": "/work/model.py",
-            "audit_output_path": "/work/audit.json",
-            "audit_schema": json.dumps(AuditReport.model_json_schema()),
-            "verification_dir": "/work/attempts",
-        },
-        # What `create_agent` adds for a stage that answers structurally, and
-        # what it adds for the coder, which does not.
-        {
-            "coding_output_path": "/work/model.py",
-            "audit_output_path": "/work/audit.json",
-            "audit_schema": json.dumps(AuditReport.model_json_schema()),
-            "verification_dir": "/work/attempts",
-            "output_schema": "SENTINEL_SCHEMA",
-            "max_turns": "20",
-        },
-        {
-            "coding_output_path": "/work/model.py",
-            "audit_output_path": "/work/audit.json",
-            "audit_schema": json.dumps(AuditReport.model_json_schema()),
-            "verification_dir": "/work/attempts",
-            "max_turns": "10",
-        },
-    ]
-    rendered = {
-        PromptTemplate(ROLE_PATHS["cad_reconstructor"]).render(**context)
-        for context in stage_contexts
-    }
-
-    assert len(rendered) == 1
-    assert "$" not in rendered.pop()
+def test_baseline_role_does_not_receive_multi_agent_context() -> None:
+    role = STAGES_DIR.parents[1] / "pipeline_single/prompts/coder_role.md"
+    assert build_system_prompt(role, {}).text == role.read_text().strip()
 
 
 def test_a_missing_value_is_refused(tmp_path: Path) -> None:
@@ -669,15 +636,15 @@ def test_the_digest_follows_the_file(tmp_path: Path) -> None:
     assert prompt.sha256 != before
 
 
-def test_interpreter_uses_localized_evidence_and_checks_cross_view_ambiguities() -> (
-    None
-):
-    guidelines = _guidelines("interpretation")
-    assert "not a trace of every drawing primitive" in guidelines
-    assert "hidden lines and matching projections" in guidelines
-    assert "numeric sizes and model positions in parameters" in guidelines
-    assert "convert pixel measurements with the scale" in guidelines
-    assert "report the affected parameter and the choice you made" in guidelines
+def test_interpreter_uses_localized_evidence_and_checks_cross_view_ambiguities(
+    render_stage: Callable[..., str],
+) -> None:
+    instructions = render_stage("interpretation")
+    assert "not a trace of every drawing primitive" in instructions
+    assert "hidden lines and matching projections" in instructions
+    assert "numeric sizes and model positions in parameters" in instructions
+    assert "convert pixel measurements with the scale" in instructions
+    assert "report the affected parameter and the choice you made" in instructions
 
 
 def test_interpretation_prioritises_a_verified_draft_and_source_pixel_measurements(
@@ -729,12 +696,14 @@ def test_coordinate_markdown_agrees_with_the_projection_contract() -> None:
         assert STANDARD_VIEW_FRAMES[view] == (u_axis, v_axis), view
 
 
-def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes() -> None:
-    guidelines = _guidelines("operations")
+def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes(
+    render_stage: Callable[..., str],
+) -> None:
+    instructions = render_stage("operations")
 
-    assert "build order" in guidelines
-    assert "`semantics`" in guidelines
-    assert "`verb`" in guidelines
+    assert "build order" in instructions
+    assert "`semantics`" in instructions
+    assert "`verb`" in instructions
     assert set(Operation.model_fields) == {
         "name",
         "verb",
@@ -743,16 +712,63 @@ def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes() -> None:
     }
 
 
-def test_the_coder_is_told_to_build_in_list_order() -> None:
-    assert "Build the operations in list order" in _guidelines("coding")
+def test_the_coder_is_told_to_build_in_list_order(
+    render_stage: Callable[..., str],
+) -> None:
+    assert "Build the operations in list order" in render_stage("coding")
 
 
-def test_downstream_prompts_use_interpreted_features_and_preserve_the_datum() -> None:
+def test_downstream_prompts_use_interpreted_features_and_preserve_the_datum(
+    render_stage: Callable[..., str],
+) -> None:
     for stage in ("operations", "coding"):
-        guidelines = _guidelines(stage)
-        assert "sem_main_bore.radius" in guidelines
-        assert "sem_main_bore.center" in guidelines
-        assert "datum" in guidelines
-        assert "null means unknown, never zero" in guidelines.lower()
-        assert "ev_" not in guidelines
-        assert "geo_" not in guidelines
+        instructions = render_stage(stage)
+        assert "sem_main_bore.radius" in instructions
+        assert "sem_main_bore.center" in instructions
+        assert "datum" in instructions
+        assert "null means unknown, never zero" in instructions.lower()
+        assert "ev_" not in instructions
+        assert "geo_" not in instructions
+
+
+@pytest.mark.parametrize("role", list(ROLE_PATHS))
+def test_coding_instructions_are_not_injected_into_system_prompts(role: str) -> None:
+    system = build_system_prompt(ROLE_PATHS[role], _RUN_PATHS).text
+
+    guide = PromptTemplate(RECONSTRUCTION_CONTEXT_PATH).render(**_RUN_PATHS)
+    assert system == guide + "\n\n" + ROLE_PATHS[role].read_text().strip()
+    assert "calculate_drawing_scale" not in system
+    assert "## Evidence policy" not in system
+    assert "do not wait for upstream agreement" not in system.lower()
+    assert "stroke thickness" not in system.lower()
+
+
+@pytest.mark.parametrize("stage", list(PipelineStage))
+def test_geometry_correction_policy_belongs_to_the_coding_round(
+    render_stage: Callable[..., str], stage: PipelineStage
+) -> None:
+    instruction = render_stage(stage.value)
+    assert ("Do not wait for upstream agreement" in instruction) == (
+        stage is PipelineStage.CODING
+    )
+
+
+def test_coder_tests_predictions_and_inspects_the_latest_candidate(
+    render_stage: Callable[..., str],
+) -> None:
+    instruction = render_stage("coding")
+
+    assert "Do not believe in your 3D reasoning blindly" in instruction
+    assert "do not reject it based only on your reasoning" in instruction
+    assert "Choose a candidate, the smallest change needed to test it" in instruction
+    assert "run the trial before further speculation" in instruction
+    assert "older candidate's render is not evidence for a later edit" in instruction
+    assert "obtain a new measurement or run a new trial" in instruction
+    assert "Scratch files are not automatically verified or submitted" in instruction
+    assert "unticketed_changes" in instruction
+    observation = instruction.index("how boundaries connect")
+    assert observation < instruction.index("stroke thickness")
+    assert (
+        "Keep untested predictions and unavailable views explicitly unverified"
+        in instruction
+    )
