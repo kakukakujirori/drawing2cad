@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from inspect import cleandoc
 from pathlib import Path, PurePosixPath
+from statistics import fmean
 from typing import Literal
 
 from langchain_core.messages.content import ContentBlock, create_text_block
@@ -119,6 +120,9 @@ class OutputVerifier:
         self.projection_view_mode = projection_view_mode
 
         self._last_feedback_report: VerifyOutputResult | None = None
+        # The last two builds with a chamfer distance, so feedback shows the change.
+        self._scored: VerifyOutputResult | None = None
+        self._scored_before: VerifyOutputResult | None = None
         # What the last build returned, and the digest of the program it ran
         # on. Assigned together, so one is never read against the other. See
         # `verify`.
@@ -142,6 +146,8 @@ class OutputVerifier:
         self._built = None
         self._built_from_digest = None
         self._last_feedback_report = None
+        self._scored = None
+        self._scored_before = None
 
     def verify(self) -> VerifyOutputResult:
         """Verify the program and, when it yields a solid, render its views.
@@ -452,6 +458,8 @@ class OutputVerifier:
         """Verify, and say what happened in blocks a message can carry."""
         report = self.verify()
         self._last_feedback_report = report
+        if report is not self._scored and chamfers(report.drawing_diff_report):
+            self._scored_before, self._scored = self._scored, report
 
         exec_report = report.exec_report
         render_report = report.render_report
@@ -509,7 +517,9 @@ class OutputVerifier:
 
         # drawing diff report
         if drawing_diff_text := describe_drawing_diffs(
-            drawing_diff_report, self.workdir
+            drawing_diff_report,
+            self.workdir,
+            previous=self._scored_before if report is self._scored else None,
         ):
             blocks.append(create_text_block(drawing_diff_text))
 
@@ -645,13 +655,49 @@ def describe_intermediates(
     return msg
 
 
+def chamfers(diff_reports: Mapping[str, DrawingDiffReport] | None) -> dict[str, float]:
+    """The chamfer distance of each view that could be measured."""
+    return {
+        name: chamfer
+        for name, report in (diff_reports or {}).items()
+        if (chamfer := report.stats.get("chamfer_drawing_px")) is not None
+    }
+
+
+def _describe_chamfer(current: float, previous: float | None) -> str:
+    change = f" ({current - previous:+.2f})" if previous is not None else ""
+    return f"{current:.2f} px{change}"
+
+
+def _describe_mean_chamfer(
+    current: Mapping[str, float],
+    previous: Mapping[str, float],
+    previous_id: str | None,
+) -> str:
+    comparable = bool(previous) and previous.keys() == current.keys()
+    text = f"Mean chamfer over {len(current)} views: " + _describe_chamfer(
+        fmean(current.values()), fmean(previous.values()) if comparable else None
+    )
+    if previous:
+        text += f"\nChanges in parentheses are against verification {previous_id}."
+    return text
+
+
 def describe_drawing_diffs(
     diff_reports: Mapping[str, DrawingDiffReport] | None,
     workdir: SandboxWorkdir,
+    previous: VerifyOutputResult | None = None,
 ) -> str:
-    """Format comparison results without executing comparisons or writing files."""
+    """Format comparison results without executing comparisons or writing files.
+
+    Scores are compared with `previous`, the build the reader saw before.
+    """
     if not diff_reports:
         return ""
+    current_scores = chamfers(diff_reports)
+    previous_scores: dict[str, float] = (
+        chamfers(previous.drawing_diff_report) if previous else {}
+    )
 
     # The complete layout of one view.
     view_template = cleandoc("""
@@ -664,8 +710,15 @@ def describe_drawing_diffs(
 
     view_blocks: list[str] = []
     for name, report in diff_reports.items():
+        notes = []
+        if name in current_scores:
+            notes.append(
+                "chamfer: "
+                + _describe_chamfer(current_scores[name], previous_scores.get(name))
+            )
         # Preserve errors and warnings, including failures without images.
-        notes = [f"error: {report.error}"] if report.error else []
+        if report.error:
+            notes.append(f"error: {report.error}")
         notes.extend(f"warning: {warning}" for warning in report.warnings)
         notes_text = "\n" + "\n".join(notes) if notes else ""
 
@@ -714,8 +767,26 @@ def describe_drawing_diffs(
         correct shape, material side, or completeness. Check residual for missing
         input boundaries. Note that alignment is heuristic and can be wrong or hide size errors.
 
+        The chamfer score is the mean distance in input pixels between the aligned
+        input and projection lines, with far lines capped. Lower is better. Dimensions
+        and text in the input never appear in a projection, so even a correct
+        model stays above zero: judge the change between builds, not the value.
+        {mean}
         {views}
 
         Open available overlay and residual with load_image. Confirm suspected
         mismatches against the input drawing crop and original STEP projection.
-    """).format(views="\n\n".join(view_blocks))
+    """).format(
+        mean=(
+            "\n"
+            + _describe_mean_chamfer(
+                current_scores,
+                previous_scores,
+                previous.verification_id if previous else None,
+            )
+            + "\n"
+            if current_scores
+            else ""
+        ),
+        views="\n\n".join(view_blocks),
+    )

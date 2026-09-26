@@ -117,7 +117,7 @@ def test_chamfer_keeps_its_objective_direction_and_inverts_the_result(
         np.testing.assert_array_equal(
             drawing_gray, cv2.cvtColor(drawing, cv2.COLOR_RGB2GRAY)
         )
-        assert cfg.model == model and cfg.maxiter == 5
+        assert cfg.model == model and cfg.top_k == 5
         return {
             "H_source_to_drawing": matrix.tolist(),
             "config": {"model": model},
@@ -127,7 +127,7 @@ def test_chamfer_keeps_its_objective_direction_and_inverts_the_result(
         }
 
     monkeypatch.setattr(chamfer, "register", register)
-    result = alignment.align(drawing, projection, model=model, options={"maxiter": 5})
+    result = alignment.align(drawing, projection, model=model, options={"top_k": 5})
     assert result.status != "failed"
     assert "test warning" in result.warnings
     projection_points = np.array([[5.0, 7.0], [22.0, 41.0], [81.0, 61.0]])
@@ -185,7 +185,7 @@ def test_chamfer_optimizer_recovers_a_transformed_line_drawing():
     result = alignment.align(
         drawing,
         projection,
-        options={"maxiter": 60, "popsize": 10, "restarts": 1, "top_k": 2},
+        options={"top_k": 2},
     )
     assert result.status != "failed", result.diagnostics
     # General caveats are in the feedback legend, not repeated per view.

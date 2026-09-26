@@ -8,11 +8,14 @@ from typing import Any
 
 import cv2
 import numpy as np
+from scipy.spatial import cKDTree
 
 from .align import AlignmentResult, _validate_rgb, opencv_transform
 from .image_ops import distance_map, foreground_mask
 
 _DISPLAY_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+# Capping keeps a far annotation from outweighing the part's own lines.
+CHAMFER_CAP_PX = 20.0
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,32 @@ def _distance_summary(distances: np.ndarray) -> dict[str, Any]:
         "p95_px": float(np.percentile(distances, 95)) if distances.size else None,
         "max_px": float(distances.max()) if distances.size else None,
     }
+
+
+def _chamfer(
+    drawing_ink: np.ndarray, output_ink: np.ndarray, matrix: np.ndarray
+) -> float | None:
+    """Mean line distance both ways in drawing pixels, to compare builds of one part.
+
+    Every drawing line counts, and the unit does not change with the output's
+    size. Output lines outside the drawing are not evaluated.
+    """
+    if not (drawing_ink.any() and output_ink.any()):
+        return None
+    drawing_xy = np.argwhere(drawing_ink)[:, ::-1].astype(np.float64)
+    output_xy = cv2.perspectiveTransform(
+        np.argwhere(output_ink)[None, :, ::-1].astype(np.float64),
+        np.linalg.inv(matrix),
+    )[0]
+    height, width = drawing_ink.shape
+    inside = np.all((output_xy >= 0) & (output_xy <= (width - 1, height - 1)), axis=1)
+    if not inside.any():
+        return None
+    missing = cKDTree(output_xy).query(drawing_xy)[0]
+    extra = cKDTree(drawing_xy).query(output_xy[inside])[0]
+    missing_mean = np.minimum(missing, CHAMFER_CAP_PX).mean()
+    extra_mean = np.minimum(extra, CHAMFER_CAP_PX).mean()
+    return float((missing_mean + extra_mean) / 2)
 
 
 def _measure_distances(
@@ -71,12 +100,15 @@ def _colors(distances: np.ndarray, clip: float | None) -> np.ndarray:
 
 
 def _warp_drawing(
-    drawing_gray: np.ndarray, matrix: np.ndarray, output_shape: tuple[int, int]
+    drawing_gray: np.ndarray,
+    drawing_ink: np.ndarray,
+    matrix: np.ndarray,
+    output_shape: tuple[int, int],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Warp the line pixels, observed canvas, and gray background together."""
     height, width = output_shape
     # Nearest-neighbor warping preserves binary line membership and observation.
-    masks = (foreground_mask(drawing_gray), np.ones(drawing_gray.shape, dtype=bool))
+    masks = (drawing_ink, np.ones(drawing_gray.shape, dtype=bool))
     aligned_ink, valid = (
         cv2.warpPerspective(
             mask.astype(np.uint8),
@@ -194,16 +226,18 @@ def compute_diff(
         # Map input line membership and input coverage into the output pixel frame.
         drawing_gray = cv2.cvtColor(drawing_rgb, cv2.COLOR_RGB2GRAY)
         projection_gray = cv2.cvtColor(projection_rgb, cv2.COLOR_RGB2GRAY)
+        drawing_ink = foreground_mask(drawing_gray)
         output_ink = foreground_mask(projection_gray)
         matrix = opencv_transform(alignment.H_drawing_to_projection)
         aligned_ink, valid, aligned_gray = _warp_drawing(
-            drawing_gray, matrix, projection_gray.shape
+            drawing_gray, drawing_ink, matrix, projection_gray.shape
         )
         # Measure both directions; output pixels outside input coverage are unknown.
         output_distances, input_distances, measured = _measure_distances(
             aligned_ink, output_ink, valid
         )
         stats.update(measured)
+        stats["chamfer_drawing_px"] = _chamfer(drawing_ink, output_ink, matrix)
         # Automatic display scales are per direction; unavailable maxima stay null.
         if distance_clip_px is None:
             stats["red_distance_px"] = stats["output_to_input"]["max_px"]

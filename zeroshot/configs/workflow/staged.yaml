@@ -22,9 +22,6 @@ workflow:
       rotation_degrees: 10.0
 
       pyramid: [0.5, 1.0]
-      restarts: 8
-      maxiter: 180
-      popsize: 18
       top_k: 4
 
   interpretation_agent_builder:

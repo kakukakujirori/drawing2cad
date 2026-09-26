@@ -6,7 +6,10 @@ import numpy as np
 import pytest
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages.coding.verify import describe_drawing_diffs
+from zeroshot.pipeline.stages.coding.verify import (
+    VerifyOutputResult,
+    describe_drawing_diffs,
+)
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 
@@ -73,6 +76,45 @@ error: projection unavailable"""
     for unwanted in (str(tmp_path), "/work/unavailable", "p95_px", "red_distance_px"):
         assert unwanted not in text
     assert set(tmp_path.rglob("*")) == files_before
+
+
+def _scored(tmp_path, chamfers):
+    return {
+        name: DrawingDiffReport(
+            drawing_path=tmp_path / f"{name}.png",
+            projection_path=tmp_path / f"projected_{name}.png",
+            stats={"chamfer_drawing_px": chamfer},
+        )
+        for name, chamfer in chamfers.items()
+    }
+
+
+def test_scores_show_changes_against_the_previous_build(tmp_path):
+    previous = VerifyOutputResult(
+        verification_id="002",
+        drawing_diff_report=_scored(tmp_path, {"view_front": 8.0, "view_top": 4.0}),
+    )
+    current = _scored(tmp_path, {"view_front": 6.0, "view_top": 5.0})
+
+    text = describe_drawing_diffs(current, SandboxWorkdir(tmp_path), previous)
+
+    assert "chamfer: 6.00 px (-2.00)" in text
+    assert "Mean chamfer over 2 views: 5.50 px (-0.50)" in text
+    assert "against verification 002" in text
+
+
+def test_only_views_measured_both_times_are_compared(tmp_path):
+    previous = VerifyOutputResult(
+        verification_id="002",
+        drawing_diff_report=_scored(tmp_path, {"view_front": 8.0}),
+    )
+    current = _scored(tmp_path, {"view_front": 6.0, "view_top": 5.0})
+
+    text = describe_drawing_diffs(current, SandboxWorkdir(tmp_path), previous)
+
+    assert "chamfer: 6.00 px (-2.00)" in text
+    assert "chamfer: 5.00 px\n" in text
+    assert "Mean chamfer over 2 views: 5.50 px\n" in text
 
 
 def test_failed_alignment_can_have_warnings_without_an_error_or_images(tmp_path):

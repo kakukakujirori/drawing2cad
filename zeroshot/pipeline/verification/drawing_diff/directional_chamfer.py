@@ -1,8 +1,9 @@
 """Robust CAD-line registration, mapping CAD pixels -> drawing pixels.
 
-CPU-only, no learned features, no annotation removal. A bounded similarity
-search is followed by local similarity/affine/homography refinement. This is
-heuristic optimization, NOT a certificate of global optimality.
+CPU-only, no learned features, no annotation removal. A grid search over
+similarity scale and rotation, exhaustive in translation, is followed by local
+similarity/affine/homography refinement. This is heuristic optimization, NOT a
+certificate of global optimality.
 
 Distances and robust scales are in original DRAWING pixels. Ink is True.
 Direction banks approximate directional Chamfer; this is not a reimplementation
@@ -15,14 +16,14 @@ import argparse
 import json
 import math
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
 import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter, map_coordinates
-from scipy.optimize import differential_evolution, minimize
+from scipy.optimize import minimize
 from scipy.spatial import cKDTree
 
 if __package__:
@@ -42,13 +43,11 @@ class Config:
     orientation_weight: float = 3.0  # drawing pixels / radian; 0 disables it
     direction_bins: int = 12
     balance_power: float = 0.0  # 0: equal point weights; 1: equal direction bins
-    max_points: int = 2400
     pyramid: tuple[float, ...] = (0.5, 1.0)
-    restarts: int = 2
-    maxiter: int = 180
-    popsize: int = 18
+    # Grid of the global search: log scale and degrees.
+    scale_step: float = 0.02
+    rotation_step: float = 1.0
     top_k: int = 4
-    seed: int = 7
     regularization: float = 0.01
     anisotropy_limit: float = 0.06  # log singular stretch parameter, approximately
     shear_limit: float = 0.10
@@ -67,10 +66,10 @@ class Config:
             raise ValueError("Invalid loss/regularization scale")
         if self.direction_bins < 4 or not 0 <= self.balance_power <= 1:
             raise ValueError("Invalid orientation settings")
-        if self.max_points < 8:
-            raise ValueError("max_points must be at least 8")
-        if min(self.restarts, self.maxiter, self.popsize, self.top_k) < 1:
-            raise ValueError("Iteration/sample counts must be positive")
+        if self.top_k < 1:
+            raise ValueError("top_k must be positive")
+        if self.scale_step <= 0 or self.rotation_step <= 0:
+            raise ValueError("Grid steps must be positive")
         if (
             not self.pyramid
             or self.pyramid[-1] != 1.0
@@ -254,11 +253,6 @@ class Objective:
         if len(p) < 8:
             raise ValueError("Too few visible source pixels")
         self.visible_points = p.copy()
-        if len(p) > cfg.max_points:
-            ids = np.random.default_rng(cfg.seed).choice(
-                len(p), cfg.max_points, replace=False
-            )
-            p, angle = p[ids], angle[ids]
         self.points = p
         self.u = (p - self.center) / self.Ls
         self.tangents = np.column_stack((np.cos(angle), np.sin(angle)))
@@ -372,9 +366,11 @@ class Objective:
                 break
         return kept
 
-    def refine(self, p: np.ndarray, level: int) -> np.ndarray:
-        # Bounded local windows prevent Powell's 1D searches from jumping to
-        # an unrelated repeated line. Always retain the better old solution.
+    def refine(self, p: np.ndarray, level: int) -> tuple[np.ndarray, bool]:
+        """Improve p locally, and say whether the search converged.
+
+        Bounded windows keep it from jumping to an unrelated repeated line.
+        """
         radius = np.array(
             [
                 0.045,
@@ -395,16 +391,71 @@ class Objective:
         result = minimize(
             fun,
             p,
-            method="Powell",
+            method="Nelder-Mead",
             bounds=bounds,
             options={
-                "maxiter": 50,
-                "maxfev": 2200 if len(p) == 4 else 4400,
-                "xtol": 2e-6,
-                "ftol": 1e-7,
+                "maxfev": 1500 if len(p) == 4 else 3000,
+                "xatol": 1e-6,
+                "fatol": 1e-7,
             },
         )
-        return result.x if np.isfinite(result.fun) and result.fun < fun(p) else p.copy()
+        better = np.isfinite(result.fun) and result.fun < fun(p)
+        return (result.x if better else p.copy()), bool(result.success)
+
+
+# The global search runs on a coarse copy, where tau widens with the pixel.
+_COARSE_FACTOR = 0.25
+_COARSE_KEPT = 32
+
+
+def grid_search(objective: Objective, target: np.ndarray) -> list[np.ndarray]:
+    """The best translation of each grid scale and rotation, best first.
+
+    Translation is exhaustive by correlation, so the result is deterministic.
+    """
+    cfg, q = objective.cfg, _COARSE_FACTOR
+    points, angles = features(target)
+    distance = DistanceBank(
+        target.shape, points, angles, q, replace(cfg, orientation_weight=0.0)
+    ).maps[0]
+    loss = (-np.expm1(-0.5 * (distance * q / cfg.tau) ** 2)).astype(np.float32)
+    h, w = target.shape
+    u = (objective.visible_points - objective.center) / objective.Ls
+    low, high = np.log(cfg.relative_scale)
+    limit = cfg.rotation_degrees
+    found = []
+    for log_scale in np.arange(low, high + 1e-9, cfg.scale_step):
+        for degrees in np.arange(-limit, limit + 1e-9, cfg.rotation_step):
+            theta = np.deg2rad(degrees)
+            c, s = np.cos(theta), np.sin(theta)
+            offsets = q * objective.Lt * np.exp(log_scale) * (u @ [[c, s], [-s, c]])
+            corner = np.floor(offsets.min(axis=0))
+            cells = np.rint(offsets - corner).astype(int)
+            template = np.zeros(cells.max(axis=0)[::-1] + 1, np.float32)
+            np.add.at(template, (cells[:, 1], cells[:, 0]), 1.0 / len(cells))
+            th, tw = template.shape
+            # Placing the template off the drawing costs the maximum loss.
+            padded = cv2.copyMakeBorder(
+                loss, th, th, tw, tw, cv2.BORDER_CONSTANT, value=1.0
+            )
+            score = cv2.matchTemplate(padded, template, cv2.TM_CCORR)
+            # Template corner (x, y) puts the part centre at q*Lt*t below.
+            ys, xs = np.mgrid[: score.shape[0], : score.shape[1]]
+            tx = (xs - tw - corner[0]) / (q * objective.Lt)
+            ty = (ys - th - corner[1]) / (q * objective.Lt)
+            inside = (
+                (tx >= 0)
+                & (tx <= (w - 1) / objective.Lt)
+                & (ty >= 0)
+                & (ty <= (h - 1) / objective.Lt)
+            )
+            score[~inside] = np.inf
+            y, x = np.unravel_index(np.argmin(score), score.shape)
+            found.append(
+                (score[y, x], np.array([tx[y, x], ty[y, x], log_scale, theta]))
+            )
+    found.sort(key=lambda item: item[0])
+    return [params for _, params in found[:_COARSE_KEPT]]
 
 
 def register(
@@ -424,37 +475,17 @@ def register(
     start = time.perf_counter()
     source, target = foreground_mask(source_gray), foreground_mask(drawing_gray)
     objective = Objective(source, target, cfg, source_visibility)
-    candidates = []
-    optimizer_runs = []
-    for restart in range(cfg.restarts):
-        result = differential_evolution(
-            lambda p: objective(p, 0),
-            objective.bounds(4),
-            rng=cfg.seed + restart,
-            popsize=cfg.popsize,
-            maxiter=cfg.maxiter,
-            tol=1e-5,
-            atol=1e-7,
-            polish=False,
-            workers=1,
-        )
-        candidates.extend(result.population)
-        candidates.append(result.x)
-        optimizer_runs.append(
-            {
-                "success": bool(result.success),
-                "message": str(result.message),
-                "nfev": int(result.nfev),
-                "nit": int(result.nit),
-            }
-        )
-    candidates = objective.diverse(candidates, 0, cfg.top_k)
+    candidates = objective.diverse(grid_search(objective, target), 0, cfg.top_k)
+    converged: list[bool] = []
     for level in range(len(cfg.pyramid)):
-        candidates = [objective.refine(p, level) for p in candidates]
-        candidates = objective.diverse(candidates, level, cfg.top_k)
+        refined = [objective.refine(p, level) for p in candidates]
+        candidates = objective.diverse([p for p, _ in refined], level, cfg.top_k)
+        converged = [ok for _, ok in refined]
     n = {"similarity": 4, "affine": 6, "homography": 8}[cfg.model]
     if n > 4:
-        candidates = [objective.refine(np.pad(p, (0, n - 4)), -1) for p in candidates]
+        refined = [objective.refine(np.pad(p, (0, n - 4)), -1) for p in candidates]
+        candidates = [p for p, _ in refined]
+        converged = [ok for _, ok in refined]
     candidates.sort(key=objective)
     p = candidates[0]
     H = objective.matrix(p)
@@ -481,7 +512,7 @@ def register(
         ),
         "seconds": time.perf_counter() - start,
         "config": asdict(cfg),
-        "optimizer_runs": optimizer_runs,
+        "optimizer_runs": [{"success": ok} for ok in converged],
         "hypotheses": [
             {"loss": objective(v), "H": objective.matrix(v).tolist()}
             for v in candidates
@@ -613,9 +644,6 @@ def main() -> None:
     parser.add_argument("--tau", type=float, default=3.0)
     parser.add_argument("--orientation-weight", type=float, default=3.0)
     parser.add_argument("--balance-power", type=float, default=0.0)
-    parser.add_argument("--restarts", type=int, default=2)
-    parser.add_argument("--maxiter", type=int, default=180)
-    parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
         "--source-visibility",
         help="Known visibility: white=use, black=ignore, same size as CAD",
@@ -629,9 +657,6 @@ def main() -> None:
         tau=args.tau,
         orientation_weight=args.orientation_weight,
         balance_power=args.balance_power,
-        restarts=args.restarts,
-        maxiter=args.maxiter,
-        seed=args.seed,
     )
     source, target = read_gray(args.source), read_gray(args.target)
     visibility = (

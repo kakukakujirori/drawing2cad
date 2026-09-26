@@ -199,7 +199,7 @@ def test_invalid_executor_settings_fail_at_construction(settings, name):
 @pytest.mark.parametrize(
     ("backend", "options"),
     [
-        ("directional_chamfer", {"max_points": 1}),
+        ("directional_chamfer", {"scale_step": 0}),
         ("match_anything", {"ransac_max_iter": 0}),
     ],
 )

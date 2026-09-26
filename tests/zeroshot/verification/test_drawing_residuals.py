@@ -43,6 +43,27 @@ def test_every_shifted_line_pixel_is_colored():
     assert diff.stats["outside_fraction"] == 0
 
 
+def test_chamfer_caps_far_lines():
+    drawing, output = _white(), _white()
+    drawing[10:55, [20, 60]] = 0  # the line at 60 is 36px from any output line
+    output[10:55, 24] = 0
+    diff = compute_diff(drawing, output, _alignment())
+
+    # input capped (4 + 20) / 2 = 12, output 4
+    assert diff.stats["chamfer_drawing_px"] == 8.0
+
+
+def test_chamfer_counts_drawing_lines_beyond_the_projection():
+    drawing = np.full((64, 100, 3), 255, dtype=np.uint8)
+    output = _white()
+    drawing[10:55, [20, 90]] = 0  # x=90 lies outside the 64px projection
+    output[10:55, 20] = 0
+    diff = compute_diff(drawing, output, _alignment())
+
+    # input (0 + capped 20) / 2 = 10, output 0
+    assert diff.stats["chamfer_drawing_px"] == 5.0
+
+
 def test_missing_hole_only_appears_in_reverse_residual():
     drawing, output = _white(100), _white(100)
     cv2.rectangle(output, (10, 10), (90, 90), (0, 0, 0), 1)

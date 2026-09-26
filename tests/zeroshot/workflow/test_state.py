@@ -458,10 +458,6 @@ def test_real_drawing_diff_survives_a_sqlite_checkpoint(tmp_path: Path) -> None:
     image.save(projection_path)
     (diff,) = DrawingDiffExecutor(
         alignment_options={
-            "maxiter": 2,
-            "popsize": 4,
-            "restarts": 1,
-            "max_points": 80,
             "top_k": 1,
             "pyramid": (1.0,),
         },

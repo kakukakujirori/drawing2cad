@@ -543,20 +543,23 @@ def test_an_unchanged_program_is_not_built_twice(tmp_path: Path) -> None:
 
 
 class StubDiffDrawer:
-    def __init__(self, *, error=None, fatal=False):
+    def __init__(self, *, error=None, fatal=False, chamfers=()):
         self.error = error
         self.fatal = fatal
+        self.chamfers = list(chamfers)  # one per call; None measures nothing
         self.calls = []
 
     def execute(self, pairs):
         self.calls.append(list(pairs))
         if self.fatal:
             raise RuntimeError("comparison worker failed")
+        chamfer = self.chamfers.pop(0) if self.chamfers else None
         return [
             DrawingDiffReport(
                 drawing_path=drawing,
                 projection_path=projection,
                 error=self.error,
+                stats={"chamfer_drawing_px": chamfer},
                 alignment=None
                 if self.error
                 else AlignmentResult(
@@ -599,6 +602,31 @@ def _set_input_crop(verifier, tmp_path):
             ),
         ]
     )
+
+
+def test_feedback_compares_scores_with_the_last_scored_build(tmp_path):
+    workdir = SandboxWorkdir(tmp_path)
+    drawer = StubDiffDrawer(chamfers=[8.0, None, 6.0, 7.0])
+    verifier = _create_verifier(
+        StubCadQueryExecutor(_execution_report()), workdir, diff_drawer=drawer
+    )
+    _set_input_crop(verifier, tmp_path)
+
+    def build(number: int) -> str:
+        (tmp_path / "model.py").write_text(f"{VALID_SOURCE}\n# build {number}\n")
+        return _text(verifier.feedback())
+
+    first = build(0)
+    assert "chamfer: 8.00 px\n" in first
+    assert "Changes in parentheses" not in first
+    assert "\nchamfer: " not in build(1)
+    third = build(2)
+    assert "chamfer: 6.00 px (-2.00)" in third
+    assert "against verification 000" in third
+    assert _text(verifier.feedback()) == third  # not against itself
+
+    verifier.reset()
+    assert "Changes in parentheses" not in build(3)
 
 
 def test_diff_uses_final_render_and_feedback_formats_the_stored_reports(tmp_path):
