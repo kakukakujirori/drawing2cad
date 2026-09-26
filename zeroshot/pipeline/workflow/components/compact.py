@@ -30,19 +30,20 @@ Answer every section. Where a section has nothing to report, write "None".
 What is being asked of you overall, and what would count as having done it.
 
 ## FINDINGS
-What you established, and the evidence that settled it: the measurements,
-values and identifiers you arrived at, and the observations they came from.
-Separate direct observations and measurements from untested predictions.
-For rejected alternatives, retain the evidence and artifact paths supporting
-the rejection; mark untested alternatives as untested. Reconsider a rejection
-when new evidence undermines its basis.
+What you observed and measured: the values and identifiers you arrived at, and
+the images, files or commands that showed them. Separate direct observations
+and measurements from untested predictions. Do not list rejected alternatives
+here. A rejection is a judgment, and it can be wrong.
 
 ## WORK DONE
 The commands you ran, the files you read or wrote, and what came back. Enough
 that you do not repeat an action whose result you already have.
 
 ## OPEN QUESTIONS
-What is still undecided, and what would settle it.
+What is still undecided, and what would settle it. List each rejected
+alternative here with the views, lines or numbers that decided against it and
+the artifact paths. Mark untested alternatives as untested. Reconsider a
+rejection when new evidence undermines its basis.
 
 ## NEXT STEPS
 What to do next.

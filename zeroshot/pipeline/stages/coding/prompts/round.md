@@ -48,9 +48,11 @@ Do not believe in your 3D reasoning blindly. Whenever deciding geometric design 
 - Execute with `run_shell`, export STEP, then call `render_step` with its path and deciding views (e.g., `views=["front", "top"]`). Open the returned PNGs with `load_image` and compare with the source. Known views use registered drawing axes; the tool reports the axes used.
 - Integrate supported corrections into `$coding_output_path` after each meaningful group of changes and inspect the full-model verification. After integrating a trial into $coding_output_path, inspect the updated full-model verification and renders. After further geometry changes, inspect newly generated images.
 - Treat stroke thickness as a drawing convention, not a physical feature width.
-- Read the geometry census: all faces of one kind or hundreds of edges may indicate an unintended approximation.
+- Read the geometry census:
+  - All faces of one kind or hundreds of edges may indicate an unintended approximation.
+  - A `ret_` split into several solids can mean the feature's intended shape is wrong, not only its construction. Before you add material or values the drawing does not show, derive the feature again from every view and build a candidate with a different topology.
 - Inspect final orthographic PNG and relevant perspective renders with `load_image`; use ezdxf for relevant DXF measurements. Compare feature extent, placement and connections. For widespread mismatch, check XYZ/view axes, mirroring and alignment.
-- If a kernel operation keeps failing, inspect its geometric preconditions and try another construction of the intended feature; do not silently skip it.
+- If a kernel operation keeps failing, inspect its geometric preconditions. Try another construction, or reconsider whether the intended feature is right. Do not silently skip it.
 
 ### Submission
 

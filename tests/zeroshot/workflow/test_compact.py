@@ -347,12 +347,23 @@ def test_compaction_retries_reach_the_existing_event_log(
 def test_compaction_keeps_observations_distinct_from_untested_predictions() -> None:
     model = _notes()
     compact_transcript(_worked_transcript(), model=model)
-    instruction = model.received_messages[0][-1].text
+    instruction = " ".join(model.received_messages[0][-1].text.split())
 
     assert (
         "Separate direct observations and measurements from untested predictions"
         in instruction
     )
-    assert "artifact paths supporting" in instruction
     assert "Reconsider a rejection" in instruction
     assert "do not reopen" not in instruction
+
+
+def test_compaction_keeps_rejections_open_rather_than_settled() -> None:
+    model = _notes()
+    compact_transcript(_worked_transcript(), model=model)
+    instruction = " ".join(model.received_messages[0][-1].text.split())
+    findings = instruction.split("## FINDINGS")[1].split("## WORK DONE")[0]
+    open_questions = instruction.split("## OPEN QUESTIONS")[1].split("## NEXT")[0]
+
+    assert "Do not list rejected alternatives here" in findings
+    assert "List each rejected alternative here" in open_questions
+    assert "artifact paths" in open_questions
