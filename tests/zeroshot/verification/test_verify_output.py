@@ -234,7 +234,7 @@ def test_real_cadquery_render_and_drawing_diff_reach_feedback(tmp_path: Path) ->
     assert diff.error is None
     assert diff.alignment.H_drawing_to_projection is not None
     assert diff.drawing_path == drawing_path
-    assert set(diff.paths) == {"overlay_path", "residual_path"}
+    assert set(diff.paths) == {"overlay_path", "unmatched_path"}
     adapter = TypeAdapter(VerifyOutputResult)
     restored = adapter.validate_json(adapter.dump_json(report))
     assert restored.exec_report == report.exec_report
@@ -242,14 +242,19 @@ def test_real_cadquery_render_and_drawing_diff_reach_feedback(tmp_path: Path) ->
     assert restored.drawing_diff_report["view_front"].paths == diff.paths
     # Untyped diagnostic tuples become JSON arrays; their values must survive.
     assert adapter.dump_json(restored) == adapter.dump_json(report)
-    for path in diff.paths.values():
+    # The unmatched image is drawn on the input, the overlay on the projection.
+    frames = {
+        "overlay_path": diff.projection_path,
+        "unmatched_path": diff.drawing_path,
+    }
+    for key, path in diff.paths.items():
         assert path.parent == diff.projection_path.parent
-        with Image.open(path) as saved, Image.open(diff.projection_path) as projection:
-            assert saved.size == projection.size
+        with Image.open(path) as saved, Image.open(frames[key]) as frame:
+            assert saved.size == frame.size
     text = "\n".join(block["text"] for block in blocks if block["type"] == "text")
     assert "[Drawing comparison]" in text
     assert "/work/attempts/round_000/coding/000/projection/front_overlay.png" in text
-    assert "/work/attempts/round_000/coding/000/projection/front_residual.png" in text
+    assert "/work/attempts/round_000/coding/000/projection/front_unmatched.png" in text
 
 
 type Frames = Mapping[View, tuple[Axis, Axis]]
@@ -575,8 +580,8 @@ class StubDiffDrawer:
                     "overlay_path": projection.with_name(
                         f"{projection.stem}_overlay.png"
                     ),
-                    "residual_path": projection.with_name(
-                        f"{projection.stem}_residual.png"
+                    "unmatched_path": projection.with_name(
+                        f"{projection.stem}_unmatched.png"
                     ),
                 },
             )
@@ -649,7 +654,7 @@ def test_diff_uses_final_render_and_feedback_formats_the_stored_reports(tmp_path
     assert verifier.confirmed
     assert "view_front" in text
     assert "projection/front_overlay.png" in text
-    assert "projection/front_residual.png" in text
+    assert "projection/front_unmatched.png" in text
     assert "drawing_diff.json" not in text
     assert str(tmp_path) not in text
     assert len(executor.calls) == len(drawer.calls) == 1
@@ -735,7 +740,7 @@ def test_pair_failure_is_feedback_and_does_not_reject_step(tmp_path, enabled):
     assert verifier.confirmed
     assert ("alignment failed" in text) is enabled
     assert ("[Drawing comparison]" in text) is enabled
-    assert ("Open available overlay and residual" in text) is enabled
+    assert ("Open available overlay and unmatched" in text) is enabled
     assert "projection/front.png" in text
     assert (report.drawing_diff_report is not None) is enabled
 

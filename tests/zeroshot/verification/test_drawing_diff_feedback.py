@@ -9,6 +9,7 @@ from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import (
     VerifyOutputResult,
     describe_drawing_diffs,
+    unmatched_items,
 )
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
@@ -31,7 +32,6 @@ def test_feedback_lists_sandbox_images_and_keeps_failure_reasons(tmp_path):
             stats={"red_distance_px": 12, "output_to_input": {"p95_px": 5}},
             paths={
                 "overlay_path": tmp_path / "projection/front_overlay.png",
-                "residual_path": tmp_path / "projection/front_residual.png",
             },
             warnings=("ambiguous alignment",),
         ),
@@ -50,7 +50,7 @@ def test_feedback_lists_sandbox_images_and_keeps_failure_reasons(tmp_path):
 input: /work/inputs/front.png
 projection: /work/projection/front.png
 overlay: /work/projection/front_overlay.png
-residual: /work/projection/front_residual.png
+unmatched: unavailable
 warning: ambiguous alignment"""
         in text
     )
@@ -59,20 +59,19 @@ warning: ambiguous alignment"""
 input: /work/inputs/top.png
 projection: unavailable
 overlay: unavailable
-residual: unavailable
+unmatched: unavailable
 error: projection unavailable"""
         in text
     )
     assert text.count("[Drawing comparison]") == 1
     assert "original drawing crop" in text
     assert "orthographic line rendering of the generated STEP" in text
-    assert "annotations" in text
-    assert "increasingly red" in text
-    assert "residual: projection in pale gray" in text
-    assert "Blue only means a nearby input line" in text
+    assert "only dimensions, leaders or text in the input" in text
+    assert "residual" not in text
+    assert "Blue in the overlay only means a nearby input line" in text
     assert text.lower().count("alignment is heuristic") == 1
-    assert "Open available overlay and residual with load_image" in text
-    assert "input drawing crop and original STEP projection" in text
+    assert "Open available overlay and unmatched images with load_image" in text
+    assert "Mismatches:" not in text  # none were listed
     for unwanted in (str(tmp_path), "/work/unavailable", "p95_px", "red_distance_px"):
         assert unwanted not in text
     assert set(tmp_path.rglob("*")) == files_before
@@ -117,6 +116,52 @@ def test_only_views_measured_both_times_are_compared(tmp_path):
     assert "Mean chamfer over 2 views: 5.50 px\n" in text
 
 
+def test_unmatched_groups_are_listed_under_their_view_by_audit_key(tmp_path):
+    group = {
+        "direction": "missing",
+        "kind": "lines",
+        "size_px": 361,
+        "box_px": [465, 358, 673, 440],
+    }
+    reports = {
+        "view_top": DrawingDiffReport(
+            drawing_path=tmp_path / "top.png",
+            projection_path=tmp_path / "projection/top.png",
+            stats={
+                "chamfer_drawing_px": 6.0,
+                "unmatched": [
+                    group | {"color": "red"},
+                    group | {"direction": "extra", "color": "yellow"},
+                    group
+                    | {"kind": "material", "direction": "extra", "color": "purple"},
+                ],
+            },
+            paths={"unmatched_path": tmp_path / "projection/top_unmatched.png"},
+        ),
+    }
+
+    text = describe_drawing_diffs(reports, SandboxWorkdir(tmp_path))
+
+    assert (
+        """unmatched: /work/projection/top_unmatched.png
+chamfer: 6.00 px"""
+        in text
+    )
+    assert (
+        """Mismatches:
+view_top, boxes in /work/top.png:
+drawing_diff.view_top.1 (red): missing lines, 361 px, box [465, 358, 673, 440]
+drawing_diff.view_top.2 (yellow): extra lines, 361 px, box [465, 358, 673, 440]
+drawing_diff.view_top.3 (purple): extra material, 361 px², box [465, 358, 673, 440]"""
+        in text
+    )
+    assert list(unmatched_items(reports)) == [
+        "drawing_diff.view_top.1",
+        "drawing_diff.view_top.2",
+        "drawing_diff.view_top.3",
+    ]
+
+
 def test_failed_alignment_can_have_warnings_without_an_error_or_images(tmp_path):
     report = DrawingDiffReport(
         drawing_path=tmp_path / "crop.png",
@@ -124,14 +169,14 @@ def test_failed_alignment_can_have_warnings_without_an_error_or_images(tmp_path)
         alignment=AlignmentResult(
             "directional_chamfer", "similarity", "failed", None, {}
         ),
-        warnings=("Drawing residuals unavailable: no usable alignment",),
+        warnings=("Drawing comparison unavailable: no usable alignment",),
     )
 
     text = describe_drawing_diffs({"view_front": report}, SandboxWorkdir(tmp_path))
 
     assert "projection: /work/front.png" in text
-    assert "overlay: unavailable\nresidual: unavailable" in text
-    assert "warning: Drawing residuals unavailable: no usable alignment" in text
+    assert "overlay: unavailable\nunmatched: unavailable" in text
+    assert "warning: Drawing comparison unavailable: no usable alignment" in text
     assert "error:" not in text
 
 

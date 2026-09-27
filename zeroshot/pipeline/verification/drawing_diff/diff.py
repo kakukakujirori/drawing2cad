@@ -1,4 +1,4 @@
-"""Full-resolution drawing residuals in the output projection's pixel frame."""
+"""Compare a drawing view with the output's projection at full resolution."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from scipy.spatial import cKDTree
 
 from .align import AlignmentResult, _validate_rgb, opencv_transform
 from .image_ops import distance_map, foreground_mask
+from .unmatched import describe_unmatched, draw_unmatched, find_unmatched, warp_output_to_drawing
 
 _DISPLAY_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 # Capping keeps a far annotation from outweighing the part's own lines.
@@ -21,7 +22,7 @@ CHAMFER_CAP_PX = 20.0
 @dataclass(frozen=True)
 class DiffResult:
     overlay: np.ndarray | None
-    residual: np.ndarray | None
+    unmatched: np.ndarray | None
     stats: dict[str, Any]
     warnings: tuple[str, ...]
 
@@ -64,12 +65,12 @@ def _chamfer(
 
 def _measure_distances(
     aligned_ink: np.ndarray, output_ink: np.ndarray, valid: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+) -> tuple[np.ndarray, dict[str, Any]]:
     """Measure reciprocal line distances and distinguish unknown input coverage."""
     observed = output_ink & valid
     outside_count = int((output_ink & ~valid).sum())
     output_count = int(output_ink.sum())
-    # Only output lines within the warped input canvas have a measured residual.
+    # Only output lines within the warped input canvas are measured.
     output_distances = distance_map(aligned_ink)[observed]
     input_distances = distance_map(output_ink)[aligned_ink]
     stats = {
@@ -81,7 +82,7 @@ def _measure_distances(
         "output_to_input": _distance_summary(output_distances),
         "input_to_output": _distance_summary(input_distances),
     }
-    return output_distances, input_distances, stats
+    return output_distances, stats
 
 
 def _normalized(distances: np.ndarray, clip: float | None) -> np.ndarray:
@@ -163,24 +164,6 @@ def _render_overlay(
     return overlay
 
 
-def _render_residual(
-    aligned_ink: np.ndarray,
-    projection_gray: np.ndarray,
-    distances: np.ndarray,
-    clip: float | None,
-) -> np.ndarray:
-    """Color input lines gray→red over a pale projection for spatial context."""
-    # Expand dark projection strokes for display, preserving antialiasing at their edges.
-    thick_projection = cv2.erode(projection_gray, _DISPLAY_KERNEL)
-    gray = np.rint(200 + thick_projection.astype(float) * (55 / 255)).astype(np.uint8)
-    residual = np.repeat(gray[..., None], 3, axis=2)
-    strength = _normalized(distances, clip)[:, None]
-    residual[aligned_ink] = np.rint(225 + strength * np.array([30, -225, -225])).astype(
-        np.uint8
-    )
-    return residual
-
-
 def compute_diff(
     drawing_rgb: np.ndarray,
     projection_rgb: np.ndarray,
@@ -194,8 +177,7 @@ def compute_diff(
     bright red. None uses each direction's observed maximum independently;
     perfect agreement stays dark blue or pale gray.
     Unsupported output pixels are medium gray, excluded from distance statistics.
-    The reverse residual colors input lines pale gray→red over the pale projection.
-    Projection strokes expand by 2px in both images; measurements use the original lines.
+    Projection strokes expand by 2px; measurements use the original lines.
     Distances are raw output pixels, independent of optimizer sampling/loss.
 
     Invalid arguments raise ValueError. Unusable image content or a failed
@@ -216,7 +198,6 @@ def compute_diff(
         "color_normalization": "image_max" if distance_clip_px is None else "fixed",
         "distance_clip_px": distance_clip_px,
         "red_distance_px": distance_clip_px,
-        "residual_red_distance_px": distance_clip_px,
         "unobserved_color_rgb": [128, 128, 128],
     }
     warnings = list(alignment.warnings)
@@ -233,15 +214,17 @@ def compute_diff(
             drawing_gray, drawing_ink, matrix, projection_gray.shape
         )
         # Measure both directions; output pixels outside input coverage are unknown.
-        output_distances, input_distances, measured = _measure_distances(
-            aligned_ink, output_ink, valid
-        )
+        output_distances, measured = _measure_distances(aligned_ink, output_ink, valid)
         stats.update(measured)
         stats["chamfer_drawing_px"] = _chamfer(drawing_ink, output_ink, matrix)
-        # Automatic display scales are per direction; unavailable maxima stay null.
+        # Cluster distances to highlight unmatched output lines and regions.
+        output_seen = warp_output_to_drawing(output_ink, matrix, drawing_ink.shape)
+        groups = find_unmatched(drawing_ink, output_seen)
+        stats["unmatched"] = describe_unmatched(groups)
+        unmatched = draw_unmatched(drawing_gray, output_seen, groups)
+        # An automatic display scale is unavailable when no output line is measured.
         if distance_clip_px is None:
             stats["red_distance_px"] = stats["output_to_input"]["max_px"]
-            stats["residual_red_distance_px"] = stats["input_to_output"]["max_px"]
         overlay = _render_overlay(
             aligned_gray,
             output_ink & valid,
@@ -249,13 +232,7 @@ def compute_diff(
             output_distances,
             stats["red_distance_px"],
         )
-        residual = _render_residual(
-            aligned_ink,
-            projection_gray,
-            input_distances,
-            stats["residual_red_distance_px"],
-        )
-        # Warn about missing observation coverage, not a global residual threshold.
+        # Warn about missing observation coverage, not a global distance threshold.
         if stats["outside_count"]:
             warnings.append(
                 f"{stats['outside_fraction']:.1%} of output ink is outside the observed input "
@@ -263,8 +240,8 @@ def compute_diff(
             )
         if not output_distances.size:
             warnings.append("No output ink is inside the observed input region.")
-        return DiffResult(overlay, residual, stats, tuple(warnings))
+        return DiffResult(overlay, unmatched, stats, tuple(warnings))
     except (ValueError, cv2.error) as exc:
-        # An unusable alignment or line drawing produces no residual images.
-        warnings.append(f"Drawing residuals unavailable: {exc}")
+        # An unusable alignment or line drawing produces no comparison images.
+        warnings.append(f"Drawing comparison unavailable: {exc}")
         return DiffResult(None, None, stats, tuple(warnings))

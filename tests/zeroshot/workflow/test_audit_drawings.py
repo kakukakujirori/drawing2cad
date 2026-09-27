@@ -1,6 +1,7 @@
 """Audit links through the interpretation, including direct missing-member tickets."""
 
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import ezdxf
@@ -16,6 +17,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditRegion,
     AuditReport,
     CausalHop,
+    ConcernReview,
     RevisionRequest,
     StageOutputRef,
 )
@@ -32,6 +34,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.verification import AttemptStore, ExecutionStatus
 from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
+from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 
 
 def snapshot() -> ReconstructionSnapshot:
@@ -141,6 +144,40 @@ def test_a_mistyped_member_suggests_a_close_existing_one() -> None:
         SubmissionValidationError, match=r"snapshot\. Maybe: sem_bore\?$"
     ):
         validate_audit_report(report(target="sem_bor"), snapshot())
+
+
+def test_every_listed_drawing_diff_group_needs_an_answer() -> None:
+    group = {
+        "direction": "missing",
+        "kind": "lines",
+        "size_px": 80,
+        "box_px": [1, 2, 3, 4],
+        "color": "red",
+    }
+    diff = DrawingDiffReport(
+        drawing_path=Path("front.png"),
+        projection_path=None,
+        stats={"unmatched": [group]},
+    )
+    base = snapshot()
+    assert base.verification is not None
+    verification = replace(base.verification, drawing_diff_report={"view_front": diff})
+    listed = base.model_copy(update={"verification": verification})
+    unanswered = report(target="sem_bore")
+
+    with pytest.raises(
+        SubmissionValidationError, match="missing: drawing_diff.view_front.1"
+    ):
+        validate_audit_report(unanswered, listed)
+    answer = ConcernReview(
+        finding_name="find_bore", disposition="It is the missing bore."
+    )
+    validate_audit_report(
+        unanswered.model_copy(
+            update={"concern_reviews": {"drawing_diff.view_front.1": answer}}
+        ),
+        listed,
+    )
 
 
 def test_dimension_can_trace_to_its_source_view() -> None:

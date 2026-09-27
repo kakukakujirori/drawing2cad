@@ -614,9 +614,9 @@ def test_public_resume_relocates_nested_verification_paths(
     attempt = source / relative
     projection = attempt / "projection/front.png"
     overlay = projection.with_stem("front_overlay")
-    residual = projection.with_stem("front_residual")
+    unmatched = projection.with_stem("front_unmatched")
     intermediate = attempt / "intermediate_returns/ret_base.step"
-    for path in (projection, overlay, residual, intermediate):
+    for path in (projection, overlay, unmatched, intermediate):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"preserved artifact")
     verification = original.snapshots[-1].verification
@@ -647,7 +647,7 @@ def test_public_resume_relocates_nested_verification_paths(
                     H_drawing_to_projection=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                     diagnostics={"description": str(source)},
                 ),
-                paths={"overlay_path": overlay, "residual_path": residual},
+                paths={"overlay_path": overlay, "unmatched_path": unmatched},
             ),
             "view_top": DrawingDiffReport(
                 drawing_path=saved_input,
@@ -679,7 +679,7 @@ def test_public_resume_relocates_nested_verification_paths(
     assert diff.projection_path == destination / projection.relative_to(source)
     assert diff.paths == {
         "overlay_path": destination / overlay.relative_to(source),
-        "residual_path": destination / residual.relative_to(source),
+        "unmatched_path": destination / unmatched.relative_to(source),
     }
     assert isinstance(diff.alignment, AlignmentResult)
     assert diff.alignment.H_drawing_to_projection == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]

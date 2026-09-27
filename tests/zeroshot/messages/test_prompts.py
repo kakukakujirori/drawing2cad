@@ -469,7 +469,9 @@ def test_the_audit_names_concerns_the_way_its_contract_does(
     schema = json.dumps(AuditReport.model_json_schema())
 
     assert "`<reporting_stage>.<concern_id>`" in rendered
-    assert "keyed by <reporting_stage>.<concern_id> as they appear" in schema
+    assert "Key a concern by <reporting_stage>.<concern_id> as it appears" in schema
+    assert "`drawing_diff.*` item" in rendered
+    assert "drawing_diff item as listed: drawing_diff.view_top.1" in schema
     assert "round prompt" not in schema
 
 

@@ -36,10 +36,6 @@ def test_every_shifted_line_pixel_is_colored():
     assert np.all(diff.overlay[20, 22:27] == [0, 168, 255])
     assert np.all(diff.overlay[20, [21, 27]] == 255)
     assert np.all(diff.overlay[10:55, 20] == 225)
-    assert np.all(diff.residual[10:55, 20] == [235, 150, 150])
-    assert np.all(diff.residual[10:55, 24] == 200)
-    assert np.all(diff.residual[20, 22:27] == 200)
-    assert np.all(diff.residual[20, [19, 21, 27]] == 255)
     assert diff.stats["outside_fraction"] == 0
 
 
@@ -64,7 +60,26 @@ def test_chamfer_counts_drawing_lines_beyond_the_projection():
     assert diff.stats["chamfer_drawing_px"] == 5.0
 
 
-def test_missing_hole_only_appears_in_reverse_residual():
+def test_unmatched_groups_are_listed_in_drawing_pixels():
+    drawing = np.full((160, 200, 3), 255, dtype=np.uint8)
+    output = _white(160)
+    drawing[20:140, [20, 80, 140]] = 0
+    output[20:140, [20, 140]] = 0
+    diff = compute_diff(drawing, output, _alignment())
+
+    assert diff.stats["unmatched"] == [
+        {
+            "direction": "missing",
+            "kind": "lines",
+            "size_px": 120,
+            "box_px": [80, 20, 81, 140],
+            "color": "red",
+        }
+    ]
+    assert diff.unmatched.shape == drawing.shape
+
+
+def test_missing_hole_only_appears_in_input_distances():
     drawing, output = _white(100), _white(100)
     cv2.rectangle(output, (10, 10), (90, 90), (0, 0, 0), 1)
     drawing[:] = output
@@ -74,8 +89,6 @@ def test_missing_hole_only_appears_in_reverse_residual():
     assert diff.stats["output_to_input"]["max_px"] == 0
     assert diff.stats["input_to_output"]["max_px"] >= 30
     np.testing.assert_array_equal(diff.overlay[10, 50], [0, 0, 128])
-    np.testing.assert_array_equal(diff.residual[10, 50], [225, 225, 225])
-    np.testing.assert_array_equal(diff.residual[40, 50], [255, 0, 0])
 
 
 def test_output_outside_input_is_neutral_and_excluded():
@@ -111,7 +124,7 @@ def test_public_scale_uses_half_pixel_coordinates():
     assert diff.stats["input_to_output"]["max_px"] == 0
 
 
-def test_failed_alignment_returns_no_fake_residual():
+def test_failed_alignment_returns_no_fake_images():
     drawing, output = _white(32), _white()
     drawing[8:24, 10] = 0
     output[18:34, 20] = 0
@@ -119,11 +132,11 @@ def test_failed_alignment_returns_no_fake_residual():
         "directional_chamfer", "similarity", "failed", None, {}, ("no transform",)
     )
     diff = compute_diff(drawing, output, failed)
-    assert diff.overlay is None and diff.residual is None
+    assert diff.overlay is None and diff.unmatched is None
     assert diff.stats["comparison_status"] == "failed"
     assert "output_to_input" not in diff.stats
     assert diff.warnings[0] == "no transform"
-    assert "Drawing residuals unavailable" in diff.warnings[1]
+    assert "Drawing comparison unavailable" in diff.warnings[1]
     with pytest.raises(ValueError, match="distance_clip_px"):
         compute_diff(drawing, output, failed, distance_clip_px=0)
 
@@ -139,7 +152,6 @@ def test_automatic_range_preserves_gradient_and_raw_distances():
 
     assert automatic.stats["color_normalization"] == "image_max"
     assert automatic.stats["red_distance_px"] == 6
-    assert automatic.stats["residual_red_distance_px"] == 2
     assert automatic.stats["output_to_input"] == fixed.stats["output_to_input"]
     assert automatic.stats["input_to_output"] == fixed.stats["input_to_output"]
     assert np.all(automatic.overlay[10:55, 22] == [0, 168, 255])
@@ -147,32 +159,21 @@ def test_automatic_range_preserves_gradient_and_raw_distances():
     assert np.all(fixed.overlay[10:55, 22] == [0, 20, 255])
     assert np.all(clipped.overlay[10:55, [22, 26]] == [255, 0, 0])
     assert clipped.stats["output_to_input"] == fixed.stats["output_to_input"]
-    assert np.all(automatic.residual[10:55, 20] == [255, 0, 0])
     assert automatic.warnings == fixed.warnings == ()
 
 
-def test_automatic_zero_range_and_reverse_range_are_independent():
+def test_automatic_range_ignores_missing_input_lines():
     drawing, output = _white(100), _white(100)
     cv2.rectangle(output, (10, 10), (90, 90), (0, 0, 0), 1)
     drawing[:] = output
     identical = compute_diff(drawing, output, _alignment(), distance_clip_px=None)
-    assert (
-        identical.stats["red_distance_px"]
-        == identical.stats["residual_red_distance_px"]
-        == 0
-    )
+    assert identical.stats["red_distance_px"] == 0
     np.testing.assert_array_equal(identical.overlay[10, 50], [0, 0, 128])
-    np.testing.assert_array_equal(identical.residual[10, 50], [225, 225, 225])
 
     cv2.circle(drawing, (50, 50), 10, (0, 0, 0), 1)
     missing_hole = compute_diff(drawing, output, _alignment(), distance_clip_px=None)
     assert missing_hole.stats["red_distance_px"] == 0
-    assert missing_hole.stats["residual_red_distance_px"] >= 30
-    assert missing_hole.residual.shape == drawing.shape
     np.testing.assert_array_equal(missing_hole.overlay[10, 50], [0, 0, 128])
-    np.testing.assert_array_equal(missing_hole.residual[10, 50], [225, 225, 225])
-    red, green, blue = missing_hole.residual[40, 50]
-    assert red > 225 and 0 < green == blue < 225
 
 
 def test_automatic_range_is_unknown_when_no_output_lines_are_observed():
@@ -190,7 +191,6 @@ def test_automatic_range_is_unknown_when_no_output_lines_are_observed():
         "max_px": None,
     }
     assert np.all(diff.overlay[8:24, 50] == 128)
-    assert diff.stats["residual_red_distance_px"] == 40
 
 
 def test_thickening_keeps_original_measurements_where_strokes_overlap():

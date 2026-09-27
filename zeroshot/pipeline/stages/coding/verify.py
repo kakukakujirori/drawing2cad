@@ -5,7 +5,7 @@ from hashlib import sha256
 from inspect import cleandoc
 from pathlib import Path, PurePosixPath
 from statistics import fmean
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.messages.content import ContentBlock, create_text_block
 
@@ -664,6 +664,49 @@ def chamfers(diff_reports: Mapping[str, DrawingDiffReport] | None) -> dict[str, 
     }
 
 
+def _view_unmatched(name: str, report: DrawingDiffReport) -> dict[str, dict[str, Any]]:
+    return {
+        f"drawing_diff.{name}.{number}": item
+        for number, item in enumerate(report.stats.get("unmatched", []), 1)
+    }
+
+
+def unmatched_items(
+    diff_reports: Mapping[str, DrawingDiffReport] | None,
+) -> dict[str, dict[str, Any]]:
+    """Each listed unmatched line group, keyed as the audit answers it."""
+    return {
+        key: item
+        for name, report in (diff_reports or {}).items()
+        for key, item in _view_unmatched(name, report).items()
+    }
+
+
+def _describe_unmatched(key: str, item: Mapping[str, Any]) -> str:
+    unit = "px" if item["kind"] == "lines" else "px²"
+    return (
+        f"{key} ({item['color']}): {item['direction']} {item['kind']}, "
+        f"{item['size_px']} {unit}, box {item['box_px']}"
+    )
+
+
+def _describe_groups(
+    diff_reports: Mapping[str, DrawingDiffReport], workdir: SandboxWorkdir
+) -> str:
+    """Every listed group, under the input file its boxes are measured in."""
+    blocks = [
+        "\n".join(
+            [
+                f"{name}, boxes in {workdir.host_to_sandbox_path(report.drawing_path)}:",
+                *(_describe_unmatched(key, item) for key, item in items.items()),
+            ]
+        )
+        for name, report in diff_reports.items()
+        if (items := _view_unmatched(name, report))
+    ]
+    return "Mismatches:\n" + "\n\n".join(blocks) if blocks else ""
+
+
 def _describe_chamfer(current: float, previous: float | None) -> str:
     change = f" ({current - previous:+.2f})" if previous is not None else ""
     return f"{current:.2f} px{change}"
@@ -705,11 +748,12 @@ def describe_drawing_diffs(
         input: {input_path}
         projection: {projection_path}
         overlay: {overlay}
-        residual: {residual}{notes}
+        unmatched: {unmatched}{notes}
     """)
 
     view_blocks: list[str] = []
     for name, report in diff_reports.items():
+        input_path = workdir.host_to_sandbox_path(report.drawing_path)
         notes = []
         if name in current_scores:
             notes.append(
@@ -725,7 +769,7 @@ def describe_drawing_diffs(
         view_blocks.append(
             view_template.format(
                 name=name,
-                input_path=workdir.host_to_sandbox_path(report.drawing_path),
+                input_path=input_path,
                 projection_path=(
                     workdir.host_to_sandbox_path(report.projection_path)
                     if report.projection_path is not None
@@ -736,9 +780,9 @@ def describe_drawing_diffs(
                     if report.paths.get("overlay_path") is not None
                     else "unavailable"
                 ),
-                residual=(
-                    workdir.host_to_sandbox_path(report.paths.get("residual_path"))
-                    if report.paths.get("residual_path") is not None
+                unmatched=(
+                    workdir.host_to_sandbox_path(report.paths.get("unmatched_path"))
+                    if report.paths.get("unmatched_path") is not None
                     else "unavailable"
                 ),
                 notes=notes_text,
@@ -748,34 +792,38 @@ def describe_drawing_diffs(
     # The complete message layout, with shared explanations stated once.
     return cleandoc("""
         [Drawing comparison]
-        - input: original drawing crop for this view.
-        - projection: orthographic line rendering of the generated STEP.
+        - input: the original drawing crop of the view.
+        - projection: an orthographic line rendering of the generated STEP.
+        - overlay: the input moved onto the projection's pixels, in pale gray,
+            with the projection's lines colored blue to red by their distance
+            from the nearest input line. Medium-gray projection lines lie
+            outside the input crop and are not compared.
+        - unmatched: the input's lines in gray and the projection's lines in
+            light blue, in the input's pixels; a line both draw is pure blue. Each
+            mismatch listed below lies on a band of its color, numbered with
+            the last part of its key; a material mismatch is also hatched.
 
-        For available comparison images, the input is transformed into
-        projection pixel coordinates to help locate possible mismatches.
+        A mismatch is a group of lines, or an area, that only one image has.
+        Missing lines and missing material are in the input only; extra lines
+        and extra material are in the projection only. Material compares the
+        two silhouettes. Solid and dashed lines count alike. Some missing
+        lines are only dimensions, leaders or text in the input; those are
+        not defects.
 
-        - overlay: aligned input in pale gray; projection lines colored blue→red
-            by the distance from the nearest aligned input line.
-            Medium-gray projection lines fall outside the transformed input crop;
-            their mismatch is not evaluated.
-        - residual: projection in pale gray; aligned input lines drawn over it,
-            pale gray at agreement and increasingly red farther from the nearest
-            projection line. Red can reveal missing or misplaced CAD features;
-            drawing annotations also contribute.
-
-        Blue only means a nearby input line; it suggests, but does not guarantee,
-        correct shape, material side, or completeness. Check residual for missing
-        input boundaries. Note that alignment is heuristic and can be wrong or hide size errors.
+        Blue in the overlay only means a nearby input line; it does not prove
+        the shape, the material side or completeness. Alignment is heuristic
+        and can be wrong or hide size errors.
 
         The chamfer score is the mean distance in input pixels between the aligned
         input and projection lines, with far lines capped. Lower is better. Dimensions
         and text in the input never appear in a projection, so even a correct
         model stays above zero: judge the change between builds, not the value.
         {mean}
-        {views}
+        {views}{groups}
 
-        Open available overlay and residual with load_image. Confirm suspected
-        mismatches against the input drawing crop and original STEP projection.
+        Open available overlay and unmatched images with load_image. Confirm
+        suspected mismatches against the input drawing crop and the original
+        STEP projection.
     """).format(
         mean=(
             "\n"
@@ -789,4 +837,7 @@ def describe_drawing_diffs(
             else ""
         ),
         views="\n\n".join(view_blocks),
+        groups=f"\n\n{groups}"
+        if (groups := _describe_groups(diff_reports, workdir))
+        else "",
     )

@@ -16,6 +16,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     CausalHop,
     StageOutputRef,
 )
+from zeroshot.pipeline.stages.coding.verify import unmatched_items
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.operations.contracts import Operation
@@ -178,17 +179,21 @@ def _validate_concern_coverage(
     report: AuditReport,
     snapshot: ReconstructionSnapshot,
 ) -> None:
-    """Every concern this round's stages reported is disposed of, and only those."""
-    expected = set(reported_concerns(snapshot.stage_reports))
+    """Every concern and drawing_diff item this round raised is disposed of, and only those."""
+    verification = snapshot.verification
+    diff_reports = verification.drawing_diff_report if verification else None
+    expected = set(reported_concerns(snapshot.stage_reports)) | set(
+        unmatched_items(diff_reports)
+    )
     reviewed = set(report.concern_reviews)
     if missing := sorted(expected - reviewed):
         raise SubmissionValidationError(
-            "concern_reviews must answer every concern this round's stage "
-            f"reports raise; missing: {', '.join(missing)}"
+            "concern_reviews must answer every stage-report concern and "
+            f"drawing_diff item this round raises; missing: {', '.join(missing)}"
         )
     if unknown := sorted(reviewed - expected):
         raise SubmissionValidationError(
-            "concern_reviews names concerns no stage report raises this round: "
+            "concern_reviews names keys this round does not raise: "
             f"{', '.join(unknown)}. This round raises: "
             f"{', '.join(sorted(expected)) or 'none'}"
         )

@@ -90,10 +90,10 @@ def run_align_diff_save(
         path = projection_path.with_name(f"{projection_path.stem}_overlay.png")
         Image.fromarray(diff.overlay).save(path)
         paths["overlay_path"] = path
-    if diff.residual is not None:
-        path = projection_path.with_name(f"{projection_path.stem}_residual.png")
-        Image.fromarray(diff.residual).save(path)
-        paths["residual_path"] = path
+    if diff.unmatched is not None:
+        path = projection_path.with_name(f"{projection_path.stem}_unmatched.png")
+        Image.fromarray(diff.unmatched).save(path)
+        paths["unmatched_path"] = path
 
     return DrawingDiffReport(
         drawing_path=drawing_path,

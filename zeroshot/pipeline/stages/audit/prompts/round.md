@@ -25,8 +25,9 @@ Expected paths within this directory: `<ret_name>/output.step`, `<ret_name>/proj
 
 Write the complete `AuditReport` to `$audit_output_path`. Do not modify the program, reconstruction history, input files, verification report or generated artifacts.
 
-Review every ticket and every stage-report concern: give one `ticket_reviews` entry per ticket and one `concern_reviews` entry per concern, keyed `<reporting_stage>.<concern_id>`.
+Review every ticket and every stage-report concern: give one `ticket_reviews` entry per ticket and one `concern_reviews` entry per concern, keyed `<reporting_stage>.<concern_id>`. Also give one `concern_reviews` entry per `drawing_diff.*` item in the drawing comparison, keyed as listed.
 
+- For each `drawing_diff.*` item, open its view's unmatched image. Name the finding that contains the item, or dismiss it with what the input drawing shows there, such as a dimension, a leader line, or the same edge a few pixels away. Blank input where an extra mismatch lies means the model has an edge or material the drawing lacks: a defect, not a drawing convention or a seam. The projection DXF shows what the model has, not where the input has it, so it cannot dismiss an item.
 - Report all material defects. Quantify the discrepancy when the source supports a measurement; do not invent a number when it does not.
 - Cover every unsolved ticket with the current findings' `related_ticket_ids`. Merge overlapping defects and recompute their backtraces from current artifacts: the root may have changed since the old ticket. Do not repeat the backtrace or revision request inside the ticket review.
 - Each finding describes one defect with one revision root stage. Separate roots in different stages; several members of one stage sharing the same defect may be requested together.

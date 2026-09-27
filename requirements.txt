@@ -26,6 +26,7 @@ rootutils
 rtree
 ruff
 safetensors
+scikit-image
 scipy
 tensorboard
 tqdm

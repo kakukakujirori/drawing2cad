@@ -462,9 +462,9 @@ class TicketReview(BaseModel):
 
 
 class ConcernReview(BaseModel):
-    """How one concern a reasoning stage reported is disposed of.
+    """How one stage-report concern or drawing_diff item is disposed of.
 
-    Keyed by the concern it answers, so the concern cannot be left out.
+    Keyed by what it answers, so nothing can be left out.
     """
 
     model_config = ConfigDict(
@@ -516,11 +516,13 @@ class AuditReport(Submission):
         ...,
         description=(
             "Your answer to every concern the current stage_reports raise and "
-            "no others, keyed by <reporting_stage>.<concern_id> as they appear "
+            "every drawing_diff item the drawing comparison lists, and no others. "
+            "Key a concern by <reporting_stage>.<concern_id> as it appears "
             "there: coding.concern_bore_diameter. The prefix names the stage "
-            "that reported the concern, not the stage that must change. A "
-            "concern cannot be left out: name the finding that takes it over, "
-            "or the reason it needs none."
+            "that reported the concern, not the stage that must change. Key a "
+            "drawing_diff item as listed: drawing_diff.view_top.1. For each "
+            "entry, name the finding that takes it over, or the reason it needs "
+            "none."
         ),
     )
 
