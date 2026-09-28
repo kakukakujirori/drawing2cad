@@ -1,0 +1,28 @@
+# @package _global_
+
+defaults:
+  - /input: png_dimensioned
+  - /model: gpt6_luna_codex
+  - _self_
+
+workflow:
+  name: native
+
+artifact_root: outputs/zeroshot_native
+console: true
+
+sample:
+  sample_id: "000364"
+
+sandbox_runner:
+  python_executable: null
+  default_timeout_s: 30.0
+  max_stdout_bytes: 1048576
+  max_stderr_bytes: 1048576
+
+hydra:
+  run:
+    dir: ${artifact_root}/${sample.sample_id}
+  sweep:
+    dir: ${artifact_root}
+    subdir: ${sample.sample_id}

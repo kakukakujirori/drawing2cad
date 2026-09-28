@@ -1,0 +1,15 @@
+# @package _global_
+
+model:
+  _target_: zeroshot.pipeline.models.openrouter.ChatOpenRouterSingleReasoning
+  model: anthropic/claude-sonnet-5
+  api_key: ${oc.env:OPENROUTER_API_KEY}
+  reasoning:
+    effort: max
+    exclude: false
+  output_version: v1
+  max_tokens: 128000
+  timeout: 600000  # OpenRouter adapter uses milliseconds.
+  max_retries: 0
+  openrouter_provider:
+    require_parameters: true
