@@ -76,7 +76,7 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
     assert result["stage_submission"] == TicketAnswers.model_validate(response)
     assert stage.interpretation_verifier.accepted_interpretation is not None
     messages = result["interpretation_state"]["messages"]
-    assert any("not ready to submit" in message.text for message in messages)
+    assert any("Answer refused" in message.text for message in messages)
     assert any('"inliers": "3/3"' in message.text for message in messages)
     assert "DrawingInterpretation JSON schema" in model.received_messages[0][-1].text
     assert "calculate_drawing_scale" in model.bound_tool_name_history[0]

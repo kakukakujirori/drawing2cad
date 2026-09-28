@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from langchain_core.messages.content import ContentBlock, create_text_block
+from langchain_core.messages.content import ContentBlock
 from omegaconf import OmegaConf
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
@@ -423,6 +423,10 @@ def _stub_verification(
         @property
         def confirmed(self) -> bool:
             return True
+
+        @property
+        def blockers(self) -> list[str]:
+            return []
 
         def reset(self) -> None:
             pass
@@ -877,34 +881,6 @@ def test_invalid_operations_retry_without_reaching_coding(
 
     assert result["reconstruction"].snapshots[0].operations == _plan()
     assert result["stage_validation_failure_count"] == 0
-
-
-def test_a_refused_answer_is_named_when_the_stage_ends_without_one(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stub_verification(monkeypatch)
-    stub = coding_stage_module.OutputVerifier
-
-    def unconfirmed(**kwargs: Any) -> Any:
-        verifier = stub(**kwargs)
-        type(verifier).confirmed = property(lambda self: False)
-        verifier.feedback = lambda: [create_text_block("ret_x hands back its input")]
-        return verifier
-
-    monkeypatch.setattr(coding_stage_module, "OutputVerifier", unconfirmed)
-    with SandboxWorkdir() as workdir:
-        result = _graph(
-            workdir,
-            interpreter=ScriptedChatModel(responses=_interpretation_script()),
-            planner=ScriptedChatModel(responses=_operations_script()),
-            coder=ScriptedChatModel(responses=(_coding_submission(),)),
-            auditor=ScriptedChatModel(responses=()),
-            max_stage_validation_retries=0,
-        ).invoke({})
-
-    error = result["stage_validation_error"]
-    assert "did not return its ticket answers; its answer was refused" in error
-    assert "ret_x hands back its input" in error
 
 
 @pytest.mark.parametrize("recovers", [True, False])

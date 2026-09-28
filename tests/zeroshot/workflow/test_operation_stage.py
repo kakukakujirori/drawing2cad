@@ -116,7 +116,7 @@ def test_an_invalid_plan_is_refused_until_the_file_validates(tmp_path):
     assert stage.operation_verifier.accepted_plan == _plan()
     messages = result["operations_state"]["messages"]
     assert any("sem_absent" in message.text for message in messages)
-    assert any("not ready to submit" in message.text for message in messages)
+    assert any("Answer refused" in message.text for message in messages)
     assert "OperationPlan JSON schema" in model.received_messages[0][-1].text
 
 

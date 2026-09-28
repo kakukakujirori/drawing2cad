@@ -32,6 +32,7 @@ class AuditVerifier:
         self._snapshot: ReconstructionSnapshot | None = None
         self._checked: bytes | None = None
         self._accepted: AuditReport | None = None
+        self._error: str | None = None
         self.evidence_renders: dict[str, list[str]] = {}
 
     @property
@@ -45,6 +46,7 @@ class AuditVerifier:
         self._snapshot = snapshot
         self._checked = None
         self._accepted = None
+        self._error = None
         self.evidence_renders = {}
 
     def _contents(self) -> bytes | None:
@@ -53,7 +55,15 @@ class AuditVerifier:
 
     @property
     def confirmed(self) -> bool:
-        return self._accepted is not None and self._contents() == self._checked
+        return not self.blockers
+
+    @property
+    def blockers(self) -> list[str]:
+        """Why the file as it is now cannot be the answer, by its latest verification."""
+        verified = self._accepted is not None or self._error is not None
+        if not verified or self._contents() != self._checked:
+            return [f"{self.source_filename} has not been verified as it is now"]
+        return [self._error] if self._error is not None else []
 
     @property
     def accepted_report(self) -> AuditReport | None:
@@ -94,6 +104,7 @@ class AuditVerifier:
             )
         except Exception as invalid:  # noqa: BLE001 - feed file/render failures back
             error = str(invalid)
+        self._error = error
         (directory / "_audit_validation_log.json").write_text(
             json.dumps(
                 {"error": error, "evidence_renders": self.evidence_renders}, indent=2

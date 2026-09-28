@@ -113,12 +113,6 @@ def create_single_graph(
     )
     coding_middleware = VerifyOnWriteMiddleware(
         output_verifier,
-        refusal=(
-            "The current program must produce a verified solid, and its "
-            "verification feedback must be shown before submission. Read the "
-            "feedback, correct model.py, and submit only after verification "
-            "succeeds."
-        ),
         require_feedback_before_submit=True,
     )
     coding_agent = coding_agent_builder(

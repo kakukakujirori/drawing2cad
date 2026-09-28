@@ -29,7 +29,7 @@ from zeroshot.pipeline_single.contracts import (
 class _StubVerifier:
     def __init__(self, workdir: SandboxWorkdir, **_: object) -> None:
         self.source_path = workdir.host_bind_dir / "model.py"
-        self.confirmed = True
+        self.blockers: list[str] = []
         self.builds = 0
 
     def reset(self) -> None:

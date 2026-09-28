@@ -144,11 +144,6 @@ def create_interpretation_stage(
         interpretation_verifier,
         ticket_verifier=ticket_verifier,
         fingerprint=interpretation_verifier.source_digest,
-        refusal=(
-            "The interpretation is not ready to submit. Correct the current JSON "
-            "and referenced files, read the validation and calibration feedback, "
-            "and answer only after the current artifact validates."
-        ),
         require_feedback_before_submit=True,
     )
     agent = builder(

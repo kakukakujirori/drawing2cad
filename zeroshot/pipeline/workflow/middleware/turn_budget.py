@@ -142,11 +142,12 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
     ) -> ModelResponse[Any]:
         return await handler(self._answer_only(request))
 
+    @hook_config(can_jump_to=["model"])
     @override
     def after_model(
         self, state: TurnBudgetState, runtime: Runtime[None]
     ) -> dict[str, Any]:
-        """Count the turn."""
+        """Count the turn, and end the agent only on the model's own message."""
         del runtime
 
         last_ai_message = next(
@@ -159,6 +160,9 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
             "current_turn": state.get("current_turn", 0) + 1,
             "total_turns": state.get("total_turns", 0) + 1,
         }
+        # A refusal added after a text answer is for the model to act on.
+        if isinstance(state["messages"][-1], HumanMessage):
+            return progress | {"jump_to": "model"}
         if is_tool_call and state.get("structured_response") is None:
             return progress
         return progress | {"stop_reason": StopReason.COMPLETED}

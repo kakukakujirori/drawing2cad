@@ -127,12 +127,6 @@ def create_coding_stage(
         output_verifier,
         ticket_verifier=ticket_verifier,
         fingerprint=output_verifier.source_digest,
-        refusal=(
-            "The current program must produce a verified solid, preserve the "
-            "required operation identities, and have its verification feedback shown "
-            "before submission. Read the feedback, correct model.py, and submit "
-            "only after verification succeeds."
-        ),
         require_feedback_before_submit=True,
     )
     # Resolve frames on each call so a later round uses its updated interpretation.

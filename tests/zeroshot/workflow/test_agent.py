@@ -981,6 +981,10 @@ class _CountingVerifier:
     def confirmed(self) -> bool:
         return self._sound
 
+    @property
+    def blockers(self) -> list[str]:
+        return [] if self._sound else [f"build {len(self.seen)} is broken"]
+
     def feedback(self) -> list[ContentBlock]:
         path = self.source_path
         self.seen.append(path.read_text(encoding="utf-8") if path.is_file() else "")
@@ -1223,9 +1227,9 @@ def test_an_answer_is_refused_while_the_program_does_not_build(
     refusal = next(
         message.text
         for message in result["messages"]
-        if "has not passed verification" in message.text
+        if "Answer refused" in message.text
     )
-    assert "not ready to submit" in refusal
+    assert "build 1 is broken" in refusal
     assert verifier.seen == ["result = broken", "result = 1"]
     messages = result["messages"]
     acknowledgement_index = next(
@@ -1236,7 +1240,7 @@ def test_an_answer_is_refused_while_the_program_does_not_build(
     assert messages[acknowledgement_index].status == "error"
     assert "refused" in messages[acknowledgement_index].text
     assert isinstance(messages[acknowledgement_index + 1], HumanMessage)
-    assert "not ready to submit" in messages[acknowledgement_index + 1].text
+    assert "Answer refused" in messages[acknowledgement_index + 1].text
     assert unanswered_tool_calls(messages) == []
 
 
@@ -1264,10 +1268,9 @@ def test_an_answer_before_the_file_exists_is_refused_with_feedback(
 
     assert result["structured_response"] == _Answer(done=True)
     assert verifier.seen == ["", "result = 1"]
-    refusal = next(
-        m.text for m in result["messages"] if "not ready to submit" in m.text
-    )
-    assert "[verified] build 1" in refusal
+    refusal = next(m.text for m in result["messages"] if "Answer refused" in m.text)
+    # The model never saw this build, so its report follows the reason.
+    assert refusal.index("build 1 is broken") < refusal.index("[verified] build 1")
     assert not any(m.text == "Submission received." for m in result["messages"][:-1])
 
 
@@ -1322,22 +1325,35 @@ def test_an_answer_that_contradicts_its_round_is_refused_inside_the_agent(
         and message.tool_call_id in {"call-1", "call-3"}
     )
     # Every reason at once while the build fails; only the answer's after it.
-    assert "not ready to submit" in unbuilt
+    assert "Answer refused" in unbuilt
     assert "dimension_checks missing" in unbuilt
     assert contradicted == "dimension_checks missing"
     assert unanswered_tool_calls(messages) == []
 
 
-def test_a_text_answer_is_left_to_integration(tmp_path: Path) -> None:
-    """Refusing a text answer would end the stage without saying why."""
+def _text_answer() -> AIMessage:
+    return AIMessage(content='{"done": true}')
+
+
+def test_a_refused_text_answer_goes_back_to_the_model(tmp_path: Path) -> None:
+    """A text answer calls no tool, yet its refusal must not end the agent."""
     path = tmp_path / "model.py"
-    path.write_text("result = 1", encoding="utf-8")
+    path.write_text("result = broken", encoding="utf-8")
     tickets = _Tickets("dimension_checks missing")
+    model = ScriptedChatModel(
+        responses=(
+            _text_answer(),
+            tool_call("write", {"text": "result = 1"}, "call-1"),
+            _text_answer(),
+        )
+    )
     graph = _subgraph(
-        ScriptedChatModel(responses=(AIMessage(content='{"done": true}'),)),
+        model,
         tools=(_writing_tool(path), echo),
         extra_middleware=[
-            VerifyOnWriteMiddleware(_CountingVerifier(path), ticket_verifier=tickets)
+            VerifyOnWriteMiddleware(
+                _CountingVerifier(path, builds=[False, True]), ticket_verifier=tickets
+            )
         ],
         announce_turns=False,
         output_schema=_Answer,
@@ -1347,7 +1363,35 @@ def test_a_text_answer_is_left_to_integration(tmp_path: Path) -> None:
     result = graph.invoke({"messages": [HumanMessage(content="go")]})
 
     assert result["structured_response"] == _Answer(done=True)
+    assert result["stop_reason"] == StopReason.COMPLETED
+    # Integration checks a text answer's tickets.
     assert tickets.seen == []
+    # The refusal is the last thing the model reads before it acts again.
+    refusal = model.received_messages[1][-1]
+    assert isinstance(refusal, HumanMessage)
+    assert "Answer refused" in refusal.text
+
+
+def test_refused_text_answers_spend_the_turn_budget(tmp_path: Path) -> None:
+    path = tmp_path / "model.py"
+    path.write_text("result = broken", encoding="utf-8")
+    graph = _subgraph(
+        ScriptedChatModel(responses=tuple(_text_answer() for _ in range(5))),
+        tools=(_writing_tool(path), echo),
+        extra_middleware=[
+            VerifyOnWriteMiddleware(_CountingVerifier(path, builds=[False] * 5))
+        ],
+        max_turns=3,
+        announce_turns=False,
+        output_schema=_Answer,
+        response_format_strategy="provider",
+    )
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+
+    assert "structured_response" not in result
+    assert result["current_turn"] == 3
+    assert result["stop_reason"] == StopReason.BUDGET_EXHAUSTED
 
 
 def test_an_answer_stands_when_the_program_builds(tmp_path: Path) -> None:
@@ -1364,7 +1408,7 @@ def test_an_answer_stands_when_the_program_builds(tmp_path: Path) -> None:
     result = graph.invoke({"messages": [HumanMessage(content="go")]})
 
     assert result["structured_response"] == _Answer(done=True)
-    assert not any("has not passed verification" in m.text for m in result["messages"])
+    assert not any("Answer refused" in m.text for m in result["messages"])
 
 
 @pytest.mark.parametrize("already_verified", [False, True])
@@ -1421,7 +1465,7 @@ def test_a_submission_waits_for_parallel_tools_and_a_separate_answer(
         "parallel-tool",
     }
     assert group[0].status == "error"
-    assert "submit" in group[0].text.lower()
+    assert "answer refused" in group[0].text.lower()
     assert all(
         state.get("stop_reason") is None
         for state in states
@@ -1462,12 +1506,16 @@ def test_an_answer_waits_until_the_model_has_seen_required_feedback(
     assert result["structured_response"] == _Answer(done=True)
     assert len(model.received_messages) == 2
     assert verifier.seen == ['{"sheets": []}']
-    assert any("not ready to submit" in message.text for message in result["messages"])
+    (unread,) = (m.text for m in result["messages"] if "not been shown" in m.text)
+    # Reading the report is enough; the file need not change.
+    assert "stays refused" not in unread
 
 
-def test_a_refusal_repeats_what_the_build_reported(tmp_path: Path) -> None:
-    """The failure has to travel with the refusal; a turn behind it is a turn
-    the model has to go looking for."""
+def test_a_refusal_names_its_reason_without_repeating_a_read_report(
+    tmp_path: Path,
+) -> None:
+    """The reason travels with the refusal, first; a report already read is not
+    sent again, where its length would bury the reason."""
     path = tmp_path / "model.py"
     path.write_text("result = broken", encoding="utf-8")
     graph, _ = _verifying_agent(
@@ -1491,11 +1539,12 @@ def test_a_refusal_repeats_what_the_build_reported(tmp_path: Path) -> None:
     refusal = next(
         message.text
         for message in result["messages"]
-        if "has not passed verification" in message.text
+        if "Answer refused" in message.text
     )
     # The answer came in a turn that wrote nothing, so no build ran for it;
-    # the refusal still carries the report from the build that did.
-    assert "[verified] build 1" in refusal
+    # the model read that build's report, so only the reason is sent.
+    assert "build 1 is broken" in refusal
+    assert "[verified] build 1" not in refusal
 
 
 def test_agent_offers_only_the_answer_on_its_final_turn() -> None:

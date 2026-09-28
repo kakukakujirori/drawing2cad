@@ -1445,16 +1445,13 @@ def test_only_verified_program_outcomes_are_confirmed(
     assert not verifier.confirmed
 
 
-def test_a_program_that_builds_but_misses_its_operations_is_not_confirmed(
-    tmp_path: Path,
-) -> None:
+def _verifier_with_one_operation(tmp_path: Path, executor: StubCadQueryExecutor):
     from zeroshot.pipeline.stages.operations.contracts import (
         Operation,
         OperationPlan,
         OperationVerb,
     )
 
-    executor = StubCadQueryExecutor(_execution_report())
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir)
@@ -1469,14 +1466,38 @@ def test_a_program_that_builds_but_misses_its_operations_is_not_confirmed(
         ],
         rationale="one step",
     )
+    return verifier
+
+
+def test_a_program_that_builds_but_misses_its_operations_is_not_confirmed(
+    tmp_path: Path,
+) -> None:
+    verifier = _verifier_with_one_operation(
+        tmp_path, StubCadQueryExecutor(_execution_report())
+    )
 
     text = _text(verifier.feedback())
 
     assert not verifier.confirmed
-    assert (
-        "model.py does not match the current OperationPlan: missing=('op_base',)"
-        in text
+    (fault,) = verifier.blockers
+    assert "does not match the current OperationPlan: missing=('op_base',)" in fault
+    # The refusal names it; the build report stays about the build.
+    assert fault not in text
+
+
+def test_a_failed_build_blocks_only_by_its_status(tmp_path: Path) -> None:
+    verifier = _verifier_with_one_operation(
+        tmp_path,
+        StubCadQueryExecutor(
+            _execution_report(status=ExecutionStatus.FAILED, returncode=1)
+        ),
     )
+
+    verifier.feedback()
+
+    assert verifier.blockers == [
+        "its build ended with status FAILED; the build report says why"
+    ]
 
 
 def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> None:

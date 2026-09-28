@@ -118,7 +118,6 @@ def create_audit_stage(
     middleware = VerifyOnWriteMiddleware(
         audit_verifier,
         require_feedback_before_submit=True,
-        refusal=f"Correct {audit_filename}, read validation feedback and check the generated evidence before submitting AuditSubmission.",
     )
     audit_agent = audit_agent_builder(
         tools=tools,

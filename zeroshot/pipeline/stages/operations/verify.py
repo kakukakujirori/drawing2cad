@@ -36,6 +36,7 @@ class OperationPlanVerifier:
         self._interpretation: DrawingInterpretation | None = None
         self._accepted: OperationPlan | None = None
         self._checked: bytes | None = None
+        self._error: str | None = None
 
     @property
     def source_path(self) -> Path:
@@ -58,6 +59,7 @@ class OperationPlanVerifier:
         self._interpretation = interpretation
         self._accepted = None
         self._checked = None
+        self._error = None
 
     def _contents(self) -> bytes | None:
         path = self.source_path
@@ -65,7 +67,15 @@ class OperationPlanVerifier:
 
     @property
     def confirmed(self) -> bool:
-        return self._accepted is not None and self._contents() == self._checked
+        return not self.blockers
+
+    @property
+    def blockers(self) -> list[str]:
+        """Why the file as it is now cannot be the answer, by its latest verification."""
+        verified = self._accepted is not None or self._error is not None
+        if not verified or self._contents() != self._checked:
+            return [f"{self.source_filename} has not been verified as it is now"]
+        return [self._error] if self._error is not None else []
 
     @property
     def accepted_plan(self) -> OperationPlan | None:
@@ -98,6 +108,7 @@ class OperationPlanVerifier:
             error = "\n".join(
                 semantic_errors(invalid, self.source_filename, contents or b"")
             )
+        self._error = error
         (attempt_dir / "_operations_validation_log.json").write_text(
             json.dumps({"error": error}, indent=2) + "\n", encoding="utf-8"
         )

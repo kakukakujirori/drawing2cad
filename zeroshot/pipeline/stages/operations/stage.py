@@ -112,10 +112,6 @@ def create_operation_stage(
     middleware = VerifyOnWriteMiddleware(
         operation_verifier,
         ticket_verifier=ticket_verifier,
-        refusal=(
-            "The operation plan is not ready to submit. Correct the current JSON "
-            "using the validation feedback, and answer only after it validates."
-        ),
     )
     agent = operation_agent_builder(
         tools=tools,

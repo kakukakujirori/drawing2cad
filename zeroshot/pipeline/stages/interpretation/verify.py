@@ -198,13 +198,21 @@ class InterpretationVerifier:
 
     @property
     def confirmed(self) -> bool:
+        return not self.blockers
+
+    @property
+    def blockers(self) -> list[str]:
+        """Why the file as it is now cannot be the answer, by its latest verification."""
         result = self._last_feedback_result
-        return (
-            result is not None
-            and result is self._built
-            and result.confirmed
-            and self.source_digest() == self._built_from_digest
-        )
+        if (
+            result is None
+            or result is not self._built
+            or self.source_digest() != self._built_from_digest
+        ):
+            return [f"{self.source_filename} has not been verified as it is now"]
+        if result.confirmed:
+            return []
+        return list(result.errors) or [f"{self.source_filename} is not valid"]
 
     @property
     def accepted_interpretation(self) -> DrawingInterpretation | None:

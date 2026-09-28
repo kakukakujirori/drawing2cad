@@ -120,6 +120,7 @@ class OutputVerifier:
         self.projection_view_mode = projection_view_mode
 
         self._last_feedback_report: VerifyOutputResult | None = None
+        self._last_feedback_digest: str | None = None
         # The last two builds with a chamfer distance, so feedback shows the change.
         self._scored: VerifyOutputResult | None = None
         self._scored_before: VerifyOutputResult | None = None
@@ -146,6 +147,7 @@ class OutputVerifier:
         self._built = None
         self._built_from_digest = None
         self._last_feedback_report = None
+        self._last_feedback_digest = None
         self._scored = None
         self._scored_before = None
 
@@ -432,18 +434,23 @@ class OutputVerifier:
 
     @property
     def confirmed(self) -> bool:
-        """Whether the most recent `feedback` build implements the operations.
+        return not self.blockers
 
-        False before the first build, so a program never built cannot pass for
-        one that did.
-        """
+    @property
+    def blockers(self) -> list[str]:
+        """Why the file as it is now cannot be the answer, by its latest verification."""
         report = self._last_feedback_report
-        if report is None or report.exec_report is None or self._program_faults(report):
-            return False
-        return (
-            report.exec_report.status is ExecutionStatus.VERIFIED
-            and report.exec_report.returncode == 0
-        )
+        if (
+            report is None
+            or report.exec_report is None
+            or self.source_digest() != self._last_feedback_digest
+        ):
+            return [f"{self.source_filename} has not been verified as it is now"]
+        exec_report = report.exec_report
+        if exec_report.status is not ExecutionStatus.VERIFIED or exec_report.returncode:
+            status = exec_report.status.value
+            return [f"its build ended with status {status}; the build report says why"]
+        return list(self._program_faults(report))
 
     @property
     def accepted_source(self) -> str | None:
@@ -458,6 +465,7 @@ class OutputVerifier:
         """Verify, and say what happened in blocks a message can carry."""
         report = self.verify()
         self._last_feedback_report = report
+        self._last_feedback_digest = self.source_digest()
         if report is not self._scored and chamfers(report.drawing_diff_report):
             self._scored_before, self._scored = self._scored, report
 
@@ -549,8 +557,6 @@ class OutputVerifier:
                     heading="[Projected drawing]",
                 )
             )
-        if faults := self._program_faults(report):
-            blocks.append(create_text_block("\n".join(faults)))
         return blocks
 
     def _program_faults(self, report: VerifyOutputResult) -> tuple[str, ...]:
