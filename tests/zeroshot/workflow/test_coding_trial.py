@@ -56,7 +56,7 @@ def test_read_only_tools_and_verification_share_one_reminder_per_batch(tmp_path)
         output_schema=ExampleProposal,
         response_format_strategy="tool",
         extra_middleware=[
-            VerifyOnWriteMiddleware(verifier, require_feedback_before_submit=True),
+            VerifyOnWriteMiddleware(verifier),
             CodingTrialMiddleware(("echo", "write"), max_turns=4),
         ],
     )

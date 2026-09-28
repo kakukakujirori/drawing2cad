@@ -115,10 +115,7 @@ def create_audit_stage(
     audit_verifier = AuditVerifier(
         attempt_store, source_filename=audit_filename, evidence_mode=evidence_mode
     )
-    middleware = VerifyOnWriteMiddleware(
-        audit_verifier,
-        require_feedback_before_submit=True,
-    )
+    middleware = VerifyOnWriteMiddleware(audit_verifier)
     audit_agent = audit_agent_builder(
         tools=tools,
         system_prompt=build_system_prompt(

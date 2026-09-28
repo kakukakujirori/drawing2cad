@@ -1236,6 +1236,8 @@ def test_an_interpretation_revision_refreshes_parameter_values_and_preserves_his
                     *_operations_script(detail="start at sem_feature_1.offset"),
                     # A round that changes nothing still hands on the seeded plan,
                     # whose references are refreshed against the new interpretation.
+                    # The first answer is refused once, with the plan's report.
+                    _operation_submission(ticket),
                     _operation_submission(ticket),
                 )
             ),

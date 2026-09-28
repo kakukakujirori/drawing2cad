@@ -1006,19 +1006,13 @@ def _verifying_agent(
     model: ScriptedChatModel,
     path: Path,
     builds: Sequence[bool] = (),
-    require_feedback_before_submit: bool = False,
     **agent_options: Any,
 ) -> tuple[Any, _CountingVerifier]:
     verifier = _CountingVerifier(path, builds)
     graph = _subgraph(
         model,
         tools=(_writing_tool(path), echo),
-        extra_middleware=[
-            VerifyOnWriteMiddleware(
-                verifier,
-                require_feedback_before_submit=require_feedback_before_submit,
-            )
-        ],
+        extra_middleware=[VerifyOnWriteMiddleware(verifier)],
         **agent_options,
     )
     return graph, verifier
@@ -1244,10 +1238,10 @@ def test_an_answer_is_refused_while_the_program_does_not_build(
     assert unanswered_tool_calls(messages) == []
 
 
-def test_an_answer_before_the_file_exists_is_refused_with_feedback(
+def test_an_answer_before_the_file_exists_is_refused_without_a_build(
     tmp_path: Path,
 ) -> None:
-    """A missing file is not a standing build; the refusal must say what failed."""
+    """A missing file has nothing to build; writing it is what gets it verified."""
     path = tmp_path / "model.py"
     graph, verifier = _verifying_agent(
         ScriptedChatModel(
@@ -1258,7 +1252,7 @@ def test_an_answer_before_the_file_exists_is_refused_with_feedback(
             )
         ),
         path,
-        builds=[False, True],
+        builds=[True],
         announce_turns=False,
         output_schema=_Answer,
         response_format_strategy="tool",
@@ -1267,10 +1261,10 @@ def test_an_answer_before_the_file_exists_is_refused_with_feedback(
     result = graph.invoke({"messages": [HumanMessage(content="go")]})
 
     assert result["structured_response"] == _Answer(done=True)
-    assert verifier.seen == ["", "result = 1"]
+    assert verifier.seen == ["result = 1"]
     refusal = next(m.text for m in result["messages"] if "Answer refused" in m.text)
-    # The model never saw this build, so its report follows the reason.
-    assert refusal.index("build 1 is broken") < refusal.index("[verified] build 1")
+    assert "build 0 is broken" in refusal
+    assert "[verified]" not in refusal
     assert not any(m.text == "Submission received." for m in result["messages"][:-1])
 
 
@@ -1396,9 +1390,13 @@ def test_refused_text_answers_spend_the_turn_budget(tmp_path: Path) -> None:
 
 def test_an_answer_stands_when_the_program_builds(tmp_path: Path) -> None:
     path = tmp_path / "model.py"
-    path.write_text("result = 1", encoding="utf-8")
     graph, _ = _verifying_agent(
-        ScriptedChatModel(responses=(_answer_call("call-1"),)),
+        ScriptedChatModel(
+            responses=(
+                tool_call("write", {"text": "result = 1"}, "call-1"),
+                _answer_call("call-2"),
+            )
+        ),
         path,
         announce_turns=False,
         output_schema=_Answer,
@@ -1408,6 +1406,7 @@ def test_an_answer_stands_when_the_program_builds(tmp_path: Path) -> None:
     result = graph.invoke({"messages": [HumanMessage(content="go")]})
 
     assert result["structured_response"] == _Answer(done=True)
+    assert not any("Answer refused" in m.text for m in result["messages"])
     assert not any("Answer refused" in m.text for m in result["messages"])
 
 
@@ -1482,11 +1481,11 @@ def test_a_submission_waits_for_parallel_tools_and_a_separate_answer(
     assert unanswered_tool_calls(messages) == []
 
 
-def test_an_answer_waits_until_the_model_has_seen_required_feedback(
+def test_a_file_kept_from_before_is_shown_once_before_its_answer_stands(
     tmp_path: Path,
 ) -> None:
-    """A visual artifact may validate on submission but still needs one model
-    turn after the render, so the model can inspect and repair it."""
+    """An answer with a file the model never saw verified here, e.g. one kept
+    from the last round, is refused once with that file's report."""
     path = tmp_path / "drawing.json"
     path.write_text('{"sheets": []}', encoding="utf-8")
     model = ScriptedChatModel(
@@ -1498,7 +1497,6 @@ def test_an_answer_waits_until_the_model_has_seen_required_feedback(
         announce_turns=False,
         output_schema=_Answer,
         response_format_strategy="tool",
-        require_feedback_before_submit=True,
     )
 
     result = graph.invoke({"messages": [HumanMessage(content="go")]})
@@ -1506,9 +1504,10 @@ def test_an_answer_waits_until_the_model_has_seen_required_feedback(
     assert result["structured_response"] == _Answer(done=True)
     assert len(model.received_messages) == 2
     assert verifier.seen == ['{"sheets": []}']
-    (unread,) = (m.text for m in result["messages"] if "not been shown" in m.text)
+    (first,) = (m.text for m in result["messages"] if "first report" in m.text)
     # Reading the report is enough; the file need not change.
-    assert "stays refused" not in unread
+    assert "stays refused" not in first
+    assert "[verified] build 1" in first
 
 
 def test_a_refusal_names_its_reason_without_repeating_a_read_report(

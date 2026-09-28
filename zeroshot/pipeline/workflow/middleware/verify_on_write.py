@@ -11,10 +11,6 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock, create_text_block
 from langgraph.runtime import Runtime
 
-_UNREAD = (
-    "Answer refused: the latest verification report has not been shown to you "
-    "yet. Read it below, then answer again."
-)
 _ANSWER_WITH_TOOLS_REFUSED = (
     "Answer refused: you called other tools in the same turn as the answer. "
     "Read what they return, then answer in a turn with no other tool calls."
@@ -55,11 +51,10 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     rewrote the file four times in parallel is built once, on the state it
     ended in.
 
-    It also gates the stage's answer. A model whose answer schema is bound as a
-    tool can call it the way it calls any other tool, part-way through the work;
-    only a build standing between that call and the end of the stage stops a
-    unverified artifact becoming the stage's result. What either verifier
-    reports is handed back to the model; this middleware judges nothing itself.
+    It also gates the stage's answer by the verifier's blockers. An answer with
+    a file whose report the model never saw here is verified first, and
+    refused once with that report. What either verifier reports is handed back
+    to the model; this middleware judges nothing itself.
     """
 
     def __init__(
@@ -67,26 +62,18 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         verifier: ArtifactVerifier,
         *,
         ticket_verifier: AnswerVerifier | None = None,
-        require_feedback_before_submit: bool = False,
         fingerprint: Callable[[], str | None] | None = None,
     ) -> None:
         super().__init__()
         self.verifier = verifier
         self.ticket_verifier = ticket_verifier
         self.fingerprint = fingerprint
-        self.require_feedback_before_submit = require_feedback_before_submit
-        # What was on disk at construction is not this agent's work, so
-        # `before_model` stays quiet about it. The gate keeps its own mark,
-        # because a program nobody built must never pass for one that builds.
-        self._last_seen = self._digest()
-        self._last_built: str | None = None
-        self._last_report: list[ContentBlock] = []
+        self.reset()
 
     def reset(self) -> None:
-        """Accept the current source as a machine-provided, unbuilt baseline."""
-        self._last_seen = self._digest()
-        self._last_built = None
-        self._last_report = []
+        """Take the file on disk as the stage's starting point, unreported."""
+        self._last_seen = self._digest()  # what `before_model` last looked at
+        self._reported: str | None = None  # the file whose report the model saw
 
     def _digest(self) -> str | None:
         if self.fingerprint is not None:
@@ -96,20 +83,18 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         path = self.verifier.source_path
         return sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
-    def _build(self) -> list[ContentBlock]:
-        self._last_report = self.verifier.feedback()
-        # Validation may fill derived fields in the watched artifact.
-        self._last_seen = self._last_built = self._digest()
-        return self._last_report
-
     @override
     def before_model(
         self, state: _AgentState[Any], runtime: Runtime[None]
     ) -> dict[str, Any] | None:
+        """Verify the file after the tools that changed it, before the model reads on."""
         del state, runtime
         if self._digest() == self._last_seen:
             return None
-        return {"messages": [HumanMessage(content_blocks=self._build())]}
+        report = self.verifier.feedback()
+        # Validation may fill derived fields in the watched artifact.
+        self._last_seen = self._reported = self._digest()
+        return {"messages": [HumanMessage(content_blocks=report)]}
 
     @override
     def wrap_model_call(
@@ -139,32 +124,28 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         )
 
     def _artifact_reasons(self) -> list[ContentBlock]:
-        """Why the artifact is not ready to submit; nothing when it is.
-
-        The reasons come first. A report the model already read is not repeated,
-        so a repeated answer costs one short message, and the reason stays in view.
-        """
-        # A build of exactly this content already stands, and the model read it.
-        reported = self._digest() == self._last_built
-        report = self._last_report if reported else self._build()
-        if not self.verifier.blockers and (
-            reported or not self.require_feedback_before_submit
-        ):
-            return []
-        # A missing file matches "never built" (both None) but has no report yet.
-        if not report:
-            report, reported = self._build(), False
-        if not (blockers := self.verifier.blockers):
-            # It passes, but was first built just now, so its report is unseen;
-            # e.g. a file kept unchanged from the last round.
-            return [create_text_block(_UNREAD), *report]
+        """Why the file cannot be the answer, reasons first; nothing when it can."""
         name = self.verifier.source_path.name
-        refusal = create_text_block(
-            f"Answer refused. It stays refused until {name} changes:\n"
-            + "".join(f"- {blocker}\n" for blocker in blockers)
-            + f"Correct {name} based on its latest verification report."
-        )
-        return [refusal] if reported else [refusal, *report]
+        report: list[ContentBlock] = []
+        if self._digest() != self._reported:
+            # An answer with a file the model never saw verified in this stage,
+            # e.g. one kept from the last round: verify it and show the report.
+            report = self.verifier.feedback()
+            self._last_seen = self._reported = self._digest()
+        if blockers := self.verifier.blockers:
+            text = (
+                f"Answer refused. It stays refused until {name} changes:\n"
+                + "".join(f"- {blocker}\n" for blocker in blockers)
+                + f"Correct {name} based on its latest verification report."
+            )
+        elif report:
+            text = (
+                f"Answer refused: this is the first report on {name} in this "
+                "stage. Read it below, then answer again."
+            )
+        else:
+            return []
+        return [create_text_block(text), *report]
 
 
 def _has_unrun_calls(response: ModelResponse[Any]) -> bool:

@@ -137,9 +137,7 @@ def test_write_validate_review_rewrite_and_confirm_only_current_attempt(strategy
                 _answer(strategy, accepted=False),
             )
         )
-        middleware = VerifyOnWriteMiddleware(
-            verifier, require_feedback_before_submit=True
-        )
+        middleware = VerifyOnWriteMiddleware(verifier)
         agent = create_agent(
             role="output_auditor",
             model=model,
@@ -227,9 +225,7 @@ def test_completion_cannot_skip_feedback_or_submit_changed_invalid_bytes(strateg
         verifier.reset(snapshot)
         verifier.source_path.write_text(report.model_dump_json())
         # The file is valid but no verification feedback has been delivered yet.
-        middleware = VerifyOnWriteMiddleware(
-            verifier, require_feedback_before_submit=True
-        )
+        middleware = VerifyOnWriteMiddleware(verifier)
         from langchain.agents.middleware import ModelResponse
         from langchain_core.messages import ToolMessage
 

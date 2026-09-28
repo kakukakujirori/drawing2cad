@@ -144,7 +144,6 @@ def create_interpretation_stage(
         interpretation_verifier,
         ticket_verifier=ticket_verifier,
         fingerprint=interpretation_verifier.source_digest,
-        require_feedback_before_submit=True,
     )
     agent = builder(
         tools=[*tools, create_calculate_drawing_scale_tool()],

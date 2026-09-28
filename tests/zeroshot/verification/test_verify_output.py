@@ -1536,7 +1536,7 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
         response_format_strategy="tool",
         max_turns=2,
         extra_middleware=[
-            VerifyOnWriteMiddleware(verifier, require_feedback_before_submit=True)
+            VerifyOnWriteMiddleware(verifier)
         ],
     )
     result = agent.invoke({"messages": [HumanMessage(content="Submit the program.")]})

@@ -111,10 +111,7 @@ def create_single_graph(
         # No interpretation names the drawing's views, so all six are drawn.
         projection_view_mode="standard",
     )
-    coding_middleware = VerifyOnWriteMiddleware(
-        output_verifier,
-        require_feedback_before_submit=True,
-    )
+    coding_middleware = VerifyOnWriteMiddleware(output_verifier)
     coding_agent = coding_agent_builder(
         tools=[run_shell, load_image, create_calculate_drawing_scale_tool()],
         system_prompt=build_system_prompt(

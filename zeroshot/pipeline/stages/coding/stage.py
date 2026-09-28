@@ -127,7 +127,6 @@ def create_coding_stage(
         output_verifier,
         ticket_verifier=ticket_verifier,
         fingerprint=output_verifier.source_digest,
-        require_feedback_before_submit=True,
     )
     # Resolve frames on each call so a later round uses its updated interpretation.
     coding_tools = [
