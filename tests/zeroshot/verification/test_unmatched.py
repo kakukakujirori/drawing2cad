@@ -3,6 +3,9 @@ import numpy as np
 import pytest
 
 from zeroshot.pipeline.verification.drawing_diff.unmatched import (
+    COLORS,
+    INPUT_GRAY,
+    draw_unmatched,
     find_unmatched,
     warp_output_to_drawing,
 )
@@ -36,6 +39,17 @@ def test_an_output_line_the_drawing_lacks_is_extra():
     groups = find_unmatched(_lines(*OUTLINE, width=5), _lines(*OUTLINE, INNER))
 
     assert [g.direction for g in groups] == ["extra"]
+
+
+def test_thick_input_line_keeps_its_color_band_and_gray_center_visible():
+    drawing = _lines(*OUTLINE, INNER, width=11)
+    output = _lines(*OUTLINE)
+    groups = find_unmatched(drawing, output)
+    image = draw_unmatched(np.uint8(~drawing) * 255, output, groups)
+
+    assert np.all(image[99:102, 90:120] == INPUT_GRAY)
+    assert np.all(image[97, 90:120] == COLORS["red"])
+    assert np.all(image[103, 90:120] == COLORS["red"])
 
 
 def test_length_does_not_depend_on_stroke_width():

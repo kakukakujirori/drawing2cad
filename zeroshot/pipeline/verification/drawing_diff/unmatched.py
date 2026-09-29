@@ -26,7 +26,7 @@ MIN_AREA_PX = 1000
 # A line group this close to a material group's outline is that outline;
 # the width covers the corners that the material's opening rounds off.
 OUTLINE_PX = 8
-# Wider than the thickest drawing line, so the band shows on both sides of it.
+# Wider than the displayed strokes, so the band shows on both sides of them.
 BAND_PX = 5
 INPUT_GRAY = (110, 110, 110)
 OUTPUT_SKY = (90, 190, 255)
@@ -199,10 +199,12 @@ def draw_unmatched(
             image[group.xy[stripe, 1], group.xy[stripe, 0]] = color
         else:
             image[cv2.dilate(mask, _disk(BAND_PX)) > 0] = color
-    drawn = drawing_gray < 128
+    drawn = cv2.dilate(
+        skeletonize(drawing_gray < 128).astype(np.uint8), np.ones((3, 3), np.uint8)
+    ) > 0
     shown = cv2.dilate(output.astype(np.uint8), np.ones((2, 2), np.uint8)) > 0
     image[drawn] = INPUT_GRAY
-    image[shown] = OUTPUT_SKY  # thickened to stand out from the gray input
+    image[shown] = OUTPUT_SKY
     image[drawn & shown] = BOTH_BLUE
     for number, (group, color) in enumerate(zip(groups, COLORS.values()), 1):
         x, y = group.xy[np.argmin(group.xy[:, 1])]  # the top of the lines, not the box
