@@ -1,0 +1,1 @@
+Reconstruct the part shown in the provided 2D engineering drawing as a CadQuery Python script. Save the script to /work/model.py. Assign the final shape to a variable named result. Do not include STEP export code in model.py.

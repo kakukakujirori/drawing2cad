@@ -1,0 +1,11 @@
+# @package _global_
+
+model:
+  _target_: langchain_openai.chat_models.codex._ChatOpenAICodex
+  model: gpt-6-luna
+  reasoning:
+    effort: max
+    summary: detailed
+  output_version: responses/v1
+  timeout: 600.0
+  max_retries: 0
