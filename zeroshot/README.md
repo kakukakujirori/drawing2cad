@@ -9,10 +9,10 @@ Generate:
 ```bash
 conda activate drawing2cad
 
-# gpt5.6-luna
+# gpt6-luna
 python -m zeroshot.run_pipeline --multirun \
-    model=gpt5.6_luna_codex \
-    artifact_root=outputs/gpt5.6_luna \
+    model=gpt6_luna_codex \
+    artifact_root=outputs/gpt6_luna \
     on_existing=retry \
     workflow=continued \
     sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
@@ -30,7 +30,7 @@ Evaluate:
 
 ```bash
 python -m zeroshot.evaluation.aggregate_run \
-    --run-dir outputs/gpt5.6_luna
+    --run-dir outputs/gpt6_luna
 ```
 
 ## Single-agent baseline
@@ -38,10 +38,10 @@ python -m zeroshot.evaluation.aggregate_run \
 Coder + Auditor construction:
 
 ```bash
-# gpt5.6-luna
+# gpt6-luna
 python -m zeroshot.run_pipeline --multirun \
-    model=gpt5.6_luna_codex \
-    artifact_root=outputs/gpt5.6_luna_single \
+    model=gpt6_luna_codex \
+    artifact_root=outputs/gpt6_luna_single \
     on_existing=retry \
     workflow=single \
     sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
