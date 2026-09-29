@@ -75,7 +75,27 @@ alternatives with `model=...` or `input=...`. Native uses only the input sheets
 and model fields; shared
 presenter/response-format settings do not add behavior. Hydra `--multirun`
 works with the usual overrides.
-Use a new `artifact_root` for a repeated sample; existing runs are not overwritten.
+
+To run or reissue a sweep:
+
+```bash
+python -m zeroshot.pipeline_native --multirun \
+  model=gpt6_luna_codex \
+  artifact_root=outputs/native_luna \
+  on_existing=retry \
+  sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
+```
+
+`on_existing` follows the staged pipeline's policies:
+
+- `fail` (default): refuse completed or incomplete existing runs.
+- `skip`: skip generations with `run_completed`; refuse failed or interrupted runs.
+- `retry`: skip generations with `run_completed`; clear failed or interrupted runs
+  and generate from scratch, keeping Hydra's `.hydra/` and job logs.
+
+Completion is determined by generation's `events.jsonl`. A retrospective failure
+after `run_completed` still counts as completed and is skipped by `skip`/`retry`.
+Use a new `artifact_root` to regenerate a completed sample.
 
 A worktree does not contain the ignored dataset. Point directly to the source
 PNG; the runner copies only this file into the sandbox:

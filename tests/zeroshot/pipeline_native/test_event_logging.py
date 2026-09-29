@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from zeroshot.pipeline_native.event_logging import EventLog, safe_value, write_json
+from zeroshot.pipeline_native.event_logging import (
+    EventLog,
+    has_run_completed,
+    safe_value,
+    write_json,
+)
 
 
 def protocol(method, data, seq):
@@ -147,3 +152,23 @@ def test_redaction_keeps_reasoning_and_image_hashes(tmp_path: Path) -> None:
     write_json(path, value)
     assert json.loads(path.read_text()) == redacted
     assert "never-write-this" not in path.read_text()
+
+
+@pytest.mark.parametrize(
+    ("records", "completed"),
+    [
+        (None, False),
+        (b"", False),
+        (b'{"event": "run_failed"}\n', False),
+        (b'{"event": "messages", "data": {"event": "run_completed"}}\n', False),
+        (b'{"event": "run_started"}\n{"event": "messages", "data": "\xe3', False),
+        (b'{"event": "run_completed"}\n', True),
+    ],
+)
+def test_generation_completion_uses_top_level_event_and_tolerates_interruption(
+    tmp_path, records, completed
+):
+    path = tmp_path / "events.jsonl"
+    if records is not None:
+        path.write_bytes(records)
+    assert has_run_completed(path) is completed

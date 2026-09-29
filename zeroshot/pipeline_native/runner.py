@@ -6,6 +6,8 @@ import hashlib
 import shutil
 import subprocess
 import sys
+import tempfile
+from contextlib import ExitStack
 from importlib.metadata import version
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -25,10 +27,15 @@ from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.workflow.middleware.stateless_reasoning import (
     StatelessReasoningMiddleware,
 )
-from zeroshot.pipeline_native.event_logging import EventLog, write_json
+from zeroshot.pipeline_native.event_logging import (
+    EventLog,
+    has_run_completed,
+    write_json,
+)
 
 _PROMPT = Path(__file__).parent / "prompts" / "generator.md"
 _RETROSPECTIVE_PROMPT = _PROMPT.with_name("retrospective.md")
+_ON_EXISTING = ("fail", "skip", "retry")
 
 
 def _basename(value: str) -> str:
@@ -59,11 +66,71 @@ def _git(*args: str) -> str | None:
     return process.stdout.strip() if process.returncode == 0 else None
 
 
-def run(config: DictConfig, *, model: BaseChatModel | None = None) -> dict[str, Any]:
-    """Run once; retain failures and refuse to overwrite an earlier experiment."""
+def _prepare_workspace(
+    run_dir: Path, names: list[str], sources: list[Path], on_existing: str
+) -> Path:
+    """Stage inputs safely before retry removes the previous run's artifacts."""
+    with ExitStack() as stack:
+        # An input can live in the old workspace, or be reached via a symlink
+        # there even when its final target lives outside the run directory.
+        if on_existing == "retry" and any(
+            path.resolve().is_relative_to(run_dir.resolve())
+            for source in sources
+            for path in (source, *source.absolute().parents)
+        ):
+            staging = Path(
+                stack.enter_context(
+                    tempfile.TemporaryDirectory(prefix="drawing2cad-native-retry-")
+                )
+            )
+            for name, source in zip(names, sources, strict=True):
+                shutil.copyfile(source, staging / f"{name}.png")
+            sources = [staging / f"{name}.png" for name in names]
+
+        if on_existing == "retry" and run_dir.is_dir():
+            # Hydra writes these before the runner starts; keep the current
+            # resolved config and open job log while clearing other artifacts.
+            for entry in run_dir.iterdir():
+                if entry.name == ".hydra" or entry.suffix == ".log":
+                    continue
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+
+        run_dir.mkdir(parents=True, exist_ok=True)
+        workspace = run_dir / "workspace"
+        workspace.mkdir()  # Also reserves the destination against concurrent runs.
+        inputs = workspace / "inputs"
+        inputs.mkdir()
+        for name, source in zip(names, sources, strict=True):
+            shutil.copyfile(source, inputs / f"{name}.png")
+        return workspace
+
+
+def run(
+    config: DictConfig, *, model: BaseChatModel | None = None
+) -> dict[str, Any] | None:
+    """Run one sample, returning None when a completed generation is skipped."""
     if config.workflow.name != "native":
         raise ValueError("This entrypoint requires workflow=native")
+    on_existing = config.get("on_existing", "fail")
+    if on_existing not in _ON_EXISTING:
+        raise ValueError(f"on_existing must be one of {_ON_EXISTING}: {on_existing!r}")
     sample_id = _basename(str(config.sample.sample_id))
+    run_dir = Path(to_absolute_path(str(config.artifact_root))) / sample_id
+    events_path = run_dir / "events.jsonl"
+    if has_run_completed(events_path):
+        if on_existing in {"skip", "retry"}:
+            return None
+        raise FileExistsError(f"Sample already ran: {run_dir}")
+    if on_existing != "retry" and (
+        (run_dir / "workspace").exists() or events_path.exists()
+    ):
+        raise FileExistsError(
+            f"Incomplete run left behind; use on_existing=retry to redo: {run_dir}"
+        )
+
     sheets = list(config.sample.drawing.sheets)
     if not sheets:
         raise ValueError("At least one input PNG is required")
@@ -75,16 +142,9 @@ def run(config: DictConfig, *, model: BaseChatModel | None = None) -> dict[str, 
         if source.suffix.lower() != ".png" or not source.is_file():
             raise ValueError(f"Input must be an existing PNG: {source}")
 
-    run_dir = Path(to_absolute_path(str(config.artifact_root))) / sample_id
-    workspace = run_dir / "workspace"
-    if workspace.exists() or (run_dir / "events.jsonl").exists():
-        raise FileExistsError(
-            f"Run already exists; choose a new artifact_root: {run_dir}"
-        )
-    run_dir.mkdir(parents=True, exist_ok=True)
-    workspace.mkdir()  # Also reserves the destination against concurrent runs.
+    workspace = _prepare_workspace(run_dir, names, sources, on_existing)
 
-    with EventLog(run_dir / "events.jsonl", console=bool(config.console)) as log:
+    with EventLog(events_path, console=bool(config.console)) as log:
         run_id = str(uuid4())
         log.write("run_started", {"run_id": run_id, "sample_id": sample_id})
         try:
@@ -121,12 +181,10 @@ def run(config: DictConfig, *, model: BaseChatModel | None = None) -> dict[str, 
                 workspace, read_only_subdirs=[PurePosixPath("inputs")]
             ) as workdir:
                 inputs = workspace / "inputs"
-                inputs.mkdir()
                 load_image = create_load_image_tool(workdir)
                 blocks: list[dict[str, Any]] = []
                 for name, source in zip(names, sources, strict=True):
                     staged = inputs / f"{name}.png"
-                    shutil.copyfile(source, staged)
                     sandbox_path = str(workdir.host_to_sandbox_path(staged))
                     images = load_image.invoke({"image_path": sandbox_path})
                     if not images[0]["image_url"]["url"].startswith("data:image/png;"):

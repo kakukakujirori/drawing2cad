@@ -64,6 +64,21 @@ def write_json(path: Path, value: Any) -> None:
     )
 
 
+def has_run_completed(path: Path) -> bool:
+    """Check generation completion, tolerating partial records from interruption."""
+    if not path.is_file():
+        return False
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict) and record.get("event") == "run_completed":
+                return True
+    return False
+
+
 class EventLog:
     def __init__(self, path: Path, *, console: bool = False) -> None:
         self.path = path
