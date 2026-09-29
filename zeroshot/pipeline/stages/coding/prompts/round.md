@@ -17,7 +17,7 @@ $dimension_inventory
 
 The source drawing takes precedence over upstream interpretations and plans. An adopted upstream interpretation is not evidence for retaining current geometry or rejecting an alternative.
 
-Do not wait for upstream agreement before implementing a correction supported by drawing evidence and a rendered trial. Leave upstream JSON files unchanged and preserve operation identities. Report the geometry changed, supporting evidence and affected `view_`/`dim_`/`sem_`/`op_` IDs in the relevant ticket response, or in `stage_report.concerns` when no assigned ticket covers the issue. If evidence is insufficient, retain the best executable model and state the unresolved mismatch; plan compliance does not resolve it.
+Do not wait for upstream agreement before implementing a correction supported by drawing evidence and a rendered trial. Leave upstream JSON files unchanged and preserve operation identities. Report the geometry changed, supporting evidence and affected `view_`/`dim_`/`sem_`/`op_` IDs in the relevant ticket response, or in `stage_report.concerns` when no assigned ticket covers the issue. When a feature's shape is uncertain, actively test as many hypotheses as you have on the whole model in `$coding_output_path` and compare their projections with the input. Adopt the hypothesis that matches best. Leaving the feature out is one of these hypotheses, not a safe default. Do not reject a hypothesis on a guess without evidence.
 
 Assign each operation's completed CadQuery result to a stable `ret_` variable by replacing its `op_` prefix. Helper functions and variables such as `part` are allowed. For example:
 
@@ -44,9 +44,9 @@ After a tool turn changes `$coding_output_path`, automatic verification executes
 Do not believe in your 3D reasoning blindly. Whenever deciding geometric design details, build candidate CAD parts, render the relevant views, and compare the resulting images with the input drawing. This is especially important when you seek an alternative design hypothesis: do not reject it based only on your reasoning. Build and observe it first.
 
 - When testing, choose a candidate, the smallest change needed to test it, and the deciding views; then run the trial before further speculation. Before revisiting the same question, obtain a new measurement or run a new trial.
-- Use any scratch Python file separate from `$coding_output_path`, including the suspect feature and enough surrounding geometry to check its extent and connections. No `op_`/`ret_` structure is required. Scratch files are not automatically executed, verified or submitted. You will need to manually write `cq.exporters.export(...)` to generate the STEP file.
+- Use any scratch Python file separate from `$coding_output_path` to experiment with part of the shape, including the suspect feature and enough surrounding geometry to check its extent and connections. No `op_`/`ret_` structure is required. Scratch files are not automatically executed, verified or submitted. You will need to manually write `cq.exporters.export(...)` to generate the STEP file.
 - Execute with `run_shell`, export STEP, then call `render_step` with its path and deciding views (e.g., `views=["front", "top"]`). Open the returned PNGs with `load_image` and compare with the source. Known views use registered drawing axes; the tool reports the axes used.
-- Integrate supported corrections into `$coding_output_path` after each meaningful group of changes and inspect the full-model verification. After integrating a trial into $coding_output_path, inspect the updated full-model verification and renders. After further geometry changes, inspect newly generated images.
+- Integrate any promising part experiments into `$coding_output_path` immediately to see whether the projections of the resulting shape give a better match with the input. Quick iteration is the key to fast improvements.
 - Treat stroke thickness as a drawing convention, not a physical feature width.
 - Read the geometry census:
   - All faces of one kind or hundreds of edges may indicate an unintended approximation.

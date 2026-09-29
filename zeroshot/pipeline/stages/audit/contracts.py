@@ -120,8 +120,11 @@ class RevisionRequest(BaseModel):
     instruction: str = Field(
         ...,
         description=(
-            "What is wrong with the target and what its owning stage must "
-            "correct, without supplying a replacement artifact."
+            "What is wrong with the target: what the drawing shows there and "
+            "what the build has instead. Take values from printed dimensions "
+            "where possible, and give directions as model axes with signs. State "
+            "the defect, not its correction: the owning stage decides how to "
+            "correct it. Supply no replacement artifact."
         ),
     )
     proposed_names: list[str] = Field(

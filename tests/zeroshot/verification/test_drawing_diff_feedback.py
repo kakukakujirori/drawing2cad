@@ -198,4 +198,4 @@ def test_coding_can_correct_geometry_without_overwriting_upstream_artifacts():
 
     assert "source drawing takes precedence" in coding
     assert "Leave upstream JSON files unchanged" in coding
-    assert "state the unresolved mismatch" in coding
+    assert "Leaving the feature out is one of these hypotheses" in coding
