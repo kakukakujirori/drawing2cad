@@ -29,8 +29,8 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
         "console": None,
         "artifact_presenter": {
             "_target_": "zeroshot.pipeline.messages.artifact.ArtifactPresenter",
-            "input_mode": "path",
-            "feedback_mode": "none",
+            "input": "path",
+            "output_renders": "path",
         },
         "models": {},
         "model": {
@@ -103,8 +103,8 @@ def test_run_composes_dependencies_and_manifest(
             "console": None,
             "artifact_presenter": {
                 "_target_": "zeroshot.pipeline.messages.artifact.ArtifactPresenter",
-                "input_mode": "path",
-                "feedback_mode": "none",
+                "input": "path",
+                "output_renders": "path",
             },
             "models": {},
             "model": {

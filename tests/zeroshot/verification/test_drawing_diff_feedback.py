@@ -4,7 +4,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import (
     VerifyOutputResult,
@@ -14,13 +16,22 @@ from zeroshot.pipeline.stages.coding.verify import (
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 
+PRESENTER = ArtifactPresenter(input="path")
+
+
+def _text(blocks):
+    return "\n".join(block["text"] for block in blocks if block["type"] == "text")
+
 
 @pytest.mark.parametrize("reports", [None, {}])
 def test_no_comparison_produces_no_message(tmp_path, reports):
-    assert describe_drawing_diffs(reports, SandboxWorkdir(tmp_path)) == ""
+    assert (
+        describe_drawing_diffs(reports, SandboxWorkdir(tmp_path), presenter=PRESENTER)
+        == []
+    )
 
 
-def test_feedback_lists_sandbox_images_and_keeps_failure_reasons(tmp_path):
+def test_feedback_lists_input_and_keeps_failure_reasons(tmp_path):
     workdir = SandboxWorkdir(tmp_path)
     reports = {
         "view_front": DrawingDiffReport(
@@ -41,37 +52,25 @@ def test_feedback_lists_sandbox_images_and_keeps_failure_reasons(tmp_path):
             error="projection unavailable",
         ),
     }
+    overlay = reports["view_front"].paths["overlay_path"]
+    overlay.parent.mkdir(parents=True)
+    Image.new("RGB", (4, 4), "white").save(overlay)
     files_before = set(tmp_path.rglob("*"))
 
-    text = describe_drawing_diffs(reports, workdir)
+    text = _text(describe_drawing_diffs(reports, workdir, presenter=PRESENTER))
 
-    assert (
-        """view_front
-input: /work/inputs/front.png
-projection: /work/projection/front.png
-overlay: /work/projection/front_overlay.png
-unmatched: unavailable
-warning: ambiguous alignment"""
-        in text
-    )
-    assert (
-        """view_top
-input: /work/inputs/top.png
-projection: unavailable
-overlay: unavailable
-unmatched: unavailable
-error: projection unavailable"""
-        in text
-    )
+    assert "view_front input: /work/inputs/front.png" in text
+    assert "view_front warning: ambiguous alignment" in text
+    assert "view_top input: /work/inputs/top.png" in text
+    assert "view_top error: projection unavailable" in text
     assert text.count("[Drawing comparison]") == 1
-    assert "original drawing crop" in text
-    assert "orthographic line rendering of the generated STEP" in text
-    assert "only dimensions, leaders or text in the input" in text
-    assert "residual" not in text
-    assert "Blue in the overlay only means a nearby input line" in text
-    assert text.lower().count("alignment is heuristic") == 1
-    assert "Open available overlay and unmatched images with load_image" in text
-    assert "Mismatches:" not in text  # none were listed
+    assert "Alignment may be wrong or hide size errors" in text
+    assert "Overlay images:" in text
+    assert "view_front overlay: /work/projection/front_overlay.png" in text
+    assert "Blue=near, red=far" in text
+    assert "blue doesn't ensure correct matching" in text
+    assert "Unmatched images:" not in text
+    assert "Mismatch clusters" not in text
     for unwanted in (str(tmp_path), "/work/unavailable", "p95_px", "red_distance_px"):
         assert unwanted not in text
     assert set(tmp_path.rglob("*")) == files_before
@@ -95,7 +94,11 @@ def test_scores_show_changes_against_the_previous_build(tmp_path):
     )
     current = _scored(tmp_path, {"view_front": 6.0, "view_top": 5.0})
 
-    text = describe_drawing_diffs(current, SandboxWorkdir(tmp_path), previous)
+    text = _text(
+        describe_drawing_diffs(
+            current, SandboxWorkdir(tmp_path), previous, presenter=PRESENTER
+        )
+    )
 
     assert "chamfer: 6.00 px (-2.00)" in text
     assert "Mean chamfer over 2 views: 5.50 px (-0.50)" in text
@@ -109,14 +112,19 @@ def test_only_views_measured_both_times_are_compared(tmp_path):
     )
     current = _scored(tmp_path, {"view_front": 6.0, "view_top": 5.0})
 
-    text = describe_drawing_diffs(current, SandboxWorkdir(tmp_path), previous)
+    text = _text(
+        describe_drawing_diffs(
+            current, SandboxWorkdir(tmp_path), previous, presenter=PRESENTER
+        )
+    )
 
     assert "chamfer: 6.00 px (-2.00)" in text
-    assert "chamfer: 5.00 px\n" in text
-    assert "Mean chamfer over 2 views: 5.50 px\n" in text
+    assert "view_top chamfer: 5.00 px" in text.splitlines()
+    assert "Mean chamfer over 2 views: 5.50 px" in text.splitlines()
 
 
-def test_unmatched_groups_are_listed_under_their_view_by_audit_key(tmp_path):
+@pytest.mark.parametrize("mode", ["path", "image"])
+def test_unmatched_groups_are_listed_under_their_view_by_audit_key(tmp_path, mode):
     group = {
         "direction": "missing",
         "kind": "lines",
@@ -140,21 +148,45 @@ def test_unmatched_groups_are_listed_under_their_view_by_audit_key(tmp_path):
         ),
     }
 
-    text = describe_drawing_diffs(reports, SandboxWorkdir(tmp_path))
+    unmatched = reports["view_top"].paths["unmatched_path"]
+    unmatched.parent.mkdir(parents=True)
+    Image.new("RGB", (700, 500), "white").save(unmatched)
+    blocks = describe_drawing_diffs(
+        reports,
+        SandboxWorkdir(tmp_path),
+        presenter=ArtifactPresenter(input="path", unmatched=mode),
+    )
+    text = _text(blocks)
 
+    assert "view_top input: /work/top.png" in text
+    assert "view_top chamfer: 6.00 px" in text
+    assert "Mismatch clusters (bboxes in input-view pixels):" in text
     assert (
-        """unmatched: /work/projection/top_unmatched.png
-chamfer: 6.00 px"""
+        "Missing = input-only; extra = projection-only; material = silhouette difference"
         in text
     )
+    assert "Missing dimension/leader/text lines aren't defects" in text
     assert (
-        """Mismatches:
-view_top, boxes in /work/top.png:
-drawing_diff.view_top.1 (red): missing lines, 361 px, box [465, 358, 673, 440]
-drawing_diff.view_top.2 (yellow): extra lines, 361 px, box [465, 358, 673, 440]
+        "The input is shown in gray, the projection in light blue, and their overlap in blue"
+        in text
+    )
+    assert "Bands match cluster colors and ID suffix numbers" in text
+    assert "a material mismatch is also hatched" in text
+    assert (
+        """drawing_diff.view_top.1 (red): missing lines, 361 skeleton pixels, box [465, 358, 673, 440]
+drawing_diff.view_top.2 (yellow): extra lines, 361 skeleton pixels, box [465, 358, 673, 440]
 drawing_diff.view_top.3 (purple): extra material, 361 px², box [465, 358, 673, 440]"""
         in text
     )
+    label = next(
+        i
+        for i, block in enumerate(blocks)
+        if block["type"] == "text" and block["text"].startswith("view_top unmatched:")
+    )
+    assert text.index("drawing_diff.view_top.1") < text.index("view_top unmatched:")
+    assert sum(block["type"] == "image" for block in blocks) == int(mode == "image")
+    if mode == "image":
+        assert blocks[label + 1]["type"] == "image"
     assert list(unmatched_items(reports)) == [
         "drawing_diff.view_top.1",
         "drawing_diff.view_top.2",
@@ -172,12 +204,18 @@ def test_failed_alignment_can_have_warnings_without_an_error_or_images(tmp_path)
         warnings=("Drawing comparison unavailable: no usable alignment",),
     )
 
-    text = describe_drawing_diffs({"view_front": report}, SandboxWorkdir(tmp_path))
+    text = _text(
+        describe_drawing_diffs(
+            {"view_front": report}, SandboxWorkdir(tmp_path), presenter=PRESENTER
+        )
+    )
 
-    assert "projection: /work/front.png" in text
-    assert "overlay: unavailable\nunmatched: unavailable" in text
+    assert "input: /work/crop.png" in text
+    assert "/work/front.png" not in text
     assert "warning: Drawing comparison unavailable: no usable alignment" in text
     assert "error:" not in text
+    assert "Overlay images:" not in text
+    assert "Unmatched images:" not in text
 
 
 @pytest.mark.parametrize("stage", ["coding", "audit"])

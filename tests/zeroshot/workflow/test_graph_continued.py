@@ -101,7 +101,12 @@ def _continued_graph(
             default_timeout_s=10,
         ),
         sandbox_workdir=workdir,
-        artifact_presenter=ArtifactPresenter(input_mode="path", feedback_mode="none"),
+        artifact_presenter=ArtifactPresenter(
+            input="path",
+            output_renders="path",
+            unmatched="path",
+            overlay="none",
+        ),
         input_manifest=InputManifest(
             sample_id="test",
             drawing=[register_view("view_input", View.FULL_PAGE, image_path)],

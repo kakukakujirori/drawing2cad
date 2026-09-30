@@ -72,7 +72,6 @@ _RUN_PATHS = {
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
     "dimension_inventory": "[]",
-    "drawing_diff_summary": "No automatic drawing comparison was recorded.",
 }
 
 
@@ -105,10 +104,9 @@ def render_stage(
         return instructions.build(
             state,
             PipelineStage(stage),
-            include_artifact=False,
+            append_inputs=False,
             **{
                 "attempt_dir": "/work/attempts/001",
-                "intermediate_returns_dir": "unavailable",
                 **context,
             },
         ).text
@@ -134,18 +132,16 @@ def test_a_reused_builder_reads_the_latest_round_and_ticket_ownership(
     instructions: StageInstructions,
     state: ReconstructionState,
 ) -> None:
-    first = instructions.build(state, PipelineStage.CODING, include_artifact=False).text
+    first = instructions.build(state, PipelineStage.CODING, append_inputs=False).text
     assert "round 0" in first
     assert "Tickets assigned to coding this round: ticket_initial" in first
 
     state["reconstruction"] = open_next_round(
         _completed_run(), _report(target=_ref("coding", "ret_hole"))
     )
-    coding = instructions.build(
-        state, PipelineStage.CODING, include_artifact=False
-    ).text
+    coding = instructions.build(state, PipelineStage.CODING, append_inputs=False).text
     interpreted = instructions.build(
-        state, PipelineStage.INTERPRETATION, include_artifact=False
+        state, PipelineStage.INTERPRETATION, append_inputs=False
     ).text
 
     assert "round 1" in coding
@@ -171,7 +167,7 @@ def test_assigned_evidence_paths_reach_the_round_instruction(
 
     for recipient in ("interpretation", "operations", "coding"):
         text = instructions.build(
-            state, PipelineStage(recipient), include_artifact=False
+            state, PipelineStage(recipient), append_inputs=False
         ).text
         for path in ticket.evidence_renders:
             assert (path in text) == (
@@ -189,7 +185,7 @@ def test_a_validation_retry_needs_only_the_error_from_state(
     message = instructions.build(
         {"stage_validation_error": "Unknown reference: sem_missing"},
         stage,
-        include_artifact=True,
+        append_inputs=True,
     )
 
     assert f"[{stage.title()} Validation Error]" in message.text
@@ -203,14 +199,12 @@ def test_input_is_attached_only_when_requested_and_fresh_on_each_build(
     instructions: StageInstructions,
     state: ReconstructionState,
 ) -> None:
-    plain = instructions.build(
-        state, PipelineStage.INTERPRETATION, include_artifact=False
-    )
+    plain = instructions.build(state, PipelineStage.INTERPRETATION, append_inputs=False)
     attached = instructions.build(
-        state, PipelineStage.INTERPRETATION, include_artifact=True
+        state, PipelineStage.INTERPRETATION, append_inputs=True
     )
     another = instructions.build(
-        state, PipelineStage.INTERPRETATION, include_artifact=True
+        state, PipelineStage.INTERPRETATION, append_inputs=True
     )
 
     assert "[Input artifacts]" not in plain.text
@@ -309,8 +303,7 @@ def test_the_returns_section_says_what_the_directory_is_for(
     render_stage: Callable[..., str],
 ) -> None:
     """The layout line alone does not say which `ret_` a defect belongs to."""
-    returns_dir = f"/work/attempts/001/{INTERMEDIATE_RETURNS_DIR}"
-    section = render_stage("audit", intermediate_returns_dir=returns_dir)
+    section = render_stage("audit")
 
     assert INTERMEDIATE_RETURNS_DIR in section
     assert "ret_" in section
@@ -322,18 +315,15 @@ def test_the_audit_reads_the_attempt_directory_the_build_actually_wrote(
 ) -> None:
     """The per-operation views are what localise a defect to one `ret_...`, and
     the auditor only looks in a directory it was told about."""
-    returns_dir = f"/work/attempts/001/{INTERMEDIATE_RETURNS_DIR}"
     rendered = render_stage(
         "audit",
         attempt_dir="/work/attempts/001",
-        intermediate_returns_dir=returns_dir,
     )
 
     assert "/work/attempts/001" in rendered
     assert "Latest interpretation verification" not in rendered
     assert "_interpretation_raw" not in rendered
     assert "_interpretation_validation_log" not in rendered
-    assert f"Recorded directory: {returns_dir}" in rendered
 
 
 def test_audit_reads_ticket_bodies_from_history_without_echoing_them(
@@ -762,14 +752,17 @@ def test_coder_tests_predictions_and_inspects_the_latest_candidate(
 
     assert "Do not believe in your 3D reasoning blindly" in instruction
     assert "do not reject it based only on your reasoning" in instruction
-    assert "Choose a candidate, the smallest change needed to test it" in instruction
+    assert "choose a candidate, the smallest change needed to test it" in instruction
     assert "run the trial before further speculation" in instruction
-    assert "older candidate's render is not evidence for a later edit" in instruction
+    assert "Read the latest verification feedback before concluding" in instruction
     assert "obtain a new measurement or run a new trial" in instruction
-    assert "Scratch files are not automatically verified or submitted" in instruction
+    assert (
+        "Scratch files are not automatically executed, verified or submitted"
+        in instruction
+    )
     assert "unticketed_changes" in instruction
-    observation = instruction.index("how boundaries connect")
-    assert observation < instruction.index("stroke thickness")
+    assert "Compare feature extent, placement and connections" in instruction
+    assert "Treat stroke thickness as a drawing convention" in instruction
     assert (
         "Keep untested predictions and unavailable views explicitly unverified"
         in instruction

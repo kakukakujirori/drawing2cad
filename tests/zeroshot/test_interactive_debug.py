@@ -185,7 +185,6 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
         "workflow": {
             "share_thread": False,
             "diff_drawer_config": None,
-            "show_intermediate_returns": False,
             "coding_agent_builder": {
                 "role": "coder",
                 "model": "${model}",
@@ -196,7 +195,12 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
             "python_executable": sys.executable,
             "default_timeout_s": 30,
         },
-        "artifact_presenter": {"feedback_mode": "path"},
+        "artifact_presenter": {
+            "_target_": "zeroshot.pipeline.messages.artifact.ArtifactPresenter",
+            "input": "path",
+            "output_renders": "path",
+            "intermediates": "none",
+        },
     }
     (run / ".hydra").mkdir()
     OmegaConf.save(OmegaConf.create(config), run / ".hydra/config.yaml")
@@ -310,7 +314,16 @@ def test_dialogue_tools_history_and_reset_without_submission_or_turn_limit(
     )
     second = ScriptedChatModel(responses=(AIMessage(content="Independent answer"),))
     models = iter([first, second])
-    monkeypatch.setattr(debug, "instantiate", lambda _: next(models))
+    instantiate = debug.instantiate
+    monkeypatch.setattr(
+        debug,
+        "instantiate",
+        lambda settings: (
+            next(models)
+            if settings._target_ == "tests.zeroshot.chat_models.ScriptedChatModel"
+            else instantiate(settings)
+        ),
+    )
     builds = []
 
     def feedback(verifier):

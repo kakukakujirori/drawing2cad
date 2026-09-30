@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from string import Template
-from typing import Literal, cast
+from typing import Literal
 
-from langchain_core.messages import HumanMessage, SystemMessage, merge_message_runs
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import BaseModel
 
@@ -62,47 +62,49 @@ class StageInstructions:
         state: ReconstructionState,
         stage: PipelineStage,
         *,
-        include_artifact: bool,
+        append_inputs: bool,
+        feedback: Sequence[ContentBlock] = (),
         **extra_context: str,
     ) -> HumanMessage:
+        blocks: list[ContentBlock]
         if validation_error := state.get("stage_validation_error"):
-            # A re-ask, so the round's instructions already stand in
-            # the transcript and only the rejection is new.
-            return HumanMessage(
-                content_blocks=[
-                    create_text_block(
-                        f"[{stage.title()} Validation Error]\n"
-                        f"Your previous {stage} stage output was rejected. "
-                        "Return the corrected complete output using this feedback:\n\n"
-                        f"{validation_error}"
-                    )
-                ]
+            # The original instructions and input already stand in the transcript.
+            blocks = [
+                create_text_block(
+                    f"[{stage.title()} Validation Error]\n"
+                    f"Your previous {stage} stage output was rejected. "
+                    "Return the corrected complete output using this feedback:\n\n"
+                    f"{validation_error}"
+                )
+            ]
+        else:
+            snapshot = current_snapshot(state)
+            context = {
+                **self.prompt_context,
+                "current_round": str(snapshot.round),
+                "assigned_tickets": _assigned_ticket_ids(snapshot, stage),
+                **extra_context,
+            }
+            stages_dir = Path(__file__).parent.parent
+            text_templates = [
+                PromptTemplate(
+                    stages_dir / "_base" / "prompts" / "coordinate_frames.md"
+                ),
+                PromptTemplate(stages_dir / stage.value / "prompts" / "round.md"),
+            ]
+            texts = "\n\n".join(
+                template.render(**context) for template in text_templates
             )
+            blocks = [create_text_block(texts)]
+            if append_inputs:
+                feedback = [*self._input_blocks(), *feedback]
 
-        snapshot = current_snapshot(state)
-        context = {
-            **self.prompt_context,
-            "current_round": str(snapshot.round),
-            "assigned_tickets": _assigned_ticket_ids(snapshot, stage),
-            **extra_context,
-        }
-        stages_dir = Path(__file__).parent.parent
-        text_templates = [
-            PromptTemplate(stages_dir / "_base" / "prompts" / "coordinate_frames.md"),
-            PromptTemplate(stages_dir / stage.value / "prompts" / "round.md"),
-        ]
-        texts = "\n\n".join(template.render(**context) for template in text_templates)
-        instruction = HumanMessage(content_blocks=[create_text_block(texts)])
-
-        if include_artifact:
-            (instruction,) = cast(
-                list[HumanMessage],
-                merge_message_runs([instruction, self.create_artifact_message()]),
-            )
-
-        return instruction
+        return HumanMessage(content_blocks=[*blocks, *feedback])
 
     def create_artifact_message(self) -> HumanMessage:
+        return HumanMessage(content_blocks=self._input_blocks())
+
+    def _input_blocks(self) -> list[ContentBlock]:
         # host path -> sandbox path
         presented = SandboxedArtifact.of(self.input_artifact, self.workdir)
 
@@ -112,7 +114,7 @@ class StageInstructions:
         if self.input_presentation_mode == "image":
             blocks.extend(presented.images())
 
-        return HumanMessage(content_blocks=blocks)
+        return blocks
 
 
 def _assigned_ticket_ids(

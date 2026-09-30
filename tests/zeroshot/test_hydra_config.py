@@ -23,19 +23,37 @@ from zeroshot.pipeline_single.graph import create_single_graph
 CONFIG_DIR = Path(__file__).parents[2] / "zeroshot" / "configs"
 
 
-def test_default_config_instantiates_artifact_presenter() -> None:
+@pytest.mark.parametrize("mode", ["none", "path", "image"])
+def test_default_config_instantiates_artifact_presenter(mode) -> None:
     config_path = CONFIG_DIR / "default.yaml"
     assert config_path.is_file(), config_path
+    modes = {
+        "output_renders": "path" if mode == "none" else mode,
+        "unmatched": "path" if mode == "none" else mode,
+        "overlay": mode,
+        "intermediates": mode,
+    }
 
     with initialize_config_dir(
         config_dir=str(CONFIG_DIR.resolve()),
         version_base="1.3",
     ):
-        config = compose(config_name="default")
+        config = compose(
+            config_name="default",
+            overrides=[
+                "workflow=continued",
+                *[
+                    f"artifact_presenter.{kind}={selected}"
+                    for kind, selected in modes.items()
+                ],
+            ],
+        )
 
     presenter = instantiate(config.artifact_presenter)
     console_reporter = instantiate(config.console)
     assert isinstance(presenter, ArtifactPresenter)
+    for kind, selected in modes.items():
+        assert getattr(presenter, kind) == selected
     assert isinstance(console_reporter, ConsoleReporter)
     assert console_reporter._muted_graph_nodes == frozenset()
     assert config.resume_from is None
@@ -272,7 +290,6 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "audit_agent_builder",
         "max_audit_reject_count",
         "max_stage_validation_retries",
-        "show_intermediate_returns",
         "diff_drawer_config",
     }
     assert (

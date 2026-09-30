@@ -12,4 +12,4 @@ sample:
         file: data/test_vlm/techdraw/dxf/${sample.sample_id}.dxf
 
 artifact_presenter:
-  input_mode: "path"
+  input: "path"

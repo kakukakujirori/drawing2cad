@@ -64,7 +64,7 @@ def _graph(workdir: SandboxWorkdir, coder, auditor):
             python_executable=Path(sys.executable), default_timeout_s=30
         ),
         sandbox_workdir=workdir,
-        artifact_presenter=ArtifactPresenter(input_mode="path", feedback_mode="path"),
+        artifact_presenter=ArtifactPresenter(input="path", output_renders="path"),
         input_manifest=InputManifest(
             sample_id="test",
             drawing=[register_view("view_input", View.FULL_PAGE, image)],

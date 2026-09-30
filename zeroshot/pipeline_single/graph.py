@@ -93,7 +93,7 @@ def create_single_graph(
     }
     drawing = StageInstructions(
         input_artifact=input_manifest.drawing,
-        input_presentation_mode=artifact_presenter.input_mode,
+        input_presentation_mode=artifact_presenter.input,
         prompt_context=prompt_context,
         workdir=sandbox_workdir,
     )
@@ -103,11 +103,9 @@ def create_single_graph(
         workdir=sandbox_workdir,
         renderer=StepRenderer(),
         diff_drawer=None,
-        feedback_presentation_mode=artifact_presenter.feedback_mode,
+        artifact_presenter=artifact_presenter,
         attempt_store=attempt_store,
         source_filename=output_filename,
-        # `ret_` returns name planned operations; there is no plan here.
-        show_intermediate_returns=False,
         # No interpretation names the drawing's views, so all six are drawn.
         projection_view_mode="standard",
     )

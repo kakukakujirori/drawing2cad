@@ -25,4 +25,4 @@ sample:
         file: data/test_vlm/render_3d/transparent_shaded_edges_perspective/${sample.sample_id}.png
 
 artifact_presenter:
-  input_mode: "path"
+  input: "path"

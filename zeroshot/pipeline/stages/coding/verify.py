@@ -10,6 +10,7 @@ from typing import Any, Literal
 from langchain_core.messages.content import ContentBlock, create_text_block
 
 from zeroshot.pipeline.messages.artifact import (
+    ArtifactPresenter,
     View,
     build_feedback_message_blocks,
 )
@@ -89,10 +90,9 @@ class OutputVerifier:
         workdir: SandboxWorkdir,
         renderer: StepRenderer,
         diff_drawer: DrawingDiffExecutor | None,
-        feedback_presentation_mode: Literal["none", "path", "image"],
+        artifact_presenter: ArtifactPresenter,
         attempt_store: AttemptStore,
         source_filename: str = "model.py",
-        show_intermediate_returns: bool = True,
         projection_view_mode: Literal["interpreted", "standard"] = "interpreted",
     ) -> None:
         source_path = PurePosixPath(source_filename)
@@ -110,13 +110,12 @@ class OutputVerifier:
         self.workdir = workdir
         self.renderer = renderer
         self.diff_drawer = diff_drawer
-        self.feedback_presentation_mode = feedback_presentation_mode
+        self.artifact_presenter = artifact_presenter
         # The previous stages' deliverables must be available to the verifier
         self.interpretation: DrawingInterpretation | None = None
         self.operations: OperationPlan | None = None
         self.source_filename = source_filename
         self.attempt_store = attempt_store
-        self.show_intermediate_returns = show_intermediate_returns
         self.projection_view_mode = projection_view_mode
 
         self._last_feedback_report: VerifyOutputResult | None = None
@@ -223,7 +222,7 @@ class OutputVerifier:
             output_step_path,
             intermediate_returns_dir=(
                 host_verification_dir / INTERMEDIATE_RETURNS_DIR
-                if self.show_intermediate_returns
+                if self.artifact_presenter.intermediates != "none"
                 else None
             ),
         )
@@ -398,40 +397,6 @@ class OutputVerifier:
 
         return compared
 
-    def _make_manifest(
-        self, render_report: RenderReport, verification_id: str
-    ) -> FeedbackManifest:
-        pictorial = render_report.render3d_paths.as_mapping().get(FEEDBACK_PICTORIAL)
-        sheets: list[DrawingView] = []
-        failed = dict(render_report.projection_errors)
-
-        def offer(
-            name: str,
-            role: View,
-            path: Path,
-            axes: tuple[Axis, Axis] | None = None,
-        ) -> None:
-            """Announce a drawing, or explain it: an unreadable one is not fatal."""
-            try:
-                sheets.append(register_view(_projected(name), role, path, axes))
-            except Exception as why:  # noqa: BLE001 - report it where it would have been
-                failed[name] = f"{type(why).__name__}: {why}"
-
-        # A projection is written at 1:1 in model millimetres, which is the
-        # frame a region measured on it is read in.
-        view_frames = self._projection_frames()
-        for view, path in render_report.projection_paths.as_mapping().items():
-            offer(view, View(view), path, view_frames[View(view)])
-        if pictorial:
-            offer(FEEDBACK_PICTORIAL, View.PERSPECTIVE, pictorial)
-        if why := render_report.render3d_errors.get(FEEDBACK_PICTORIAL):
-            failed[FEEDBACK_PICTORIAL] = why
-        return FeedbackManifest(
-            verification_id=verification_id,
-            drawing=sheets,
-            errors={_projected(name): why for name, why in failed.items()},
-        )
-
     @property
     def confirmed(self) -> bool:
         return not self.blockers
@@ -469,95 +434,13 @@ class OutputVerifier:
         if report is not self._scored and chamfers(report.drawing_diff_report):
             self._scored_before, self._scored = self._scored, report
 
-        exec_report = report.exec_report
-        render_report = report.render_report
-        drawing_diff_report = report.drawing_diff_report
-        assert exec_report is not None, (
-            "shouldn't happen: verify() always returns an exec_report"
-        )
-
-        # create manifest
-        final_render = (render_report or {}).get(RESULT_NAME)
-        manifest = None
-        if final_render is not None:
-            assert report.verification_id is not None
-            manifest = self._make_manifest(final_render, report.verification_id)
-
-        # build feedback messages
-        sandbox_source = self.workdir.sandbox_bind_dir / self.source_filename
-        exec_report_dict = {
-            "verification_id": report.verification_id,
-            "status": exec_report.status.value,
-            "returncode": exec_report.returncode,
-            "stdout": exec_report.stdout,
-            "stderr": exec_report.stderr,
-            "executor_error": exec_report.executor_error,
-            "shape": exec_report.census.describe() if exec_report.census else "",
-        }
-        blocks: list[ContentBlock] = [
-            create_text_block(
-                f"{sandbox_source} has been executed, and upon successful STEP "
-                "file generation, its rendering images are exported:"
-            ),
-            create_text_block(json.dumps(exec_report_dict, indent=2)),
-        ]
-
-        # render report
-        if exec_report.intermediate_returns:
-            assert report.sandbox_verification_dir is not None
-
-            intermediate_renders = {
-                output.name: render_report[output.name]
-                for output in exec_report.intermediate_returns
-                if render_report and output.name in render_report
-            }
-
-            blocks.append(
-                create_text_block(
-                    describe_intermediates(
-                        exec_report.intermediate_returns,
-                        intermediate_renders,
-                        PurePosixPath(report.sandbox_verification_dir)
-                        / INTERMEDIATE_RETURNS_DIR,
-                    )
-                )
-            )
-
-        # drawing diff report
-        if drawing_diff_text := describe_drawing_diffs(
-            drawing_diff_report,
+        return build_verification_feedback(
+            report,
             self.workdir,
+            self.artifact_presenter,
+            self._projection_frames() if report.render_report else {},
             previous=self._scored_before if report is self._scored else None,
-        ):
-            blocks.append(create_text_block(drawing_diff_text))
-
-        # output paths and feedback manifest
-        if manifest:
-            # Offer the same ordinary projections in both A/B conditions, also
-            # when automatic image attachments are disabled.
-            projections = [
-                self.workdir.host_to_sandbox_path(png)
-                for sheet in manifest.drawing
-                if (path := Path(sheet.file)).suffix.lower() == ".dxf"
-                and (png := path.with_suffix(".png")).is_file()
-            ]
-            if projections:
-                blocks.append(
-                    create_text_block(
-                        "[Orthographic PNGs]\nOpen these with `load_image` and compare "
-                        "each view against the input drawing:\n"
-                        + "\n".join(f"- {path}" for path in projections)
-                    )
-                )
-            blocks.extend(
-                build_feedback_message_blocks(
-                    manifest,
-                    self.workdir,
-                    mode=self.feedback_presentation_mode,
-                    heading="[Projected drawing]",
-                )
-            )
-        return blocks
+        )
 
     def _program_faults(self, report: VerifyOutputResult) -> tuple[str, ...]:
         exec_report = report.exec_report
@@ -568,6 +451,122 @@ class OutputVerifier:
         except SyntaxError:
             # The build already reports it.
             return ()
+
+
+def build_verification_feedback(
+    report: VerifyOutputResult,
+    workdir: SandboxWorkdir,
+    presenter: ArtifactPresenter,
+    view_frames: ViewFrames,
+    *,
+    previous: VerifyOutputResult | None = None,
+) -> list[ContentBlock]:
+    """Format saved verification reports in execution, render, comparison order.
+
+    This owns the report text and its attachments together. Stage instructions
+    and the HumanMessage carrying them belong to the caller.
+    """
+    exec_report = report.exec_report
+    render_report = report.render_report or {}
+    drawing_diff_report = report.drawing_diff_report
+
+    # 1. Execution outcome, including failures that produced no STEP.
+    blocks: list[ContentBlock] = [create_text_block("[Execution result]")]
+    if exec_report is not None:
+        blocks.append(
+            create_text_block(
+                json.dumps(
+                    {
+                        "verification_id": report.verification_id,
+                        "status": exec_report.status.value,
+                        "returncode": exec_report.returncode,
+                        "stdout": exec_report.stdout,
+                        "stderr": exec_report.stderr,
+                        "executor_error": exec_report.executor_error,
+                        "shape": exec_report.census.describe()
+                        if exec_report.census
+                        else "",
+                    },
+                    separators=(",", ":"),
+                )
+            )
+        )
+    else:
+        blocks.append(create_text_block("No execution report was recorded."))
+
+    # 2a. Final renders.
+    if presenter.output_renders != "none" and RESULT_NAME in render_report:
+        blocks.extend(
+            build_feedback_message_blocks(
+                _render_manifest(
+                    render_report[RESULT_NAME],
+                    report.verification_id or "",
+                    view_frames,
+                ),
+                workdir,
+                mode=presenter.output_renders,
+            )
+        )
+
+    # 2b. Intermediate renders, including the intermediate census.
+    if presenter.intermediates != "none" and exec_report:
+        blocks.extend(
+            describe_intermediates(
+                exec_report.intermediate_returns,
+                {
+                    item.name: render_report[item.name]
+                    for item in exec_report.intermediate_returns
+                    if item.name in render_report
+                },
+                view_frames=view_frames,
+                sandbox_workdir=workdir,
+                sandbox_verification_dir=report.sandbox_verification_dir,
+                verification_id=report.verification_id,
+                presenter=presenter,
+            )
+        )
+
+    # 3. Drawing comparison, including image legends and attachments.
+    blocks.extend(
+        describe_drawing_diffs(
+            drawing_diff_report, workdir, previous, presenter=presenter
+        )
+    )
+    return blocks
+
+
+def _render_manifest(
+    render_report: RenderReport, verification_id: str, view_frames: ViewFrames
+) -> FeedbackManifest:
+    pictorial = render_report.render3d_paths.as_mapping().get(FEEDBACK_PICTORIAL)
+    sheets: list[DrawingView] = []
+    failed = dict(render_report.projection_errors)
+
+    def offer(
+        name: str,
+        role: View,
+        path: Path,
+        axes: tuple[Axis, Axis] | None = None,
+    ) -> None:
+        """Announce a drawing, or explain it: an unreadable one is not fatal."""
+        try:
+            sheets.append(register_view(_projected(name), role, path, axes))
+        except Exception as why:  # noqa: BLE001 - report it where it would have been
+            failed[name] = f"{type(why).__name__}: {why}"
+
+    # A projection is written at 1:1 in model millimetres, which is the
+    # frame a region measured on it is read in.
+    for view, path in render_report.projection_paths.as_mapping().items():
+        offer(view, View(view), path, view_frames[View(view)])
+    if pictorial:
+        offer(FEEDBACK_PICTORIAL, View.PERSPECTIVE, pictorial)
+    if why := render_report.render3d_errors.get(FEEDBACK_PICTORIAL):
+        failed[FEEDBACK_PICTORIAL] = why
+    return FeedbackManifest(
+        verification_id=verification_id,
+        drawing=sheets,
+        errors={_projected(name): why for name, why in failed.items()},
+    )
 
 
 def _projected(view: str) -> str:
@@ -621,8 +620,13 @@ def _census_table(returns: Sequence[IntermediateReturn]) -> str:
 def describe_intermediates(
     intermediate_returns: Sequence[IntermediateReturn],
     intermediate_renders: Mapping[str, RenderReport],
-    sandbox_returns_dir: PurePosixPath,
-) -> str:
+    view_frames: ViewFrames,
+    sandbox_workdir: SandboxWorkdir,
+    sandbox_verification_dir: str | None,
+    verification_id: str | None = None,
+    *,
+    presenter: ArtifactPresenter,
+) -> list[ContentBlock]:
     """Say what every `ret_*` came out as, and where its views were written.
 
     One sentence for the layout rather than four paths per return: every
@@ -630,7 +634,8 @@ def describe_intermediates(
     tokens on a convention the reader can apply once.
     """
     if not intermediate_returns:
-        return ""
+        return []
+
     failures = [
         f"- {name}: {reason}"
         for name, report in intermediate_renders.items()
@@ -640,25 +645,38 @@ def describe_intermediates(
         )
     ]
 
+    assert sandbox_verification_dir is not None, "intermediate renders need a sandbox dir"
+
     msg = cleandoc("""
         [Intermediate results]
-        Each line describes a `ret_*` solid in the program in a built order.
-        The first line is the first solid built, and each line after it is the difference from the line above.
-        Refer to these values for debugging.
-
+        ret_* in execution order: first absolute, then changes vs last measured return.
         {table}
-
-        Corresponding artifacts are saved in {sandbox_returns_dir}/<name>/ with the following files:
+        Files are under {sandbox_returns_dir}/<name>/:
         output.step, projection/<view>.dxf, projection/<view>.png, render_3d/<style>.png.
-        Inspect relevant views with load_image.
     """).format(
         table=_census_table(intermediate_returns),
-        sandbox_returns_dir=sandbox_returns_dir,
+        sandbox_returns_dir=PurePosixPath(sandbox_verification_dir) / INTERMEDIATE_RETURNS_DIR,
     )
     if failures:
         msg += "\n\nRender failures:\n" + "\n".join(failures)
 
-    return msg
+    blocks: list[ContentBlock] = [create_text_block(msg)]
+    if presenter.intermediates == "image":
+        for name in intermediate_renders:
+            blocks.extend(
+                build_feedback_message_blocks(
+                    _render_manifest(
+                        intermediate_renders[name],
+                        verification_id or "",
+                        view_frames,
+                    ),
+                    sandbox_workdir,
+                    mode="image",
+                    heading=f"[Intermediate {name}]",
+                )
+            )
+
+    return blocks
 
 
 def chamfers(diff_reports: Mapping[str, DrawingDiffReport] | None) -> dict[str, float]:
@@ -689,28 +707,11 @@ def unmatched_items(
 
 
 def _describe_unmatched(key: str, item: Mapping[str, Any]) -> str:
-    unit = "px" if item["kind"] == "lines" else "px²"
+    unit = "skeleton pixels" if item["kind"] == "lines" else "px²"
     return (
         f"{key} ({item['color']}): {item['direction']} {item['kind']}, "
         f"{item['size_px']} {unit}, box {item['box_px']}"
     )
-
-
-def _describe_groups(
-    diff_reports: Mapping[str, DrawingDiffReport], workdir: SandboxWorkdir
-) -> str:
-    """Every listed group, under the input file its boxes are measured in."""
-    blocks = [
-        "\n".join(
-            [
-                f"{name}, boxes in {workdir.host_to_sandbox_path(report.drawing_path)}:",
-                *(_describe_unmatched(key, item) for key, item in items.items()),
-            ]
-        )
-        for name, report in diff_reports.items()
-        if (items := _view_unmatched(name, report))
-    ]
-    return "Mismatches:\n" + "\n\n".join(blocks) if blocks else ""
 
 
 def _describe_chamfer(current: float, previous: float | None) -> str:
@@ -736,114 +737,111 @@ def describe_drawing_diffs(
     diff_reports: Mapping[str, DrawingDiffReport] | None,
     workdir: SandboxWorkdir,
     previous: VerifyOutputResult | None = None,
-) -> str:
-    """Format comparison results without executing comparisons or writing files.
+    *,
+    presenter: ArtifactPresenter,
+) -> list[ContentBlock]:
+    """Build the complete comparison feedback: results, legends, paths and images.
 
     Scores are compared with `previous`, the build the reader saw before.
     """
     if not diff_reports:
-        return ""
-    current_scores = chamfers(diff_reports)
-    previous_scores: dict[str, float] = (
+        return []
+    current_chamfer_by_view = chamfers(diff_reports)
+    previous_chamfer_by_view = (
         chamfers(previous.drawing_diff_report) if previous else {}
     )
 
-    # The complete layout of one view.
-    view_template = cleandoc("""
-        {name}
-        input: {input_path}
-        projection: {projection_path}
-        overlay: {overlay}
-        unmatched: {unmatched}{notes}
-    """)
-
-    view_blocks: list[str] = []
+    view_chamfer_scores = []
+    comparison_diagnostics = []
     for name, report in diff_reports.items():
-        input_path = workdir.host_to_sandbox_path(report.drawing_path)
-        notes = []
-        if name in current_scores:
-            notes.append(
-                "chamfer: "
-                + _describe_chamfer(current_scores[name], previous_scores.get(name))
+        if name in current_chamfer_by_view:
+            view_chamfer_scores.append(
+                f"{name} chamfer: "
+                + _describe_chamfer(
+                    current_chamfer_by_view[name], previous_chamfer_by_view.get(name)
+                )
             )
-        # Preserve errors and warnings, including failures without images.
         if report.error:
-            notes.append(f"error: {report.error}")
-        notes.extend(f"warning: {warning}" for warning in report.warnings)
-        notes_text = "\n" + "\n".join(notes) if notes else ""
-
-        view_blocks.append(
-            view_template.format(
-                name=name,
-                input_path=input_path,
-                projection_path=(
-                    workdir.host_to_sandbox_path(report.projection_path)
-                    if report.projection_path is not None
-                    else "unavailable"
-                ),
-                overlay=(
-                    workdir.host_to_sandbox_path(report.paths.get("overlay_path"))
-                    if report.paths.get("overlay_path") is not None
-                    else "unavailable"
-                ),
-                unmatched=(
-                    workdir.host_to_sandbox_path(report.paths.get("unmatched_path"))
-                    if report.paths.get("unmatched_path") is not None
-                    else "unavailable"
-                ),
-                notes=notes_text,
-            )
+            comparison_diagnostics.append(f"{name} error: {report.error}")
+        comparison_diagnostics.extend(
+            f"{name} warning: {warning}" for warning in report.warnings
         )
 
-    # The complete message layout, with shared explanations stated once.
-    return cleandoc("""
-        [Drawing comparison]
-        - input: the original drawing crop of the view.
-        - projection: an orthographic line rendering of the generated STEP.
-        - overlay: the input moved onto the projection's pixels, in pale gray,
-            with the projection's lines colored blue to red by their distance
-            from the nearest input line. Medium-gray projection lines lie
-            outside the input crop and are not compared.
-        - unmatched: the input's lines in gray and the projection's lines in
-            light blue, in the input's pixels; a line both draw is pure blue. Each
-            mismatch listed below lies on a band of its color, numbered with
-            the last part of its key; a material mismatch is also hatched.
-
-        A mismatch is a group of lines, or an area, that only one image has.
-        Missing lines and missing material are in the input only; extra lines
-        and extra material are in the projection only. Material compares the
-        two silhouettes. Solid and dashed lines count alike. Some missing
-        lines are only dimensions, leaders or text in the input; those are
-        not defects.
-
-        Blue in the overlay only means a nearby input line; it does not prove
-        the shape, the material side or completeness. Alignment is heuristic
-        and can be wrong or hide size errors.
-
-        The chamfer score is the mean distance in input pixels between the aligned
-        input and projection lines, with far lines capped. Lower is better. Dimensions
-        and text in the input never appear in a projection, so even a correct
-        model stays above zero: judge the change between builds, not the value.
-        {mean}
-        {views}{groups}
-
-        Open available overlay and unmatched images with load_image. Confirm
-        suspected mismatches against the input drawing crop and the original
-        STEP projection.
-    """).format(
-        mean=(
-            "\n"
-            + _describe_mean_chamfer(
-                current_scores,
-                previous_scores,
-                previous.verification_id if previous else None,
-            )
-            + "\n"
-            if current_scores
-            else ""
-        ),
-        views="\n\n".join(view_blocks),
-        groups=f"\n\n{groups}"
-        if (groups := _describe_groups(diff_reports, workdir))
-        else "",
+    mismatch_clusters = "\n".join(
+        _describe_unmatched(key, item)
+        for key, item in unmatched_items(diff_reports).items()
     )
+    input_view_paths = "\n".join(
+        f"{name} input: {workdir.host_to_sandbox_path(report.drawing_path)}"
+        for name, report in diff_reports.items()
+    )
+    mean_chamfer_summary = (
+        _describe_mean_chamfer(
+            current_chamfer_by_view,
+            previous_chamfer_by_view,
+            previous.verification_id if previous else None,
+        )
+        if current_chamfer_by_view
+        else ""
+    )
+    overlay_paths = {
+        f"{name} overlay": report.paths["overlay_path"]
+        for name, report in diff_reports.items()
+        if "overlay_path" in report.paths
+    }
+    unmatched_paths = {
+        f"{name} unmatched": report.paths["unmatched_path"]
+        for name, report in diff_reports.items()
+        if "unmatched_path" in report.paths
+    }
+
+    prompt = cleandoc("""
+        [Drawing comparison]
+        Projections were spatially aligned to DrawingViews, with differences highlighted in Overlay and Unmatched.
+        Check Chamfer distances for quantitative deviation extent.
+        NOTE: Alignment may be wrong or hide size errors.
+
+        Alignment log:
+        {comparison_diagnostics}
+
+        Input views:
+        {input_view_paths}
+
+        Chamfer: mean line distance after alignment (input px); lower is better.
+        {view_chamfer_scores}
+        {mean_chamfer_summary}
+    """).format(
+        comparison_diagnostics="\n".join(comparison_diagnostics),
+        input_view_paths=input_view_paths,
+        view_chamfer_scores="\n".join(view_chamfer_scores),
+        mean_chamfer_summary=mean_chamfer_summary,
+    )
+    blocks: list[ContentBlock] = [create_text_block(prompt)]
+
+    # overlay
+    blocks += build_feedback_message_blocks(
+        overlay_paths,
+        workdir,
+        mode=presenter.overlay,
+        heading=cleandoc("""Overlay images:
+        The input is moved onto the projection's pixels (pale gray).
+        Blue=near, red=far from the input lines. Note that blue doesn't ensure correct matching, only that the input is near the projection.
+        """)
+    )
+
+    # unmatched
+    blocks += build_feedback_message_blocks(
+        unmatched_paths,
+        workdir,
+        mode=presenter.unmatched,
+        heading=cleandoc("""Unmatched images:
+        The input is shown in gray, the projection in light blue, and their overlap in blue.
+        Bands match cluster colors and ID suffix numbers; a material mismatch is also hatched.
+        - Missing = input-only; extra = projection-only; material = silhouette difference.
+        - Missing dimension/leader/text lines aren't defects.
+
+        Mismatch clusters (bboxes in input-view pixels):
+        {mismatch_clusters}
+        """).format(mismatch_clusters=mismatch_clusters or "No clusters reported.")
+    )
+    return blocks

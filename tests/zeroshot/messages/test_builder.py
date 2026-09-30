@@ -99,11 +99,11 @@ def _feedback_manifest(
 
 
 def _presenter(
-    *, input_mode: str = "path", feedback_mode: str = "none"
+    *, input: str = "path", output_renders: str = "path"
 ) -> ArtifactPresenter:
     return ArtifactPresenter(
-        input_mode=input_mode,  # type: ignore[arg-type]
-        feedback_mode=feedback_mode,  # type: ignore[arg-type]
+        input=input,  # type: ignore[arg-type]
+        output_renders=output_renders,  # type: ignore[arg-type]
     )
 
 
@@ -117,15 +117,15 @@ def _text(blocks: list[ContentBlock]) -> str:
 
 
 @pytest.mark.parametrize(
-    ("input_mode", "feedback_mode"),
-    [("unknown", "none"), ("path", "unknown"), ("none", "none")],
+    ("input", "output_renders"),
+    [("unknown", "path"), ("path", "unknown"), ("none", "path")],
 )
 def test_a_mode_the_presenter_cannot_honour_is_refused(
-    input_mode: str, feedback_mode: str
+    input: str, output_renders: str
 ) -> None:
-    """`none` is a feedback outcome only: a run always offers its input."""
+    """The input and final output always offer paths or images."""
     with pytest.raises(ValueError):
-        _presenter(input_mode=input_mode, feedback_mode=feedback_mode)
+        _presenter(input=input, output_renders=output_renders)
 
 
 def test_a_sheet_is_named_where_the_model_can_open_it_and_nowhere_else(
@@ -273,3 +273,46 @@ def test_withholding_the_feedback_also_withholds_why_it_is_missing(
     blocks = build_feedback_message_blocks(manifest, workdir, mode="none")
 
     assert blocks == []
+
+
+@pytest.mark.parametrize(
+    "kind", ["output_renders", "overlay", "unmatched", "intermediates"]
+)
+@pytest.mark.parametrize("mode", [True, "unknown"])
+def test_feedback_modes_reject_booleans_and_unknown_strings(kind, mode):
+    with pytest.raises(ValueError, match=f"invalid {kind}"):
+        ArtifactPresenter(input="path", **{kind: mode})
+
+
+@pytest.mark.parametrize("kind", ["input", "output_renders", "unmatched"])
+def test_required_artifact_kinds_cannot_be_hidden(kind):
+    with pytest.raises(ValueError, match=f"invalid {kind}"):
+        ArtifactPresenter(**{"input": "path", kind: "none"})
+
+
+@pytest.mark.parametrize("mode", ["none", "path", "image"])
+def test_comparison_images_use_the_same_description_and_attachment_builder(
+    tmp_path: Path, workdir: SandboxWorkdir, mode
+):
+    path = _write(tmp_path / "front_unmatched.png", b"unmatched-image")
+    blocks = build_feedback_message_blocks(
+        {"view_front unmatched": path},
+        workdir,
+        mode=mode,
+        heading="Colored bands identify mismatches.",
+    )
+
+    if mode == "none":
+        assert blocks == []
+    else:
+        assert [block["type"] for block in blocks] == ["text", "text"] + (
+            ["image"] if mode == "image" else []
+        )
+        assert _text(blocks) == (
+            "Colored bands identify mismatches.\n"
+            "view_front unmatched: /work/front_unmatched.png"
+        )
+        if mode == "image":
+            assert base64.b64decode(blocks[-1]["base64"]) == b"unmatched-image"
+
+    assert build_feedback_message_blocks({}, workdir, mode=mode) == []

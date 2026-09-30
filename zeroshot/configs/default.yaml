@@ -35,8 +35,13 @@ console:
 
 artifact_presenter:
   _target_: zeroshot.pipeline.messages.artifact.ArtifactPresenter
-  input_mode: "path"
-  feedback_mode: "path"
+  input: "path"
+  # Each feedback kind: none (omit), path (list), image (list and attach).
+  output_renders: "path"
+  overlay: "path"
+  unmatched: "image"
+  # for intermediates, "none" also skips intermediate STEP export and rendering.
+  intermediates: "path"
 
 sandbox_runner:
   python_executable: ${oc.env:CONDA_PREFIX}/bin/python

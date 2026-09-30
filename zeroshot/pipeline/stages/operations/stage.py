@@ -72,7 +72,7 @@ class OperationStage:
             self.instructions.build(
                 state,
                 PipelineStage.OPERATIONS,
-                include_artifact=(not previous or self.input_after_compaction),
+                append_inputs=(not previous or self.input_after_compaction),
                 operations_output_path=str(
                     self.instructions.workdir.sandbox_bind_dir
                     / self.operation_verifier.source_filename

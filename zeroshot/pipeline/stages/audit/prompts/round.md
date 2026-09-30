@@ -11,15 +11,7 @@ The program is at `$coding_output_path`. Built artifacts are in $attempt_dir:
 - `projection/<view>.dxf` and `projection/<view>.png`: projections for the orthographic views identified in the interpretation.
 - `render_3d/*.png`: perspective renders. List the directory for their names.
 
-#### Automatic drawing comparison
-
-$drawing_diff_summary
-
-#### Intermediate operation outputs
-
-Recorded directory: $intermediate_returns_dir
-
-Expected paths within this directory: `<ret_name>/output.step`, `<ret_name>/projection/` and `<ret_name>/render_3d/`.
+The accompanying verification reports and images document the generated CAD model and its differences from the input drawing.
 
 ### Artifact contract
 

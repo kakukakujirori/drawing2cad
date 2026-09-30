@@ -69,18 +69,19 @@ class InterpretationStage:
         instruction = self.instructions.build(
             state,
             PipelineStage.INTERPRETATION,
-            include_artifact=(not previous or self.input_after_compaction),
+            append_inputs=(not previous or self.input_after_compaction),
             interpretation_output_path=str(
                 self.instructions.workdir.sandbox_bind_dir
                 / self.interpretation_verifier.source_filename
             ),
             interpretation_schema=schema_for_prompt(DrawingInterpretation),
+            feedback=(
+                [create_text_block(self.dxf_context)]
+                if self.dxf_context is not None
+                and state.get("stage_validation_error") is None
+                else []
+            ),
         )
-        if self.dxf_context is not None and state.get("stage_validation_error") is None:
-            instruction.content = [
-                *instruction.content_blocks,
-                create_text_block(self.dxf_context),
-            ]
         result = self.agent.invoke(
             {
                 **previous,

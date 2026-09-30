@@ -155,24 +155,34 @@ class ArtifactPresenter:
     agent, and one presenter is shared by all of them.
     """
 
-    input_mode: Literal["path", "image"]
-    feedback_mode: Literal["none", "path", "image"]
+    input: Literal["path", "image"]
+    output_renders: Literal["path", "image"] = "path"
+    overlay: Literal["none", "path", "image"] = "path"
+    unmatched: Literal["path", "image"] = "path"
+    intermediates: Literal["none", "path", "image"] = "path"
 
     def __post_init__(self) -> None:
-        if self.input_mode not in {"path", "image"}:
-            raise ValueError(f"invalid input_mode: {self.input_mode!r}")
-        if self.feedback_mode not in {"none", "path", "image"}:
-            raise ValueError(f"invalid feedback_mode: {self.feedback_mode!r}")
+        if self.input not in {"path", "image"}:
+            raise ValueError(f"invalid input: {self.input!r}")
+        for name in ("overlay", "intermediates"):
+            if getattr(self, name) not in {"none", "path", "image"}:
+                raise ValueError(f"invalid {name}: {getattr(self, name)!r}")
+        for name in ("output_renders", "unmatched"):
+            if getattr(self, name) not in {"path", "image"}:
+                raise ValueError(f"invalid {name}: {getattr(self, name)!r}")
 
 
 def build_feedback_message_blocks(
-    manifest: FeedbackManifest,
+    artifacts: FeedbackManifest | Mapping[str, Path],
     workdir: SandboxWorkdir,
     *,
     mode: Literal["none", "path", "image"],
     heading: str = "[Projected drawing]",
 ) -> list[ContentBlock]:
-    """Present the views produced by an artifact verification.
+    """Present a description followed by named files and optional images.
+
+    Render manifests include view roles and failures; annotated comparison
+    images only need names and paths.
 
     Blocks rather than a message, so the caller decides what carries them.
     A verification never becomes a turn anyone spoke.
@@ -183,13 +193,40 @@ def build_feedback_message_blocks(
     if mode == "none":
         return []
 
-    presented = SandboxedArtifact.of(manifest.drawing, workdir)
-    failed = [f"- {name}: unavailable ({why})" for name, why in manifest.errors.items()]
-    if not presented.sheets and not failed:
-        return []
+    paths: Mapping[str, Path]
+    if isinstance(artifacts, FeedbackManifest):
+        presented = SandboxedArtifact.of(artifacts.drawing, workdir)
+        failed = [
+            f"- {name}: unavailable ({why})" for name, why in artifacts.errors.items()
+        ]
+        if not presented.sheets and not failed:
+            return []
+        lines = [heading, *presented.listing(), *failed, ""]
+        blocks: list[ContentBlock] = [create_text_block("\n".join(lines))]
+        if mode == "image":
+            blocks.extend(presented.images())
+        paths = {
+            f"{sheet.name} PNG": png
+            for sheet in artifacts.drawing
+            if Path(sheet.file).suffix.lower() == ".dxf"
+            and (png := Path(sheet.file).with_suffix(".png")).is_file()
+        }
+    else:
+        if not artifacts:
+            return []
+        blocks = [create_text_block(heading)]
+        paths = artifacts
 
-    lines = [heading, *presented.listing(), *failed, ""]
-    blocks: list[ContentBlock] = [create_text_block("\n".join(lines))]
-    if mode == "image":
-        blocks.extend(presented.images())
+    for name, path in paths.items():
+        _check_reachable(path, workdir, name)
+        blocks.append(
+            create_text_block(f"{name}: {workdir.host_to_sandbox_path(path)}")
+        )
+        if mode == "image":
+            blocks.append(
+                create_image_block(
+                    base64=base64.b64encode(path.read_bytes()).decode("ascii"),
+                    mime_type=_MIME_TYPES[path.suffix.lower()],
+                )
+            )
     return blocks

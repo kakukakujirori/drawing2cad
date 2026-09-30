@@ -1,13 +1,14 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.stages._base.prompt import (
     StageInstructions,
     build_system_prompt,
@@ -15,10 +16,9 @@ from zeroshot.pipeline.stages._base.prompt import (
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
 from zeroshot.pipeline.stages.audit.verify import AuditVerifier
-from zeroshot.pipeline.stages.coding.verify import describe_drawing_diffs
+from zeroshot.pipeline.stages.coding.verify import build_verification_feedback
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import AttemptStore
-from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.evidence import EvidenceMode
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
@@ -35,6 +35,7 @@ class AuditStage:
     attempt_store: AttemptStore
     audit_verifier: AuditVerifier
     middleware: VerifyOnWriteMiddleware
+    artifact_presenter: ArtifactPresenter
 
     def run(self, state: ReconstructionState, config: RunnableConfig) -> dict[str, Any]:
         snapshot = current_snapshot(state)
@@ -58,26 +59,20 @@ class AuditStage:
         instruction = self.instructions.build(
             state,
             PipelineStage.AUDIT,
-            include_artifact=not previous,
+            append_inputs=not previous,
             audit_output_path=str(
                 self.instructions.workdir.sandbox_bind_dir
                 / self.audit_verifier.source_filename
             ),
             audit_schema=schema_for_prompt(AuditReport),
             attempt_dir=attempt_dir,
-            intermediate_returns_dir=(
-                str(PurePosixPath(attempt_dir) / INTERMEDIATE_RETURNS_DIR)
-                if verification.exec_report
-                and verification.exec_report.intermediate_returns
-                else "unavailable"
-            ),
-            drawing_diff_summary=(
-                describe_drawing_diffs(
-                    verification.drawing_diff_report,
-                    self.instructions.workdir,
-                )
-                if verification.drawing_diff_report is not None
-                else "No automatic drawing comparison was recorded."
+            feedback=build_verification_feedback(
+                verification,
+                self.instructions.workdir,
+                self.artifact_presenter,
+                snapshot.interpretation.view_frames()
+                if snapshot.interpretation
+                else {},
             ),
         )
         result = self.agent.invoke(
@@ -108,6 +103,7 @@ def create_audit_stage(
     instructions: StageInstructions,
     prompt_context: dict[str, str],
     attempt_store: AttemptStore,
+    artifact_presenter: ArtifactPresenter,
     audit_filename: str = "audit.json",
     evidence_mode: EvidenceMode = "mark",
 ) -> AuditStage:
@@ -132,4 +128,5 @@ def create_audit_stage(
         attempt_store=attempt_store,
         audit_verifier=audit_verifier,
         middleware=middleware,
+        artifact_presenter=artifact_presenter,
     )

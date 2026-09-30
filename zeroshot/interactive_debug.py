@@ -300,11 +300,8 @@ def build_agent(
             )
             if diff_config
             else None,
-            feedback_presentation_mode=config.artifact_presenter.feedback_mode,
+            artifact_presenter=instantiate(config.artifact_presenter),
             attempt_store=AttemptStore(workdir, lambda: snapshot.round),
-            show_intermediate_returns=config.workflow.get(
-                "show_intermediate_returns", True
-            ),
         )
         # Interpretation paths may be host paths in older runs; point the new
         # verifier at the copy, never the original workspace.

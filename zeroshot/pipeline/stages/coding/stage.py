@@ -2,13 +2,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 from omegaconf import DictConfig, OmegaConf
 
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
 from zeroshot.pipeline.stages.coding.verify import OutputVerifier
@@ -69,7 +70,7 @@ class CodingStage:
             self.instructions.build(
                 state,
                 PipelineStage.CODING,
-                include_artifact=(not previous or self.input_after_compaction),
+                append_inputs=(not previous or self.input_after_compaction),
                 dimension_inventory=interpretation.render_dimension_inventory(),
             ),
         ]
@@ -95,9 +96,8 @@ def create_coding_stage(
     attempt_store: AttemptStore,
     sandbox_runner: SandboxRunner,
     diff_drawer_config: dict[str, Any] | None,
-    feedback_presentation_mode: Literal["none", "path", "image"],
+    artifact_presenter: ArtifactPresenter,
     output_filename: str = "model.py",
-    show_intermediate_returns: bool = False,
     input_after_compaction: bool = False,
 ) -> CodingStage:
     if isinstance(diff_drawer_config, DictConfig):
@@ -117,10 +117,9 @@ def create_coding_stage(
         workdir=instructions.workdir,
         renderer=renderer,
         diff_drawer=diff_drawer,
-        feedback_presentation_mode=feedback_presentation_mode,
+        artifact_presenter=artifact_presenter,
         attempt_store=attempt_store,
         source_filename=output_filename,
-        show_intermediate_returns=show_intermediate_returns,
     )
     ticket_verifier = TicketVerifier(lambda: output_verifier.accepted_source)
     coding_middleware = VerifyOnWriteMiddleware(

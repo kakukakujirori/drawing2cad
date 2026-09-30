@@ -853,8 +853,8 @@ def _manifest_without_renders(tmp_path: Path, sample_id: str) -> InputManifest:
     )
 
 
-def _artifact_presenter_without_renders() -> ArtifactPresenter:
-    return ArtifactPresenter(input_mode="path", feedback_mode="none")
+def _path_artifact_presenter() -> ArtifactPresenter:
+    return ArtifactPresenter(input="path", output_renders="path")
 
 
 def _sandbox_runner() -> SandboxRunner:
@@ -929,7 +929,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
             _CODING_ANSWER,
         )
     )
-    artifact_presenter = ArtifactPresenter(input_mode="path", feedback_mode="none")
+    artifact_presenter = ArtifactPresenter(input="path", output_renders="path")
     runner = PipelineRunner(
         # This test is about input staging and transcript contents, not budget
         # announcements, so keep those extra HumanMessages out of its fixture.
@@ -1032,8 +1032,8 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     ).read_bytes() == selected_bytes
     assert not (saved_workdir / "inputs" / "view_hidden.png").exists()
     assert (saved_workdir / "scratch.txt").read_text(encoding="utf-8") == "persisted"
-    # The coding stage renders even when feedback_mode="none"; the auditor
-    # still needs these artifacts, without a renderer supplied by the runner.
+    # The coding stage generates these artifacts even in path presentation mode,
+    # without a renderer supplied by the runner.
     snapshot = result["reconstruction"].snapshots[-1]
     assert snapshot.verification is not None
     coding_attempt = (
@@ -1139,7 +1139,7 @@ def test_run_sample_preserves_workdir_when_graph_fails(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"
     runner = PipelineRunner(
         graph_factory=_graph_factory(model),
-        artifact_presenter=_artifact_presenter_without_renders(),
+        artifact_presenter=_path_artifact_presenter(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
     )
@@ -1189,7 +1189,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     console_output = StringIO()
     runner = PipelineRunner(
         graph_factory=_graph_factory(model),
-        artifact_presenter=_artifact_presenter_without_renders(),
+        artifact_presenter=_path_artifact_presenter(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         console_reporter=ConsoleReporter(
@@ -1284,7 +1284,7 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
     artifact_root = tmp_path / "artifacts"
     runner = PipelineRunner(
         graph_factory=_graph_factory(model),
-        artifact_presenter=_artifact_presenter_without_renders(),
+        artifact_presenter=_path_artifact_presenter(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
     )
@@ -1336,7 +1336,7 @@ def _runner_for_rerun(
             ScriptedChatModel(responses=(_writing_model(), _CODING_ANSWER)),
             max_stage_validation_retries=0,
         ),
-        artifact_presenter=_artifact_presenter_without_renders(),
+        artifact_presenter=_path_artifact_presenter(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         on_existing=on_existing,  # type: ignore[arg-type]
@@ -1394,7 +1394,7 @@ def test_a_failed_sample_is_not_treated_as_completed(tmp_path: Path) -> None:
     manifest = _manifest_without_renders(tmp_path, "failed-then-skip")
     runner = PipelineRunner(
         graph_factory=_graph_factory(ScriptedChatModel(responses=())),
-        artifact_presenter=_artifact_presenter_without_renders(),
+        artifact_presenter=_path_artifact_presenter(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         on_existing="skip",
@@ -1453,7 +1453,7 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
     artifact_root = tmp_path / "artifacts"
     manifest = _manifest_without_renders(tmp_path, "injected-graph")
     PipelineRunner(
-        artifact_presenter=_artifact_presenter_without_renders(),
+        artifact_presenter=_path_artifact_presenter(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         graph_factory=recording_factory,
@@ -1489,7 +1489,7 @@ def test_a_graphs_own_settings_reach_it_through_the_factory(tmp_path: Path) -> N
     )
     coder = ScriptedChatModel(responses=responses)
     runner = PipelineRunner(
-        artifact_presenter=_artifact_presenter_without_renders(),
+        artifact_presenter=_path_artifact_presenter(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=tmp_path / "artifacts",
         graph_factory=_graph_factory(
@@ -1515,7 +1515,7 @@ def test_retry_redoes_an_interrupted_sample(tmp_path: Path) -> None:
     with pytest.raises(AssertionError, match="ran out of responses"):
         PipelineRunner(
             graph_factory=_graph_factory(ScriptedChatModel(responses=())),
-            artifact_presenter=_artifact_presenter_without_renders(),
+            artifact_presenter=_path_artifact_presenter(),
             sandbox_runner=_sandbox_runner(),
             artifact_root=artifact_root,
         ).run_sample(manifest)
@@ -1597,7 +1597,7 @@ def test_what_the_agent_was_told_about_its_budget_reaches_the_event_log(
         )
     )
     PipelineRunner(
-        artifact_presenter=_artifact_presenter_without_renders(),
+        artifact_presenter=_path_artifact_presenter(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         graph_factory=_graph_factory(
@@ -1637,7 +1637,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
 
     artifact_root = tmp_path / "prompted"
     PipelineRunner(
-        artifact_presenter=_artifact_presenter_without_renders(),
+        artifact_presenter=_path_artifact_presenter(),
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         graph_factory=_graph_factory(
@@ -1704,7 +1704,7 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
     for sample_id, (responses, expected) in cases.items():
         artifact_root = tmp_path / sample_id
         PipelineRunner(
-            artifact_presenter=_artifact_presenter_without_renders(),
+            artifact_presenter=_path_artifact_presenter(),
             sandbox_runner=_sandbox_runner(),
             artifact_root=artifact_root,
             graph_factory=_graph_factory(

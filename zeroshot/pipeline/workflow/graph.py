@@ -73,7 +73,6 @@ def create_reconstruction_graph(
     reconstruction_history_filename: str = "reconstruction.json",
     max_audit_reject_count: int = 3,
     max_stage_validation_retries: int = 3,
-    show_intermediate_returns: bool = True,
     share_thread: bool = False,
     compact_between_stages: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
@@ -128,7 +127,7 @@ def create_reconstruction_graph(
     stage_instructions = StageInstructions(
         prompt_context=prompt_context,
         input_artifact=input_manifest.drawing,
-        input_presentation_mode=artifact_presenter.input_mode,
+        input_presentation_mode=artifact_presenter.input,
         workdir=sandbox_workdir,
     )
 
@@ -164,10 +163,9 @@ def create_reconstruction_graph(
         prompt_context=prompt_context,
         attempt_store=attempt_store,
         sandbox_runner=sandbox_runner,
-        feedback_presentation_mode=artifact_presenter.feedback_mode,
+        artifact_presenter=artifact_presenter,
         diff_drawer_config=diff_drawer_config,
         output_filename=output_filename,
-        show_intermediate_returns=show_intermediate_returns,
         input_after_compaction=compact_between_stages is not None,
     )
     audit_stage = stage_factory(PipelineStage.AUDIT)(
@@ -178,6 +176,7 @@ def create_reconstruction_graph(
         prompt_context=prompt_context,
         attempt_store=attempt_store,
         evidence_mode=audit_evidence_mode,
+        artifact_presenter=artifact_presenter,
     )
 
     def save_history(history: ReconstructionHistory) -> None:

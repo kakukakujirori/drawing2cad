@@ -12,6 +12,7 @@ from pydantic import TypeAdapter
 
 from tests.zeroshot.contracts import UNTURNED, interpretation
 from tests.zeroshot.contracts import view as drawing_view
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import (
     FEEDBACK_PICTORIAL,
@@ -140,20 +141,28 @@ def _create_verifier(
     workdir: SandboxWorkdir,
     *,
     renderer: object | None = None,  # defaults to a StubRenderer
-    feedback_presentation_mode: Literal["none", "path", "image"] = "none",
+    output_renders: Literal["path", "image"] = "path",
     views: Mapping[View, tuple[str, str]] = VIEW_FRAMES,
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
     attempt_store: AttemptStore | None = None,
-    show_intermediate_returns: bool = True,
+    intermediates: Literal["none", "path", "image"] = "path",
     diff_drawer: object | None = None,
     projection_view_mode: Literal["interpreted", "standard"] = "interpreted",
+    unmatched: Literal["path", "image"] = "image",
+    overlay: Literal["none", "path", "image"] = "path",
 ) -> OutputVerifier:
     verifier = OutputVerifier(
         executor,  # type: ignore[arg-type]
         workdir,
         renderer=renderer or StubRenderer(),  # type: ignore[arg-type]
-        feedback_presentation_mode=feedback_presentation_mode,
+        artifact_presenter=ArtifactPresenter(
+            input="path",
+            output_renders=output_renders,
+            intermediates=intermediates,
+            unmatched=unmatched,
+            overlay=overlay,
+        ),
         attempt_store=attempt_store
         or AttemptStore(
             workdir,
@@ -161,7 +170,6 @@ def _create_verifier(
             root_dirname=output_dirname,
         ),
         source_filename=source_filename,
-        show_intermediate_returns=show_intermediate_returns,
         diff_drawer=diff_drawer,  # type: ignore[arg-type]
         projection_view_mode=projection_view_mode,
     )
@@ -210,9 +218,10 @@ def test_real_cadquery_render_and_drawing_diff_reach_feedback(tmp_path: Path) ->
             workdir=workdir,
             renderer=StepRenderer(max_workers=1),
             diff_drawer=DrawingDiffExecutor(),
-            feedback_presentation_mode="path",
+            artifact_presenter=ArtifactPresenter(
+                input="path", intermediates="none", unmatched="image"
+            ),
             attempt_store=AttemptStore(workdir, round_source=lambda: 0),
-            show_intermediate_returns=False,
         )
         verifier.interpretation = interpretation(
             views=[
@@ -255,6 +264,13 @@ def test_real_cadquery_render_and_drawing_diff_reach_feedback(tmp_path: Path) ->
     assert "[Drawing comparison]" in text
     assert "/work/attempts/round_000/coding/000/projection/front_overlay.png" in text
     assert "/work/attempts/round_000/coding/000/projection/front_unmatched.png" in text
+    # The unmatched image is attached right after the line that names it.
+    label = next(
+        index
+        for index, block in enumerate(blocks)
+        if block["type"] == "text" and block["text"].startswith("view_front unmatched:")
+    )
+    assert blocks[label + 1]["type"] == "image"
 
 
 type Frames = Mapping[View, tuple[Axis, Axis]]
@@ -453,14 +469,10 @@ def test_the_intermediate_returns_are_kept_beside_their_attempt(
     ]
 
 
-def test_the_returns_block_says_what_to_do_with_the_drawings_it_lists(
+def test_the_returns_block_lists_results_and_where_to_find_their_drawings(
     tmp_path: Path,
 ) -> None:
-    """Measured: the coder read the census table and never opened the drawings.
-
-    The instruction rides with the block rather than in the coding prompt, so a
-    run that drew no returns cannot be told to go and read them.
-    """
+    """The census and artifact layout stay together in intermediate feedback."""
     executor = StubCadQueryExecutor(
         _execution_report(), return_names=("ret_base", "ret_hole")
     )
@@ -469,11 +481,14 @@ def test_the_returns_block_says_what_to_do_with_the_drawings_it_lists(
 
     text = _text(_create_verifier(executor, workdir).feedback())
 
-    assert "load_image" in text
     assert "[Intermediate results]" in text
     assert "\nret_base " in text
     assert "\nret_hole " in text
-    assert "\nCorresponding artifacts are saved in " in text
+    assert (
+        "\nFiles are under /work/attempts/round_000/coding/000/intermediate_returns/<name>/"
+        in text
+    )
+    assert "projection/<view>.dxf, projection/<view>.png" in text
 
 
 def test_a_run_with_the_returns_switched_off_says_nothing_about_them(
@@ -484,7 +499,7 @@ def test_a_run_with_the_returns_switched_off_says_nothing_about_them(
     )
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    verifier = _create_verifier(executor, workdir, show_intermediate_returns=False)
+    verifier = _create_verifier(executor, workdir, intermediates="none")
 
     report = verifier.verify()
 
@@ -559,6 +574,13 @@ class StubDiffDrawer:
         if self.fatal:
             raise RuntimeError("comparison worker failed")
         chamfer = self.chamfers.pop(0) if self.chamfers else None
+        if not self.error:  # saved as the real worker saves it
+            for _, projection in pairs:
+                unmatched = projection.with_name(f"{projection.stem}_unmatched.png")
+                Image.new("RGB", (4, 4), "white").save(unmatched)
+                Image.new("RGB", (4, 4), "white").save(
+                    projection.with_name(f"{projection.stem}_overlay.png")
+                )
         return [
             DrawingDiffReport(
                 drawing_path=drawing,
@@ -634,12 +656,21 @@ def test_feedback_compares_scores_with_the_last_scored_build(tmp_path):
     assert "Changes in parentheses" not in build(3)
 
 
-def test_diff_uses_final_render_and_feedback_formats_the_stored_reports(tmp_path):
+@pytest.mark.parametrize("unmatched", ["path", "image"])
+def test_diff_uses_final_render_and_feedback_formats_the_stored_reports(
+    tmp_path, unmatched
+):
     workdir = SandboxWorkdir(tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE)
     executor = StubCadQueryExecutor(_execution_report(), return_names=("ret_base",))
     drawer = StubDiffDrawer()
-    verifier = _create_verifier(executor, workdir, diff_drawer=drawer)
+    verifier = _create_verifier(
+        executor,
+        workdir,
+        diff_drawer=drawer,
+        unmatched=unmatched,
+        output_renders="path",
+    )
     _set_input_crop(verifier, tmp_path)
 
     report = verifier.verify()
@@ -650,7 +681,20 @@ def test_diff_uses_final_render_and_feedback_formats_the_stored_reports(tmp_path
     ]
     assert not verifier.confirmed  # Only feedback confirms the inspected build.
 
-    text = _text(verifier.feedback())
+    blocks = verifier.feedback()
+    text = _text(blocks)
+    headings = [
+        "[Execution result]",
+        "[Projected drawing]",
+        "[Intermediate results]",
+        "[Drawing comparison]",
+    ]
+    positions = [text.index(heading) for heading in headings]
+    assert positions == sorted(positions)
+    assert all(text.count(heading) == 1 for heading in headings)
+    assert sum(block["type"] == "image" for block in blocks) == int(
+        unmatched == "image"
+    )
     assert verifier.confirmed
     assert "view_front" in text
     assert "projection/front_overlay.png" in text
@@ -731,6 +775,7 @@ def test_pair_failure_is_feedback_and_does_not_reject_step(tmp_path, enabled):
         StubCadQueryExecutor(_execution_report()),
         SandboxWorkdir(tmp_path),
         diff_drawer=drawer,
+        output_renders="path",
     )
     _set_input_crop(verifier, tmp_path)
 
@@ -740,7 +785,8 @@ def test_pair_failure_is_feedback_and_does_not_reject_step(tmp_path, enabled):
     assert verifier.confirmed
     assert ("alignment failed" in text) is enabled
     assert ("[Drawing comparison]" in text) is enabled
-    assert ("Open available overlay and unmatched" in text) is enabled
+    assert "Overlay images:" not in text
+    assert "Unmatched images:" not in text
     assert "projection/front.png" in text
     assert (report.drawing_diff_report is not None) is enabled
 
@@ -902,7 +948,7 @@ def test_verified_output_is_rendered_and_offered_to_the_model(tmp_path: Path) ->
         executor,
         workdir,
         renderer=renderer,
-        feedback_presentation_mode="path",
+        output_renders="path",
     )
 
     text = _text(verifier.feedback())
@@ -931,7 +977,7 @@ def test_rendered_artifacts_stay_inside_the_verification_directory(
         executor,
         workdir,
         renderer=StubRenderer(),
-        feedback_presentation_mode="path",
+        output_renders="path",
     )
 
     verifier.feedback()
@@ -962,7 +1008,7 @@ def test_failed_verification_renders_nothing_and_reports_only_the_error(
         executor,
         workdir,
         renderer=renderer,
-        feedback_presentation_mode="path",
+        output_renders="path",
     )
 
     result = verifier.feedback()
@@ -983,7 +1029,7 @@ def test_a_projection_that_cannot_be_read_is_explained_not_raised(
         executor,
         workdir,
         renderer=StubRenderer(corrupt_views=("front",)),
-        feedback_presentation_mode="path",
+        output_renders="path",
     )
 
     text = _text(verifier.feedback())
@@ -1003,7 +1049,7 @@ def test_a_pictorial_that_failed_is_explained_where_it_would_have_been(
         executor,
         workdir,
         renderer=renderer,
-        feedback_presentation_mode="path",
+        output_renders="path",
     )
 
     result = verifier.feedback()
@@ -1031,7 +1077,7 @@ def test_a_style_that_is_not_offered_is_neither_named_nor_explained(
         executor,
         workdir,
         renderer=renderer,
-        feedback_presentation_mode="path",
+        output_renders="path",
     )
 
     text = _text(verifier.feedback())
@@ -1051,7 +1097,7 @@ def test_result_carries_paths_but_never_the_drawing_itself(
         executor,
         workdir,
         renderer=StubRenderer(),
-        feedback_presentation_mode="path",
+        output_renders="path",
     )
 
     text = _text(verifier.feedback())
@@ -1070,20 +1116,19 @@ def test_images_are_embedded_only_when_the_presenter_asks_for_them(
     executor = StubCadQueryExecutor(_execution_report())
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
 
-    def block_types(mode: Literal["none", "path", "image"]) -> list[str]:
+    def block_types(mode: Literal["path", "image"]) -> list[str]:
         workdir = SandboxWorkdir(host_bind_dir=tmp_path)
         result = _create_verifier(
             executor,
             workdir,
             renderer=StubRenderer(),
-            feedback_presentation_mode=mode,
+            output_renders=mode,
         ).feedback()
         assert isinstance(result, list)
         return [block["type"] for block in result]
 
     assert "image" not in block_types("path")
     assert "image" in block_types("image")
-    assert "image" not in block_types("none")
 
 
 def test_without_image_attachments_the_model_still_sees_orthographic_pngs(
@@ -1093,12 +1138,14 @@ def test_without_image_attachments_the_model_still_sees_orthographic_pngs(
     executor = StubCadQueryExecutor(_execution_report())
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    verifier = _create_verifier(executor, workdir, renderer=StubRenderer())
+    verifier = _create_verifier(
+        executor, workdir, renderer=StubRenderer(), output_renders="path"
+    )
 
     result = verifier.feedback()
 
     assert _report_json(result)["status"] == "VERIFIED"
-    assert "projection/front.dxf" not in _text(result)
+    assert "projection/front.dxf" in _text(result)
     assert "/work/attempts/round_000/coding/000/projection/front.png" in _text(result)
     assert (_coding_attempt(tmp_path) / "projection" / "front.dxf").is_file()
 
@@ -1313,7 +1360,7 @@ def test_the_returns_are_neither_kept_nor_drawn_when_switched_off(
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     renderer = StubRenderer()
     verifier = _create_verifier(
-        executor, workdir, renderer=renderer, show_intermediate_returns=False
+        executor, workdir, renderer=renderer, intermediates="none"
     )
 
     text = _text(verifier.feedback())
@@ -1535,9 +1582,7 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
         output_schema=TicketAnswers,
         response_format_strategy="tool",
         max_turns=2,
-        extra_middleware=[
-            VerifyOnWriteMiddleware(verifier)
-        ],
+        extra_middleware=[VerifyOnWriteMiddleware(verifier)],
     )
     result = agent.invoke({"messages": [HumanMessage(content="Submit the program.")]})
     assert result.get("structured_response") is None
@@ -1559,7 +1604,7 @@ def test_the_verifier_asks_for_exactly_the_views_it_was_given(
         workdir,
         renderer=renderer,
         views={view: UNTURNED[view] for view in (View.LEFT, View.BOTTOM)},
-        feedback_presentation_mode="path",
+        output_renders="path",
     )
 
     text = _text(verifier.feedback())
@@ -1584,7 +1629,7 @@ def test_standard_projections_draw_all_six_views_without_an_interpretation(
         executor,
         workdir,
         renderer=renderer,
-        feedback_presentation_mode="path",
+        output_renders="path",
         projection_view_mode="standard",
     )
 
@@ -1601,7 +1646,7 @@ def test_standard_projections_draw_all_six_views_without_an_interpretation(
             f"- view_projected_{view} ({view}): {sandbox_dir}/projection/{view}.dxf"
             in text
         )
-        assert f"- {sandbox_dir}/projection/{view}.png" in text
+        assert f"{sandbox_dir}/projection/{view}.png" in text
 
 
 @pytest.mark.parametrize(
@@ -1659,9 +1704,8 @@ def test_real_cadquery_render_reaches_feedback_in_six_standard_views(
             workdir=workdir,
             renderer=StepRenderer(max_workers=1),
             diff_drawer=None,
-            feedback_presentation_mode="path",
+            artifact_presenter=ArtifactPresenter(input="path", intermediates="none"),
             attempt_store=AttemptStore(workdir, round_source=lambda: 0),
-            show_intermediate_returns=False,
             projection_view_mode="standard",
         )
         text = _text(verifier.feedback())
@@ -1682,3 +1726,59 @@ def test_real_cadquery_render_reaches_feedback_in_six_standard_views(
         assert f"{sandbox_dir}/projection/{view}.png" in text
     assert render.render3d_paths.hlg_translucent_faces_perspective.is_file()
     assert f"{sandbox_dir}/render_3d/{FEEDBACK_PICTORIAL}.png" in text
+
+
+@pytest.mark.parametrize(
+    ("kind", "mode"),
+    [
+        (kind, mode)
+        for kind in ("output_renders", "overlay", "unmatched", "intermediates")
+        for mode in (
+            ("path", "image")
+            if kind in {"output_renders", "unmatched"}
+            else ("none", "path", "image")
+        )
+    ],
+)
+def test_feedback_kinds_are_presented_independently(tmp_path, kind, mode):
+    (tmp_path / "model.py").write_text(VALID_SOURCE)
+    modes = {
+        "output_renders": "path",
+        "unmatched": "path",
+        "overlay": "none",
+        "intermediates": "none",
+    }
+    modes[kind] = mode
+    verifier = _create_verifier(
+        StubCadQueryExecutor(_execution_report(), return_names=("ret_base",)),
+        SandboxWorkdir(tmp_path),
+        diff_drawer=StubDiffDrawer(chamfers=[6.0]),
+        **modes,
+    )
+    _set_input_crop(verifier, tmp_path)
+    blocks = verifier.feedback()
+    text = _text(blocks)
+    paths = {
+        "output_renders": "/coding/000/projection/front.png",
+        "overlay": "front_overlay.png",
+        "unmatched": "front_unmatched.png",
+        "intermediates": "intermediate_returns",
+    }
+    for name, path in paths.items():
+        assert (path in text) == (modes[name] != "none")
+    for name, legend in {
+        "overlay": "The input is moved onto the projection's pixels",
+        "unmatched": "a material mismatch is also hatched",
+    }.items():
+        assert (legend in text) == (modes[name] != "none")
+    assert "[Drawing comparison]" in text
+    assert "chamfer:" in text
+    expected_images = (
+        (2 if kind in {"output_renders", "intermediates"} else 1)
+        if mode == "image"
+        else 0
+    )
+    assert sum(block["type"] == "image" for block in blocks) == expected_images
+    # Presentation never suppresses execution or final STEP rendering.
+    assert verifier.confirmed
+    assert RESULT_NAME in verifier.verify().render_report

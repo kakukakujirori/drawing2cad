@@ -344,7 +344,12 @@ def _agent(role: str, model: BaseChatModel, **overrides: Any) -> AgentBuilder:
 
 
 def _artifact_presenter() -> ArtifactPresenter:
-    return ArtifactPresenter(input_mode="path", feedback_mode="none")
+    return ArtifactPresenter(
+        input="path",
+        output_renders="path",
+        unmatched="path",
+        overlay="path",
+    )
 
 
 def _write_projection_dxf(path: Path) -> None:
@@ -516,6 +521,11 @@ def test_an_accepted_round_is_integrated_and_persisted(
         projection_dir = (
             workdir.host_bind_dir / "attempts/round_000/coding/000/projection"
         )
+        from PIL import Image
+
+        projection_dir.mkdir(parents=True, exist_ok=True)
+        for kind in ("overlay", "unmatched"):
+            Image.new("RGB", (4, 4), "white").save(projection_dir / f"front_{kind}.png")
         diff_reports = {
             "view_front": DrawingDiffReport(
                 drawing_path=workdir.host_bind_dir / "view_front.png",
@@ -539,6 +549,7 @@ def test_an_accepted_round_is_integrated_and_persisted(
                     else (),
                 ),
                 drawing_diff_report=diff_reports,
+                sandbox_verification_dir="/work/attempts/round_000/coding/000",
             ),
             views_seen=views_seen,
         )
@@ -608,7 +619,7 @@ def test_an_accepted_round_is_integrated_and_persisted(
     )
     returns_dir = "/work/attempts/round_000/coding/000/intermediate_returns"
     assert (returns_dir in audit_instruction) is has_returns
-    assert ("Recorded directory: unavailable" in audit_instruction) is not has_returns
+    assert ("[Intermediate results]" in audit_instruction) is has_returns
     assert "what the plan meant it to" in audit_instruction
 
 

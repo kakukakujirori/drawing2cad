@@ -1,6 +1,7 @@
 """The auditor reviews file-derived evidence before completing the current audit."""
 
 import json
+from dataclasses import replace
 from functools import partial
 
 import pytest
@@ -20,6 +21,7 @@ from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _ref,
     _report,
 )
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.audit.contracts import (
@@ -30,6 +32,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
 from zeroshot.pipeline.stages.audit.stage import create_audit_stage
 from zeroshot.pipeline.stages.audit.verify import AuditVerifier
 from zeroshot.pipeline.verification import AttemptStore
+from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.lifecycle import open_next_round
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
@@ -42,12 +45,28 @@ def _answer(strategy, *, accepted=True):
     return tool_call("AuditSubmission", payload, "submit_audit")
 
 
-def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving():
+@pytest.mark.parametrize("unmatched", ["path", "image"])
+def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving(
+    unmatched,
+):
     history = _completed_run()
     report = AuditReport(
         ticket_reviews=bootstrap_review(), concern_reviews={}, findings=[]
     )
     with SandboxWorkdir() as workdir:
+        path = workdir.host_bind_dir / "front_unmatched.png"
+        Image.new("RGB", (4, 4), "white").save(path)
+        snapshot = history.snapshots[-1]
+        snapshot.verification = replace(
+            snapshot.verification,
+            drawing_diff_report={
+                "view_front": DrawingDiffReport(
+                    drawing_path=workdir.host_bind_dir / "front.png",
+                    projection_path=path,
+                    paths={"unmatched_path": path},
+                ),
+            },
+        )
 
         @tool
         def write_report() -> str:
@@ -78,10 +97,39 @@ def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving():
             prompt_context=context,
             attempt_store=AttemptStore(workdir, lambda: 0),
             audit_filename="review.json",
+            artifact_presenter=ArtifactPresenter(
+                input="path",
+                output_renders="path",
+                overlay="none",
+                unmatched=unmatched,
+            ),
         )
         result = stage.run({"reconstruction": history}, {})
         assert result["audit_report"] == report
+        blocks = model.received_messages[0][-1].content_blocks
+        assert sum(block["type"] == "image" for block in blocks) == int(
+            unmatched == "image"
+        )
         instruction = model.received_messages[0][-1].text
+        assert (
+            sum(
+                isinstance(message, HumanMessage)
+                for message in model.received_messages[0]
+            )
+            == 1
+        )
+        for heading in (
+            "[Input artifacts]",
+            "[Execution result]",
+            "[Drawing comparison]",
+        ):
+            assert instruction.count(heading) == 1
+        assert (
+            instruction.index("[Input artifacts]")
+            < instruction.index("[Execution result]")
+            < instruction.index("[Drawing comparison]")
+        )
+        assert "/work/front_unmatched.png" in instruction
         assert "`/work/review.json`" in instruction
         assert "`audit.json`" not in instruction
         assert "review.json: valid." in model.received_messages[1][-1].text
