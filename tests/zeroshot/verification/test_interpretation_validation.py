@@ -99,7 +99,15 @@ def test_different_roles_cannot_share_a_png(tmp_path: Path, file: str) -> None:
 def test_repeated_role_may_still_reference_the_same_file(tmp_path: Path) -> None:
     submitted = raster_case(tmp_path)
     submitted.views.append(
-        submitted.views[0].model_copy(update={"name": "view_detail", "dimensions": []})
+        submitted.views[0].model_copy(
+            update={
+                "name": "view_detail",
+                "dimensions": [],
+                "region": submitted.views[0].region.model_copy(
+                    update={"box_px": (0, 0, 1200, 1400)}
+                ),
+            }
+        )
     )
     accepted, _ = validate_interpretation(submitted, workdir=SandboxWorkdir(tmp_path))
     assert len(accepted.views) == 2
@@ -473,7 +481,7 @@ def _page_layout(workdir: Path, *others: dict) -> DrawingInterpretation:
     Image.new("RGB", (2400, 3000), "white").save(workdir / "page.png")
     data = raster_case(workdir).model_dump()
     front = data["views"][0]
-    front["region"].update(view="view_page", box_px=(100, 1800, 1300, 2800))
+    front["region"].update(view="view_page", box_px=(100, 1400, 1300, 2800))
     views = [
         {
             "name": "view_page",
@@ -486,7 +494,8 @@ def _page_layout(workdir: Path, *others: dict) -> DrawingInterpretation:
     ]
     for other in others:
         role = other["role"]
-        Image.new("RGB", (1200, 1400), "white").save(workdir / f"{role}.png")
+        x0, y0, x1, y1 = other["box_px"]
+        Image.new("RGB", (x1 - x0, y1 - y0), "white").save(workdir / f"{role}.png")
         crop = deepcopy(front)
         crop.update(
             name=f"view_{role}",
@@ -549,7 +558,7 @@ def test_a_page_without_a_front_view_is_placed_against_nothing(tmp_path: Path) -
     """ditech 005 reads as top, bottom and an end view: no view plays front."""
     layout = _page_layout(
         tmp_path,
-        {"role": "top", "box_px": (100, 300, 1300, 1300)},
+        {"role": "top", "box_px": (100, 300, 1300, 1700)},
         {"role": "right", "box_px": (1500, 300, 2300, 1300)},
     )
     data = layout.model_dump()

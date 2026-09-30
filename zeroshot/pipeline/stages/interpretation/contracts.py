@@ -226,11 +226,26 @@ class DrawingView(Contract):
     file: str = Field(
         ...,
         min_length=1,
-        description="Path to this view's image or DXF in the workspace. Keep registered input files. Different roles require separate files; save each identified view as a crop. A single orthographic view may reuse its full_page parent's file only with a full-file Region.",
+        description=(
+            "Path to this view's image or DXF in the workspace. Keep registered input files. "
+            "Different roles require separate files; a single orthographic view may reuse "
+            "its full_page parent's file only with a full-file Region. "
+            "Raster crops only: match the parent image at region.box_px pixel for pixel "
+            "at 1:1 scale, without resizing, rotation or preprocessing. "
+            "Keep observation-only crops and zooms in separate files."
+        ),
     )
     region: Region = Field(
         ...,
-        description="Where this view is located in the referenced DrawingView. Preserve each registered input's self-reference and full-file bounds. A new view gives its location in the parent view; a single-view drawing that reuses the parent file covers the whole file.",
+        description=(
+            "Where this view is located in the referenced DrawingView: box_px for a "
+            "raster source, box_uv in native coordinates for a DXF source. "
+            "Preserve each registered input's self-reference and full-file bounds. "
+            "A new view gives its location in the parent view; reuse of the parent file "
+            "for a single-view drawing covers the whole file. "
+            "For derived rasters only, parent references must lead to an original "
+            "registered input without self-reference or cycles."
+        ),
     )
     dimensions: list[Dimension] = Field(
         ..., description="Printed figures on this sheet; empty if none."

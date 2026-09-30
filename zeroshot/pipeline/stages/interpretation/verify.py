@@ -154,6 +154,24 @@ class InterpretationVerifier:
                         f"role and full-file region: {original.name} ({original.role}), "
                         f"{original.file}. Dimensions may be added.",
                     )
+            original_names = {view.name for view in self._original_views}
+            for index, view in enumerate(submitted_interpretation.views):
+                if Path(view.file).suffix.lower() == ".dxf":
+                    continue
+                # New rasters cannot evade crop checks by registering themselves
+                # (or a cycle of new views) as their own source.
+                parent = view
+                visited = set()
+                while parent.name not in original_names:
+                    if parent.name in visited:
+                        raise LocatedError.at(
+                            ("views", index, "region"),
+                            f"{view.name}: a derived raster's parent references must "
+                            "lead to an original input view, without self-reference "
+                            "or cycles. Set region.view to the view you cropped.",
+                        )
+                    visited.add(parent.name)
+                    parent = by_name[parent.region.view][1]
             if any(
                 original.role is View.FULL_PAGE for original in self._original_views
             ) and not any(

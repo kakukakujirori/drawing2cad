@@ -124,7 +124,7 @@ def _interpretation_candidate(
         item.model_copy(
             update={
                 "file": "/work/front.png",
-                "region": Region(view="view_input", box_px=(0, 0, 10, 10)),
+                "region": Region(view="view_input", box_px=(0, 0, 20, 20)),
             }
         )
         for item in artifact.views

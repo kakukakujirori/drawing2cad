@@ -5,7 +5,10 @@ import pytest
 from PIL import Image
 
 from tests.zeroshot.contracts import UNTURNED
-from tests.zeroshot.verification.test_interpretation_validation import raster_case
+from tests.zeroshot.verification.test_interpretation_validation import (
+    dxf_case,
+    raster_case,
+)
 from zeroshot.pipeline.messages.manifest import register_view
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.interpretation.contracts import (
@@ -44,6 +47,7 @@ def _case(
             "v_axis": UNTURNED.get(input_role, (None, None))[1],
         },
     )
+    data["views"][1]["region"] = {"view": "view_page", "box_px": [0, 0, 1200, 1400]}
     given = [
         register_view(
             "view_page",
@@ -186,7 +190,7 @@ def test_crop_edits_trigger_feedback_and_do_not_reuse_previous_acceptance(tmp_pa
     assert verifier.accepted_interpretation is None
     update = middleware.before_model({}, None)
     assert update is not None and "invalid" in update["messages"][0].text
-    Image.new("RGB", (1200, 1400), "gray").save(tmp_path / "front.png")
+    Image.new("RGB", (1200, 1400), "white").save(tmp_path / "front.png")
     update = middleware.before_model({}, None)
     assert update is not None and verifier.confirmed
     assert verifier.verify().attempt_id == "002"
@@ -214,6 +218,7 @@ def test_invalid_json_and_missing_original_page_are_rejected_and_recorded(tmp_pa
     ]
     data = candidate.model_dump()
     data["views"].pop(0)
+    data["views"][0]["region"]["view"] = "view_front"
     verifier.source_path.write_text(json.dumps(data))
     assert "Retain each original input file" in verifier.feedback()[0]["text"]
     assert not verifier.confirmed
@@ -283,6 +288,7 @@ def test_original_identity_and_full_file_region_cannot_be_rewritten(tmp_path, ch
     original = data["views"][0]
     if changed == "name":
         original["name"] = original["region"]["view"] = "view_renamed"
+        data["views"][1]["region"]["view"] = "view_renamed"
     elif changed == "file":
         original["file"] = "/work/front.png"
     elif changed == "role":
@@ -383,3 +389,121 @@ def test_absent_calibration_stays_valid_and_reports_zero_measurements(tmp_path):
     assert verifier.accepted_interpretation.views[1].scale is None
     assert '"status": "insufficient_evidence"' in feedback
     assert '"inliers": "0/0"' in feedback
+
+
+@pytest.mark.parametrize("change", ["resize", "rotate", "pixel"])
+def test_crop_must_match_parent_pixels_even_on_first_submission(tmp_path, change):
+    verifier, candidate, _ = _case(tmp_path)
+    with Image.open(tmp_path / "source.png") as source:
+        source.putpixel((450, 750), (0, 0, 0))
+        source.save(tmp_path / "source.png")
+        crop = source.copy()
+    if change == "resize":
+        crop = crop.resize((2400, 2800))
+    elif change == "rotate":
+        crop = crop.rotate(180)
+    else:
+        crop.putpixel((600, 800), (0, 0, 0))
+    crop.save(tmp_path / "front.png")
+    submitted = candidate.model_dump_json()
+    verifier.source_path.write_text(submitted)
+
+    text = verifier.feedback()[0]["text"]
+
+    assert not verifier.confirmed
+    assert "$.views[1].file" in text and "unmodified 1:1 crop" in text
+    assert verifier.source_path.read_text() == submitted
+    # Correcting only the pixels invalidates the cached failure and is accepted.
+    with Image.open(tmp_path / "source.png") as source:
+        source.convert("RGBA").save(tmp_path / "front.png")
+    verifier.feedback()
+    assert verifier.confirmed
+    # A later image-only overwrite also invalidates acceptance.
+    crop.save(tmp_path / "front.png")
+    assert not verifier.confirmed
+    text = verifier.feedback()[0]["text"]
+    assert (
+        "image_size disagrees" if change == "resize" else "unmodified 1:1 crop"
+    ) in text
+    assert not verifier.confirmed
+
+
+@pytest.mark.parametrize("cycle", [False, True])
+def test_new_raster_cannot_replace_its_parent_with_self_reference_or_a_cycle(
+    tmp_path, cycle
+):
+    verifier, candidate, _ = _case(tmp_path)
+    data = candidate.model_dump()
+    data["views"][1]["region"]["view"] = "view_front"
+    if cycle:
+        child = dict(data["views"][1], name="view_child", dimensions=[])
+        child["region"] = {"view": "view_front", "box_px": [0, 0, 1200, 1400]}
+        data["views"].append(child)
+        data["views"][1]["region"]["view"] = "view_child"
+    verifier.source_path.write_text(json.dumps(data))
+
+    text = verifier.feedback()[0]["text"]
+
+    assert not verifier.confirmed
+    assert "$.views[1].region" in text and "lead to an original input view" in text
+
+
+def test_nested_crops_can_reference_an_accepted_parent_view(tmp_path):
+    verifier, candidate, _ = _case(tmp_path)
+    child = candidate.views[1].model_copy(
+        update={"name": "view_child", "file": "/work/child.png", "dimensions": []}
+    )
+    child.region = child.region.model_copy(
+        update={"view": "view_front", "box_px": (100, 200, 800, 1000)}
+    )
+    with Image.open(tmp_path / "front.png") as parent:
+        parent.crop(child.region.box_px).save(tmp_path / "child.png")
+    candidate.views.append(child)
+    verifier.source_path.write_text(candidate.model_dump_json())
+
+    verifier.feedback()
+
+    assert verifier.confirmed
+
+
+@pytest.mark.parametrize("child_reference", [None, "view_front", "view_detail"])
+def test_native_dxf_input_and_derived_dxf_do_not_require_raster_crop_checks(
+    tmp_path, child_reference
+):
+    candidate = dxf_case(tmp_path)
+    original = register_view(
+        "view_front", View.FRONT, tmp_path / "front.dxf", axes=("+x", "+z")
+    )
+    if child_reference is not None:
+        # A separate native drawing can cite its source or retain its own frame;
+        # neither introduces raster resize/pixel requirements.
+        (tmp_path / "detail.dxf").write_bytes((tmp_path / "front.dxf").read_bytes())
+        child = candidate.views[0].model_copy(
+            update={
+                "name": "view_detail",
+                "role": View.DETAIL,
+                "file": "/work/detail.dxf",
+                "region": candidate.views[0].region.model_copy(
+                    update={"view": child_reference}
+                ),
+                "dimensions": [],
+                "u_axis": None,
+                "v_axis": None,
+            }
+        )
+        candidate.views.append(child)
+    workdir = SandboxWorkdir(tmp_path)
+    verifier = InterpretationVerifier(
+        workdir, AttemptStore(workdir, round_source=lambda: 0), [original]
+    )
+    verifier.reset(candidate)
+
+    verifier.feedback()
+
+    assert verifier.confirmed
+    accepted = verifier.accepted_interpretation
+    assert accepted is not None
+    assert all(
+        view.image_size is None and view.scale is None for view in accepted.views
+    )
+    assert accepted.views[-1].region.box_uv == candidate.views[-1].region.box_uv

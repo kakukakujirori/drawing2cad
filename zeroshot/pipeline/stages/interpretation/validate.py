@@ -197,6 +197,34 @@ def _require_distinct_view_files(
             )
 
 
+def _require_raster_crops(views: list[DrawingView], paths: dict[str, Path]) -> None:
+    """A derived raster must be the unmodified, native-size crop it declares."""
+    for index, view in enumerate(views):
+        region = view.region
+        path, parent_path = paths[view.name], paths[region.view]
+        if region.view == view.name or ".dxf" in {
+            path.suffix.lower(),
+            parent_path.suffix.lower(),
+        }:
+            continue
+        # Region validation has already checked the parent's pixel bounds.
+        assert region.box_px is not None
+        x0, y0, x1, y1 = region.box_px
+        with Image.open(parent_path) as parent, Image.open(path) as crop:
+            if crop.size != (x1 - x0, y1 - y0) or (
+                crop.convert("RGBA").tobytes()
+                != parent.crop(region.box_px).convert("RGBA").tobytes()
+            ):
+                raise LocatedError.at(
+                    ("views", index, "file"),
+                    f"{view.name}.file must exactly match the unmodified 1:1 crop of "
+                    f"{region.view} at region.box_px={region.box_px}. "
+                    "Save the crop without resizing, rotating or preprocessing; "
+                    "keep observation-only crops and zooms in separate files. "
+                    "If the registered crop changes, update its Region and measurements.",
+                )
+
+
 def _calibrate_sheets(
     interpretation: DrawingInterpretation,
     data: dict[str, Any],
@@ -354,8 +382,10 @@ def validate_interpretation(
     Raster submissions normally leave image_size, scale and box_uv null.
     Scale and box_uv are recalculated on every call, since a measurement fix
     changes them. A stored image_size must still match its file, which catches
-    a resized sheet. No consensus (including one measurement) leaves scale/UV
-    null; return diagnostics to the interpreter instead of guessing a scale.
+    a resized sheet. Derived rasters must also match their declared parent crop
+    pixel for pixel, including on the first submission. No consensus (including
+    one measurement) leaves scale/UV null; return diagnostics to the interpreter
+    instead of guessing a scale.
 
     A DXF keeps its own millimetre coordinates, never preview pixels, so its
     measured_length is already a length and is retained rather than passed to
@@ -371,4 +401,5 @@ def validate_interpretation(
     data = interpretation.model_dump()
     sheets, reports = _calibrate_sheets(interpretation, data, paths)
     _calibrate_regions(interpretation, data, sheets)
+    _require_raster_crops(interpretation.views, paths)
     return DrawingInterpretation.model_validate(data), reports
