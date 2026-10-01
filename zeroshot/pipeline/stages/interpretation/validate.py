@@ -23,6 +23,9 @@ from zeroshot.pipeline.tools.calculate_drawing_scale import calculate_drawing_sc
 
 type _Box = tuple[float, ...]
 
+# Provisional annotation limit; calibrated separately from CAD difference scores.
+MAX_DIMENSION_REGION_FRACTION = 0.25
+
 
 @dataclass(frozen=True)
 class _Sheet:
@@ -356,6 +359,23 @@ def _calibrate_regions(
                 ("views", index, "dimensions", position, "region"),
                 sheets[dim["region"]["view"]],
             )
+            # Native-size crops share their parent's pixel units. Use the
+            # containing view's area even when the annotation cites that parent.
+            sheet = sheets[output["name"]]
+            box = dim["region"]["box_px"]
+            if not sheet.dxf and box is not None:
+                x0, y0, x1, y1 = box
+                if (x1 - x0) * (y1 - y0) >= (
+                    MAX_DIMENSION_REGION_FRACTION * math.prod(sheet.size)
+                ):
+                    raise LocatedError.at(
+                        ("views", index, "dimensions", position, "region", "box_px"),
+                        f"{dim['name']}.region must cover less than "
+                        f"{MAX_DIMENSION_REGION_FRACTION:.0%} of {output['name']}'s "
+                        "image area. Tighten the box around this dimension's "
+                        "text, symbols and dimension/extension/leader lines; "
+                        "do not expand it to enclose the dimensioned feature.",
+                    )
 
     for index, (feature, output) in enumerate(
         zip(interpretation.features, data["features"])

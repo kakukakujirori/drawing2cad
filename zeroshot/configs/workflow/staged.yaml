@@ -18,7 +18,7 @@ workflow:
     timeout_seconds: 180.0
     distance_clip_px: 12.0  # null: normalize colors by each image's maximum distance
     alignment_options:
-      relative_scale: [0.45, 0.90]
+      relative_scale: [0.45, 1.1]
       rotation_degrees: 1.0  # drawings are axis-aligned; wider fits a rotated wrong pose
 
       pyramid: [0.5, 1.0]

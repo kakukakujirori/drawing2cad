@@ -129,9 +129,7 @@ def test_full_page_and_separate_files_use_referenced_regions_and_own_measurement
         dimension["name"] = f"dim_top_{index}"
         dimension["measured_length"] /= 2
         # The callout is on the original page, but length was measured on top.png.
-        dimension["region"].update(
-            view="view_full_page", box_px=(1800, 700, 2200, 1000)
-        )
+        dimension["region"].update(view="view_full_page", box_px=(1800, 700, 2200, 980))
     page_dimensions = deepcopy(front["dimensions"])
     for index, dimension in enumerate(page_dimensions):
         dimension["name"] = f"dim_page_{index}"
@@ -167,7 +165,7 @@ def test_full_page_and_separate_files_use_referenced_regions_and_own_measurement
     assert whole.region.box_uv == pytest.approx((0, 0, 120, 150))
     assert front.region.box_uv == pytest.approx((5, 70, 65, 140))
     assert top.region.box_uv == pytest.approx((75, 105, 105, 145))
-    assert top.dimensions[0].region.box_uv == pytest.approx((90, 100, 110, 115))
+    assert top.dimensions[0].region.box_uv == pytest.approx((90, 101, 110, 115))
     evidence = accepted.features[0].evidence
     assert evidence[0].box_uv == pytest.approx((56, 38.9, 64.2, 45.6))
     assert evidence[1].box_uv == pytest.approx((20, 120, 60, 140))
@@ -464,7 +462,7 @@ def test_image_diagonal_limits_linear_measurements_only(
     data["views"][0]["region"]["box_px"] = (0, 0, 100, 100)
     for dimension in data["views"][0]["dimensions"]:
         dimension["kind"] = kind
-        dimension["region"]["box_px"] = (0, 0, 100, 100)
+        dimension["region"]["box_px"] = (0, 0, 20, 80)
     submitted = DrawingInterpretation.model_validate(data)
     if kind == "linear":
         with pytest.raises(ValueError, match="diagonal"):
@@ -579,3 +577,27 @@ def test_a_page_without_a_front_view_is_placed_against_nothing(tmp_path: Path) -
         View.TOP,
         View.RIGHT,
     ]
+
+
+def test_dimension_citing_parent_is_limited_by_its_containing_view(tmp_path):
+    data = raster_case(tmp_path).model_dump()
+    Image.new("RGB", (2400, 3000), "white").save(tmp_path / "page.png")
+    data["views"][0]["region"].update(view="view_page", box_px=(100, 200, 1300, 1600))
+    data["views"].append(
+        {
+            "name": "view_page",
+            "role": "full_page",
+            "file": "page.png",
+            "region": {"view": "view_page", "box_px": (0, 0, 2400, 3000)},
+            "dimensions": [],
+        }
+    )
+    data["views"][0]["dimensions"][0]["region"].update(
+        view="view_page", box_px=(100, 200, 700, 900)
+    )
+    # 25% of the crop but only 5.8% of the parent: changing the cited file
+    # must not relax the same dimension's limit.
+    with pytest.raises(LocatedError, match="less than 25% of view_front"):
+        validate_interpretation(
+            DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
+        )

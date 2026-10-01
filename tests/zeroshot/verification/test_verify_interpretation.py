@@ -507,3 +507,24 @@ def test_native_dxf_input_and_derived_dxf_do_not_require_raster_crop_checks(
         view.image_size is None and view.scale is None for view in accepted.views
     )
     assert accepted.views[-1].region.box_uv == candidate.views[-1].region.box_uv
+
+
+@pytest.mark.parametrize("box", [(0, 0, 600, 700), (0, 0, 1200, 1400)])
+def test_oversized_dimension_bbox_is_refused_until_tightened(tmp_path, box):
+    verifier, candidate, _ = _case(tmp_path)
+    dimension = candidate.views[1].dimensions[0]
+    dimension.region = dimension.region.model_copy(update={"box_px": box})
+    submitted = candidate.model_dump_json()
+    verifier.source_path.write_text(submitted)
+
+    feedback = verifier.feedback()[0]["text"]
+    assert not verifier.confirmed
+    assert "$.views[1].dimensions[0].region.box_px" in feedback
+    assert "less than 25%" in feedback
+    assert verifier.source_path.read_text() == submitted
+
+    # One pixel below the boundary is accepted after resubmission.
+    dimension.region = dimension.region.model_copy(update={"box_px": (0, 0, 600, 699)})
+    verifier.source_path.write_text(candidate.model_dump_json())
+    verifier.feedback()
+    assert verifier.confirmed

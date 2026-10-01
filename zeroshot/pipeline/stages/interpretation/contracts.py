@@ -172,7 +172,11 @@ class Dimension(Contract):
     )
     region: Region = Field(
         ...,
-        description="Region containing the printed callout and its indicated target; may refer to an original input view even when the measurement is on another view's file.",
+        description=(
+            "Tight Region around this dimension's printed text/symbols and "
+            "dimension, extension and leader lines; do not expand it to enclose "
+            "the dimensioned feature. May refer to an original input view."
+        ),
     )
     quantity: int = Field(
         ...,
