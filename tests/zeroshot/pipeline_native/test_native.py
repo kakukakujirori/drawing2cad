@@ -19,6 +19,9 @@ from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from zeroshot.pipeline_native.connection_retry import (
     ConnectionRetryMiddleware,
 )
+from zeroshot.pipeline_native.turn_limit import (
+    TurnLimitMiddleware,
+)
 from zeroshot.pipeline.workflow.middleware.stateless_reasoning import (
     StatelessReasoningMiddleware,
 )
@@ -118,6 +121,7 @@ def test_native_runs_two_tools_preserves_reasoning_and_requires_model_file(
             ToolErrorMiddleware,
             ConnectionRetryMiddleware,
             StatelessReasoningMiddleware,
+            TurnLimitMiddleware,
         ),
         (ConnectionRetryMiddleware, StatelessReasoningMiddleware),
     ]
@@ -623,3 +627,28 @@ def test_native_non_retryable_error_fails_immediately(tmp_path, monkeypatch):
     assert events[-1]["data"]["error_type"] == "BadRequestError"
 
 
+def test_native_turn_limit_exceeded_marks_completed_and_skips_retrospective(tmp_path):
+    config = _config(tmp_path, "max_turns=2", "on_existing=skip")
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("load_image", {"image_path": "/work/missing.png"}, "c1"),
+            tool_call("load_image", {"image_path": "/work/missing.png"}, "c2"),
+            tool_call("load_image", {"image_path": "/work/missing.png"}, "c3"),
+        )
+    )
+    result = runner.run(config, model=model)
+    assert result is not None
+    assert result.get("status") == "turn_limit_exceeded"
+
+    directory = Path(config.artifact_root) / config.sample.sample_id
+    assert (directory / "workspace/model.py").is_file()
+    assert (directory / "messages.json").is_file()
+    assert not (directory / "reasoning_traj.md").exists()
+
+    events = _events(config)
+    assert events[-1]["event"] == "run_completed"
+    assert events[-1]["data"]["status"] == "turn_limit_exceeded"
+    assert any(e["event"] == "turn_limit_exceeded" for e in events)
+
+    # Running again with on_existing=skip must return None (skipped as completed)
+    assert runner.run(config, model=model) is None

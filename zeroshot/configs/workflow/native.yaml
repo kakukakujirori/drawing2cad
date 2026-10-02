@@ -11,6 +11,7 @@ workflow:
 artifact_root: outputs/zeroshot_native
 console: true
 model_retries: 5
+max_turns: 25
 
 # fail: refuse existing runs; skip: skip completed generations, refuse incomplete
 # ones; retry: skip completed generations and restart failed/interrupted ones.

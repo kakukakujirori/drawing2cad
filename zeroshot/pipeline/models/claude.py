@@ -102,9 +102,14 @@ def _image_parts(content: Any) -> list[dict[str, Any]]:
         if isinstance(part, dict):
             if part.get("type") in {"image_url", "image"}:
                 parts.append(part)
-            elif part.get("type") == "tool_result" and isinstance(part.get("content"), list):
+            elif part.get("type") == "tool_result" and isinstance(
+                part.get("content"), list
+            ):
                 for subpart in part["content"]:
-                    if isinstance(subpart, dict) and subpart.get("type") in {"image_url", "image"}:
+                    if isinstance(subpart, dict) and subpart.get("type") in {
+                        "image_url",
+                        "image",
+                    }:
                         parts.append(subpart)
     return parts
 
@@ -114,9 +119,12 @@ def _cap_tool_images(messages: list[dict[str, Any]], limit: int) -> None:
     originals = sum(
         len(_image_parts(msg.get("content")))
         for msg in messages
-        if msg.get("role") != "user" or not any(
+        if msg.get("role") != "user"
+        or not any(
             isinstance(p, dict) and p.get("type") == "tool_result"
-            for p in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+            for p in (
+                msg.get("content") if isinstance(msg.get("content"), list) else []
+            )
         )
     )
     if originals > limit:
@@ -139,10 +147,12 @@ def _cap_tool_images(messages: list[dict[str, Any]], limit: int) -> None:
                                 remaining -= 1
                                 new_subcontent.append(subpart)
                             else:
-                                new_subcontent.append({
-                                    "type": "text",
-                                    "text": "[Previous tool image trimmed to stay within context limit]",
-                                })
+                                new_subcontent.append(
+                                    {
+                                        "type": "text",
+                                        "text": "[Previous tool image trimmed to stay within context limit]",
+                                    }
+                                )
                         else:
                             new_subcontent.append(subpart)
                     part["content"] = new_subcontent
@@ -176,14 +186,16 @@ def _format_messages_for_anthropic(
                             if url.startswith("data:"):
                                 header, b64_data = url.split(",", 1)
                                 media_type = header.split(";")[0].split(":")[1]
-                                parts.append({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": b64_data,
-                                    },
-                                })
+                                parts.append(
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": media_type,
+                                            "data": b64_data,
+                                        },
+                                    }
+                                )
                             else:
                                 raise ValueError(
                                     f"Unsupported image_url format (expected data URL): {url[:40]}..."
@@ -205,12 +217,14 @@ def _format_messages_for_anthropic(
                         parts.append({"type": "text", "text": item.get("text", "")})
             if msg.tool_calls:
                 for tc in msg.tool_calls:
-                    parts.append({
-                        "type": "tool_use",
-                        "id": tc["id"],
-                        "name": tc["name"],
-                        "input": tc["args"],
-                    })
+                    parts.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc["id"],
+                            "name": tc["name"],
+                            "input": tc["args"],
+                        }
+                    )
             formatted_messages.append({"role": "assistant", "content": parts})
         elif isinstance(msg, ToolMessage):
             tool_content: Any
@@ -224,20 +238,24 @@ def _format_messages_for_anthropic(
                     elif isinstance(item, dict):
                         itype = item.get("type")
                         if itype == "text":
-                            tool_parts.append({"type": "text", "text": item.get("text", "")})
+                            tool_parts.append(
+                                {"type": "text", "text": item.get("text", "")}
+                            )
                         elif itype == "image_url":
                             url = item.get("image_url", {}).get("url", "")
                             if isinstance(url, str) and url.startswith("data:"):
                                 header, b64_data = url.split(",", 1)
                                 media_type = header.split(";")[0].split(":")[1]
-                                tool_parts.append({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": b64_data,
-                                    },
-                                })
+                                tool_parts.append(
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": media_type,
+                                            "data": b64_data,
+                                        },
+                                    }
+                                )
                         elif itype == "image":
                             tool_parts.append(item)
                         else:
@@ -246,22 +264,26 @@ def _format_messages_for_anthropic(
             else:
                 tool_content = str(msg.content)
 
-            formatted_messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": msg.tool_call_id,
-                        "content": tool_content,
-                        "is_error": msg.status == "error",
-                    }
-                ],
-            })
+            formatted_messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": msg.tool_call_id,
+                            "content": tool_content,
+                            "is_error": msg.status == "error",
+                        }
+                    ],
+                }
+            )
         else:
-            formatted_messages.append({
-                "role": "user",
-                "content": [{"type": "text", "text": str(msg.content)}],
-            })
+            formatted_messages.append(
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": str(msg.content)}],
+                }
+            )
 
     # Anthropic requires strict role alternation (user -> assistant -> user).
     # Merge consecutive messages sharing the same role.
@@ -282,9 +304,13 @@ def _format_messages_for_anthropic(
 class ChatClaude(BaseChatModel):
     """ChatModel targeting Anthropic Claude using Claude subscription OAuth credentials."""
 
-    model: str = Field(default="claude-sonnet-5", description="Anthropic model identifier")
+    model: str = Field(
+        default="claude-sonnet-5", description="Anthropic model identifier"
+    )
     max_tokens: int = Field(default=128000, description="Max tokens to generate")
-    temperature: float | None = Field(default=None, description="Sampling temperature (0.0 to 1.0)")
+    temperature: float | None = Field(
+        default=None, description="Sampling temperature (0.0 to 1.0)"
+    )
     thinking: dict[str, Any] | None = Field(
         default=None,
         description="Extended thinking configuration, e.g. {'type': 'adaptive'}",
@@ -374,9 +400,7 @@ class ChatClaude(BaseChatModel):
             f"x-anthropic-billing-header: cc_version=2.1.284.12a; cc_entrypoint=sdk-cli; "
             f"cch=00000; cc_prompt_id={prompt_id}; cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;"
         )
-        system_blocks: list[dict[str, Any]] = [
-            {"type": "text", "text": billing_header}
-        ]
+        system_blocks: list[dict[str, Any]] = [{"type": "text", "text": billing_header}]
         if system_prompt:
             system_blocks.append({"type": "text", "text": system_prompt})
 
@@ -469,23 +493,29 @@ class ChatClaude(BaseChatModel):
         for block in data.get("content", []):
             btype = block.get("type")
             if btype == "thinking":
-                content_parts.append({
-                    "type": "reasoning",
-                    "reasoning": block.get("thinking", ""),
-                    "signature": block.get("signature", ""),
-                })
+                content_parts.append(
+                    {
+                        "type": "reasoning",
+                        "reasoning": block.get("thinking", ""),
+                        "signature": block.get("signature", ""),
+                    }
+                )
             elif btype == "text":
-                content_parts.append({
-                    "type": "text",
-                    "text": block.get("text", ""),
-                })
+                content_parts.append(
+                    {
+                        "type": "text",
+                        "text": block.get("text", ""),
+                    }
+                )
             elif btype == "tool_use":
-                tool_calls.append({
-                    "id": block.get("id"),
-                    "name": block.get("name"),
-                    "args": block.get("input", {}),
-                    "type": "tool_call",
-                })
+                tool_calls.append(
+                    {
+                        "id": block.get("id"),
+                        "name": block.get("name"),
+                        "args": block.get("input", {}),
+                        "type": "tool_call",
+                    }
+                )
 
         ai_msg = AIMessage(
             content=content_parts if content_parts else "",
@@ -528,7 +558,7 @@ class ChatClaude(BaseChatModel):
                 for line in resp.iter_lines():
                     if not line or not line.startswith("data: "):
                         continue
-                    data_str = line[len("data: "):].strip()
+                    data_str = line[len("data: ") :].strip()
                     if data_str == "[DONE]":
                         break
                     try:
@@ -561,11 +591,13 @@ class ChatClaude(BaseChatModel):
                             yield ChatGenerationChunk(message=chunk)
                         elif btype == "thinking" and block.get("thinking"):
                             chunk = AIMessageChunk(
-                                content=[{
-                                    "type": "reasoning",
-                                    "reasoning": block.get("thinking", ""),
-                                    "index": current_block_index,
-                                }]
+                                content=[
+                                    {
+                                        "type": "reasoning",
+                                        "reasoning": block.get("thinking", ""),
+                                        "index": current_block_index,
+                                    }
+                                ]
                             )
                             yield ChatGenerationChunk(message=chunk)
                     elif etype == "content_block_delta":
@@ -574,11 +606,13 @@ class ChatClaude(BaseChatModel):
                         if dtype == "thinking_delta":
                             text = delta.get("thinking", "")
                             chunk = AIMessageChunk(
-                                content=[{
-                                    "type": "reasoning",
-                                    "reasoning": text,
-                                    "index": current_block_index,
-                                }]
+                                content=[
+                                    {
+                                        "type": "reasoning",
+                                        "reasoning": text,
+                                        "index": current_block_index,
+                                    }
+                                ]
                             )
                             if run_manager:
                                 run_manager.on_llm_new_token(
@@ -589,21 +623,25 @@ class ChatClaude(BaseChatModel):
                         elif dtype == "signature_delta":
                             sig = delta.get("signature", "")
                             chunk = AIMessageChunk(
-                                content=[{
-                                    "type": "reasoning",
-                                    "signature": sig,
-                                    "index": current_block_index,
-                                }]
+                                content=[
+                                    {
+                                        "type": "reasoning",
+                                        "signature": sig,
+                                        "index": current_block_index,
+                                    }
+                                ]
                             )
                             yield ChatGenerationChunk(message=chunk)
                         elif dtype == "text_delta":
                             text = delta.get("text", "")
                             chunk = AIMessageChunk(
-                                content=[{
-                                    "type": "text",
-                                    "text": text,
-                                    "index": current_block_index,
-                                }]
+                                content=[
+                                    {
+                                        "type": "text",
+                                        "text": text,
+                                        "index": current_block_index,
+                                    }
+                                ]
                             )
                             if run_manager:
                                 run_manager.on_llm_new_token(
@@ -630,7 +668,10 @@ class ChatClaude(BaseChatModel):
                         stop_reason = event.get("delta", {}).get("stop_reason")
                         chunk = AIMessageChunk(
                             content="",
-                            response_metadata={"stop_reason": stop_reason, "usage": usage},
+                            response_metadata={
+                                "stop_reason": stop_reason,
+                                "usage": usage,
+                            },
                         )
                         yield ChatGenerationChunk(message=chunk)
 
@@ -663,7 +704,7 @@ class ChatClaude(BaseChatModel):
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data: "):
                         continue
-                    data_str = line[len("data: "):].strip()
+                    data_str = line[len("data: ") :].strip()
                     if data_str == "[DONE]":
                         break
                     try:
@@ -696,11 +737,13 @@ class ChatClaude(BaseChatModel):
                             yield ChatGenerationChunk(message=chunk)
                         elif btype == "thinking" and block.get("thinking"):
                             chunk = AIMessageChunk(
-                                content=[{
-                                    "type": "reasoning",
-                                    "reasoning": block.get("thinking", ""),
-                                    "index": current_block_index,
-                                }]
+                                content=[
+                                    {
+                                        "type": "reasoning",
+                                        "reasoning": block.get("thinking", ""),
+                                        "index": current_block_index,
+                                    }
+                                ]
                             )
                             yield ChatGenerationChunk(message=chunk)
                     elif etype == "content_block_delta":
@@ -709,11 +752,13 @@ class ChatClaude(BaseChatModel):
                         if dtype == "thinking_delta":
                             text = delta.get("thinking", "")
                             chunk = AIMessageChunk(
-                                content=[{
-                                    "type": "reasoning",
-                                    "reasoning": text,
-                                    "index": current_block_index,
-                                }]
+                                content=[
+                                    {
+                                        "type": "reasoning",
+                                        "reasoning": text,
+                                        "index": current_block_index,
+                                    }
+                                ]
                             )
                             if run_manager:
                                 await run_manager.on_llm_new_token(
@@ -724,21 +769,25 @@ class ChatClaude(BaseChatModel):
                         elif dtype == "signature_delta":
                             sig = delta.get("signature", "")
                             chunk = AIMessageChunk(
-                                content=[{
-                                    "type": "reasoning",
-                                    "signature": sig,
-                                    "index": current_block_index,
-                                }]
+                                content=[
+                                    {
+                                        "type": "reasoning",
+                                        "signature": sig,
+                                        "index": current_block_index,
+                                    }
+                                ]
                             )
                             yield ChatGenerationChunk(message=chunk)
                         elif dtype == "text_delta":
                             text = delta.get("text", "")
                             chunk = AIMessageChunk(
-                                content=[{
-                                    "type": "text",
-                                    "text": text,
-                                    "index": current_block_index,
-                                }]
+                                content=[
+                                    {
+                                        "type": "text",
+                                        "text": text,
+                                        "index": current_block_index,
+                                    }
+                                ]
                             )
                             if run_manager:
                                 await run_manager.on_llm_new_token(
@@ -765,7 +814,10 @@ class ChatClaude(BaseChatModel):
                         stop_reason = event.get("delta", {}).get("stop_reason")
                         chunk = AIMessageChunk(
                             content="",
-                            response_metadata={"stop_reason": stop_reason, "usage": usage},
+                            response_metadata={
+                                "stop_reason": stop_reason,
+                                "usage": usage,
+                            },
                         )
                         yield ChatGenerationChunk(message=chunk)
 
