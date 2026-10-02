@@ -21,7 +21,19 @@ def _send_out_of_order(pairs, connection, **_options):
     try:
         for index in reversed(range(len(pairs))):
             connection.send(
-                (index, DrawingDiffReport(*pairs[index], stats={"index": index}))
+                (
+                    index,
+                    DrawingDiffReport(
+                        *pairs[index],
+                        stats={
+                            "index": index,
+                            "scale": _options["drawing_scales"][index],
+                            "tolerance": _options["alignment_options"][
+                                "scale_tolerance"
+                            ],
+                        },
+                    ),
+                )
             )
     finally:
         connection.close()
@@ -109,8 +121,12 @@ def test_start_failure_closes_both_pipe_ends(monkeypatch, tmp_path):
 
 def test_results_keep_input_order_when_worker_sends_out_of_order(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "run_worker", _send_out_of_order)
-    reports = DrawingDiffExecutor(timeout_seconds=20).execute(_pairs(tmp_path))
+    reports = DrawingDiffExecutor(
+        timeout_seconds=20, alignment_options={"scale_tolerance": 0.02}
+    ).execute(_pairs(tmp_path), drawing_scales=[0.25, None])
     assert [report.stats["index"] for report in reports] == [0, 1]
+    assert [report.stats["scale"] for report in reports] == [0.25, None]
+    assert all(report.stats["tolerance"] == 0.02 for report in reports)
     assert [
         (report.drawing_path, report.projection_path) for report in reports
     ] == _pairs(tmp_path)
@@ -188,6 +204,8 @@ def test_worker_saves_diff_pngs_beside_projection(tmp_path, monkeypatch):
         ({"timeout_seconds": 0}, "timeout_seconds"),
         ({"timeout_seconds": -1}, "timeout_seconds"),
         ({"distance_clip_px": 0}, "distance_clip_px"),
+        ({"alignment_options": {"scale_tolerance": 0}}, "scale_tolerance"),
+        ({"alignment_options": {"scale_tolerance": float("nan")}}, "scale_tolerance"),
     ],
 )
 def test_invalid_executor_settings_fail_at_construction(settings, name):
@@ -199,6 +217,7 @@ def test_invalid_executor_settings_fail_at_construction(settings, name):
     ("backend", "options"),
     [
         ("directional_chamfer", {"scale_step": 0}),
+        ("directional_chamfer", {"outline_weight": 1.1}),
         ("match_anything", {"ransac_max_iter": 0}),
     ],
 )
@@ -210,3 +229,78 @@ def test_backend_options_fail_at_construction(backend, options):
 def test_image_max_is_allowed():
     executor = DrawingDiffExecutor(distance_clip_px=None)
     assert executor.distance_clip_px is None
+
+
+@pytest.mark.parametrize("scales", [[], [0, None], [float("nan"), None]])
+def test_invalid_pair_scales_are_rejected_before_start(tmp_path, scales):
+    with pytest.raises(ValueError, match="drawing_scales"):
+        DrawingDiffExecutor().execute(_pairs(tmp_path), drawing_scales=scales)
+
+
+@pytest.mark.parametrize("tolerance", [None, 0.02])
+def test_worker_uses_dxf_raster_bounds_for_calibrated_scale(
+    tmp_path, monkeypatch, tolerance
+):
+    import ezdxf
+
+    drawing, projection = tmp_path / "drawing.png", tmp_path / "right.png"
+    Image.new("RGB", (500, 800), "white").save(drawing)
+    Image.new("RGB", (480, 640), "white").save(projection)
+    doc = ezdxf.new()
+    doc.modelspace().add_lwpolyline([(0, 0), (30, 0), (30, 40), (0, 40)], close=True)
+    doc.saveas(projection.with_suffix(".dxf"))
+    captured = []
+
+    def align(*_args, **kwargs):
+        captured.append(kwargs["options"])
+        return AlignmentResult("directional_chamfer", "similarity", "failed", None, {})
+
+    monkeypatch.setattr(worker, "align", align)
+    backend_options = {"rotation_degrees": 1, "relative_scale": (0.45, 1.1)}
+    options = backend_options.copy()
+    if tolerance is not None:
+        options["scale_tolerance"] = tolerance
+    original_options = options.copy()
+    report = worker.run_align_diff_save(
+        drawing, projection, alignment_options=options, drawing_mm_per_pixel=0.125
+    )
+    # DXF margin = 30*.04=1.2 mm. Average the two raster axes' rounding error.
+    source_scale = (32.4 / 480 + 42.4 / 640) / 2
+    expected = source_scale / 0.125 * 640 / 800
+    expected_tolerance = 0.01 if tolerance is None else tolerance
+    np.testing.assert_allclose(
+        captured[-1]["relative_scale"],
+        [expected * (1 - expected_tolerance), expected * (1 + expected_tolerance)],
+    )
+    assert "scale_tolerance" not in captured[-1]
+    assert options == original_options  # pair-specific, no shared mutation
+    assert report.alignment.diagnostics["scale_calibration"] == {
+        "status": "applied",
+        "expected_pixel_scale": source_scale / 0.125,
+    }
+
+    report = worker.run_align_diff_save(
+        drawing,
+        projection,
+        model="affine",
+        alignment_options=options,
+        drawing_mm_per_pixel=0.125,
+    )
+    assert captured[-1] == backend_options
+    assert report.alignment.diagnostics["scale_calibration"]["status"] == "unavailable"
+
+    projection.with_suffix(".dxf").unlink()
+    report = worker.run_align_diff_save(
+        drawing, projection, alignment_options=options, drawing_mm_per_pixel=0.125
+    )
+    assert captured[-1] == backend_options
+    assert (
+        report.alignment.diagnostics["scale_calibration"]["reason"]
+        == "projection DXF unavailable"
+    )
+    report = worker.run_align_diff_save(drawing, projection, alignment_options=options)
+    assert captured[-1] == backend_options
+    assert (
+        report.alignment.diagnostics["scale_calibration"]["reason"]
+        == "input scale unavailable"
+    )

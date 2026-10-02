@@ -1,6 +1,6 @@
 """Robust CAD-line registration, mapping CAD pixels -> drawing pixels.
 
-CPU-only, no learned features, no annotation removal. A grid search over
+CPU-only, no learned features. A grid search over
 similarity scale and rotation, exhaustive in translation, is followed by local
 similarity/affine/homography refinement. This is heuristic optimization, NOT a
 certificate of global optimality.
@@ -18,15 +18,16 @@ import math
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import cv2
 import numpy as np
-from scipy.ndimage import gaussian_filter, map_coordinates
+from scipy.ndimage import binary_fill_holes, gaussian_filter, map_coordinates
 from scipy.optimize import minimize
 from scipy.spatial import cKDTree
+from skimage.morphology import skeletonize
 
-if __package__:
+if TYPE_CHECKING or __package__:
     from .image_ops import distance_map, foreground_mask
 else:  # Preserve direct-file CLI execution alongside package imports.
     from image_ops import distance_map, foreground_mask
@@ -36,13 +37,14 @@ else:  # Preserve direct-file CLI execution alongside package imports.
 class Config:
     model: Literal["similarity", "affine", "homography"] = "similarity"
     loss: Literal["welsch", "cauchy", "squared"] = "welsch"
-    # Object extent / drawing's longest image dimension, not pixel scale.
+    # Pixel magnification * source's longest image side / drawing's longest side.
     relative_scale: tuple[float, float] = (0.45, 0.90)
     rotation_degrees: float = 10.0
     tau: float = 3.0
     orientation_weight: float = 3.0  # drawing pixels / radian; 0 disables it
     direction_bins: int = 12
     balance_power: float = 0.0  # 0: equal point weights; 1: equal direction bins
+    outline_weight: float = 0.8  # source outer pixels: input outline vs all input ink
     pyramid: tuple[float, ...] = (0.5, 1.0)
     # Grid of the global search: log scale and degrees.
     scale_step: float = 0.02
@@ -66,6 +68,8 @@ class Config:
             raise ValueError("Invalid loss/regularization scale")
         if self.direction_bins < 4 or not 0 <= self.balance_power <= 1:
             raise ValueError("Invalid orientation settings")
+        if not 0 <= self.outline_weight <= 1:
+            raise ValueError("outline_weight must be in [0, 1]")
         if self.top_k < 1:
             raise ValueError("top_k must be positive")
         if self.scale_step <= 0 or self.rotation_step <= 0:
@@ -88,7 +92,9 @@ class Config:
             )
 
 
-def validate_options(model: str, options: dict[str, Any]) -> dict[str, Any]:
+def validate_options(
+    model: Literal["similarity", "affine", "homography"], options: dict[str, Any]
+) -> dict[str, Any]:
     """Validate common-API overrides and return the effective Chamfer settings."""
     # Keep all defaults and search constraints in the optimizer's existing Config.
     try:
@@ -122,7 +128,7 @@ def estimate_transform(
     # Preserve CAD→drawing optimization to avoid fitting annotation lines to CAD.
     drawing_gray = cv2.cvtColor(drawing_rgb, cv2.COLOR_RGB2GRAY)
     projection_gray = cv2.cvtColor(projection_rgb, cv2.COLOR_RGB2GRAY)
-    config = Config(**(options | {"model": model}))
+    config = Config(**options)
     raw = register(projection_gray, drawing_gray, config)
     diagnostics["chamfer"] = raw
     diagnostics["chamfer_distance_frame"] = "drawing pixels"
@@ -165,6 +171,46 @@ def features(ink: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     angle = (0.5 * np.arctan2(2 * xy, xx - yy) + np.pi / 2) % np.pi
     y, x = np.nonzero(ink)
     return np.column_stack((x, y)).astype(np.float64), angle[y, x]
+
+
+def external_boundary(ink: np.ndarray, *, drawing: bool = False) -> np.ndarray:
+    """CAD silhouette, or the centre strokes of a drawing's largest filled part."""
+    if drawing:
+        # Do not close input gaps: that can join dimension lines to the part.
+        area = binary_fill_holes(ink).astype(np.uint8)
+        area = cv2.morphologyEx(
+            area,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+        )
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(area)
+        if count == 1:
+            # Open/thin drawings retain the all-ink objective.
+            return np.zeros_like(ink)
+        # ponytail: one part per view; assemblies need per-part outlines.
+        area = (labels == 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])).astype(np.uint8)
+    else:
+        closed = cv2.morphologyEx(
+            ink.astype(np.uint8),
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+        )
+        area = binary_fill_holes(closed).astype(np.uint8)
+    eroded = np.asarray(cv2.erode(area, np.ones((3, 3), np.uint8))).astype(bool)
+    boundary = area.astype(bool) & ~eroded
+    if drawing:
+        # ponytail: 5 px covers native crop strokes; adapt to stroke width for other DPI.
+        boundary = skeletonize(ink & (distance_map(boundary) <= 5))
+    return boundary
+
+
+def robust_loss(distance: np.ndarray, tau: float, loss: str) -> np.ndarray:
+    z = (distance / tau) ** 2
+    if loss == "welsch":
+        return -np.expm1(-0.5 * z)
+    if loss == "cauchy":
+        return np.log1p(z)
+    return z
 
 
 class DistanceBank:
@@ -240,10 +286,13 @@ class Objective:
         cfg: Config,
         source_visibility: np.ndarray | None = None,
     ):
+        # Set the image frames used by normalized transforms.
         self.cfg = cfg
         self.src_shape, self.dst_shape = src.shape, dst.shape
         self.Ls, self.Lt = float(max(src.shape)), float(max(dst.shape))
         self.center = (np.array(src.shape[::-1]) - 1) / 2
+
+        # Extract CAD stroke points and keep the observable ones.
         p, angle = features(src)
         if source_visibility is not None:
             if source_visibility.shape != src.shape:
@@ -252,22 +301,54 @@ class Objective:
             p, angle = p[valid], angle[valid]
         if len(p) < 8:
             raise ValueError("Too few visible source pixels")
+
+        # Normalize CAD coordinates and store their tangent vectors.
         self.visible_points = p.copy()
         self.points = p
         self.u = (p - self.center) / self.Ls
         self.tangents = np.column_stack((np.cos(angle), np.sin(angle)))
+
+        # Balance point weights across stroke directions.
         bins = (
             np.rint(angle * cfg.direction_bins / np.pi).astype(int) % cfg.direction_bins
         )
         weights = np.maximum(
-            np.bincount(bins, minlength=cfg.direction_bins)[bins], 1
+            np.bincount(bins, minlength=cfg.direction_bins)[bins].astype(float), 1
         ) ** (-cfg.balance_power)
         self.weights = weights / weights.sum()
+
+        # Build distance fields for all input drawing strokes.
         target_points, target_angles = features(dst)
         self.banks = [
             DistanceBank(dst.shape, target_points, target_angles, q, cfg)
             for q in cfg.pyramid
         ]
+
+        # Extract the input outline for the outer-stroke objective.
+        self.target_outline = (
+            external_boundary(dst, drawing=True) if cfg.outline_weight else None
+        )
+        self.outer = np.zeros(len(p), dtype=bool)
+        self.outline_banks = []
+        if self.target_outline is not None and self.target_outline.any():
+            # Identify CAD stroke points within 2 px of its outer boundary.
+            self.outer = (
+                distance_map(external_boundary(src))[
+                    p[:, 1].astype(int), p[:, 0].astype(int)
+                ]
+                <= 2
+            )
+
+            # Build distance fields for the input outline alone.
+            outline_points, outline_angles = features(self.target_outline)
+            self.outline_banks = [
+                DistanceBank(dst.shape, outline_points, outline_angles, q, cfg)
+                for q in cfg.pyramid
+            ]
+        else:
+            self.target_outline = None
+
+        # Store CAD image corners to compare candidate transforms.
         h, w = src.shape
         self.corners = np.array(
             [[0.0, 0.0], [w - 1.0, 0.0], [w - 1.0, h - 1.0], [0.0, h - 1.0]]
@@ -312,13 +393,15 @@ class Objective:
     def __call__(self, params: np.ndarray, level: int = -1) -> float:
         xy, angle = self.transform(params)
         d = self.banks[level].sample(xy, angle)
-        z = (d / self.cfg.tau) ** 2
-        if self.cfg.loss == "welsch":
-            rho = -np.expm1(-0.5 * z)  # bounded, smooth 0..1
-        elif self.cfg.loss == "cauchy":
-            rho = np.log1p(z)
-        else:
-            rho = z
+        rho = robust_loss(d, self.cfg.tau, self.cfg.loss)
+        if self.outline_banks:
+            outline_distance = self.outline_banks[level].sample(
+                xy[self.outer], angle[self.outer]
+            )
+            a = self.cfg.outline_weight
+            rho[self.outer] = (1 - a) * rho[self.outer] + a * robust_loss(
+                outline_distance, self.cfg.tau, self.cfg.loss
+            )
         score = float(self.weights @ rho)
         if len(params) > 4:
             limits = np.array(
@@ -414,11 +497,22 @@ def grid_search(objective: Objective, target: np.ndarray) -> list[np.ndarray]:
     Translation is exhaustive by correlation, so the result is deterministic.
     """
     cfg, q = objective.cfg, _COARSE_FACTOR
-    points, angles = features(target)
-    distance = DistanceBank(
-        target.shape, points, angles, q, replace(cfg, orientation_weight=0.0)
-    ).maps[0]
-    loss = (-np.expm1(-0.5 * (distance * q / cfg.tau) ** 2)).astype(np.float32)
+    masks, weights = [target], [objective.weights]
+    if objective.target_outline is not None:
+        a = cfg.outline_weight
+        masks.append(objective.target_outline)
+        weights = [
+            objective.weights * (1 - a * objective.outer),
+            objective.weights * a * objective.outer,
+        ]
+    losses = []
+    for mask in masks:
+        points = np.column_stack(np.nonzero(mask)[::-1])
+        angles = np.zeros(len(points))
+        distance = DistanceBank(
+            target.shape, points, angles, q, replace(cfg, orientation_weight=0.0)
+        ).maps[0]
+        losses.append(robust_loss(distance * q, cfg.tau, "welsch").astype(np.float32))
     h, w = target.shape
     u = (objective.visible_points - objective.center) / objective.Ls
     low, high = np.log(cfg.relative_scale)
@@ -431,14 +525,19 @@ def grid_search(objective: Objective, target: np.ndarray) -> list[np.ndarray]:
             offsets = q * objective.Lt * np.exp(log_scale) * (u @ [[c, s], [-s, c]])
             corner = np.floor(offsets.min(axis=0))
             cells = np.rint(offsets - corner).astype(int)
-            template = np.zeros(cells.max(axis=0)[::-1] + 1, np.float32)
-            np.add.at(template, (cells[:, 1], cells[:, 0]), 1.0 / len(cells))
-            th, tw = template.shape
-            # Placing the template off the drawing costs the maximum loss.
-            padded = cv2.copyMakeBorder(
-                loss, th, th, tw, tw, cv2.BORDER_CONSTANT, value=1.0
-            )
-            score = cv2.matchTemplate(padded, template, cv2.TM_CCORR)
+            shape = cells.max(axis=0)[::-1] + 1
+            th, tw = shape
+            score = None
+            for loss, weight in zip(losses, weights, strict=True):
+                template = np.zeros(shape, np.float32)
+                np.add.at(template, (cells[:, 1], cells[:, 0]), weight)
+                # Placing the template off the drawing costs the maximum loss.
+                padded = cv2.copyMakeBorder(
+                    loss, th, th, tw, tw, cv2.BORDER_CONSTANT, value=1.0
+                )
+                values = cv2.matchTemplate(padded, template, cv2.TM_CCORR)
+                score = values if score is None else score + values
+            assert score is not None
             # Template corner (x, y) puts the part centre at q*Lt*t below.
             ys, xs = np.mgrid[: score.shape[0], : score.shape[1]]
             tx = (xs - tw - corner[0]) / (q * objective.Lt)
@@ -506,6 +605,10 @@ def register(
         "fraction_within_2px": float(np.mean(geometric_distance <= 2)),
         "outside_fraction": float(1 - inside.mean()),
         "source_visibility_applied": source_visibility is not None,
+        "input_outline_loss_fraction": cfg.outline_weight
+        if objective.outline_banks
+        else 0.0,
+        "source_outline_point_fraction": float(objective.outer.mean()),
         # Keep diagnostics checkpointable: msgpack cannot encode NumPy scalars.
         "visible_source_ink_fraction": float(
             len(objective.visible_points) / np.count_nonzero(source)

@@ -1,3 +1,4 @@
+import math
 import multiprocessing as mp
 import time
 from collections.abc import Sequence
@@ -43,12 +44,15 @@ class DrawingDiffExecutor:
             raise ValueError("timeout_seconds must be positive")
         if distance_clip_px is not None and distance_clip_px <= 0:
             raise ValueError("distance_clip_px must be None or positive")
+        options = dict(alignment_options or {})
+        if not 0 < options.pop("scale_tolerance", 0.01) < 1:
+            raise ValueError("scale_tolerance must be in (0, 1)")
 
         if backend == "directional_chamfer":
             from .drawing_diff.directional_chamfer import validate_options
         else:
             from .drawing_diff.match_anything import validate_options
-        validate_options(model, alignment_options or {})
+        validate_options(model, options)
 
         self.backend = backend
         self.model = model
@@ -56,12 +60,28 @@ class DrawingDiffExecutor:
         self.distance_clip_px = distance_clip_px
         self.timeout_seconds = timeout_seconds
 
-    def execute(self, pairs: Sequence[tuple[Path, Path]]) -> list[DrawingDiffReport]:
+    def execute(
+        self,
+        pairs: Sequence[tuple[Path, Path]],
+        *,
+        drawing_scales: Sequence[float | None] | None = None,
+    ) -> list[DrawingDiffReport]:
+        """Compare pairs; drawing_scales are input millimetres per native pixel."""
+        scales = (
+            list(drawing_scales) if drawing_scales is not None else [None] * len(pairs)
+        )
+        if len(scales) != len(pairs) or any(
+            scale is not None and (not math.isfinite(scale) or scale <= 0)
+            for scale in scales
+        ):
+            raise ValueError(
+                "drawing_scales must contain one positive finite scale or None per pair"
+            )
         if not pairs:
             return []
 
         deadline = time.monotonic() + self.timeout_seconds
-        process, receiver = self._start(pairs)
+        process, receiver = self._start(pairs, scales)
         try:
             return self._collect(process, receiver, pairs, deadline)
         finally:
@@ -72,7 +92,7 @@ class DrawingDiffExecutor:
             receiver.close()
 
     def _start(
-        self, pairs: Sequence[tuple[Path, Path]]
+        self, pairs: Sequence[tuple[Path, Path]], drawing_scales: Sequence[float | None]
     ) -> tuple[BaseProcess, Connection]:
         # lazy import to prevent circular dependency
         from .drawing_diff.worker import run_worker
@@ -89,6 +109,7 @@ class DrawingDiffExecutor:
                     "model": self.model,
                     "alignment_options": self.alignment_options,
                     "distance_clip_px": self.distance_clip_px,
+                    "drawing_scales": drawing_scales,
                 },
             )
             process.start()

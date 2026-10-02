@@ -380,7 +380,8 @@ class OutputVerifier:
 
         # run the diff on the selected pairs
         raw_reports = self.diff_drawer.execute(
-            [(drawing, projection) for _, drawing, projection in selected]
+            [(drawing, projection) for _, drawing, projection in selected],
+            drawing_scales=[view.scale for view, _, _ in selected],
         )
 
         compared: dict[str, DrawingDiffReport] = {

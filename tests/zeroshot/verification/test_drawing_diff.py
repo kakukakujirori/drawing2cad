@@ -197,6 +197,59 @@ def test_chamfer_optimizer_recovers_a_transformed_line_drawing():
     assert np.max(np.linalg.norm(restored - (points + 0.5), axis=1)) < 1
 
 
+def test_input_outline_preserves_notch_but_excludes_dimension_lines():
+    ink = np.zeros((150, 180), np.uint8)
+    outline = np.array(
+        [
+            [20, 20],
+            [110, 20],
+            [110, 45],
+            [60, 45],
+            [60, 85],
+            [110, 85],
+            [110, 110],
+            [20, 110],
+        ]
+    )
+    cv2.polylines(ink, [outline], True, 1, 3)
+    cv2.line(ink, (20, 120), (110, 120), 1, 2)
+    cv2.line(ink, (20, 20), (20, 125), 1, 2)
+    boundary = chamfer.external_boundary(ink.astype(bool), drawing=True)
+    assert boundary[55:75, 59:62].any()  # concave notch, not a bounding rectangle
+    assert not boundary[119:].any()  # dimension and extension lines
+    assert not boundary[55:75, 90:115].any()  # no invented line closing the notch
+
+    cv2.line(ink := np.zeros_like(ink), (20, 20), (110, 110), 1, 1)
+    objective = chamfer.Objective(ink.astype(bool), ink.astype(bool), chamfer.Config())
+    assert objective.target_outline is None
+    assert not objective.outline_banks
+
+
+def test_outer_line_loss_mixes_with_all_ink_loss_and_keeps_regularization():
+    ink = np.zeros((90, 120), np.uint8)
+    cv2.rectangle(ink, (10, 10), (100, 75), 1, 2)
+    cv2.circle(ink, (45, 35), 8, 1, 2)
+    mask = ink.astype(bool)
+    p = np.array([0.5, 0.5, 0, 0, 0.01, 0.02])
+    for loss in ("welsch", "cauchy", "squared"):
+        objectives = [
+            chamfer.Objective(
+                mask,
+                mask,
+                chamfer.Config(
+                    model="affine",
+                    loss=loss,
+                    outline_weight=a,
+                    balance_power=1,
+                ),
+            )
+            for a in (0, 0.8, 1)
+        ]
+        assert objectives[1](p) == pytest.approx(
+            0.2 * objectives[0](p) + 0.8 * objectives[2](p)
+        )
+
+
 def test_rgb_loader_composites_alpha_without_exif_rotation(tmp_path):
     pixels = np.array(
         [[[255, 0, 0, 255], [0, 0, 0, 0], [0, 0, 255, 128]]], dtype=np.uint8

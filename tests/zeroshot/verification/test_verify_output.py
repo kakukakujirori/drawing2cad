@@ -568,9 +568,11 @@ class StubDiffDrawer:
         self.fatal = fatal
         self.chamfers = list(chamfers)  # one per call; None measures nothing
         self.calls = []
+        self.drawing_scales = []
 
-    def execute(self, pairs):
+    def execute(self, pairs, *, drawing_scales=None):
         self.calls.append(list(pairs))
+        self.drawing_scales.append(drawing_scales)
         if self.fatal:
             raise RuntimeError("comparison worker failed")
         chamfer = self.chamfers.pop(0) if self.chamfers else None
@@ -672,6 +674,7 @@ def test_diff_uses_final_render_and_feedback_formats_the_stored_reports(
         output_renders="path",
     )
     _set_input_crop(verifier, tmp_path)
+    verifier.interpretation.views[1].scale = 0.125
 
     report = verifier.verify()
     assert set(report.render_report) == {"ret_base", RESULT_NAME}
@@ -679,6 +682,7 @@ def test_diff_uses_final_render_and_feedback_formats_the_stored_reports(
     assert drawer.calls == [
         [(tmp_path / "front.png", _coding_attempt(tmp_path) / "projection/front.png")]
     ]
+    assert drawer.drawing_scales == [[0.125]]
     assert not verifier.confirmed  # Only feedback confirms the inspected build.
 
     blocks = verifier.feedback()
