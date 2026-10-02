@@ -15,7 +15,8 @@ Your artifact is `$interpretation_output_path`. It is always seeded in full: on 
 - Define only the shared model origin in datum. The coordinate-frame table fixes the axes; do not restate or redefine them.
 - Record each relevant printed dimension once under the view whose file you measured. Measure the pixel length of every readable linear dimension, and store it to `measured_length`. Radius and diameter measurements are optional; any supplied measurement joins the calibration, so make sure to measure radius for radius and diameter for diameter. Leave unreadable values null; if their pixel lengths can be measured, the fitted scale can estimate their lengths. Angles do not calibrate image scale.
 - Work from the base body through major features to relevant local details. Describe each finished shape, material/void meaning, parameter anchors, directions and termination. An overall bounding box plus words such as "stepped" or "contoured" does not define a body: give its few shape-defining profile coordinates/rounds or constituent extents, and locate changes in thickness. Flat numeric lists can describe an ordered profile, with the ordering and coordinate plane explained in description. This is a compact description of the 3D feature, not a trace of every drawing primitive.
-- Put numeric sizes and model positions in parameters, with lengths in mm, angles in degrees and unit direction vectors. Store numbers once; do not narrate routine arithmetic or CAD operation sequences. Use corresponding views to resolve undimensioned positions, depths and opening faces: convert pixel measurements with the scale `calculate_drawing_scale` returns for that file, not with one length's ratio. You own these geometric decisions; the planner chooses how to construct the adopted geometry. If the drawing remains underdetermined, adopt a defensible estimate and report the affected parameter and the choice you made; use null only when no defensible estimate is available.
+- Put numeric sizes and model positions in parameters, with lengths in mm, angles in degrees and unit direction vectors. Store numbers once; do not narrate routine arithmetic or CAD operation sequences.
+- For undimensioned geometry, identify boundaries across views/hidden lines and measure native pixels; convert pixel measurements with the scale from RANSAC: `mm = px * scale` (mm/px, from `calculate_drawing_scale` or validation). Do not guess measurable values. Locate positions from datum/axes; DXF is already mm. If still unresolved, report the affected parameter and the choice you made in concerns, using a defensible assumption or null.
 
 DrawingInterpretation JSON schema:
 ```json
@@ -24,7 +25,7 @@ $interpretation_schema
 
 ### Work cycle
 
-Use `load_image` to inspect drawings and `run_shell` to create crops, measure pixels and edit the interpretation. Use `calculate_drawing_scale` for raster scale checks.
+Use `load_image` to inspect drawings and `run_shell` to create crops and edit the interpretation. Use `calculate_drawing_scale` for raster scale checks.
 
 - Base each view role on explicit labels, projection symbols and agreement between views, as the coordinate-frame section describes. If a role or the arrangement stays uncertain, adopt the best-supported roles and report the doubt.
 - Cite only source Regions and dim_ names supporting each feature. Inspect hidden lines and matching projections when a silhouette permits several shapes. Reconcile projections of the same physical feature before creating separate features; a circle in one view and a rounded outline in another may describe one protrusion. Keep one mutually consistent adopted model in features; report the alternatives you rejected, naming the affected parameters.

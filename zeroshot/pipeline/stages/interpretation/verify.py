@@ -256,5 +256,9 @@ class InterpretationVerifier:
                 f"{self.workdir.sandbox_bind_dir / self.source_filename}: "
                 f"{'valid' if result.confirmed else 'invalid'}.\n"
                 + json.dumps({"errors": result.errors, "reports": summaries})
-            )
+            ),
+            create_text_block(
+                "\n\nWarning: Don't you leave any undimensioned features unmeasured? "
+                "Deduce them by = pix_len * RANSAC scale (mm/px)."
+            ),
         ]

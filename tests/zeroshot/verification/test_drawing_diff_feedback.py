@@ -64,6 +64,8 @@ def test_feedback_lists_input_and_keeps_failure_reasons(tmp_path):
     assert "view_top input: /work/inputs/top.png" in text
     assert "view_top error: projection unavailable" in text
     assert text.count("[Drawing comparison]") == 1
+    assert text.count("Comparison warnings/errors:") == 1
+    assert "Alignment log:" not in text
     assert "Alignment may be wrong or hide size errors" in text
     assert "Overlay images:" in text
     assert "view_front overlay: /work/projection/front_overlay.png" in text
@@ -103,6 +105,8 @@ def test_scores_show_changes_against_the_previous_build(tmp_path):
     assert "chamfer: 6.00 px (-2.00)" in text
     assert "Mean chamfer over 2 views: 5.50 px (-0.50)" in text
     assert "against verification 002" in text
+    assert "Comparison warnings/errors:" not in text
+    assert "Alignment log:" not in text
 
 
 def test_only_views_measured_both_times_are_compared(tmp_path):

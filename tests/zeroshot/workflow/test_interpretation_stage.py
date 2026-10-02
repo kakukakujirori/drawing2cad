@@ -99,6 +99,14 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
     assert len(verifications) == 2
     assert "full_page input is an unsplit page" in verifications[0]
     assert "valid." in verifications[1]
+    valid_feedback = next(
+        message
+        for message in model.received_messages[-1]
+        if '"inliers": "3/3"' in message.text
+    )
+    blocks = valid_feedback.content_blocks
+    assert json.loads(blocks[0]["text"].splitlines()[-1])["errors"] == []
+    assert blocks[-1]["text"].lstrip().startswith("Warning:")
 
 
 def _dxf_input(tmp_path):
