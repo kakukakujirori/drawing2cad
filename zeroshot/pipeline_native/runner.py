@@ -24,6 +24,9 @@ from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
+from zeroshot.pipeline_native.connection_retry import (
+    ConnectionRetryMiddleware,
+)
 from zeroshot.pipeline.workflow.middleware.stateless_reasoning import (
     StatelessReasoningMiddleware,
 )
@@ -209,12 +212,20 @@ def run(
                 log.write("prompt", {"system": prompt, "messages": messages})
                 if model is None:
                     model = instantiate(config.model)
+                model_retries = (
+                    int(retries)
+                    if (retries := config.get("model_retries")) is not None
+                    else 5
+                )
                 agent = create_agent(
                     model=model,
                     tools=[create_run_shell_tool(sandbox, workdir), load_image],
                     system_prompt=prompt,
                     middleware=[
                         ToolErrorMiddleware(on_error=_tool_error),
+                        ConnectionRetryMiddleware(
+                            max_retries=model_retries, role="generator"
+                        ),
                         StatelessReasoningMiddleware(),
                     ],
                     name="generator",
@@ -256,7 +267,12 @@ def run(
             raise
 
     _write_retrospective(
-        model, result["messages"], prompt, run_dir, bool(config.console)
+        model,
+        result["messages"],
+        prompt,
+        run_dir,
+        bool(config.console),
+        model_retries=model_retries,
     )
     return result
 
@@ -267,6 +283,8 @@ def _write_retrospective(
     system_prompt: str,
     run_dir: Path,
     console: bool,
+    *,
+    model_retries: int = 5,
 ) -> None:
     """Ask only after generation is saved; tools cannot modify its artifacts."""
     with EventLog(run_dir / "retrospective_events.jsonl", console=console) as log:
@@ -292,7 +310,12 @@ def _write_retrospective(
                 model=model,
                 tools=[],
                 system_prompt=system_prompt,
-                middleware=[StatelessReasoningMiddleware()],
+                middleware=[
+                    ConnectionRetryMiddleware(
+                        max_retries=model_retries, role="retrospective"
+                    ),
+                    StatelessReasoningMiddleware(),
+                ],
                 name="retrospective",
                 checkpointer=False,
             )

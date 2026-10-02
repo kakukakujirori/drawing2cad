@@ -8,10 +8,10 @@ there is no auditor, verifier, turn budget, structured submission, compaction,
 or answer-correction retry. An ordinary final answer ends generation. A missing,
 empty, or symlinked `model.py` is recorded as failure without asking again.
 
-The existing sandbox, two tools, OpenRouter adapter, and stateless-reasoning
+The existing sandbox, two tools, OpenRouter and direct Claude adapters, and stateless-reasoning
 middleware are reused unchanged. The native runner and logging remain separate.
-The shared middleware's package also imports workflow and verification definitions;
-the native agent installs only the stateless guard and tool-error handling.
+The native agent installs the stateless guard, tool-error handling, and `ConnectionRetryMiddleware`
+to retry transport failures (dropped streams, timeouts, HTTP 429/5xx) with backoff (`model_retries`, default 5).
 No new dependencies are required.
 
 After generation is saved, the runner asks the same model once for a chronological
@@ -30,7 +30,7 @@ From the repository/worktree root with the existing `drawing2cad` environment:
 python -m zeroshot.pipeline_native \
   model=gpt6_luna_codex \
   sample.sample_id=000364 \
-  artifact_root=outputs/native_luna
+  artifact_root=outputs/native_luna_6.0
 ```
 
 The default is GPT-6 Luna, `reasoning.effort=max`, `summary=detailed`, using the
@@ -40,19 +40,22 @@ model accepts images and reasoning with tool calls through Responses
 
 Prepared model configs (select with `model=...`):
 
-| Config | Model | Reasoning effort |
-| --- | --- | --- |
-| `gpt6_luna_codex` | GPT-6 Luna | `max` |
-| `gpt6_sol_codex` | GPT-6 Sol | `max` |
-| `gpt6_astra_codex` | GPT-6 Astra | `max` |
-| `opus5.5_openrouter` | Claude Opus 5.5 | `max` |
-| `sonnet5_openrouter` | Claude Sonnet 5 | `max` |
+| Config | Model | Reasoning effort | Integration / Authentication |
+| --- | --- | --- | --- |
+| `gpt6_luna_codex` | GPT-6 Luna (6.0) | `max` | Codex connection |
+| `gpt6_sol_codex` | GPT-6 Sol (6.0) | `max` | Codex connection |
+| `gpt6.1_sol_codex` | GPT-6.1 Sol (6.1) | `max` | Codex connection |
+| `gpt6_astra_codex` | GPT-6 Astra | `max` | Codex connection |
+| `opus5.5_claude` | Claude Opus 5.5 | `high` (adaptive) | Direct Claude (`zeroshot.pipeline.models.claude`) |
+| `opus5.5_openrouter` | Claude Opus 5.5 | `max` | OpenRouter (`OPENROUTER_API_KEY`) |
+| `sonnet5.5_claude` | Claude Sonnet 5.5 | `high` (adaptive) | Direct Claude (`zeroshot.pipeline.models.claude`) |
+| `sonnet5_openrouter` | Claude Sonnet 5 | `max` | OpenRouter (`OPENROUTER_API_KEY`) |
 
-The GPT configurations use the Codex connection. Claude configurations use
+The GPT configurations use the Codex connection. Claude direct configurations use
+OAuth / Anthropic API credentials (`claude auth login`). Claude OpenRouter configurations use
 OpenRouter and `OPENROUTER_API_KEY`; they request reasoning output and keep
-128,000 output tokens available for thinking plus the response. No extra model
-experiments are triggered by adding or composing configs. The initial Luna
-run used `xhigh`; the requested rerun uses `max` and the post-generation report.
+128,000 output tokens available for thinking plus the response. `model_retries`
+(default: `5`) controls the number of transport retry attempts on dropped streams or rate limits.
 
 Maximum efforts were checked against the official [Luna](https://developers.openai.com/api/docs/models/gpt-6-luna),
 [Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
@@ -81,7 +84,7 @@ To run or reissue a sweep:
 ```bash
 python -m zeroshot.pipeline_native --multirun \
   model=gpt6_luna_codex \
-  artifact_root=outputs/native_luna \
+  artifact_root=outputs/native_luna_6.0 \
   on_existing=retry \
   sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
 ```

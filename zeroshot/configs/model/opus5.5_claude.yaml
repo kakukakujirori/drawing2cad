@@ -1,0 +1,13 @@
+# @package _global_
+
+model:
+  _target_: zeroshot.pipeline.models.claude.ChatClaude
+  model: claude-opus-5-5
+  max_tokens: 128000
+  thinking:
+    type: adaptive
+    display: summarized
+    effort: xhigh
+  max_images_per_request: 4
+  timeout: 600.0
+  max_retries: 0
