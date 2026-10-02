@@ -802,7 +802,6 @@ def describe_drawing_diffs(
         Check Chamfer distances for quantitative deviation extent.
         NOTE: Alignment may be wrong or hide size errors.
 
-        Alignment log:
         {comparison_diagnostics}
 
         Input views:
@@ -812,7 +811,11 @@ def describe_drawing_diffs(
         {view_chamfer_scores}
         {mean_chamfer_summary}
     """).format(
-        comparison_diagnostics="\n".join(comparison_diagnostics),
+        comparison_diagnostics=(
+            "\n".join(["Comparison warnings/errors:", *comparison_diagnostics])
+            if comparison_diagnostics
+            else ""
+        ),
         input_view_paths=input_view_paths,
         view_chamfer_scores="\n".join(view_chamfer_scores),
         mean_chamfer_summary=mean_chamfer_summary,
