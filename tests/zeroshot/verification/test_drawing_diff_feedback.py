@@ -10,9 +10,11 @@ from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import (
     VerifyOutputResult,
+    build_verification_feedback,
     describe_drawing_diffs,
     unmatched_items,
 )
+from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 
@@ -296,3 +298,59 @@ def test_region_error_is_explained_and_combined_scores_stay_internal(tmp_path):
     )
     assert "view_top area mismatch unavailable: input part area unavailable" in text
     assert "match score" not in text
+
+
+def test_shared_feedback_uses_registered_signed_axes_for_arbitrary_view_names(tmp_path):
+    path = tmp_path / "right_unmatched.png"
+    Image.new("RGB", (4, 4), "white").save(path)
+    report = DrawingDiffReport(
+        drawing_path=tmp_path / "crop.png",
+        projection_path=tmp_path / "right.png",
+        stats={
+            "model_uv_mapping": {"status": "provisional"},
+            "unmatched": [
+                {
+                    "direction": "extra",
+                    "kind": "material",
+                    "size_px": 2000,
+                    "color": "red",
+                    "box_px": [10, 20, 30, 40],
+                    "box_model_uv": [6, 10, 8, 14],
+                }
+            ],
+        },
+        paths={"unmatched_path": path},
+    )
+
+    text = _text(
+        build_verification_feedback(
+            VerifyOutputResult(drawing_diff_report={"view_rotated_profile": report}),
+            SandboxWorkdir(tmp_path),
+            PRESENTER,
+            {View.RIGHT: ("-z", "+y")},
+        )
+    )
+
+    assert "view_rotated_profile: U=-Z, V=+Y; X depth is not observable" in text
+    assert "CAD bounds: Z≈-8.00..-6.00, Y≈10.00..14.00 mm" in text
+    assert "CAD coordinates are provisional" in text
+
+
+def test_unavailable_cad_coordinates_keep_the_reason_in_shared_feedback(tmp_path):
+    report = DrawingDiffReport(
+        drawing_path=tmp_path / "crop.png",
+        projection_path=tmp_path / "front.png",
+        stats={
+            "model_uv_mapping": {
+                "status": "unavailable",
+                "reason": "projection DXF unavailable",
+            }
+        },
+    )
+    text = _text(
+        describe_drawing_diffs(
+            {"view_front": report}, SandboxWorkdir(tmp_path), presenter=PRESENTER
+        )
+    )
+
+    assert "view_front CAD coordinates unavailable: projection DXF unavailable" in text

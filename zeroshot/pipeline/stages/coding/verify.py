@@ -530,7 +530,11 @@ def build_verification_feedback(
     # 3. Drawing comparison, including image legends and attachments.
     blocks.extend(
         describe_drawing_diffs(
-            drawing_diff_report, workdir, previous, presenter=presenter
+            drawing_diff_report,
+            workdir,
+            previous,
+            presenter=presenter,
+            view_frames=view_frames,
         )
     )
     return blocks
@@ -707,31 +711,58 @@ def unmatched_items(
     }
 
 
-def _describe_unmatched(key: str, item: Mapping[str, Any]) -> str:
-    unit = "skeleton pixels" if item["kind"] == "lines" else "px²"
-    return (
-        f"{key} ({item['color']}): {item['direction']} {item['kind']}, "
-        f"{item['size_px']} {unit}, box {item['box_px']}"
-    )
-
-
 def _describe_chamfer(current: float, previous: float | None) -> str:
     change = f" ({current - previous:+.2f})" if previous is not None else ""
     return f"{current:.2f} px{change}"
 
 
-def _describe_mean_chamfer(
-    current: Mapping[str, float],
-    previous: Mapping[str, float],
-    previous_id: str | None,
-) -> str:
-    comparable = bool(previous) and previous.keys() == current.keys()
-    text = f"Mean chamfer over {len(current)} views: " + _describe_chamfer(
-        fmean(current.values()), fmean(previous.values()) if comparable else None
-    )
-    if previous:
-        text += f"\nChanges in parentheses are against verification {previous_id}."
-    return text
+def _drawing_diff_data(
+    diff_reports: Mapping[str, DrawingDiffReport],
+    previous: VerifyOutputResult | None,
+    view_frames: ViewFrames | None,
+) -> dict[str, Any]:
+    """Prepare comparison values and CAD bounds without generating prompt text."""
+    current = chamfers(diff_reports)
+    before = chamfers(previous.drawing_diff_report) if previous else {}
+    comparable = bool(before) and before.keys() == current.keys()
+
+    # Projection filenames name roles; interpreter view names can be arbitrary.
+    frames_by_role = {role.value: frame for role, frame in (view_frames or {}).items()}
+    frames = {}
+    clusters = []
+    for name, report in diff_reports.items():
+        frame = (
+            frames_by_role.get(report.projection_path.stem)
+            if report.projection_path
+            else None
+        )
+        frames[name] = None
+        if frame:
+            axes = {axis[-1].upper() for axis in frame}
+            frames[name] = {
+                "u": frame[0].upper(),
+                "v": frame[1].upper(),
+                "depth": next(axis for axis in "XYZ" if axis not in axes),
+            }
+        for key, item in _view_unmatched(name, report).items():
+            bounds = None
+            if frame and (box := item.get("box_model_uv")) is not None:
+                bounds = []
+                for axis, low, high in zip(frame, box[:2], box[2:], strict=True):
+                    sign = -1 if axis.startswith("-") else 1
+                    low, high = sorted((sign * low, sign * high))
+                    bounds.append((axis[-1].upper(), low, high))
+            # Keep raw clusters untouched: their audit keys and pixel boxes are public.
+            clusters.append((key, item, bounds))
+
+    return {
+        "chamfers": current,
+        "previous_chamfers": before,
+        "mean_chamfer": fmean(current.values()) if current else None,
+        "previous_mean_chamfer": fmean(before.values()) if comparable else None,
+        "frames": frames,
+        "clusters": clusters,
+    }
 
 
 def describe_drawing_diffs(
@@ -740,6 +771,7 @@ def describe_drawing_diffs(
     previous: VerifyOutputResult | None = None,
     *,
     presenter: ArtifactPresenter,
+    view_frames: ViewFrames | None = None,
 ) -> list[ContentBlock]:
     """Build the complete comparison feedback: results, legends, paths and images.
 
@@ -747,21 +779,19 @@ def describe_drawing_diffs(
     """
     if not diff_reports:
         return []
-    current_chamfer_by_view = chamfers(diff_reports)
-    previous_chamfer_by_view = (
-        chamfers(previous.drawing_diff_report) if previous else {}
-    )
+    data = _drawing_diff_data(diff_reports, previous, view_frames)
 
+    # All comparison prose is assembled here; the helper above only calculates data.
     view_chamfer_scores = []
     view_region_errors = []
+    model_coordinates = []
     comparison_diagnostics = []
     for name, report in diff_reports.items():
-
-        if name in current_chamfer_by_view:
+        if name in data["chamfers"]:
             view_chamfer_scores.append(
                 f"{name} chamfer: "
                 + _describe_chamfer(
-                    current_chamfer_by_view[name], previous_chamfer_by_view.get(name)
+                    data["chamfers"][name], data["previous_chamfers"].get(name)
                 )
             )
 
@@ -778,29 +808,60 @@ def describe_drawing_diffs(
                 f"{name} area mismatch unavailable: {material.get('reason', 'region error unavailable')}"
             )
 
+        mapping = report.stats.get("model_uv_mapping", {})
+        if mapping.get("status") == "unavailable":
+            comparison_diagnostics.append(
+                f"{name} CAD coordinates unavailable: {mapping['reason']}"
+            )
+        elif mapping:
+            if (frame := data["frames"][name]) is not None:
+                model_coordinates.append(
+                    f"{name}: U={frame['u']}, V={frame['v']}; "
+                    f"{frame['depth']} depth is not observable in this view."
+                )
+            else:
+                model_coordinates.append(
+                    f"{name}: registered axes unavailable; CAD bounds use projection U/V."
+                )
+            if mapping["status"] == "provisional":
+                model_coordinates.append(
+                    f"{name}: CAD coordinates are provisional (alignment uncertain)."
+                )
         if report.error:
             comparison_diagnostics.append(f"{name} error: {report.error}")
         comparison_diagnostics.extend(
             f"{name} warning: {warning}" for warning in report.warnings
         )
 
-    mismatch_clusters = "\n".join(
-        _describe_unmatched(key, item)
-        for key, item in unmatched_items(diff_reports).items()
-    )
+    mismatch_clusters = []
+    for key, item, bounds in data["clusters"]:
+        unit = "skeleton pixels" if item["kind"] == "lines" else "px²"
+        text = (
+            f"{key} ({item['color']}): {item['direction']} {item['kind']}, "
+            f"{item['size_px']} {unit}, box {item['box_px']}"
+        )
+        if (box := item.get("box_model_uv")) is not None:
+            if bounds is None:
+                text += f"; CAD UV box {box} mm (registered axes unavailable)"
+            else:
+                spans = (f"{axis}≈{low:.2f}..{high:.2f}" for axis, low, high in bounds)
+                text += "; CAD bounds: " + ", ".join(spans) + " mm"
+        mismatch_clusters.append(text)
     input_view_paths = "\n".join(
         f"{name} input: {workdir.host_to_sandbox_path(report.drawing_path)}"
         for name, report in diff_reports.items()
     )
-    mean_chamfer_summary = (
-        _describe_mean_chamfer(
-            current_chamfer_by_view,
-            previous_chamfer_by_view,
-            previous.verification_id if previous else None,
+    mean_chamfer_summary = ""
+    if data["mean_chamfer"] is not None:
+        mean_chamfer_summary = (
+            f"Mean chamfer over {len(data['chamfers'])} views: "
+            + _describe_chamfer(data["mean_chamfer"], data["previous_mean_chamfer"])
         )
-        if current_chamfer_by_view
-        else ""
-    )
+        if data["previous_chamfers"]:
+            previous_id = previous.verification_id if previous else None
+            mean_chamfer_summary += (
+                f"\nChanges in parentheses are against verification {previous_id}."
+            )
     overlay_paths = {
         f"{name} overlay": report.paths["overlay_path"]
         for name, report in diff_reports.items()
@@ -827,6 +888,7 @@ def describe_drawing_diffs(
         {view_chamfer_scores}
         {mean_chamfer_summary}
         {region_scores}
+        {model_coordinates}
     """).format(
         comparison_diagnostics=(
             "\n".join(["Comparison warnings/errors:", *comparison_diagnostics])
@@ -846,6 +908,7 @@ def describe_drawing_diffs(
             if view_region_errors
             else ""
         ),
+        model_coordinates="\n".join(model_coordinates),
     )
     blocks: list[ContentBlock] = [create_text_block(prompt)]
 
@@ -857,7 +920,7 @@ def describe_drawing_diffs(
         heading=cleandoc("""Overlay images:
         The input is moved onto the projection's pixels (pale gray).
         Blue=near, red=far from the input lines. Note that blue doesn't ensure correct matching, only that the input is near the projection.
-        """)
+        """),
     )
 
     # unmatched
@@ -873,6 +936,8 @@ def describe_drawing_diffs(
 
         Mismatch clusters (bboxes in input-view pixels):
         {mismatch_clusters}
-        """).format(mismatch_clusters=mismatch_clusters or "No clusters reported.")
+        """).format(
+            mismatch_clusters="\n".join(mismatch_clusters) or "No clusters reported."
+        ),
     )
     return blocks

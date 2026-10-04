@@ -11,6 +11,7 @@ from PIL import Image
 from zeroshot.pipeline.verification import run_drawing_diff
 from zeroshot.pipeline.verification.drawing_diff import worker
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
+from zeroshot.pipeline.verification.drawing_diff.diff import DiffResult
 from zeroshot.pipeline.verification.run_drawing_diff import (
     DrawingDiffExecutor,
     DrawingDiffReport,
@@ -185,6 +186,10 @@ def test_worker_saves_diff_pngs_beside_projection(tmp_path, monkeypatch):
     report = worker.run_align_diff_save(drawing_path, projection_path)
 
     assert report.error is None
+    assert report.stats["model_uv_mapping"] == {
+        "status": "unavailable",
+        "reason": "projection DXF unavailable",
+    }
     assert report.paths == {
         "overlay_path": tmp_path / "front_overlay.png",
         "unmatched_path": tmp_path / "front_unmatched.png",
@@ -278,6 +283,10 @@ def test_worker_uses_dxf_raster_bounds_for_calibrated_scale(
         "status": "applied",
         "expected_pixel_scale": source_scale / 0.125,
     }
+    assert (
+        type(report.alignment.diagnostics["scale_calibration"]["expected_pixel_scale"])
+        is float
+    )
 
     report = worker.run_align_diff_save(
         drawing,
@@ -304,3 +313,70 @@ def test_worker_uses_dxf_raster_bounds_for_calibrated_scale(
         report.alignment.diagnostics["scale_calibration"]["reason"]
         == "input scale unavailable"
     )
+
+
+def test_worker_maps_pixel_boundaries_and_all_box_corners_through_dxf_margins(
+    tmp_path, monkeypatch
+):
+    import ezdxf
+
+    drawing, projection = tmp_path / "drawing.png", tmp_path / "right.png"
+    Image.new("RGB", (300, 300), "white").save(drawing)
+    Image.new("RGB", (480, 640), "white").save(projection)
+    matrix = np.array([[2.0, -1, 100], [1, 2, 20], [0, 0, 1]])
+    monkeypatch.setattr(
+        worker,
+        "align",
+        lambda *_args, **_kwargs: AlignmentResult(
+            "directional_chamfer", "similarity", "ok", matrix.tolist(), {}
+        ),
+    )
+    monkeypatch.setattr(
+        worker,
+        "compute_diff",
+        lambda *_args, **_kwargs: DiffResult(
+            None, None, {"unmatched": [{"box_px": [10, 20, 30, 50]}]}, ()
+        ),
+    )
+    doc = ezdxf.new()
+    doc.modelspace().add_lwpolyline([(0, 0), (30, 0), (30, 40), (0, 40)], close=True)
+    doc.saveas(projection.with_suffix(".dxf"))
+
+    report = worker.run_align_diff_save(drawing, projection)
+
+    expected_p = np.array([[0.0675, 0, -1.2], [0, -0.06625, 41.2], [0, 0, 1]])
+    np.testing.assert_allclose(report.stats["projection_to_model_uv"], expected_p)
+    transform = np.array(report.stats["drawing_to_model_uv"])
+    point = transform @ [10, 20, 1]
+    np.testing.assert_allclose(point, [5.55, 36.5625, 1])
+    np.testing.assert_allclose(np.linalg.inv(transform) @ point, [10, 20, 1])
+    assert report.stats["unmatched"][0]["box_model_uv"] == pytest.approx(
+        [3.525, 31.2625, 8.25, 36.5625]
+    )
+    assert report.stats["model_uv_mapping"]["status"] == "provisional"
+    calibrated = worker.run_align_diff_save(
+        drawing, projection, drawing_mm_per_pixel=0.125
+    )
+    assert calibrated.stats["model_uv_mapping"]["status"] == "ok"
+
+    # A new model bbox changes both raster bounds and H, but not the physical location.
+    doc = ezdxf.new()
+    doc.modelspace().add_lwpolyline(
+        [(-5, -10), (45, -10), (45, 50), (-5, 50)], close=True
+    )
+    doc.saveas(projection.with_suffix(".dxf"))
+    expected_new_p = np.array([[54 / 480, 0, -7], [0, -64 / 640, 52], [0, 0, 1]])
+    matrix = np.linalg.inv(expected_new_p) @ transform
+    updated = worker.run_align_diff_save(drawing, projection)
+    np.testing.assert_allclose(
+        updated.stats["drawing_to_model_uv"], transform, atol=1e-12
+    )
+    np.testing.assert_allclose(
+        updated.stats["unmatched"][0]["box_model_uv"],
+        report.stats["unmatched"][0]["box_model_uv"],
+    )
+
+    projection.with_suffix(".dxf").write_text("invalid DXF")
+    unavailable = worker.run_align_diff_save(drawing, projection)
+    assert "DXF unreadable" in unavailable.stats["model_uv_mapping"]["reason"]
+    assert "drawing_to_model_uv" not in unavailable.stats
