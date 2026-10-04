@@ -752,10 +752,14 @@ def test_coder_tests_predictions_and_inspects_the_latest_candidate(
 
     assert "Do not believe in your 3D reasoning blindly" in instruction
     assert "do not reject it based only on your reasoning" in instruction
-    assert "choose a candidate, the smallest change needed to test it" in instruction
-    assert "run the trial before further speculation" in instruction
+    assert "inspect the latest deciding views and overall scores" in instruction
+    assert "before keeping or undoing the change" in instruction
+    assert "If the expected change is absent" in instruction
     assert "Read the latest verification feedback before concluding" in instruction
-    assert "obtain a new measurement or run a new trial" in instruction
+    assert (
+        "revise the geometry or coordinate hypothesis before another trial"
+        in instruction
+    )
     assert (
         "Scratch files are not automatically executed, verified or submitted"
         in instruction

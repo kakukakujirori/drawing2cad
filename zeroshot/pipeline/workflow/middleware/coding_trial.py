@@ -11,10 +11,9 @@ from zeroshot.pipeline.workflow.middleware.turn_budget import TurnBudgetState
 
 _REMINDER_NAME = "coding_trial_reminder"
 _REMINDER = (
-    "If a geometric hypothesis is still unresolved, state the hypothesis, minimal "
-    "change and deciding view, then build, render and inspect the latest images "
-    "before deciding. Reconsider the same question only after a new measurement "
-    "or trial."
+    "If geometry remains unresolved, make trial fixes rather than long speculation. "
+    "Inspect the latest relevant views and scores before deciding. If the expected "
+    "change is absent, revise the geometry or coordinate hypothesis before another trial."
 )
 
 
