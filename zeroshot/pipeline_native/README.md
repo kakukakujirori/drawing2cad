@@ -63,7 +63,7 @@ for newer Claude models; `reasoning.exclude=false` keeps that trace in responses
 
 For GLM, use the existing standalone `model=glm5.3_flash_openrouter` config and
 `OPENROUTER_API_KEY`. Both GLM and Claude use
-`zeroshot.pipeline.models.openrouter.ChatOpenRouterSingleReasoning` directly.
+`zeroshot.pipeline.models.openrouter.ChatOpenRouter` directly.
 Every model config is independently defined; none inherits another model config.
 Do not pass a secret on the command line.
 

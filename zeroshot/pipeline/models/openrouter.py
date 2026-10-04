@@ -29,8 +29,10 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
-from langchain_openrouter.chat_models import ChatOpenRouter
+from langchain_openrouter.chat_models import ChatOpenRouter as _ChatOpenRouter
 from pydantic import BaseModel, Field
+
+from .image_history import trim_image_history
 
 # Constant across a block's deltas, and concatenated by the chunk merge because
 # it is a string the merge has no exemption for. `type` is already exempt in
@@ -68,10 +70,11 @@ def _thin_reasoning_details(details: Any, kept: set[Any]) -> None:
                 kept.add((block, field))
 
 
-class ChatOpenRouterSingleReasoning(ChatOpenRouter):
-    """Send each turn's reasoning once, and its constant fields once."""
+class ChatOpenRouter(_ChatOpenRouter):
+    """OpenRouter fixes for reasoning, tool images, retries and image history."""
 
-    max_images_per_request: int | None = Field(default=None, gt=0, strict=True)
+    # None sends every image; protected images must fit the configured hard limit.
+    image_history_limit: int | None = Field(default=None, gt=0, strict=True)
 
     @override
     def _build_client(self) -> Any:
@@ -176,13 +179,26 @@ class ChatOpenRouterSingleReasoning(ChatOpenRouter):
     def _create_message_dicts(
         self, messages: list[BaseMessage], stop: list[str] | None
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        # OpenRouter serializes through this hook (Chat Completions API).
+        # Share image selection with Codex before backend-specific conversion
+        # and tool-image lifting; do not edit the saved BaseMessage history.
+        messages = trim_image_history(messages, self.image_history_limit, strict=True)
         message_dicts, params = super()._create_message_dicts(messages, stop)
         for message_dict in message_dicts:
             _drop_block_ids(message_dict)
             _drop_null_detail_fields(message_dict)
             _drop_redundant_reasoning(message_dict)
-        if self.max_images_per_request is not None:
-            _cap_tool_images(message_dicts, self.max_images_per_request)
+        # Fully omitted tool images leave a text-only list; providers require
+        # a string for tool results, including these omission notices.
+        if self.image_history_limit is not None:
+            for message_dict in message_dicts:
+                content = message_dict.get("content")
+                if (
+                    message_dict.get("role") == "tool"
+                    and isinstance(content, list)
+                    and not _image_parts(content)
+                ):
+                    message_dict["content"] = _tool_result_text(content, 0)
         return _lift_tool_images(message_dicts), params
 
 
@@ -222,44 +238,6 @@ def _image_parts(content: Any) -> list[dict[str, Any]]:
         for part in content
         if isinstance(part, dict) and part.get("type") == "image_url"
     ]
-
-
-def _cap_tool_images(message_dicts: list[dict[str, Any]], limit: int) -> None:
-    """Keep sources and the newest tool images on the wire, leaving history intact."""
-    originals = sum(
-        len(_image_parts(message.get("content")))
-        for message in message_dicts
-        if message.get("role") != "tool"
-    )
-    if originals > limit:
-        raise ValueError(
-            f"Original image attachments ({originals}) exceed "
-            f"max_images_per_request ({limit}); none were dropped."
-        )
-    remaining = limit - originals
-    for message in reversed(message_dicts):
-        if message.get("role") != "tool":
-            continue
-        images = _image_parts(message.get("content"))
-        omitted = max(len(images) - remaining, 0)
-        remaining = max(remaining - len(images), 0)
-        if not omitted:
-            continue
-        content = []
-        for part in message["content"]:
-            if isinstance(part, dict) and part.get("type") == "image_url" and omitted:
-                content.append(
-                    {
-                        "type": "text",
-                        "text": "Previously loaded image omitted from this request to stay within the image limit.",
-                    }
-                )
-                omitted -= 1
-            else:
-                content.append(part)
-        message["content"] = (
-            content if _image_parts(content) else _tool_result_text(content, 0)
-        )
 
 
 def _lift_tool_images(

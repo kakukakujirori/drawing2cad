@@ -4,7 +4,7 @@
 response_format_strategy: tool
 
 model:
-  _target_: zeroshot.pipeline.models.openrouter.ChatOpenRouterSingleReasoning
+  _target_: zeroshot.pipeline.models.openrouter.ChatOpenRouter
 
   model: z-ai/glm-5.3-flash
   # Effort is a share of max_tokens; OpenRouter takes no `summary`.
@@ -18,7 +18,7 @@ model:
     order: [Together, Fireworks, DeepInfra, Cloudflare]
     allow_fallbacks: false
   # Cloudflare's image limit.
-  max_images_per_request: 8
+  image_history_limit: 8
 
   # Hard turns reason for ~30k tokens; the rest leaves room for a whole program.
   max_tokens: 60000

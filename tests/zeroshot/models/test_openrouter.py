@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import pytest
@@ -15,7 +16,7 @@ from langchain_core.messages.content import (
 from langchain_core.outputs import ChatGenerationChunk
 from pydantic import BaseModel
 
-from zeroshot.pipeline.models.openrouter import ChatOpenRouterSingleReasoning
+from zeroshot.pipeline.models.openrouter import ChatOpenRouter
 
 
 def _delta(text: str, fmt: str | None = "unknown") -> ChatGenerationChunk:
@@ -42,7 +43,7 @@ def _model(
     monkeypatch: pytest.MonkeyPatch,
     deltas: list[tuple[str, str | None]],
 ) -> Any:
-    model = ChatOpenRouterSingleReasoning(model="test", api_key="EMPTY")
+    model = ChatOpenRouter(model="test", api_key="EMPTY")
     monkeypatch.setattr(
         type(model).__mro__[1],
         "_stream",
@@ -99,7 +100,7 @@ class _Answer(BaseModel):
 
 def test_a_call_is_forced_only_when_the_answer_is_the_one_tool_left() -> None:
     """Forced to pick among several tools, GLM submitted near-empty answers."""
-    model = ChatOpenRouterSingleReasoning(model="test", api_key="EMPTY")
+    model = ChatOpenRouter(model="test", api_key="EMPTY")
 
     working: Any = model.bind_tools([_Echo, _Answer], tool_choice="any")
     final: Any = model.bind_tools([_Answer], tool_choice="any")
@@ -109,7 +110,7 @@ def test_a_call_is_forced_only_when_the_answer_is_the_one_tool_left() -> None:
 
 
 def test_payload_sends_reasoning_once() -> None:
-    model = ChatOpenRouterSingleReasoning(model="test", api_key="EMPTY")
+    model = ChatOpenRouter(model="test", api_key="EMPTY")
     message = AIMessage(
         content="",
         additional_kwargs={
@@ -127,7 +128,7 @@ def test_payload_sends_reasoning_once() -> None:
 
 
 def test_payload_keeps_reasoning_without_detail_text() -> None:
-    model = ChatOpenRouterSingleReasoning(model="test", api_key="EMPTY")
+    model = ChatOpenRouter(model="test", api_key="EMPTY")
     message = AIMessage(
         content="",
         additional_kwargs={
@@ -143,7 +144,7 @@ def test_payload_keeps_reasoning_without_detail_text() -> None:
 
 def test_payload_leaves_out_a_null_detail_field() -> None:
     """A null in a string-typed field is refused as 422 when it goes back."""
-    model = ChatOpenRouterSingleReasoning(model="test", api_key="EMPTY")
+    model = ChatOpenRouter(model="test", api_key="EMPTY")
     message = AIMessage(
         content="",
         additional_kwargs={
@@ -161,7 +162,7 @@ def test_payload_leaves_out_a_null_detail_field() -> None:
 
 
 def _failing_model(monkeypatch: pytest.MonkeyPatch) -> Any:
-    model = ChatOpenRouterSingleReasoning(model="test", api_key="EMPTY")
+    model = ChatOpenRouter(model="test", api_key="EMPTY")
 
     def _raise(*_args: Any, **_kwargs: Any) -> Any:
         raise ValueError("... Input should be a valid string (code: 422)")
@@ -219,7 +220,7 @@ _IMAGE = {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"
 
 def test_payload_leaves_out_the_block_id_langchain_stamps_on_a_part() -> None:
     """Fireworks types a content part by its fields and refuses the extra one."""
-    model = ChatOpenRouterSingleReasoning(model="test", api_key="EMPTY")
+    model = ChatOpenRouter(model="test", api_key="EMPTY")
     message = HumanMessage(
         content=[
             create_text_block("a sheet"),
@@ -235,7 +236,7 @@ def test_payload_leaves_out_the_block_id_langchain_stamps_on_a_part() -> None:
 
 def test_payload_carries_a_tool_image_in_a_user_message_after_it() -> None:
     """A tool result is typed as a string, so DeepInfra refuses an image in one."""
-    model = ChatOpenRouterSingleReasoning(model="test", api_key="EMPTY")
+    model = ChatOpenRouter(model="test", api_key="EMPTY")
     messages = [
         ToolMessage(content=[_IMAGE], tool_call_id="1"),
         HumanMessage(content="what is it"),
@@ -254,7 +255,7 @@ def test_payload_carries_a_tool_image_in_a_user_message_after_it() -> None:
 def test_the_images_of_parallel_tool_calls_arrive_after_the_last_result() -> None:
     """A result has to reach the turn that called for it before any other role,
     so two results in a row are not split by the message carrying their images."""
-    model = ChatOpenRouterSingleReasoning(model="test", api_key="EMPTY")
+    model = ChatOpenRouter(model="test", api_key="EMPTY")
     messages = [
         ToolMessage(content=[_IMAGE], tool_call_id="1"),
         ToolMessage(content=[_IMAGE], tool_call_id="2"),
@@ -271,7 +272,7 @@ def test_the_images_of_parallel_tool_calls_arrive_after_the_last_result() -> Non
 
 
 def test_a_tool_result_that_is_only_text_is_left_alone() -> None:
-    model = ChatOpenRouterSingleReasoning(model="test", api_key="EMPTY")
+    model = ChatOpenRouter(model="test", api_key="EMPTY")
 
     dicts, _ = model._create_message_dicts(
         [ToolMessage(content="done", tool_call_id="1")], None
@@ -290,12 +291,12 @@ def _image(name: str) -> dict[str, Any]:
 
 @pytest.mark.parametrize("limit", [None, 8, 1])
 def test_image_cap_keeps_sources_newest_images_and_complete_parallel_groups(limit):
-    model = ChatOpenRouterSingleReasoning(
+    model = ChatOpenRouter(
         model="test",
         api_key="EMPTY",
-        **({} if limit is None else {"max_images_per_request": limit}),
+        **({} if limit is None else {"image_history_limit": limit}),
     )
-    assert model.max_images_per_request == limit
+    assert model.image_history_limit == limit
     messages: list[BaseMessage] = [HumanMessage(content=[_image("source")])]
     for start in (0, 4):
         messages.append(
@@ -335,8 +336,8 @@ def test_image_cap_keeps_sources_newest_images_and_complete_parallel_groups(limi
     ]
     assert dicts[0]["content"] == [_image("source")]
     assert [message.model_dump() for message in messages] == before
-    assert "max_images_per_request" not in params
-    assert "max_images_per_request" not in model.model_kwargs
+    assert "image_history_limit" not in params
+    assert "image_history_limit" not in model.model_kwargs
     for index, message in enumerate(dicts):
         if message["role"] == "assistant":
             calls = [call["id"] for call in message["tool_calls"]]
@@ -348,16 +349,14 @@ def test_image_cap_keeps_sources_newest_images_and_complete_parallel_groups(limi
     for i, result in enumerate(results):
         assert isinstance(result["content"], str)
         assert f"Read {i}." in result["content"]
-        assert ("Previously loaded image omitted" in result["content"]) == (
+        assert ("Image omitted from this request." in result["content"]) == (
             i not in kept
         )
         assert "Loaded 0 images" not in result["content"]
 
 
 def test_image_cap_retains_newest_parts_within_one_tool_result():
-    model = ChatOpenRouterSingleReasoning(
-        model="test", api_key="EMPTY", max_images_per_request=2
-    )
+    model = ChatOpenRouter(model="test", api_key="EMPTY", image_history_limit=2)
     messages = [
         ToolMessage(
             content=[
@@ -374,31 +373,96 @@ def test_image_cap_retains_newest_parts_within_one_tool_result():
 
     assert result["tool_call_id"] == "images"
     assert "Read all three." in result["content"]
-    assert "Previously loaded image omitted" in result["content"]
+    assert "Image omitted from this request." in result["content"]
     assert "Loaded 2 images, attached below." in result["content"]
     assert carrier["content"][1:] == [_image("new"), _image("newest")]
     assert len(messages[0].content) == 4
 
 
 def test_image_cap_refuses_to_drop_original_attachments():
-    model = ChatOpenRouterSingleReasoning(
-        model="test", api_key="EMPTY", max_images_per_request=1
-    )
+    model = ChatOpenRouter(model="test", api_key="EMPTY", image_history_limit=1)
     message = HumanMessage(content=[_image("source_1"), _image("source_2")])
     before = message.model_dump()
 
     with pytest.raises(
         ValueError,
-        match=r"Original image attachments \(2\).*max_images_per_request \(1\)",
+        match=r"Protected image attachments \(2\).*image_history_limit \(1\)",
     ):
         model._create_message_dicts([message], None)
 
     assert message.model_dump() == before
 
 
+def test_image_cap_omits_old_verification_images_and_keeps_the_latest_visual_report():
+    model = ChatOpenRouter(model="test", api_key="EMPTY", image_history_limit=8)
+    messages: list[BaseMessage] = [
+        HumanMessage(
+            content=[
+                create_text_block("[Input artifacts]\n[Execution result]"),
+                create_image_block(url="https://example.test/source.png"),
+            ]
+        )
+    ]
+    for name in ("old", "middle", "latest"):
+        messages.append(
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "[Execution result]"},
+                    *[
+                        create_image_block(url=f"https://example.test/{name}{n}.png")
+                        for n in range(3)
+                    ],
+                ]
+            )
+        )
+    messages.append(
+        AIMessage(
+            content="Inspect",
+            tool_calls=[
+                {
+                    "name": "load_image",
+                    "args": {"image_path": f"/work/{n}.png"},
+                    "id": str(n),
+                }
+                for n in range(6)
+            ],
+        )
+    )
+    messages.extend(
+        ToolMessage(content=[_image(str(n))], tool_call_id=str(n)) for n in range(6)
+    )
+    messages.append(HumanMessage(content="[Execution result]\nBuild failed"))
+    before = [message.model_dump() for message in messages]
+
+    payload, _ = model._create_message_dicts(messages, None)
+    kept = [
+        part["image_url"]["url"]
+        for message in payload
+        for part in message.get("content", [])
+        if isinstance(message.get("content"), list)
+        and isinstance(part, dict)
+        and part.get("type") == "image_url"
+    ]
+    assert kept == [
+        _image(name)["image_url"]["url"]
+        for name in ["source", "latest0", "latest1", "latest2", "2", "3", "4", "5"]
+    ]
+    assert [message.model_dump() for message in messages] == before
+    assert "Image omitted from this request." == next(
+        m["content"] for m in payload if m.get("tool_call_id") == "0"
+    )
+    original_call = next(
+        call
+        for message in payload
+        for call in message.get("tool_calls", [])
+        if call["id"] == "0"
+    )
+    assert json.loads(original_call["function"]["arguments"]) == {
+        "image_path": "/work/0.png"
+    }
+
+
 @pytest.mark.parametrize("limit", [0, -1, 1.5, True])
 def test_image_cap_requires_a_positive_integer(limit):
-    with pytest.raises(ValueError, match="max_images_per_request"):
-        ChatOpenRouterSingleReasoning(
-            model="test", api_key="EMPTY", max_images_per_request=limit
-        )
+    with pytest.raises(ValueError, match="image_history_limit"):
+        ChatOpenRouter(model="test", api_key="EMPTY", image_history_limit=limit)

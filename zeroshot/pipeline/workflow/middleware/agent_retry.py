@@ -29,7 +29,7 @@ class UnansweredModelCall(Exception):
 class TextWithoutToolCall(UnansweredModelCall):
     """Text without a tool call under ToolStrategy, which ends the agent unanswered.
 
-    `ChatOpenRouterSingleReasoning.bind_tools` lets models skip tools, so this happens.
+    `ChatOpenRouter.bind_tools` lets models skip tools, so this happens.
     """
 
 

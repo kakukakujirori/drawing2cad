@@ -82,9 +82,10 @@ def test_gemma4_ollama_config_instantiates_chat_openai() -> None:
     ("model_config", "model_name"),
     [
         ("gpt5.6_luna_codex", "gpt-5.6-luna"),
+        ("gpt6_luna_codex", "gpt-6-luna"),
     ],
 )
-def test_gpt5_6_codex_config_instantiates_oauth_model(
+def test_codex_config_instantiates_oauth_model(
     model_config: str, model_name: str
 ) -> None:
     with initialize_config_dir(
