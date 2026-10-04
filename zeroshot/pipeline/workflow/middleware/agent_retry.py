@@ -20,6 +20,16 @@ from pydantic import ValidationError
 from zeroshot.pipeline.stages._base.error_locations import answer_errors
 
 from .connection_retry import ModelConnectionRetry, report_model_retry
+from .output_limit_budget import OutputLimitBudget, OutputLimitBudgetExceeded
+
+
+def _is_output_limit(metadata: dict[str, Any]) -> bool:
+    details = metadata.get("incomplete_details") or {}
+    return metadata.get("finish_reason") == "length" or (
+        metadata.get("status") == "incomplete"
+        and isinstance(details, dict)
+        and details.get("reason") == "max_output_tokens"
+    )
 
 
 class UnansweredModelCall(Exception):
@@ -74,6 +84,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         max_retries: int,
         role: str = "",
         max_transport_retries: int | None = None,
+        output_limit_budget: OutputLimitBudget | None = None,
     ) -> None:
         super().__init__()
         if max_retries < 0:
@@ -85,6 +96,56 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             max_retries if max_transport_retries is None else max_transport_retries
         )
         self.role = role
+        self.output_limit_budget = output_limit_budget
+
+    def _count_output_limit(
+        self,
+        request: ModelRequest[None],
+        attempt: int,
+        *,
+        response: ModelResponse[Any] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        budget = self.output_limit_budget
+        if budget is None:
+            return
+        if isinstance(error, StructuredOutputError):
+            message = error.ai_message
+        elif response is not None:
+            # ToolStrategy may append a ToolMessage after its accepted AI answer.
+            message = next(
+                (
+                    item
+                    for item in reversed(response.result)
+                    if isinstance(item, AIMessage)
+                ),
+                None,
+            )
+        else:
+            message = None
+        metadata = getattr(message, "response_metadata", None) or {}
+        if not isinstance(error, LengthFinishReasonError) and not _is_output_limit(
+            metadata
+        ):
+            return
+        try:
+            budget.record()
+        except OutputLimitBudgetExceeded as exhausted:
+            report_model_retry(
+                exhausted,
+                role=self.role,
+                attempt=attempt,
+                max_retries=self.max_retries,
+                retrying=False,
+                adjusted=False,
+                details={
+                    "finish_reason": "length",
+                    "generation_id": metadata.get("id"),
+                    "output_limit_failures": budget.failures,
+                },
+                stream_writer=request.runtime.stream_writer,
+            )
+            raise
 
     def _report(
         self,
@@ -186,6 +247,8 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         request: ModelRequest[None],
         handler: Callable[[ModelRequest[None]], ModelResponse[Any]],
     ) -> ModelResponse[Any]:
+        if self.output_limit_budget is not None:
+            self.output_limit_budget.check()
         current_request = request
         rejected = 0
         transport = ModelConnectionRetry(
@@ -195,6 +258,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             try:
                 response = transport.invoke(partial(handler, current_request))
             except (LengthFinishReasonError, StructuredOutputError) as error:
+                self._count_output_limit(current_request, rejected, error=error)
                 retrying = rejected < self.max_retries
                 self._report(current_request, rejected, error, retrying=retrying)
                 if not retrying:
@@ -206,6 +270,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     else self._retry_structured_output_request(current_request, error)
                 )
             else:
+                self._count_output_limit(current_request, rejected, response=response)
                 unanswered = _unanswered(current_request, response)
                 if unanswered is None:
                     return response
@@ -234,6 +299,8 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         request: ModelRequest[None],
         handler: Callable[[ModelRequest[None]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
+        if self.output_limit_budget is not None:
+            self.output_limit_budget.check()
         current_request = request
         rejected = 0
         transport = ModelConnectionRetry(
@@ -243,6 +310,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             try:
                 response = await transport.ainvoke(partial(handler, current_request))
             except (LengthFinishReasonError, StructuredOutputError) as error:
+                self._count_output_limit(current_request, rejected, error=error)
                 retrying = rejected < self.max_retries
                 self._report(current_request, rejected, error, retrying=retrying)
                 if not retrying:
@@ -254,6 +322,7 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     else self._retry_structured_output_request(current_request, error)
                 )
             else:
+                self._count_output_limit(current_request, rejected, response=response)
                 unanswered = _unanswered(current_request, response)
                 if unanswered is None:
                     return response

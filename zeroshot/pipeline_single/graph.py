@@ -33,6 +33,7 @@ from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.components.agent import AgentState
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
+from zeroshot.pipeline.workflow.middleware.output_limit_budget import OutputLimitBudget
 from zeroshot.pipeline_single.contracts import CodingReport, SingleAuditReport
 
 type AgentBuilder = partial[Pregel[Any, Any, Any, Any]]
@@ -72,9 +73,12 @@ def create_single_graph(
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     max_audit_reject_count: int = 1,
     max_stage_validation_retries: int = 3,
+    max_output_limit_failures: int = 3,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ):
     """Code the part from the drawing, audit it, and recode from the findings."""
+    output_limit_budget = OutputLimitBudget(max_output_limit_failures)
+
     run_shell = create_run_shell_tool(sandbox_runner, sandbox_workdir)
     load_image = create_load_image_tool(sandbox_workdir)
 
@@ -111,6 +115,7 @@ def create_single_graph(
     )
     coding_middleware = VerifyOnWriteMiddleware(output_verifier)
     coding_agent = coding_agent_builder(
+        output_limit_budget=output_limit_budget,
         tools=[run_shell, load_image, create_calculate_drawing_scale_tool()],
         system_prompt=build_system_prompt(
             _PROMPTS / "coder_role.md", prompt_context, CodingReport
@@ -119,6 +124,7 @@ def create_single_graph(
         extra_middleware=[coding_middleware],
     )
     audit_agent = audit_agent_builder(
+        output_limit_budget=output_limit_budget,
         tools=[run_shell, load_image],
         system_prompt=build_system_prompt(
             _PROMPTS / "auditor_role.md",

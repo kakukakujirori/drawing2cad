@@ -43,3 +43,6 @@ workflow:
 
   max_audit_reject_count: 1
   max_stage_validation_retries: 3
+
+  # Positive integer cap, shared by coder and auditor for this run.
+  max_output_limit_failures: 3

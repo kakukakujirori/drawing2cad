@@ -25,6 +25,7 @@ from zeroshot.pipeline.workflow.middleware import (
     StopReason,
     TurnBudgetMiddleware,
 )
+from zeroshot.pipeline.workflow.middleware.output_limit_budget import OutputLimitBudget
 
 
 class AgentState(_AgentState[Any]):
@@ -91,6 +92,7 @@ def create_agent(
     model_retries: int = 5,
     checkpointer: Checkpointer = False,
     extra_middleware: Sequence[AgentMiddleware[Any, None, Any]] = (),
+    output_limit_budget: OutputLimitBudget | None = None,
 ):
 
     middleware = cast(
@@ -107,7 +109,11 @@ def create_agent(
                 announce_turns=announce_turns,
                 reset_turns_when_reentrant=reset_turns_when_reentrant,
             ),
-            ModelCallRetryMiddleware(max_retries=model_retries, role=role),
+            ModelCallRetryMiddleware(
+                max_retries=model_retries,
+                role=role,
+                output_limit_budget=output_limit_budget,
+            ),
             # Innermost, so it sees every message the layers above appended and
             # sanitises each retry attempt rather than only the first.
             StatelessReasoningMiddleware(),

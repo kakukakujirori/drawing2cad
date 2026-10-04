@@ -99,6 +99,7 @@ def test_run_composes_dependencies_and_manifest(
                 ),
                 "_partial_": True,
                 "max_audit_reject_count": 7,
+                "max_output_limit_failures": 3,
             },
             "console": None,
             "artifact_presenter": {
@@ -145,10 +146,12 @@ def test_run_composes_dependencies_and_manifest(
     assert runner_options["artifact_root"] == artifact_root
     assert runner_options["console_reporter"] is None
     assert runner_options["resume_from"] == tmp_path / "reconstruction.json"
+    assert "max_output_limit_failures" not in runner_options
     graph_factory = runner_options["graph_factory"]
     assert graph_factory.func is create_reconstruction_graph
     assert graph_factory.keywords == {
         "max_audit_reject_count": 7,
+        "max_output_limit_failures": 3,
     }
     assert captured["sandbox_options"] == {
         "python_executable": Path(sys.executable),

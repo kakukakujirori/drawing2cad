@@ -50,7 +50,7 @@ def _answer(model) -> AIMessage:
     return AIMessage(content=model.model_dump_json())
 
 
-def _graph(workdir: SandboxWorkdir, coder, auditor):
+def _graph(workdir: SandboxWorkdir, coder, auditor, **overrides):
     common = {"announce_turns": False, "model_retries": 0, "max_turns": 5}
     image = workdir.host_bind_dir / "drawing.png"
     Image.new("RGB", (20, 20), "white").save(image)
@@ -69,6 +69,7 @@ def _graph(workdir: SandboxWorkdir, coder, auditor):
             sample_id="test",
             drawing=[register_view("view_input", View.FULL_PAGE, image)],
         ),
+        **overrides,
     )
 
 

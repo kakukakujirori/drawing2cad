@@ -85,3 +85,7 @@ workflow:
   # Invalid structured stage submissions return to that stage with the
   # validator's exact feedback. This bounds those graph-level retries.
   max_stage_validation_retries: 3
+
+  # Stop on this many output-limit failures across all stage agents and rounds.
+  # A new run starts from zero. The cap must be a positive integer.
+  max_output_limit_failures: 3

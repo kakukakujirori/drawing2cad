@@ -291,6 +291,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "audit_agent_builder",
         "max_audit_reject_count",
         "max_stage_validation_retries",
+        "max_output_limit_failures",
         "diff_drawer_config",
     }
     assert (
@@ -382,6 +383,25 @@ def test_the_single_workflow_config_fits_its_graph_factory() -> None:
 
     assert graph_factory.func is create_single_graph
     signature(create_single_graph).bind_partial(**graph_factory.keywords)
+
+
+@pytest.mark.parametrize("workflow", ["staged", "continued", "single"])
+@pytest.mark.parametrize("cap", [3, 2])
+def test_output_limit_cap_belongs_to_the_workflow(workflow, cap):
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()), version_base="1.3"
+    ):
+        config = compose(
+            config_name="default",
+            overrides=[
+                f"workflow={workflow}",
+                *([f"workflow.max_output_limit_failures={cap}"] if cap != 3 else []),
+            ],
+        )
+    assert "max_output_limit_failures" not in config
+    graph_factory = instantiate(config.workflow)
+    assert graph_factory.keywords["max_output_limit_failures"] == cap
+    signature(graph_factory.func).bind_partial(**graph_factory.keywords)
 
 
 @pytest.mark.parametrize("workflow", ["staged", "continued"])

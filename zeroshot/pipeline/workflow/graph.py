@@ -46,6 +46,7 @@ from zeroshot.pipeline.workflow.lifecycle import (
     save_reconstruction,
     start_reconstruction,
 )
+from zeroshot.pipeline.workflow.middleware.output_limit_budget import OutputLimitBudget
 from zeroshot.pipeline.workflow.state import (
     ReconstructionState,
     carry_thread,
@@ -73,6 +74,7 @@ def create_reconstruction_graph(
     reconstruction_history_filename: str = "reconstruction.json",
     max_audit_reject_count: int = 3,
     max_stage_validation_retries: int = 3,
+    max_output_limit_failures: int = 3,
     share_thread: bool = False,
     compact_between_stages: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
@@ -89,6 +91,12 @@ def create_reconstruction_graph(
             "compact_between_stages needs share_thread: with a transcript per "
             "stage there is no handover at which to compact anything."
         )
+
+    # Unlike stage validation retries, output limits recur inside a child agent's
+    # wrap_model_call before any update reaches the parent workflow state. Share
+    # one mutable counter across agents to stop inside that retry loop without
+    # threading the count through every stage's input/output. Keep it across rounds.
+    output_limit_budget = OutputLimitBudget(max_output_limit_failures)
 
     # Create tools
     basic_tools = [
@@ -133,8 +141,9 @@ def create_reconstruction_graph(
 
     stages_dir = Path(__file__).resolve().parents[1] / "stages"
 
+    # Bind the shared budget into builders; each stage adds its tools and schema.
     interpretation_stage = stage_factory(PipelineStage.INTERPRETATION)(
-        interpretation_agent_builder,
+        partial(interpretation_agent_builder, output_limit_budget=output_limit_budget),
         tools=basic_tools,
         role_path=(
             None if share_thread else stages_dir / "interpretation/prompts/role.md"
@@ -146,7 +155,7 @@ def create_reconstruction_graph(
         input_after_compaction=compact_between_stages is not None,
     )
     operation_stage = stage_factory(PipelineStage.OPERATIONS)(
-        operations_agent_builder,
+        partial(operations_agent_builder, output_limit_budget=output_limit_budget),
         tools=basic_tools,
         role_path=(None if share_thread else stages_dir / "operations/prompts/role.md"),
         instructions=stage_instructions,
@@ -156,7 +165,7 @@ def create_reconstruction_graph(
         input_after_compaction=compact_between_stages is not None,
     )
     coding_stage = stage_factory(PipelineStage.CODING)(
-        coding_agent_builder,
+        partial(coding_agent_builder, output_limit_budget=output_limit_budget),
         tools=basic_tools,
         role_path=(None if share_thread else stages_dir / "coding/prompts/role.md"),
         instructions=stage_instructions,
@@ -169,7 +178,7 @@ def create_reconstruction_graph(
         input_after_compaction=compact_between_stages is not None,
     )
     audit_stage = stage_factory(PipelineStage.AUDIT)(
-        audit_agent_builder,
+        partial(audit_agent_builder, output_limit_budget=output_limit_budget),
         tools=basic_tools,
         role_path=stages_dir / "audit/prompts/role.md",
         instructions=stage_instructions,
