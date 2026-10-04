@@ -4,6 +4,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
@@ -12,7 +13,12 @@ from omegaconf import DictConfig, OmegaConf
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages._base.prompt import StageInstructions, build_system_prompt
-from zeroshot.pipeline.stages.coding.verify import OutputVerifier
+from zeroshot.pipeline.stages.coding.progress import (
+    CodingProgressMiddleware,
+)
+from zeroshot.pipeline.stages.coding.progress import (
+    ProgressOutputVerifier as OutputVerifier,
+)
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
@@ -24,10 +30,7 @@ from zeroshot.pipeline.verification import (
     StepRenderer,
 )
 from zeroshot.pipeline.workflow._config import _child_graph_config
-from zeroshot.pipeline.workflow.middleware import (
-    CodingTrialMiddleware,
-    VerifyOnWriteMiddleware,
-)
+from zeroshot.pipeline.workflow.middleware import CodingTrialMiddleware
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
@@ -40,7 +43,7 @@ class CodingStage:
     instructions: StageInstructions
     output_verifier: OutputVerifier
     ticket_verifier: TicketVerifier
-    middleware: VerifyOnWriteMiddleware
+    middleware: CodingProgressMiddleware
     input_after_compaction: bool
 
     def run(self, state: ReconstructionState, config: RunnableConfig) -> dict[str, Any]:
@@ -59,9 +62,11 @@ class CodingStage:
         self.output_verifier.operations = snapshot.operations
 
         # Start verification against this round's interpretation and operations.
+        baseline = []
         if state.get("stage_validation_error") is None:
             self.output_verifier.reset()
             self.middleware.reset()  # NOTE: must be after attributes are assigned
+            baseline = self.middleware.baseline_feedback()
         self.ticket_verifier.reset(state["reconstruction"])
 
         previous = state.get("coding_state") or {}
@@ -73,6 +78,7 @@ class CodingStage:
                 append_inputs=(not previous or self.input_after_compaction),
                 dimension_inventory=interpretation.render_dimension_inventory(),
             ),
+            *([HumanMessage(content_blocks=baseline)] if baseline else []),
         ]
         result = self.agent.invoke(
             {
@@ -122,7 +128,7 @@ def create_coding_stage(
         source_filename=output_filename,
     )
     ticket_verifier = TicketVerifier(lambda: output_verifier.accepted_source)
-    coding_middleware = VerifyOnWriteMiddleware(
+    coding_middleware = CodingProgressMiddleware(
         output_verifier,
         ticket_verifier=ticket_verifier,
         fingerprint=output_verifier.source_digest,
