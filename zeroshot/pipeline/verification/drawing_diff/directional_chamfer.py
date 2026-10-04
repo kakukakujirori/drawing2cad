@@ -28,9 +28,9 @@ from scipy.spatial import cKDTree
 from skimage.morphology import skeletonize
 
 if TYPE_CHECKING or __package__:
-    from .image_ops import distance_map, foreground_mask
+    from .image_ops import distance_map, drawing_area, foreground_mask
 else:  # Preserve direct-file CLI execution alongside package imports.
-    from image_ops import distance_map, foreground_mask
+    from image_ops import distance_map, drawing_area, foreground_mask
 
 
 @dataclass
@@ -176,19 +176,7 @@ def features(ink: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def external_boundary(ink: np.ndarray, *, drawing: bool = False) -> np.ndarray:
     """CAD silhouette, or the centre strokes of a drawing's largest filled part."""
     if drawing:
-        # Do not close input gaps: that can join dimension lines to the part.
-        area = binary_fill_holes(ink).astype(np.uint8)
-        area = cv2.morphologyEx(
-            area,
-            cv2.MORPH_OPEN,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
-        )
-        count, labels, stats, _ = cv2.connectedComponentsWithStats(area)
-        if count == 1:
-            # Open/thin drawings retain the all-ink objective.
-            return np.zeros_like(ink)
-        # ponytail: one part per view; assemblies need per-part outlines.
-        area = (labels == 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])).astype(np.uint8)
+        area = drawing_area(ink).astype(np.uint8)
     else:
         closed = cv2.morphologyEx(
             ink.astype(np.uint8),

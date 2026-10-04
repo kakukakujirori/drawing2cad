@@ -7,6 +7,7 @@ from zeroshot.pipeline.verification.drawing_diff.unmatched import (
     INPUT_GRAY,
     draw_unmatched,
     find_unmatched,
+    measure_material_error,
     warp_output_to_drawing,
 )
 
@@ -103,3 +104,66 @@ def test_thin_lines_survive_shrinking_onto_the_drawing(offset):
         ),
         seen,
     )
+
+
+def test_region_mask_excludes_annotation_enclosures_and_does_not_close_gaps():
+    drawing = np.zeros((420, 420), np.uint8)
+    cv2.rectangle(drawing, (80, 80), (240, 240), 1, 1)
+    output = drawing.copy()
+    baseline = measure_material_error(drawing.astype(bool), output.astype(bool))
+    cv2.rectangle(drawing, (60, 270), (260, 390), 1, 1)
+    drawing[390, 160] = 0  # closing this annotation would invent a large filled region
+    cv2.rectangle(drawing, (300, 30), (320, 50), 1, 1)  # a closed character
+
+    error = measure_material_error(drawing.astype(bool), output.astype(bool))
+
+    assert error == baseline
+    assert error["union_px2"] < 170**2
+
+
+def test_region_score_counts_missing_material_outside_the_current_output_bbox():
+    drawing, output = np.zeros((300, 300), np.uint8), np.zeros((300, 300), np.uint8)
+    cv2.rectangle(drawing, (20, 20), (260, 200), 1, 1)
+    cv2.rectangle(output, (160, 20), (260, 200), 1, 1)
+
+    error = measure_material_error(drawing.astype(bool), output.astype(bool))
+
+    assert error["missing_px2"] > 20000
+    assert error["extra_px2"] < 100  # extraction can round the input's corners
+    assert error["ratio"] > 0.5
+
+
+def test_region_score_counts_all_groups_beyond_the_five_displayed_clusters():
+    drawing = np.zeros((500, 500), np.uint8)
+    cv2.rectangle(drawing, (20, 20), (100, 100), 1, 1)
+    output = drawing.copy()
+    for x in (180, 280, 380):
+        for y in (200, 300):
+            cv2.rectangle(output, (x, y), (x + 50, y + 50), 1, 1)
+    drawing, output = drawing.astype(bool), output.astype(bool)
+
+    groups = find_unmatched(drawing, output)
+    error = measure_material_error(drawing, output)
+
+    assert len(groups) == 5 and all(group.material for group in groups)
+    assert error["extra_px2"] > sum(group.size_px for group in groups)
+    assert error["missing_px2"] == 0
+
+
+def test_open_or_thin_input_has_unavailable_region_error():
+    error = measure_material_error(_lines(INNER), _lines(*OUTLINE))
+
+    assert error["status"] == "unavailable"
+    assert error["ratio"] is None
+    assert "input part area" in error["reason"]
+
+
+def test_region_score_keeps_a_thin_misalignment_instead_of_reporting_zero():
+    drawing, output = np.zeros((350, 450), np.uint8), np.zeros((350, 450), np.uint8)
+    cv2.rectangle(drawing, (80, 60), (320, 290), 1, 1)
+    cv2.rectangle(output, (88, 60), (328, 290), 1, 1)
+
+    error = measure_material_error(drawing.astype(bool), output.astype(bool))
+
+    assert error["missing_px2"] + error["extra_px2"] == 3696
+    assert error["ratio"] > 0.05

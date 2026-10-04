@@ -753,8 +753,10 @@ def describe_drawing_diffs(
     )
 
     view_chamfer_scores = []
+    view_region_errors = []
     comparison_diagnostics = []
     for name, report in diff_reports.items():
+
         if name in current_chamfer_by_view:
             view_chamfer_scores.append(
                 f"{name} chamfer: "
@@ -762,6 +764,20 @@ def describe_drawing_diffs(
                     current_chamfer_by_view[name], previous_chamfer_by_view.get(name)
                 )
             )
+
+        material = report.stats.get("material_error", {})
+        if material.get("ratio") is not None:
+            ratio = material["ratio"]
+            percentage = "<0.01%" if 0 < ratio < 0.0001 else f"{ratio:.2%}"
+            view_region_errors.append(
+                f"{name}: aligned silhouette mask mismatch={percentage} "
+                f"(missing={material['missing_px2']} px², extra={material['extra_px2']} px²)"
+            )
+        elif material:
+            view_region_errors.append(
+                f"{name} area mismatch unavailable: {material.get('reason', 'region error unavailable')}"
+            )
+
         if report.error:
             comparison_diagnostics.append(f"{name} error: {report.error}")
         comparison_diagnostics.extend(
@@ -810,6 +826,7 @@ def describe_drawing_diffs(
         Chamfer: mean line distance after alignment (input px); lower is better.
         {view_chamfer_scores}
         {mean_chamfer_summary}
+        {region_scores}
     """).format(
         comparison_diagnostics=(
             "\n".join(["Comparison warnings/errors:", *comparison_diagnostics])
@@ -819,6 +836,16 @@ def describe_drawing_diffs(
         input_view_paths=input_view_paths,
         view_chamfer_scores="\n".join(view_chamfer_scores),
         mean_chamfer_summary=mean_chamfer_summary,
+        region_scores=(
+            "\n".join(
+                [
+                    "Aligned filled-silhouette mismatch (all mask pixels; includes alignment/extraction error; internal holes/lines excluded). Zero means the extracted masks match.",
+                    *view_region_errors,
+                ]
+            )
+            if view_region_errors
+            else ""
+        ),
     )
     blocks: list[ContentBlock] = [create_text_block(prompt)]
 

@@ -37,6 +37,8 @@ def test_every_shifted_line_pixel_is_colored():
     assert np.all(diff.overlay[20, [21, 27]] == 255)
     assert np.all(diff.overlay[10:55, 20] == 225)
     assert diff.stats["outside_fraction"] == 0
+    assert diff.stats["material_error"]["status"] == "unavailable"
+    assert diff.stats["match_score"] is None
 
 
 def test_chamfer_caps_far_lines():
@@ -207,3 +209,30 @@ def test_thickening_keeps_original_measurements_where_strokes_overlap():
     assert diff.stats["output_to_input"]["count"] == 90
     assert diff.stats["output_to_input"]["max_px"] == 2
     assert diff.stats["input_to_output"]["max_px"] == 0
+
+
+def test_match_score_combines_capped_line_distance_and_broad_silhouette_error():
+    drawing, output = _white(300), _white(300)
+    outline = np.array(
+        [
+            [40, 40],
+            [260, 40],
+            [260, 260],
+            [40, 260],
+            [40, 180],
+            [140, 180],
+            [140, 100],
+            [40, 100],
+        ]
+    )
+    cv2.polylines(drawing, [outline], True, (0, 0, 0), 1)
+    cv2.rectangle(output, (40, 40), (260, 260), (0, 0, 0), 1)
+
+    diff = compute_diff(drawing, output, _alignment())
+    material = diff.stats["material_error"]
+
+    assert material["status"] == "ok" and material["extra_px2"] > 6000
+    assert material["missing_px2"] == 0
+    assert diff.stats["match_score"] == pytest.approx(
+        diff.stats["chamfer_drawing_px"] / 20 + material["ratio"]
+    )

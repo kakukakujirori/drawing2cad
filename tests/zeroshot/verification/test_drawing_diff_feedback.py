@@ -241,3 +241,58 @@ def test_coding_can_correct_geometry_without_overwriting_upstream_artifacts():
     assert "source drawing takes precedence" in coding
     assert "Leave upstream JSON files unchanged" in coding
     assert "Leaving the feature out is one of these hypotheses" in coding
+
+
+def test_region_error_is_explained_and_combined_scores_stay_internal(tmp_path):
+    reports = _scored(tmp_path, {"view_front": 5.0, "view_top": 6.0})
+    for name, ratio, score in (("view_front", 0.1, 0.35), ("view_top", 0.2, 0.5)):
+        reports[name].stats.update(
+            {
+                "material_error": {
+                    "status": "ok",
+                    "ratio": ratio,
+                    "missing_px2": 0,
+                    "extra_px2": 1000,
+                },
+                "match_score": score,
+            }
+        )
+
+    text = _text(
+        describe_drawing_diffs(reports, SandboxWorkdir(tmp_path), presenter=PRESENTER)
+    )
+
+    assert (
+        "view_front: aligned silhouette mask mismatch=10.00% (missing=0 px², extra=1000 px²)"
+        in text
+    )
+    assert "view_top: aligned silhouette mask mismatch=20.00%" in text
+    assert "includes alignment/extraction error; internal holes/lines excluded" in text
+    assert "Zero means the extracted masks match" in text
+    assert "S=" not in text and "C/20" not in text and "match score" not in text
+    assert reports["view_front"].stats["match_score"] == 0.35
+    assert "Best" not in text and "improved" not in text
+
+    reports["view_front"].stats["material_error"].update(
+        {"ratio": 0.000001, "extra_px2": 1}
+    )
+    text = _text(
+        describe_drawing_diffs(reports, SandboxWorkdir(tmp_path), presenter=PRESENTER)
+    )
+    assert "view_front: aligned silhouette mask mismatch=<0.01%" in text
+
+    reports["view_top"].stats.update(
+        {
+            "material_error": {
+                "status": "unavailable",
+                "ratio": None,
+                "reason": "input part area unavailable",
+            },
+            "match_score": None,
+        }
+    )
+    text = _text(
+        describe_drawing_diffs(reports, SandboxWorkdir(tmp_path), presenter=PRESENTER)
+    )
+    assert "view_top area mismatch unavailable: input part area unavailable" in text
+    assert "match score" not in text

@@ -11,7 +11,7 @@ import numpy as np
 from scipy.ndimage import binary_fill_holes
 from skimage.morphology import skeletonize
 
-from .image_ops import distance_map
+from .image_ops import distance_map, drawing_area
 
 # Tuned on two drawings and their ground truth: outputs/a2_gate_20260927.
 UNMATCHED_PX = 12.0
@@ -124,6 +124,30 @@ def _filled(ink: np.ndarray) -> np.ndarray:
     return binary_fill_holes(closed)
 
 
+def measure_material_error(
+    drawing_ink: np.ndarray, output: np.ndarray
+) -> dict[str, Any]:
+    """Unfiltered mismatch of the extracted filled silhouettes after alignment."""
+    input_area = drawing_area(drawing_ink)
+    if not input_area.any():
+        return {
+            "status": "unavailable",
+            "reason": "input part area unavailable",
+            "ratio": None,
+        }
+    output_area = _filled(output)
+    missing = int((input_area & ~output_area).sum())
+    extra = int((output_area & ~input_area).sum())
+    union = int((input_area | output_area).sum())
+    return {
+        "status": "ok",
+        "missing_px2": missing,
+        "extra_px2": extra,
+        "union_px2": union,
+        "ratio": (missing + extra) / union,
+    }
+
+
 def _outline(groups: list[Unmatched], shape: tuple[int, ...]) -> np.ndarray:
     """A band around the edges of the groups' areas."""
     area = np.zeros(shape, np.uint8)
@@ -147,10 +171,13 @@ def find_unmatched(drawing_ink: np.ndarray, output: np.ndarray) -> list[Unmatche
         max(ys.min() - PART_MARGIN_PX, 0) : ys.max() + PART_MARGIN_PX + 1,
         max(xs.min() - PART_MARGIN_PX, 0) : xs.max() + PART_MARGIN_PX + 1,
     ] = True
-    drawing_area, output_area = _filled(drawing_ink), _filled(output)
-    material = _material_groups(
-        drawing_area & ~output_area & part, "missing"
-    ) + _material_groups(output_area & ~drawing_area, "extra")
+    input_area, output_area = drawing_area(drawing_ink), _filled(output)
+    material = (
+        _material_groups(input_area & ~output_area & part, "missing")
+        + _material_groups(output_area & ~input_area, "extra")
+        if input_area.any()
+        else []
+    )
     far_from_output = distance_map(output_lines) > UNMATCHED_PX
     far_from_drawing = distance_map(drawing_lines) > UNMATCHED_PX
     lines = _line_groups(drawing_lines & part & far_from_output, "missing")

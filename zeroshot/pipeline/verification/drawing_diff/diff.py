@@ -12,7 +12,13 @@ from scipy.spatial import cKDTree
 
 from .align import AlignmentResult, _validate_rgb, opencv_transform
 from .image_ops import distance_map, foreground_mask
-from .unmatched import describe_unmatched, draw_unmatched, find_unmatched, warp_output_to_drawing
+from .unmatched import (
+    describe_unmatched,
+    draw_unmatched,
+    find_unmatched,
+    measure_material_error,
+    warp_output_to_drawing,
+)
 
 _DISPLAY_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 # Capping keeps a far annotation from outweighing the part's own lines.
@@ -199,6 +205,12 @@ def compute_diff(
         "distance_clip_px": distance_clip_px,
         "red_distance_px": distance_clip_px,
         "unobserved_color_rgb": [128, 128, 128],
+        "material_error": {
+            "status": "unavailable",
+            "reason": "drawing comparison unavailable",
+            "ratio": None,
+        },
+        "match_score": None,
     }
     warnings = list(alignment.warnings)
     try:
@@ -219,6 +231,11 @@ def compute_diff(
         stats["chamfer_drawing_px"] = _chamfer(drawing_ink, output_ink, matrix)
         # Cluster distances to highlight unmatched output lines and regions.
         output_seen = warp_output_to_drawing(output_ink, matrix, drawing_ink.shape)
+        material = measure_material_error(drawing_ink, output_seen)
+        stats["material_error"] = material
+        chamfer = stats["chamfer_drawing_px"]
+        if chamfer is not None and material["ratio"] is not None:
+            stats["match_score"] = chamfer / CHAMFER_CAP_PX + material["ratio"]
         groups = find_unmatched(drawing_ink, output_seen)
         stats["unmatched"] = describe_unmatched(groups)
         unmatched = draw_unmatched(drawing_gray, output_seen, groups)

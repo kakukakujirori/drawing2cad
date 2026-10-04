@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+from scipy.ndimage import binary_fill_holes
 
 
 def foreground_mask(gray: np.ndarray) -> np.ndarray:
@@ -32,3 +33,18 @@ def distance_map(foreground: np.ndarray) -> np.ndarray:
     return cv2.distanceTransform(
         (~foreground).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE
     ).astype(np.float64)
+
+
+def drawing_area(ink: np.ndarray) -> np.ndarray:
+    """The largest filled input part, excluding thin annotations; empty if absent."""
+    # Do not close input gaps: that can join dimension lines to the part.
+    area = cv2.morphologyEx(
+        binary_fill_holes(ink).astype(np.uint8),
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+    )
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(area)
+    if count == 1:
+        return np.zeros_like(ink, dtype=bool)
+    # ponytail: one main connected part per view; assemblies need per-part masks.
+    return labels == 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
