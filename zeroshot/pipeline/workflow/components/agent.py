@@ -101,12 +101,13 @@ def create_agent(
             # rather than once per attempt: the first handler in this list is
             # the outermost layer around the model call.
             PromptLogMiddleware(role),
-            ModelCallRetryMiddleware(max_retries=model_retries, role=role),
+            # Retries must see the final turn's reduced tool set.
             TurnBudgetMiddleware(
                 max_turns,
                 announce_turns=announce_turns,
                 reset_turns_when_reentrant=reset_turns_when_reentrant,
             ),
+            ModelCallRetryMiddleware(max_retries=model_retries, role=role),
             # Innermost, so it sees every message the layers above appended and
             # sanitises each retry attempt rather than only the first.
             StatelessReasoningMiddleware(),

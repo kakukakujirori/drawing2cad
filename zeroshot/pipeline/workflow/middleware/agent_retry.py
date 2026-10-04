@@ -356,25 +356,24 @@ _MALFORMED = "the arguments of {names} did not parse: {reason}"
 _REWRITE_CALL = (
     "Your last call to {names} could not be read: its arguments were not valid "
     "JSON ({reason}), so nothing ran. Send the same call again with the "
-    "arguments as one well-formed JSON object. The analysis you have already "
-    "done is above; keep it."
+    "arguments as one well-formed JSON object."
 )
 _CALL_A_TOOL = (
     "Your last turn was text without a tool call, so nothing ran and no answer "
     "was submitted. Call a tool to keep working, or {submit}."
 )
 _THOUGHT_TOO_LONG = (
-    "Your last turn spent its whole output budget on thinking and came back "
-    "empty. You have been thinking a long time, so answer now. The analysis "
-    "you have already done is above; build on it rather than starting over."
+    "Retry notice: the previous generation attempt spent its whole output "
+    "budget on thinking and came back empty; that response is not included "
+    "in this history. Keep the next response brief and actionable. "
+    "Use an available tool to make progress, or submit when ready."
 )
 # Output beyond reasoning that long was a tool call the limit cut off.
 _CUT_OFF_CALL_TOKENS = 1000
 _CUT_OFF_CALL = (
-    "Your last turn reached the output-token limit while writing a tool call, "
-    "so the call was cut off and never ran; nothing was written. Keep each "
-    "tool call short: write a large file in several smaller pieces, and think "
-    "less before writing. The analysis you have already done is above."
+    "Retry notice: the previous generation attempt returned no text or tool call; "
+    "that response is not included in this history. Try again with a shorter response. "
+    "If writing a large file, split it into smaller tool calls."
 )
 
 

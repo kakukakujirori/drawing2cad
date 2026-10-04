@@ -132,6 +132,39 @@ def test_a_program_statement_follows_its_operation() -> None:
         _answer(run, "coding", _verified(base), dimension_checks={})
 
 
+def test_a_coding_report_can_explain_a_changed_helper() -> None:
+    source = "depth = 5.0\n" + _SOURCE.replace("ret_base = object()", "ret_base = object(depth)")
+    run = open_next_round(
+        _completed_run(verification=_verified(source)),
+        _report(target=_ref("operations", "op_hole")),
+    )
+    run = _answer(run, "interpretation", interpretation("the base", "the hole"))
+    run = _answer(run, "operations", _operations())
+
+    _answer(
+        run,
+        "coding",
+        _verified(source.replace("depth = 5.0", "depth = 0.05")),
+        dimension_checks={},
+        unticketed_changes={"ret_base": "Reduced the helper depth from 5 to 0.05."},
+    )
+
+
+def test_a_coding_report_cannot_explain_an_unknown_return() -> None:
+    run = _revision("operations", "op_hole")
+    run = _answer(run, "interpretation", interpretation("the base", "the hole"))
+    run = _answer(run, "operations", _operations())
+
+    with pytest.raises(SubmissionValidationError, match="did not change: ret_missing"):
+        _answer(
+            run,
+            "coding",
+            _verified(_SOURCE),
+            dimension_checks={},
+            unticketed_changes={"ret_missing": "Changed its helper."},
+        )
+
+
 def test_fields_validation_derives_are_not_changes() -> None:
     run = _revision("interpretation", "sem_feature_1")
     calibrated = interpretation("the base", "the hole")

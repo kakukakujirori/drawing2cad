@@ -135,7 +135,8 @@ def validate_revision_scope(
         and name not in report.unticketed_changes
     )
 
-    # 4. Report those, and any explanation given for a member that did not change.
+    # 4. Coding's AST comparison cannot see helper changes; allow their explanation
+    #    against an existing return, while still rejecting unknown member names.
     errors = []
     if uncovered:
         errors.append(
@@ -143,7 +144,10 @@ def validate_revision_scope(
             f"{', '.join(uncovered)}. Undo them, or give each a reason in "
             "stage_report.unticketed_changes."
         )
-    if unchanged := sorted(report.unticketed_changes.keys() - changes.keys()):
+    unexplained_names = report.unticketed_changes.keys() - changes.keys()
+    if isinstance(artifact, str):
+        unexplained_names -= before.keys() | after.keys()
+    if unchanged := sorted(unexplained_names):
         errors.append(
             "stage_report.unticketed_changes names members this stage did not "
             f"change: {', '.join(unchanged)}"

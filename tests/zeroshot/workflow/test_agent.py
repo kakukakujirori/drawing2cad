@@ -1588,6 +1588,38 @@ def test_a_length_truncated_answer_earns_the_length_correction() -> None:
     assert "output-token limit" in model.received_messages[-1][-1].text
 
 
+def test_final_turn_retry_sees_the_tools_removed_by_the_budget() -> None:
+    cut_off = AIMessage(
+        content="unfinished",
+        response_metadata={"finish_reason": "length"},
+        usage_metadata={
+            "input_tokens": 1,
+            "output_tokens": 60000,
+            "total_tokens": 60001,
+            "output_token_details": {"reasoning": 59999},
+        },
+    )
+    model = ScriptedChatModel(responses=(cut_off, _answer_call("answer")))
+
+    result = _subgraph(
+        model,
+        max_turns=1,
+        model_retries=1,
+        output_schema=_Answer,
+        response_format_strategy="tool",
+    ).invoke({"messages": [HumanMessage(content="go")]})
+
+    assert result["structured_response"] == _Answer(done=True)
+    assert all("echo" not in tools for tools in model.bound_tool_name_history)
+    correction = model.received_messages[-1][-1].text
+    assert "output-token limit" in correction
+    assert "Call a tool to keep working" not in correction
+    assert not any(
+        isinstance(m, AIMessage) and m.text == "unfinished"
+        for m in model.received_messages[-1]
+    )
+
+
 def test_a_working_turn_that_ran_long_is_not_told_to_stop_using_tools() -> None:
     """`Do not call tools` reads as give up while there is still work to do --
     one coding stage answered "not yet implemented" on its first turn."""
@@ -1599,9 +1631,10 @@ def test_a_working_turn_that_ran_long_is_not_told_to_stop_using_tools() -> None:
         {"messages": [HumanMessage(content="go")]}
     )
 
-    correction = model.received_messages[-1][-1].text
-    assert "Do not call tools" not in correction
-    assert "whole output budget on thinking" in correction
+    correction = model.received_messages[-1][-1].text.lower()
+    assert "do not call tools" not in correction
+    assert "use an available tool to make progress" in correction
+    assert "answer now" not in correction
 
 
 def test_a_tool_call_cut_off_by_the_limit_is_told_to_write_in_pieces() -> None:
@@ -1619,12 +1652,16 @@ def test_a_tool_call_cut_off_by_the_limit_is_told_to_write_in_pieces() -> None:
         {"messages": [HumanMessage(content="go")]}
     )
 
-    correction = model.received_messages[-1][-1].text
-    assert "cut off" in correction
-    assert "thinking and came back" not in correction
+    retry = model.received_messages[-1]
+    assert retry[:-1] == model.received_messages[0]
+    assert isinstance(retry[-1], HumanMessage)
+    correction = retry[-1].text
+    assert "Retry notice:" in correction
+    assert "not included in this history" in correction
+    assert "split it into smaller tool calls" in correction
 
 
-def test_an_empty_answer_that_did_not_run_out_earns_the_plain_nudge() -> None:
+def test_an_empty_answer_earns_a_retry_notice_without_replaying_it() -> None:
     model = ScriptedChatModel(
         responses=(_empty("stop"), AIMessage(content="done")),
     )
@@ -1633,4 +1670,10 @@ def test_an_empty_answer_that_did_not_run_out_earns_the_plain_nudge() -> None:
         {"messages": [HumanMessage(content="go")]}
     )
 
-    assert "whole output budget on thinking" in model.received_messages[-1][-1].text
+    retry = model.received_messages[-1]
+    assert retry[:-1] == model.received_messages[0]
+    assert isinstance(retry[-1], HumanMessage)
+    correction = retry[-1].text
+    assert "Retry notice:" in correction
+    assert "not included in this history" in correction
+    assert "output-token limit" not in correction

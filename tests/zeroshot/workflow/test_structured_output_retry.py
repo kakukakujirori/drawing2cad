@@ -10,7 +10,7 @@ import json
 
 import httpx
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from openai import APIStatusError
 from openrouter.errors.badrequestresponse_error import (
     BadRequestResponseError,
@@ -162,8 +162,7 @@ def test_a_rejected_answer_is_not_replayed_with_its_unanswered_tool_calls() -> N
 
 
 def test_a_turn_that_only_thought_is_asked_again_rather_than_ending_the_stage() -> None:
-    """A model that spends its output budget reasoning returns an empty message,
-    which the agent loop would otherwise read as a finished answer."""
+    """An empty response is retried with feedback, without replaying that AI turn."""
     model = ScriptedChatModel(
         responses=(AIMessage(content=""), _answering("ticket_initial", "call_1"))
     )
@@ -172,9 +171,10 @@ def test_a_turn_that_only_thought_is_asked_again_rather_than_ending_the_stage() 
 
     assert result["structured_response"] == Answer(ticket_id="ticket_initial")
     assert len(model.received_messages) == 2
-    nudge = str(model.received_messages[1][-1].content)
-    assert "You have been thinking a long time" in nudge
-    assert "build on it rather than starting over" in nudge
+    retry = model.received_messages[1]
+    assert retry[:-1] == model.received_messages[0]
+    assert isinstance(retry[-1], HumanMessage)
+    assert retry[-1].text.strip()
 
 
 def test_text_without_a_tool_call_is_asked_again_rather_than_ending_the_stage() -> None:
