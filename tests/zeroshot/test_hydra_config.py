@@ -293,7 +293,9 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "max_stage_validation_retries",
         "max_output_limit_failures",
         "diff_drawer_config",
+        "fresh_coder",
     }
+    assert graph_factory.keywords["fresh_coder"] is True
     assert (
         graph_factory.keywords["diff_drawer_config"]["backend"] == "directional_chamfer"
     )
@@ -325,6 +327,24 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert ROLE_PATHS["operation_planner"].is_file()
     assert "output_schema" not in stage.keywords
     assert "agent" not in config
+
+
+@pytest.mark.parametrize("workflow", ["staged", "continued"])
+@pytest.mark.parametrize("fresh", [False, True])
+def test_fresh_coder_can_be_selected_in_workflow_config(workflow, fresh) -> None:
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()), version_base="1.3"
+    ):
+        config = compose(
+            config_name="default",
+            overrides=[
+                f"workflow={workflow}",
+                f"workflow.fresh_coder={str(fresh).lower()}",
+            ],
+        )
+    factory = instantiate(config.workflow)
+    assert factory.keywords["fresh_coder"] is fresh
+    assert factory.keywords["max_output_limit_failures"] == 3
 
 
 def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None:

@@ -11,6 +11,8 @@ workflow:
   _target_: zeroshot.pipeline.workflow.graph.create_reconstruction_graph
   _partial_: true
 
+  fresh_coder: true  # Set false to retain the full coder inference history.
+
   # Set diff_drawer_config: null to disable drawing comparison.
   diff_drawer_config:
     backend: directional_chamfer

@@ -31,6 +31,10 @@ from zeroshot.pipeline.verification import (
 )
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.middleware import CodingTrialMiddleware
+from zeroshot.pipeline.workflow.middleware.fresh_coding import (
+    INSTRUCTIONS_NAME,
+    FreshCodingMiddleware,
+)
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
@@ -60,6 +64,9 @@ class CodingStage:
         # integration belong to this stage of this round.
         self.output_verifier.interpretation = interpretation
         self.output_verifier.operations = snapshot.operations
+        fresh = isinstance(self.middleware, FreshCodingMiddleware)
+        if fresh:
+            self.middleware.set_context(state, self.instructions)
 
         # Start verification against this round's interpretation and operations.
         baseline = []
@@ -70,15 +77,36 @@ class CodingStage:
         self.ticket_verifier.reset(state["reconstruction"])
 
         previous = state.get("coding_state") or {}
+        instruction = self.instructions.build(
+            state,
+            PipelineStage.CODING,
+            append_inputs=(not previous or self.input_after_compaction),
+            dimension_inventory=interpretation.render_dimension_inventory(),
+        )
+        if fresh:
+            instruction = instruction.model_copy(
+                update={
+                    "name": INSTRUCTIONS_NAME,
+                    "additional_kwargs": {
+                        **instruction.additional_kwargs,
+                        "coding_validation_error": bool(
+                            state.get("stage_validation_error")
+                        ),
+                    },
+                }
+            )
         messages = [
             *list(previous.get("messages") or []),
-            self.instructions.build(
-                state,
-                PipelineStage.CODING,
-                append_inputs=(not previous or self.input_after_compaction),
-                dimension_inventory=interpretation.render_dimension_inventory(),
+            instruction,
+            *(
+                [
+                    self.middleware.checkpoint_message(baseline)
+                    if fresh
+                    else HumanMessage(content_blocks=baseline)
+                ]
+                if baseline
+                else []
             ),
-            *([HumanMessage(content_blocks=baseline)] if baseline else []),
         ]
         result = self.agent.invoke(
             {
@@ -105,6 +133,7 @@ def create_coding_stage(
     artifact_presenter: ArtifactPresenter,
     output_filename: str = "model.py",
     input_after_compaction: bool = False,
+    fresh_memory: bool = False,
 ) -> CodingStage:
     if isinstance(diff_drawer_config, DictConfig):
         diff_drawer_config = cast(
@@ -128,7 +157,10 @@ def create_coding_stage(
         source_filename=output_filename,
     )
     ticket_verifier = TicketVerifier(lambda: output_verifier.accepted_source)
-    coding_middleware = CodingProgressMiddleware(
+    middleware_type = (
+        FreshCodingMiddleware if fresh_memory else CodingProgressMiddleware
+    )
+    coding_middleware = middleware_type(
         output_verifier,
         ticket_verifier=ticket_verifier,
         fingerprint=output_verifier.source_digest,
