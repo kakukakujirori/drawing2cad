@@ -40,9 +40,10 @@ class ProgressOutputVerifier(OutputVerifier):
             or not (report.host_verification_dir / self.source_filename).is_file()
             or (report.host_verification_dir / self.source_filename).is_symlink()
             or self.operations is None
-            or self._program_faults(report)
         ):
             return None, "STEP or OperationPlan checks are not satisfied"
+        if faults := self._program_faults(report):
+            return None, "submission is blocked: " + " ".join(faults)
         try:
             saved_source = (
                 report.host_verification_dir / self.source_filename
@@ -107,6 +108,9 @@ class ProgressOutputVerifier(OutputVerifier):
         blocks = super().feedback()
         report = self._last_feedback_report
         assert report is not None
+        execution = report.exec_report
+        if execution is None or execution.status != ExecutionStatus.VERIFIED:
+            return blocks  # The build report already says why.
         if report is not self._previous_candidate:
             score, reason = self._candidate_score(report)
             previous = self._previous_candidate

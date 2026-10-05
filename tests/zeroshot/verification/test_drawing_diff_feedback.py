@@ -61,18 +61,20 @@ def test_feedback_lists_input_and_keeps_failure_reasons(tmp_path):
 
     text = _text(describe_drawing_diffs(reports, workdir, presenter=PRESENTER))
 
-    assert "view_front input: /work/inputs/front.png" in text
-    assert "view_front warning: ambiguous alignment" in text
-    assert "view_top input: /work/inputs/top.png" in text
-    assert "view_top error: projection unavailable" in text
+    lines = text.splitlines()
+    front = next(line for line in lines if line.startswith("- view_front "))
+    top = next(line for line in lines if line.startswith("- view_top "))
+    assert "input /work/inputs/front.png" in front
+    assert "warning: ambiguous alignment" in front
+    assert "input /work/inputs/top.png" in top
+    assert "error: projection unavailable" in top
     assert text.count("[Drawing comparison]") == 1
-    assert text.count("Comparison warnings/errors:") == 1
     assert "Alignment log:" not in text
     assert "Alignment may be wrong or hide size errors" in text
     assert "Overlay images:" in text
     assert "view_front overlay: /work/projection/front_overlay.png" in text
-    assert "Blue=near, red=far" in text
-    assert "blue doesn't ensure correct matching" in text
+    assert "blue near and red far" in text
+    assert "Blue does not prove a correct match" in text
     assert "Unmatched images:" not in text
     assert "Mismatch clusters" not in text
     for unwanted in (str(tmp_path), "/work/unavailable", "p95_px", "red_distance_px"):
@@ -104,10 +106,10 @@ def test_scores_show_changes_against_the_previous_build(tmp_path):
         )
     )
 
-    assert "chamfer: 6.00 px (-2.00)" in text
-    assert "Mean chamfer over 2 views: 5.50 px (-0.50)" in text
+    assert "line distance 6.00 px (-2.00)" in text
+    assert "Mean line distance over 2 views: 5.50 px (-0.50)" in text
     assert "against verification 002" in text
-    assert "Comparison warnings/errors:" not in text
+    assert "warning" not in text
     assert "Alignment log:" not in text
 
 
@@ -124,9 +126,12 @@ def test_only_views_measured_both_times_are_compared(tmp_path):
         )
     )
 
-    assert "chamfer: 6.00 px (-2.00)" in text
-    assert "view_top chamfer: 5.00 px" in text.splitlines()
-    assert "Mean chamfer over 2 views: 5.50 px" in text.splitlines()
+    assert "line distance 6.00 px (-2.00)" in text
+    assert any(
+        line.startswith("- view_top ") and "line distance 5.00 px; silhouette" in line
+        for line in text.splitlines()
+    )
+    assert "Mean line distance over 2 views: 5.50 px" in text.splitlines()
 
 
 @pytest.mark.parametrize("mode", ["path", "image"])
@@ -164,20 +169,13 @@ def test_unmatched_groups_are_listed_under_their_view_by_audit_key(tmp_path, mod
     )
     text = _text(blocks)
 
-    assert "view_top input: /work/top.png" in text
-    assert "view_top chamfer: 6.00 px" in text
-    assert "Mismatch clusters (bboxes in input-view pixels):" in text
-    assert (
-        "Missing = input-only; extra = projection-only; material = silhouette difference"
-        in text
-    )
-    assert "Missing dimension/leader/text lines aren't defects" in text
-    assert (
-        "The input is shown in gray, the projection in light blue, and their overlap in blue"
-        in text
-    )
-    assert "Bands match cluster colors and ID suffix numbers" in text
-    assert "a material mismatch is also hatched" in text
+    assert "- view_top (input /work/top.png): line distance 6.00 px" in text
+    assert "Mismatch clusters (box in input-view pixels):" in text
+    assert "Missing = input only; extra = projection only" in text
+    assert "Missing dimension, leader and text lines are not defects" in text
+    assert "input gray, projection light blue, overlap blue" in text
+    assert "Colored bands mark the clusters below by color and ID suffix" in text
+    assert "hatching marks material (silhouette) differences" in text
     assert (
         """drawing_diff.view_top.1 (red): missing lines, 361 skeleton pixels, box [465, 358, 673, 440]
 drawing_diff.view_top.2 (yellow): extra lines, 361 skeleton pixels, box [465, 358, 673, 440]
@@ -216,7 +214,7 @@ def test_failed_alignment_can_have_warnings_without_an_error_or_images(tmp_path)
         )
     )
 
-    assert "input: /work/crop.png" in text
+    assert "input /work/crop.png" in text
     assert "/work/front.png" not in text
     assert "warning: Drawing comparison unavailable: no usable alignment" in text
     assert "error:" not in text
@@ -264,13 +262,9 @@ def test_region_error_is_explained_and_combined_scores_stay_internal(tmp_path):
         describe_drawing_diffs(reports, SandboxWorkdir(tmp_path), presenter=PRESENTER)
     )
 
-    assert (
-        "view_front: aligned silhouette mask mismatch=10.00% (missing=0 px², extra=1000 px²)"
-        in text
-    )
-    assert "view_top: aligned silhouette mask mismatch=20.00%" in text
-    assert "includes alignment/extraction error; internal holes/lines excluded" in text
-    assert "Zero means the extracted masks match" in text
+    assert "silhouette mismatch 10.00% (missing 0 px², extra 1000 px²)" in text
+    assert "silhouette mismatch 20.00%" in text
+    assert "holes and inner lines are excluded" in text
     assert "S=" not in text and "C/20" not in text and "match score" not in text
     assert reports["view_front"].stats["match_score"] == 0.35
     assert "Best" not in text and "improved" not in text
@@ -281,7 +275,7 @@ def test_region_error_is_explained_and_combined_scores_stay_internal(tmp_path):
     text = _text(
         describe_drawing_diffs(reports, SandboxWorkdir(tmp_path), presenter=PRESENTER)
     )
-    assert "view_front: aligned silhouette mask mismatch=<0.01%" in text
+    assert "silhouette mismatch <0.01%" in text
 
     reports["view_top"].stats.update(
         {
@@ -296,7 +290,7 @@ def test_region_error_is_explained_and_combined_scores_stay_internal(tmp_path):
     text = _text(
         describe_drawing_diffs(reports, SandboxWorkdir(tmp_path), presenter=PRESENTER)
     )
-    assert "view_top area mismatch unavailable: input part area unavailable" in text
+    assert "silhouette mismatch unavailable: input part area unavailable" in text
     assert "match score" not in text
 
 
@@ -331,9 +325,38 @@ def test_shared_feedback_uses_registered_signed_axes_for_arbitrary_view_names(tm
         )
     )
 
-    assert "view_rotated_profile: U=-Z, V=+Y; X depth is not observable" in text
+    assert "U=-Z, V=+Y, X depth hidden" in text
     assert "CAD bounds: Z≈-8.00..-6.00, Y≈10.00..14.00 mm" in text
-    assert "CAD coordinates are provisional" in text
+    assert "alignment uncertain" in text
+
+
+def test_a_view_without_scale_says_its_size_was_not_compared(tmp_path):
+    report = DrawingDiffReport(
+        drawing_path=tmp_path / "crop.png",
+        projection_path=tmp_path / "front.png",
+        alignment=AlignmentResult(
+            backend="directional_chamfer",
+            model="similarity",
+            status="ok",
+            H_drawing_to_projection=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            diagnostics={
+                "scale_calibration": {
+                    "status": "unavailable",
+                    "reason": "input scale unavailable",
+                }
+            },
+        ),
+        stats={"model_uv_mapping": {"status": "provisional"}},
+    )
+
+    text = _text(
+        describe_drawing_diffs(
+            {"view_front": report}, SandboxWorkdir(tmp_path), presenter=PRESENTER
+        )
+    )
+
+    assert "size not compared: input scale unavailable" in text
+    assert "alignment uncertain" not in text
 
 
 def test_unavailable_cad_coordinates_keep_the_reason_in_shared_feedback(tmp_path):
@@ -353,4 +376,4 @@ def test_unavailable_cad_coordinates_keep_the_reason_in_shared_feedback(tmp_path
         )
     )
 
-    assert "view_front CAD coordinates unavailable: projection DXF unavailable" in text
+    assert "CAD coordinates unavailable: projection DXF unavailable" in text

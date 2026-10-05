@@ -100,7 +100,18 @@ class ShapeCensus:
             total, delta = sum(now.values()), sum(now.values()) - sum(before.values())
             kinds = _by_kind_change(now, before)
             parts.append(f"{label} {total} ({delta:+d}{f': {kinds}' if kinds else ''})")
+        if self._same_shape_as(previous):
+            parts.append("NO CHANGE: this step left the shape as it was")
         return "; ".join(parts)
+
+    def _same_shape_as(self, previous: "ShapeCensus") -> bool:
+        # A cutter that misses the part changes neither volume nor topology.
+        return (
+            self.solids == previous.solids
+            and abs(self.volume - previous.volume) <= 1e-6 * max(previous.volume, 1.0)
+            and self.faces == previous.faces
+            and self.edges == previous.edges
+        )
 
 
 def read_census(step_path: Path) -> ShapeCensus | None:

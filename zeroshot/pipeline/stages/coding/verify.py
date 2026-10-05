@@ -25,6 +25,7 @@ from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.check_program import check_program
+from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
@@ -770,6 +771,76 @@ def _drawing_diff_data(
     }
 
 
+def _provisional_reasons(alignment: AlignmentResult | None) -> list[str]:
+    """Why a view's CAD coordinates are provisional: its fit, its scale, or both."""
+    calibration = (
+        alignment.diagnostics.get("scale_calibration", {}) if alignment else {}
+    )
+    reasons = []
+    if alignment is None or alignment.status != "ok":
+        reasons.append("alignment uncertain")
+    if calibration.get("status") == "unavailable":
+        reasons.append(f"size not compared: {calibration['reason']}")
+    return reasons
+
+
+_COMPARISON = cleandoc("""
+    [Drawing comparison]
+    Each input view was aligned to its projection. Scores are lower the better.{changes}
+    {views}
+    Mean line distance over {count} views: {mean}
+    Line distance: mean distance between input and projection lines, in input pixels. Silhouette mismatch: difference of the filled outlines; holes and inner lines are excluded. Alignment may be wrong or hide size errors.
+""")
+_VIEW = "- {name} (input {input_path}{axes}): line distance {line}; silhouette mismatch {silhouette}{caveats}"
+_CHANGES = " Changes in parentheses are against verification {previous_id}."
+_OVERLAY = (
+    "Overlay images: input lines in pale gray; projection lines blue near and red "
+    "far from them. Blue does not prove a correct match."
+)
+_UNMATCHED = cleandoc("""
+    Unmatched images: input gray, projection light blue, overlap blue. Colored bands mark the clusters below by color and ID suffix; hatching marks material (silhouette) differences. Missing = input only; extra = projection only. Missing dimension, leader and text lines are not defects.
+    Mismatch clusters (box in input-view pixels):
+    {clusters}
+""")
+_CLUSTER = "{key} ({color}): {direction} {kind}, {size} {unit}, box {box}{cad}"
+
+
+def _silhouette(material: Mapping[str, Any]) -> str:
+    if (ratio := material.get("ratio")) is None:
+        reason = material.get("reason")
+        return f"unavailable: {reason}" if reason else "unavailable"
+    percentage = "<0.01%" if 0 < ratio < 0.0001 else f"{ratio:.2%}"
+    return (
+        f"{percentage} (missing {material['missing_px2']} px², "
+        f"extra {material['extra_px2']} px²)"
+    )
+
+
+def _comparison_caveats(report: DrawingDiffReport, has_frame: bool) -> list[str]:
+    """What limits one view's scores or CAD coordinates, in reading order."""
+    caveats = []
+    mapping = report.stats.get("model_uv_mapping", {})
+    if mapping.get("status") == "unavailable":
+        caveats.append(f"CAD coordinates unavailable: {mapping['reason']}")
+    elif mapping.get("status") == "provisional":
+        caveats.extend(_provisional_reasons(report.alignment))
+    elif mapping and not has_frame:
+        caveats.append("registered axes unavailable; CAD bounds use projection U/V")
+    if report.error:
+        caveats.append(f"error: {report.error}")
+    caveats.extend(f"warning: {warning}" for warning in report.warnings)
+    return caveats
+
+
+def _cad_extent(item: Mapping[str, Any], bounds: Any) -> str:
+    if (box := item.get("box_model_uv")) is None:
+        return ""
+    if bounds is None:
+        return f"; CAD UV box {box} mm (registered axes unavailable)"
+    spans = (f"{axis}≈{low:.2f}..{high:.2f}" for axis, low, high in bounds)
+    return "; CAD bounds: " + ", ".join(spans) + " mm"
+
+
 def describe_drawing_diffs(
     diff_reports: Mapping[str, DrawingDiffReport] | None,
     workdir: SandboxWorkdir,
@@ -786,163 +857,79 @@ def describe_drawing_diffs(
         return []
     data = _drawing_diff_data(diff_reports, previous, view_frames)
 
-    # All comparison prose is assembled here; the helper above only calculates data.
-    view_chamfer_scores = []
-    view_region_errors = []
-    model_coordinates = []
-    comparison_diagnostics = []
+    views = []
     for name, report in diff_reports.items():
-        if name in data["chamfers"]:
-            view_chamfer_scores.append(
-                f"{name} chamfer: "
-                + _describe_chamfer(
-                    data["chamfers"][name], data["previous_chamfers"].get(name)
-                )
+        frame = data["frames"][name]
+        line = data["chamfers"].get(name)
+        caveats = _comparison_caveats(report, frame is not None)
+        views.append(
+            _VIEW.format(
+                name=name,
+                input_path=workdir.host_to_sandbox_path(report.drawing_path),
+                axes=(
+                    f"; U={frame['u']}, V={frame['v']}, {frame['depth']} depth hidden"
+                    if frame is not None
+                    else ""
+                ),
+                line=(
+                    _describe_chamfer(line, data["previous_chamfers"].get(name))
+                    if line is not None
+                    else "unavailable"
+                ),
+                silhouette=_silhouette(report.stats.get("material_error", {})),
+                caveats="".join(f"; {caveat}" for caveat in caveats),
             )
-
-        material = report.stats.get("material_error", {})
-        if material.get("ratio") is not None:
-            ratio = material["ratio"]
-            percentage = "<0.01%" if 0 < ratio < 0.0001 else f"{ratio:.2%}"
-            view_region_errors.append(
-                f"{name}: aligned silhouette mask mismatch={percentage} "
-                f"(missing={material['missing_px2']} px², extra={material['extra_px2']} px²)"
-            )
-        elif material:
-            view_region_errors.append(
-                f"{name} area mismatch unavailable: {material.get('reason', 'region error unavailable')}"
-            )
-
-        mapping = report.stats.get("model_uv_mapping", {})
-        if mapping.get("status") == "unavailable":
-            comparison_diagnostics.append(
-                f"{name} CAD coordinates unavailable: {mapping['reason']}"
-            )
-        elif mapping:
-            if (frame := data["frames"][name]) is not None:
-                model_coordinates.append(
-                    f"{name}: U={frame['u']}, V={frame['v']}; "
-                    f"{frame['depth']} depth is not observable in this view."
-                )
-            else:
-                model_coordinates.append(
-                    f"{name}: registered axes unavailable; CAD bounds use projection U/V."
-                )
-            if mapping["status"] == "provisional":
-                model_coordinates.append(
-                    f"{name}: CAD coordinates are provisional (alignment uncertain)."
-                )
-        if report.error:
-            comparison_diagnostics.append(f"{name} error: {report.error}")
-        comparison_diagnostics.extend(
-            f"{name} warning: {warning}" for warning in report.warnings
         )
-
-    mismatch_clusters = []
-    for key, item, bounds in data["clusters"]:
-        unit = "skeleton pixels" if item["kind"] == "lines" else "px²"
-        text = (
-            f"{key} ({item['color']}): {item['direction']} {item['kind']}, "
-            f"{item['size_px']} {unit}, box {item['box_px']}"
-        )
-        if (box := item.get("box_model_uv")) is not None:
-            if bounds is None:
-                text += f"; CAD UV box {box} mm (registered axes unavailable)"
-            else:
-                spans = (f"{axis}≈{low:.2f}..{high:.2f}" for axis, low, high in bounds)
-                text += "; CAD bounds: " + ", ".join(spans) + " mm"
-        mismatch_clusters.append(text)
-    input_view_paths = "\n".join(
-        f"{name} input: {workdir.host_to_sandbox_path(report.drawing_path)}"
-        for name, report in diff_reports.items()
-    )
-    mean_chamfer_summary = ""
-    if data["mean_chamfer"] is not None:
-        mean_chamfer_summary = (
-            f"Mean chamfer over {len(data['chamfers'])} views: "
-            + _describe_chamfer(data["mean_chamfer"], data["previous_mean_chamfer"])
-        )
-        if data["previous_chamfers"]:
-            previous_id = previous.verification_id if previous else None
-            mean_chamfer_summary += (
-                f"\nChanges in parentheses are against verification {previous_id}."
-            )
-    overlay_paths = {
-        f"{name} overlay": report.paths["overlay_path"]
-        for name, report in diff_reports.items()
-        if "overlay_path" in report.paths
-    }
-    unmatched_paths = {
-        f"{name} unmatched": report.paths["unmatched_path"]
-        for name, report in diff_reports.items()
-        if "unmatched_path" in report.paths
-    }
-
-    prompt = cleandoc("""
-        [Drawing comparison]
-        Projections were spatially aligned to DrawingViews, with differences highlighted in Overlay and Unmatched.
-        Check Chamfer distances for quantitative deviation extent.
-        NOTE: Alignment may be wrong or hide size errors.
-
-        {comparison_diagnostics}
-
-        Input views:
-        {input_view_paths}
-
-        Chamfer: mean line distance after alignment (input px); lower is better.
-        {view_chamfer_scores}
-        {mean_chamfer_summary}
-        {region_scores}
-        {model_coordinates}
-    """).format(
-        comparison_diagnostics=(
-            "\n".join(["Comparison warnings/errors:", *comparison_diagnostics])
-            if comparison_diagnostics
+    mean = data["mean_chamfer"]
+    prompt = _COMPARISON.format(
+        count=len(data["chamfers"]),
+        changes=(
+            _CHANGES.format(previous_id=previous.verification_id if previous else None)
+            if data["previous_chamfers"]
             else ""
         ),
-        input_view_paths=input_view_paths,
-        view_chamfer_scores="\n".join(view_chamfer_scores),
-        mean_chamfer_summary=mean_chamfer_summary,
-        region_scores=(
-            "\n".join(
-                [
-                    "Aligned filled-silhouette mismatch (all mask pixels; includes alignment/extraction error; internal holes/lines excluded). Zero means the extracted masks match.",
-                    *view_region_errors,
-                ]
-            )
-            if view_region_errors
-            else ""
+        views="\n".join(views),
+        mean=(
+            _describe_chamfer(mean, data["previous_mean_chamfer"])
+            if mean is not None
+            else "unavailable"
         ),
-        model_coordinates="\n".join(model_coordinates),
     )
+    clusters = [
+        _CLUSTER.format(
+            key=key,
+            color=item["color"],
+            direction=item["direction"],
+            kind=item["kind"],
+            size=item["size_px"],
+            unit="skeleton pixels" if item["kind"] == "lines" else "px²",
+            box=item["box_px"],
+            cad=_cad_extent(item, bounds),
+        )
+        for key, item, bounds in data["clusters"]
+    ]
+
     blocks: list[ContentBlock] = [create_text_block(prompt)]
-
-    # overlay
     blocks += build_feedback_message_blocks(
-        overlay_paths,
+        {
+            f"{name} overlay": report.paths["overlay_path"]
+            for name, report in diff_reports.items()
+            if "overlay_path" in report.paths
+        },
         workdir,
         mode=presenter.overlay,
-        heading=cleandoc("""Overlay images:
-        The input is moved onto the projection's pixels (pale gray).
-        Blue=near, red=far from the input lines. Note that blue doesn't ensure correct matching, only that the input is near the projection.
-        """),
+        heading=_OVERLAY,
     )
-
-    # unmatched
     blocks += build_feedback_message_blocks(
-        unmatched_paths,
+        {
+            f"{name} unmatched": report.paths["unmatched_path"]
+            for name, report in diff_reports.items()
+            if "unmatched_path" in report.paths
+        },
         workdir,
         mode=presenter.unmatched,
-        heading=cleandoc("""Unmatched images:
-        The input is shown in gray, the projection in light blue, and their overlap in blue.
-        Bands match cluster colors and ID suffix numbers; a material mismatch is also hatched.
-        - Missing = input-only; extra = projection-only; material = silhouette difference.
-        - Missing dimension/leader/text lines aren't defects.
-
-        Mismatch clusters (bboxes in input-view pixels):
-        {mismatch_clusters}
-        """).format(
-            mismatch_clusters="\n".join(mismatch_clusters) or "No clusters reported."
+        heading=_UNMATCHED.format(
+            clusters="\n".join(clusters) or "No clusters reported."
         ),
     )
     return blocks

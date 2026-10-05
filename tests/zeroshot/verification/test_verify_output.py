@@ -646,11 +646,13 @@ def test_feedback_compares_scores_with_the_last_scored_build(tmp_path):
         return _text(verifier.feedback())
 
     first = build(0)
-    assert "chamfer: 8.00 px\n" in first
+    assert "line distance 8.00 px; silhouette mismatch unavailable" in first
     assert "Changes in parentheses" not in first
-    assert "\nchamfer: " not in build(1)
+    unscored = build(1)
+    assert "line distance unavailable" in unscored
+    assert "Mean line distance over 0 views: unavailable" in unscored
     third = build(2)
-    assert "chamfer: 6.00 px (-2.00)" in third
+    assert "line distance 6.00 px (-2.00)" in third
     assert "against verification 000" in third
     assert _text(verifier.feedback()) == third  # not against itself
 
@@ -1199,7 +1201,7 @@ def test_an_operation_that_built_nothing_shows_no_change() -> None:
     )
 
     assert _census_table(returns).splitlines()[1] == (
-        "ret_cleaned  volume 6000.0 (+0.0); bbox 10.00 x 20.00 x 30.00; faces 6 (+0); edges 12 (+0)"
+        "ret_cleaned  volume 6000.0 (+0.0); bbox 10.00 x 20.00 x 30.00; faces 6 (+0); edges 12 (+0); NO CHANGE: this step left the shape as it was"
     )
 
 
@@ -1771,12 +1773,12 @@ def test_feedback_kinds_are_presented_independently(tmp_path, kind, mode):
     for name, path in paths.items():
         assert (path in text) == (modes[name] != "none")
     for name, legend in {
-        "overlay": "The input is moved onto the projection's pixels",
-        "unmatched": "a material mismatch is also hatched",
+        "overlay": "Overlay images: input lines in pale gray",
+        "unmatched": "hatching marks material (silhouette) differences",
     }.items():
         assert (legend in text) == (modes[name] != "none")
     assert "[Drawing comparison]" in text
-    assert "chamfer:" in text
+    assert "line distance" in text
     expected_images = (
         (2 if kind in {"output_renders", "intermediates"} else 1)
         if mode == "image"
