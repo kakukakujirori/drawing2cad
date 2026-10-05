@@ -161,7 +161,9 @@ def _require_a_readable_submission(interpretation: DrawingInterpretation) -> Non
         raise LocatedError.at(
             unmeasured[0][0],
             "measure every linear dimension whose printed value you read, in "
-            f"its own view file's units: {', '.join(n for _, n in unmeasured)}",
+            f"its own view file's units: {', '.join(n for _, n in unmeasured)}. "
+            "If you cannot locate the entity that annotation measures, "
+            "remove it from dimensions and report it in concerns.",
         )
     _require_third_angle_placement(interpretation.views)
 
