@@ -43,16 +43,21 @@ def _distance_summary(distances: np.ndarray) -> dict[str, Any]:
     }
 
 
-def _chamfer(
+def _chamfers(
     drawing_ink: np.ndarray, output_ink: np.ndarray, matrix: np.ndarray
-) -> float | None:
+) -> dict[str, float | None]:
     """Mean line distance both ways in drawing pixels, to compare builds of one part.
 
     Every drawing line counts, and the unit does not change with the output's
-    size. Output lines outside the drawing are not evaluated.
+    size. Output lines outside the drawing are not evaluated. The bounded mean
+    caps each distance at CHAMFER_CAP_PX; the unbounded mean does not.
     """
+    unavailable = {
+        "bounded_chamfer_drawing_px": None,
+        "unbounded_chamfer_drawing_px": None,
+    }
     if not (drawing_ink.any() and output_ink.any()):
-        return None
+        return unavailable
     drawing_xy = np.argwhere(drawing_ink)[:, ::-1].astype(np.float64)
     output_xy = cv2.perspectiveTransform(
         np.argwhere(output_ink)[None, :, ::-1].astype(np.float64),
@@ -61,12 +66,17 @@ def _chamfer(
     height, width = drawing_ink.shape
     inside = np.all((output_xy >= 0) & (output_xy <= (width - 1, height - 1)), axis=1)
     if not inside.any():
-        return None
+        return unavailable
     missing = cKDTree(output_xy).query(drawing_xy)[0]
     extra = cKDTree(drawing_xy).query(output_xy[inside])[0]
-    missing_mean = np.minimum(missing, CHAMFER_CAP_PX).mean()
-    extra_mean = np.minimum(extra, CHAMFER_CAP_PX).mean()
-    return float((missing_mean + extra_mean) / 2)
+    bounded = (
+        np.minimum(missing, CHAMFER_CAP_PX).mean()
+        + np.minimum(extra, CHAMFER_CAP_PX).mean()
+    )
+    return {
+        "bounded_chamfer_drawing_px": float(bounded / 2),
+        "unbounded_chamfer_drawing_px": float((missing.mean() + extra.mean()) / 2),
+    }
 
 
 def _measure_distances(
@@ -228,14 +238,23 @@ def compute_diff(
         # Measure both directions; output pixels outside input coverage are unknown.
         output_distances, measured = _measure_distances(aligned_ink, output_ink, valid)
         stats.update(measured)
-        stats["chamfer_drawing_px"] = _chamfer(drawing_ink, output_ink, matrix)
+        stats.update(_chamfers(drawing_ink, output_ink, matrix))
         # Cluster distances to highlight unmatched output lines and regions.
         output_seen = warp_output_to_drawing(output_ink, matrix, drawing_ink.shape)
         material = measure_material_error(drawing_ink, output_seen)
         stats["material_error"] = material
-        chamfer = stats["chamfer_drawing_px"]
-        if chamfer is not None and material["ratio"] is not None:
-            stats["match_score"] = chamfer / CHAMFER_CAP_PX + material["ratio"]
+        # Both terms are lengths in drawing pixels: the mean distance between
+        # the line sets, and the mismatched silhouette area per unit of outline.
+        # A view whose input silhouette cannot be filled is scored by lines alone;
+        # that depends only on the input, so builds of one drawing stay comparable.
+        line = stats["unbounded_chamfer_drawing_px"]
+        if line is not None:
+            stats["match_score"] = line + (
+                (material["missing_px2"] + material["extra_px2"])
+                / max(material["input_perimeter_px"], 1.0)
+                if material["ratio"] is not None
+                else 0.0
+            )
         groups = find_unmatched(drawing_ink, output_seen)
         stats["unmatched"] = describe_unmatched(groups)
         unmatched = draw_unmatched(drawing_gray, output_seen, groups)

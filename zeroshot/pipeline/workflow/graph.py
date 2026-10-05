@@ -16,6 +16,7 @@ from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
+from zeroshot.pipeline.stages.coding.progress import DEFAULT_MATCH_MARGIN_PX
 from zeroshot.pipeline.stages.contracts import (
     ReconstructionHistory,
     ReconstructionSnapshot,
@@ -81,6 +82,7 @@ def create_reconstruction_graph(
     audit_evidence_mode: EvidenceMode = "mark",
     diff_drawer_config: Mapping[str, Any] | None = None,
     fresh_coder: bool = False,
+    match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
 ):
     """Interpret and plan the part, implement it, then verify and audit it."""
     if max_audit_reject_count < 0:
@@ -178,6 +180,7 @@ def create_reconstruction_graph(
         output_filename=output_filename,
         input_after_compaction=compact_between_stages is not None,
         fresh_memory=fresh_coder,
+        match_margin_px=match_margin_px,
     )
     audit_stage = stage_factory(PipelineStage.AUDIT)(
         partial(audit_agent_builder, output_limit_budget=output_limit_budget),

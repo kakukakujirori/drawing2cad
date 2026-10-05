@@ -35,16 +35,24 @@ def distance_map(foreground: np.ndarray) -> np.ndarray:
     ).astype(np.float64)
 
 
+# Below this share of the filled part surviving the opening, the part is thin-walled.
+MIN_KEPT_AREA = 0.5
+
+
 def drawing_area(ink: np.ndarray) -> np.ndarray:
-    """The largest filled input part, excluding thin annotations; empty if absent."""
+    """The largest filled input part, excluding thin annotations; empty if absent.
+
+    Empty too when the part's own walls are as thin as the annotations, as in
+    sheet metal seen edge-on, since the opening then erases the part itself.
+    """
     # Do not close input gaps: that can join dimension lines to the part.
+    filled = binary_fill_holes(ink).astype(np.uint8)
     area = cv2.morphologyEx(
-        binary_fill_holes(ink).astype(np.uint8),
-        cv2.MORPH_OPEN,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+        filled, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     )
     count, labels, stats, _ = cv2.connectedComponentsWithStats(area)
-    if count == 1:
+    before = cv2.connectedComponentsWithStats(filled)[2][1:, cv2.CC_STAT_AREA]
+    if count == 1 or stats[1:, cv2.CC_STAT_AREA].max() < MIN_KEPT_AREA * before.max():
         return np.zeros_like(ink, dtype=bool)
     # ponytail: one main connected part per view; assemblies need per-part masks.
     return labels == 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])

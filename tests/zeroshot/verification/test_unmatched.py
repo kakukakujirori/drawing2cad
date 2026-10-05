@@ -155,7 +155,7 @@ def test_open_or_thin_input_has_unavailable_region_error():
 
     assert error["status"] == "unavailable"
     assert error["ratio"] is None
-    assert "input part area" in error["reason"]
+    assert "cannot be filled" in error["reason"]
 
 
 def test_region_score_keeps_a_thin_misalignment_instead_of_reporting_zero():

@@ -27,6 +27,9 @@ workflow:
 
       pyramid: [0.5, 1.0]
       top_k: 4
+  # The coder hears "no measurable change" for match score changes below this
+  # (input px, the unit of the score diff_drawer_config computes).
+  match_margin_px: 0.5
 
   interpretation_agent_builder:
     _target_: zeroshot.pipeline.workflow.create_agent

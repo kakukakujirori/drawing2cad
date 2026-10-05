@@ -691,11 +691,11 @@ def describe_intermediates(
 
 
 def chamfers(diff_reports: Mapping[str, DrawingDiffReport] | None) -> dict[str, float]:
-    """The chamfer distance of each view that could be measured."""
+    """The bounded chamfer distance of each view that could be measured."""
     return {
         name: chamfer
         for name, report in (diff_reports or {}).items()
-        if (chamfer := report.stats.get("chamfer_drawing_px")) is not None
+        if (chamfer := report.stats.get("bounded_chamfer_drawing_px")) is not None
     }
 
 

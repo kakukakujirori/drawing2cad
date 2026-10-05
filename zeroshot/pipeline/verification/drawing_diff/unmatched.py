@@ -132,19 +132,23 @@ def measure_material_error(
     if not input_area.any():
         return {
             "status": "unavailable",
-            "reason": "input part area unavailable",
+            "reason": "the input outline cannot be filled (thin walls or open lines)",
             "ratio": None,
         }
     output_area = _filled(output)
     missing = int((input_area & ~output_area).sum())
     extra = int((output_area & ~input_area).sum())
     union = int((input_area | output_area).sum())
+    contours, _ = cv2.findContours(
+        input_area.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+    )
     return {
         "status": "ok",
         "missing_px2": missing,
         "extra_px2": extra,
         "union_px2": union,
         "ratio": (missing + extra) / union,
+        "input_perimeter_px": float(sum(cv2.arcLength(c, True) for c in contours)),
     }
 
 

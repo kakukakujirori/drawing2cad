@@ -294,8 +294,10 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "max_output_limit_failures",
         "diff_drawer_config",
         "fresh_coder",
+        "match_margin_px",
     }
     assert graph_factory.keywords["fresh_coder"] is True
+    assert graph_factory.keywords["match_margin_px"] == 0.5
     assert (
         graph_factory.keywords["diff_drawer_config"]["backend"] == "directional_chamfer"
     )

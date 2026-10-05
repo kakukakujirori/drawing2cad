@@ -4,6 +4,7 @@ import pytest
 
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.drawing_diff.diff import compute_diff
+from zeroshot.pipeline.verification.drawing_diff.image_ops import drawing_area
 
 
 def _white(size=64):
@@ -38,7 +39,10 @@ def test_every_shifted_line_pixel_is_colored():
     assert np.all(diff.overlay[10:55, 20] == 225)
     assert diff.stats["outside_fraction"] == 0
     assert diff.stats["material_error"]["status"] == "unavailable"
-    assert diff.stats["match_score"] is None
+    # A line drawing has no fillable silhouette, so lines alone score it.
+    assert diff.stats["match_score"] == pytest.approx(
+        diff.stats["unbounded_chamfer_drawing_px"]
+    )
 
 
 def test_chamfer_caps_far_lines():
@@ -47,8 +51,9 @@ def test_chamfer_caps_far_lines():
     output[10:55, 24] = 0
     diff = compute_diff(drawing, output, _alignment())
 
-    # input capped (4 + 20) / 2 = 12, output 4
-    assert diff.stats["chamfer_drawing_px"] == 8.0
+    # input capped (4 + 20) / 2 = 12, output 4; uncapped input (4 + 36) / 2 = 20
+    assert diff.stats["bounded_chamfer_drawing_px"] == 8.0
+    assert diff.stats["unbounded_chamfer_drawing_px"] == 12.0
 
 
 def test_chamfer_counts_drawing_lines_beyond_the_projection():
@@ -59,7 +64,7 @@ def test_chamfer_counts_drawing_lines_beyond_the_projection():
     diff = compute_diff(drawing, output, _alignment())
 
     # input (0 + capped 20) / 2 = 10, output 0
-    assert diff.stats["chamfer_drawing_px"] == 5.0
+    assert diff.stats["bounded_chamfer_drawing_px"] == 5.0
 
 
 def test_unmatched_groups_are_listed_in_drawing_pixels():
@@ -211,7 +216,7 @@ def test_thickening_keeps_original_measurements_where_strokes_overlap():
     assert diff.stats["input_to_output"]["max_px"] == 0
 
 
-def test_match_score_combines_capped_line_distance_and_broad_silhouette_error():
+def test_match_score_adds_line_distance_and_silhouette_offset_in_pixels():
     drawing, output = _white(300), _white(300)
     outline = np.array(
         [
@@ -233,6 +238,22 @@ def test_match_score_combines_capped_line_distance_and_broad_silhouette_error():
 
     assert material["status"] == "ok" and material["extra_px2"] > 6000
     assert material["missing_px2"] == 0
-    assert diff.stats["match_score"] == pytest.approx(
-        diff.stats["chamfer_drawing_px"] / 20 + material["ratio"]
-    )
+    # The outline of the L-shaped input is 1100 px long.
+    assert material["input_perimeter_px"] == pytest.approx(1100, rel=0.05)
+    offset = (material["missing_px2"] + material["extra_px2"]) / material[
+        "input_perimeter_px"
+    ]
+    line = diff.stats["unbounded_chamfer_drawing_px"]
+    assert diff.stats["match_score"] == pytest.approx(line + offset)
+    assert line >= diff.stats["bounded_chamfer_drawing_px"]
+
+
+def test_a_thin_walled_outline_has_no_silhouette():
+    """Sheet metal edge-on: the opening that drops annotations erases the part."""
+    ink = np.zeros((120, 160), bool)
+    cv2.rectangle(ink.view(np.uint8), (20, 20), (140, 24), 1, 1)
+    cv2.rectangle(ink.view(np.uint8), (20, 20), (24, 100), 1, 1)
+    assert not drawing_area(ink).any()
+    solid = np.zeros((120, 160), bool)
+    cv2.rectangle(solid.view(np.uint8), (20, 20), (140, 100), 1, 1)
+    assert drawing_area(solid).sum() > 0.9 * 121 * 81

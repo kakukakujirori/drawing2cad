@@ -1,6 +1,8 @@
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 from tests.zeroshot.contracts import interpretation, view
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxWorkdir
@@ -71,7 +73,7 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
                     ),
                     stats={
                         "match_score": score,
-                        "chamfer_drawing_px": score * 20,
+                        "bounded_chamfer_drawing_px": score * 20,
                         "comparison_status": "ok",
                         "provisional": False,
                         "outside_count": 0,
@@ -108,21 +110,27 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
             verifier.source_path.write_text(source + f"# trial {build_count}\n")
             return verifier.feedback()[0]["text"]
 
-        assert "baseline" in attempt([0.7, 0.7, 0.7])
+        assert "baseline (match score 7.00 px)" in attempt([7.0, 7.0, 7.0])
         before = build_count
         assert "baseline" in verifier.feedback()[0]["text"]
         assert build_count == before  # Repeated feedback uses the same saved build.
-        improved = attempt([0.8, 0.4, 0.3])  # One view worse; the whole drawing better.
-        assert "Overall drawing match improved. Use this candidate" in improved
+        improved = attempt([8.0, 4.0, 3.0])  # One view worse; the whole drawing better.
+        assert "Overall match improved by 2.00 px over the saved best" in improved
         assert (
             "Best saved eligible candidate: /work/attempts/round_000/coding/001/model.py"
             in improved
         )
-        worse = attempt([0.8, 0.8, 0.8])
-        assert "worsened versus the previous" in worse
+        worse = attempt([8.0, 8.0, 8.0])
+        assert "Worsened by 3.00 px versus the previous candidate" in worse
         assert (
             "Previous candidate: /work/attempts/round_000/coding/001/model.py" in worse
         )
+        # Changes inside the margin are not measurable and keep the saved best.
+        assert "No measurable change: within 0.50 px" in attempt([8.0, 8.0, 8.3])
+        near_best = attempt([5.0, 5.0, 4.4])
+        assert "Improved by 3.30 px over the previous candidate" in near_best
+        assert "but not by 0.50 px over the saved best (5.00 px)" in near_best
+        assert "round_000/coding/001/model.py" in near_best.split("Best saved")[1]
         best = verifier._best_candidate
         assert best is not None
         saved_model = best[1].host_verification_dir / "model.py"
@@ -140,7 +148,6 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
             {"comparison_status": "uncertain"},
             {"provisional": True},
             {"outside_count": 1},
-            {"material_error": {"status": "unavailable"}},
         ):
             patches = {
                 "stats": {**best[1].drawing_diff_report["view_front"].stats, **stats}
@@ -224,3 +231,20 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
         assert len(received[-1]["messages"]) == 1
         assert verifier._best_candidate is not best  # Fresh-invocation scope.
         assert "S=" not in improved and "C/20" not in improved
+
+
+@pytest.mark.parametrize("margin", [-0.1, float("nan"), float("inf")])
+def test_match_margin_must_be_finite_and_non_negative(tmp_path, margin):
+    with (
+        SandboxWorkdir(host_bind_dir=tmp_path) as workdir,
+        pytest.raises(ValueError, match="match_margin_px"),
+    ):
+        ProgressOutputVerifier(
+            executor=None,
+            workdir=workdir,
+            renderer=None,
+            diff_drawer=None,
+            artifact_presenter=ArtifactPresenter(input="path"),
+            attempt_store=AttemptStore(workdir, round_source=lambda: 0),
+            match_margin_px=margin,
+        )

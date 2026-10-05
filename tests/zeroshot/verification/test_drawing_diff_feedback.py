@@ -87,7 +87,7 @@ def _scored(tmp_path, chamfers):
         name: DrawingDiffReport(
             drawing_path=tmp_path / f"{name}.png",
             projection_path=tmp_path / f"projected_{name}.png",
-            stats={"chamfer_drawing_px": chamfer},
+            stats={"bounded_chamfer_drawing_px": chamfer},
         )
         for name, chamfer in chamfers.items()
     }
@@ -147,7 +147,7 @@ def test_unmatched_groups_are_listed_under_their_view_by_audit_key(tmp_path, mod
             drawing_path=tmp_path / "top.png",
             projection_path=tmp_path / "projection/top.png",
             stats={
-                "chamfer_drawing_px": 6.0,
+                "bounded_chamfer_drawing_px": 6.0,
                 "unmatched": [
                     group | {"color": "red"},
                     group | {"direction": "extra", "color": "yellow"},

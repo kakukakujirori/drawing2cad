@@ -17,7 +17,10 @@ from zeroshot.pipeline.stages.coding.middleware import (
     CodingTrialMiddleware,
     FreshCodingMiddleware,
 )
-from zeroshot.pipeline.stages.coding.progress import ProgressOutputVerifier
+from zeroshot.pipeline.stages.coding.progress import (
+    DEFAULT_MATCH_MARGIN_PX,
+    ProgressOutputVerifier,
+)
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
@@ -105,6 +108,7 @@ def create_coding_stage(
     output_filename: str = "model.py",
     input_after_compaction: bool = False,
     fresh_memory: bool = False,
+    match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
 ) -> CodingStage:
     if isinstance(diff_drawer_config, DictConfig):
         diff_drawer_config = cast(
@@ -126,6 +130,7 @@ def create_coding_stage(
         artifact_presenter=artifact_presenter,
         attempt_store=attempt_store,
         source_filename=output_filename,
+        match_margin_px=match_margin_px,
     )
     ticket_verifier = TicketVerifier(lambda: output_verifier.accepted_source)
     middleware_type = FreshCodingMiddleware if fresh_memory else CodingMiddleware

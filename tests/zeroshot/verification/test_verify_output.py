@@ -588,7 +588,7 @@ class StubDiffDrawer:
                 drawing_path=drawing,
                 projection_path=projection,
                 error=self.error,
-                stats={"chamfer_drawing_px": chamfer},
+                stats={"bounded_chamfer_drawing_px": chamfer},
                 alignment=None
                 if self.error
                 else AlignmentResult(

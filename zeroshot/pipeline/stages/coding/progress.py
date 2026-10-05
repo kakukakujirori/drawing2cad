@@ -10,10 +10,54 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 from zeroshot.pipeline.stages.coding.verify import OutputVerifier, VerifyOutputResult
 from zeroshot.pipeline.verification.run_cadquery import ExecutionStatus
 
+# Match score changes below this are not measurable (input pixels).
+DEFAULT_MATCH_MARGIN_PX = 0.5
+
+_UNAVAILABLE = "Overall comparison unavailable: {reason}."
+_FIRST = (
+    "First fully comparable candidate recorded as the baseline "
+    "(match score {score:.2f} px)."
+)
+_IMPROVED_ON_BEST = (
+    "Overall match improved by {gain:.2f} px over the saved best ({best:.2f} → "
+    "{score:.2f} px). Use this candidate as the next baseline; verify the selected "
+    "defect in the latest target view and check other views. A numeric improvement "
+    "does not confirm that defect is fixed."
+)
+_IMPROVED_ON_PREVIOUS = (
+    "Improved by {gain:.2f} px over the previous candidate ({previous:.2f} → "
+    "{score:.2f} px), but not by {margin:.2f} px over the saved best ({best:.2f} px)."
+)
+_WORSENED = (
+    "Worsened by {loss:.2f} px versus the previous candidate ({previous:.2f} → "
+    "{score:.2f} px); inspect the latest views before adopting it."
+)
+_UNCHANGED = (
+    "No measurable change: within {margin:.2f} px of the previous candidate "
+    "({previous:.2f} → {score:.2f} px)."
+)
+_NOT_BETTER = (
+    "Not better than the saved best ({best:.2f} px) by {margin:.2f} px or more "
+    "(match score {score:.2f} px)."
+)
+_SCORE_LEGEND = (
+    "Match score: mean over views of the uncapped line distance plus the "
+    "mismatched silhouette area per input outline length, in input pixels; "
+    "lower is better."
+)
+
 
 class ProgressOutputVerifier(OutputVerifier):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
+        if not (math.isfinite(match_margin_px) and match_margin_px >= 0):
+            raise ValueError("match_margin_px must be finite and non-negative")
+        self.match_margin_px = match_margin_px
         self._previous_candidate: VerifyOutputResult | None = None
         self._best_candidate: tuple[float, VerifyOutputResult] | None = None
         self._progress_text = ""
@@ -81,7 +125,6 @@ class ProgressOutputVerifier(OutputVerifier):
                 or stats.get("comparison_status") != "ok"
                 or stats.get("provisional") is not False
                 or stats.get("outside_count") != 0
-                or stats.get("material_error", {}).get("status") != "ok"
             ):
                 return (
                     None,
@@ -104,6 +147,36 @@ class ProgressOutputVerifier(OutputVerifier):
             PurePosixPath(report.sandbox_verification_dir) / self.source_filename
         )
 
+    def _progress(
+        self,
+        score: float | None,
+        reason: str,
+        report: VerifyOutputResult,
+        previous: float | None,
+    ) -> str:
+        """Compare a candidate with the saved best and the previous candidate."""
+        margin, best = self.match_margin_px, self._best_candidate
+        if score is None:
+            return _UNAVAILABLE.format(reason=reason)
+        if best is None:
+            self._best_candidate = (score, report)
+            return _FIRST.format(score=score) + "\n" + _SCORE_LEGEND
+        values = {"score": score, "best": best[0], "margin": margin}
+        if score <= best[0] - margin:
+            self._best_candidate = (score, report)
+            text = _IMPROVED_ON_BEST.format(gain=best[0] - score, **values)
+        elif previous is None:
+            text = _NOT_BETTER.format(**values)
+        elif score <= previous - margin:
+            text = _IMPROVED_ON_PREVIOUS.format(
+                gain=previous - score, previous=previous, **values
+            )
+        elif score >= previous + margin:
+            text = _WORSENED.format(loss=score - previous, previous=previous, **values)
+        else:
+            text = _UNCHANGED.format(previous=previous, **values)
+        return text + "\n" + _SCORE_LEGEND
+
     def feedback(self) -> list[ContentBlock]:
         blocks = super().feedback()
         report = self._last_feedback_report
@@ -115,32 +188,7 @@ class ProgressOutputVerifier(OutputVerifier):
             score, reason = self._candidate_score(report)
             previous = self._previous_candidate
             previous_score = self._candidate_score(previous)[0] if previous else None
-            best = self._best_candidate
-
-            if score is None:
-                text = f"Overall comparison unavailable: {reason}."
-            elif best is None:
-                self._best_candidate = (score, report)
-                text = "First fully comparable candidate recorded as the baseline."
-            elif score < best[0]:
-                self._best_candidate = (score, report)
-                text = (
-                    "Overall drawing match improved. Use this candidate as the next "
-                    "baseline; verify the selected defect in the latest target view "
-                    "and check other views. A numeric improvement does not confirm "
-                    "that defect is fixed."
-                )
-            elif previous_score is not None and score < previous_score:
-                text = "Overall match improved versus the previous candidate; " + (
-                    "it matches the saved best."
-                    if score == best[0]
-                    else "the saved best remains better."
-                )
-            elif previous_score is not None and score > previous_score:
-                text = "Overall match worsened versus the previous candidate; inspect the latest views before adopting it."
-            else:
-                text = "No improvement over the saved best candidate was measured."
-
+            text = self._progress(score, reason, report, previous_score)
             if previous is not None and previous.sandbox_verification_dir is not None:
                 text += f"\nPrevious candidate: {self.candidate_path(previous)}"
             if report.sandbox_verification_dir is not None:
