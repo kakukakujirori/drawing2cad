@@ -15,6 +15,7 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import BaseModel
 
 from zeroshot.pipeline.messages.artifact import SandboxedArtifact
+from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingView
@@ -112,7 +113,11 @@ class StageInstructions:
         blocks: list[ContentBlock] = [create_text_block("\n".join(lines))]
 
         if self.input_presentation_mode == "image":
-            blocks.extend(presented.images())
+            # Marked so the image history never drops them.
+            blocks.extend(
+                {**block, "id": INPUT_IMAGE_ID} if block["type"] == "image" else block
+                for block in presented.images()
+            )
 
         return blocks
 

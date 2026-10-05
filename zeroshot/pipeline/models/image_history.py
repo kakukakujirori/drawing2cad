@@ -1,17 +1,19 @@
 """Choose images before either backend serializes the conversation.
 
-Protect the source drawing and latest visual verification, then fill the
-remaining budget with recent tool/report images. Replace older images with
-omission notices in message copies; saved transcripts keep their images.
+Keep the run's input drawings, then the newest other images. Replace older
+images with omission notices in message copies; saved transcripts keep theirs.
 """
 
 import logging
 from collections.abc import Sequence
 from typing import Any
 
-from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import BaseMessage
 
 logger = logging.getLogger(__name__)
+
+# The block id the prompt gives the input drawings it attaches.
+INPUT_IMAGE_ID = "input_drawing"
 
 
 def _is_image(part: Any) -> bool:
@@ -22,60 +24,34 @@ def _is_image(part: Any) -> bool:
 def trim_image_history(
     messages: Sequence[BaseMessage], limit: int | None, *, strict: bool = False
 ) -> list[BaseMessage]:
-    """Limit request images, preserving source/latest-report anchors.
+    """Limit request images to the input drawings and the newest others.
 
-    ``None`` disables pruning. With ``strict=True``, protected images alone
-    exceeding the limit are an error (OpenRouter's configured hard limit); otherwise
-    anchors take priority over the budget (Codex's context budget).
+    ``None`` disables pruning. With ``strict=True`` (OpenRouter's hard limit),
+    input drawings alone exceeding the limit are an error.
     """
     outgoing = list(messages)
     if limit is None:
         return outgoing
 
-    # Collect image locations oldest-first and find the last visual report.
-    images = []
-    latest_report = None
+    # Image locations oldest-first.
+    inputs, others = [], []
     for message_index, message in enumerate(messages):
         if not isinstance(message.content, list):
             continue
-        text = "\n".join(
-            part.get("text", "") for part in message.content if isinstance(part, dict)
-        )
-        report = (
-            isinstance(message, HumanMessage)
-            and "[Execution result]" in text
-            and "[Input artifacts]" not in text
-        )
         for part_index, part in enumerate(message.content):
             if _is_image(part):
-                images.append(
-                    (
-                        message_index,
-                        part_index,
-                        isinstance(message, ToolMessage) or report,
-                    )
-                )
-                if report:
-                    latest_report = message_index
-
-    # Only reports with images count: a failed build must not replace the last
-    # visual report. Other user images (including the drawing) stay protected.
-    removable = [
-        (message_index, part_index)
-        for message_index, part_index, history_image in images
-        if history_image and message_index != latest_report
-    ]
-    protected = len(images) - len(removable)
-    if strict and protected > limit:
+                is_input = part.get("id") == INPUT_IMAGE_ID
+                (inputs if is_input else others).append((message_index, part_index))
+    if strict and len(inputs) > limit:
         raise ValueError(
-            f"Protected image attachments ({protected}) exceed "
-            f"image_history_limit ({limit}); none were dropped."
+            f"Input drawings ({len(inputs)}) exceed image_history_limit ({limit}); "
+            "none were dropped."
         )
 
     # Remove oldest images first; clone only content lists we actually change.
-    omitted = max(0, len(removable) - max(0, limit - protected))
+    omitted = max(0, len(others) - max(0, limit - len(inputs)))
     copied: dict[int, list[Any]] = {}
-    for message_index, part_index in removable[:omitted]:
+    for message_index, part_index in others[:omitted]:
         original = messages[message_index]
         if message_index not in copied:
             copied[message_index] = list(original.content)
@@ -87,9 +63,9 @@ def trim_image_history(
             "text": "Image omitted from this request.",
         }
     logger.info(
-        "Image history: %s -> %s images (%s protected)",
-        len(images),
-        len(images) - omitted,
-        protected,
+        "Image history: %s -> %s images (%s input drawings)",
+        len(inputs) + len(others),
+        len(inputs) + len(others) - omitted,
+        len(inputs),
     )
     return outgoing

@@ -18,6 +18,7 @@ from zeroshot.pipeline.messages.artifact import (
     build_feedback_message_blocks,
 )
 from zeroshot.pipeline.messages.manifest import FeedbackManifest, InputManifest
+from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.interpretation.contracts import (
@@ -316,3 +317,13 @@ def test_comparison_images_use_the_same_description_and_attachment_builder(
             assert base64.b64decode(blocks[-1]["base64"]) == b"unmatched-image"
 
     assert build_feedback_message_blocks({}, workdir, mode=mode) == []
+
+
+def test_attached_input_drawings_are_marked_for_the_image_history(
+    tmp_path: Path, workdir: SandboxWorkdir
+) -> None:
+    manifest = _input_manifest(tmp_path, _pictorial(tmp_path, "front"))
+    blocks = _input_blocks(manifest, workdir, mode="image")
+
+    images = [block for block in blocks if block["type"] == "image"]
+    assert images and all(block["id"] == INPUT_IMAGE_ID for block in images)

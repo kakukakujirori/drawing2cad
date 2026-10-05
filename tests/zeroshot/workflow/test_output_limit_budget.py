@@ -335,3 +335,23 @@ def test_runner_preserves_artifacts_and_new_runs_start_with_a_fresh_cap(tmp_path
     assert [len(m.received_messages) for m in models] == [3, 3, 3]
     assert [budget.failures for budget in budgets] == [3, 3, 3]
     assert len({id(budget) for budget in budgets}) == 3
+
+
+class _CappedScriptedModel(ScriptedChatModel):
+    max_tokens: int = 60000
+
+
+def test_an_answer_that_fills_max_tokens_counts_whatever_finish_it_reports():
+    message = AIMessage(
+        content="done",
+        response_metadata={"finish_reason": "tool_calls"},
+        usage_metadata={
+            "input_tokens": 1,
+            "output_tokens": 60000,
+            "total_tokens": 60001,
+        },
+    )
+    budget = OutputLimitBudget(3)
+    model = _CappedScriptedModel(responses=(message,))
+    agent(model, output_limit_budget=budget).invoke({"messages": []})
+    assert budget.failures == 1

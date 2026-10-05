@@ -16,6 +16,7 @@ from langchain_core.messages.content import (
 from langchain_core.outputs import ChatGenerationChunk
 from pydantic import BaseModel
 
+from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 from zeroshot.pipeline.models.openrouter import ChatOpenRouter
 
 
@@ -289,6 +290,10 @@ def _image(name: str) -> dict[str, Any]:
     }
 
 
+def _input_image(name: str) -> dict[str, Any]:
+    return create_image_block(url=f"https://example.test/{name}.png", id=INPUT_IMAGE_ID)
+
+
 @pytest.mark.parametrize("limit", [None, 8, 1])
 def test_image_cap_keeps_sources_newest_images_and_complete_parallel_groups(limit):
     model = ChatOpenRouter(
@@ -297,7 +302,7 @@ def test_image_cap_keeps_sources_newest_images_and_complete_parallel_groups(limi
         **({} if limit is None else {"image_history_limit": limit}),
     )
     assert model.image_history_limit == limit
-    messages: list[BaseMessage] = [HumanMessage(content=[_image("source")])]
+    messages: list[BaseMessage] = [HumanMessage(content=[_input_image("source")])]
     for start in (0, 4):
         messages.append(
             AIMessage(
@@ -381,25 +386,24 @@ def test_image_cap_retains_newest_parts_within_one_tool_result():
 
 def test_image_cap_refuses_to_drop_original_attachments():
     model = ChatOpenRouter(model="test", api_key="EMPTY", image_history_limit=1)
-    message = HumanMessage(content=[_image("source_1"), _image("source_2")])
+    message = HumanMessage(content=[_input_image("source_1"), _input_image("source_2")])
     before = message.model_dump()
 
     with pytest.raises(
-        ValueError,
-        match=r"Protected image attachments \(2\).*image_history_limit \(1\)",
+        ValueError, match=r"Input drawings \(2\).*image_history_limit \(1\)"
     ):
         model._create_message_dicts([message], None)
 
     assert message.model_dump() == before
 
 
-def test_image_cap_omits_old_verification_images_and_keeps_the_latest_visual_report():
-    model = ChatOpenRouter(model="test", api_key="EMPTY", image_history_limit=8)
+def test_image_cap_keeps_input_drawings_and_the_newest_images():
+    model = ChatOpenRouter(model="test", api_key="EMPTY", image_history_limit=6)
     messages: list[BaseMessage] = [
         HumanMessage(
             content=[
-                create_text_block("[Input artifacts]\n[Execution result]"),
-                create_image_block(url="https://example.test/source.png"),
+                create_text_block("[Input artifacts]"),
+                _input_image("source"),
             ]
         )
     ]
@@ -444,8 +448,7 @@ def test_image_cap_omits_old_verification_images_and_keeps_the_latest_visual_rep
         and part.get("type") == "image_url"
     ]
     assert kept == [
-        _image(name)["image_url"]["url"]
-        for name in ["source", "latest0", "latest1", "latest2", "2", "3", "4", "5"]
+        _image(name)["image_url"]["url"] for name in ["source", "1", "2", "3", "4", "5"]
     ]
     assert [message.model_dump() for message in messages] == before
     assert "Image omitted from this request." == next(

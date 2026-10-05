@@ -5,9 +5,10 @@ from langchain_core.messages.content import create_image_block
 from langchain_openai.chat_models.codex import _ChatOpenAICodex
 
 from zeroshot.pipeline.models.codex import ChatCodex
+from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 
 
-def test_image_budget_retains_source_latest_report_and_recent_tools(monkeypatch):
+def test_image_budget_keeps_input_drawings_and_the_newest_images(monkeypatch):
     def image(name):
         return {
             "type": "image_url",
@@ -26,10 +27,14 @@ def test_image_budget_retains_source_latest_report_and_recent_tools(monkeypatch)
 
     # Use the real serializer, stubbing only OAuth so no token/network is needed.
     monkeypatch.setattr(_ChatOpenAICodex, "_codex_headers_sync", lambda self: {})
-    model = ChatCodex(model="gpt-6-luna", image_history_limit=8)
+    model = ChatCodex(model="gpt-6-luna", image_history_limit=6)
     messages = [
         HumanMessage(
-            content=[create_image_block(url="https://example.test/drawing.png")]
+            content=[
+                create_image_block(
+                    url="https://example.test/drawing.png", id=INPUT_IMAGE_ID
+                )
+            ]
         ),
         report("old"),
         report("latest"),
@@ -62,7 +67,7 @@ def test_image_budget_retains_source_latest_report_and_recent_tools(monkeypatch)
             if isinstance(part, dict) and part["type"] == "input_image"
         ]
 
-    names = ["drawing", "latest", "latest2", "latest3", "2", "3", "4", "5"]
+    names = ["drawing", "1", "2", "3", "4", "5"]
     assert retained_images(payload) == [
         image(name)["image_url"]["url"] for name in names
     ]
@@ -84,22 +89,11 @@ def test_image_budget_retains_source_latest_report_and_recent_tools(monkeypatch)
     assert "image_history_limit" not in payload
     assert "image_history_limit" not in model.model_kwargs
 
-    # No budget reproduces the parent payload; a tiny budget preserves anchors.
+    # No budget reproduces the parent payload; a tiny budget keeps the drawing.
     model.image_history_limit = None
     assert model._get_request_payload(
         messages
     ) == _ChatOpenAICodex._get_request_payload(model, messages)
     model.image_history_limit = 1
     payload = model._get_request_payload(messages)
-    assert retained_images(payload) == [
-        image(name)["image_url"]["url"]
-        for name in ["drawing", "latest", "latest2", "latest3"]
-    ]
-
-    # A failed build with no images must not displace the last visual report.
-    messages.append(HumanMessage(content="[Execution result]\nBuild failed"))
-    payload = model._get_request_payload(messages)
-    assert retained_images(payload) == [
-        image(name)["image_url"]["url"]
-        for name in ["drawing", "latest", "latest2", "latest3"]
-    ]
+    assert retained_images(payload) == [image("drawing")["image_url"]["url"]]

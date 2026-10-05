@@ -23,6 +23,13 @@ from .connection_retry import ModelConnectionRetry, report_model_retry
 from .output_limit_budget import OutputLimitBudget, OutputLimitBudgetExceeded
 
 
+def _reached_max_tokens(model: Any, message: Any) -> bool:
+    """Whether the output filled the model's max_tokens, whatever finish it reported."""
+    limit = getattr(model, "max_tokens", None)
+    usage = getattr(message, "usage_metadata", None) or {}
+    return isinstance(limit, int) and usage.get("output_tokens", 0) >= limit
+
+
 def _is_output_limit(metadata: dict[str, Any]) -> bool:
     details = metadata.get("incomplete_details") or {}
     return metadata.get("finish_reason") == "length" or (
@@ -124,8 +131,11 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         else:
             message = None
         metadata = getattr(message, "response_metadata", None) or {}
-        if not isinstance(error, LengthFinishReasonError) and not _is_output_limit(
-            metadata
+        # GLM on Together reported tool_calls for a generation cut at max_tokens.
+        if not (
+            isinstance(error, LengthFinishReasonError)
+            or _is_output_limit(metadata)
+            or _reached_max_tokens(request.model, message)
         ):
             return
         try:
