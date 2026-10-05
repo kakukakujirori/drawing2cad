@@ -492,7 +492,7 @@ def test_coding_receives_all_dimension_readings_even_when_the_plan_omits_them(
         instructions=instructions,
         output_verifier=Mock(),
         ticket_verifier=Mock(),
-        middleware=Mock(baseline_feedback=Mock(return_value=[])),
+        middleware=Mock(opening=lambda state, instructions, message, retry: [message]),
         input_after_compaction=False,
     )
 

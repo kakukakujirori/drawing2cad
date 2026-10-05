@@ -4,10 +4,8 @@ from types import SimpleNamespace
 from tests.zeroshot.contracts import interpretation, view
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxWorkdir
-from zeroshot.pipeline.stages.coding.progress import (
-    CodingProgressMiddleware,
-    ProgressOutputVerifier,
-)
+from zeroshot.pipeline.stages.coding.middleware import CodingMiddleware
+from zeroshot.pipeline.stages.coding.progress import ProgressOutputVerifier
 from zeroshot.pipeline.stages.coding.stage import CodingStage
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
@@ -101,10 +99,8 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
             )
 
         monkeypatch.setattr(verifier, "_build", build)
-        middleware = CodingProgressMiddleware(
-            verifier, fingerprint=verifier.source_digest
-        )
-        assert middleware.baseline_feedback() == []  # Empty initial coder workspace.
+        middleware = CodingMiddleware(verifier, fingerprint=verifier.source_digest)
+        assert middleware.report_existing() == []  # Empty initial coder workspace.
 
         def attempt(values, source=SOURCE):
             nonlocal scores

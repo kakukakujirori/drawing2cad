@@ -1,15 +1,19 @@
-"""Give inference a verified coding checkpoint while retaining the full state."""
+"""Open the coder's conversation, report its writes to model.py and prompt trials."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, override
 
-from langchain.agents.middleware import ModelRequest, ModelResponse
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock, create_text_block
+from langgraph.runtime import Runtime
 
-from zeroshot.pipeline.stages.coding.progress import CodingProgressMiddleware
+from zeroshot.pipeline.stages.coding.progress import ProgressOutputVerifier
+from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
+from zeroshot.pipeline.workflow.middleware.turn_budget import TurnBudgetState
 
 if TYPE_CHECKING:
     from zeroshot.pipeline.stages._base.prompt import StageInstructions
@@ -19,14 +23,73 @@ INSTRUCTIONS_NAME = "coding_stage_instructions"
 CHECKPOINT_NAME = "coding_verified_checkpoint"
 
 
-class FreshCodingMiddleware(CodingProgressMiddleware):
+class CodingMiddleware(VerifyOnWriteMiddleware):
+    """Verify model.py after each write, and open the stage with its existing build."""
+
+    verifier: ProgressOutputVerifier
+
+    def report_existing(self) -> list[ContentBlock]:
+        """Report an existing model.py before the first response, without refusing it later."""
+        if not self.verifier.source_path.is_file():
+            return []
+        report = self.verifier.feedback()
+        self._last_seen = self._reported = self._digest()
+        return report
+
+    def opening(
+        self,
+        state: ReconstructionState,
+        instructions: StageInstructions,
+        instruction: HumanMessage,
+        *,
+        retry: bool,
+    ) -> list[HumanMessage]:
+        """The messages that start an invocation; a validation retry adds no report."""
+        del state, instructions
+        report = [] if retry else self.report_existing()
+        return [instruction, *([self.report_message(report)] if report else [])]
+
+    def report_message(self, report: list[ContentBlock]) -> HumanMessage:
+        return HumanMessage(content_blocks=report)
+
+    @override
+    def before_model(self, state, runtime):
+        update = super().before_model(state, runtime)
+        if update is not None:
+            (message,) = update["messages"]
+            update["messages"] = [self.report_message(message.content_blocks)]
+        return update
+
+
+class FreshCodingMiddleware(CodingMiddleware):
     """Drop pre-checkpoint messages only from a model request, after valid builds."""
 
     def reset(self) -> None:
         super().reset()
         self._baseline_candidate: dict[str, Any] | None = None
 
-    def set_context(
+    @override
+    def opening(
+        self,
+        state: ReconstructionState,
+        instructions: StageInstructions,
+        instruction: HumanMessage,
+        *,
+        retry: bool,
+    ) -> list[HumanMessage]:
+        self._set_context(state, instructions)
+        instruction = instruction.model_copy(
+            update={
+                "name": INSTRUCTIONS_NAME,
+                "additional_kwargs": {
+                    **instruction.additional_kwargs,
+                    "coding_validation_error": retry,
+                },
+            }
+        )
+        return super().opening(state, instructions, instruction, retry=retry)
+
+    def _set_context(
         self, state: ReconstructionState, instructions: StageInstructions
     ) -> None:
         history = state["reconstruction"]
@@ -63,19 +126,20 @@ class FreshCodingMiddleware(CodingProgressMiddleware):
             ),
         }
 
-    def checkpoint_message(self, feedback: list[ContentBlock]) -> HumanMessage:
+    @override
+    def report_message(self, feedback: list[ContentBlock]) -> HumanMessage:
         source = self.verifier.accepted_source
-        report = self.verifier._last_feedback_report
+        report = self.verifier.last_report
         if source is None or report is None:
             return HumanMessage(content_blocks=feedback)
         candidate = {
             "verification_id": report.verification_id,
-            "program": self.verifier._candidate_path(report),
+            "program": self.verifier.candidate_path(report),
             "source_sha256": self.verifier.source_digest(),
         }
         if self._baseline_candidate is None:
             self._baseline_candidate = candidate
-        best = self.verifier._best_candidate
+        best = self.verifier.best_report
         entries = sorted(self.verifier.workdir.host_bind_dir.iterdir())
         auxiliary = [
             str(self.verifier.workdir.host_to_sandbox_path(path))
@@ -89,8 +153,8 @@ class FreshCodingMiddleware(CodingProgressMiddleware):
             "baseline_candidate": self._baseline_candidate,
             "best_eligible_candidate": (
                 {
-                    "verification_id": best[1].verification_id,
-                    "program": self.verifier._candidate_path(best[1]),
+                    "verification_id": best.verification_id,
+                    "program": self.verifier.candidate_path(best),
                 }
                 if best is not None
                 else None
@@ -116,14 +180,6 @@ class FreshCodingMiddleware(CodingProgressMiddleware):
                 *feedback,
             ],
         )
-
-    @override
-    def before_model(self, state, runtime):
-        update = super().before_model(state, runtime)
-        if update is not None:
-            message = update["messages"][0]
-            update["messages"] = [self.checkpoint_message(message.content_blocks)]
-        return update
 
     @override
     def wrap_model_call(
@@ -193,3 +249,48 @@ class FreshCodingMiddleware(CodingProgressMiddleware):
             }
         )
         return super().wrap_model_call(request.override(messages=selected), handler)
+
+
+_REMINDER_NAME = "coding_trial_reminder"
+_REMINDER = (
+    "If geometry remains unresolved, make trial fixes rather than long speculation. "
+    "Inspect the latest relevant views and scores before deciding. If the expected "
+    "change is absent, revise the geometry or coordinate hypothesis before another trial."
+)
+
+
+class CodingTrialMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
+    """Give one short reminder per tool batch, independently of model.py writes."""
+
+    def __init__(self, tool_names: Iterable[str], max_turns: int) -> None:
+        super().__init__()
+        self.tool_names = frozenset(tool_names)
+        self.max_turns = max_turns
+
+    @override
+    def before_model(
+        self, state: TurnBudgetState, runtime: Runtime[None]
+    ) -> dict[str, Any] | None:
+        del runtime
+        # No old-batch reminder on entry, or new trial on the answer-only turn.
+        if not 0 < state.get("current_turn", 0) < self.max_turns - 1:
+            return None
+
+        # Inspect only the latest response and its results; the notice itself
+        # marks an already-reminded batch, including after a checkpoint resume.
+        answered: set[str] = set()
+        for message in reversed(state["messages"]):
+            if isinstance(message, HumanMessage) and message.name == _REMINDER_NAME:
+                return None
+            if isinstance(message, ToolMessage):
+                answered.add(message.tool_call_id)
+            elif isinstance(message, AIMessage):
+                calls = message.tool_calls
+                if not any(call["name"] in self.tool_names for call in calls):
+                    return None
+                if not all(call["id"] in answered for call in calls):
+                    return None
+                return {
+                    "messages": [HumanMessage(content=_REMINDER, name=_REMINDER_NAME)]
+                }
+        return None

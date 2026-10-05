@@ -419,6 +419,11 @@ class OutputVerifier:
         return list(self._program_faults(report))
 
     @property
+    def last_report(self) -> VerifyOutputResult | None:
+        """The build the model was last shown."""
+        return self._last_feedback_report
+
+    @property
     def accepted_source(self) -> str | None:
         """The program of the most recent `feedback` build, once confirmed."""
         report = self._last_feedback_report

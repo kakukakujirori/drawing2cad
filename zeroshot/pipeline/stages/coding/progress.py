@@ -1,4 +1,4 @@
-"""Keep comparable saved candidates and encourage verified drawing improvements."""
+"""Rank verified builds by their drawing match and tell the coder how they compare."""
 
 import math
 from pathlib import PurePosixPath
@@ -9,7 +9,6 @@ from langchain_core.messages.content import ContentBlock, create_text_block
 
 from zeroshot.pipeline.stages.coding.verify import OutputVerifier, VerifyOutputResult
 from zeroshot.pipeline.verification.run_cadquery import ExecutionStatus
-from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
 
 class ProgressOutputVerifier(OutputVerifier):
@@ -93,7 +92,12 @@ class ProgressOutputVerifier(OutputVerifier):
             scores.append(score)
         return fmean(scores), ""
 
-    def _candidate_path(self, report: VerifyOutputResult) -> str:
+    @property
+    def best_report(self) -> VerifyOutputResult | None:
+        """The best eligible build of this invocation."""
+        return self._best_candidate[1] if self._best_candidate is not None else None
+
+    def candidate_path(self, report: VerifyOutputResult) -> str:
         assert report.sandbox_verification_dir is not None
         return str(
             PurePosixPath(report.sandbox_verification_dir) / self.source_filename
@@ -134,11 +138,11 @@ class ProgressOutputVerifier(OutputVerifier):
                 text = "No improvement over the saved best candidate was measured."
 
             if previous is not None and previous.sandbox_verification_dir is not None:
-                text += f"\nPrevious candidate: {self._candidate_path(previous)}"
+                text += f"\nPrevious candidate: {self.candidate_path(previous)}"
             if report.sandbox_verification_dir is not None:
-                text += f"\nCurrent candidate: {self._candidate_path(report)}"
+                text += f"\nCurrent candidate: {self.candidate_path(report)}"
             if self._best_candidate is not None:
-                text += "\nBest saved eligible candidate: " + self._candidate_path(
+                text += "\nBest saved eligible candidate: " + self.candidate_path(
                     self._best_candidate[1]
                 )
             # ponytail: best is scoped to this invocation; persist it only if
@@ -149,13 +153,3 @@ class ProgressOutputVerifier(OutputVerifier):
             create_text_block("[Candidate progress]\n" + self._progress_text),
             *blocks,
         ]
-
-
-class CodingProgressMiddleware(VerifyOnWriteMiddleware):
-    def baseline_feedback(self) -> list[ContentBlock]:
-        """Show an existing model before response one, without refusing it later."""
-        if not self.verifier.source_path.is_file():
-            return []
-        report = self.verifier.feedback()
-        self._last_seen = self._reported = self._digest()
-        return report

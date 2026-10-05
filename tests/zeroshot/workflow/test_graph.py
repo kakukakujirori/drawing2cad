@@ -454,7 +454,7 @@ def _stub_verification(
 
     monkeypatch.setattr(
         coding_stage_module,
-        "OutputVerifier",
+        "ProgressOutputVerifier",
         lambda **kwargs: StubVerifier(
             workdir=kwargs["workdir"],
             source_filename=kwargs["source_filename"],

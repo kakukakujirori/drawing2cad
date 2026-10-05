@@ -14,10 +14,8 @@ from tests.zeroshot.workflow.test_agent import (
     _writing_tool,
     echo,
 )
-from zeroshot.pipeline.workflow.middleware import (
-    CodingTrialMiddleware,
-    VerifyOnWriteMiddleware,
-)
+from zeroshot.pipeline.stages.coding.middleware import CodingTrialMiddleware
+from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
 
 def _reminders(messages):

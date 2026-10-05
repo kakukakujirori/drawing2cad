@@ -26,6 +26,11 @@ from zeroshot.pipeline.stages.audit.contracts import (
     RevisionRequest,
     StageOutputRef,
 )
+from zeroshot.pipeline.stages.coding.middleware import (
+    CHECKPOINT_NAME,
+    INSTRUCTIONS_NAME,
+    FreshCodingMiddleware,
+)
 from zeroshot.pipeline.stages.coding.progress import ProgressOutputVerifier
 from zeroshot.pipeline.stages.coding.stage import create_coding_stage
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
@@ -50,11 +55,6 @@ from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
     start_reconstruction,
-)
-from zeroshot.pipeline.workflow.middleware.fresh_coding import (
-    CHECKPOINT_NAME,
-    INSTRUCTIONS_NAME,
-    FreshCodingMiddleware,
 )
 from zeroshot.pipeline.workflow.middleware.output_limit_budget import (
     OutputLimitBudget,
@@ -169,7 +169,7 @@ def setup(tmp_path, monkeypatch):
     verifier = ProgressOutputVerifier(None, workdir, None, None, presenter, store)
     verifier.interpretation, verifier.operations = ir, plan
     middleware = FreshCodingMiddleware(verifier, fingerprint=verifier.source_digest)
-    middleware.set_context(state, instructions)
+    middleware._set_context(state, instructions)
 
     @tool
     def write(source: str) -> str:
@@ -376,7 +376,7 @@ def test_stage_flag_and_new_round_baseline_and_validation_instruction(setup, fre
 def test_structured_answer_with_tools_is_still_refused_and_pairs_survive(setup):
     _, _, verifier, middleware, tools = setup
     verifier.source_path.write_text(SOURCE)
-    checkpoint = middleware.checkpoint_message(middleware.baseline_feedback())
+    checkpoint = middleware.report_message(middleware.report_existing())
     model = ScriptedChatModel(
         responses=(
             AIMessage(
@@ -428,7 +428,7 @@ def test_structured_answer_with_tools_is_still_refused_and_pairs_survive(setup):
 def test_retry_feedback_and_shared_budget_are_retained(setup, failure):
     _, _, verifier, middleware, tools = setup
     verifier.source_path.write_text(SOURCE)
-    checkpoint = middleware.checkpoint_message(middleware.baseline_feedback())
+    checkpoint = middleware.report_message(middleware.report_existing())
     valid = AIMessage(content=answers().model_dump_json())
     rejected = AIMessage(
         content="invalid JSON",
@@ -463,7 +463,7 @@ def test_retry_feedback_and_shared_budget_are_retained(setup, failure):
 def test_fresh_coder_stops_at_the_existing_output_limit_cap(setup):
     _, _, verifier, middleware, tools = setup
     verifier.source_path.write_text(SOURCE)
-    checkpoint = middleware.checkpoint_message(middleware.baseline_feedback())
+    checkpoint = middleware.report_message(middleware.report_existing())
     model = ScriptedChatModel(
         responses=(
             AIMessage(content="", response_metadata={"finish_reason": "length"}),
