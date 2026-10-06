@@ -175,7 +175,8 @@ class Dimension(Contract):
         description=(
             "Tight Region around this dimension's printed text/symbols and "
             "dimension, extension and leader lines; do not expand it to enclose "
-            "the dimensioned feature. May refer to an original input view."
+            "the dimensioned feature. Use the containing DrawingView.name and "
+            "that view file's native coordinates."
         ),
     )
     quantity: int = Field(
@@ -234,6 +235,7 @@ class DrawingView(Contract):
             "Path to this view's image or DXF in the workspace. Keep registered input files. "
             "Different roles require separate files; a single orthographic view may reuse "
             "its full_page parent's file only with a full-file Region. "
+            "Include the view's printed dimensions and dimension/extension/leader lines in its crop. "
             "Raster crops only: match the parent image at region.box_px pixel for pixel "
             "at 1:1 scale, without resizing, rotation or preprocessing. "
             "Keep observation-only crops and zooms in separate files."
@@ -252,7 +254,7 @@ class DrawingView(Contract):
         ),
     )
     dimensions: list[Dimension] = Field(
-        ..., description="Printed figures on this sheet; empty if none."
+        ..., description="Printed dimensions shown in this view; empty if none."
     )
     image_size: tuple[int, int] | None = Field(
         default=None,
@@ -348,7 +350,7 @@ class DrawingInterpretation(Contract):
     )
     views: list[DrawingView] = Field(
         ...,
-        description="Registered input files with their existing names, roles and full-file Regions, plus every newly identified view. A FULL_PAGE input requires at least one new view with an orthographic role (e.g, front or top). Add printed dimensions to the appropriate views.",
+        description="Registered input files with their existing names, roles and full-file Regions, plus every newly identified view. A FULL_PAGE input requires at least one new view with an orthographic role (e.g, front or top). Register projection dimensions under their views; standalone dimensional text annotations elsewhere on the page may remain under FULL_PAGE.",
     )
     features: list[SemanticFeature] = Field(
         ...,

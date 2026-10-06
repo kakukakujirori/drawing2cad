@@ -10,7 +10,7 @@ __pycache__/
 /data
 /experiments_dep
 /logs
-/outputs
+/outputs*
 
 # codebase
 .vscode/

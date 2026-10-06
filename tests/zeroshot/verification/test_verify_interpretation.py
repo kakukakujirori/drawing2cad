@@ -141,6 +141,46 @@ def test_verification_fills_the_main_file_and_keeps_unadvertised_debug_records(
     assert len(list(attempt.parent.iterdir())) == 1
 
 
+def test_page_radius_annotation_is_kept_without_warning(
+    tmp_path,
+):
+    verifier, candidate, _ = _case(tmp_path)
+    page, front = candidate.views
+    crop_box = (100, 200, 1000, 1300)
+    front.region = front.region.model_copy(update={"box_px": crop_box})
+    with Image.open(tmp_path / "source.png") as source:
+        source.crop(crop_box).save(tmp_path / "front.png")
+    annotation = front.dimensions[0].model_copy(
+        update={
+            "name": "dim_page_fillet",
+            "kind": "radius",
+            "text": "ALL FILLETS R2",
+            "nominal_value": 2.0,
+            "measured_length": None,
+            "region": page.region.model_copy(update={"box_px": (1000, 10, 1100, 80)}),
+        }
+    )
+    page.dimensions.append(annotation)
+    verifier.reset(candidate)
+
+    summary = json.loads(verifier.feedback()[0]["text"].splitlines()[-1])
+    assert verifier.confirmed and summary["errors"] == []
+    assert not any(report.get("warnings") for report in summary["reports"].values())
+    accepted = verifier.accepted_interpretation
+    assert accepted.views[0].dimensions[0].text == annotation.text
+    assert accepted.views[0].dimensions[0].nominal_value == 2.0
+    assert accepted.views[0].dimensions[0].measured_length is None
+    assert accepted.views[0].dimensions[0].region.view == page.name
+    assert accepted.views[0].scale == accepted.views[1].scale == pytest.approx(0.1)
+    log = (
+        tmp_path
+        / "attempts/round_000/interpretation/000/_interpretation_validation_log.json"
+    )
+    report = json.loads(log.read_text())["reports"]["view_page"]
+    assert report["measurements"] == []
+    assert "warnings" not in report
+
+
 def test_automatic_enrichment_does_not_trigger_another_verification(tmp_path):
     verifier, candidate, _ = _case(tmp_path)
     middleware = VerifyOnWriteMiddleware(verifier, fingerprint=verifier.source_digest)
