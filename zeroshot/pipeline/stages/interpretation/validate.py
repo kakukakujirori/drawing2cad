@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass, replace
 from itertools import combinations
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 from PIL import Image
@@ -25,6 +26,8 @@ type _Box = tuple[float, ...]
 
 # Provisional annotation limit; calibrated separately from CAD difference scores.
 MAX_DIMENSION_REGION_FRACTION = 0.25
+# Relative spread within which views' scales count as one, as in RANSAC.
+SCALE_AGREEMENT = 0.02
 
 
 @dataclass(frozen=True)
@@ -262,7 +265,57 @@ def _calibrate_sheets(
                 view, output, sheet, location
             )
         sheets[view.name] = sheet
+    _share_page_scale(interpretation, data, sheets, reports)
     return sheets, reports
+
+
+def _share_page_scale(
+    interpretation: DrawingInterpretation,
+    data: dict[str, Any],
+    sheets: dict[str, _Sheet],
+    reports: dict[str, dict[str, Any]],
+) -> None:
+    """Give a page's orthographic crops without a scale the one the others agree on.
+
+    Detail and section views may be enlarged, so they neither give nor take one.
+    """
+    outputs = {output["name"]: output for output in data["views"]}
+    for page in interpretation.views:
+        if page.region.view != page.name or sheets[page.name].dxf:
+            continue
+        family = [page] + [
+            view
+            for view in interpretation.views
+            if view.region.view == page.name
+            and view.name != page.name
+            and view.role in ORTHOGRAPHIC_VIEWS
+        ]
+        known = {
+            view.name: sheets[view.name].scale
+            for view in family
+            if sheets[view.name].scale is not None
+        }
+        if not known or max(known.values()) / min(known.values()) - 1 > SCALE_AGREEMENT:
+            continue
+        scale = median(known.values())
+        for view in family:
+            report = reports[view.name]
+            # One printed length cannot fit a scale, but a disagreeing one
+            # may mark an enlarged view.
+            single = report.get("scale")
+            if (
+                view.name in known
+                or report["status"] != "insufficient_evidence"
+                or (single is not None and abs(single / scale - 1) > SCALE_AGREEMENT)
+            ):
+                continue
+            sheets[view.name] = replace(sheets[view.name], scale=scale)
+            outputs[view.name]["scale"] = scale
+            reports[view.name] = {
+                **report,
+                "scale": scale,
+                "scale_source": "shared with " + ", ".join(known),
+            }
 
 
 def _readable_path(
@@ -405,9 +458,10 @@ def validate_interpretation(
     Scale and box_uv are recalculated on every call, since a measurement fix
     changes them. A stored image_size must still match its file, which catches
     a resized sheet. Derived rasters must also match their declared parent crop
-    pixel for pixel, including on the first submission. No consensus (including
-    one measurement) leaves scale/UV null; return diagnostics to the interpreter
-    instead of guessing a scale.
+    pixel for pixel, including on the first submission. An orthographic crop
+    without its own consensus takes the scale its page and sibling crops agree on.
+    No consensus (including one measurement) leaves scale/UV null; return
+    diagnostics to the interpreter instead of guessing a scale.
 
     A DXF keeps its own millimetre coordinates, never preview pixels, so its
     measured_length is already a length and is retained rather than passed to

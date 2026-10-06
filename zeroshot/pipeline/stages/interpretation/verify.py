@@ -250,6 +250,8 @@ class InterpretationVerifier:
                 "inliers": f"{inliers}/{total}",
                 "outliers": report.get("outliers", []),
             }
+            if "scale_source" in report:
+                summaries[name]["scale_source"] = report["scale_source"]
         return [
             create_text_block(
                 f"[Interpretation verification]\n"

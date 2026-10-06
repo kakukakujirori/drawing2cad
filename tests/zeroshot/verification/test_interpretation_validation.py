@@ -510,6 +510,70 @@ def _page_layout(workdir: Path, *others: dict) -> DrawingInterpretation:
     return DrawingInterpretation.model_validate(data)
 
 
+def test_a_crop_without_dimensions_takes_its_sibling_scale(tmp_path: Path) -> None:
+    """Only the front crop carries dimensions; the page and the top crop share them."""
+    accepted, diagnostics = validate_interpretation(
+        _page_layout(tmp_path, {"role": "top", "box_px": (100, 300, 1300, 1300)}),
+        workdir=SandboxWorkdir(tmp_path),
+    )
+    top = accepted.views[2]
+    assert [view.scale for view in accepted.views] == pytest.approx([0.1] * 3)
+    assert "scale_source" not in diagnostics["view_front"]
+    assert diagnostics["view_top"]["scale_source"] == "shared with view_front"
+    assert top.region.box_uv == pytest.approx((10, 170, 130, 270))
+
+
+def _with_enlarged_detail(tmp_path: Path, page_figures: int) -> dict:
+    """A 2:1 detail crop, `page_figures` of its figures on the page, a 2:1 right figure."""
+    data = _page_layout(
+        tmp_path,
+        {"role": "top", "box_px": (100, 300, 1300, 1300)},
+        {"role": "right", "box_px": (1500, 1800, 2300, 2800)},
+    ).model_dump()
+    page, front, _, right = data["views"]
+    Image.new("RGB", (600, 400), "white").save(tmp_path / "detail.png")
+    data["views"].append(
+        {
+            "name": "view_detail",
+            "role": "detail",
+            "file": "detail.png",
+            "region": {"view": "view_page", "box_px": (1600, 300, 2200, 700)},
+            "dimensions": [],
+        }
+    )
+    for index, dimension in enumerate(deepcopy(front["dimensions"])[:page_figures]):
+        dimension["name"] = f"dim_detail_{index}"
+        dimension["measured_length"] *= 2
+        x = 1700 + 100 * index
+        dimension["region"] = {"view": "view_page", "box_px": (x, 400, x + 80, 450)}
+        page["dimensions"].append(dimension)
+    (enlarged := deepcopy(front["dimensions"][1])).update(name="dim_right_width")
+    enlarged["measured_length"] *= 2
+    enlarged["region"] = {"view": "view_right", "box_px": (100, 100, 300, 150)}
+    right["dimensions"].append(enlarged)
+    return data
+
+
+@pytest.mark.parametrize(
+    ("page_figures", "top_scale"),
+    # A page fitted on the detail's figures disagrees with front: share nothing.
+    [(0, 0.1), (2, None)],
+)
+def test_an_enlarged_view_neither_takes_nor_skews_a_shared_scale(
+    tmp_path: Path, page_figures: int, top_scale: float | None
+) -> None:
+    accepted, _ = validate_interpretation(
+        DrawingInterpretation.model_validate(
+            _with_enlarged_detail(tmp_path, page_figures)
+        ),
+        workdir=SandboxWorkdir(tmp_path),
+    )
+    scales = {view.name: view.scale for view in accepted.views}
+    assert scales["view_top"] == pytest.approx(top_scale)
+    assert scales["view_right"] is None
+    assert scales["view_detail"] is None
+
+
 @pytest.mark.parametrize(
     ("role", "box_px"),
     [
