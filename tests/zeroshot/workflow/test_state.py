@@ -71,7 +71,7 @@ from zeroshot.pipeline.verification.run_render import (
     RenderReport,
     RenderStatus,
 )
-from zeroshot.pipeline.verification.shape_census import ShapeCensus
+from zeroshot.pipeline.verification.shape_census import ShapeCensus, Void
 from zeroshot.pipeline.workflow import (
     CUSTOM_STATE_TYPES,
 )
@@ -142,7 +142,14 @@ _VERIFICATION = VerifyOutputResult(
         returncode=0,
         step_path=Path("/tmp/workspace/attempts/v1/output.step"),
         intermediate_returns=(IntermediateReturn("ret_base"),),
-        census=ShapeCensus(1, 1.0, (1.0, 1.0, 1.0), Counter(Plane=6), Counter(Line=12)),
+        census=ShapeCensus(
+            1,
+            1.0,
+            (1.0, 1.0, 1.0),
+            Counter(Plane=6),
+            Counter(Line=12),
+            (Void(0.5, (0.0, 0.0, 0.0, 0.5, 1.0, 1.0)),),
+        ),
     ),
     render_report={
         "result": RenderReport(
@@ -356,6 +363,7 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         CadQueryExecutionReport,
         IntermediateReturn,
         ShapeCensus,
+        Void,
         RenderReport,
         RenderStatus,
         ProjectionPaths,

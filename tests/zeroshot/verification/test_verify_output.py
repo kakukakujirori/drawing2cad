@@ -41,7 +41,7 @@ from zeroshot.pipeline.verification.run_render import (
     RenderRequest,
     RenderStatus,
 )
-from zeroshot.pipeline.verification.shape_census import ShapeCensus
+from zeroshot.pipeline.verification.shape_census import ShapeCensus, read_census
 
 RENDER3D_STYLES = (
     "hlg_perspective",
@@ -1203,6 +1203,28 @@ def test_an_operation_that_built_nothing_shows_no_change() -> None:
     assert _census_table(returns).splitlines()[1] == (
         "ret_cleaned  volume 6000.0 (+0.0); bbox 10.00 x 20.00 x 30.00; faces 6 (+0); edges 12 (+0); NO CHANGE: this step left the shape as it was"
     )
+
+
+def test_a_sealed_void_is_reported_with_its_place(tmp_path: Path) -> None:
+    import cadquery as cq
+
+    hollow = (
+        cq.Workplane()
+        .box(20, 20, 20)
+        .val()
+        .cut(cq.Solid.makeBox(4, 4, 4, cq.Vector(-2, -2, -2)))
+    )
+    cq.exporters.export(hollow, str(tmp_path / "part.step"), exportType="STEP")
+    census = read_census(tmp_path / "part.step")
+    assert census is not None
+    void = "sealed voids 1 (cavities no opening reaches, bbox [xmin, ymin, zmin, xmax, ymax, zmax]: 64.0 mm³ at [-2.0, -2.0, -2.0, 2.0, 2.0, 2.0])"
+
+    assert f"bbox 20.00 x 20.00 x 20.00; {void}; faces" in census.describe()
+    solid = replace(census, voids=())
+    assert "sealed voids" not in solid.describe()
+    assert "sealed voids 1 (+1) (cavities" in census.describe_change_from(solid)
+    assert "sealed voids 0 (-1);" in solid.describe_change_from(census)
+    assert "sealed voids 1 (+0);" in census.describe_change_from(census)
 
 
 def test_a_return_that_was_not_exported_carries_the_reason() -> None:
