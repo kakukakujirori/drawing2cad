@@ -16,14 +16,22 @@ def _significant_coords(segments, axis, tol, min_sep, limit):
     totals = {}
     for x1, y1, x2, y2 in segments:
         if axis == "x" and abs(x1 - x2) <= tol:
-            key = round(x1 / tol) * tol
-            totals[key] = totals.get(key, 0.0) + abs(y2 - y1)
+            coord, length = x1, abs(y2 - y1)
         elif axis == "y" and abs(y1 - y2) <= tol:
-            key = round(y1 / tol) * tol
-            totals[key] = totals.get(key, 0.0) + abs(x2 - x1)
+            coord, length = y1, abs(x2 - x1)
+        else:
+            continue
+        key = round(coord / tol)
+        total, longest, representative = totals.get(key, (0.0, 0.0, coord))
+        # Bucketing selects edges; the longest edge supplies its real coordinate.
+        totals[key] = (
+            total + length,
+            max(longest, length),
+            coord if length > longest else representative,
+        )
 
     picked = []
-    for coord, _ in sorted(totals.items(), key=lambda kv: -kv[1]):
+    for _, _, coord in sorted(totals.values(), key=lambda bucket: -bucket[0]):
         if all(abs(coord - c) >= min_sep for c in picked):
             picked.append(coord)
         if len(picked) >= limit:

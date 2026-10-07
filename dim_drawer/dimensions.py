@@ -51,7 +51,7 @@ def sample_style(rng):
         "text_style": rng.choice(list(TEXT_STYLES)),
         "dimdsep": ord(".") if rng.random() < 0.9 else ord(","),
         "dimtad": rng.choice([1, 1, 1, 0]),
-        "dimdec": rng.choice([0, 1, 1, 2]),
+        "dimdec": 2,
         "unit": "mm" if with_unit else "",
         "fill_color": rng.choice(BACKGROUND_COLORS) if with_fill else None,
     }

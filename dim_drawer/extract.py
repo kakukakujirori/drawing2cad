@@ -34,6 +34,12 @@ def _resolve_linetype(entity, doc):
 def _flatten(entities, doc, depth=0):
     """Expand blocks and polylines recursively into primitive entities."""
     for entity in entities:
+        # Construction marks stay in the source DXF, but are not part edges.
+        if _resolve_linetype(entity, doc).startswith("CENTER") or (
+            entity.dxftype() == "INSERT"
+            and entity.dxf.name.upper().startswith("SW_CENTERMARKSYMBOL")
+        ):
+            continue
         if entity.dxftype() in ("INSERT", "LWPOLYLINE", "POLYLINE") and depth < 4:
             try:
                 virtual = list(entity.virtual_entities())
