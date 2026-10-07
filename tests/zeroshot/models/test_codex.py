@@ -97,3 +97,19 @@ def test_image_budget_keeps_input_drawings_and_the_newest_images(monkeypatch):
     model.image_history_limit = 1
     payload = model._get_request_payload(messages)
     assert retained_images(payload) == [image("drawing")["image_url"]["url"]]
+
+    # Input drawings take priority over the history budget and do not abort a run.
+    drawings = [
+        messages[0],
+        HumanMessage(
+            content=[
+                create_image_block(
+                    url="https://example.test/second.png", id=INPUT_IMAGE_ID
+                )
+            ]
+        ),
+    ]
+    assert retained_images(model._get_request_payload(drawings)) == [
+        image("drawing")["image_url"]["url"],
+        image("second")["image_url"]["url"],
+    ]

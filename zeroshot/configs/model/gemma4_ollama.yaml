@@ -3,7 +3,8 @@
 response_format_strategy: provider
 
 model:
-  _target_: langchain_openai.ChatOpenAI
+  _target_: zeroshot.pipeline.models.openai.ChatOpenAI
+  image_history_limit: 8
 
   model: gemma4:e2b
   base_url: ${oc.env:OLLAMA_BASE_URL,http://127.0.0.1:11434/v1}

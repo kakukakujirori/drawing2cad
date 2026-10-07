@@ -31,7 +31,7 @@ from zeroshot.pipeline.runner import (
     PipelineRunner,
     _latest_program_source,
 )
-from zeroshot.pipeline.sandbox import SandboxRunner
+from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import RESULT_NAME, VerifyOutputResult
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
@@ -851,6 +851,32 @@ def _manifest_without_renders(tmp_path: Path, sample_id: str) -> InputManifest:
         sample_id=sample_id,
         drawing=[register_view("view_drawing", View.FULL_PAGE, dxf_path)],
     )
+
+
+def test_staging_preserves_the_samples_image_size_limit(tmp_path):
+    image = tmp_path / "large.png"
+    Image.new("RGB", (2001, 1)).save(image)
+    original = image.read_bytes()
+    manifest = InputManifest(
+        sample_id="sample",
+        drawing=[register_view("view_drawing", View.FULL_PAGE, image)],
+        max_input_image_side=3000,
+    )
+
+    def forbidden(**kwargs):
+        pytest.fail("Staging inputs must not invoke the graph")
+
+    runner = PipelineRunner(
+        sandbox_runner=_sandbox_runner(),
+        graph_factory=forbidden,
+        artifact_presenter=_path_artifact_presenter(),
+        artifact_root=tmp_path,
+    )
+    with SandboxWorkdir() as workdir:
+        staged = runner._stage_inputs(manifest, workdir)
+        assert staged.max_input_image_side == 3000
+        assert Path(staged.drawing[0].file).read_bytes() == original
+    assert image.read_bytes() == original
 
 
 def _path_artifact_presenter() -> ArtifactPresenter:

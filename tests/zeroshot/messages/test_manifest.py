@@ -24,7 +24,10 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 
 def _write(path: Path, content: bytes = b"data") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
+    if path.suffix == ".png":
+        Image.new("RGB", (10, 10)).save(path)
+    else:
+        path.write_bytes(content)
     return path
 
 
@@ -111,6 +114,38 @@ def test_registration_rejects_images_the_presenter_cannot_attach(tmp_path):
         register_view("view_input", View.FULL_PAGE, path)
     with pytest.raises(ValueError, match="unsupported drawing file"):
         InputManifest(sample_id="sample", drawing=_drawing(path))
+
+
+@pytest.mark.parametrize(
+    "size, limit, rejected",
+    [
+        ((2000, 10), 2000, False),
+        ((10, 2000), 2000, False),
+        ((2001, 10), 2000, True),
+        ((10, 2001), 2000, True),
+        ((2001, 10), 3000, False),
+        ((11, 10), 10, True),
+    ],
+)
+def test_input_image_size_limit_preserves_pixels(tmp_path, size, limit, rejected):
+    image = tmp_path / "input.png"
+    Image.new("RGB", size).save(image)
+    original = image.read_bytes()
+    # Vector input does not acquire a pixel limit.
+    dxf = _write(tmp_path / "drawing.dxf", b"DXF")
+    if rejected:
+        with pytest.raises(ValueError, match=f"sample.max_input_image_side={limit}"):
+            InputManifest(
+                sample_id="sample",
+                drawing=_drawing(dxf, image),
+                max_input_image_side=limit,
+            )
+    else:
+        manifest = InputManifest(
+            sample_id="sample", drawing=_drawing(dxf, image), max_input_image_side=limit
+        )
+        assert manifest.max_input_image_side == limit
+    assert image.read_bytes() == original
 
 
 def test_a_verification_that_drew_nothing_is_a_manifest_too(tmp_path: Path) -> None:

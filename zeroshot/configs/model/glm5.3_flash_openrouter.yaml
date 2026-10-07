@@ -18,7 +18,6 @@ model:
   openrouter_provider:
     order: [Together, Fireworks, DeepInfra, Cloudflare]
     allow_fallbacks: false
-  # Cloudflare's image limit.
   image_history_limit: 8
 
   # Hard turns reason for ~30k tokens; the rest leaves room for a whole program.

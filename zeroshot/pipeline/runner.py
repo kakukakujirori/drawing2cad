@@ -422,6 +422,7 @@ class PipelineRunner:
         return InputManifest(
             sample_id=manifest.sample_id,
             drawing=[staged(view) for view in manifest.drawing],
+            max_input_image_side=manifest.max_input_image_side,
         )
 
 

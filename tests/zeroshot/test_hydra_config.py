@@ -184,6 +184,8 @@ def test_a_sweep_only_has_to_override_the_sample_id() -> None:
         )
 
     assert config.sample.sample_id == "000405"
+    assert config.sample.max_input_image_side == 2000
+    assert "max_input_image_side" not in config
     assert config.sample.drawing.sheets[0].file.endswith("/000405_dim.png")
     assert config.sample.target_step_path.endswith("/000405.step")
 

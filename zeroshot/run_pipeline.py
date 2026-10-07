@@ -31,6 +31,19 @@ def _validate_workflow_config(config: DictConfig) -> None:
 def run(config: DictConfig) -> ReconstructionState | None:
     _validate_workflow_config(config)
 
+    manifest = InputManifest(
+        sample_id=config.sample.sample_id,
+        drawing=[
+            register_view(
+                name=sheet.name,
+                role=sheet.role,
+                file=to_absolute_path(sheet.file),
+            )
+            for sheet in config.sample.drawing.sheets
+        ],
+        max_input_image_side=config.sample.max_input_image_side,
+    )
+
     sandbox_runner = SandboxRunner(
         python_executable=Path(
             to_absolute_path(config.sandbox_runner.python_executable)
@@ -53,18 +66,6 @@ def run(config: DictConfig) -> ReconstructionState | None:
             if resume_from is not None
             else None
         ),
-    )
-
-    manifest = InputManifest(
-        sample_id=config.sample.sample_id,
-        drawing=[
-            register_view(
-                name=sheet.name,
-                role=sheet.role,
-                file=to_absolute_path(sheet.file),
-            )
-            for sheet in config.sample.drawing.sheets
-        ],
     )
 
     return runner.run_sample(manifest)

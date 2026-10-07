@@ -2,6 +2,7 @@
 
 model:
   _target_: zeroshot.pipeline.models.openrouter.ChatOpenRouter
+  image_history_limit: 8
   model: anthropic/claude-opus-5.5
   api_key: ${oc.env:OPENROUTER_API_KEY}
   reasoning:

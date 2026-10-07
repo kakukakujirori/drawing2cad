@@ -3,7 +3,8 @@
 response_format_strategy: provider
 
 model:
-  _target_: langchain_openai.chat_models.codex._ChatOpenAICodex
+  _target_: zeroshot.pipeline.models.codex.ChatCodex
+  image_history_limit: 8
   model: gpt-6-sol
   reasoning:
     effort: max

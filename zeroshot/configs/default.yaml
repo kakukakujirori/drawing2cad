@@ -68,4 +68,6 @@ evaluation:
 #   python -m zeroshot.run_pipeline -m sample.sample_id=000364,000405,000775
 sample:
   sample_id: "000364"
+  # Reject larger input rasters before running agents; inputs are never resized.
+  max_input_image_side: 2000
   target_step_path: data/test_vlm/target_step/${sample.sample_id}.step

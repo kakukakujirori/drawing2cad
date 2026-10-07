@@ -6,6 +6,7 @@ from typing import Any
 import ezdxf
 import pytest
 from omegaconf import OmegaConf
+from PIL import Image
 
 from zeroshot import run_pipeline
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
@@ -47,6 +48,7 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
         },
         "sample": {
             "sample_id": "sample-1",
+            "max_input_image_side": 2000,
             "drawing": {
                 "sheets": [
                     {
@@ -122,6 +124,7 @@ def test_run_composes_dependencies_and_manifest(
             },
             "sample": {
                 "sample_id": "sample-1",
+                "max_input_image_side": 2000,
                 "drawing": {
                     "sheets": [
                         {
@@ -147,6 +150,7 @@ def test_run_composes_dependencies_and_manifest(
     assert runner_options["console_reporter"] is None
     assert runner_options["resume_from"] == tmp_path / "reconstruction.json"
     assert "max_output_limit_failures" not in runner_options
+    assert "max_input_image_side" not in runner_options
     graph_factory = runner_options["graph_factory"]
     assert graph_factory.func is create_reconstruction_graph
     assert graph_factory.keywords == {
@@ -182,6 +186,27 @@ def test_module_help_uses_hydra_entrypoint() -> None:
     assert completed.returncode == 0, completed.stderr
     assert "run_pipeline is powered by Hydra" in completed.stdout
     assert "artifact_root:" in completed.stdout
+
+
+def test_oversized_input_is_rejected_before_models_are_instantiated(
+    tmp_path, monkeypatch
+):
+    image = tmp_path / "large.png"
+    Image.new("RGB", (11, 1)).save(image)
+    config = _config(tmp_path, image)
+    config.sample.max_input_image_side = 10
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Oversized input must be rejected before dependency construction")
+
+    monkeypatch.setattr(run_pipeline, "instantiate", forbidden)
+    with pytest.raises(ValueError, match="sample.max_input_image_side=10"):
+        run_pipeline.run(config)
+    assert not Path(config.artifact_root).exists()
+
+    with pytest.raises(ValueError, match="sample.max_input_image_side=10"):
+        run_pipeline.main.__wrapped__(config)
+    assert not Path(config.artifact_root).exists()
 
 
 @pytest.mark.parametrize("compaction", [None, False])

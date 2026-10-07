@@ -60,6 +60,15 @@ class _ToolAwareModel(ScriptedChatModel):
         return super()._generate(messages, stop, run_manager, **kwargs)
 
 
+def test_native_rejects_oversized_input_before_creating_workspace(tmp_path):
+    config = _config(tmp_path, "sample.max_input_image_side=15")
+    model = ScriptedChatModel(responses=())
+    with pytest.raises(ValueError, match="sample.max_input_image_side=15"):
+        runner.run(config, model=model)
+    assert not Path(config.artifact_root).exists()
+    assert model.received_messages == []
+
+
 def test_native_runs_two_tools_preserves_reasoning_and_requires_model_file(
     tmp_path, monkeypatch
 ):
@@ -167,9 +176,8 @@ def test_native_runs_two_tools_preserves_reasoning_and_requires_model_file(
                 "coder",
             )
         )
-    assert (
-        report_history[0].content[1]["image_url"]["url"].startswith("data:image/png;")
-    )
+    assert report_history[0].content[1]["url"].startswith("data:image/png;")
+    assert report_history[0].content[1]["id"] == "input_drawing"
     assert "retrospective summary" not in serialized
     assert (directory / "reasoning_traj.md").read_text().strip() == retrospective
     assert not (directory / "workspace/reasoning_traj.md").exists()

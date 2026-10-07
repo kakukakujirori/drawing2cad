@@ -11,6 +11,7 @@ from typing import Literal
 
 import pytest
 from langchain_core.messages.content import ContentBlock
+from PIL import Image
 
 from tests.zeroshot.contracts import UNTURNED
 from zeroshot.pipeline.messages.artifact import (
@@ -30,7 +31,10 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 
 def _write(path: Path, content: bytes) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
+    if path.suffix == ".png":
+        Image.new("RGB", (10, 10)).save(path)
+    else:
+        path.write_bytes(content)
     return path
 
 
@@ -235,7 +239,9 @@ def test_path_mode_attaches_nothing_and_image_mode_attaches_every_raster(
     assert [block["type"] for block in by_image] == ["text", "text", "image"]
     image = by_image[2]
     assert image["type"] == "image"
-    assert base64.b64decode(image["base64"]) == b"hlg"
+    assert (
+        base64.b64decode(image["base64"]) == Path(manifest.drawing[1].file).read_bytes()
+    )
     assert image["mime_type"] == "image/png"
 
 
@@ -314,7 +320,7 @@ def test_comparison_images_use_the_same_description_and_attachment_builder(
             "view_front unmatched: /work/front_unmatched.png"
         )
         if mode == "image":
-            assert base64.b64decode(blocks[-1]["base64"]) == b"unmatched-image"
+            assert base64.b64decode(blocks[-1]["base64"]) == path.read_bytes()
 
     assert build_feedback_message_blocks({}, workdir, mode=mode) == []
 

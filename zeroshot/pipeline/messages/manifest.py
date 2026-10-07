@@ -120,6 +120,7 @@ class InputManifest:
 
     sample_id: str
     drawing: Sequence[DrawingView]
+    max_input_image_side: int = 2000
 
     def __post_init__(self) -> None:
         if not self.drawing:
@@ -129,6 +130,22 @@ class InputManifest:
         object.__setattr__(
             self, "sample_id", _safe_identifier(self.sample_id, "sample_id")
         )
+
+        # Ensure that the input image is not too large.
+        if self.max_input_image_side < 1:
+            raise ValueError("sample.max_input_image_side must be positive")
+        for view in self.drawing:
+            path = Path(view.file)
+            if path.suffix.lower() == ".dxf":
+                continue
+            with Image.open(path) as image:
+                width, height = image.size
+            if max(width, height) > self.max_input_image_side:
+                raise ValueError(
+                    f"Input image {path} is {width}x{height}; "
+                    f"sample.max_input_image_side={self.max_input_image_side} permits "
+                    f"neither side to exceed {self.max_input_image_side} pixels"
+                )
 
 
 @dataclass(frozen=True)

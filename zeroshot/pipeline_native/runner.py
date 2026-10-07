@@ -18,8 +18,11 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import ToolCallRequest, ToolErrorMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages.content import create_image_block
 from omegaconf import DictConfig, OmegaConf
+from PIL import Image
 
+from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
@@ -138,9 +141,22 @@ def run(
     if len(set(names)) != len(names):
         raise ValueError("Input drawing names must be unique")
     sources = [Path(to_absolute_path(str(sheet.file))) for sheet in sheets]
+
+    # Ensure that the input image is not too large.
+    max_side = config.sample.max_input_image_side
+    if max_side < 1:
+        raise ValueError("sample.max_input_image_side must be positive")
     for source in sources:
         if source.suffix.lower() != ".png" or not source.is_file():
             raise ValueError(f"Input must be an existing PNG: {source}")
+        with Image.open(source) as image:
+            width, height = image.size
+        if max(width, height) > max_side:
+            raise ValueError(
+                f"Input image {source} is {width}x{height}; "
+                f"sample.max_input_image_side={max_side} permits neither side to exceed "
+                f"{max_side} pixels"
+            )
 
     workspace = _prepare_workspace(run_dir, names, sources, on_existing)
 
@@ -189,6 +205,9 @@ def run(
                     images = load_image.invoke({"image_path": sandbox_path})
                     if not images[0]["image_url"]["url"].startswith("data:image/png;"):
                         raise ValueError(f"Input is not a PNG image: {source}")
+                    images[0] = create_image_block(
+                        url=images[0]["image_url"]["url"], id=INPUT_IMAGE_ID
+                    )
                     blocks.extend(
                         [
                             {"type": "text", "text": f"Input drawing: {sandbox_path}"},
