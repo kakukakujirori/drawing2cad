@@ -51,7 +51,7 @@ Do not believe in your 3D reasoning blindly. Whenever deciding geometric design 
 - Treat stroke thickness as a drawing convention, not a physical feature width.
 - Read the geometry census:
   - All faces of one kind or hundreds of edges may indicate an unintended approximation.
-  - A `ret_` split into several solids can mean the feature's intended shape is wrong, not only its construction. Before you add material or values the drawing does not show, derive the feature again from every view and build a candidate with a different topology.
+  - Before rejecting a geometric hypothesis because a build failed, identify the first failing or split `ret_` and compare it with its predecessor. For separated solids, use `run_shell` to inspect each component's volume and location and identify the operation that separated them. Repair or isolate that failure, then compare the hypothesis with the source views. Build failure alone does not establish that the proposed shape is wrong.
 - Inspect final orthographic PNG and relevant perspective renders with `load_image`; use ezdxf for relevant DXF measurements. Compare feature extent, placement and connections. For widespread mismatch, check XYZ/view axes, mirroring and alignment.
 - If a kernel operation keeps failing, inspect its geometric preconditions. Try another construction, or reconsider whether the intended feature is right. Do not silently skip it.
 

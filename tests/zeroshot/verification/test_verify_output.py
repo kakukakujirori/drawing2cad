@@ -191,7 +191,26 @@ def _coding_attempt(
     return workdir / "attempts" / f"round_{round_number:03d}" / "coding" / attempt_id
 
 
-def test_real_cadquery_render_and_drawing_diff_reach_feedback(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("source", "status", "solids"),
+    [
+        (VALID_SOURCE, ExecutionStatus.VERIFIED, 1),
+        (
+            (
+                "import cadquery as cq\n"
+                "result = cq.Compound.makeCompound([\n"
+                "    cq.Workplane('XY').box(10, 20, 30).val(),\n"
+                "    cq.Workplane('XY').box(1, 1, 1).translate((15, 0, 0)).val(),\n"
+                "])\n"
+            ),
+            ExecutionStatus.FAILED,
+            2,
+        ),
+    ],
+)
+def test_real_cadquery_render_and_drawing_diff_reach_feedback(
+    tmp_path: Path, source: str, status: ExecutionStatus, solids: int
+) -> None:
     import sys
 
     from PIL import ImageDraw
@@ -203,7 +222,7 @@ def test_real_cadquery_render_and_drawing_diff_reach_feedback(tmp_path: Path) ->
         StepRenderer,
     )
 
-    (tmp_path / "model.py").write_text(VALID_SOURCE)
+    (tmp_path / "model.py").write_text(source)
     drawing_path = tmp_path / "front.png"
     image = Image.new("RGB", (140, 340), "white")
     ImageDraw.Draw(image).rectangle((20, 20, 120, 320), outline="black", width=2)
@@ -236,8 +255,13 @@ def test_real_cadquery_render_and_drawing_diff_reach_feedback(tmp_path: Path) ->
         blocks = verifier.feedback()
         report = verifier.verify()
 
-    assert report.exec_report.status is ExecutionStatus.VERIFIED
+    assert report.exec_report.status is status
+    assert report.exec_report.census.solids == solids
     assert report.exec_report.step_path.is_file()
+    assert verifier.confirmed is (status is ExecutionStatus.VERIFIED)
+    assert verifier.accepted_source == (
+        source if status is ExecutionStatus.VERIFIED else None
+    )
     assert report.render_report[RESULT_NAME].projection_paths.front.is_file()
     diff = report.drawing_diff_report["view_front"]
     assert diff.error is None
@@ -261,6 +285,9 @@ def test_real_cadquery_render_and_drawing_diff_reach_feedback(tmp_path: Path) ->
         with Image.open(path) as saved, Image.open(frames[key]) as frame:
             assert saved.size == frame.size
     text = "\n".join(block["text"] for block in blocks if block["type"] == "text")
+    if status is ExecutionStatus.FAILED:
+        assert "Expected exactly one solid, found 2" in text
+        assert "[Diagnostic result]" in text
     assert "[Drawing comparison]" in text
     assert "/work/attempts/round_000/coding/000/projection/front_overlay.png" in text
     assert "/work/attempts/round_000/coding/000/projection/front_unmatched.png" in text

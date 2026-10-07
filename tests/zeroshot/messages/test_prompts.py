@@ -643,9 +643,9 @@ def test_interpretation_prioritises_a_verified_draft_and_source_pixel_measuremen
     render_stage: Callable[..., str],
 ) -> None:
     rendered = render_stage("interpretation")
-    assert "save a provisional artifact" in rendered
+    assert "save the current feature descriptions and numeric parameters" in rendered
     # Ordered by the pass it follows, not by a turn number picked in advance.
-    assert "save a provisional artifact by turn" not in rendered
+    assert "After inspecting all views once" in rendered
     assert "Reserve turns to read the automatic validation" in rendered
     assert "current artifact validates" in rendered
     assert "top left, x right, y down" in rendered
@@ -718,7 +718,9 @@ def test_downstream_prompts_use_interpreted_features_and_preserve_the_datum(
         assert "sem_main_bore.radius" in instructions
         assert "sem_main_bore.center" in instructions
         assert "datum" in instructions
-        assert "null means unknown, never zero" in instructions.lower()
+        assert re.search(
+            r"null means unknown, (?:never|not) zero", instructions.lower()
+        )
         assert "ev_" not in instructions
         assert "geo_" not in instructions
 

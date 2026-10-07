@@ -26,7 +26,7 @@ class ExecutionStatus(StrEnum):
     UNINITIALIZED = "UNINITIALIZED"
     VERIFIED = "VERIFIED"
     REJECTED = "REJECTED"  # syntax/validation error
-    FAILED = "FAILED"  # execution error (no STEP generated)
+    FAILED = "FAILED"  # execution or STEP validation error
     TIMEOUT = "TIMEOUT"  # CAD process timeout
     INFRA_ERROR = "INFRA_ERROR"  # sandbox infrastructure failure
 
@@ -50,6 +50,7 @@ class CadQueryExecutionReport:
     status: ExecutionStatus = ExecutionStatus.INFRA_ERROR
     executor_error: str | None = None
     returncode: int | None = None
+    # A kept result may be diagnostic only; status determines acceptance.
     step_path: Path | None = None
     stdout: str = ""
     stderr: str = ""
@@ -276,32 +277,33 @@ class CadQueryExecutor:
                     intermediate_returns=intermediate_returns,
                 )
 
-            # Check validity of STEP
+            # Keep a readable result even when STEP validation rejects its geometry.
+            step_error = None
             try:
                 self.verify_step(tmp_step_path)
             except StepVerificationError as e:
-                return CadQueryExecutionReport(
-                    source=source,
-                    status=ExecutionStatus.FAILED,
-                    executor_error=str(e),
-                    returncode=sandbox_result.returncode,
-                    stdout=sandbox_result.stdout,
-                    stderr=sandbox_result.stderr,
-                    intermediate_returns=intermediate_returns,
-                )
+                step_error = str(e)
 
             # Read inside the block: the workdir is gone once it exits.
-            census = read_census(tmp_step_path)
+            census = None if tmp_step_path.is_symlink() else read_census(tmp_step_path)
 
-            # Copy STEP
-            if output_step_path is not None:
+            kept_step_path = None
+            if output_step_path is not None and (
+                step_error is None or census is not None
+            ):
                 shutil.copyfile(tmp_step_path, output_step_path)
+                kept_step_path = output_step_path
 
         return CadQueryExecutionReport(
             source=source,
-            status=ExecutionStatus.VERIFIED,
+            status=(
+                ExecutionStatus.FAILED
+                if step_error is not None
+                else ExecutionStatus.VERIFIED
+            ),
+            executor_error=step_error,
             returncode=sandbox_result.returncode,
-            step_path=output_step_path,
+            step_path=kept_step_path,
             stdout=sandbox_result.stdout,
             stderr=sandbox_result.stderr,
             intermediate_returns=intermediate_returns,

@@ -77,12 +77,14 @@ class Operation(BaseModel):
         description=(
             "What this step does, in a sentence or two: the profile or edges "
             "it acts on, the direction it goes in, and where on the part it "
-            "lands. Preserve the interpretation's datum and feature placement. "
+            "lands. Preserve the interpretation's datum and model frame. "
             "Cite a feature parameter as sem_main_bore.radius or "
             "sem_main_bore.center, or a printed figure as "
             "dim_bore_diameter.nominal_value. The pipeline annotates references "
             "with their scalar, array or null values. Null means unknown, not zero. "
-            "Write out only construction choices that the interpretation does not state."
+            "If drawing evidence establishes a clear error or omission in the "
+            "interpretation, state any correction or addition explicitly with "
+            "that evidence."
         ),
     )
     semantics: list[str] = Field(

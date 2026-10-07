@@ -320,7 +320,11 @@ class SemanticFeature(Contract):
         description=(
             "Named sizes, model xyz positions and necessary directions, stored once. "
             "Lengths/positions in mm, angles in degrees, directions unit vectors. "
-            "Null means unknown, never zero; omit irrelevant quantities."
+            "Measure undimensioned geometry from the source views. For every "
+            "required geometric quantity in the adopted shape, provide your "
+            "best numeric estimate, including array components. "
+            "Report measurement uncertainty and assumptions in concerns, naming "
+            "the affected parameters. Omit irrelevant quantities."
         ),
     )
     evidence: list[Region] = Field(

@@ -42,11 +42,7 @@ that you do not repeat an action whose result you already have.
 ## OPEN QUESTIONS
 What is still undecided, and what would settle it. List each rejected
 alternative here with the views, lines or numbers that decided against it and
-the artifact paths. Mark untested alternatives as untested. Reconsider a
-rejection when new evidence undermines its basis.
-
-## NEXT STEPS
-What to do next.
+the artifact paths. Mark untested alternatives as untested.
 
 These are notes to yourself, not a report to a reader. Answer with the notes
 alone: no preamble, and no remarks about the act of summarising.

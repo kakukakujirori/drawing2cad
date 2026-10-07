@@ -353,7 +353,8 @@ def test_compaction_keeps_observations_distinct_from_untested_predictions() -> N
         "Separate direct observations and measurements from untested predictions"
         in instruction
     )
-    assert "Reconsider a rejection" in instruction
+    assert "Do not prescribe next steps" in instruction
+    assert "## NEXT STEPS" not in instruction
     assert "do not reopen" not in instruction
 
 

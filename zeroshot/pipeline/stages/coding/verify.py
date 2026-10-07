@@ -284,10 +284,19 @@ class OutputVerifier:
             for name, step_path in built_steps
         ]
 
-        # if the final result built a STEP, draw it too here.
-        if cq_report.status == ExecutionStatus.VERIFIED and cq_report.returncode == 0:
-            if cq_report.step_path is None or not cq_report.step_path.is_file():
-                raise ValueError("result built but no STEP path was returned?")
+        # A verified result must have its STEP. Rejected, readable results are
+        # also rendered for diagnosis, with acceptance still controlled by status.
+        if (
+            cq_report.status == ExecutionStatus.VERIFIED
+            and cq_report.returncode == 0
+            and (cq_report.step_path is None or not cq_report.step_path.is_file())
+        ):
+            raise ValueError("result built but no STEP path was returned?")
+        if (
+            cq_report.returncode == 0
+            and cq_report.step_path is not None
+            and cq_report.step_path.is_file()
+        ):
             assert RESULT_NAME not in (name for name, _ in built_steps)
             built_steps.append((RESULT_NAME, cq_report.step_path))
             render_requests.append(
@@ -501,7 +510,19 @@ def build_verification_feedback(
     else:
         blocks.append(create_text_block("No execution report was recorded."))
 
-    # 2a. Final renders.
+    # 2a. Final renders, including diagnostic-only results.
+    if (
+        exec_report is not None
+        and exec_report.status is not ExecutionStatus.VERIFIED
+        and RESULT_NAME in render_report
+    ):
+        blocks.append(
+            create_text_block(
+                "[Diagnostic result]\n"
+                "The result failed STEP validation. Its renders and drawing "
+                "comparisons are for diagnosis; this candidate remains ineligible."
+            )
+        )
     if presenter.output_renders != "none" and RESULT_NAME in render_report:
         blocks.extend(
             build_feedback_message_blocks(
@@ -656,7 +677,9 @@ def describe_intermediates(
         )
     ]
 
-    assert sandbox_verification_dir is not None, "intermediate renders need a sandbox dir"
+    assert sandbox_verification_dir is not None, (
+        "intermediate renders need a sandbox dir"
+    )
 
     msg = cleandoc("""
         [Intermediate results]
@@ -666,7 +689,8 @@ def describe_intermediates(
         output.step, projection/<view>.dxf, projection/<view>.png, render_3d/<style>.png.
     """).format(
         table=_census_table(intermediate_returns),
-        sandbox_returns_dir=PurePosixPath(sandbox_verification_dir) / INTERMEDIATE_RETURNS_DIR,
+        sandbox_returns_dir=PurePosixPath(sandbox_verification_dir)
+        / INTERMEDIATE_RETURNS_DIR,
     )
     if failures:
         msg += "\n\nRender failures:\n" + "\n".join(failures)
