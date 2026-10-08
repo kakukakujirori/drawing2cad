@@ -133,7 +133,9 @@ def test_a_program_statement_follows_its_operation() -> None:
 
 
 def test_a_coding_report_can_explain_a_changed_helper() -> None:
-    source = "depth = 5.0\n" + _SOURCE.replace("ret_base = object()", "ret_base = object(depth)")
+    source = "depth = 5.0\n" + _SOURCE.replace(
+        "ret_base = object()", "ret_base = object(depth)"
+    )
     run = open_next_round(
         _completed_run(verification=_verified(source)),
         _report(target=_ref("operations", "op_hole")),

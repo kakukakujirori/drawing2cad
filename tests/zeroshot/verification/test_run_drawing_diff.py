@@ -200,6 +200,38 @@ def test_worker_saves_diff_pngs_beside_projection(tmp_path, monkeypatch):
         assert image.mode == "RGB"
 
 
+def test_invalid_dxf_bounds_still_allow_png_comparison(tmp_path, monkeypatch):
+    import ezdxf
+
+    image = np.full((64, 64, 3), 255, dtype=np.uint8)
+    image[32, 10:55] = 0
+    drawing, projection = tmp_path / "drawing.png", tmp_path / "front.png"
+    Image.fromarray(image).save(drawing)
+    Image.fromarray(image).save(projection)
+    doc = ezdxf.new()
+    doc.modelspace().add_line((0, 0), (100, 0))
+    doc.saveas(projection.with_suffix(".dxf"))
+    monkeypatch.setattr(
+        worker,
+        "align",
+        lambda *_args, **_kwargs: AlignmentResult(
+            "directional_chamfer", "similarity", "ok", np.eye(3).tolist(), {}
+        ),
+    )
+
+    report = worker.run_align_diff_save(drawing, projection)
+
+    assert report.error is None
+    assert report.stats["comparison_status"] == "ok"
+    assert report.stats["model_uv_mapping"] == {
+        "status": "unavailable",
+        "reason": "projection DXF unreadable or invalid (ValueError)",
+    }
+    assert "projection_to_model_uv" not in report.stats
+    assert report.paths["overlay_path"].is_file()
+    assert report.paths["unmatched_path"].is_file()
+
+
 @pytest.mark.parametrize(
     ("settings", "name"),
     [

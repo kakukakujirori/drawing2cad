@@ -127,6 +127,7 @@ def _align_and_compare(
     if not 0 < scale_tolerance < 1:
         raise ValueError("scale_tolerance must be in (0, 1)")
     projection_to_uv = None
+    modelspace = None
     uv_mapping = {"status": "unavailable", "reason": "projection DXF unavailable"}
     dxf_path = projection_path.with_suffix(".dxf")
     if dxf_path.is_file():
@@ -135,8 +136,9 @@ def _align_and_compare(
         from ..render.export_dxf import DEFAULT_PNG_MARGIN_RATIO, png_bounds
 
         try:
+            modelspace = ezdxf.readfile(dxf_path).modelspace()
             x0, y0, x1, y1 = png_bounds(
-                ezdxf.readfile(dxf_path).modelspace(),
+                modelspace,
                 margin_ratio=DEFAULT_PNG_MARGIN_RATIO,
             )
             if not all(map(math.isfinite, (x0, y0, x1, y1))) or x1 <= x0 or y1 <= y0:
@@ -148,6 +150,7 @@ def _align_and_compare(
             )
             uv_mapping["reason"] = "drawing-to-projection alignment unavailable"
         except (OSError, ValueError, ezdxf.DXFError) as error:
+            modelspace = None
             uv_mapping["reason"] = (
                 f"projection DXF unreadable or invalid ({type(error).__name__})"
             )
@@ -194,6 +197,8 @@ def _align_and_compare(
         projection,
         alignment,
         distance_clip_px=distance_clip_px,
+        projection_modelspace=modelspace,
+        projection_to_uv=projection_to_uv,
     )
 
     if projection_to_uv is not None:

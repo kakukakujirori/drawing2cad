@@ -926,7 +926,7 @@ def describe_drawing_diffs(
             direction=item["direction"],
             kind=item["kind"],
             size=item["size_px"],
-            unit="skeleton pixels" if item["kind"] == "lines" else "px²",
+            unit=item["unit"],
             box=item["box_px"],
             cad=_cad_extent(item, bounds),
         )

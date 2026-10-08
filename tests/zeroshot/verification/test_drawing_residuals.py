@@ -1,4 +1,5 @@
 import cv2
+import ezdxf
 import numpy as np
 import pytest
 
@@ -78,12 +79,80 @@ def test_unmatched_groups_are_listed_in_drawing_pixels():
         {
             "direction": "missing",
             "kind": "lines",
+            "unit": "px",
             "size_px": 120,
             "box_px": [80, 20, 81, 140],
             "color": "red",
         }
     ]
     assert diff.unmatched.shape == drawing.shape
+
+
+def test_diff_builds_the_local_comparison_mask_from_dxf_geometry():
+    drawing, output = _white(200), _white(200)
+    chamfered = np.array(
+        [
+            (64, 40),
+            (136, 40),
+            (160, 64),
+            (160, 136),
+            (136, 160),
+            (64, 160),
+            (40, 136),
+            (40, 64),
+        ]
+    )
+    cv2.polylines(drawing, [chamfered], True, (0, 0, 0), 5)
+    cv2.rectangle(output, (40, 40), (160, 160), (0, 0, 0), 1)
+    coarse = compute_diff(drawing, output, _alignment())
+    assert coarse.stats["unmatched"] == []
+
+    doc = ezdxf.new()
+    corners = [(0, 60), (60, 60), (60, 0), (0, 0)]
+    for start, end in zip(corners, corners[1:] + corners[:1]):
+        doc.modelspace().add_line(start, end)
+    # Each drawing pixel is 0.5 mm; CAD +V is opposite the raster's y direction.
+    projection_to_uv = np.array([[0.5, 0, -20.25], [0, -0.5, 80.25], [0, 0, 1]])
+    detailed = compute_diff(
+        drawing,
+        output,
+        _alignment(),
+        projection_modelspace=doc.modelspace(),
+        projection_to_uv=projection_to_uv,
+    )
+
+    assert len(detailed.stats["unmatched"]) == 2
+    assert all(item["kind"] == "lines" for item in detailed.stats["unmatched"])
+    for key in ("bounded_chamfer_drawing_px", "material_error", "match_score"):
+        assert detailed.stats[key] == coarse.stats[key]
+
+
+def test_local_comparison_ignores_hidden_dash_phase_near_a_visible_corner():
+    drawing, output = _white(200), _white(200)
+    for image in (drawing, output):
+        cv2.rectangle(image, (40, 40), (160, 160), (0, 0, 0), 1)
+    for start, end in [(0, 180), (270, 360)]:
+        cv2.ellipse(drawing, (70, 70), (18, 18), 0, start, end, (0, 0, 0), 1)
+    for start, end in [(0, 70), (90, 250), (270, 360)]:
+        cv2.ellipse(output, (70, 70), (18, 18), 0, start, end, (0, 0, 0), 1)
+
+    doc = ezdxf.new()
+    corners = [(40, 40), (160, 40), (160, 160), (40, 160)]
+    for start, end in zip(corners, corners[1:] + corners[:1]):
+        doc.modelspace().add_line(start, end)
+    doc.modelspace().add_circle((70, 70), 18, dxfattribs={"linetype": "HIDDEN"})
+    coarse = compute_diff(drawing, output, _alignment())
+    detailed = compute_diff(
+        drawing,
+        output,
+        _alignment(),
+        projection_modelspace=doc.modelspace(),
+        projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1]]),
+    )
+
+    assert coarse.stats["unmatched"] == detailed.stats["unmatched"] == []
+    for key in ("bounded_chamfer_drawing_px", "material_error", "match_score"):
+        assert detailed.stats[key] == coarse.stats[key]
 
 
 def test_missing_hole_only_appears_in_input_distances():

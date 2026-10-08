@@ -8,12 +8,14 @@ from typing import Any
 
 import cv2
 import numpy as np
+from ezdxf.layouts import Modelspace
 from scipy.spatial import cKDTree
 
 from .align import AlignmentResult, _validate_rgb, opencv_transform
 from .image_ops import distance_map, foreground_mask
 from .unmatched import (
     describe_unmatched,
+    detail_geometry,
     draw_unmatched,
     find_unmatched,
     measure_material_error,
@@ -186,6 +188,8 @@ def compute_diff(
     alignment: AlignmentResult,
     *,
     distance_clip_px: float | None = 12.0,
+    projection_modelspace: Modelspace | None = None,
+    projection_to_uv: np.ndarray | None = None,
 ) -> DiffResult:
     """Color every observed output ink pixel by distance to aligned input ink.
 
@@ -196,9 +200,18 @@ def compute_diff(
     Projection strokes expand by 2px; measurements use the original lines.
     Distances are raw output pixels, independent of optimizer sampling/loss.
 
+    projection_modelspace and projection_to_uv (projection pixel boundaries to CAD UV)
+    enable local edge-finish comparison. This affects unmatched highlights,
+    not alignment or whole-view scores.
+
     Invalid arguments raise ValueError. Unusable image content or a failed
     alignment returns the reason in warnings.
     """
+    if projection_modelspace is not None and projection_to_uv is None:
+        raise ValueError(
+            "projection_to_uv must be provided if projection_modelspace is provided"
+        )
+
     # Invalid input arrays and display scales are caller errors.
     _validate_rgb(drawing_rgb, "drawing_rgb")
     _validate_rgb(projection_rgb, "projection_rgb")
@@ -206,6 +219,7 @@ def compute_diff(
         not math.isfinite(distance_clip_px) or distance_clip_px <= 0
     ):
         raise ValueError("distance_clip_px must be finite and positive, or None")
+
     # Record the display range separately from raw distances and alignment status.
     stats: dict[str, Any] = {
         "comparison_status": "failed",
@@ -255,9 +269,22 @@ def compute_diff(
                 if material["ratio"] is not None
                 else 0.0
             )
-        groups = find_unmatched(drawing_ink, output_seen)
+
+        # Edge-finish comparison needs DXF geometry mapped to drawing pixels.
+        geometry = None
+        if projection_modelspace is not None and projection_to_uv is not None:
+            geometry = detail_geometry(
+                projection_modelspace,
+                np.linalg.inv(
+                    projection_to_uv @ np.array(alignment.H_drawing_to_projection)
+                ),
+                drawing_ink.shape,
+            )
+
+        groups = find_unmatched(drawing_ink, output_seen, geometry)
         stats["unmatched"] = describe_unmatched(groups)
         unmatched = draw_unmatched(drawing_gray, output_seen, groups)
+
         # An automatic display scale is unavailable when no output line is measured.
         if distance_clip_px is None:
             stats["red_distance_px"] = stats["output_to_input"]["max_px"]
@@ -268,6 +295,7 @@ def compute_diff(
             output_distances,
             stats["red_distance_px"],
         )
+
         # Warn about missing observation coverage, not a global distance threshold.
         if stats["outside_count"]:
             warnings.append(

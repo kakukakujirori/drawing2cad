@@ -166,7 +166,9 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
         patches = {"drawing_path": tmp_path / "a_different_input.png"}
         assert "Overall comparison unavailable" in attempt([0.1, 0.1, 0.1])
         patches = {}
-        assert "submission is blocked" in attempt([0.1, 0.1, 0.1], "result = object()\n")
+        assert "submission is blocked" in attempt(
+            [0.1, 0.1, 0.1], "result = object()\n"
+        )
         assert verifier._best_candidate is best
         incomplete = replace(
             best[1],

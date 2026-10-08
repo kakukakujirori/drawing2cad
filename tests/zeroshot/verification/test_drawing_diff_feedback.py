@@ -139,6 +139,7 @@ def test_unmatched_groups_are_listed_under_their_view_by_audit_key(tmp_path, mod
     group = {
         "direction": "missing",
         "kind": "lines",
+        "unit": "px",
         "size_px": 361,
         "box_px": [465, 358, 673, 440],
     }
@@ -150,9 +151,18 @@ def test_unmatched_groups_are_listed_under_their_view_by_audit_key(tmp_path, mod
                 "bounded_chamfer_drawing_px": 6.0,
                 "unmatched": [
                     group | {"color": "red"},
-                    group | {"direction": "extra", "color": "yellow"},
                     group
-                    | {"kind": "material", "direction": "extra", "color": "purple"},
+                    | {
+                        "direction": "extra",
+                        "color": "yellow",
+                    },
+                    group
+                    | {
+                        "kind": "material",
+                        "unit": "px²",
+                        "direction": "extra",
+                        "color": "purple",
+                    },
                 ],
             },
             paths={"unmatched_path": tmp_path / "projection/top_unmatched.png"},
@@ -177,8 +187,8 @@ def test_unmatched_groups_are_listed_under_their_view_by_audit_key(tmp_path, mod
     assert "Colored bands mark the clusters below by color and ID suffix" in text
     assert "hatching marks material (silhouette) differences" in text
     assert (
-        """drawing_diff.view_top.1 (red): missing lines, 361 skeleton pixels, box [465, 358, 673, 440]
-drawing_diff.view_top.2 (yellow): extra lines, 361 skeleton pixels, box [465, 358, 673, 440]
+        """drawing_diff.view_top.1 (red): missing lines, 361 px, box [465, 358, 673, 440]
+drawing_diff.view_top.2 (yellow): extra lines, 361 px, box [465, 358, 673, 440]
 drawing_diff.view_top.3 (purple): extra material, 361 px², box [465, 358, 673, 440]"""
         in text
     )
@@ -307,6 +317,7 @@ def test_shared_feedback_uses_registered_signed_axes_for_arbitrary_view_names(tm
                     "direction": "extra",
                     "kind": "material",
                     "size_px": 2000,
+                    "unit": "px²",
                     "color": "red",
                     "box_px": [10, 20, 30, 40],
                     "box_model_uv": [6, 10, 8, 14],
