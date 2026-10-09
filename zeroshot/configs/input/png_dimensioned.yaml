@@ -14,6 +14,7 @@ sample:
       - name: view_drawing
         role: full_page
         file: data/test_vlm/techdraw_dimensioned/${sample.sample_id}_dim.png
+  target_step_path: data/test_vlm/target_step_ori/${sample.sample_id}.step
 
 artifact_presenter:
   input: "image"

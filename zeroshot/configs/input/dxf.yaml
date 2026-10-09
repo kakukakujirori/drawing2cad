@@ -23,6 +23,7 @@ sample:
       - name: view_transparent_shaded_edges_perspective
         role: perspective
         file: data/test_vlm/render_3d/transparent_shaded_edges_perspective/${sample.sample_id}.png
+  target_step_path: data/test_vlm/target_step_ori/${sample.sample_id}.step
 
 artifact_presenter:
   input: "path"

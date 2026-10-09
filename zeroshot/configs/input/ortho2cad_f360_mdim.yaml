@@ -1,0 +1,12 @@
+# @package _global_
+
+sample:
+  drawing:
+    sheets:
+      - name: view_drawing
+        role: full_page
+        file: data/ortho2cad/test100_images_f360_mdim/${sample.sample_id}.png
+  target_step_path: ???
+
+artifact_presenter:
+  input: "image"

@@ -1,0 +1,12 @@
+# @package _global_
+
+sample:
+  drawing:
+    sheets:
+      - name: view_drawing
+        role: full_page
+        file: data/itercad/benchmark/IterCAD-Draw_1k/images/draw_${sample.sample_id}.png
+  target_step_path: data/itercad/benchmark/IterCAD-Draw_1k/stl/draw_${sample.sample_id}.stl
+
+artifact_presenter:
+  input: "image"

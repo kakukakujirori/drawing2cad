@@ -1,0 +1,12 @@
+# @package _global_
+
+sample:
+  drawing:
+    sheets:
+      - name: view_drawing
+        role: full_page
+        file: data/RealCADBench-V1.0/part/input/2d_drawing/${sample.sample_id}_B.png
+  target_step_path: target_step_path: data/RealCADBench-V1.0/part/ground_truth/2d_drawing/${sample.sample_id}.stl
+
+artifact_presenter:
+  input: "image"
