@@ -5,11 +5,10 @@ inside native code, which no Python ``try`` can catch, so scoring gets the same
 containment as CadQuery execution and rendering: a fresh ``spawn`` child, a
 wall-clock timeout, and a result delivered over a pipe.
 
-Run it over a finished sample directory with::
+Rescore finished samples with::
 
     python -m zeroshot.evaluation.run_scoring \\
-        --run-dir outputs/<run>/<sample_id> \\
-        --target-step data/test_vlm/target_step/<sample_id>.step
+        --run-dir outputs/<run>/*/ --target-dir data/test_vlm/target_step_ori
 """
 
 from __future__ import annotations
@@ -21,9 +20,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from functools import partial
+from math import isfinite
 from multiprocessing.connection import Connection
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 
 from zeroshot.evaluation.align_orientation import (
     SAMPLE_POINTS as _ALIGN_SAMPLE_POINTS,
@@ -41,19 +42,22 @@ class ScoreStatus(Enum):
     FAILED = "FAILED"  # nothing scored
     TIMEOUT = "TIMEOUT"  # the scoring child overran its budget
     NO_PREDICTION = "NO_PREDICTION"  # the run produced no verified STEP
+    GENERATION_FAILED = "GENERATION_FAILED"  # predicted STEP is not a valid solid
 
 
 @dataclass(frozen=True)
 class ScoreReport:
     status: ScoreStatus
     metrics: Mapping[str, float | int] = field(default_factory=dict)
-    errors: Mapping[str, str] = field(default_factory=dict)
+    errors: Mapping[str, Any] = field(default_factory=dict)
+    details: Mapping[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
         return {
             "status": self.status.value,
             "metrics": dict(self.metrics),
             "errors": dict(self.errors),
+            **self.details,
         }
 
 
@@ -64,7 +68,7 @@ def _error_text(error: BaseException) -> str:
 
 
 def _worker(
-    scorer: StepScorer,
+    scorer: StepScorer | SharedStepScorer,
     pred_step: Path,
     gt_step: Path,
     connection: Connection,
@@ -75,9 +79,48 @@ def _worker(
         connection.close()
 
 
+def _isolated_score(
+    scorer: StepScorer | SharedStepScorer, pred_step: Path, gt_step: Path
+) -> ScoreReport | tuple[dict[str, float | int], dict[str, str]]:
+    """Keep native crashes and hangs inside the same containment for both scorers."""
+    context = mp.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_worker, args=(scorer, pred_step, gt_step, sender), daemon=True
+    )
+    process.start()
+    sender.close()
+    # Receive before joining: a full pipe otherwise blocks the scoring child.
+    ready = receiver.poll(scorer.timeout_s)
+    try:
+        payload = receiver.recv() if ready else None
+    except EOFError:
+        payload = None
+    finally:
+        receiver.close()
+    if not ready:
+        process.terminate()
+    process.join(5.0)
+    if process.is_alive():
+        process.kill()
+        process.join()
+    if payload is not None:
+        return payload
+    message = (
+        f"scoring timed out after {scorer.timeout_s:g}s"
+        if not ready
+        else f"scoring process exited without a result (exitcode={process.exitcode})"
+    )
+    return ScoreReport(
+        status=ScoreStatus.TIMEOUT if not ready else ScoreStatus.FAILED,
+        errors={"scorer": {"kind": "evaluation_error", "message": message}},
+        details={"build_valid": None},
+    )
+
+
 @dataclass(frozen=True)
 class StepScorer:
-    """Score a predicted STEP against a target STEP under a wall-clock budget."""
+    """Legacy ECCV/voxel scorer, retained for reproducing earlier runs."""
 
     timeout_s: float = 600.0
     f1_threshold: float = 0.1
@@ -209,47 +252,9 @@ class StepScorer:
                 errors={"prediction": f"no STEP at {pred_step}"},
             )
 
-        context = mp.get_context("spawn")
-        receiver, sender = context.Pipe(duplex=False)
-        process = context.Process(
-            target=_worker,
-            args=(self, pred_step, gt_step, sender),
-            daemon=True,
-        )
-        process.start()
-        sender.close()
-
-        process.join(self.timeout_s)
-        timed_out = process.is_alive()
-        if timed_out:
-            process.terminate()
-            process.join(5.0)
-            if process.is_alive():
-                process.kill()
-                process.join()
-
-        try:
-            payload = receiver.recv() if not timed_out and receiver.poll() else None
-        except EOFError:
-            payload = None
-        finally:
-            receiver.close()
-
-        if timed_out:
-            return ScoreReport(
-                status=ScoreStatus.TIMEOUT,
-                errors={"scorer": f"scoring timed out after {self.timeout_s:g}s"},
-            )
-        if payload is None:
-            # A native abort leaves no per-family attribution to report.
-            return ScoreReport(
-                status=ScoreStatus.FAILED,
-                errors={
-                    "scorer": "scoring process exited without a result "
-                    f"(exitcode={process.exitcode})"
-                },
-            )
-
+        payload = _isolated_score(self, pred_step, gt_step)
+        if isinstance(payload, ScoreReport):
+            return payload
         columns, errors = payload
         if not errors:
             status = ScoreStatus.OK
@@ -258,6 +263,97 @@ class StepScorer:
         else:
             status = ScoreStatus.FAILED
         return ScoreReport(status=status, metrics=columns, errors=errors)
+
+
+@dataclass(frozen=True)
+class SharedStepScorer:
+    """Dimension-preserving metrics, supervised independently of the agent pipeline."""
+
+    timeout_s: float = 600.0
+    reference_extent: float = 1.8
+    mesh_tolerance: float = 0.001
+    angular_tolerance: float = 0.1
+    sample_points: int = 8192
+    seed: int = 0
+    f1_threshold: float = 0.1
+    include_eccv: bool = True
+    include_ortho2cad: bool = True
+    auc_tr_min_cd: float = 1e-5
+    auc_tr_max_cd: float = 1e-1
+    auc_tr_num_points: int = 401
+
+    def __post_init__(self) -> None:
+        for name in (
+            "timeout_s",
+            "reference_extent",
+            "mesh_tolerance",
+            "angular_tolerance",
+            "f1_threshold",
+            "auc_tr_min_cd",
+            "auc_tr_max_cd",
+        ):
+            value = getattr(self, name)
+            if not isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        for name, minimum in (
+            ("sample_points", 1),
+            ("seed", 0),
+            ("auc_tr_num_points", 2),
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError(f"{name} must be an integer >= {minimum}")
+        if self.auc_tr_min_cd >= self.auc_tr_max_cd:
+            raise ValueError("auc_tr_min_cd must be smaller than auc_tr_max_cd")
+
+    @staticmethod
+    def families() -> tuple[str, ...]:
+        return ("mesh", "chamfer", "hausdorff", "eccv", "ortho2cad")
+
+    def _run_families(self, pred_step: Path, gt_step: Path) -> ScoreReport:
+        from zeroshot.evaluation.preprocess import PreprocessConfig
+        from zeroshot.evaluation.score_pair import score_pair
+
+        report = score_pair(
+            pred_step,
+            gt_step,
+            config=PreprocessConfig(
+                self.reference_extent, self.mesh_tolerance, self.angular_tolerance
+            ),
+            sample_points=self.sample_points,
+            seed=self.seed,
+            f1_threshold=self.f1_threshold,
+            include_eccv=self.include_eccv,
+            include_ortho2cad=self.include_ortho2cad,
+        )
+        return ScoreReport(
+            status=ScoreStatus(report["status"]),
+            metrics=report["metrics"],
+            errors=report["errors"],
+            details={
+                key: value
+                for key, value in report.items()
+                if key not in {"status", "metrics", "errors"}
+            },
+        )
+
+    def score(self, pred_step: Path, gt_step: Path) -> ScoreReport:
+        if not gt_step.is_file():
+            raise FileNotFoundError(f"target STEP not found: {gt_step}")
+        if not pred_step.is_file():
+            return ScoreReport(
+                status=ScoreStatus.NO_PREDICTION,
+                errors={
+                    "prediction": {
+                        "kind": "generation_failure",
+                        "message": f"no STEP at {pred_step}",
+                    }
+                },
+                details={"build_valid": False},
+            )
+        report = _isolated_score(self, pred_step, gt_step)
+        assert isinstance(report, ScoreReport)
+        return report
 
 
 def latest_verified_step(
@@ -316,7 +412,7 @@ def latest_verified_step(
 def score_run(
     run_dir: Path,
     target_step: Path,
-    scorer: StepScorer,
+    scorer: StepScorer | SharedStepScorer,
     last_only: bool = True,
 ) -> dict[str, object]:
     """Score what a finished run submitted, as a JSON-ready document.
@@ -330,7 +426,13 @@ def score_run(
     report = (
         ScoreReport(
             status=ScoreStatus.NO_PREDICTION,
-            errors={"prediction": f"no verified STEP under {run_dir}"},
+            errors={
+                "prediction": {
+                    "kind": "generation_failure",
+                    "message": f"no verified STEP under {run_dir}",
+                }
+            },
+            details={"build_valid": False},
         )
         if pred_step is None
         else scorer.score(pred_step, target_step)
@@ -341,38 +443,32 @@ def score_run(
         "target_step": str(target_step),
         "last_only": last_only,
         "scorer": asdict(scorer),
+        "evaluator": type(scorer).__name__,
         **report.as_dict(),
     }
 
 
 def main() -> None:
-    """Score a finished sample directory against its ground-truth STEP.
+    """Score sample directories against ``<target-dir>/<sample_id>.step``.
 
-    Writes ``score.json`` next to the run's ``events.jsonl`` and prints the
-    columns. The document records the scorer's settings alongside the numbers,
-    because a metric value is only meaningful with the threshold and seed that
-    produced it.
-
-    The exit code reports whether *scoring* worked, not whether the model did:
-    a prediction that scored zero, or a run that never produced a solid, is a
-    successful measurement and exits 0. Only a scorer that crashed or timed out
-    exits 1.
+    Exit 1 only when a scorer crashed or timed out, not when a model failed.
     """
 
     parser = argparse.ArgumentParser(description=main.__doc__)
     parser.add_argument(
         "--run-dir",
         type=Path,
+        nargs="+",
         required=True,
-        help="a sample's artifact directory, e.g. outputs/<run>/<sample_id>",
+        help="sample directories, e.g. outputs/<run>/*/ (skips ones without events.jsonl)",
     )
     parser.add_argument(
-        "--target-step",
+        "--target-dir",
         type=Path,
         required=True,
-        help="ground-truth STEP for that sample",
+        help="ground-truth STEPs named <sample_id>.step",
     )
-    parser.add_argument("--timeout-s", type=float, default=StepScorer.timeout_s)
+    parser.add_argument("--timeout-s", type=float, default=SharedStepScorer.timeout_s)
     parser.add_argument(
         "--last-only",
         action=argparse.BooleanOptionalAction,
@@ -384,59 +480,75 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--align-sample-points",
+        "--sample-points",
         type=int,
-        default=StepScorer.align_sample_points,
-        help="surface samples per side for the 24-orientation pose search",
+        default=SharedStepScorer.sample_points,
+        help="surface samples per side for squared CD and Hausdorff",
     )
     parser.add_argument(
-        "--split-closed-faces",
-        action=argparse.BooleanOptionalAction,
-        default=StepScorer.split_closed_faces,
-        help=(
-            "split the prediction's closed periodic faces at their seams, so "
-            "its face partition matches the SolidWorks writer the targets came "
-            "from. A dataset-specific normalization, not a metric change"
-        ),
+        "--reference-extent",
+        type=float,
+        default=SharedStepScorer.reference_extent,
+    )
+    parser.add_argument("--seed", type=int, default=SharedStepScorer.seed)
+    parser.add_argument(
+        "--f1-threshold", type=float, default=SharedStepScorer.f1_threshold
+    )
+    parser.add_argument("--skip-eccv", action="store_true")
+    parser.add_argument("--skip-ortho2cad", action="store_true")
+    parser.add_argument(
+        "--auc-tr-min-cd", type=float, default=SharedStepScorer.auc_tr_min_cd
     )
     parser.add_argument(
-        "--output",
-        type=Path,
-        default=None,
-        help="where to write the report (default: <run-dir>/score.json)",
+        "--auc-tr-max-cd", type=float, default=SharedStepScorer.auc_tr_max_cd
+    )
+    parser.add_argument(
+        "--auc-tr-num-points", type=int, default=SharedStepScorer.auc_tr_num_points
     )
     args = parser.parse_args()
+    if not args.target_dir.is_dir():
+        parser.error(f"target directory not found: {args.target_dir}")
 
-    # `score` raises on a missing target; an operator typo deserves better.
-    if not args.target_step.is_file():
-        parser.error(f"target STEP not found: {args.target_step}")
-    if not args.run_dir.is_dir():
-        parser.error(f"run directory not found: {args.run_dir}")
-
-    document = score_run(
-        args.run_dir,
-        args.target_step,
-        StepScorer(
-            timeout_s=args.timeout_s,
-            align_sample_points=args.align_sample_points,
-            split_closed_faces=args.split_closed_faces,
-        ),
-        args.last_only,
+    scorer = SharedStepScorer(
+        timeout_s=args.timeout_s,
+        sample_points=args.sample_points,
+        reference_extent=args.reference_extent,
+        seed=args.seed,
+        f1_threshold=args.f1_threshold,
+        include_eccv=not args.skip_eccv,
+        include_ortho2cad=not args.skip_ortho2cad,
+        auc_tr_min_cd=args.auc_tr_min_cd,
+        auc_tr_max_cd=args.auc_tr_max_cd,
+        auc_tr_num_points=args.auc_tr_num_points,
     )
+    scorer_failed = False
+    for run_dir in args.run_dir:
+        target_step = args.target_dir / f"{run_dir.name}.step"
+        if not (run_dir / "events.jsonl").is_file():
+            print(f"skip       {run_dir}: no events.jsonl")
+            continue
+        if not target_step.is_file():
+            print(f"skip       {run_dir}: no target {target_step}")
+            continue
+        print(f"sample     {run_dir}")
+        document = score_run(run_dir, target_step, scorer, args.last_only)
+        output_path = run_dir / "score.json"
+        output_path.write_text(
+            json.dumps(document, indent=2, allow_nan=False), encoding="utf-8"
+        )
+        print(f"status     {document['status']}")
+        print(f"prediction {document['pred_step']}")
+        for key, value in document["metrics"].items():  # type: ignore[attr-defined]
+            print(f"  {key:<26} {value}")
+        for name, message in document["errors"].items():  # type: ignore[attr-defined]
+            print(f"  ! {name}: {message}")
+        print(f"written    {output_path}")
+        scorer_failed |= document["status"] in {
+            ScoreStatus.FAILED.value,
+            ScoreStatus.TIMEOUT.value,
+        }
 
-    output_path = args.output or args.run_dir / "score.json"
-    output_path.write_text(json.dumps(document, indent=2), encoding="utf-8")
-
-    print(f"status     {document['status']}")
-    print(f"last only  {document['last_only']}")
-    print(f"prediction {document['pred_step']}")
-    for key, value in document["metrics"].items():  # type: ignore[attr-defined]
-        print(f"  {key:<26} {value}")
-    for name, message in document["errors"].items():  # type: ignore[attr-defined]
-        print(f"  ! {name}: {message}")
-    print(f"written    {output_path}")
-
-    if document["status"] in {ScoreStatus.FAILED.value, ScoreStatus.TIMEOUT.value}:
+    if scorer_failed:
         raise SystemExit(1)
 
 

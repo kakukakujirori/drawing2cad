@@ -15,7 +15,7 @@ python -m zeroshot.run_pipeline --multirun \
     artifact_root=outputs/gpt6_luna \
     on_existing=retry \
     workflow=continued \
-    sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
+    sample.sample_id=$(ls data/test_vlm/target_step_ori | sed 's/\.step//' | paste -sd,)
 
 # glm5.3-flash
 python -m zeroshot.run_pipeline --multirun \
@@ -23,7 +23,19 @@ python -m zeroshot.run_pipeline --multirun \
     artifact_root=outputs/glm5.3_flash \
     on_existing=retry \
     workflow=continued \
-    sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
+    sample.sample_id=$(ls data/test_vlm/target_step_ori | sed 's/\.step//' | paste -sd,)
+```
+
+Rescore finished samples without rerunning the agents. A rerun with
+`on_existing=retry` skips completed samples, so it does not rescore them. Each
+sample is scored against `<target-dir>/<sample_id>.step`. Directories without
+`events.jsonl` or a target are skipped. For f360, pass
+`data/ortho2cad/test100_gt_steps_f360`:
+
+```bash
+python -m zeroshot.evaluation.run_scoring \
+    --run-dir outputs/gpt6_luna/*/ \
+    --target-dir data/test_vlm/target_step_ori
 ```
 
 Evaluate:
@@ -32,6 +44,20 @@ Evaluate:
 python -m zeroshot.evaluation.aggregate_run \
     --run-dir outputs/gpt6_luna
 ```
+
+After each sample, `SharedStepScorer` writes mesh IoU, squared Chamfer/Hausdorff,
+reference ECCV F1 and official Ortho2CAD IoU to `score.json`. The default GT is
+`data/test_vlm/target_step_ori`, whose dimensions match the DXF drawings. Main
+metrics share the GT-derived scale (`reference_extent=1.8`) and maximum-IoU
+alignment over 24 cube rotations; Ortho2CAD uses its own official preprocessing.
+
+`aggregate_run` reports AUC-TR and valid-only mean/median CD, in IterCAD's unit
+(GT bbox diagonal = 1) rather than `reference_extent`. Generation failures
+stay in the AUC denominator; a missing CD from an evaluator error leaves these
+aggregates undefined. Distance metrics never fill missing values with zero.
+Sampling, mesh tolerances and AUC thresholds are configurable under
+`evaluation.scorer` and recorded with each score. Existing logs require rescoring
+before they can be combined with the new metric protocol.
 
 ## Single-agent baseline
 
@@ -44,7 +70,7 @@ python -m zeroshot.run_pipeline --multirun \
     artifact_root=outputs/gpt6_luna_single \
     on_existing=retry \
     workflow=single \
-    sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
+    sample.sample_id=$(ls data/test_vlm/target_step_ori | sed 's/\.step//' | paste -sd,)
 
 # glm5.3-flash
 python -m zeroshot.run_pipeline --multirun \
@@ -52,7 +78,7 @@ python -m zeroshot.run_pipeline --multirun \
     artifact_root=outputs/glm5.3_flash_single \
     on_existing=retry \
     workflow=single \
-    sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
+    sample.sample_id=$(ls data/test_vlm/target_step_ori | sed 's/\.step//' | paste -sd,)
 ```
 
 ## Interactive Debug

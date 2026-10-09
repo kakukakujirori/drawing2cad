@@ -1,8 +1,8 @@
 """Join what a run recorded about itself with what scoring said about it.
 
 `events.jsonl` describes every attempted sample, crashes included, and needs no
-ground truth. `score.json` exists only where a target was configured and the run
-submitted something. Neither alone says whether the pipeline works.
+ground truth. `score.json` records evaluation and generation failures wherever
+a target was configured. Neither alone says whether the pipeline works.
 
     python -m zeroshot.evaluation.aggregate_run --run-dir outputs/<run>
 """
@@ -18,7 +18,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from zeroshot.evaluation.run_scoring import ScoreStatus, StepScorer
+from zeroshot.evaluation.metrics.itercad import aggregate_itercad
+from zeroshot.evaluation.metrics.surface_distance import DISTANCE_METRICS
+from zeroshot.evaluation.run_scoring import ScoreStatus, SharedStepScorer, StepScorer
 from zeroshot.pipeline.workflow import StopReason
 
 
@@ -72,6 +74,11 @@ class SampleRow:
     node_ms: Mapping[str, int] = field(default_factory=dict)
     score_status: str | None = None
     metrics: Mapping[str, float | int] = field(default_factory=dict)
+    build_valid: bool | None = None
+    score_errors: Mapping[str, Any] = field(default_factory=dict)
+    protocol: Mapping[str, Any] = field(default_factory=dict)
+    evaluator: str | None = None
+    auc_options: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def verified(self) -> bool:
@@ -79,15 +86,20 @@ class SampleRow:
 
     @property
     def scored(self) -> bool:
-        return self.score_status == ScoreStatus.OK.value
+        return self.score_status in {ScoreStatus.OK.value, ScoreStatus.PARTIAL.value}
 
 
 @dataclass(frozen=True)
 class MetricMeans:
-    """`scored` is shape quality; `overall` counts a missing solid as zero."""
+    """Available mean; overall counts only explicit generation failures as zero.
+
+    Distances have no overall mean. An evaluator error also makes overall
+    undefined, instead of improving the metric by substituting a zero.
+    """
 
     scored: float | None
     overall: float | None
+    measured: int = 0
 
 
 @dataclass(frozen=True)
@@ -101,6 +113,7 @@ class RunSummary:
     tokens: Tokens
     wall_ms: int
     metrics: Mapping[str, MetricMeans]
+    itercad: Mapping[str, Any] = field(default_factory=dict)
 
 
 def read_events(events_path: Path, sample_id: str) -> SampleRow:
@@ -177,6 +190,20 @@ def collect(run_dir: Path) -> list[SampleRow]:
                 read_events(events_path, sample_dir.name),
                 score_status=score.get("status"),
                 metrics=score.get("metrics", {}),
+                build_valid=score.get(
+                    "build_valid",
+                    False
+                    if score.get("status") == ScoreStatus.NO_PREDICTION.value
+                    else None,
+                ),
+                score_errors=score.get("errors", {}),
+                protocol=score.get("protocol", {}),
+                evaluator=score.get("evaluator"),
+                auc_options={
+                    key.removeprefix("auc_tr_"): value
+                    for key, value in score.get("scorer", {}).items()
+                    if key.startswith("auc_tr_")
+                },
             )
         )
     return rows
@@ -199,6 +226,31 @@ def _mean(values: Iterable[float]) -> float | None:
 def summarize(rows: Sequence[SampleRow]) -> RunSummary:
     scored = [row for row in rows if row.scored]
     counted = [row for row in rows if row.tokens.input is not None]
+    protocols = [row.protocol for row in rows if row.metrics]
+    if any(protocols) and not all(protocols):
+        raise ValueError("legacy and shared score protocols are mixed; rescore the run")
+    auc_options = [row.auc_options for row in rows if row.auc_options]
+    if auc_options and any(options != auc_options[0] for options in auc_options):
+        raise ValueError("different AUC configurations are mixed; rescore the run")
+    distance_summary = {}
+    if any(
+        row.evaluator == "SharedStepScorer"
+        or row.protocol
+        or DISTANCE_METRICS.intersection(row.metrics)
+        for row in rows
+    ):
+        distance_summary = aggregate_itercad(
+            [
+                {
+                    "build_valid": row.build_valid,
+                    "metrics": row.metrics,
+                    "errors": row.score_errors,
+                    "protocol": row.protocol,
+                }
+                for row in rows
+            ],
+            **(auc_options[0] if auc_options else {}),
+        )
 
     return RunSummary(
         samples=len(rows),
@@ -220,10 +272,24 @@ def summarize(rows: Sequence[SampleRow]) -> RunSummary:
                 scored=_mean(
                     float(row.metrics[name]) for row in scored if name in row.metrics
                 ),
-                overall=_mean(float(row.metrics.get(name, 0)) for row in rows),
+                overall=None
+                if name in DISTANCE_METRICS
+                or any(
+                    name not in row.metrics
+                    and row.build_valid is not False
+                    and row.score_status
+                    not in {
+                        ScoreStatus.NO_PREDICTION.value,
+                        ScoreStatus.GENERATION_FAILED.value,
+                    }
+                    for row in rows
+                )
+                else _mean(float(row.metrics.get(name, 0)) for row in rows),
+                measured=sum(name in row.metrics for row in scored),
             )
             for name in sorted({name for row in scored for name in row.metrics})
         },
+        itercad=distance_summary,
     )
 
 
@@ -237,8 +303,12 @@ def headline_columns(rows: Sequence[SampleRow], families: Iterable[str]) -> list
     seen = dict.fromkeys(name for row in rows for name in row.metrics)
     return [
         column
-        for family in families
-        if (column := next((n for n in seen if n.startswith(f"{family}_")), None))
+        for family in dict.fromkeys(families)
+        if (
+            column := next(
+                (n for n in seen if n == family or n.startswith(f"{family}_")), None
+            )
+        )
     ]
 
 
@@ -254,6 +324,13 @@ def notes(rows: Sequence[SampleRow]) -> list[str]:
             lines.append(f"{row.sample_id}  budget exhausted: {', '.join(exhausted)}")
         if row.score_status not in {None, ScoreStatus.OK.value}:
             lines.append(f"{row.sample_id}  score {row.score_status}")
+        for stage, error in row.score_errors.items():
+            if isinstance(error, Mapping):
+                lines.append(
+                    f"{row.sample_id}  {error.get('kind', 'evaluation_error')} [{stage}]: {error.get('message')}"
+                )
+            else:
+                lines.append(f"{row.sample_id}  score error [{stage}]: {error}")
         # A pose the surfaces cannot settle makes every pose-dependent column a
         # draw the sampling won, so these samples do not carry a comparison.
         if (tied := row.metrics.get("align_tied", 1)) and tied > 1:
@@ -267,6 +344,8 @@ def _cell(value: object) -> str:
     if value is None:
         return "-"
     if isinstance(value, float):
+        if 0 < abs(value) < 0.001:
+            return f"{value:.3g}"
         return f"{value:.3f}"
     return f"{value:,}" if isinstance(value, int) else str(value)
 
@@ -307,8 +386,12 @@ def format_report(
         rule,
         "   ".join(f"{name} {getattr(summary, name)}/{total}" for name in rates),
         *(
-            f"{name}  mean {_cell(means.scored)} (scored n={summary.scored})"
-            f"   {_cell(means.overall)} (all n={total}, missing=0)"
+            f"{name}  mean {_cell(means.scored)} (measured n={means.measured})"
+            + (
+                " (valid only)"
+                if name in DISTANCE_METRICS
+                else f"   {_cell(means.overall)} (all n={total}, invalid=0)"
+            )
             for name in headlines
             if (means := summary.metrics.get(name)) is not None
         ),
@@ -318,6 +401,20 @@ def format_report(
             f"   wall {round(summary.wall_ms / 1000):,}s"
         ),
     ]
+    if summary.itercad:
+        stats = summary.itercad
+        lines += [
+            (
+                f"AUC-TR {_cell(stats['auc_tr'])}"
+                f"   Mean CD {_cell(stats['mean_cd'])}   Med. CD {_cell(stats['median_cd'])}"
+            ),
+            (
+                f"CD (GT bbox diagonal = 1) tolerances"
+                f" [{stats['auc_tr_min_cd']:g}, {stats['auc_tr_max_cd']:g}],"
+                f" {stats['auc_tr_num_points']} log-grid points;"
+                f" invalid {stats['invalid_predictions']}, evaluator errors {stats['cd_evaluation_errors']}"
+            ),
+        ]
     if remarks := notes(rows):
         lines += ["", "notes:", *(f"  {line}" for line in remarks)]
     return "\n".join(lines)
@@ -334,13 +431,15 @@ def main() -> None:
     if not rows:
         raise SystemExit(f"no sample with events.jsonl under {args.run_dir}")
     summary = summarize(rows)
-    headlines = headline_columns(rows, StepScorer().families())
+    headlines = headline_columns(
+        rows, [*SharedStepScorer().families(), *StepScorer().families()]
+    )
 
     print(format_report(rows, summary, headlines))
 
     output = args.output or args.run_dir / args.summary_name
     document = {"summary": asdict(summary), "samples": [asdict(row) for row in rows]}
-    output.write_text(json.dumps(document, indent=2) + "\n", "utf-8")
+    output.write_text(json.dumps(document, indent=2, allow_nan=False) + "\n", "utf-8")
     print(f"\nwrote {output}")
 
 

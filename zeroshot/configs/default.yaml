@@ -54,15 +54,19 @@ sandbox_runner:
 evaluation:
   last_only: false
   scorer:
-    _target_: zeroshot.evaluation.run_scoring.StepScorer
+    _target_: zeroshot.evaluation.run_scoring.SharedStepScorer
     timeout_s: 600.0
     f1_threshold: 0.1
-    normalize_to_gt_bbox: true
     reference_extent: 1.8
-    voxel_resolution: 64
+    mesh_tolerance: 0.001
+    angular_tolerance: 0.1
+    sample_points: 8192
     seed: 0
-    align_sample_points: 32768
-    split_closed_faces: false  # Split faces so that they match the SolidWorks writer
+    include_eccv: true
+    include_ortho2cad: true
+    auc_tr_min_cd: 1.0e-5
+    auc_tr_max_cd: 1.0e-1
+    auc_tr_num_points: 401
 
 # Every path derives from `sample_id`, so a sweep overrides that alone:
 #   python -m zeroshot.run_pipeline -m sample.sample_id=000364,000405,000775
@@ -70,4 +74,4 @@ sample:
   sample_id: "000364"
   # Reject larger input rasters before running agents; inputs are never resized.
   max_input_image_side: 3000
-  target_step_path: data/test_vlm/target_step/${sample.sample_id}.step
+  target_step_path: data/test_vlm/target_step_ori/${sample.sample_id}.step

@@ -84,7 +84,9 @@ def score(config: DictConfig) -> None:
         scorer=instantiate(config.evaluation.scorer),
         last_only=config.evaluation.last_only,
     )
-    (run_dir / "score.json").write_text(json.dumps(document, indent=2), "utf-8")
+    (run_dir / "score.json").write_text(
+        json.dumps(document, indent=2, allow_nan=False), "utf-8"
+    )
 
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="default")
