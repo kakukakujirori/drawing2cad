@@ -13,23 +13,16 @@ these names and still hand the actual work to a child.
 """
 
 from ._matching import (
-    chamfer,
     match_entities,
     match_incidence,
     match_or_empty,
 )
-from ._step_brep import (
-    load_step_brep,
-    normalize_to_reference_bbox,
-    reference_frame,
-)
+from ._step_brep import StepBRep, load_step_brep
 
 __all__ = [
-    "chamfer",
+    "StepBRep",
     "load_step_brep",
     "match_entities",
     "match_incidence",
     "match_or_empty",
-    "normalize_to_reference_bbox",
-    "reference_frame",
 ]

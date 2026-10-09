@@ -16,24 +16,13 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing as mp
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from functools import partial
 from math import isfinite
 from multiprocessing.connection import Connection
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
-
-from zeroshot.evaluation.align_orientation import (
-    SAMPLE_POINTS as _ALIGN_SAMPLE_POINTS,
-)
-from zeroshot.evaluation.metrics import score_eccv, score_voxel
-
-# A CAD kernel error can run to thousands of characters; this one is read by
-# a human out of a JSON file.
-_MAX_ERROR_CHARS = 500
 
 
 class ScoreStatus(Enum):
@@ -61,14 +50,8 @@ class ScoreReport:
         }
 
 
-def _error_text(error: BaseException) -> str:
-    message = " ".join(str(error).split())
-    label = type(error).__name__
-    return (f"{label}: {message}" if message else label)[:_MAX_ERROR_CHARS]
-
-
 def _worker(
-    scorer: StepScorer | SharedStepScorer,
+    scorer: StepScorer,
     pred_step: Path,
     gt_step: Path,
     connection: Connection,
@@ -79,10 +62,8 @@ def _worker(
         connection.close()
 
 
-def _isolated_score(
-    scorer: StepScorer | SharedStepScorer, pred_step: Path, gt_step: Path
-) -> ScoreReport | tuple[dict[str, float | int], dict[str, str]]:
-    """Keep native crashes and hangs inside the same containment for both scorers."""
+def _isolated_score(scorer: StepScorer, pred_step: Path, gt_step: Path) -> ScoreReport:
+    """Score in a spawned child, so native crashes and hangs become a report."""
     context = mp.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(
@@ -120,154 +101,7 @@ def _isolated_score(
 
 @dataclass(frozen=True)
 class StepScorer:
-    """Legacy ECCV/voxel scorer, retained for reproducing earlier runs."""
-
-    timeout_s: float = 600.0
-    f1_threshold: float = 0.1
-    normalize_to_gt_bbox: bool = True
-    reference_extent: float | None = 1.8
-    voxel_resolution: int = 64
-    seed: int = 0
-    align_sample_points: int = _ALIGN_SAMPLE_POINTS
-    split_closed_faces: bool = False
-
-    def __post_init__(self) -> None:
-        if self.timeout_s <= 0:
-            raise ValueError("timeout_s must be positive")
-        if self.align_sample_points < 1:
-            raise ValueError("align_sample_points must be positive")
-
-    def families(
-        self,
-    ) -> Mapping[str, Callable[[Path, Path], Mapping[str, float | int]]]:
-        """Which metric families this scorer measures, bound to its parameters.
-
-        The only place that knows which metrics exist. A family's key prefixes
-        every column it returns, and is the key its failure appears under in
-        ``ScoreReport.errors``.
-        """
-
-        return {
-            "eccv": partial(
-                score_eccv,
-                normalize_to_gt_bbox=self.normalize_to_gt_bbox,
-                reference_extent=self.reference_extent,
-                f1_threshold=self.f1_threshold,
-                seed=self.seed,
-            ),
-            "voxel": partial(score_voxel, resolution=self.voxel_resolution),
-        }
-
-    def _run_families(
-        self,
-        pred_step: Path,
-        gt_step: Path,
-    ) -> tuple[dict[str, float | int], dict[str, str]]:
-        """Run every family, keeping the columns of the ones that succeeded.
-
-        Private because it is the unsupervised path: it runs in the scoring
-        child, and only :meth:`score` supervises the timeout and the crash.
-        """
-
-        columns: dict[str, float | int] = {}
-        errors: dict[str, str] = {}
-        with TemporaryDirectory() as scratch:
-            # Every family measures the aligned solid, because every one of
-            # them is orientation-sensitive: the voxel IoU of a correct part in
-            # the wrong pose is as wrong as its F1.  There is no setting for
-            # skipping this, because a number measured against a solid in the
-            # wrong pose describes neither the part nor the leaderboard.
-            try:
-                pred_step = self._aligned(pred_step, gt_step, Path(scratch), columns)
-            except Exception as error:  # noqa: BLE001 - an unaligned score beats none
-                errors["align"] = _error_text(error)
-            if self.split_closed_faces:
-                try:
-                    pred_step = self._split_closed(pred_step, Path(scratch))
-                except Exception as error:  # noqa: BLE001 - as above
-                    errors["normalize"] = _error_text(error)
-            for name, call in self.families().items():
-                try:
-                    columns.update(call(pred_step, gt_step))
-                except Exception as error:  # noqa: BLE001
-                    errors[name] = _error_text(error)
-        return columns, errors
-
-    def _aligned(
-        self,
-        pred_step: Path,
-        gt_step: Path,
-        scratch: Path,
-        columns: dict[str, float | int],
-    ) -> Path:
-        """Rotate the prediction into the target's pose, recording which pose.
-
-        Imported here rather than at module scope for the same reason as
-        `latest_verified_step`: every `spawn` scoring child re-imports this
-        module, and only the one that scores needs CadQuery.
-        """
-
-        from zeroshot.evaluation.align_orientation import align_step
-
-        output = scratch / "aligned.step"
-        alignment = align_step(
-            pred_step,
-            gt_step,
-            output,
-            sample_points=self.align_sample_points,
-            seed=self.seed,
-        )
-        columns["align_rotation_index"] = alignment.rotation_index
-        columns["align_chamfer"] = alignment.chamfer
-        # Above one, this sample's pose was a draw between orientations the
-        # surfaces cannot tell apart, and the columns that depend on pose are
-        # worth no more than the draw.
-        columns["align_tied"] = alignment.tied
-        return output
-
-    def _split_closed(self, pred_step: Path, scratch: Path) -> Path:
-        """Re-partition the prediction's faces the way the target's writer does.
-
-        After the pose search, so both families measure the same file; the
-        voxel IoU cannot tell the two partitions apart either way.
-        """
-
-        from zeroshot.evaluation.normalize_brep import split_closed_faces
-
-        return split_closed_faces(pred_step, scratch / "normalized.step")
-
-    def score(self, pred_step: Path, gt_step: Path) -> ScoreReport:
-        """Score one prediction while supervising native-code hangs.
-
-        A missing prediction is a run outcome and is reported. A missing target
-        is a configuration error and is raised, since reporting it as an
-        unscorable prediction would understate the model.
-        """
-
-        if not gt_step.is_file():
-            raise FileNotFoundError(f"target STEP not found: {gt_step}")
-        if not pred_step.is_file():
-            return ScoreReport(
-                status=ScoreStatus.NO_PREDICTION,
-                errors={"prediction": f"no STEP at {pred_step}"},
-            )
-
-        payload = _isolated_score(self, pred_step, gt_step)
-        if isinstance(payload, ScoreReport):
-            return payload
-        columns, errors = payload
-        if not errors:
-            status = ScoreStatus.OK
-        elif columns:
-            status = ScoreStatus.PARTIAL
-        else:
-            status = ScoreStatus.FAILED
-        return ScoreReport(status=status, metrics=columns, errors=errors)
-
-
-@dataclass(frozen=True)
-class SharedStepScorer:
-    """Dimension-preserving metrics, supervised independently of the agent pipeline."""
+    """Score a predicted STEP against a target STEP under a wall-clock budget."""
 
     timeout_s: float = 600.0
     reference_extent: float = 1.8
@@ -351,9 +185,7 @@ class SharedStepScorer:
                 },
                 details={"build_valid": False},
             )
-        report = _isolated_score(self, pred_step, gt_step)
-        assert isinstance(report, ScoreReport)
-        return report
+        return _isolated_score(self, pred_step, gt_step)
 
 
 def latest_verified_step(
@@ -412,7 +244,7 @@ def latest_verified_step(
 def score_run(
     run_dir: Path,
     target_step: Path,
-    scorer: StepScorer | SharedStepScorer,
+    scorer: StepScorer,
     last_only: bool = True,
 ) -> dict[str, object]:
     """Score what a finished run submitted, as a JSON-ready document.
@@ -443,7 +275,6 @@ def score_run(
         "target_step": str(target_step),
         "last_only": last_only,
         "scorer": asdict(scorer),
-        "evaluator": type(scorer).__name__,
         **report.as_dict(),
     }
 
@@ -468,7 +299,7 @@ def main() -> None:
         required=True,
         help="ground-truth STEPs named <sample_id>.step",
     )
-    parser.add_argument("--timeout-s", type=float, default=SharedStepScorer.timeout_s)
+    parser.add_argument("--timeout-s", type=float, default=StepScorer.timeout_s)
     parser.add_argument(
         "--last-only",
         action=argparse.BooleanOptionalAction,
@@ -482,34 +313,28 @@ def main() -> None:
     parser.add_argument(
         "--sample-points",
         type=int,
-        default=SharedStepScorer.sample_points,
+        default=StepScorer.sample_points,
         help="surface samples per side for squared CD and Hausdorff",
     )
     parser.add_argument(
         "--reference-extent",
         type=float,
-        default=SharedStepScorer.reference_extent,
+        default=StepScorer.reference_extent,
     )
-    parser.add_argument("--seed", type=int, default=SharedStepScorer.seed)
-    parser.add_argument(
-        "--f1-threshold", type=float, default=SharedStepScorer.f1_threshold
-    )
+    parser.add_argument("--seed", type=int, default=StepScorer.seed)
+    parser.add_argument("--f1-threshold", type=float, default=StepScorer.f1_threshold)
     parser.add_argument("--skip-eccv", action="store_true")
     parser.add_argument("--skip-ortho2cad", action="store_true")
+    parser.add_argument("--auc-tr-min-cd", type=float, default=StepScorer.auc_tr_min_cd)
+    parser.add_argument("--auc-tr-max-cd", type=float, default=StepScorer.auc_tr_max_cd)
     parser.add_argument(
-        "--auc-tr-min-cd", type=float, default=SharedStepScorer.auc_tr_min_cd
-    )
-    parser.add_argument(
-        "--auc-tr-max-cd", type=float, default=SharedStepScorer.auc_tr_max_cd
-    )
-    parser.add_argument(
-        "--auc-tr-num-points", type=int, default=SharedStepScorer.auc_tr_num_points
+        "--auc-tr-num-points", type=int, default=StepScorer.auc_tr_num_points
     )
     args = parser.parse_args()
     if not args.target_dir.is_dir():
         parser.error(f"target directory not found: {args.target_dir}")
 
-    scorer = SharedStepScorer(
+    scorer = StepScorer(
         timeout_s=args.timeout_s,
         sample_points=args.sample_points,
         reference_extent=args.reference_extent,

@@ -12,9 +12,7 @@ from scipy.spatial import cKDTree
 
 from zeroshot.evaluation.preprocess import PreparedPair
 
-DISTANCE_METRICS = frozenset(
-    {"chamfer", "hausdorff", "chamfer_diag", "chamfer_mm2", "hausdorff_mm2"}
-)
+DISTANCE_METRICS = frozenset({"chamfer", "hausdorff", "chamfer_diag"})
 
 
 def point_distances(pred: np.ndarray, gt: np.ndarray) -> dict[str, float]:
@@ -52,6 +50,4 @@ def score_surface_distance(
     return {
         **scores,
         "chamfer_diag": scores["chamfer"] / gt_diagonal2,
-        "chamfer_mm2": scores["chamfer"] / pair.scale**2,
-        "hausdorff_mm2": scores["hausdorff"] / pair.scale**2,
     }

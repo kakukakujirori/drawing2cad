@@ -169,20 +169,20 @@ def test_the_two_metric_means_answer_different_questions(tmp_path: Path) -> None
         tmp_path,
         "scored",
         _completed_events(_USAGE),
-        {"status": "OK", "metrics": {"voxel_iou": 0.5}},
+        {"status": "OK", "metrics": {"mesh_iou": 0.5}, "build_valid": True},
     )
     _write_sample(
         tmp_path,
         "empty",
         _completed_events(_USAGE),
-        {"status": "NO_PREDICTION", "metrics": {}},
+        {"status": "NO_PREDICTION", "metrics": {}, "build_valid": False},
     )
 
     summary = summarize(collect(tmp_path))
 
     assert summary.scored == 1
-    assert summary.metrics["voxel_iou"].scored == 0.5
-    assert summary.metrics["voxel_iou"].overall == 0.25
+    assert summary.metrics["mesh_iou"].scored == 0.5
+    assert summary.metrics["mesh_iou"].overall == 0.25
 
 
 def test_a_directory_without_events_is_not_a_sample(tmp_path: Path) -> None:
@@ -216,7 +216,7 @@ def test_the_table_stays_narrow_enough_to_read(tmp_path: Path) -> None:
         tmp_path,
         "000364",
         _completed_events(_USAGE),
-        {"status": "OK", "metrics": {"eccv_surface_f1": 0.04, "voxel_iou": 0.113}},
+        {"status": "OK", "metrics": {"eccv_surface_f1": 0.04, "mesh_iou": 0.113}},
     )
 
     rows = collect(tmp_path)
@@ -246,12 +246,10 @@ def test_a_family_is_represented_by_the_column_it_returned_first() -> None:
 def test_a_family_that_produced_no_column_takes_none() -> None:
     """A family can fail on its own without emptying the table."""
     rows = [
-        SampleRow(
-            sample_id="s", terminal=Terminal.COMPLETED, metrics={"voxel_iou": 0.3}
-        )
+        SampleRow(sample_id="s", terminal=Terminal.COMPLETED, metrics={"mesh_iou": 0.3})
     ]
 
-    assert headline_columns(rows, ["eccv", "voxel"]) == ["voxel_iou"]
+    assert headline_columns(rows, ["eccv", "mesh"]) == ["mesh_iou"]
 
 
 def test_the_scorer_decides_which_metrics_the_table_leads_with(

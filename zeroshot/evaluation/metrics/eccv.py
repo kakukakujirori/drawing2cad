@@ -1,68 +1,56 @@
-"""Score one predicted STEP against one ground-truth STEP, ECCV challenge rules.
+"""ECCV 2026 CAD Challenge F1 of a pair already in the shared scale and IoU pose.
 
-The wrapper around the forked blackboxes in :mod:`.eccv_components`: it picks
-the reference frames, seeds the two sampling streams apart, and names the
-columns.
+Sampling and matching are the challenge's own; the challenge itself rescales the
+prediction independently and picks the pose by Chamfer distance.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
+import numpy as np
+
 from zeroshot.evaluation.metrics.eccv_components import (
-    chamfer,
+    StepBRep,
     load_step_brep,
     match_entities,
     match_incidence,
     match_or_empty,
-    normalize_to_reference_bbox,
-    reference_frame,
 )
+from zeroshot.evaluation.preprocess import PreparedPair
 
 # Keeps the two sides' per-face seeds disjoint; must exceed `MAX_FACES` (5000).
 _PRED_SEED_OFFSET = 10_007
 
 
 def score_eccv(
-    pred_step: Path,
-    gt_step: Path,
-    normalize_to_gt_bbox: bool = True,
-    reference_extent: float | None = 1.8,
-    f1_threshold: float = 0.1,
-    seed: int = 0,
+    pair: PreparedPair, *, f1_threshold: float = 0.1, seed: int = 0
 ) -> dict[str, Any]:
-    """Return the challenge's per-sample score and the columns behind it.
+    """Return the best mean F1 over the IoU-tied poses, then the columns behind it.
 
-    ``eccv_mean_f1`` is the surface/edge/vertex/topology mean the leaderboard
-    scales by a run's valid ratio; the rest say where that number came from.
-
-    ``reference_extent`` is the length each side's longest side is scaled to
-    before anything is measured, so that the absolute ``f1_threshold`` and the
-    per-unit-area sample density mean the same thing whatever units a file uses.
-    ``None`` keeps the file's own units and only works when both sides are
-    already normalized.
+    Tied poses are the same geometry, but a symmetric part's seams make the F1
+    depend on the pose. Independent sampling can also give F1 < 1 on small faces.
     """
+    if not np.isfinite(f1_threshold) or f1_threshold <= 0:
+        raise ValueError("f1_threshold must be finite and positive")
+    with TemporaryDirectory(prefix="eccv-") as scratch:
+        gt_path = Path(scratch) / "gt.step"
+        pair.gt_shape.exportStep(str(gt_path))
+        target = load_step_brep(gt_path, seed=seed)
+        candidates = []
+        for index, shape in pair.tied_shapes.items():
+            pred_path = Path(scratch) / f"pred_{index}.step"
+            shape.exportStep(str(pred_path))
+            predicted = load_step_brep(pred_path, seed=seed + _PRED_SEED_OFFSET)
+            candidates.append(
+                _match(predicted, target, f1_threshold) | {"eccv_rotation_index": index}
+            )
+    return max(candidates, key=lambda columns: columns["eccv_mean_f1"])
 
-    seed = int(seed)
-    target_frame = (
-        None if reference_extent is None else reference_frame(gt_step, reference_extent)
-    )
-    predicted_frame = (
-        reference_frame(pred_step, reference_extent)
-        if normalize_to_gt_bbox and reference_extent is not None
-        else target_frame
-    )
-    # Separate seeds: a shared stream correlates the samples of similar faces
-    # and biases every distance downwards.
-    target = load_step_brep(gt_step, seed=seed, frame=target_frame)
-    predicted = load_step_brep(
-        pred_step, seed=seed + _PRED_SEED_OFFSET, frame=predicted_frame
-    )
-    if normalize_to_gt_bbox:
-        predicted = normalize_to_reference_bbox(predicted, target)
 
-    threshold = float(f1_threshold)
+def _match(predicted: StepBRep, target: StepBRep, threshold: float) -> dict[str, Any]:
     surface = match_entities(
         predicted.face_pc,
         target.face_pc,
@@ -94,9 +82,6 @@ def score_eccv(
     )
     topology_f1 = (face_edge_f1 + edge_vertex_f1) / 2
     return {
-        # The challenge's per-sample score. Its leaderboard number is this
-        # multiplied by a valid ratio, which only a whole run can supply.
-        # First because reports lead with a family's first column.
         "eccv_mean_f1": (surface.f1 + edge.f1 + vertex.f1 + topology_f1) / 4,
         "eccv_surface_f1": surface.f1,
         "eccv_surface_precision": surface.precision,
@@ -106,9 +91,6 @@ def score_eccv(
         "eccv_face_edge_f1": face_edge_f1,
         "eccv_edge_vertex_f1": edge_vertex_f1,
         "eccv_topology_f1": topology_f1,
-        "eccv_chamfer_surface": chamfer(predicted.face_pc, target.face_pc),
-        "eccv_chamfer_edge": chamfer(predicted.edge_pc, target.edge_pc),
-        "eccv_chamfer_vertex": chamfer(predicted.vertex_pc, target.vertex_pc),
         "eccv_num_pred_faces": surface.num_pred,
         "eccv_num_gt_faces": surface.num_gt,
         "eccv_num_pred_edges": edge.num_pred,
@@ -116,6 +98,3 @@ def score_eccv(
         "eccv_num_pred_verts": vertex.num_pred,
         "eccv_num_gt_verts": vertex.num_gt,
     }
-
-
-__all__ = ["score_eccv"]

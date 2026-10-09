@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from zeroshot.evaluation.preprocess import (
+    IOU_TIE_TOLERANCE,
     AlignmentError,
     InvalidPredictionError,
     PreprocessConfig,
@@ -48,6 +49,8 @@ def score_pair(
             "normalization": "shared_gt_longest_side",
             **asdict(config),
             "alignment": "bbox_centres_24_rotations_maximum_mesh_iou",
+            "alignment_tie_tolerance": IOU_TIE_TOLERANCE,
+            "eccv_pose": "best_of_iou_ties",
             "sample_points": sample_points,
             "seed": seed,
             "f1_threshold": f1_threshold,
@@ -79,11 +82,11 @@ def score_pair(
         except Exception as error:  # noqa: BLE001 - independent metric failures retain other results
             report["errors"]["surface_distance"] = _error(error)
         if include_eccv:
-            from zeroshot.evaluation.metrics.eccv_shared import score_eccv_shared
+            from zeroshot.evaluation.metrics.eccv import score_eccv
 
             try:
                 report["metrics"].update(
-                    score_eccv_shared(pair, f1_threshold=f1_threshold, seed=seed)
+                    score_eccv(pair, f1_threshold=f1_threshold, seed=seed)
                 )
             except Exception as error:  # noqa: BLE001
                 report["errors"]["eccv"] = _error(error)

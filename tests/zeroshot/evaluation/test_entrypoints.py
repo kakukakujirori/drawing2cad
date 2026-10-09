@@ -122,7 +122,6 @@ def test_score_writes_the_report_into_the_run(
     assert document["status"] == "OK"
     assert document["metrics"]["mesh_iou"] == 1.0
     assert document["build_valid"] is True
-    assert document["evaluator"] == "SharedStepScorer"
 
 
 def test_a_null_target_skips_scoring(tmp_path: Path) -> None:

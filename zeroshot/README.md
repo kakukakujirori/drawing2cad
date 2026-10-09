@@ -45,11 +45,15 @@ python -m zeroshot.evaluation.aggregate_run \
     --run-dir outputs/gpt6_luna
 ```
 
-After each sample, `SharedStepScorer` writes mesh IoU, squared Chamfer/Hausdorff,
+After each sample, `StepScorer` writes mesh IoU, squared Chamfer/Hausdorff,
 reference ECCV F1 and official Ortho2CAD IoU to `score.json`. The default GT is
 `data/test_vlm/target_step_ori`, whose dimensions match the DXF drawings. Main
 metrics share the GT-derived scale (`reference_extent=1.8`) and maximum-IoU
 alignment over 24 cube rotations; Ortho2CAD uses its own official preprocessing.
+Rotations within 1e-3 IoU of the best are the same geometry, so ECCV F1 takes the
+best of them: a symmetric part's seams otherwise make its F1 depend on the pose.
+Rotations within 1e-3 IoU of the best are ties. ECCV takes the best of them,
+because a symmetric part's B-Rep seams make its F1 depend on the tied pose.
 
 `aggregate_run` reports AUC-TR and valid-only mean/median CD, in IterCAD's unit
 (GT bbox diagonal = 1) rather than `reference_extent`. Generation failures

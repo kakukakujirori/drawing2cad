@@ -54,7 +54,7 @@ sandbox_runner:
 evaluation:
   last_only: false
   scorer:
-    _target_: zeroshot.evaluation.run_scoring.SharedStepScorer
+    _target_: zeroshot.evaluation.run_scoring.StepScorer
     timeout_s: 600.0
     f1_threshold: 0.1
     reference_extent: 1.8

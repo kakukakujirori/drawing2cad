@@ -44,48 +44,6 @@ MAX_FACE_SAMPLES = 4_000_000
 
 
 @dataclass(frozen=True)
-class Frame:
-    """Similarity placing a STEP's geometry into a shared comparison frame.
-
-    Applied as ``(point - centre) * scale`` to every entity before anything is
-    measured, so face areas and edge lengths -- and therefore the sample counts
-    the metric is defined by -- are taken in the frame the metric is calibrated
-    for, not in whatever units the file happens to use.
-    """
-
-    centre: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    scale: float = 1.0
-
-    def apply(self, points: np.ndarray) -> np.ndarray:
-        if not len(points):
-            return points
-        return (points - np.asarray(self.centre, dtype=np.float64)) * self.scale
-
-
-def reference_frame(step_path: str | Path, longest_extent: float) -> Frame:
-    """Frame that centres a STEP and scales its longest side to ``longest_extent``."""
-
-    from OCC.Core.Bnd import Bnd_Box
-    from OCC.Core.BRepBndLib import brepbndlib
-
-    shape = _read_step(step_path)
-    box = Bnd_Box()
-    # `Add` bounds a spline by its control hull, which on an untriangulated
-    # shape overshoots by up to 4.5x on this dataset and silently shrinks the
-    # frame. `AddOptimal` subdivides for a tight box at a comparable cost.
-    brepbndlib.AddOptimal(shape, box, True, False)
-    x_min, y_min, z_min, x_max, y_max, z_max = box.Get()
-    sizes = (x_max - x_min, y_max - y_min, z_max - z_min)
-    longest = max(sizes)
-    if not np.isfinite(longest) or longest <= 0:
-        raise ValueError(f"STEP has no extent to normalize: {step_path}")
-    return Frame(
-        centre=((x_min + x_max) / 2, (y_min + y_max) / 2, (z_min + z_max) / 2),
-        scale=float(longest_extent) / float(longest),
-    )
-
-
-@dataclass(frozen=True)
 class StepBRep:
     """Sampled boundary representation of one STEP file."""
 
@@ -100,15 +58,6 @@ class StepBRep:
     n_faces: int
     n_edges: int
     n_verts: int
-
-    def entity_bbox(self) -> tuple[np.ndarray, np.ndarray]:
-        chunks = [self.face_pc]
-        if len(self.edge_pc):
-            chunks.append(self.edge_pc)
-        if len(self.vertex_pc):
-            chunks.append(self.vertex_pc)
-        points = np.concatenate(chunks, axis=0)
-        return points.min(axis=0), points.max(axis=0)
 
 
 def _face_triangles(face) -> tuple[np.ndarray, np.ndarray] | None:
@@ -135,7 +84,7 @@ def _face_triangles(face) -> tuple[np.ndarray, np.ndarray] | None:
     return vertices, triangles
 
 
-def _sample_edge_points(edge, *, scale: float = 1.0) -> np.ndarray | None:
+def _sample_edge_points(edge) -> np.ndarray | None:
     from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
     from OCC.Core.GCPnts import GCPnts_AbscissaPoint, GCPnts_UniformAbscissa
 
@@ -146,9 +95,7 @@ def _sample_edge_points(edge, *, scale: float = 1.0) -> np.ndarray | None:
         return None
     if not np.isfinite(length) or length <= 0:
         return None
-    # The density is per unit length in the comparison frame, so the count is
-    # taken from the scaled length rather than the file's own units.
-    count = max(2, int(length * scale * SAMPLES_PER_LENGTH))
+    count = max(2, int(length * SAMPLES_PER_LENGTH))
     abscissa = GCPnts_UniformAbscissa(curve, count)
     if not abscissa.IsDone() or abscissa.NbPoints() < 1:
         return None
@@ -177,14 +124,11 @@ def load_step_brep(
     step_path: str | Path,
     *,
     seed: int = 0,
-    frame: Frame | None = None,
 ) -> StepBRep:
     """Triangulate a STEP file and sample per-entity labeled point clouds.
 
-    ``frame`` places the geometry in a shared comparison frame before anything
-    is measured. ``None`` keeps the file's own units, which reproduces the
-    official evaluator exactly and is only meaningful when the file is already
-    normalized the way the challenge's targets are.
+    The densities are per unit of the file, so it must already be normalized
+    the way the challenge's targets are.
     """
 
     import trimesh
@@ -197,15 +141,9 @@ def load_step_brep(
 
     step_path = Path(step_path)
     shape = _read_step(step_path)
-    frame = frame or Frame()
-
-    # The deflection is a chord error in the comparison frame, so it is divided
-    # back into the file's own units before meshing. Without this a part stored
-    # in millimetres would be triangulated hundreds of times finer than the
-    # challenge's own targets.
     BRepMesh_IncrementalMesh(
         shape,
-        STEP_LINEAR_DEFLECTION / frame.scale,
+        STEP_LINEAR_DEFLECTION,
         True,
         STEP_ANGULAR_DEFLECTION,
         True,
@@ -234,17 +172,14 @@ def load_step_brep(
         if triangulated is None:
             continue
         vertices, triangles = triangulated
-        mesh = trimesh.Trimesh(
-            vertices=frame.apply(vertices), faces=triangles, process=False
-        )
+        mesh = trimesh.Trimesh(vertices=vertices, faces=triangles, process=False)
         if mesh.area <= 0 or len(mesh.faces) == 0:
             continue
         count = max(1, int(mesh.area * SAMPLES_PER_AREA))
         sampled += count
         if sampled > MAX_FACE_SAMPLES:
             raise ValueError(
-                f"{step_path} needs more than {MAX_FACE_SAMPLES} surface samples "
-                f"at this scale (frame scale {frame.scale:g})"
+                f"{step_path} needs more than {MAX_FACE_SAMPLES} surface samples"
             )
         points, _ = trimesh.sample.sample_surface(mesh, count, seed=seed + index)
         labels = np.full((len(points), 1), index - 1, dtype=np.float64)
@@ -258,10 +193,9 @@ def load_step_brep(
         edge = topods.Edge(edge_map.FindKey(index))
         if BRep_Tool.Degenerated(edge):
             continue
-        points = _sample_edge_points(edge, scale=frame.scale)
+        points = _sample_edge_points(edge)
         if points is None or len(points) == 0:
             continue
-        points = frame.apply(points)
         labels = np.full((len(points), 1), index - 1, dtype=np.float64)
         edge_chunks.append(np.concatenate([points, labels], axis=1))
     if edge_chunks:
@@ -276,7 +210,6 @@ def load_step_brep(
     for index in range(1, n_verts + 1):
         point = BRep_Tool.Pnt(topods.Vertex(vertex_map.FindKey(index)))
         vertex_pc[index - 1] = (point.X(), point.Y(), point.Z())
-    vertex_pc = frame.apply(vertex_pc)
 
     fe_matrix = np.zeros((n_faces, n_edges), dtype=np.uint8)
     for index in range(1, n_faces + 1):
@@ -311,45 +244,6 @@ def load_step_brep(
     )
 
 
-def normalize_to_reference_bbox(candidate: StepBRep, reference: StepBRep) -> StepBRep:
-    """Recentre and rescale a candidate's clouds onto the reference's bounding box.
-
-    Same transform as the official evaluator's ``NORMALIZE_PRED_TO_GT_BBOX``
-    path: it is applied to the sampled clouds, never to the topology, so the
-    incidence matrices carry over untouched.
-    """
-
-    from dataclasses import replace
-
-    candidate_min, candidate_max = candidate.entity_bbox()
-    reference_min, reference_max = reference.entity_bbox()
-    candidate_scale = float((candidate_max - candidate_min).max())
-    reference_scale = float((reference_max - reference_min).max())
-    if (
-        not np.isfinite(candidate_scale)
-        or candidate_scale <= 0
-        or not np.isfinite(reference_scale)
-        or reference_scale <= 0
-    ):
-        return candidate
-    candidate_centre = (candidate_min + candidate_max) / 2.0
-    reference_centre = (reference_min + reference_max) / 2.0
-
-    def transform(points: np.ndarray) -> np.ndarray:
-        if not len(points):
-            return points
-        return (
-            points - candidate_centre
-        ) / candidate_scale * reference_scale + reference_centre
-
-    return replace(
-        candidate,
-        face_pc=transform(candidate.face_pc),
-        edge_pc=transform(candidate.edge_pc),
-        vertex_pc=transform(candidate.vertex_pc),
-    )
-
-
 __all__ = [
     "MAX_EDGES",
     "MAX_FACES",
@@ -360,5 +254,4 @@ __all__ = [
     "STEP_LINEAR_DEFLECTION",
     "StepBRep",
     "load_step_brep",
-    "normalize_to_reference_bbox",
 ]

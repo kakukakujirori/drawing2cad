@@ -14,8 +14,7 @@ reproduced rather than reinterpreted:
   predicted pair can only be a true positive if both of its entities matched.
 
 This module is a blackbox: it defines the metric, so it is not refactored,
-tuned or "cleaned up". Its equivalence with the pre-existing port in
-``src/metrics/eccv`` is pinned by a golden test.
+tuned or "cleaned up".
 """
 
 from __future__ import annotations
@@ -149,19 +148,8 @@ def match_incidence(
     return 2 * precision * recall / (precision + recall + 1e-6)
 
 
-def chamfer(pred_points: np.ndarray, gt_points: np.ndarray) -> float:
-    from scipy.spatial import cKDTree
-
-    if not len(pred_points) or not len(gt_points):
-        return 0.0
-    pred_to_gt, _ = cKDTree(pred_points).query(gt_points, k=1)
-    gt_to_pred, _ = cKDTree(gt_points).query(pred_points, k=1)
-    return float((pred_to_gt.mean() + gt_to_pred.mean()) / 2)
-
-
 __all__ = [
     "EntityMatch",
-    "chamfer",
     "match_entities",
     "match_incidence",
     "match_or_empty",

@@ -7,14 +7,13 @@ side, and take the maximum-mesh-IoU pose among the 24 cube rotations.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import pairwise
+from itertools import pairwise, permutations, product
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import trimesh
 
-from zeroshot.evaluation.align_orientation import ORIENTATIONS
 from zeroshot.evaluation.metrics.mesh_iou import (
     manifold_iou,
     require_solid,
@@ -23,6 +22,18 @@ from zeroshot.evaluation.metrics.mesh_iou import (
 
 # Hole area, relative to the solid's surface area, that counts as a zero-area face.
 _SLIVER_AREA = 1e-9
+
+# Poses this close to the best IoU are the same geometry; re-meshing a rotated
+# solid moves its IoU by up to about 5e-4.
+IOU_TIE_TOLERANCE = 1e-3
+
+# The 24 proper rotations of a cube: signed axis permutations with det 1.
+ORIENTATIONS = [
+    matrix
+    for axes in permutations(range(3))
+    for signs in product((-1.0, 1.0), repeat=3)
+    if np.linalg.det(matrix := np.diag(signs) @ np.eye(3)[list(axes)]) > 0
+]
 
 
 class EvaluationError(RuntimeError):
@@ -56,8 +67,9 @@ class PreparedPair:
     pred_mesh: trimesh.Trimesh
     gt_mesh: trimesh.Trimesh
     iou: float
-    scale: float
     rotation_index: int
+    # The prediction in every pose whose IoU ties the best, best first.
+    tied_shapes: dict[int, Any]
     metadata: dict[str, Any]
 
 
@@ -170,18 +182,13 @@ def _to_trimesh(solid: Any) -> trimesh.Trimesh:
     )
 
 
-def best_iou_orientation(pred: Any, gt: Any) -> tuple[int, list[float]]:
-    """Fail closed if any pose's Boolean fails; never substitute CD alignment."""
+def orientation_ious(pred: Any, gt: Any) -> list[float]:
+    """Mesh IoU of each cube rotation of ``pred``; fail closed, never fall back to CD."""
     try:
-        scores = [
+        return [
             manifold_iou(pred.transform(np.column_stack((rotation, np.zeros(3)))), gt)
             for rotation in ORIENTATIONS
         ]
-        # Among numerical IoU ties prefer the smallest rotation angle. This
-        # keeps identical B-Reps' seams in place instead of needlessly rotating
-        # a symmetric solid. Trace orders the angles of proper rotations.
-        tied = np.flatnonzero(np.asarray(scores) >= max(scores) - 1e-10)
-        return int(max(tied, key=lambda i: np.trace(ORIENTATIONS[i]))), scores
     except Exception as error:
         raise AlignmentError(f"24-pose mesh-IoU alignment failed: {error}") from error
 
@@ -205,18 +212,26 @@ def prepare_pair(
         pred = transform_shape(pred, scale * np.eye(3), -scale * pred_centre)
         gt_native = _solid_mesh(gt, config)
         pred_native = _solid_mesh(pred, config)
-        index, scores = best_iou_orientation(pred_native, gt_native)
+        scores = orientation_ious(pred_native, gt_native)
+        index = int(np.argmax(scores))
+        tied = [index] + [
+            i
+            for i, score in enumerate(scores)
+            if i != index and score >= scores[index] - IOU_TIE_TOLERANCE
+        ]
+        tied_shapes = {
+            i: transform_shape(pred, ORIENTATIONS[i], np.zeros(3)) for i in tied
+        }
         rotation = ORIENTATIONS[index]
-        pred = transform_shape(pred, rotation, np.zeros(3))
         pred_native = pred_native.transform(np.column_stack((rotation, np.zeros(3))))
         return PreparedPair(
-            pred_shape=pred,
+            pred_shape=tied_shapes[index],
             gt_shape=gt,
             pred_mesh=_to_trimesh(pred_native),
             gt_mesh=_to_trimesh(gt_native),
             iou=scores[index],
-            scale=scale,
             rotation_index=index,
+            tied_shapes=tied_shapes,
             metadata={
                 "reference_extent": config.reference_extent,
                 "shared_scale": scale,
@@ -228,8 +243,7 @@ def prepare_pair(
                 "rotation": rotation.tolist(),
                 "alignment_objective": "maximum_mesh_iou",
                 "orientation_ious": scores,
-                "alignment_tie_tolerance": 1e-10,
-                "alignment_tie_break": "smallest_rotation_angle_then_list_order",
+                "tied_rotation_indices": tied,
             },
         )
     except EvaluationError:

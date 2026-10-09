@@ -1,4 +1,4 @@
-"""The shared scorer, pipeline score.json seam, and run-level CD aggregation."""
+"""The scorer, the pipeline score.json seam, and run-level CD aggregation."""
 
 import json
 import os
@@ -17,13 +17,14 @@ from zeroshot.evaluation.aggregate_run import (
     collect,
     format_report,
     headline_columns,
+    notes,
     summarize,
 )
 from zeroshot.evaluation.preprocess import AlignmentError
 from zeroshot.evaluation.run_scoring import (
     ScoreReport,
     ScoreStatus,
-    SharedStepScorer,
+    StepScorer,
     score_run,
 )
 
@@ -55,19 +56,19 @@ def _run(tmp_path, sample_id, step=None):
 
 
 def test_default_config_uses_corrected_target_and_new_scorer():
-    directory = Path(__file__).resolve().parents[2] / "zeroshot" / "configs"
+    directory = Path(__file__).resolve().parents[3] / "zeroshot" / "configs"
     with initialize_config_dir(config_dir=str(directory), version_base="1.3"):
         config = compose(config_name="default")
     assert config.sample.target_step_path == "data/test_vlm/target_step_ori/000364.step"
     scorer = instantiate(config.evaluation.scorer)
-    assert isinstance(scorer, SharedStepScorer)
+    assert isinstance(scorer, StepScorer)
     assert scorer.reference_extent == 1.8
 
 
 def test_pipeline_score_and_aggregate_include_failed_builds(tmp_path):
     gt = _box(tmp_path)
     _run(tmp_path, "000364", gt)
-    directory = Path(__file__).resolve().parents[2] / "zeroshot" / "configs"
+    directory = Path(__file__).resolve().parents[3] / "zeroshot" / "configs"
     with initialize_config_dir(config_dir=str(directory), version_base="1.3"):
         config = compose(
             config_name="default",
@@ -80,7 +81,6 @@ def test_pipeline_score_and_aggregate_include_failed_builds(tmp_path):
         )
     run_pipeline.score(config)
     good = json.loads((tmp_path / "000364" / "score.json").read_text())
-    assert good["evaluator"] == "SharedStepScorer"
     assert good["build_valid"] is True
     assert good["metrics"]["mesh_iou"] == pytest.approx(1)
     assert {"chamfer", "hausdorff", "eccv_mean_f1", "ortho2cad_iou"} <= good[
@@ -101,7 +101,7 @@ def test_pipeline_score_and_aggregate_include_failed_builds(tmp_path):
     assert summary.metrics["mesh_iou"].overall == pytest.approx(0.5)
     assert summary.metrics["chamfer"].overall is None
     rendered = format_report(
-        rows, summary, headline_columns(rows, SharedStepScorer().families())
+        rows, summary, headline_columns(rows, StepScorer().families())
     )
     assert "AUC-TR" in rendered and "Med. CD" in rendered
     assert "generation_failure" in rendered
@@ -112,7 +112,7 @@ def test_scorer_distinguishes_model_and_evaluator_failures(tmp_path):
     gt = _box(tmp_path)
     junk = tmp_path / "junk.step"
     junk.write_text("not STEP")
-    scorer = SharedStepScorer(include_eccv=False, include_ortho2cad=False)
+    scorer = StepScorer(include_eccv=False, include_ortho2cad=False)
     invalid = scorer.score(junk, gt).as_dict()
     assert invalid["status"] == "GENERATION_FAILED"
     assert invalid["build_valid"] is False
@@ -133,8 +133,8 @@ def test_alignment_failure_at_pipeline_scorer_keeps_only_ortho2cad(
     def failed(*args):
         raise AlignmentError("Boolean failed")
 
-    monkeypatch.setattr("zeroshot.evaluation.preprocess.best_iou_orientation", failed)
-    report = SharedStepScorer()._run_families(gt, gt).as_dict()
+    monkeypatch.setattr("zeroshot.evaluation.preprocess.orientation_ious", failed)
+    report = StepScorer()._run_families(gt, gt).as_dict()
     assert report["status"] == "PARTIAL"
     assert report["metrics"].keys() == {"ortho2cad_iou"}
     assert report["errors"]["alignment"]["kind"] == "evaluation_error"
@@ -147,7 +147,6 @@ def test_aggregate_keeps_partial_cd_and_refuses_zero_for_evaluator_errors():
         score_status="PARTIAL",
         metrics={"chamfer": 0.001, "chamfer_diag": 0.0002, "mesh_iou": 0.8},
         build_valid=True,
-        evaluator="SharedStepScorer",
         score_errors={"eccv": {"kind": "evaluation_error", "message": "sampling"}},
     )
     empty = SampleRow(
@@ -155,7 +154,6 @@ def test_aggregate_keeps_partial_cd_and_refuses_zero_for_evaluator_errors():
         Terminal.COMPLETED,
         score_status="GENERATION_FAILED",
         build_valid=False,
-        evaluator="SharedStepScorer",
     )
     summary = summarize([good, empty])
     assert summary.itercad["mean_cd"] == 0.0002
@@ -166,7 +164,6 @@ def test_aggregate_keeps_partial_cd_and_refuses_zero_for_evaluator_errors():
         "timeout",
         Terminal.COMPLETED,
         score_status="TIMEOUT",
-        evaluator="SharedStepScorer",
         score_errors={"scorer": {"kind": "evaluation_error", "message": "timeout"}},
     )
     summary = summarize([good, empty, timeout])
@@ -175,6 +172,22 @@ def test_aggregate_keeps_partial_cd_and_refuses_zero_for_evaluator_errors():
     assert summary.itercad["auc_tr"] is None
     assert summary.itercad["mean_cd"] is None
     assert summary.metrics["mesh_iou"].overall is None
+
+
+def test_a_sample_without_score_json_stays_out_of_the_metrics():
+    good = SampleRow(
+        "good",
+        Terminal.COMPLETED,
+        score_status="OK",
+        metrics={"chamfer_diag": 0.0, "mesh_iou": 0.8},
+        build_valid=True,
+    )
+    no_target = SampleRow("017", Terminal.COMPLETED)
+    summary = summarize([good, no_target])
+    assert summary.itercad["total_samples"] == 1
+    assert summary.itercad["auc_tr"] == pytest.approx(1)
+    assert summary.metrics["mesh_iou"].overall == pytest.approx(0.8)
+    assert any("017  no score.json" in line for line in notes([good, no_target]))
 
 
 def test_aggregate_rejects_different_protocols_and_auc_configs():
@@ -186,16 +199,15 @@ def test_aggregate_rejects_different_protocols_and_auc_configs():
         build_valid=True,
         protocol={"reference_extent": 1.8},
     )
-    legacy = SampleRow(
-        "old", Terminal.COMPLETED, score_status="OK", metrics={"voxel_iou": 1}
+    unversioned = SampleRow(
+        "old", Terminal.COMPLETED, score_status="OK", metrics={"mesh_iou": 1}
     )
     with pytest.raises(ValueError, match="protocol"):
-        summarize([shared, legacy])
+        summarize([shared, unversioned])
     rows = [
         SampleRow(
             str(i),
             Terminal.COMPLETED,
-            evaluator="SharedStepScorer",
             auc_options={"min_cd": value},
         )
         for i, value in enumerate([1e-5, 1e-4])
@@ -204,12 +216,12 @@ def test_aggregate_rejects_different_protocols_and_auc_configs():
         summarize(rows)
 
 
-class _CrashScorer(SharedStepScorer):
+class _CrashScorer(StepScorer):
     def _run_families(self, pred_step, gt_step):
         os._exit(7)
 
 
-class _LargeReportScorer(SharedStepScorer):
+class _LargeReportScorer(StepScorer):
     def _run_families(self, pred_step, gt_step):
         return ScoreReport(ScoreStatus.OK, details={"payload": "x" * 262144})
 
@@ -242,4 +254,4 @@ def test_large_reports_do_not_deadlock_the_scoring_pipe(tmp_path):
 )
 def test_bad_scoring_configuration_is_refused(options):
     with pytest.raises(ValueError):
-        SharedStepScorer(**options)
+        StepScorer(**options)
