@@ -17,7 +17,7 @@ on_existing: fail
 
 sample:
   sample_id: "000364"
-  max_input_image_side: 2000
+  max_input_image_side: 3000
 
 sandbox_runner:
   python_executable: null

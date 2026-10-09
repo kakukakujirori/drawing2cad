@@ -69,5 +69,5 @@ evaluation:
 sample:
   sample_id: "000364"
   # Reject larger input rasters before running agents; inputs are never resized.
-  max_input_image_side: 2000
+  max_input_image_side: 3000
   target_step_path: data/test_vlm/target_step/${sample.sample_id}.step
