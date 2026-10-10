@@ -19,7 +19,6 @@ from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingView
-from zeroshot.pipeline.stages.tickets.contracts import tickets_assigned_to
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     PipelineStage,
@@ -136,7 +135,7 @@ def _assigned_ticket_ids(
             if ticket.evidence_renders
             else ""
         )
-        for ticket in tickets_assigned_to(snapshot.open_tickets, stage)
+        for ticket in snapshot.open_tickets
     ]
     return ", ".join(named) or "none"
 

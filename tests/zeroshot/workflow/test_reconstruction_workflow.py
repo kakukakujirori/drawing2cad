@@ -15,11 +15,13 @@ from zeroshot.pipeline.stages.audit.contracts import (
     ConcernReview,
     TicketReview,
 )
+from zeroshot.pipeline.stages.coding.validate import CodingOutput
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import (
     ReconstructionHistory,
     ReconstructionSnapshot,
 )
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
     StageReport,
@@ -50,14 +52,6 @@ _SOURCE = "base = object()\nresult = base\n"
 def _snapshot(
     source: str | None = _SOURCE, *, ticket_id: str = "ticket_initial"
 ) -> ReconstructionSnapshot:
-    responses = [
-        TicketResponse(
-            ticket_id=ticket_id,
-            stage=stage,
-            summary=f"Reviewed the ticket during {stage}.",
-        )
-        for stage in REASONING_STAGES
-    ]
     verification = VerifyOutputResult(
         exec_report=CadQueryExecutionReport(
             status=(
@@ -74,8 +68,13 @@ def _snapshot(
             Ticket(
                 ticket_id=ticket_id,
                 subject=BootstrapWork(instruction="Reconstruct the part."),
-                assigned_stages=list(REASONING_STAGES),
-                responses=responses,
+                responses=[
+                    TicketResponse(
+                        ticket_id=ticket_id,
+                        stage=PipelineStage.CODING,
+                        summary="Reviewed the ticket during coding.",
+                    )
+                ],
             )
         ],
         round=0,
@@ -86,68 +85,25 @@ def _snapshot(
     )
 
 
-def _advance_snapshot(
-    current: ReconstructionSnapshot,
-    stage: str,
-) -> ReconstructionSnapshot:
-    tickets = [
-        Ticket(
-            ticket_id=ticket.ticket_id,
-            subject=ticket.subject,
-            assigned_stages=ticket.assigned_stages,
-            responses=[
-                *ticket.responses,
-                TicketResponse(
-                    ticket_id=ticket.ticket_id,
-                    stage=stage,  # type: ignore[arg-type]
-                    summary=f"Reviewed the ticket during {stage}.",
-                ),
-            ],
-        )
-        for ticket in current.open_tickets
-    ]
-    return ReconstructionSnapshot(
-        open_tickets=tickets,
-        round=current.round,
-        last_completed_stage=stage,  # type: ignore[arg-type]
-        interpretation=(
-            interpretation("the base", "the hole")
-            if stage == "interpretation"
-            else current.interpretation
-        ),
-        program_source=_SOURCE if stage == "coding" else current.program_source,
-        verification=(
-            VerifyOutputResult(
-                exec_report=CadQueryExecutionReport(
-                    status=ExecutionStatus.VERIFIED, source=_SOURCE, returncode=0
-                )
-            )
-            if stage == "coding"
-            else None
-        ),
-    )
-
-
-def _stage_responses(
-    history: ReconstructionHistory,
-    stage: str,
-) -> dict[str, str]:
+def _stage_responses(history: ReconstructionHistory) -> dict[str, str]:
     return {
-        ticket.ticket_id: f"Reviewed the ticket during {stage}."
+        ticket.ticket_id: "Reviewed the ticket during coding."
         for ticket in history.snapshots[-1].open_tickets
-        if stage in ticket.assigned_stages
     }
 
 
-def _reread(history: ReconstructionHistory) -> ReconstructionHistory:
-    return advance_reconstruction(
-        history,
-        TicketAnswers(
-            stage_report=StageReport(concerns={}),
-            responses=_stage_responses(history, "interpretation"),
+def _verified_output(
+    held: DrawingInterpretation | None = None,
+    verification: VerifyOutputResult | None = None,
+) -> CodingOutput:
+    return CodingOutput(
+        held or interpretation("the base", "the hole"),
+        verification
+        or VerifyOutputResult(
+            exec_report=CadQueryExecutionReport(
+                status=ExecutionStatus.VERIFIED, source=_SOURCE, returncode=0
+            )
         ),
-        workspace_output=interpretation_baseline(history)
-        or interpretation("the base", "the hole"),
     )
 
 
@@ -158,28 +114,14 @@ def _completed_run(
     history = history or start_reconstruction(
         "run_example", "Reconstruct the part.", drawing()
     )
-    history = advance_reconstruction(
+    return advance_reconstruction(
         history,
         TicketAnswers(
-            stage_report=StageReport(concerns={}),
-            responses=_stage_responses(history, "interpretation"),
-        ),
-        workspace_output=interpretation("the base", "the hole"),
-    )
-    verification = verification or VerifyOutputResult(
-        exec_report=CadQueryExecutionReport(
-            status=ExecutionStatus.VERIFIED, source=_SOURCE, returncode=0
-        )
-    )
-    history = advance_reconstruction(
-        history,
-        TicketAnswers(
-            responses=_stage_responses(history, "coding"),
+            responses=_stage_responses(history),
             stage_report=StageReport(concerns={}),
         ),
-        workspace_output=verification,
+        workspace_output=_verified_output(verification=verification),
     )
-    return history
 
 
 def _report(
@@ -209,7 +151,7 @@ def _report(
 def _concerned_snapshot() -> ReconstructionSnapshot:
     snapshot = _snapshot()
     snapshot.stage_reports = {
-        PipelineStage.INTERPRETATION: StageReport(
+        PipelineStage.CODING: StageReport(
             concerns={"concern_web_thickness": "The web thickness is estimated."},
         )
     }
@@ -232,7 +174,7 @@ def test_a_settled_concern_lets_an_audit_accept_without_findings() -> None:
     validate_submission(
         AuditReport(
             concern_reviews={
-                "interpretation.concern_web_thickness": ConcernReview(
+                "coding.concern_web_thickness": ConcernReview(
                     finding_name=None,
                     disposition="The front view confirms the estimate.",
                 )
@@ -380,12 +322,10 @@ def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
     original_json = run.model_dump_json()
     answers = TicketAnswers(
         stage_report=StageReport(concerns={}),
-        responses=_stage_responses(run, "interpretation"),
+        responses=_stage_responses(run),
     )
 
-    with pytest.raises(
-        SubmissionValidationError, match="verified DrawingInterpretation"
-    ):
+    with pytest.raises(SubmissionValidationError, match="verified interpretation"):
         advance_reconstruction(run, answers, workspace_output=VerifyOutputResult())
 
     assert run.model_dump_json() == original_json
@@ -416,7 +356,7 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
             stage_report=StageReport(concerns={}),
             responses=responses,
         ),
-        workspace_output=interpretation("the base", "the hole"),
+        workspace_output=_verified_output(),
     )
 
     updated_tickets = advanced.snapshots[-1].open_tickets
@@ -458,7 +398,7 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
                 for ticket in current.open_tickets
             },
         ),
-        workspace_output=held,
+        workspace_output=_verified_output(held),
     )
 
     stored = advanced.snapshots[-1]
@@ -467,24 +407,13 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     )
 
 
-def test_snapshot_commit_rejects_a_skipped_stage() -> None:
-    run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
-
-    with pytest.raises(ValueError, match="must advance"):
-        lifecycle_module._commit_snapshot(run, _snapshot())
-
-
 def test_snapshot_commit_preserves_ticket_subjects() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
-    run = lifecycle_module._commit_snapshot(
-        run, _advance_snapshot(run.snapshots[-1], "interpretation")
-    )
-    coding = _advance_snapshot(run.snapshots[-1], "coding")
+    coding = _snapshot()
     original_ticket = coding.open_tickets[0]
     changed_ticket = Ticket(
         ticket_id=original_ticket.ticket_id,
         subject=BootstrapWork(instruction="A different task."),
-        assigned_stages=original_ticket.assigned_stages,
         responses=original_ticket.responses,
     )
     coding = coding.model_copy(update={"open_tickets": [changed_ticket]})
@@ -493,85 +422,16 @@ def test_snapshot_commit_preserves_ticket_subjects() -> None:
         lifecycle_module._commit_snapshot(run, coding)
 
 
-def test_snapshot_commit_preserves_prior_responses() -> None:
+def test_snapshot_commit_appends_exactly_one_response() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
-    run = lifecycle_module._commit_snapshot(
-        run, _advance_snapshot(run.snapshots[-1], "interpretation")
-    )
-    coding = _advance_snapshot(run.snapshots[-1], "coding")
+    lifecycle_module._commit_snapshot(run, _snapshot())
+    coding = _snapshot()
     ticket = coding.open_tickets[0]
-    rewritten = TicketResponse(
-        ticket_id=ticket.ticket_id,
-        stage=PipelineStage.INTERPRETATION,
-        summary="Rewrote the earlier response.",
-    )
-    changed_ticket = Ticket(
-        ticket_id=ticket.ticket_id,
-        subject=ticket.subject,
-        assigned_stages=ticket.assigned_stages,
-        responses=[rewritten, ticket.responses[-1]],
-    )
-    coding = coding.model_copy(update={"open_tickets": [changed_ticket]})
+    twice = ticket.model_copy(update={"responses": ticket.responses * 2})
+    coding = coding.model_copy(update={"open_tickets": [twice]})
 
-    with pytest.raises(ValueError, match="without rewriting prior responses"):
+    with pytest.raises(ValueError, match="append one response"):
         lifecycle_module._commit_snapshot(run, coding)
-
-
-@pytest.mark.parametrize(
-    ("stage", "field", "value"),
-    [
-        (
-            "coding",
-            "interpretation",
-            interpretation("a replacement from the wrong stage"),
-        ),
-        (
-            "interpretation",
-            "verification",
-            VerifyOutputResult(
-                exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
-            ),
-        ),
-    ],
-)
-def test_snapshot_commit_preserves_artifacts_owned_by_other_stages(
-    stage: str, field: str, value: object
-) -> None:
-    run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
-    if stage == "coding":
-        run = lifecycle_module._commit_snapshot(
-            run, _advance_snapshot(run.snapshots[-1], "interpretation")
-        )
-    replacement = _advance_snapshot(run.snapshots[-1], stage)
-    replacement = replacement.model_copy(update={field: value})
-
-    with pytest.raises(ValueError, match=f"must preserve the current {field}"):
-        lifecycle_module._commit_snapshot(run, replacement)
-
-
-@pytest.mark.parametrize(
-    ("cause", "expected"),
-    [
-        ("interpretation", ["interpretation", "coding"]),
-        ("coding", ["coding"]),
-    ],
-)
-def test_a_ticket_is_assigned_from_its_cause_downstream(
-    cause: str,
-    expected: list[str],
-) -> None:
-    report = _report(cause, ["sem_feature_2"])
-
-    run = open_next_round(_completed_run(), report)
-
-    assert run.snapshots[-1].open_tickets[0].assigned_stages == expected
-
-
-def test_an_unassigned_stage_leaves_the_ticket_untouched() -> None:
-    run = _reread(open_next_round(_completed_run(), _report("coding", [])))
-    ticket = run.snapshots[-1].open_tickets[0]
-    assert ticket.assigned_stages == ["coding"]
-    assert ticket.responses == []
 
 
 def test_a_revision_round_replaces_the_complete_interpretation() -> None:
@@ -592,9 +452,9 @@ def test_a_revision_round_replaces_the_complete_interpretation() -> None:
         run,
         TicketAnswers(
             stage_report=StageReport(concerns={}),
-            responses=_stage_responses(run, "interpretation"),
+            responses=_stage_responses(run),
         ),
-        workspace_output=revised,
+        workspace_output=_verified_output(revised),
     )
     current = advanced.snapshots[-1].interpretation
     assert current == revised
@@ -799,7 +659,6 @@ def test_current_findings_replace_old_tickets_and_choose_the_new_cause(
     ticket = current.open_tickets[0]
     assert ticket.ticket_id == "ticket_002_shape_mismatch"
     assert ticket.subject == report.findings[0]
-    assert ticket.assigned_stages == list(REASONING_STAGES)
     assert ticket.responses == []
     assert not any(
         isinstance(ticket.subject, BootstrapWork) for ticket in current.open_tickets

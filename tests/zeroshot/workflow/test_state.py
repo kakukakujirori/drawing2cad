@@ -46,7 +46,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     TicketAnswers,
     TicketResponse,
 )
-from zeroshot.pipeline.stages.types import PipelineStage, ReasoningStage
+from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
@@ -67,11 +67,7 @@ from zeroshot.pipeline.workflow import (
     CUSTOM_STATE_TYPES,
 )
 from zeroshot.pipeline.workflow.components.agent import StopReason
-from zeroshot.pipeline.workflow.state import (
-    ReconstructionState,
-    carry_thread,
-    lead_transcript,
-)
+from zeroshot.pipeline.workflow.state import ReconstructionState
 
 
 @pytest.mark.parametrize(
@@ -213,16 +209,7 @@ _RECONSTRUCTION = ReconstructionHistory(
                 Ticket(
                     ticket_id="ticket_initial",
                     subject=BootstrapWork(instruction="reconstruct the drawing"),
-                    assigned_stages=[
-                        PipelineStage.INTERPRETATION,
-                        PipelineStage.CODING,
-                    ],
                     responses=[
-                        TicketResponse(
-                            ticket_id="ticket_initial",
-                            stage=PipelineStage.INTERPRETATION,
-                            summary="established sem_feature_1 and sem_feature_2",
-                        ),
                         TicketResponse(
                             ticket_id="ticket_initial",
                             stage=PipelineStage.CODING,
@@ -245,10 +232,6 @@ _RECONSTRUCTION = ReconstructionHistory(
     ],
 )
 
-_INTERPRETATION_SUBMISSION = TicketAnswers(
-    stage_report=StageReport(concerns={}),
-    responses={"ticket_initial": "established sem_feature_1 and sem_feature_2"},
-)
 _CODING_SUBMISSION = TicketAnswers(
     stage_report=StageReport(concerns={}),
     responses={"ticket_initial": "implemented the flange and the hole"},
@@ -257,13 +240,6 @@ _CODING_SUBMISSION = TicketAnswers(
 _ARTIFACTS: dict[str, object] = {
     "audit_state": {
         "structured_response": AuditSubmission(accepted=True),
-    },
-    "interpretation_state": {
-        "messages": [HumanMessage(content="interpret the drawing")],
-        "structured_response": _INTERPRETATION_SUBMISSION,
-        "current_turn": 1,
-        "total_turns": 1,
-        "stop_reason": StopReason.COMPLETED,
     },
     "coding_state": {
         "messages": [HumanMessage(content="write code")],
@@ -381,9 +357,9 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
         assert type(restored[field]) is type(value), field
         assert restored[field] == value
 
-    interpretation_state = restored["interpretation_state"]
-    assert type(interpretation_state["structured_response"]) is TicketAnswers
-    assert type(interpretation_state["stop_reason"]) is StopReason
+    coding_state = restored["coding_state"]
+    assert type(coding_state["structured_response"]) is TicketAnswers
+    assert type(coding_state["stop_reason"]) is StopReason
 
 
 def test_real_drawing_diff_survives_a_sqlite_checkpoint(tmp_path: Path) -> None:
@@ -439,84 +415,3 @@ def test_real_drawing_diff_survives_a_sqlite_checkpoint(tmp_path: Path) -> None:
         type(diff.alignment.diagnostics["chamfer"]["visible_source_ink_fraction"])
         is float
     )
-
-
-def _threaded_state(**stages: object) -> ReconstructionState:
-    """A run part-way through, each stage holding what is its own."""
-    read = [HumanMessage(content="read the views")]
-    state: dict[str, object] = {
-        "interpretation_state": {"messages": read, "current_turn": 3},
-        "coding_state": {"current_turn": 4},
-        "audit_state": {"messages": [HumanMessage(content="judge it")]},
-    }
-    return cast(ReconstructionState, state | stages)
-
-
-@pytest.mark.parametrize(
-    ("stage", "stage_state"),
-    [
-        (PipelineStage.INTERPRETATION, {"interpretation_state": {"messages": ["it"]}}),
-        (PipelineStage.CODING, {"coding_state": {"messages": ["it"]}}),
-    ],
-)
-def test_the_thread_is_taken_from_whichever_agent_carried_it(
-    stage: ReasoningStage, stage_state: dict[str, object]
-) -> None:
-    """The thread a stage finished is read from that stage's own channel."""
-    state = _threaded_state(**stage_state)
-
-    update = carry_thread(state, lead_transcript(state, stage))
-
-    assert update["coding_state"]["messages"] == ["it"]
-
-
-def test_the_thread_reaches_every_reasoning_stage_but_not_the_audit() -> None:
-    """The audit judges from the outside; a thread it took part in would leave
-    it marking its own work."""
-    state = _threaded_state(coding_state={"messages": ["wrote the model"]})
-
-    update = carry_thread(state, lead_transcript(state, PipelineStage.CODING))
-
-    assert set(update) == {"interpretation_state", "coding_state"}
-    assert update["interpretation_state"]["messages"] == ["wrote the model"]
-
-
-def test_the_stage_that_wrote_the_thread_is_given_back_what_it_wrote() -> None:
-    """Handing it its own transcript changes nothing, and costs one special
-    case less than leaving it out."""
-    state = _threaded_state(coding_state={"messages": ["wrote the model"]})
-
-    update = carry_thread(state, lead_transcript(state, PipelineStage.CODING))
-
-    assert update["coding_state"]["messages"] == ["wrote the model"]
-
-
-def test_what_a_stage_holds_besides_its_messages_survives_the_thread() -> None:
-    """Turn counts belong to their stage, not to the thread that happens to be
-    passing through it."""
-    update = carry_thread(
-        _threaded_state(),
-        lead_transcript(_threaded_state(), PipelineStage.CODING),
-    )
-
-    assert update["interpretation_state"]["current_turn"] == 3
-
-
-def test_the_prompt_log_is_told_where_the_inherited_thread_ends() -> None:
-    """Without the watermark a stage reports the transcript it was handed as
-    the prompt it was given."""
-    state = _threaded_state(interpretation_state={"messages": ["one", "two"]})
-
-    update = carry_thread(state, lead_transcript(state, PipelineStage.INTERPRETATION))
-
-    assert update["coding_state"]["reported_message_count"] == 2
-    assert update["coding_state"]["current_turn"] == 4
-
-
-def test_a_stage_that_has_not_run_is_seeded_all_the_same() -> None:
-    update = carry_thread(ReconstructionState(), [])
-
-    assert update["interpretation_state"] == {
-        "messages": [],
-        "reported_message_count": 0,
-    }

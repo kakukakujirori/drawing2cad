@@ -140,3 +140,20 @@ def test_reminder_waits_for_results_and_does_not_repeat_on_reentry():
         )
         is None
     )
+
+
+def test_no_reminder_before_the_interpretation_is_ready():
+    """Trial builds mean nothing while interpretation.json still blocks the build."""
+    ready = False
+    middleware = CodingTrialMiddleware(("echo",), max_turns=4, ready=lambda: ready)
+    state = {
+        "current_turn": 1,
+        "messages": [
+            tool_call("echo", {"value": "front"}, "front"),
+            ToolMessage(content="front", tool_call_id="front"),
+        ],
+    }
+
+    assert middleware.before_model(state, None) is None
+    ready = True
+    assert _reminders(middleware.before_model(state, None)["messages"])

@@ -1,5 +1,5 @@
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Self
 
 from pydantic import (
@@ -39,13 +39,13 @@ class BootstrapWork(BaseModel):
 
 _ANSWER_A_TICKET = (
     "Say what changed, why no change was "
-    "needed, or what prevented resolution. Include upstream concerns "
+    "needed, or what prevented resolution. Include the doubts "
     "and provisional interpretations needed to explain this ticket's "
     "outcome; put the rest in stage_report.concerns, one entry each. "
     "Do not restate the artifact's geometry or measurements: it "
     "remains authoritative. "
     "Cite the concrete stable names examined or changed: "
-    "view_..., dim_..., or sem_... in interpretation."
+    "view_..., dim_..., or sem_... in interpretation.json."
 )
 
 
@@ -90,25 +90,14 @@ class Ticket(BaseModel):
         ...,
         description=(
             "The initial reconstruction instruction or the audited defect "
-            "that the assigned reasoning stages must address."
-        ),
-    )
-    assigned_stages: list[ReasoningStage] = Field(
-        ...,
-        description=(
-            "The stages that must answer this ticket, assigned by the pipeline "
-            "from the finding's cause: interpretation and coding for an "
-            "interpretation cause, because a corrected reading has to be "
-            "carried through to the program; coding alone for a coding cause. "
-            "A stage that is not listed here must leave this ticket alone. No "
-            "agent writes this field."
+            "that coding must address."
         ),
     )
     responses: list[TicketResponse] = Field(
         ...,
         description=(
-            "One response from each assigned stage that has completed, kept in "
-            "stage order. A newly opened ticket has an empty list."
+            "Coding's response once it has completed; a newly opened ticket "
+            "has an empty list."
         ),
     )
     evidence_renders: list[str] = Field(
@@ -126,36 +115,16 @@ class Ticket(BaseModel):
         if _TICKET_ID.fullmatch(self.ticket_id) is None:
             raise ValueError("ticket_id must be a ticket_... identifier")
 
-        if not self.assigned_stages:
-            raise ValueError("a ticket must be assigned to at least one stage")
-        if (
-            tuple(self.assigned_stages)
-            != REASONING_STAGES[-len(self.assigned_stages) :]
-        ):
-            raise ValueError(
-                "assigned_stages must run from the finding's cause through coding, "
-                f"got {self.assigned_stages}"
-            )
-
         stages: list[ReasoningStage] = []
         for response in self.responses:
             if response.ticket_id != self.ticket_id:
                 raise ValueError("every response must refer to its containing ticket")
-            if response.stage not in self.assigned_stages:
-                raise ValueError(f"{response.stage} is not assigned to this ticket")
             stages.append(response.stage)
 
         if len(stages) != len(set(stages)):
             raise ValueError("a ticket may have only one response per stage")
 
         return self
-
-
-def tickets_assigned_to(
-    tickets: Sequence[Ticket],
-    stage: ReasoningStage,
-) -> list[Ticket]:
-    return [ticket for ticket in tickets if stage in ticket.assigned_stages]
 
 
 class StageReport(BaseModel):
@@ -169,15 +138,14 @@ class StageReport(BaseModel):
         ...,
         description=(
             "Additional unresolved issues and important provisional choices "
-            "your assigned-ticket responses do not already explain, one entry "
+            "your ticket responses do not already explain, one entry "
             "each, and {} if none. Keep a ticket's own doubts in its "
             "`responses` answer; do not repeat them here. The key is a stable "
             "identifier beginning concern_ and carrying on in lower_snake_case: "
             "concern_web_thickness. The value states the affected subject, the "
             "doubt and how you handled it. The audit answers each entry by its "
             "key, so give one concern its own entry rather than several in one. "
-            "Keep an entry's key while the concern stands. Include concerns "
-            "about unassigned tickets, naming their IDs when known. Do not "
+            "Keep an entry's key while the concern stands. Do not "
             "repeat artifact details or ticket summaries; a ticket summary "
             "still states its own outcome."
         ),
@@ -208,17 +176,17 @@ def reported_concerns(reports: Mapping[ReasoningStage, StageReport]) -> list[str
 
 
 class TicketAnswers(Submission):
-    """Your assigned-ticket answers and stage-wide observations.
+    """Your ticket answers and stage-wide observations.
 
-    Every reasoning stage revises its artifact in its workspace file, which
-    the pipeline verifies and reads back, so no artifact belongs in here.
+    Coding revises its artifacts in workspace files, which the pipeline
+    verifies and reads back, so no artifact belongs in here.
     """
 
     responses: dict[str, str] = Field(
         ...,
         description=(
-            "Your answer to each open ticket this stage is assigned to, keyed "
-            "by ticket ID: exactly those tickets and no others. " + _ANSWER_A_TICKET
+            "Your answer to each open ticket, keyed by ticket ID: exactly "
+            "those tickets and no others. " + _ANSWER_A_TICKET
         ),
     )
     stage_report: StageReport = Field(

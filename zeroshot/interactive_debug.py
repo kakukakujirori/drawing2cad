@@ -65,8 +65,6 @@ from zeroshot.pipeline.workflow.middleware import (
 )
 
 STAGES = {
-    "interpreter": "interpretation",
-    "interpretation": "interpretation",
     "coder": "coding",
     "coding": "coding",
     "auditor": "audit",
@@ -145,11 +143,8 @@ def select_checkpoint(
     return selected[0]
 
 
-def load_system_prompt(
-    run_dir: Path, stage: str, config: DictConfig
-) -> tuple[str, list[Path]]:
+def load_system_prompt(run_dir: Path, stage: str) -> tuple[str, list[Path]]:
     """Return the system prompt and every file read to obtain its text."""
-    shared = stage != "audit" and config.workflow.get("share_thread", False)
     events = run_dir / "events.jsonl"
     if events.is_file():
         with events.open() as handle:
@@ -157,11 +152,8 @@ def load_system_prompt(
                 event = json.loads(line)
                 namespace = event.get("namespace") or []
                 owner = namespace[0].split(":", 1)[0] if namespace else None
-                valid_owner = (
-                    owner in {"interpretation", "coding"} if shared else owner == stage
-                )
                 system = event.get("data", {}).get("system")
-                if event["event"] == "prompt" and valid_owner and system:
+                if event["event"] == "prompt" and owner == stage and system:
                     content = (
                         system.get("content", "")
                         if isinstance(system, dict)
@@ -175,9 +167,10 @@ def load_system_prompt(
     stages_dir = (
         frozen if frozen.is_dir() else Path(__file__).parent / "pipeline" / "stages"
     )
-    paths = [stages_dir / "_base/prompts/reconstruction_context.md"]
-    if not shared:
-        paths.append(stages_dir / f"{stage}/prompts/role.md")
+    paths = [
+        stages_dir / "_base/prompts/reconstruction_context.md",
+        stages_dir / f"{stage}/prompts/role.md",
+    ]
     text = "\n\n".join(path.read_text().strip() for path in paths)
     return Template(text).substitute(
         reconstruction_path="/work/reconstruction.json"
@@ -271,8 +264,6 @@ def build_agent(
     runner_config["python_executable"] = Path(runner_config["python_executable"])
     runner = SandboxRunner(**runner_config)
     tools = [create_run_shell_tool(runner, workdir), create_load_image_tool(workdir)]
-    if stage == "interpretation":
-        tools.append(create_calculate_drawing_scale_tool())
     middleware: list[AgentMiddleware[Any, None, Any]] = [
         ToolErrorMiddleware(on_error=_handle_tool_error),
         PromptLogMiddleware(settings.role),
@@ -304,6 +295,7 @@ def build_agent(
         record = json.loads((workdir.host_bind_dir / "reconstruction.json").read_text())
         restored = ReconstructionHistory.model_validate(record).snapshots[-1]
         verifier.interpretation = restored.interpretation
+        tools.append(create_calculate_drawing_scale_tool())
         tools.append(
             create_render_step_tool(
                 workdir,
@@ -435,7 +427,7 @@ def main(argv: list[str] | None = None) -> None:
     config = OmegaConf.load(run_dir / ".hydra/config.yaml")
     if not isinstance(config, DictConfig):
         raise TypeError("Run config must be a YAML mapping")
-    system, prompt_files = load_system_prompt(run_dir, stage, config)
+    system, prompt_files = load_system_prompt(run_dir, stage)
     started_at = datetime.now(UTC).astimezone().strftime("%Y%m%d_%H%M%S")
     session = (
         args.output_dir

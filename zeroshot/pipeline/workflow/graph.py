@@ -17,21 +17,11 @@ from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
 from zeroshot.pipeline.stages.coding.progress import DEFAULT_MATCH_MARGIN_PX
-from zeroshot.pipeline.stages.contracts import (
-    ReconstructionHistory,
-    ReconstructionSnapshot,
-)
+from zeroshot.pipeline.stages.coding.validate import CodingOutput
+from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.stage import stage_factory
-from zeroshot.pipeline.stages.tickets.contracts import (
-    TicketAnswers,
-    tickets_assigned_to,
-)
-from zeroshot.pipeline.stages.types import (
-    REASONING_STAGES,
-    PipelineStage,
-    ReasoningStage,
-    next_stage,
-)
+from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
+from zeroshot.pipeline.stages.types import PipelineStage, next_stage
 from zeroshot.pipeline.stages.validate import validate_submission
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
@@ -40,26 +30,19 @@ from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.evidence import EvidenceMode
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
-    interpretation_baseline,
     load_reconstruction,
     open_next_round,
     save_reconstruction,
     start_reconstruction,
 )
 from zeroshot.pipeline.workflow.middleware.output_limit_budget import OutputLimitBudget
-from zeroshot.pipeline.workflow.state import (
-    ReconstructionState,
-    carry_thread,
-    current_snapshot,
-    lead_transcript,
-)
+from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
 type AgentBuilder = partial[CompiledGraph]
 
 
 def create_reconstruction_graph(
-    interpretation_agent_builder: AgentBuilder,
     coding_agent_builder: AgentBuilder,
     audit_agent_builder: AgentBuilder,
     sandbox_runner: SandboxRunner,
@@ -73,25 +56,20 @@ def create_reconstruction_graph(
     max_audit_reject_count: int = 3,
     max_stage_validation_retries: int = 3,
     max_output_limit_failures: int = 3,
-    share_thread: bool = False,
     compact_between_stages: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     audit_evidence_mode: EvidenceMode = "mark",
     diff_drawer_config: Mapping[str, Any] | None = None,
     fresh_coder: bool = False,
+    coding_trial_reminder: bool = True,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
     review_drawing_diff_clusters: bool = True,
 ):
-    """Interpret the drawing, implement the part, then verify and audit it."""
+    """Interpret the drawing and implement the part, then verify and audit it."""
     if max_audit_reject_count < 0:
         raise ValueError(f"{max_audit_reject_count=} must be non-negative")
     if max_stage_validation_retries < 0:
         raise ValueError(f"{max_stage_validation_retries=} must be non-negative")
-    if compact_between_stages is not None and not share_thread:
-        raise ValueError(
-            "compact_between_stages needs share_thread: with a transcript per "
-            "stage there is no handover at which to compact anything."
-        )
 
     # Unlike stage validation retries, output limits recur inside a child agent's
     # wrap_model_call before any update reaches the parent workflow state. Share
@@ -140,22 +118,10 @@ def create_reconstruction_graph(
     stages_dir = Path(__file__).resolve().parents[1] / "stages"
 
     # Bind the shared budget into builders; each stage adds its tools and schema.
-    interpretation_stage = stage_factory(PipelineStage.INTERPRETATION)(
-        partial(interpretation_agent_builder, output_limit_budget=output_limit_budget),
-        tools=basic_tools,
-        role_path=(
-            None if share_thread else stages_dir / "interpretation/prompts/role.md"
-        ),
-        instructions=stage_instructions,
-        prompt_context=prompt_context,
-        attempt_store=attempt_store,
-        interpretation_filename=interpretation_filename,
-        input_after_compaction=compact_between_stages is not None,
-    )
     coding_stage = stage_factory(PipelineStage.CODING)(
         partial(coding_agent_builder, output_limit_budget=output_limit_budget),
         tools=basic_tools,
-        role_path=(None if share_thread else stages_dir / "coding/prompts/role.md"),
+        role_path=stages_dir / "coding/prompts/role.md",
         instructions=stage_instructions,
         prompt_context=prompt_context,
         attempt_store=attempt_store,
@@ -163,8 +129,10 @@ def create_reconstruction_graph(
         artifact_presenter=artifact_presenter,
         diff_drawer_config=diff_drawer_config,
         output_filename=output_filename,
+        interpretation_filename=interpretation_filename,
         input_after_compaction=compact_between_stages is not None,
         fresh_memory=fresh_coder,
+        coding_trial_reminder=coding_trial_reminder,
         match_margin_px=match_margin_px,
     )
     audit_stage = stage_factory(PipelineStage.AUDIT)(
@@ -247,30 +215,15 @@ def create_reconstruction_graph(
             "stage_submission": None,
         }
 
-    def _workspace_output(
-        stage: PipelineStage | None,
-        snapshot: ReconstructionSnapshot,
-        reconstruction: ReconstructionHistory,
-    ) -> Any:
-        """The verified artifact the stage produced, or the baseline it kept."""
-        tickets = snapshot.open_tickets
-        match stage:
-            case PipelineStage.INTERPRETATION:
-                if not tickets_assigned_to(tickets, PipelineStage.INTERPRETATION):
-                    return interpretation_baseline(reconstruction)
-                accepted = (
-                    interpretation_stage.interpretation_verifier.accepted_interpretation
-                )
-                filename = interpretation_filename
-            case PipelineStage.CODING:
-                return coding_stage.output_verifier.verify()
-            case _:
-                raise RuntimeError(f"{stage} is not a reasoning stage")
-        if accepted is None:
+    def _workspace_output() -> CodingOutput:
+        """The verified files the coder left: its reading and the build of its program."""
+        workspace = coding_stage.workspace
+        interpretation = workspace.interpretation.accepted_interpretation
+        if interpretation is None:
             raise SubmissionValidationError(
-                f"{filename} has not passed validation for this submission"
+                f"{interpretation_filename} has not passed validation for this submission"
             )
-        return accepted
+        return CodingOutput(interpretation, workspace.output.verify())
 
     def integrate_stage_submission(
         state: ReconstructionState,
@@ -287,13 +240,9 @@ def create_reconstruction_graph(
         if reconstruction is None:
             raise RuntimeError("stage integration requires reconstruction")
 
-        snapshot = current_snapshot(state)
-        stage = next_stage(snapshot.last_completed_stage)
         try:
             updated = advance_reconstruction(
-                reconstruction,
-                submission,
-                workspace_output=_workspace_output(stage, snapshot, reconstruction),
+                reconstruction, submission, workspace_output=_workspace_output()
             )
         except SubmissionValidationError as error:
             return _rejected_stage_submission(state, str(error))
@@ -313,28 +262,16 @@ def create_reconstruction_graph(
                 state.get("stage_validation_failure_count", 0)
                 <= max_stage_validation_retries
             ):
-                retry_stage = next_stage(snapshot.last_completed_stage)
-                if retry_stage not in REASONING_STAGES:
-                    raise RuntimeError("no reasoning stage is available to retry")
-                return retry_stage.value
+                return PipelineStage.CODING.value
             return "__end__"
 
-        completed = snapshot.last_completed_stage
-        if completed is None:
-            raise RuntimeError(
-                "successful stage integration did not complete a reasoning stage"
-            )
-        if (
-            completed is PipelineStage.CODING
-            and snapshot.round >= max_audit_reject_count
-        ):
+        if snapshot.last_completed_stage is not PipelineStage.CODING:
+            raise RuntimeError("successful stage integration did not complete coding")
+        if snapshot.round >= max_audit_reject_count:
             return "__end__"
-        if share_thread:
-            return _handover_node(completed)
-        following = next_stage(completed)
-        if following is None:
-            raise RuntimeError("coding must be followed by audit")
-        return following.value
+        if compact_between_stages is not None:
+            return "coding_handover"
+        return PipelineStage.AUDIT.value
 
     # ------------------------------------------------------------------
     # Audit validation and round transition
@@ -395,48 +332,46 @@ def create_reconstruction_graph(
             return "__end__"
 
         if current_snapshot(state).last_completed_stage is None:
-            return PipelineStage.INTERPRETATION.value
+            return PipelineStage.CODING.value
         return "__end__"
 
     # ------------------------------------------------------------------
     # Graph construction
     # ------------------------------------------------------------------
 
-    # compaction after stage & carry thread through stages
-    def handover(
-        state: ReconstructionState, config: RunnableConfig, *, stage: ReasoningStage
+    def coding_handover(
+        state: ReconstructionState, config: RunnableConfig
     ) -> dict[str, Any]:
-        thread = lead_transcript(state, stage)
-        if compact_between_stages is not None:
-            thread = compact_transcript(
-                thread, model=compact_between_stages, config=config
-            )
-        return carry_thread(state, thread)
-
-    def _handover_node(stage: ReasoningStage) -> str:
-        return stage.value + "_handover"
+        """Trade the coder's working turns for notes before its next round."""
+        assert compact_between_stages is not None
+        coding_state = state.get("coding_state") or {}
+        thread = compact_transcript(
+            list(coding_state.get("messages") or []),
+            model=compact_between_stages,
+            config=config,
+        )
+        return {
+            "coding_state": {
+                **coding_state,
+                "messages": thread,
+                "reported_message_count": len(thread),
+            }
+        }
 
     # Construct a graph
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
     workflow.add_node("initialize", initialize)
-    workflow.add_node(PipelineStage.INTERPRETATION.value, interpretation_stage.run)
     workflow.add_node(PipelineStage.CODING.value, coding_stage.run)
     workflow.add_node(PipelineStage.AUDIT.value, audit_stage.run)
     workflow.add_node("integrate_stage_submission", integrate_stage_submission)
     workflow.add_node("integrate_audit_report", integrate_audit_report)
-
-    if share_thread:
-        for stage in REASONING_STAGES:
-            workflow.add_node(_handover_node(stage), partial(handover, stage=stage))
-            following = next_stage(stage)
-            if following is None:
-                raise RuntimeError(f"{stage.value} has no successor")
-            workflow.add_edge(_handover_node(stage), following.value)
+    if compact_between_stages is not None:
+        workflow.add_node("coding_handover", coding_handover)
+        workflow.add_edge("coding_handover", PipelineStage.AUDIT.value)
 
     workflow.add_edge(START, "initialize")
     workflow.add_conditional_edges("initialize", after_initialize)
-    for stage in REASONING_STAGES:
-        workflow.add_edge(stage.value, "integrate_stage_submission")
+    workflow.add_edge(PipelineStage.CODING.value, "integrate_stage_submission")
     workflow.add_edge(PipelineStage.AUDIT.value, "integrate_audit_report")
     workflow.add_conditional_edges(
         "integrate_stage_submission",

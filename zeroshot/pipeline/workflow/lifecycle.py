@@ -9,6 +9,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
 )
+from zeroshot.pipeline.stages.coding.validate import CodingOutput
 from zeroshot.pipeline.stages.contracts import (
     ReconstructionHistory,
     ReconstructionSnapshot,
@@ -19,10 +20,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
 )
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
-from zeroshot.pipeline.stages.snapshot_update import (
-    WorkspaceOutput,
-    build_snapshot_update,
-)
+from zeroshot.pipeline.stages.snapshot_update import build_snapshot_update
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
     Ticket,
@@ -53,7 +51,6 @@ def start_reconstruction(
             Ticket(
                 ticket_id="ticket_initial",
                 subject=BootstrapWork(instruction=instruction),
-                assigned_stages=list(REASONING_STAGES),
                 responses=[],
             )
         ],
@@ -149,16 +146,8 @@ def _ticket_from_finding(
     return Ticket(
         ticket_id=ticket_id,
         subject=finding,
-        assigned_stages=_assigned_stages(finding),
         responses=[],
         evidence_renders=evidence_renders,
-    )
-
-
-def _assigned_stages(finding: AuditFinding) -> list[ReasoningStage]:
-    """The stage the defect originates in, and everything after it."""
-    return list(
-        REASONING_STAGES[REASONING_STAGES.index(PipelineStage(finding.cause)) :]
     )
 
 
@@ -166,7 +155,7 @@ def advance_reconstruction(
     history: ReconstructionHistory,
     submission: TicketAnswers,
     *,
-    workspace_output: WorkspaceOutput | None = None,
+    workspace_output: CodingOutput | None = None,
 ) -> ReconstructionHistory:
     """Validate and atomically integrate one reasoning-stage result.
 
@@ -188,19 +177,11 @@ def advance_reconstruction(
         response.ticket_id: response for response in update.responses
     }
     tickets = [
-        (
-            Ticket(
-                ticket_id=ticket.ticket_id,
-                subject=ticket.subject,
-                assigned_stages=ticket.assigned_stages,
-                responses=[
-                    *ticket.responses,
-                    responses_by_ticket[ticket.ticket_id],
-                ],
-                evidence_renders=ticket.evidence_renders,
-            )
-            if stage in ticket.assigned_stages
-            else ticket
+        Ticket(
+            ticket_id=ticket.ticket_id,
+            subject=ticket.subject,
+            responses=[*ticket.responses, responses_by_ticket[ticket.ticket_id]],
+            evidence_renders=ticket.evidence_renders,
         )
         for ticket in current.open_tickets
     ]
@@ -240,7 +221,7 @@ def _commit_snapshot(
             f"to {expected_stage!r}"
         )
 
-    _require_ticket_progress(current, snapshot, expected_stage)
+    _require_ticket_progress(current, snapshot)
     _require_only_stage_artifact_changed(current, snapshot, expected_stage)
 
     return ReconstructionHistory(
@@ -253,7 +234,6 @@ def _commit_snapshot(
 def _require_ticket_progress(
     current: ReconstructionSnapshot,
     replacement: ReconstructionSnapshot,
-    stage: ReasoningStage,
 ) -> None:
     """Keep ticket identity and prior responses fixed within one round."""
     current_ids = [ticket.ticket_id for ticket in current.open_tickets]
@@ -270,17 +250,7 @@ def _require_ticket_progress(
             raise ValueError(
                 f"{previous.ticket_id} subject must not change within a round"
             )
-        if updated.assigned_stages != previous.assigned_stages:
-            raise ValueError(
-                f"{previous.ticket_id} assignment must not change within a round"
-            )
-        if stage not in updated.assigned_stages:
-            if updated.responses != previous.responses:
-                raise ValueError(
-                    f"{previous.ticket_id} is not assigned to {stage} and must "
-                    "keep its responses unchanged"
-                )
-        elif (
+        if (
             len(updated.responses) != len(previous.responses) + 1
             or updated.responses[:-1] != previous.responses
         ):

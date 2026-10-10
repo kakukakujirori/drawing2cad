@@ -55,24 +55,15 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
     history = start_reconstruction(
         "run_test", "Build the part", [view("full_page", file="/work/inputs/page.png")]
     )
-    snapshot = history.snapshots[-1]
-    snapshot.last_completed_stage = PipelineStage.INTERPRETATION
-    snapshot.interpretation = interpretation("block")
-    snapshot.interpretation.views[0].file = "/work/inputs/page.png"
-    snapshot.open_tickets[0].responses = [
-        TicketResponse(
-            ticket_id="ticket_initial",
-            stage=PipelineStage.INTERPRETATION,
-            summary="Done",
-        )
-    ]
     completed = history.model_copy(deep=True)
     final = completed.snapshots[-1]
     final.last_completed_stage = PipelineStage.CODING
+    final.interpretation = interpretation("block")
+    final.interpretation.views[0].file = "/work/inputs/page.png"
     final.program_source = "result = 'original submission'\n"
-    final.open_tickets[0].responses.append(
+    final.open_tickets[0].responses = [
         TicketResponse(ticket_id="ticket_initial", stage="coding", summary="Done")
-    )
+    ]
     final.verification = VerifyOutputResult(
         verification_id="000",
         host_verification_dir=attempt,
@@ -412,12 +403,8 @@ def test_source_asset_symlink_cannot_copy_files_outside_workspace(tmp_path):
         debug.prepare_workspace(source, database.parent / "workspace", tmp_path / "new")
 
 
-@pytest.mark.parametrize(
-    "stage, shared", [("coding", True), ("coding", False), ("audit", True)]
-)
-def test_system_fallback_reads_merged_context_before_the_frozen_role(
-    tmp_path, stage, shared
-):
+@pytest.mark.parametrize("stage", ["coding", "audit"])
+def test_system_fallback_reads_merged_context_before_the_frozen_role(tmp_path, stage):
     run = tmp_path / "run" / "000364"
     run.mkdir(parents=True)
     stages = run.parent / "code/zeroshot/pipeline/stages"
@@ -429,35 +416,24 @@ def test_system_fallback_reads_merged_context_before_the_frozen_role(
     role = stages / stage / "prompts/role.md"
     role.parent.mkdir(parents=True)
     role.write_text("FROZEN ROLE")
-    config = OmegaConf.create({"workflow": {"share_thread": shared}})
 
-    prompt, prompt_files = debug.load_system_prompt(run, stage, config)
-    expected = "FROZEN CONTEXT /work/reconstruction.json"
-    expected_files = [base / "reconstruction_context.md"]
-    if not shared or stage == "audit":
-        expected += "\n\nFROZEN ROLE"
-        expected_files.append(role)
-    assert prompt == expected
-    assert prompt_files == expected_files
+    prompt, prompt_files = debug.load_system_prompt(run, stage)
+    assert prompt == "FROZEN CONTEXT /work/reconstruction.json\n\nFROZEN ROLE"
+    assert prompt_files == [base / "reconstruction_context.md", role]
 
 
-@pytest.mark.parametrize(
-    "stage, shared", [("coding", True), ("coding", False), ("audit", True)]
-)
-def test_local_system_fallback_matches_pipeline_composition(tmp_path, stage, shared):
+@pytest.mark.parametrize("stage", ["coding", "audit"])
+def test_local_system_fallback_matches_pipeline_composition(tmp_path, stage):
     from tests.zeroshot.prompt_paths import STAGES_DIR
     from zeroshot.pipeline.stages._base.prompt import build_system_prompt
 
-    config = OmegaConf.create({"workflow": {"share_thread": shared}})
-    role = (
-        None if shared and stage != "audit" else STAGES_DIR / stage / "prompts/role.md"
-    )
+    role = STAGES_DIR / stage / "prompts/role.md"
     expected = build_system_prompt(
         role, {"reconstruction_path": "/work/reconstruction.json"}
     )
-    actual, prompt_files = debug.load_system_prompt(tmp_path / "000364", stage, config)
+    actual, prompt_files = debug.load_system_prompt(tmp_path / "000364", stage)
     assert actual == expected.text
     assert prompt_files == [
         STAGES_DIR / "_base/prompts/reconstruction_context.md",
-        *([role] if role is not None else []),
+        role,
     ]

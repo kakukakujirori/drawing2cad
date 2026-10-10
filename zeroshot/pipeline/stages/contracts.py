@@ -37,10 +37,7 @@ class ReconstructionSnapshot(BaseModel):
     open_tickets: list[Ticket] = Field(
         ...,
         min_length=1,
-        description=(
-            "Every ticket raised for this round, each naming the stages "
-            "assigned to answer it."
-        ),
+        description=("Every ticket raised for this round; coding answers each."),
     )
     round: int = Field(
         ...,
@@ -54,7 +51,7 @@ class ReconstructionSnapshot(BaseModel):
         ...,
         description=(
             "The last reasoning stage atomically integrated into this "
-            "snapshot, or null before the drawing is read. Coding includes "
+            "snapshot, or null before coding completes. Coding includes "
             "a completed verification attempt, whether it succeeded or failed."
         ),
     )
@@ -62,7 +59,7 @@ class ReconstructionSnapshot(BaseModel):
         ...,
         description=(
             "The complete drawing interpretation produced in this round, or null "
-            "until interpretation completes. Earlier interpretations remain in "
+            "until coding completes. Earlier interpretations remain in "
             "preceding snapshots."
         ),
     )
@@ -116,9 +113,7 @@ class ReconstructionSnapshot(BaseModel):
                 + ", ".join(premature_reports)
             )
         for ticket in self.open_tickets:
-            expected_stages = tuple(
-                stage for stage in completed_stages if stage in ticket.assigned_stages
-            )
+            expected_stages = tuple(completed_stages)
             actual_stages = tuple(response.stage for response in ticket.responses)
             if actual_stages != expected_stages:
                 raise ValueError(
@@ -142,13 +137,9 @@ class ReconstructionSnapshot(BaseModel):
             )
 
         # Stage integrity checks
-        if (
-            PipelineStage.INTERPRETATION in completed_stages
-            and self.interpretation is None
-        ):
-            raise ValueError("interpretation must exist after interpretation")
-
         if self.last_completed_stage is PipelineStage.CODING:
+            if self.interpretation is None:
+                raise ValueError("interpretation must exist after coding")
             if self.verification is None:
                 raise ValueError("verification must exist after coding")
             if self.verification.exec_report is None:

@@ -34,7 +34,6 @@ from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.workflow import StopReason
 from zeroshot.pipeline.workflow.components.agent import create_agent
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
-from zeroshot.pipeline.workflow.state import carry_thread
 
 _SYSTEM_PROMPT = SystemMessage(content="Use the echo tool to complete the task.")
 
@@ -413,19 +412,10 @@ def test_handed_over_history_uses_the_receiving_agents_system_prompt() -> None:
     first = _subgraph(
         first_model, system_prompt="FIRST SYSTEM", announce_turns=False
     ).invoke({"messages": [HumanMessage(content="first task")]})
-    carried = carry_thread({}, first["messages"])
     second_model = ScriptedChatModel(responses=(AIMessage(content="second answer"),))
     second = _subgraph(
         second_model, system_prompt="SECOND SYSTEM", announce_turns=False
-    ).invoke(
-        {
-            **carried["interpretation_state"],
-            "messages": [
-                *carried["interpretation_state"]["messages"],
-                HumanMessage(content="next task"),
-            ],
-        }
-    )
+    ).invoke({"messages": [*first["messages"], HumanMessage(content="next task")]})
 
     seen = second_model.received_messages[0]
     assert [m.text for m in seen if isinstance(m, SystemMessage)] == ["SECOND SYSTEM"]
@@ -1504,7 +1494,9 @@ def test_a_file_kept_from_before_is_shown_once_before_its_answer_stands(
     assert result["structured_response"] == _Answer(done=True)
     assert len(model.received_messages) == 2
     assert verifier.seen == ['{"sheets": []}']
-    (first,) = (m.text for m in result["messages"] if "first report" in m.text)
+    (first,) = (
+        m.text for m in result["messages"] if "first verification report" in m.text
+    )
     # Reading the report is enough; the file need not change.
     assert "stays refused" not in first
     assert "[verified] build 1" in first

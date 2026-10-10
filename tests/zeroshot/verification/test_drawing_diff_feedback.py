@@ -244,12 +244,12 @@ def test_fixed_instructions_do_not_require_optional_comparison_images(stage):
     assert "linked JSON" not in text
 
 
-def test_coding_can_correct_geometry_without_overwriting_upstream_artifacts():
+def test_coding_corrects_its_reading_with_the_drawing_as_authority():
     stages = Path(__file__).parents[3] / "zeroshot/pipeline/stages"
     coding = (stages / "coding/prompts/round.md").read_text()
 
-    assert "source drawing takes precedence" in coding
-    assert "Leave upstream JSON files unchanged" in coding
+    assert "The source drawing is the authority" in coding
+    assert "correct the interpretation as well as the program" in coding
     assert "Leaving the feature out is one of these hypotheses" in coding
 
 

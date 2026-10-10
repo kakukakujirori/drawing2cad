@@ -11,7 +11,12 @@ workflow:
   _target_: zeroshot.pipeline.workflow.graph.create_reconstruction_graph
   _partial_: true
 
-  fresh_coder: true  # Set false to retain the full coder inference history.
+  # Drop coder history older than the latest verified build from each request.
+  fresh_coder: false
+  # Remind the coder to test geometry by trial builds, once interpretation.json is valid.
+  coding_trial_reminder: true
+  # The auditor must answer every drawing_diff cluster in concern_reviews.
+  review_drawing_diff_clusters: true
 
   # Set diff_drawer_config: null to disable drawing comparison.
   diff_drawer_config:
@@ -31,22 +36,6 @@ workflow:
   # (input px, the unit of the score diff_drawer_config computes).
   match_margin_px: 0.5
 
-  # The auditor must answer every drawing_diff cluster in concern_reviews.
-  review_drawing_diff_clusters: true
-
-  interpretation_agent_builder:
-    _target_: zeroshot.pipeline.workflow.create_agent
-    _partial_: true
-    role: drawing_interpreter
-    model: ${model}
-
-    response_format_strategy: ${response_format_strategy}
-    max_turns: 40
-    announce_turns: true
-    reset_turns_when_reentrant: true
-    model_retries: 5
-    checkpointer: false
-
   coding_agent_builder:
     _target_: zeroshot.pipeline.workflow.create_agent
     _partial_: true
@@ -54,7 +43,7 @@ workflow:
     model: ${model}
 
     response_format_strategy: ${response_format_strategy}
-    max_turns: 20
+    max_turns: 60
     announce_turns: true
     reset_turns_when_reentrant: true
     model_retries: 5
@@ -73,8 +62,11 @@ workflow:
     model_retries: 5
     checkpointer: false
 
-  # How many rejected audits may open a fresh round. Every new round runs all
-  # assigned reasoning stages against the complete set of new tickets.
+  # The coder's transcript is compacted before audit when another round may
+  # follow, so that round starts from notes rather than raw turns.
+  compact_between_stages: ${model}
+
+  # How many rejected audits may open a fresh round.
   max_audit_reject_count: 1
 
   # Invalid structured stage submissions return to that stage with the

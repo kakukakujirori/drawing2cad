@@ -6,15 +6,11 @@ from typing import Literal, NamedTuple, cast
 
 
 class PipelineStage(StrEnum):
-    INTERPRETATION = "interpretation"
     CODING = "coding"
     AUDIT = "audit"
 
 
-type ReasoningStage = Literal[
-    PipelineStage.INTERPRETATION,
-    PipelineStage.CODING,
-]
+type ReasoningStage = Literal[PipelineStage.CODING]
 
 PIPELINE_STAGES = tuple(PipelineStage)
 REASONING_STAGES = cast(tuple[ReasoningStage, ...], PIPELINE_STAGES[:-1])
@@ -23,8 +19,7 @@ REASONING_STAGES = cast(tuple[ReasoningStage, ...], PIPELINE_STAGES[:-1])
 # Fields a stage may update, not fields that must be non-null at completion.
 # In particular, a failed coding attempt may have no readable program source.
 STAGE_ARTIFACT_FIELDS: Mapping[ReasoningStage, tuple[ArtifactField, ...]] = {
-    PipelineStage.INTERPRETATION: ("interpretation",),
-    PipelineStage.CODING: ("program_source", "verification"),
+    PipelineStage.CODING: ("interpretation", "program_source", "verification"),
 }
 type ArtifactField = Literal["interpretation", "program_source", "verification"]
 

@@ -32,6 +32,7 @@ from zeroshot.pipeline.runner import (
     _latest_program_source,
 )
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages.coding.validate import CodingOutput
 from zeroshot.pipeline.stages.coding.verify import RESULT_NAME, VerifyOutputResult
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
@@ -88,14 +89,6 @@ def _ticket_response(stage: str, summary: str) -> dict[str, str]:
     return {"ticket_initial": summary}
 
 
-_A_READING = AIMessage(
-    content=TicketAnswers(
-        stage_report=StageReport(concerns={}),
-        responses=_ticket_response("interpretation", "Established sem_feature_1."),
-    ).model_dump_json()
-)
-
-
 def _writing_interpretation() -> AIMessage:
     artifact = interpretation("a box").model_dump(mode="json")
     script = cleandoc(
@@ -143,14 +136,6 @@ def _writing_interpretation() -> AIMessage:
     )
 
 
-def _interpretation_stage():
-    return _agent(
-        "drawing_interpreter",
-        ScriptedChatModel(responses=(_writing_interpretation(), _A_READING)),
-        announce_turns=False,
-    )
-
-
 def _writing_model(call_id: str = "call-write-model") -> AIMessage:
     """One turn that puts a building program in the workspace.
 
@@ -188,7 +173,6 @@ def _graph_factory(
     so a run's config -- or a test -- binds it before the runner ever sees it."""
     return partial(
         create_reconstruction_graph,
-        interpretation_agent_builder=_interpretation_stage(),
         coding_agent_builder=_agent("coder", model, **agent_overrides),
         audit_agent_builder=_agent(
             "output_auditor",
@@ -211,23 +195,18 @@ def _verified_resume_run():
     run = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(concerns={}),
-            responses=_ticket_response("interpretation", "Established sem_feature_1."),
-        ),
-        workspace_output=interpretation("a box"),
-    )
-    run = advance_reconstruction(
-        run,
-        TicketAnswers(
             responses=_ticket_response("coding", "Implemented the box."),
             stage_report=StageReport(concerns={}),
         ),
-        workspace_output=VerifyOutputResult(
-            verification_id="007",
-            exec_report=CadQueryExecutionReport(
-                status=ExecutionStatus.VERIFIED,
-                source=VALID_BOX_SOURCE,
-                returncode=0,
+        workspace_output=CodingOutput(
+            interpretation("a box"),
+            VerifyOutputResult(
+                verification_id="007",
+                exec_report=CadQueryExecutionReport(
+                    status=ExecutionStatus.VERIFIED,
+                    source=VALID_BOX_SOURCE,
+                    returncode=0,
+                ),
             ),
         ),
     )
@@ -411,10 +390,13 @@ def test_resume_restores_drawing_stage_crops(
         run,
         TicketAnswers(
             stage_report=StageReport(concerns={}),
-            responses=_ticket_response("interpretation", "Read view_front."),
+            responses=_ticket_response("coding", "Read view_front."),
         ),
-        workspace_output=interpretation(
-            views=[page, crop, relative_crop, temporary_crop]
+        workspace_output=CodingOutput(
+            interpretation(views=[page, crop, relative_crop, temporary_crop]),
+            VerifyOutputResult(
+                exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+            ),
         ),
     )
     derived = source_workspace / "derived" / "sheet_front.dxf"
@@ -845,6 +827,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     )
     model = ScriptedChatModel(
         responses=(
+            _writing_interpretation(),
             AIMessage(
                 content="",
                 tool_calls=[
@@ -892,10 +875,11 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert model.bound_tool_names == (
         "run_shell",
         "load_image",
+        "calculate_drawing_scale",
         "render_step",
     )
-    # Two inspections, the write, and the answer.
-    assert len(model.received_messages) == 4
+    # The interpretation, two inspections, the write, and the answer.
+    assert len(model.received_messages) == 5
 
     # The coder opens on the workflow transcript: its own prompt, the run's
     # input, then the current interpretation and plan.
@@ -927,6 +911,9 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     ]
     assert [type(message) for message in messages] == [
         *[type(message) for message in initial_messages],
+        AIMessage,
+        ToolMessage,
+        HumanMessage,
         AIMessage,
         ToolMessage,
         AIMessage,
@@ -1108,6 +1095,7 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
     manifest = _manifest_without_renders(tmp_path, "valid-box")
     model = ScriptedChatModel(
         responses=(
+            _writing_interpretation(),
             AIMessage(
                 content="",
                 tool_calls=[
@@ -1190,6 +1178,7 @@ def test_run_sample_repairs_model_after_intermediate_verification_failure(
     manifest = _manifest_without_renders(tmp_path, "repair-box")
     model = ScriptedChatModel(
         responses=(
+            _writing_interpretation(),
             AIMessage(
                 content="",
                 tool_calls=[
@@ -1274,7 +1263,9 @@ def _runner_for_rerun(
         # This coder answers without writing model.py, which the graph would
         # otherwise send back to it. These tests are about rerun policy.
         graph_factory=_graph_factory(
-            ScriptedChatModel(responses=(_writing_model(), _CODING_ANSWER)),
+            ScriptedChatModel(
+                responses=(_writing_interpretation(), _writing_model(), _CODING_ANSWER)
+            ),
             max_stage_validation_retries=0,
         ),
         artifact_presenter=_path_artifact_presenter(),
@@ -1377,10 +1368,15 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
         # A cast is a graph's own setting, so a real factory arrives with one
         # already bound; only what the runner adds is under test here.
         return create_reconstruction_graph(
-            interpretation_agent_builder=_interpretation_stage(),
             coding_agent_builder=_agent(
                 "coder",
-                ScriptedChatModel(responses=(_writing_model(), _CODING_ANSWER)),
+                ScriptedChatModel(
+                    responses=(
+                        _writing_interpretation(),
+                        _writing_model(),
+                        _CODING_ANSWER,
+                    )
+                ),
             ),
             audit_agent_builder=_agent(
                 "output_auditor",
@@ -1581,7 +1577,9 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
         sandbox_runner=_sandbox_runner(),
         artifact_root=artifact_root,
         graph_factory=_graph_factory(
-            ScriptedChatModel(responses=(_writing_model(), _CODING_ANSWER)),
+            ScriptedChatModel(
+                responses=(_writing_interpretation(), _writing_model(), _CODING_ANSWER)
+            ),
             announce_turns=False,
             max_stage_validation_retries=0,
         ),
@@ -1592,11 +1590,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
 
     # One per ask, not one per model call: the report is what an agent was
     # asked when it was asked, and a retry re-asks nothing new.
-    assert [prompt["role"] for prompt in prompts] == [
-        "drawing_interpreter",
-        "coder",
-        "output_auditor",
-    ]
+    assert [prompt["role"] for prompt in prompts] == ["coder", "output_auditor"]
 
     coder = next(prompt for prompt in prompts if prompt["role"] == "coder")
     assert ROLE_PATHS["coder"].read_text().strip() in coder["system"]
@@ -1607,7 +1601,7 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
         for block in message["content"]
         if isinstance(block, Mapping) and block.get("type") == "text"
     )
-    assert "Implement the complete CadQuery program" in instruction
+    assert "Reconstruct the drawing for round" in instruction
     # The run's paths reach the stage that needs them through its instruction,
     # not through a role that every stage of a shared thread would read.
     assert "/work/model.py" in instruction
@@ -1637,7 +1631,10 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             ),
             "BUDGET_EXHAUSTED",
         ),
-        "stopped-by-agent": ((_writing_model(), _CODING_ANSWER), "COMPLETED"),
+        "stopped-by-agent": (
+            (_writing_interpretation(), _writing_model(), _CODING_ANSWER),
+            "COMPLETED",
+        ),
     }
 
     for sample_id, (responses, expected) in cases.items():
@@ -1648,7 +1645,7 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             artifact_root=artifact_root,
             graph_factory=_graph_factory(
                 ScriptedChatModel(responses=responses),
-                max_turns=2,
+                max_turns=3,
                 max_stage_validation_retries=0,
             ),
         ).run_sample(_manifest_without_renders(tmp_path, sample_id))
@@ -1658,10 +1655,7 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
             for event in _events(artifact_root / sample_id)
             if event["event"] == "stop_reason"
         ]
-        expected_reasons = {
-            "drawing_interpreter": "COMPLETED",
-            "coder": expected,
-        }
+        expected_reasons = {"coder": expected}
         if expected == "COMPLETED":
             expected_reasons["output_auditor"] = "COMPLETED"
         assert {

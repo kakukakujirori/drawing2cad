@@ -209,26 +209,6 @@ def test_oversized_input_is_rejected_before_models_are_instantiated(
     assert not Path(config.artifact_root).exists()
 
 
-@pytest.mark.parametrize("compaction", [None, False])
-def test_a_shared_workflow_requires_configured_compaction(
-    compaction: object,
-) -> None:
-    config = OmegaConf.create(
-        {
-            "workflow": {
-                "share_thread": True,
-                "compact_between_stages": compaction,
-            }
-        }
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="share_thread=true requires.*compact_between_stages",
-    ):
-        run_pipeline._validate_workflow_config(config)
-
-
 def test_a_skipped_sample_is_neither_recorded_nor_scored(
     tmp_path: Path, monkeypatch
 ) -> None:

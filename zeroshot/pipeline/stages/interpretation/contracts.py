@@ -1,4 +1,3 @@
-import json
 import math
 import re
 from collections import Counter
@@ -200,27 +199,6 @@ class Dimension(Contract):
             raise ValueError("angular dimensions cannot have measured_length")
         return self
 
-    def to_summary(self) -> "DimensionSummary":
-        return DimensionSummary(
-            name=self.name,
-            text=self.text,
-            nominal_value=self.nominal_value,
-            kind=self.kind,
-            quantity=self.quantity,
-        )
-
-
-class DimensionSummary(Contract):
-    name: str = Field(..., description="Stable dim_ name.")
-    text: str = Field(..., description="The callout exactly as printed.")
-    nominal_value: float | None = Field(
-        ..., description="Printed nominal value; null if unreadable."
-    )
-    kind: Literal["linear", "diameter", "radius", "angular"] = Field(
-        ..., description="The kind of printed dimension."
-    )
-    quantity: int = Field(..., ge=1, description="Feature count.")
-
 
 class DrawingView(Contract):
     name: str = Field(..., description="Stable view_ name, kept across revisions.")
@@ -376,9 +354,6 @@ class DrawingInterpretation(Contract):
                 frames.setdefault(view.role, (view.u_axis, view.v_axis))
         return frames
 
-    def dimension_inventory(self) -> list[DimensionSummary]:
-        return [dim.to_summary() for dim in self.all_dimensions]
-
     def members(self) -> dict[str, Member]:
         """The datum, views, dimensions and features, and the names each cites.
 
@@ -418,13 +393,6 @@ class DrawingInterpretation(Contract):
                 ),
             )
         return members
-
-    def render_dimension_inventory(self) -> str:
-        return json.dumps(
-            [summary.model_dump(mode="json") for summary in self.dimension_inventory()],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
 
     @model_validator(mode="after")
     def require_unique_names(self) -> Self:

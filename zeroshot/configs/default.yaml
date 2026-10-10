@@ -3,7 +3,7 @@
 defaults:
   - _self_
   - input: png_dimensioned  # dxf
-  - workflow: continued
+  - workflow: coder_auditor
 
 artifact_root: outputs/zeroshot
 

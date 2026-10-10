@@ -12,7 +12,6 @@ from langgraph.graph import END, START, StateGraph
 from PIL import Image
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
-from tests.zeroshot.pipeline_single import test_single_graph as single_tests
 from tests.zeroshot.workflow import test_graph as staged_tests
 from tests.zeroshot.workflow.test_agent import _FlakyChatModel, _length_failure
 from tests.zeroshot.workflow.test_structured_output_retry import Answer, _answering
@@ -200,32 +199,29 @@ def test_output_limit_cap_requires_a_positive_integer(cap):
 
 
 @pytest.mark.parametrize("cross_round", [False, True])
-def test_staged_workflow_shares_the_cap_across_stages_and_rounds(
-    monkeypatch, cross_round
-):
+def test_the_workflow_shares_the_cap_across_stages_and_rounds(monkeypatch, cross_round):
     staged_tests._stub_verification(
         monkeypatch, staged_tests._verified("000"), staged_tests._verified("001")
     )
-    interpretation = staged_tests._interpretation_script()
     coding = (
-        staged_tests._coding_submission(),
-        staged_tests._coding_submission(staged_tests._ROUND_ONE_TICKET),
+        *staged_tests._coding_script(),
+        *staged_tests._coding_script(
+            staged_tests._ROUND_ONE_TICKET, call_id="revision"
+        ),
     )
     audit = staged_tests._audit_script(staged_tests._rejected_audit())
-    interpretation[0].response_metadata = {"finish_reason": "length"}
+    coding[0].response_metadata = {"finish_reason": "length"}
     if cross_round:
         audit[-1].response_metadata = {"finish_reason": "length"}
-        coding[1].response_metadata = {"finish_reason": "length"}
+        coding[3].response_metadata = {"finish_reason": "length"}
     else:
-        coding[0].response_metadata = {"finish_reason": "length"}
+        coding[1].response_metadata = {"finish_reason": "length"}
     cap = 3 if cross_round else 2
-    interpreter = ScriptedChatModel(responses=interpretation)
     coder = ScriptedChatModel(responses=coding)
     auditor = ScriptedChatModel(responses=audit)
     with SandboxWorkdir() as workdir:
         graph = staged_tests._graph(
             workdir,
-            interpreter=interpreter,
             coder=coder,
             auditor=auditor,
             max_output_limit_failures=cap,
@@ -235,41 +231,8 @@ def test_staged_workflow_shares_the_cap_across_stages_and_rounds(
             graph.invoke({})
         history = load_reconstruction(workdir.host_bind_dir / "reconstruction.json")
         assert history.snapshots[-1].round == int(cross_round)
-    assert len(interpreter.received_messages) == 2
-    assert len(coder.received_messages) == (2 if cross_round else 1)
+    assert len(coder.received_messages) == (4 if cross_round else 2)
     assert len(auditor.received_messages) == (2 if cross_round else 0)
-
-
-@pytest.mark.parametrize("cap", [2, 3])
-def test_single_workflow_shares_the_configured_cap(monkeypatch, cap):
-    monkeypatch.setattr(
-        single_tests.graph_module, "OutputVerifier", single_tests._StubVerifier
-    )
-    monkeypatch.setattr(
-        single_tests.graph_module, "compact_transcript", lambda thread, **_: thread[-1:]
-    )
-    coding = (
-        single_tests._answer(single_tests.CodingReport(summary="plate")),
-        single_tests._answer(single_tests.CodingReport(summary="revised plate")),
-    )
-    finding = single_tests.Finding(
-        observation="hole missing", evidence=["front"], revision_request="add it"
-    )
-    audit = single_tests._answer(
-        single_tests.SingleAuditReport(accepted=False, findings=[finding])
-    )
-    for message in (*coding, audit):
-        message.response_metadata = {"finish_reason": "length"}
-    coder = ScriptedChatModel(responses=coding)
-    auditor = ScriptedChatModel(responses=(audit,))
-    with SandboxWorkdir() as workdir:
-        graph = single_tests._graph(
-            workdir, coder, auditor, max_output_limit_failures=cap
-        )
-        with pytest.raises(OutputLimitBudgetExceeded, match=f"{cap}/{cap}"):
-            graph.invoke({})
-    assert len(coder.received_messages) == cap - 1
-    assert len(auditor.received_messages) == 1
 
 
 def test_runner_preserves_artifacts_and_new_runs_start_with_a_fresh_cap(tmp_path):

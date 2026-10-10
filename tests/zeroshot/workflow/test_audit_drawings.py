@@ -38,7 +38,6 @@ def snapshot() -> ReconstructionSnapshot:
             Ticket(
                 ticket_id="ticket_initial",
                 subject=BootstrapWork(instruction="Reconstruct"),
-                assigned_stages=list(REASONING_STAGES),
                 responses=[
                     TicketResponse(
                         ticket_id="ticket_initial", stage=stage, summary="Completed."

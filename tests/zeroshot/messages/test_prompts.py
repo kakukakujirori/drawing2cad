@@ -2,7 +2,6 @@ import json
 import re
 from collections.abc import Callable
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 
@@ -22,7 +21,6 @@ from zeroshot.pipeline.stages._base.prompt import (
     build_system_prompt,
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
-from zeroshot.pipeline.stages.coding.stage import CodingStage
 from zeroshot.pipeline.stages.interpretation.contracts import (
     TOWARD_VIEWER,
     DrawingInterpretation,
@@ -66,7 +64,6 @@ _RUN_PATHS = {
     "interpretation_schema": json.dumps(DrawingInterpretation.model_json_schema()),
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
-    "dimension_inventory": "[]",
 }
 _DRAWING_DIFF_REVIEWS = PromptTemplate(
     STAGES_DIR / "audit/prompts/drawing_diff_reviews.md"
@@ -137,24 +134,20 @@ def test_a_reused_builder_reads_the_latest_round_and_ticket_ownership(
 
     state["reconstruction"] = open_next_round(_completed_run(), _report("coding", []))
     coding = instructions.build(state, PipelineStage.CODING, append_inputs=False).text
-    interpreted = instructions.build(
-        state, PipelineStage.INTERPRETATION, append_inputs=False
-    ).text
 
     assert "round 1" in coding
     assert "Tickets assigned to coding this round: ticket_001_shape_mismatch" in coding
-    assert "Assigned tickets: none" in interpreted
-    assert "ticket_initial" not in coding + interpreted
+    assert "ticket_initial" not in coding
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "coding"])
-def test_assigned_evidence_paths_reach_the_round_instruction(
+@pytest.mark.parametrize("cause", ["interpretation", "coding"])
+def test_ticket_evidence_paths_reach_the_round_instruction(
     instructions: StageInstructions,
     state: ReconstructionState,
-    stage: str,
+    cause: str,
 ) -> None:
     state["reconstruction"] = open_next_round(
-        _completed_run(), _report(stage, ["sem_feature_1"])
+        _completed_run(), _report(cause, ["sem_feature_1"])
     )
     ticket = state["reconstruction"].snapshots[-1].open_tickets[0]
     ticket.evidence_renders = [
@@ -162,16 +155,8 @@ def test_assigned_evidence_paths_reach_the_round_instruction(
         "/work/tickets/evidence_1.png",
     ]
 
-    for recipient in ("interpretation", "coding"):
-        text = instructions.build(
-            state, PipelineStage(recipient), append_inputs=False
-        ).text
-        for path in ticket.evidence_renders:
-            assert (path in text) == (
-                PipelineStage(recipient) in ticket.assigned_stages
-            )
-        if recipient == stage:
-            assert "(evidence: " in text
+    text = instructions.build(state, PipelineStage.CODING, append_inputs=False).text
+    assert "(evidence: " + ", ".join(ticket.evidence_renders) + ")" in text
 
 
 @pytest.mark.parametrize("stage", list(PipelineStage))
@@ -196,13 +181,9 @@ def test_input_is_attached_only_when_requested_and_fresh_on_each_build(
     instructions: StageInstructions,
     state: ReconstructionState,
 ) -> None:
-    plain = instructions.build(state, PipelineStage.INTERPRETATION, append_inputs=False)
-    attached = instructions.build(
-        state, PipelineStage.INTERPRETATION, append_inputs=True
-    )
-    another = instructions.build(
-        state, PipelineStage.INTERPRETATION, append_inputs=True
-    )
+    plain = instructions.build(state, PipelineStage.CODING, append_inputs=False)
+    attached = instructions.build(state, PipelineStage.CODING, append_inputs=True)
+    another = instructions.build(state, PipelineStage.CODING, append_inputs=True)
 
     assert "[Input artifacts]" not in plain.text
     assert attached.text.startswith(plain.text)
@@ -220,7 +201,7 @@ def test_input_is_attached_only_when_requested_and_fresh_on_each_build(
 def test_interpretation_prompt_exposes_the_runtime_schema(
     render_stage: Callable[..., str],
 ) -> None:
-    prompt = render_stage("interpretation")
+    prompt = render_stage("coding")
     examples = re.findall(r"```json\n(.*?)\n```", prompt, re.DOTALL)
     assert len(examples) == 1
     schema = json.loads(examples[0])
@@ -279,7 +260,7 @@ def test_the_system_prompt_explains_selective_history_navigation() -> None:
 def test_round_instructions_do_not_repeat_the_reconstruction_guide(
     render_stage: Callable[..., str],
 ) -> None:
-    rendered = render_stage("interpretation")
+    rendered = render_stage("coding")
 
     assert "## Reconstruction history" not in rendered
     assert "ReconstructionHistory" not in rendered
@@ -390,7 +371,7 @@ def test_the_coding_round_keeps_code_in_the_workspace_and_reports_concerns(
         "concern those responses do not explain" in rendered
     )
     assert "dimension_checks" not in rendered
-    assert "pipeline captures it through verification" in rendered
+    assert "pipeline captures both files through verification" in rendered
 
 
 def test_audit_can_read_concerns_from_both_ticket_summaries_and_stage_reports(
@@ -402,7 +383,7 @@ def test_audit_can_read_concerns_from_both_ticket_summaries_and_stage_reports(
         AuditReport,
     ).text
 
-    assert "upstream blockers or provisional interpretations" in prompt
+    assert "provisional interpretations and what could not be resolved" in prompt
     assert "one `concern_...` entry each" in prompt
     assert "further unresolved issues" in prompt
     assert "The auditor reviews each" in prompt
@@ -424,68 +405,18 @@ def test_the_audit_names_concerns_the_way_its_contract_does(
     assert "round prompt" not in schema
 
 
-def test_coding_receives_all_dimension_readings(
-    instructions: StageInstructions,
-    state: ReconstructionState,
-) -> None:
-    from tests.zeroshot.workflow.test_resolve_submission import interpretation
-    from tests.zeroshot.workflow.test_validate_submission import _snapshot
-
-    held = interpretation()
-    dimension = held.views[0].dimensions[0]
-    held.views[0].dimensions.extend(
-        [
-            dimension.model_copy(update={"name": "dim_duplicate_value"}),
-            dimension.model_copy(
-                update={"name": "dim_unreadable", "nominal_value": None}
-            ),
-        ]
-    )
-    state["reconstruction"].snapshots[0] = _snapshot(
-        PipelineStage.INTERPRETATION, held=held
-    )
-    agent = Mock()
-    agent.invoke.return_value = {}
-    stage = CodingStage(
-        agent=agent,
-        instructions=instructions,
-        output_verifier=Mock(),
-        ticket_verifier=Mock(),
-        middleware=Mock(opening=lambda state, instructions, message, retry: [message]),
-        input_after_compaction=False,
-    )
-
-    def check_baseline_context():
-        assert stage.output_verifier.interpretation is held
-
-    stage.middleware.reset.side_effect = check_baseline_context
-    stage.run(state, {})
-    instruction = agent.invoke.call_args.args[0]["messages"][-1].text
-    (inventory,) = re.findall(r"```json\n(.*?)\n```", instruction, re.DOTALL)
-    readings = json.loads(inventory)
-
-    assert [item["name"] for item in readings] == [
-        dimension.name,
-        "dim_duplicate_value",
-        "dim_unreadable",
-    ]
-    assert readings[0]["nominal_value"] == readings[1]["nominal_value"]
-    assert readings[2]["nominal_value"] is None
-    assert set(readings[0]) == {"name", "text", "nominal_value", "kind", "quantity"}
-
-
 def test_the_interpretation_round_uses_json_for_the_artifact_and_answer_for_tickets(
     render_stage: Callable[..., str],
 ) -> None:
-    rendered = render_stage("interpretation")
-    assert "/work/interpretation.json" in rendered
-    assert "contents when you answer become this round's interpretation" in rendered
+    rendered = render_stage("coding")
+    assert "- `/work/interpretation.json`: your reading of the drawing." in rendered
+    assert "Write the interpretation first." in rendered
+    assert "builds the program only after the interpretation validates" in rendered
     assert "TicketAnswers" in rendered
-    assert "current artifact validates" in rendered
     assert "`edits`" not in rendered
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "coding", "audit"])
+@pytest.mark.parametrize("stage", ["coding", "audit"])
 def test_every_round_has_explicit_instruction_sections(
     render_stage: Callable[..., str], stage: str
 ) -> None:
@@ -500,7 +431,7 @@ def test_every_round_has_explicit_instruction_sections(
 
 @pytest.mark.parametrize(
     "role",
-    ["drawing_interpreter", "coder", "output_auditor"],
+    ["coder", "output_auditor"],
 )
 def test_a_proposer_role_says_who_it_is_and_leaves_the_rest_to_the_instruction(
     role: str,
@@ -527,8 +458,8 @@ def test_shared_system_is_context_only_regardless_of_stage_budget_and_schema() -
         assert "$" not in rendered
 
 
-def test_baseline_role_does_not_receive_multi_agent_context() -> None:
-    role = STAGES_DIR.parents[1] / "pipeline_single/prompts/coder_role.md"
+def test_a_role_without_a_record_receives_no_reconstruction_context() -> None:
+    role = ROLE_PATHS["coder"]
     assert build_system_prompt(role, {}).text == role.read_text().strip()
 
 
@@ -585,7 +516,7 @@ def test_the_digest_follows_the_file(tmp_path: Path) -> None:
 def test_interpreter_uses_localized_evidence_and_checks_cross_view_ambiguities(
     render_stage: Callable[..., str],
 ) -> None:
-    instructions = render_stage("interpretation")
+    instructions = render_stage("coding")
     assert "not a trace of every drawing primitive" in instructions
     assert "hidden lines and matching projections" in instructions
     assert "numeric sizes and model positions in parameters" in instructions
@@ -596,12 +527,11 @@ def test_interpreter_uses_localized_evidence_and_checks_cross_view_ambiguities(
 def test_interpretation_prioritises_a_verified_draft_and_source_pixel_measurements(
     render_stage: Callable[..., str],
 ) -> None:
-    rendered = render_stage("interpretation")
-    assert "save the current feature descriptions and numeric parameters" in rendered
+    rendered = render_stage("coding")
+    assert "current feature descriptions with numeric parameters" in rendered
     # Ordered by the pass it follows, not by a turn number picked in advance.
     assert "After inspecting all views once" in rendered
     assert "Reserve turns to read the automatic validation" in rendered
-    assert "current artifact validates" in rendered
     assert "top left, x right, y down" in rendered
     assert "native pixels, not a resized display" in rendered
     assert "validation derives them" in rendered
@@ -647,7 +577,7 @@ def test_the_coding_prompt_uses_interpreted_features_and_preserves_the_datum(
 ) -> None:
     instructions = render_stage("coding")
     assert "sem_main_bore.radius" in instructions
-    assert "sem_main_bore.center" in instructions
+    assert "dim_bore_diameter.nominal_value" in instructions
     assert "datum" in instructions
     assert re.search(r"null means unknown, (?:never|not) zero", instructions.lower())
     assert "ev_" not in instructions
@@ -662,7 +592,7 @@ def test_coding_instructions_are_not_injected_into_system_prompts(role: str) -> 
     assert system == guide + "\n\n" + ROLE_PATHS[role].read_text().strip()
     assert "calculate_drawing_scale" not in system
     assert "## Evidence policy" not in system
-    assert "do not wait for upstream agreement" not in system.lower()
+    assert "correct the interpretation as well as" not in system.lower()
     assert "stroke thickness" not in system.lower()
 
 
@@ -671,7 +601,7 @@ def test_geometry_correction_policy_belongs_to_the_coding_round(
     render_stage: Callable[..., str], stage: PipelineStage
 ) -> None:
     instruction = render_stage(stage.value)
-    assert ("Do not wait for upstream agreement" in instruction) == (
+    assert ("correct the interpretation as well as the program" in instruction) == (
         stage is PipelineStage.CODING
     )
 

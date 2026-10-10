@@ -35,5 +35,5 @@ def _planned_run() -> ReconstructionHistory:
     return ReconstructionHistory(
         run_id="run_tickets",
         input_drawings=drawing(),
-        snapshots=[_snapshot(PipelineStage.INTERPRETATION)],
+        snapshots=[_snapshot(None)],
     )

@@ -1,5 +1,4 @@
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
 
@@ -8,10 +7,7 @@ from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.coding.middleware import CodingMiddleware
 from zeroshot.pipeline.stages.coding.progress import ProgressOutputVerifier
-from zeroshot.pipeline.stages.coding.stage import CodingStage
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
-from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
-from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.run_cadquery import (
@@ -23,7 +19,7 @@ from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 SOURCE = "result = object()\n"
 
 
-def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypatch):
+def test_best_candidate_eligibility_and_cache(tmp_path, monkeypatch):
     with SandboxWorkdir(host_bind_dir=tmp_path) as workdir:
         verifier = ProgressOutputVerifier(
             executor=None,
@@ -184,42 +180,6 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
         )
         assert verifier._candidate_score(failed)[0] is None
 
-        # A new invocation gets an existing-file baseline once; validation retries
-        # reuse it, and the first valid answer is already allowed by the middleware.
-        verifier.source_path.write_text(SOURCE)
-        scores = [0.7, 0.7, 0.7]
-        received = []
-        agent = SimpleNamespace(
-            invoke=lambda state, config: received.append(state) or {}
-        )
-        instructions = SimpleNamespace(build=lambda *args, **kwargs: "instructions")
-        stage = CodingStage(
-            agent,
-            instructions,
-            verifier,
-            TicketVerifier(),
-            middleware,
-            False,
-        )
-        state = {
-            "reconstruction": SimpleNamespace(
-                snapshots=[
-                    SimpleNamespace(
-                        last_completed_stage=PipelineStage.INTERPRETATION,
-                        interpretation=verifier.interpretation,
-                    )
-                ]
-            )
-        }
-        before = build_count
-        stage.run(state, {})
-        assert build_count == before + 1
-        assert "First fully comparable" in received[-1]["messages"][-1].text
-        assert middleware._artifact_reasons() == []
-        stage.run({**state, "stage_validation_error": "answer missing a ticket"}, {})
-        assert build_count == before + 1
-        assert len(received[-1]["messages"]) == 1
-        assert verifier._best_candidate is not best  # Fresh-invocation scope.
         assert "S=" not in improved and "C/20" not in improved
 
 

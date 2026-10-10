@@ -22,7 +22,6 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     TicketAnswers,
     TicketResponse,
 )
-from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus
 from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
 
@@ -59,12 +58,10 @@ def _ticket(
     *,
     subject: BootstrapWork | AuditFinding | None = None,
     stages: tuple[str, ...] = (),
-    assigned: tuple[str, ...] = ("interpretation", "coding"),
 ) -> Ticket:
     return Ticket(
         ticket_id=ticket_id,
         subject=subject or BootstrapWork(instruction="Reconstruct the part."),
-        assigned_stages=list(assigned),  # type: ignore[arg-type]
         responses=_responses(ticket_id, *stages),
     )
 
@@ -76,11 +73,7 @@ def _snapshot(
     last_completed_stage: str | None = None,
     verification: VerifyOutputResult | None = None,
 ) -> ReconstructionSnapshot:
-    interpreted = (
-        _interpretation()
-        if last_completed_stage in {"interpretation", "coding"}
-        else None
-    )
+    interpreted = _interpretation() if last_completed_stage == "coding" else None
     return ReconstructionSnapshot(
         open_tickets=[ticket or _ticket()],
         round=round,
@@ -188,27 +181,10 @@ def test_schema_words_used_as_dictionary_keys_are_preserved() -> None:
     assert submission.responses == {"type": "Keep this response."}
 
 
-def test_interpretation_carries_ticket_answers_while_json_carries_the_artifact() -> (
-    None
-):
-    responses = answered(_responses("ticket_bootstrap", "interpretation"))
-
-    submission = TicketAnswers(
-        stage_report=StageReport(concerns={}),
-        responses=responses,
-    )
-
-    assert submission.responses == responses
-    assert set(TicketAnswers.model_fields) == {
-        "responses",
-        "stage_report",
-    }
-
-
 def test_a_stage_submission_does_not_keep_extra_fields() -> None:
     submission = TicketAnswers.model_validate(
         {
-            "responses": answered(_responses("ticket_bootstrap", "interpretation")),
+            "responses": answered(_responses("ticket_bootstrap", "coding")),
             "stage_report": {
                 "concerns": {},
                 "type": "empty",
@@ -253,39 +229,15 @@ def test_missing_or_misspelled_reports_are_not_silently_empty(missing):
     )
 
 
-def test_a_round_checkpoint_requires_every_ticket_response_in_stage_order() -> None:
-    ticket = _ticket(stages=("interpretation",))
-
+def test_a_round_checkpoint_requires_coding_to_answer_every_ticket() -> None:
     with pytest.raises(ValidationError, match="responses must be"):
         _snapshot(
-            ticket=ticket,
+            ticket=_ticket(),
             last_completed_stage="coding",
+            verification=VerifyOutputResult(
+                exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+            ),
         )
-
-
-@pytest.mark.parametrize(
-    "assigned",
-    [(), ("interpretation",), ("coding", "interpretation")],
-)
-def test_a_ticket_assignment_runs_from_one_revision_root_through_coding(
-    assigned: tuple[str, ...],
-) -> None:
-    with pytest.raises(ValidationError, match="assigned"):
-        _ticket(assigned=assigned)
-
-
-def test_a_ticket_rejects_a_response_from_a_stage_it_does_not_assign() -> None:
-    with pytest.raises(ValidationError, match="not assigned to this ticket"):
-        _ticket(stages=("interpretation",), assigned=("coding",))
-
-
-def test_a_completed_stage_leaves_no_response_on_a_ticket_it_is_not_assigned() -> None:
-    snapshot = _snapshot(
-        ticket=_ticket(assigned=("coding",)),
-        last_completed_stage="interpretation",
-    )
-
-    assert snapshot.open_tickets[0].responses == []
 
 
 def test_a_ticket_rejects_a_response_for_another_ticket() -> None:
@@ -293,11 +245,7 @@ def test_a_ticket_rejects_a_response_for_another_ticket() -> None:
         Ticket(
             ticket_id="ticket_one",
             subject=BootstrapWork(instruction="Reconstruct the part."),
-            assigned_stages=[
-                PipelineStage.INTERPRETATION,
-                PipelineStage.CODING,
-            ],
-            responses=_responses("ticket_other", "interpretation"),
+            responses=_responses("ticket_other", "coding"),
         )
 
 
@@ -307,7 +255,7 @@ def test_a_failed_verification_is_a_valid_completed_coding_checkpoint() -> None:
             status=ExecutionStatus.REJECTED, executor_error="model.py was not found"
         )
     )
-    ticket = _ticket(stages=("interpretation", "coding"))
+    ticket = _ticket(stages=("coding",))
 
     snapshot = _snapshot(
         ticket=ticket,
@@ -320,7 +268,7 @@ def test_a_failed_verification_is_a_valid_completed_coding_checkpoint() -> None:
 
 
 def test_an_uninitialized_verification_does_not_complete_coding() -> None:
-    ticket = _ticket(stages=("interpretation", "coding"))
+    ticket = _ticket(stages=("coding",))
 
     with pytest.raises(ValidationError, match="must be completed"):
         _snapshot(
@@ -335,12 +283,11 @@ def test_an_uninitialized_verification_does_not_complete_coding() -> None:
 
 
 @pytest.mark.parametrize(
-    ("completed_stage", "field", "value"),
+    ("field", "value"),
     [
-        (None, "interpretation", _interpretation()),
-        ("interpretation", "program_source", "result = object()\n"),
+        ("interpretation", _interpretation()),
+        ("program_source", "result = object()\n"),
         (
-            "interpretation",
             "verification",
             VerifyOutputResult(
                 exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
@@ -348,42 +295,30 @@ def test_an_uninitialized_verification_does_not_complete_coding() -> None:
         ),
     ],
 )
-def test_snapshot_rejects_an_artifact_from_an_unfinished_stage(
-    completed_stage: str | None,
-    field: str,
-    value,
+def test_snapshot_rejects_an_artifact_before_coding_completes(
+    field: str, value
 ) -> None:
-    completed_stages = {
-        None: (),
-        "interpretation": ("interpretation",),
-    }[completed_stage]
-    snapshot = _snapshot(
-        ticket=_ticket(stages=completed_stages),
-        last_completed_stage=completed_stage,
-    )
-    data = snapshot.model_dump()
+    data = _snapshot().model_dump()
     data[field] = value
 
     with pytest.raises(ValidationError, match="unfinished stage artifacts"):
         ReconstructionSnapshot.model_validate(data)
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "coding"])
-def test_snapshot_rejects_reports_from_unfinished_stages(stage):
+def test_snapshot_rejects_a_report_before_coding_completes():
     data = _snapshot().model_dump()
-    data["stage_reports"] = {
-        stage: {
-            "concerns": {"concern_web": "A concern."},
-        }
-    }
+    data["stage_reports"] = {"coding": {"concerns": {"concern_web": "A concern."}}}
     with pytest.raises(ValidationError, match="unfinished stages.*stage_reports"):
         ReconstructionSnapshot.model_validate(data)
 
 
 def test_old_completed_history_loads_without_claiming_a_stage_report():
     snapshot = _snapshot(
-        ticket=_ticket(stages=("interpretation",)),
-        last_completed_stage="interpretation",
+        ticket=_ticket(stages=("coding",)),
+        last_completed_stage="coding",
+        verification=VerifyOutputResult(
+            exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+        ),
     )
     run = ReconstructionHistory(
         run_id="run_legacy", input_drawings=drawing(), snapshots=[snapshot]
@@ -425,7 +360,7 @@ def test_round_zero_rejects_a_finding_in_place_of_bootstrap_work() -> None:
 
 def test_later_rounds_reject_bootstrap_tickets() -> None:
     first = _snapshot(
-        ticket=_ticket(stages=("interpretation", "coding")),
+        ticket=_ticket(stages=("coding",)),
         last_completed_stage="coding",
         verification=VerifyOutputResult(
             exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
@@ -455,7 +390,7 @@ def test_round_numbers_follow_snapshot_order() -> None:
 
 def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None:
     first = _snapshot(
-        ticket=_ticket(stages=("interpretation", "coding")),
+        ticket=_ticket(stages=("coding",)),
         last_completed_stage="coding",
         verification=VerifyOutputResult(
             verification_id="000",

@@ -24,6 +24,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditRegion,
 )
+from zeroshot.pipeline.stages.coding import stage as coding_stage_module
 from zeroshot.pipeline.stages.coding.middleware import (
     CHECKPOINT_NAME,
     INSTRUCTIONS_NAME,
@@ -31,9 +32,14 @@ from zeroshot.pipeline.stages.coding.middleware import (
 )
 from zeroshot.pipeline.stages.coding.progress import ProgressOutputVerifier
 from zeroshot.pipeline.stages.coding.stage import create_coding_stage
+from zeroshot.pipeline.stages.coding.validate import CodingOutput
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
+from zeroshot.pipeline.stages.coding.workspace import CodingWorkspaceVerifier
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
-from zeroshot.pipeline.stages.interpretation.contracts import View
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    DrawingInterpretation,
+    View,
+)
 from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
     Ticket,
@@ -61,6 +67,28 @@ from zeroshot.pipeline.workflow.middleware.output_limit_budget import (
 SOURCE = "result = object()\n"
 
 
+class _AcceptedInterpretation:
+    """interpretation.json as it stands once the coder's reading validated."""
+
+    source_filename = "interpretation.json"
+
+    def __init__(self, accepted: DrawingInterpretation) -> None:
+        self.accepted_interpretation = accepted
+
+    @property
+    def blockers(self) -> list[str]:
+        return []
+
+    def source_digest(self) -> str:
+        return "accepted"
+
+    def reset(self, baseline: DrawingInterpretation) -> None:
+        pass
+
+    def feedback(self) -> list:
+        return []
+
+
 def answers(ticket="ticket_initial"):
     return TicketAnswers(
         responses={ticket: "Reviewed the base"},
@@ -76,10 +104,16 @@ def setup(tmp_path, monkeypatch):
     (tmp_path / "inputs").mkdir()
     drawing = tmp_path / "inputs/front.png"
     Image.new("RGB", (20, 20), "white").save(drawing)
-    ir = interpretation(views=[view("front", scale=0.1, file="/work/inputs/front.png")])
+    ir = interpretation(
+        "the base", views=[view("front", scale=0.1, file="/work/inputs/front.png")]
+    )
     history = start_reconstruction("run_memory", "Build the drawing", [ir.views[0]])
-    history = advance_reconstruction(history, answers(), workspace_output=ir)
     state = {"reconstruction": history}
+    monkeypatch.setattr(
+        coding_stage_module,
+        "InterpretationVerifier",
+        lambda **kwargs: _AcceptedInterpretation(ir),
+    )
     store = AttemptStore(
         workdir, round_source=lambda: state["reconstruction"].snapshots[-1].round
     )
@@ -91,6 +125,7 @@ def setup(tmp_path, monkeypatch):
         input_presentation_mode="image",
         prompt_context={
             "coding_output_path": "/work/model.py",
+            "interpretation_output_path": "/work/interpretation.json",
             "verification_dir": "/work/attempts",
             "reconstruction_path": "/work/reconstruction.json",
         },
@@ -154,7 +189,9 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(ProgressOutputVerifier, "feedback", feedback)
     verifier = ProgressOutputVerifier(None, workdir, None, None, presenter, store)
     verifier.interpretation = ir
-    middleware = FreshCodingMiddleware(verifier, fingerprint=verifier.source_digest)
+    workspace = CodingWorkspaceVerifier(_AcceptedInterpretation(ir), verifier)  # type: ignore[arg-type]
+    workspace.output.interpretation = ir
+    middleware = FreshCodingMiddleware(workspace, fingerprint=workspace.source_digest)
     middleware._set_context(state, instructions)
 
     @tool
@@ -199,7 +236,7 @@ def test_valid_writes_replace_only_inference_and_keep_between_write_work(setup):
     initial = [
         AIMessage(content="stale judgment"),
         instructions.build(
-            state, PipelineStage.CODING, append_inputs=True, dimension_inventory="{}"
+            state, PipelineStage.CODING, append_inputs=True, interpretation_schema="{}"
         ).model_copy(update={"name": INSTRUCTIONS_NAME}),
     ]
     result = agent.stream_events(
@@ -228,7 +265,7 @@ def test_valid_writes_replace_only_inference_and_keep_between_write_work(setup):
         '"verification_id":"002"' in latest.text
         and '"verification_id":"000"' in latest.text
     )
-    assert "/work/scan.json" in latest.text and "Scale needs checking" in latest.text
+    assert "/work/scan.json" in latest.text
     assert "/work/tmp/" in latest.text
     assert any("[turn 6/6] Final turn" in m.text for m in seen[5])
     assert all(not unanswered_tool_calls(messages) for messages in seen)
@@ -237,7 +274,7 @@ def test_valid_writes_replace_only_inference_and_keep_between_write_work(setup):
     assert any(m.text == "stale judgment" for m in saved)
     assert sum(isinstance(m, ToolMessage) for m in saved) == 5
     assert [m.id for m in saved] == [m.id for m in result["messages"]]
-    assert middleware._reported == verifier.source_digest()
+    assert middleware._reported == middleware._digest()
     metadata = [
         e["data"]
         for e in events
@@ -253,7 +290,9 @@ def test_stage_flag_and_new_round_baseline_and_validation_instruction(setup, fre
     state, instructions, verifier, _, tools = setup
     verifier.source_path.write_text(SOURCE + "# previous round\n")
     completed = advance_reconstruction(
-        state["reconstruction"], answers(), workspace_output=verifier.verify()
+        state["reconstruction"],
+        answers(),
+        workspace_output=CodingOutput(verifier.interpretation, verifier.verify()),
     )
     finding = AuditFinding(
         name="find_base",
@@ -268,22 +307,18 @@ def test_stage_flag_and_new_round_baseline_and_validation_instruction(setup, fre
     current = previous.model_copy(
         update={
             "round": 1,
-            "last_completed_stage": PipelineStage.INTERPRETATION,
+            "last_completed_stage": None,
+            "interpretation": None,
             "program_source": None,
             "verification": None,
             "open_tickets": [
                 Ticket(
                     ticket_id="ticket_fix",
                     subject=finding,
-                    assigned_stages=[PipelineStage.CODING],
                     responses=[],
                 )
             ],
-            "stage_reports": {
-                stage: report
-                for stage, report in previous.stage_reports.items()
-                if stage != PipelineStage.CODING
-            },
+            "stage_reports": {},
         }
     )
     state["reconstruction"] = ReconstructionHistory.model_validate(
@@ -346,7 +381,7 @@ def test_stage_flag_and_new_round_baseline_and_validation_instruction(setup, fre
     assert any(
         "current validation instruction" in m.text for m in model.received_messages[-1]
     )
-    assert any("reconstruction round 1" in m.text for m in model.received_messages[-1])
+    assert any("drawing for round 1" in m.text for m in model.received_messages[-1])
     assert (second["current_turn"], second["total_turns"]) == (4, 20)
     if fresh:
         checkpoint = next(
@@ -401,9 +436,7 @@ def test_structured_answer_with_tools_is_still_refused_and_pairs_survive(setup):
     )
     assert not unanswered_tool_calls(model.received_messages[-1])
     assert model.bound_tool_name_history[-1] == ("TicketAnswers",)
-    assert (
-        result["current_turn"] == 2 and middleware._reported == verifier.source_digest()
-    )
+    assert result["current_turn"] == 2 and middleware._reported == middleware._digest()
 
 
 @pytest.mark.parametrize("failure", ["schema", "length"])
@@ -439,7 +472,7 @@ def test_retry_feedback_and_shared_budget_are_retained(setup, failure):
     assert budget.failures == (2 if failure == "length" else 1)
     assert result["current_turn"] == result["total_turns"] == 1
     assert model.bound_tool_name_history[-1] == ()
-    assert middleware._reported == verifier.source_digest()
+    assert middleware._reported == middleware._digest()
 
 
 def test_fresh_coder_stops_at_the_existing_output_limit_cap(setup):
@@ -481,7 +514,7 @@ def test_graph_applies_fresh_memory_only_to_coder_and_shares_the_budget(setup, f
     create_reconstruction_graph(
         *[
             partial(builder, role=role, max_turns=1)
-            for role in ("drawing_interpreter", "coder", "output_auditor")
+            for role in ("coder", "output_auditor")
         ],
         sandbox_runner=SandboxRunner(Path(sys.executable), default_timeout_s=30),
         sandbox_workdir=verifier.workdir,
@@ -497,5 +530,5 @@ def test_graph_applies_fresh_memory_only_to_coder_and_shares_the_budget(setup, f
             for middleware in kwargs["extra_middleware"]
         )
         assert uses_fresh is (fresh and role == "coder")
-    assert set(captured) == {"drawing_interpreter", "coder", "output_auditor"}
+    assert set(captured) == {"coder", "output_auditor"}
     assert len({id(kwargs["output_limit_budget"]) for kwargs in captured.values()}) == 1

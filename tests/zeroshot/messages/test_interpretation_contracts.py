@@ -1,6 +1,5 @@
 """Local validation for file-backed interpretation sheets and evidence."""
 
-import json
 from copy import deepcopy
 
 import pytest
@@ -10,7 +9,6 @@ from tests.zeroshot.contracts import UNTURNED
 from zeroshot.pipeline.stages.interpretation.contracts import (
     ORTHOGRAPHIC_VIEWS,
     TOWARD_VIEWER,
-    DimensionSummary,
     DrawingInterpretation,
     DrawingView,
     Region,
@@ -286,27 +284,6 @@ def test_interpretation_all_dimensions_and_inventory() -> None:
     assert dimension.text == "Ø4.2"
     assert dimension.nominal_value == 4.2
     assert dimension.quantity == 1
-
-    inventory = interpretation.dimension_inventory()
-    assert len(inventory) == 1
-    summary = inventory[0]
-    assert isinstance(summary, DimensionSummary)
-    assert summary.name == "dim_pin_diameter"
-    assert summary.text == "Ø4.2"
-    assert summary.nominal_value == 4.2
-    assert summary.kind == "diameter"
-    assert summary.quantity == 1
-
-    rendered = interpretation.render_dimension_inventory()
-    assert json.loads(rendered) == [
-        {
-            "name": "dim_pin_diameter",
-            "text": "Ø4.2",
-            "nominal_value": 4.2,
-            "kind": "diameter",
-            "quantity": 1,
-        }
-    ]
 
 
 def _view(role: str, u_axis: str, v_axis: str) -> dict:

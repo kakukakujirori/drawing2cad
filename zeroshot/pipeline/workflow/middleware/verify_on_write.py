@@ -124,8 +124,7 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         )
 
     def _artifact_reasons(self) -> list[ContentBlock]:
-        """Why the file cannot be the answer, reasons first; nothing when it can."""
-        name = self.verifier.source_path.name
+        """Why the files cannot be the answer, reasons first; nothing when they can."""
         report: list[ContentBlock] = []
         if self._digest() != self._reported:
             # An answer with a file the model never saw verified in this stage,
@@ -134,14 +133,14 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             self._last_seen = self._reported = self._digest()
         if blockers := self.verifier.blockers:
             text = (
-                f"Answer refused. It stays refused until {name} changes:\n"
+                "Answer refused. It stays refused until the files change:\n"
                 + "".join(f"- {blocker}\n" for blocker in blockers)
-                + f"Correct {name} based on its latest verification report."
+                + "Correct them based on their latest verification reports."
             )
         elif report:
             text = (
-                f"Answer refused: this is the first report on {name} in this "
-                "stage. Read it below, then answer again."
+                "Answer refused: this is the first verification report on these "
+                "files in this stage. Read it below, then answer again."
             )
         else:
             return []

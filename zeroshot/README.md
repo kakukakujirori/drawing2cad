@@ -14,7 +14,6 @@ python -m zeroshot.run_pipeline --multirun \
     model=gpt6_luna_codex \
     artifact_root=outputs/gpt6_luna \
     on_existing=retry \
-    workflow=continued \
     sample.sample_id=$(ls data/test_vlm/target_step_ori | sed 's/\.step//' | paste -sd,)
 
 # glm5.3-flash
@@ -22,7 +21,6 @@ python -m zeroshot.run_pipeline --multirun \
     model=glm5.3_flash_openrouter \
     artifact_root=outputs/glm5.3_flash \
     on_existing=retry \
-    workflow=continued \
     sample.sample_id=$(ls data/test_vlm/target_step_ori | sed 's/\.step//' | paste -sd,)
 ```
 
@@ -63,33 +61,25 @@ Sampling, mesh tolerances and AUC thresholds are configurable under
 `evaluation.scorer` and recorded with each score. Existing logs require rescoring
 before they can be combined with the new metric protocol.
 
-## Single-agent baseline
+## Workflow
 
-Coder + Auditor construction:
+`workflow=coder_auditor` (the default) runs two agents per round. The coder
+writes `interpretation.json` (views, dimensions, 3D features) and then
+`model.py`; the program is built only after the interpretation validates. The
+auditor compares both with the drawing and names each defect's cause. Flags in
+`zeroshot/configs/workflow/coder_auditor.yaml`:
 
-```bash
-# gpt6-luna
-python -m zeroshot.run_pipeline --multirun \
-    model=gpt6_luna_codex \
-    artifact_root=outputs/gpt6_luna_single \
-    on_existing=retry \
-    workflow=single \
-    sample.sample_id=$(ls data/test_vlm/target_step_ori | sed 's/\.step//' | paste -sd,)
+- `review_drawing_diff_clusters`: the auditor must answer every drawing_diff cluster.
+- `coding_trial_reminder`: remind the coder to make trial builds once the interpretation is valid.
+- `fresh_coder`: drop coder history older than the latest verified build.
 
-# glm5.3-flash
-python -m zeroshot.run_pipeline --multirun \
-    model=glm5.3_flash_openrouter \
-    artifact_root=outputs/glm5.3_flash_single \
-    on_existing=retry \
-    workflow=single \
-    sample.sample_id=$(ls data/test_vlm/target_step_ori | sed 's/\.step//' | paste -sd,)
-```
+The four-agent version is at the git tag `pipeline-4agent-20261010`.
 
 ## Interactive Debug
 
 ```bash
 python -m interactive_debug \
   --run outputs/glm5.3_flash/xxx/checkpoints.sqlite \
-  --stage {interpretation, coding, audit} \
+  --stage {coding, audit} \
   --round 000
 ```

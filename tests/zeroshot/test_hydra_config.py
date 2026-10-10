@@ -18,7 +18,6 @@ from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffExecutor
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
-from zeroshot.pipeline_single.graph import create_single_graph
 
 CONFIG_DIR = Path(__file__).parents[2] / "zeroshot" / "configs"
 
@@ -40,7 +39,6 @@ def test_default_config_instantiates_artifact_presenter(mode) -> None:
         config = compose(
             config_name="default",
             overrides=[
-                "workflow=continued",
                 *[
                     f"artifact_presenter.{kind}={selected}"
                     for kind, selected in modes.items()
@@ -160,7 +158,6 @@ def test_the_backend_chosen_decides_how_every_agent_is_asked_for_structured_outp
         )
 
     builders = [
-        "interpretation_agent_builder",
         "coding_agent_builder",
         "audit_agent_builder",
     ]
@@ -270,7 +267,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         config = compose(
             config_name="default",
             overrides=[
-                "workflow=staged",
+                "workflow=coder_auditor",
                 # Overridden rather than read, so flipping a checked-in default
                 # is an experiment, not a test failure.
                 "workflow.coding_agent_builder.max_turns=5",
@@ -285,24 +282,28 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     # answers, on which model, for how long, and leaves the tools and the
     # contracts to the code.
     assert set(graph_factory.keywords) == {
-        "interpretation_agent_builder",
         "coding_agent_builder",
         "audit_agent_builder",
+        "compact_between_stages",
         "max_audit_reject_count",
         "max_stage_validation_retries",
         "max_output_limit_failures",
         "diff_drawer_config",
         "fresh_coder",
+        "coding_trial_reminder",
         "match_margin_px",
         "review_drawing_diff_clusters",
     }
-    assert graph_factory.keywords["fresh_coder"] is True
+    assert graph_factory.keywords["fresh_coder"] is False
+    assert graph_factory.keywords["coding_trial_reminder"] is True
     assert graph_factory.keywords["review_drawing_diff_clusters"] is True
     assert graph_factory.keywords["match_margin_px"] == 0.5
+    assert graph_factory.keywords["compact_between_stages"] is not None
     assert (
         graph_factory.keywords["diff_drawer_config"]["backend"] == "directional_chamfer"
     )
     assert graph_factory.keywords["diff_drawer_config"]["model"] == "similarity"
+    signature(graph_factory.func).bind_partial(**graph_factory.keywords)
 
     coder = graph_factory.keywords["coding_agent_builder"]
     assert coder.func is create_agent
@@ -316,113 +317,49 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     coder_model = coder.keywords["model"]
     assert isinstance(coder_model, ChatOpenAI)
     assert coder_model.model_name == "gemma4:e2b"
+    assert "output_schema" not in coder.keywords
 
-    stage = graph_factory.keywords["interpretation_agent_builder"]
-    assert stage.func is create_agent
-    assert stage.keywords["role"] == "drawing_interpreter"
-    assert ROLE_PATHS["drawing_interpreter"].is_file()
-    assert stage.keywords["response_format_strategy"] == "provider"
-    assert stage.keywords["model"].model_name == "gemma4:e2b"
-
-    assert "output_schema" not in stage.keywords
+    auditor = graph_factory.keywords["audit_agent_builder"]
+    assert auditor.keywords["role"] == "output_auditor"
+    assert ROLE_PATHS[auditor.keywords["role"]].is_file()
+    assert RECONSTRUCTION_CONTEXT_PATH.is_file()
+    # Hydra partials accept unknown keywords and otherwise defer this failure
+    # until the first sample builds its graph.
+    for builder in (coder, auditor):
+        signature(builder.func).bind_partial(**builder.keywords)
     assert "agent" not in config
 
 
-@pytest.mark.parametrize("workflow", ["staged", "continued"])
-@pytest.mark.parametrize("fresh", [False, True])
-def test_fresh_coder_can_be_selected_in_workflow_config(workflow, fresh) -> None:
+@pytest.mark.parametrize(
+    "flag", ["fresh_coder", "coding_trial_reminder", "review_drawing_diff_clusters"]
+)
+@pytest.mark.parametrize("value", [False, True])
+def test_each_workflow_flag_can_be_selected_in_config(flag, value) -> None:
     with initialize_config_dir(
         config_dir=str(CONFIG_DIR.resolve()), version_base="1.3"
     ):
         config = compose(
             config_name="default",
-            overrides=[
-                f"workflow={workflow}",
-                f"workflow.fresh_coder={str(fresh).lower()}",
-            ],
+            overrides=[f"workflow.{flag}={str(value).lower()}"],
         )
-    factory = instantiate(config.workflow)
-    assert factory.keywords["fresh_coder"] is fresh
-    assert factory.keywords["max_output_limit_failures"] == 3
+    assert instantiate(config.workflow).keywords[flag] is value
 
 
-def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None:
-    """The variant is the staged graph with the thread shared, so it has to
-    inherit staged's settings rather than restate them, and it has to give both
-    reasoning stages one role."""
-    with initialize_config_dir(
-        config_dir=str(CONFIG_DIR.resolve()),
-        version_base="1.3",
-    ):
-        config = compose(config_name="default", overrides=["workflow=continued"])
-
-    graph_factory = instantiate(config.workflow)
-
-    assert graph_factory.func is create_reconstruction_graph
-    assert graph_factory.keywords["share_thread"] is True
-    assert graph_factory.keywords["compact_between_stages"] is not None
-
-    roles = {
-        graph_factory.keywords["interpretation_agent_builder"].keywords["role"],
-        graph_factory.keywords["coding_agent_builder"].keywords["role"],
-    }
-    assert roles == {"cad_reconstructor"}
-    assert RECONSTRUCTION_CONTEXT_PATH.is_file()
-
-    # Hydra partials accept unknown keywords and otherwise defer this failure
-    # until the first sample builds its graph. Check every configured builder
-    # against its callable now so configuration drift fails in this test.
-    for key in (
-        "interpretation_agent_builder",
-        "coding_agent_builder",
-        "audit_agent_builder",
-    ):
-        builder = graph_factory.keywords[key]
-        signature(builder.func).bind_partial(**builder.keywords)
-
-    # The audit reads the result on its own, so it keeps its own role.
-    assert (
-        graph_factory.keywords["audit_agent_builder"].keywords["role"]
-        == "output_auditor"
-    )
-    # Inherited from staged rather than restated here.
-    assert "max_audit_reject_count" in graph_factory.keywords
-
-
-def test_the_single_workflow_config_fits_its_graph_factory() -> None:
-    with initialize_config_dir(
-        config_dir=str(CONFIG_DIR.resolve()),
-        version_base="1.3",
-    ):
-        config = compose(config_name="default", overrides=["workflow=single"])
-
-    graph_factory = instantiate(config.workflow)
-
-    assert graph_factory.func is create_single_graph
-    signature(create_single_graph).bind_partial(**graph_factory.keywords)
-
-
-@pytest.mark.parametrize("workflow", ["staged", "continued", "single"])
 @pytest.mark.parametrize("cap", [3, 2])
-def test_output_limit_cap_belongs_to_the_workflow(workflow, cap):
+def test_output_limit_cap_belongs_to_the_workflow(cap):
     with initialize_config_dir(
         config_dir=str(CONFIG_DIR.resolve()), version_base="1.3"
     ):
         config = compose(
             config_name="default",
-            overrides=[
-                f"workflow={workflow}",
-                *([f"workflow.max_output_limit_failures={cap}"] if cap != 3 else []),
-            ],
+            overrides=[f"workflow.max_output_limit_failures={cap}"] if cap != 3 else [],
         )
     assert "max_output_limit_failures" not in config
     graph_factory = instantiate(config.workflow)
     assert graph_factory.keywords["max_output_limit_failures"] == cap
-    signature(graph_factory.func).bind_partial(**graph_factory.keywords)
 
 
-@pytest.mark.parametrize("workflow", ["staged", "continued"])
-def test_drawing_diff_accepts_null_color_scale_without_a_separate_mode(workflow):
+def test_drawing_diff_accepts_null_color_scale_without_a_separate_mode():
     with initialize_config_dir(
         config_dir=str(CONFIG_DIR.resolve()),
         version_base="1.3",
@@ -430,7 +367,6 @@ def test_drawing_diff_accepts_null_color_scale_without_a_separate_mode(workflow)
         config = compose(
             config_name="default",
             overrides=[
-                f"workflow={workflow}",
                 "workflow.diff_drawer_config.backend=match_anything",
                 # Switching backends also replaces backend-specific options.
                 "workflow.diff_drawer_config.alignment_options=null",
@@ -449,15 +385,13 @@ def test_drawing_diff_accepts_null_color_scale_without_a_separate_mode(workflow)
     )
 
 
-@pytest.mark.parametrize("workflow", ["staged", "continued"])
-def test_drawing_diff_can_be_disabled_with_null_config(workflow: str) -> None:
+def test_drawing_diff_can_be_disabled_with_null_config() -> None:
     with initialize_config_dir(
         config_dir=str(CONFIG_DIR.resolve()),
         version_base="1.3",
     ):
         config = compose(
-            config_name="default",
-            overrides=[f"workflow={workflow}", "workflow.diff_drawer_config=null"],
+            config_name="default", overrides=["workflow.diff_drawer_config=null"]
         )
 
     graph_factory = instantiate(config.workflow)

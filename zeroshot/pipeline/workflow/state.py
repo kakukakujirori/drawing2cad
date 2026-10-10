@@ -1,14 +1,10 @@
-from collections.abc import Mapping, Sequence
 from typing import (
-    Any,
     NotRequired,
     TypedDict,
-    cast,
     get_args,
     get_type_hints,
 )
 
-from langchain_core.messages import AnyMessage
 from typing_extensions import is_typeddict
 
 from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
@@ -17,15 +13,11 @@ from zeroshot.pipeline.stages.contracts import (
     ReconstructionSnapshot,
 )
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
-from zeroshot.pipeline.stages.types import (
-    PipelineStage,
-    ReasoningStage,
-)
+from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.workflow.components.agent import AgentState
 
 
 class ReconstructionState(TypedDict):
-    interpretation_state: NotRequired[AgentState]
     coding_state: NotRequired[AgentState]
     audit_state: NotRequired[AgentState]
 
@@ -37,40 +29,11 @@ class ReconstructionState(TypedDict):
     audit_evidence: NotRequired[dict[str, list[str]]]
 
 
-# Where each reasoning stage keeps the transcript of the agent that carried
-# the thread. The one place that knows which channel belongs to which stage.
-_LEAD_TRANSCRIPT: Mapping[ReasoningStage, str] = {
-    PipelineStage.INTERPRETATION: "interpretation_state",
-    PipelineStage.CODING: "coding_state",
-}
-
-
 def current_snapshot(state: ReconstructionState) -> ReconstructionSnapshot:
     reconstruction = state.get("reconstruction")
     if reconstruction is None:
         raise RuntimeError("reconstruction has not been initialized")
     return reconstruction.snapshots[-1]
-
-
-def lead_transcript(
-    state: ReconstructionState, stage: ReasoningStage
-) -> list[AnyMessage]:
-    """The transcript of the agent that carried the thread through `stage`."""
-    stage_state = cast(Mapping[str, Any], state).get(_LEAD_TRANSCRIPT[stage]) or {}
-    return list(stage_state.get("messages") or [])
-
-
-def carry_thread(
-    state: ReconstructionState, thread: Sequence[AnyMessage]
-) -> dict[str, Any]:
-    """Broadcast `thread` to other stages."""
-    seeded = {"messages": list(thread), "reported_message_count": len(thread)}
-
-    stage_states = cast(Mapping[str, Any], state)
-    return {
-        channel: {**(dict(stage_states.get(channel) or {})), **seeded}
-        for channel in _LEAD_TRANSCRIPT.values()
-    }
 
 
 def _custom_state_types(*root_schemas: type) -> tuple[type, ...]:

@@ -1,9 +1,9 @@
-"""Open the coder's conversation, report its writes to model.py and prompt trials."""
+"""Open the coder's conversation, report its workspace writes and prompt trials."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, override
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock, create_text_block
 from langgraph.runtime import Runtime
 
-from zeroshot.pipeline.stages.coding.progress import ProgressOutputVerifier
+from zeroshot.pipeline.stages.coding.workspace import CodingWorkspaceVerifier
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 from zeroshot.pipeline.workflow.middleware.turn_budget import TurnBudgetState
 
@@ -24,9 +24,9 @@ CHECKPOINT_NAME = "coding_verified_checkpoint"
 
 
 class CodingMiddleware(VerifyOnWriteMiddleware):
-    """Verify model.py after each write, and open the stage with its existing build."""
+    """Verify the workspace after each write, and open the stage with its existing build."""
 
-    verifier: ProgressOutputVerifier
+    verifier: CodingWorkspaceVerifier
 
     def report_existing(self) -> list[ContentBlock]:
         """Report an existing model.py before the first response, without refusing it later."""
@@ -97,7 +97,6 @@ class FreshCodingMiddleware(CodingMiddleware):
         self._inputs = instructions.create_artifact_message().content_blocks
         self._context = {
             "round": snapshot.round,
-            "interpretation": snapshot.interpretation.model_dump(mode="json"),
             "open_tickets": [
                 ticket.model_dump(mode="json") for ticket in snapshot.open_tickets
             ],
@@ -114,9 +113,11 @@ class FreshCodingMiddleware(CodingMiddleware):
                 )
             },
         }
+        output = self.verifier.output
         self._known_names = {
-            self.verifier.source_filename,
-            self.verifier.attempt_store.root_dirname.name,
+            output.source_filename,
+            self.verifier.interpretation.source_filename,
+            output.attempt_store.root_dirname.name,
             "inputs",
             *(
                 path.rsplit("/", 1)[-1]
@@ -127,33 +128,36 @@ class FreshCodingMiddleware(CodingMiddleware):
 
     @override
     def report_message(self, feedback: list[ContentBlock]) -> HumanMessage:
-        source = self.verifier.accepted_source
-        report = self.verifier.last_report
-        if source is None or report is None:
+        output = self.verifier.output
+        source = output.accepted_source
+        report = output.last_report
+        interpretation = self.verifier.interpretation.accepted_interpretation
+        if source is None or report is None or interpretation is None:
             return HumanMessage(content_blocks=feedback)
         candidate = {
             "verification_id": report.verification_id,
-            "program": self.verifier.candidate_path(report),
-            "source_sha256": self.verifier.source_digest(),
+            "program": output.candidate_path(report),
+            "source_sha256": output.source_digest(),
         }
         if self._baseline_candidate is None:
             self._baseline_candidate = candidate
-        best = self.verifier.best_report
-        entries = sorted(self.verifier.workdir.host_bind_dir.iterdir())
+        best = output.best_report
+        entries = sorted(output.workdir.host_bind_dir.iterdir())
         auxiliary = [
-            str(self.verifier.workdir.host_to_sandbox_path(path))
+            str(output.workdir.host_to_sandbox_path(path))
             + ("/" if path.is_dir() else "")
             for path in entries
             if path.name not in self._known_names and not path.is_symlink()
         ]
         context = {
             **self._context,
+            "interpretation": interpretation.model_dump(mode="json"),
             "current_candidate": candidate,
             "baseline_candidate": self._baseline_candidate,
             "best_eligible_candidate": (
                 {
                     "verification_id": best.verification_id,
-                    "program": self.verifier.candidate_path(best),
+                    "program": output.candidate_path(best),
                 }
                 if best is not None
                 else None
@@ -259,12 +263,18 @@ _REMINDER = (
 
 
 class CodingTrialMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
-    """Give one short reminder per tool batch, independently of model.py writes."""
+    """Give one short reminder per tool batch once `ready`, independently of writes."""
 
-    def __init__(self, tool_names: Iterable[str], max_turns: int) -> None:
+    def __init__(
+        self,
+        tool_names: Iterable[str],
+        max_turns: int,
+        ready: Callable[[], bool] = lambda: True,
+    ) -> None:
         super().__init__()
         self.tool_names = frozenset(tool_names)
         self.max_turns = max_turns
+        self.ready = ready
 
     @override
     def before_model(
@@ -273,6 +283,8 @@ class CodingTrialMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         del runtime
         # No old-batch reminder on entry, or new trial on the answer-only turn.
         if not 0 < state.get("current_turn", 0) < self.max_turns - 1:
+            return None
+        if not self.ready():
             return None
 
         # Inspect only the latest response and its results; the notice itself
