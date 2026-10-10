@@ -38,20 +38,12 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     Region,
     View,
 )
-from zeroshot.pipeline.stages.operations.contracts import (
-    Operation,
-    OperationPlan,
-    OperationVerb,
-)
 from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
     TicketAnswers,
 )
 from zeroshot.pipeline.verification import CadQueryExecutor, ExecutionStatus
-from zeroshot.pipeline.verification.run_cadquery import (
-    CadQueryExecutionReport,
-    IntermediateReturn,
-)
+from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
 from zeroshot.pipeline.verification.run_drawing_diff import (
     AlignmentResult,
     DrawingDiffReport,
@@ -161,52 +153,6 @@ def _interpretation_stage():
     )
 
 
-_A_PLAN = OperationPlan(
-    proposal=[
-        Operation(
-            name="op_base",
-            verb=OperationVerb.EXTRUDE,
-            detail="extrude it",
-            semantics=["sem_feature_1"],
-        )
-    ],
-    rationale="one extrude",
-)
-
-
-def _operations_stage():
-    write = AIMessage(
-        content="",
-        tool_calls=[
-            {
-                "name": "run_shell",
-                "args": {
-                    "command": "python -c "
-                    + shlex.quote(
-                        "from pathlib import Path;"
-                        f"Path('/work/operations.json').write_text({_A_PLAN.model_dump_json()!r})"
-                    )
-                },
-                "id": "call-write-operations",
-                "type": "tool_call",
-            }
-        ],
-    )
-    submission = TicketAnswers(
-        stage_report=StageReport(
-            concerns={}, dimension_checks=None, unticketed_changes={}
-        ),
-        responses=_ticket_response("operations", "Established op_base."),
-    )
-    return _agent(
-        "operation_planner",
-        ScriptedChatModel(
-            responses=(write, AIMessage(content=submission.model_dump_json()))
-        ),
-        announce_turns=False,
-    )
-
-
 def _writing_model(call_id: str = "call-write-model") -> AIMessage:
     """One turn that puts a building program in the workspace.
 
@@ -228,7 +174,7 @@ def _writing_model(call_id: str = "call-write-model") -> AIMessage:
 
 _CODING_ANSWER = AIMessage(
     content=TicketAnswers(
-        responses=_ticket_response("coding", "Implemented ret_base and result."),
+        responses=_ticket_response("coding", "Implemented the box."),
         stage_report=StageReport(
             concerns={}, unticketed_changes={}, dimension_checks={}
         ),
@@ -247,7 +193,6 @@ def _graph_factory(
     return partial(
         create_reconstruction_graph,
         interpretation_agent_builder=_interpretation_stage(),
-        operations_agent_builder=_operations_stage(),
         coding_agent_builder=_agent("coder", model, **agent_overrides),
         audit_agent_builder=_agent(
             "output_auditor",
@@ -261,8 +206,7 @@ def _graph_factory(
 VALID_BOX_SOURCE = """\
 import cadquery as cq
 
-ret_base = cq.Workplane("XY").box(10, 20, 30)
-result = ret_base
+result = cq.Workplane("XY").box(10, 20, 30)
 """
 
 
@@ -281,17 +225,7 @@ def _verified_resume_run():
     run = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
-            responses=_ticket_response("operations", "Established op_base."),
-        ),
-        workspace_output=_A_PLAN,
-    )
-    run = advance_reconstruction(
-        run,
-        TicketAnswers(
-            responses=_ticket_response("coding", "Implemented ret_base and result."),
+            responses=_ticket_response("coding", "Implemented the box."),
             stage_report=StageReport(
                 concerns={}, unticketed_changes={}, dimension_checks={}
             ),
@@ -309,7 +243,7 @@ def _verified_resume_run():
     return run
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding", "audit"])
+@pytest.mark.parametrize("stage", ["interpretation", "coding", "audit"])
 def test_resume_copies_an_external_attempt_directly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
 ) -> None:
@@ -379,7 +313,7 @@ def test_resume_copies_an_external_attempt_directly(
     assert (source_workspace / future_diagnostic).is_file()
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding", "audit"])
+@pytest.mark.parametrize("stage", ["interpretation", "coding", "audit"])
 def test_resume_temporarily_protects_an_attempt_cleared_by_retry(
     tmp_path: Path, stage: str
 ) -> None:
@@ -615,8 +549,7 @@ def test_public_resume_relocates_nested_verification_paths(
     projection = attempt / "projection/front.png"
     overlay = projection.with_stem("front_overlay")
     unmatched = projection.with_stem("front_unmatched")
-    intermediate = attempt / "intermediate_returns/ret_base.step"
-    for path in (projection, overlay, unmatched, intermediate):
+    for path in (projection, overlay, unmatched):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"preserved artifact")
     verification = original.snapshots[-1].verification
@@ -627,7 +560,6 @@ def test_public_resume_relocates_nested_verification_paths(
         exec_report=replace(
             verification.exec_report,
             step_path=attempt / "output.step",
-            intermediate_returns=(IntermediateReturn("ret_base", intermediate),),
         ),
         render_report={
             RESULT_NAME: RenderReport(
@@ -668,9 +600,6 @@ def test_public_resume_relocates_nested_verification_paths(
     assert restored.exec_report.source is None
     assert result["reconstruction"].snapshots[-1].program_source == VALID_BOX_SOURCE
     assert restored.exec_report.step_path == destination / relative / "output.step"
-    assert restored.exec_report.intermediate_returns[0].step_path == (
-        destination / intermediate.relative_to(source)
-    )
     assert restored.render_report[RESULT_NAME].projection_paths.front == (
         destination / projection.relative_to(source).with_suffix(".dxf")
     )
@@ -685,10 +614,7 @@ def test_public_resume_relocates_nested_verification_paths(
     assert diff.alignment.H_drawing_to_projection == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
     assert diff.alignment.diagnostics == {"description": str(source)}
     assert restored.drawing_diff_report["view_top"].projection_path is None
-    for path in (
-        *diff.paths.values(),
-        restored.exec_report.intermediate_returns[0].step_path,
-    ):
+    for path in diff.paths.values():
         assert path.read_bytes() == b"preserved artifact"
     assert original.snapshots[-1].verification.host_verification_dir == attempt
 
@@ -1251,7 +1177,6 @@ def test_run_sample_verifies_and_preserves_valid_cadquery_output(
         "audit",
         "coding",
         "interpretation",
-        "operations",
     ]
     final_attempt = round_attempts / "coding" / "000"
     assert (final_attempt / "model.py").read_text(encoding="utf-8") == VALID_BOX_SOURCE
@@ -1463,7 +1388,6 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
         # already bound; only what the runner adds is under test here.
         return create_reconstruction_graph(
             interpretation_agent_builder=_interpretation_stage(),
-            operations_agent_builder=_operations_stage(),
             coding_agent_builder=_agent(
                 "coder",
                 ScriptedChatModel(responses=(_writing_model(), _CODING_ANSWER)),
@@ -1680,7 +1604,6 @@ def test_the_prompt_each_role_was_given_reaches_the_event_log(
     # asked when it was asked, and a retry re-asks nothing new.
     assert [prompt["role"] for prompt in prompts] == [
         "drawing_interpreter",
-        "operation_planner",
         "coder",
         "output_auditor",
     ]
@@ -1747,7 +1670,6 @@ def test_why_the_run_stopped_reaches_the_event_log(tmp_path: Path) -> None:
         ]
         expected_reasons = {
             "drawing_interpreter": "COMPLETED",
-            "operation_planner": "COMPLETED",
             "coder": expected,
         }
         if expected == "COMPLETED":

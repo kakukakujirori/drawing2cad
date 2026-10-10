@@ -1,5 +1,5 @@
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from inspect import cleandoc
@@ -21,10 +21,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
 )
-from zeroshot.pipeline.stages.operations.contracts import OperationPlan
-from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.attempts import AttemptStore
-from zeroshot.pipeline.verification.check_program import check_program
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
@@ -38,7 +35,6 @@ from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
     ExecutionStatus,
-    IntermediateReturn,
 )
 from zeroshot.pipeline.verification.run_drawing_diff import (
     DrawingDiffExecutor,
@@ -49,7 +45,6 @@ from zeroshot.pipeline.verification.run_render import (
     RenderRequest,
     StepRenderer,
 )
-from zeroshot.pipeline.verification.shape_census import ShapeCensus
 
 # Build outcomes a second attempt at the same bytes could come out of
 # differently, because they turn on how loaded the machine was.
@@ -112,9 +107,8 @@ class OutputVerifier:
         self.renderer = renderer
         self.diff_drawer = diff_drawer
         self.artifact_presenter = artifact_presenter
-        # The previous stages' deliverables must be available to the verifier
+        # The interpretation names the views to project and compare.
         self.interpretation: DrawingInterpretation | None = None
-        self.operations: OperationPlan | None = None
         self.source_filename = source_filename
         self.attempt_store = attempt_store
         self.projection_view_mode = projection_view_mode
@@ -218,15 +212,7 @@ class OutputVerifier:
         output_model_path = host_verification_dir / self.source_filename
         output_step_path = host_verification_dir / "output.step"
 
-        cq_report = self.executor.execute(
-            self.source_path,
-            output_step_path,
-            intermediate_returns_dir=(
-                host_verification_dir / INTERMEDIATE_RETURNS_DIR
-                if self.artifact_presenter.intermediates != "none"
-                else None
-            ),
-        )
+        cq_report = self.executor.execute(self.source_path, output_step_path)
         if cq_report.source is not None:
             output_model_path.write_text(
                 cq_report.source,
@@ -267,23 +253,7 @@ class OutputVerifier:
         cq_report: CadQueryExecutionReport,
         host_verification_dir: Path,
     ) -> dict[str, RenderReport]:
-        """Draw and describe every `ret_xxx` and `result` the program left behind.
-
-        A program that ran leaves the returns whether or not `result` passed, and
-        a result that failed is when they are most worth reading; a result that
-        passed adds one more drawing of the same kind, so all of them are drawn in one batch.
-        """
-        host_returns_dir = host_verification_dir / INTERMEDIATE_RETURNS_DIR
-        built_steps = [
-            (output.name, output.step_path)
-            for output in cq_report.intermediate_returns
-            if output.step_path is not None
-        ]
-        render_requests = [
-            self._issue_render_request(step_path, host_returns_dir / name)
-            for name, step_path in built_steps
-        ]
-
+        """Draw `result`, including a readable one that failed STEP validation."""
         # A verified result must have its STEP. Rejected, readable results are
         # also rendered for diagnosis, with acceptance still controlled by status.
         if (
@@ -293,25 +263,14 @@ class OutputVerifier:
         ):
             raise ValueError("result built but no STEP path was returned?")
         if (
-            cq_report.returncode == 0
-            and cq_report.step_path is not None
-            and cq_report.step_path.is_file()
+            cq_report.returncode != 0
+            or cq_report.step_path is None
+            or not cq_report.step_path.is_file()
         ):
-            assert RESULT_NAME not in (name for name, _ in built_steps)
-            built_steps.append((RESULT_NAME, cq_report.step_path))
-            render_requests.append(
-                self._issue_render_request(cq_report.step_path, host_verification_dir)
-            )
-
-        # render all the requests in one batch.
-        return {
-            name: ret
-            for (name, _), ret in zip(
-                built_steps,
-                self.renderer.render_many(render_requests),
-                strict=True,
-            )
-        }
+            return {}
+        request = self._issue_render_request(cq_report.step_path, host_verification_dir)
+        (report,) = self.renderer.render_many([request])
+        return {RESULT_NAME: report}
 
     def _draw_diffs(
         self,
@@ -426,7 +385,7 @@ class OutputVerifier:
         if exec_report.status is not ExecutionStatus.VERIFIED or exec_report.returncode:
             status = exec_report.status.value
             return [f"its build ended with status {status}; the build report says why"]
-        return list(self._program_faults(report))
+        return []
 
     @property
     def last_report(self) -> VerifyOutputResult | None:
@@ -457,16 +416,6 @@ class OutputVerifier:
             self._projection_frames() if report.render_report else {},
             previous=self._scored_before if report is self._scored else None,
         )
-
-    def _program_faults(self, report: VerifyOutputResult) -> tuple[str, ...]:
-        exec_report = report.exec_report
-        if self.operations is None or exec_report is None or exec_report.source is None:
-            return ()
-        try:
-            return check_program(exec_report.source, self.operations).faults
-        except SyntaxError:
-            # The build already reports it.
-            return ()
 
 
 def build_verification_feedback(
@@ -536,24 +485,6 @@ def build_verification_feedback(
             )
         )
 
-    # 2b. Intermediate renders, including the intermediate census.
-    if presenter.intermediates != "none" and exec_report:
-        blocks.extend(
-            describe_intermediates(
-                exec_report.intermediate_returns,
-                {
-                    item.name: render_report[item.name]
-                    for item in exec_report.intermediate_returns
-                    if item.name in render_report
-                },
-                view_frames=view_frames,
-                sandbox_workdir=workdir,
-                sandbox_verification_dir=report.sandbox_verification_dir,
-                verification_id=report.verification_id,
-                presenter=presenter,
-            )
-        )
-
     # 3. Drawing comparison, including image legends and attachments.
     blocks.extend(
         describe_drawing_diffs(
@@ -604,114 +535,6 @@ def _render_manifest(
 def _projected(view: str) -> str:
     """Name a drawing of the built solid apart from the views of the input."""
     return f"view_projected_{view}"
-
-
-def _validity(output: IntermediateReturn) -> str:
-    """Flag a BRep that was not valid before export; its STEP may have been repaired."""
-    if output.valid is None:
-        return f"BRep validity unknown ({output.validity_reason or 'not checked'}); "
-    if not output.valid:
-        return f"BRep INVALID before export ({output.validity_reason}); "
-    return ""
-
-
-def _census_table(returns: Sequence[IntermediateReturn]) -> str:
-    """Lay out what each `ret_*` held, one line each, in program order.
-
-    Every line after the first states its change from the line above, so an
-    operation that built nothing and an operation that undid the one before it
-    both show on the face of the table. A return that never reached a STEP
-    carries the reason instead, and the line after it compares against the last
-    return that did.
-    """
-    width = max((len(output.name) for output in returns), default=0)
-    lines: list[str] = []
-    previous: ShapeCensus | None = None
-    for output in returns:
-        head = f"{output.name:<{width}}  {_validity(output)}"
-        if output.census is None:
-            reason = (
-                "STEP exported; shape census unavailable"
-                if output.step_path is not None
-                else f"not exported: {output.error}"
-            )
-            lines.append(head + reason)
-            continue
-        lines.append(
-            head
-            + (
-                output.census.describe()
-                if previous is None
-                else output.census.describe_change_from(previous)
-            )
-        )
-        previous = output.census
-    return "\n".join(lines)
-
-
-def describe_intermediates(
-    intermediate_returns: Sequence[IntermediateReturn],
-    intermediate_renders: Mapping[str, RenderReport],
-    view_frames: ViewFrames,
-    sandbox_workdir: SandboxWorkdir,
-    sandbox_verification_dir: str | None,
-    verification_id: str | None = None,
-    *,
-    presenter: ArtifactPresenter,
-) -> list[ContentBlock]:
-    """Say what every `ret_*` came out as, and where its views were written.
-
-    One sentence for the layout rather than four paths per return: every
-    directory holds the same file names, so listing them all would spend
-    tokens on a convention the reader can apply once.
-    """
-    if not intermediate_returns:
-        return []
-
-    failures = [
-        f"- {name}: {reason}"
-        for name, report in intermediate_renders.items()
-        for reason in (
-            *report.projection_errors.values(),
-            *report.render3d_errors.values(),
-        )
-    ]
-
-    assert sandbox_verification_dir is not None, (
-        "intermediate renders need a sandbox dir"
-    )
-
-    msg = cleandoc("""
-        [Intermediate results]
-        ret_* in execution order: first absolute, then changes vs last measured return.
-        {table}
-        Files are under {sandbox_returns_dir}/<name>/:
-        output.step, projection/<view>.dxf, projection/<view>.png, render_3d/<style>.png.
-    """).format(
-        table=_census_table(intermediate_returns),
-        sandbox_returns_dir=PurePosixPath(sandbox_verification_dir)
-        / INTERMEDIATE_RETURNS_DIR,
-    )
-    if failures:
-        msg += "\n\nRender failures:\n" + "\n".join(failures)
-
-    blocks: list[ContentBlock] = [create_text_block(msg)]
-    if presenter.intermediates == "image":
-        for name in intermediate_renders:
-            blocks.extend(
-                build_feedback_message_blocks(
-                    _render_manifest(
-                        intermediate_renders[name],
-                        verification_id or "",
-                        view_frames,
-                    ),
-                    sandbox_workdir,
-                    mode="image",
-                    heading=f"[Intermediate {name}]",
-                )
-            )
-
-    return blocks
 
 
 def chamfers(diff_reports: Mapping[str, DrawingDiffReport] | None) -> dict[str, float]:

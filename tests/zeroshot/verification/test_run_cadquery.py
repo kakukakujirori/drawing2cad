@@ -14,17 +14,11 @@ from zeroshot.pipeline.sandbox import (
     SandboxStatus,
     SandboxWorkdir,
 )
-from zeroshot.pipeline.verification._run_program import (
-    INTERMEDIATE_RETURNS_DIR,
-    _keep,
-)
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     CadQueryExecutor,
     ExecutionStatus,
     StepVerificationError,
-    _read_returns,
-    _returned_names,
 )
 from zeroshot.pipeline.verification.shape_census import ShapeCensus
 
@@ -37,11 +31,11 @@ result = cq.Workplane("XY").box(10, 20, 30)
 TWO_RESULT_SOURCE = """\
 import cadquery as cq
 
-ret_base = cq.Workplane("XY").box(10, 20, 30)  # the block
-ret_hole = ret_base.cut(
+base = cq.Workplane("XY").box(10, 20, 30)  # the block
+hole = base.cut(
     cq.Workplane("XY").box(2, 2, 100)
 )
-result = ret_hole
+result = hole
 """
 
 
@@ -484,190 +478,6 @@ def test_execute_rejects_sandbox_output_symlink(tmp_path: Path) -> None:
     assert not requested_output_path.exists()
 
 
-def test_the_returned_names_are_the_ones_the_program_assigns_in_order() -> None:
-    assert _returned_names(TWO_RESULT_SOURCE, "model.py") == ["ret_base", "ret_hole"]
-
-
-def test_a_nested_assignment_is_not_kept() -> None:
-    source = """\
-def build():
-    ret_inner = object()
-    return ret_inner
-
-result = build()
-"""
-
-    assert _returned_names(source, "model.py") == []
-
-
-def test_execute_keeps_every_named_output_when_asked_for_them(
-    tmp_path: Path,
-) -> None:
-    executor = CadQueryExecutor(
-        sandbox_runner=SandboxRunner(
-            python_executable=Path(sys.executable),
-            default_timeout_s=60.0,
-        ),
-    )
-    model_path = _write_model(tmp_path, TWO_RESULT_SOURCE)
-    output_step_path = tmp_path / "output.step"
-    intermediate_returns_dir = tmp_path / "intermediate_returns"
-
-    report = executor.execute(
-        model_path, output_step_path, intermediate_returns_dir=intermediate_returns_dir
-    )
-
-    assert report.status is ExecutionStatus.VERIFIED
-    # The reported source stays what the coder wrote, not what was run.
-    assert report.source == TWO_RESULT_SOURCE
-    assert [output.name for output in report.intermediate_returns] == [
-        "ret_base",
-        "ret_hole",
-    ]
-    for output in report.intermediate_returns:
-        assert output.error is None
-        assert output.step_path is not None
-        CadQueryExecutor.verify_step(output.step_path)
-
-
-def _real_executor() -> CadQueryExecutor:
-    return CadQueryExecutor(
-        sandbox_runner=SandboxRunner(
-            python_executable=Path(sys.executable),
-            default_timeout_s=60.0,
-        ),
-    )
-
-
-def test_a_program_that_raises_keeps_what_it_built_before(tmp_path: Path) -> None:
-    source = """\
-import cadquery as cq
-
-ret_base = cq.Workplane("XY").box(10, 20, 30)
-ret_hole = ret_base.no_such_method()
-result = ret_hole
-"""
-    report = _real_executor().execute(
-        _write_model(tmp_path, source),
-        intermediate_returns_dir=tmp_path / "intermediate_returns",
-    )
-
-    assert report.status is ExecutionStatus.FAILED
-    assert report.returncode != 0
-    # The failure is still the line the coder wrote.
-    assert "line 4" in report.stderr
-    # ret_hole was never assigned, so only ret_base is reported.
-    (base,) = report.intermediate_returns
-    assert base.name == "ret_base"
-    assert base.valid is True
-    assert base.step_path is not None and base.step_path.is_file()
-    assert base.census is not None and base.census.volume == pytest.approx(6000.0)
-
-
-def test_a_program_that_raises_before_any_return_keeps_none(tmp_path: Path) -> None:
-    source = """\
-import cadquery as cq
-
-raise RuntimeError("boom")
-ret_base = cq.Workplane("XY").box(10, 20, 30)
-result = ret_base
-"""
-    report = _real_executor().execute(
-        _write_model(tmp_path, source),
-        intermediate_returns_dir=tmp_path / "intermediate_returns",
-    )
-
-    assert report.status is ExecutionStatus.FAILED
-    assert "RuntimeError: boom" in report.stderr
-    assert report.intermediate_returns == ()
-
-
-def test_an_invalid_return_stays_invalid_though_its_step_imports_valid(
-    tmp_path: Path,
-) -> None:
-    source = """\
-import cadquery as cq
-
-ret_bowtie = (
-    cq.Workplane("XY").polyline([(0, 0), (10, 10), (10, 0), (0, 10)]).close().extrude(5)
-)
-ret_box = cq.Workplane("XY").box(1, 2, 3)
-ret_empty = cq.Workplane("XY")
-result = ret_box
-"""
-    report = _real_executor().execute(
-        _write_model(tmp_path, source),
-        intermediate_returns_dir=tmp_path / "intermediate_returns",
-    )
-    kept = {output.name: output for output in report.intermediate_returns}
-
-    bowtie = kept["ret_bowtie"]
-    assert bowtie.valid is False
-    assert bowtie.validity_reason == "shape 1 of 1 is invalid"
-    # The STEP round trip repairs it, which is why validity is checked before export.
-    assert bowtie.step_path is not None
-    CadQueryExecutor.verify_step(bowtie.step_path)
-    assert kept["ret_box"].valid is True
-    # An empty stack is unknown, not valid.
-    assert kept["ret_empty"].valid is None
-    assert kept["ret_empty"].validity_reason == "holds no shape"
-
-
-def test_a_return_whose_metadata_is_unreadable_does_not_cost_the_rest(
-    tmp_path: Path,
-) -> None:
-    sandbox_dir = tmp_path / "sandbox"
-    sandbox_dir.mkdir()
-    (sandbox_dir / "ret_broken.json").write_text("{", encoding="utf-8")
-    (sandbox_dir / "ret_base.json").write_text(
-        '{"valid": true, "validity_reason": null, "export_error": null}',
-        encoding="utf-8",
-    )
-    _write_valid_box_step(sandbox_dir / "ret_base.step")
-
-    broken, base = _read_returns(
-        ["ret_broken", "ret_unassigned", "ret_base"], sandbox_dir, tmp_path / "host"
-    )
-
-    assert broken.valid is None
-    assert broken.validity_reason is None
-    assert broken.error == "metadata unreadable: JSONDecodeError"
-    assert base.valid is True
-    assert base.step_path == tmp_path / "host" / "ret_base" / "output.step"
-
-
-def test_a_named_output_that_is_not_a_shape_is_reported_rather_than_kept(
-    tmp_path: Path,
-) -> None:
-    executor = CadQueryExecutor(
-        sandbox_runner=SandboxRunner(
-            python_executable=Path(sys.executable),
-            default_timeout_s=60.0,
-        ),
-    )
-    source = """\
-import cadquery as cq
-
-ret_base = cq.Workplane("XY").box(10, 20, 30)
-ret_count = 3
-result = ret_base
-"""
-    model_path = _write_model(tmp_path, source)
-
-    report = executor.execute(
-        model_path, intermediate_returns_dir=tmp_path / "intermediate_returns"
-    )
-
-    assert report.status is ExecutionStatus.VERIFIED
-    reported = {output.name: output for output in report.intermediate_returns}
-    assert reported["ret_base"].error is None
-    # Whatever the exporter said about an int, said back rather than raised.
-    assert reported["ret_count"].error
-    assert reported["ret_count"].valid is None
-    assert reported["ret_count"].validity_reason == "holds non-shape values: int"
-    assert not (tmp_path / "intermediate_returns" / "ret_count.step").exists()
-
-
 def test_the_staged_program_is_the_one_the_coder_wrote(tmp_path: Path) -> None:
     # Read inside the run: the sandbox workdir is gone once execute returns.
     seen: dict[str, object] = {}
@@ -679,47 +489,11 @@ def test_the_staged_program_is_the_one_the_coder_wrote(tmp_path: Path) -> None:
     executor, runner = _executor(_sandbox_result(), capture)
     model_path = _write_model(tmp_path, TWO_RESULT_SOURCE)
 
-    report = executor.execute(model_path)
+    executor.execute(model_path)
     command, _ = runner.calls[0]
 
-    assert report.intermediate_returns == ()
     assert seen["source"] == TWO_RESULT_SOURCE
-    # No returns was asked for, so the runner is given no output to keep.
     assert command == "python /work/_run_program.py /work/model.py"
-
-
-def test_the_runner_is_told_which_outputs_to_keep(tmp_path: Path) -> None:
-    executor, runner = _executor(_sandbox_result(), _write_valid_box_step)
-    model_path = _write_model(tmp_path, TWO_RESULT_SOURCE)
-
-    executor.execute(
-        model_path, intermediate_returns_dir=tmp_path / "intermediate_returns"
-    )
-    command, _ = runner.calls[0]
-
-    assert command == "python /work/_run_program.py /work/model.py ret_base ret_hole"
-
-
-def test_a_kept_return_is_counted(tmp_path: Path) -> None:
-    executor = CadQueryExecutor(
-        sandbox_runner=SandboxRunner(
-            python_executable=Path(sys.executable),
-            default_timeout_s=60.0,
-        ),
-    )
-    model_path = _write_model(tmp_path, TWO_RESULT_SOURCE)
-
-    report = executor.execute(
-        model_path, intermediate_returns_dir=tmp_path / "intermediate_returns"
-    )
-    counted = {output.name: output.census for output in report.intermediate_returns}
-
-    assert counted["ret_base"] is not None
-    assert counted["ret_base"].volume == pytest.approx(6000.0)
-    assert counted["ret_base"].faces == Counter({"Plane": 6})
-    # A 2x2 bar cut through the 30mm depth of the block.
-    assert counted["ret_hole"] is not None
-    assert counted["ret_hole"].volume == pytest.approx(5880.0)
 
 
 def test_a_syntax_error_is_reported_with_the_line_and_the_caret(
@@ -749,7 +523,7 @@ def test_an_export_failure_carries_the_traceback_that_explains_it(
     source = """\
 import cadquery as cq
 
-ret_base = cq.Workplane("XY").box(10, 20, 30)
+base = cq.Workplane("XY").box(10, 20, 30)
 result = 3
 """
 
@@ -783,7 +557,7 @@ result = cq.Workplane("XY").box(10, 20, 30).faces(">Z").fillet(100.0)
     assert "/work/model.py" in report.stderr
 
 
-def test_a_return_in_several_pieces_is_counted_whole(tmp_path: Path) -> None:
+def test_a_result_in_several_pieces_is_counted_whole(tmp_path: Path) -> None:
     executor = CadQueryExecutor(
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable),
@@ -793,115 +567,19 @@ def test_a_return_in_several_pieces_is_counted_whole(tmp_path: Path) -> None:
     source = """\
 import cadquery as cq
 
-ret_apart = cq.Workplane("XY").box(10, 10, 10).union(
+result = cq.Workplane("XY").box(10, 10, 10).union(
     cq.Workplane("XY").box(10, 10, 10).translate((100, 0, 0))
 )
-result = ret_apart
 """
 
     report = executor.execute(
-        _write_model(tmp_path, source),
-        intermediate_returns_dir=tmp_path / "intermediate_returns",
+        _write_model(tmp_path, source), output_step_path=tmp_path / "output.step"
     )
-    counted = report.intermediate_returns[0].census
+    counted = report.census
 
+    # Rejected as two solids, but still counted for the coder to read.
+    assert report.status is ExecutionStatus.FAILED
     assert counted is not None
     assert counted.solids == 2
     # Both boxes, not just the one `.val()` would have returned.
     assert counted.volume == pytest.approx(2000.0)
-
-
-def test_an_empty_nested_compound_does_not_abort_verification(tmp_path: Path) -> None:
-    executor = CadQueryExecutor(
-        SandboxRunner(python_executable=Path(sys.executable), default_timeout_s=60.0)
-    )
-    source = """\
-import cadquery as cq
-
-result = cq.Workplane("XY").box(1, 2, 3)
-ret_nested = cq.Compound.makeCompound([cq.Compound.makeCompound([]), result.val()])
-"""
-
-    report = executor.execute(
-        _write_model(tmp_path, source),
-        intermediate_returns_dir=tmp_path / "intermediate_returns",
-    )
-
-    assert report.status is ExecutionStatus.VERIFIED
-    assert report.census is not None
-    assert report.census.volume == pytest.approx(6.0)
-    output = report.intermediate_returns[0]
-    assert output.step_path is not None and output.step_path.is_file()
-    assert output.census is None
-
-
-def test_a_partial_step_left_by_a_failed_export_is_not_a_kept_output(
-    tmp_path: Path,
-) -> None:
-    """The writer can create the file and then raise; the reason outranks the file."""
-    sandbox_dir = tmp_path / "sandbox"
-    sandbox_dir.mkdir()
-    (sandbox_dir / "ret_base.json").write_text(
-        '{"valid": true, "validity_reason": null, '
-        '"export_error": "RuntimeError: ran out of disk"}',
-        encoding="utf-8",
-    )
-    (sandbox_dir / "ret_base.step").write_text("ISO-10303-21;\n", encoding="utf-8")
-
-    (base,) = _read_returns(["ret_base"], sandbox_dir, tmp_path / "host")
-
-    assert base.error == "RuntimeError: ran out of disk"
-    assert base.step_path is None
-    assert base.census is None
-    assert base.valid is True
-
-
-def test_an_output_whose_metadata_cannot_be_saved_does_not_cost_the_rest(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    write_text = Path.write_text
-
-    def refuse_the_first(self: Path, *args: object, **kwargs: object) -> int:
-        if self.name == "ret_a.json":
-            raise PermissionError("no room for diagnostics")
-        return write_text(self, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(Path, "write_text", refuse_the_first)
-
-    _keep({"ret_a": 1, "ret_b": 2}, ["ret_a", "ret_b"])
-
-    kept = tmp_path / INTERMEDIATE_RETURNS_DIR
-    assert not (kept / "ret_a.json").exists()
-    assert (kept / "ret_b.json").is_file()
-    assert "ret_a: not kept: PermissionError" in capsys.readouterr().err
-
-
-def test_a_host_directory_that_cannot_be_made_costs_only_that_return(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The caller has yet to read the CAD result, so saving must not raise over it."""
-    sandbox_dir = tmp_path / "sandbox"
-    sandbox_dir.mkdir()
-    (sandbox_dir / "ret_base.json").write_text(
-        '{"valid": true, "validity_reason": null, "export_error": null}',
-        encoding="utf-8",
-    )
-    _write_valid_box_step(sandbox_dir / "ret_base.step")
-    mkdir = Path.mkdir
-
-    def refuse_the_host(self: Path, *args: object, **kwargs: object) -> None:
-        if "host" in self.parts:
-            raise PermissionError("read-only artifact root")
-        mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(Path, "mkdir", refuse_the_host)
-
-    (base,) = _read_returns(["ret_base"], sandbox_dir, tmp_path / "host")
-
-    assert base.error == "not kept: read-only artifact root"
-    assert base.step_path is None
-    assert base.valid is True

@@ -19,8 +19,6 @@ from zeroshot.pipeline.stages.coding.validate import (
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.operations.contracts import OperationPlan
-from zeroshot.pipeline.stages.operations.validate import validate_operations
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.tickets.validate import validate_ticket_answers
 from zeroshot.pipeline.stages.types import (
@@ -31,7 +29,7 @@ from zeroshot.pipeline.stages.types import (
 )
 
 type Submission = TicketAnswers | AuditReport
-type StageDeliverable = DrawingInterpretation | OperationPlan | VerifyOutputResult
+type StageDeliverable = DrawingInterpretation | VerifyOutputResult
 
 
 def validate_submission(
@@ -61,13 +59,12 @@ def validate_submission(
         )
     raise_together(
         partial(validate_ticket_answers, submission, snapshot),
-        partial(_validate_deliverable, stage, snapshot, deliverable),
+        partial(_validate_deliverable, stage, deliverable),
     )
 
 
 def _validate_deliverable(
     stage: ReasoningStage,
-    snapshot: ReconstructionSnapshot,
     deliverable: StageDeliverable | None,
 ) -> None:
     match stage:
@@ -76,17 +73,11 @@ def _validate_deliverable(
                 raise SubmissionValidationError(
                     "interpretation requires a verified DrawingInterpretation"
                 )
-        case PipelineStage.OPERATIONS:
-            if not isinstance(deliverable, OperationPlan):
-                raise SubmissionValidationError(
-                    "operations requires a verified OperationPlan"
-                )
-            validate_operations(deliverable, snapshot.interpretation)
         case PipelineStage.CODING:
             if not isinstance(deliverable, VerifyOutputResult):
                 raise SubmissionValidationError(
                     "coding requires a terminal verification result"
                 )
-            validate_coding(snapshot, deliverable)
+            validate_coding(deliverable)
         case _:
             raise SubmissionValidationError(f"unexpected reasoning stage: {stage}")

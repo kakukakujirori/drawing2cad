@@ -15,7 +15,6 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
 )
-from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
     StageReport,
@@ -65,14 +64,6 @@ class ReconstructionSnapshot(BaseModel):
             "The complete drawing interpretation produced in this round, or null "
             "until interpretation completes. Earlier interpretations remain in "
             "preceding snapshots."
-        ),
-    )
-    operations: OperationPlan | None = Field(
-        ...,
-        description=(
-            "The complete operation plan produced in this round, or null "
-            "until this round's operations stage completes. Earlier plans "
-            "remain available in preceding snapshots."
         ),
     )
     program_source: str | None = Field(
@@ -156,9 +147,6 @@ class ReconstructionSnapshot(BaseModel):
             and self.interpretation is None
         ):
             raise ValueError("interpretation must exist after interpretation")
-
-        if PipelineStage.OPERATIONS in completed_stages and self.operations is None:
-            raise ValueError("operations must exist after operations")
 
         if self.last_completed_stage is PipelineStage.CODING:
             if self.verification is None:

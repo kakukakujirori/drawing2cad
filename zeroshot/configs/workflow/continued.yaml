@@ -1,6 +1,6 @@
 # @package _global_
 
-# Interpretation, operation planning and coding share a compacted transcript.
+# Interpretation and coding share a compacted transcript.
 # Audit keeps an independent reading of the input and completed program.
 defaults:
   - staged
@@ -14,10 +14,8 @@ workflow:
   # and their tool results consume the context needed by downstream stages.
   compact_between_stages: ${model}
 
-  # One role for all three reasoning stages
+  # One role for both reasoning stages
   interpretation_agent_builder:
-    role: cad_reconstructor
-  operations_agent_builder:
     role: cad_reconstructor
   coding_agent_builder:
     role: cad_reconstructor

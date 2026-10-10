@@ -4,21 +4,15 @@ import pytest
 
 from tests.zeroshot.contracts import interpretation
 from tests.zeroshot.workflow.test_reconstruction_workflow import (
-    _SOURCE,
     _completed_run,
-    _operations,
     _ref,
     _report,
     _stage_responses,
 )
-from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
-from zeroshot.pipeline.stages.operations.contracts import OperationPlan
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.tickets.contracts import StageReport, TicketAnswers
-from zeroshot.pipeline.stages.tickets.validate import StageArtifact
 from zeroshot.pipeline.stages.validate import SubmissionValidationError
-from zeroshot.pipeline.verification import ExecutionStatus
-from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
 from zeroshot.pipeline.workflow.lifecycle import advance_reconstruction, open_next_round
 
 
@@ -28,14 +22,13 @@ def _revision(stage: str, name: str | None) -> ReconstructionHistory:
 
 def _answer(
     history: ReconstructionHistory,
-    stage: str,
-    artifact: StageArtifact | VerifyOutputResult,
+    artifact: DrawingInterpretation,
     **report: object,
 ) -> ReconstructionHistory:
     return advance_reconstruction(
         history,
         TicketAnswers(
-            responses=_stage_responses(history, stage),
+            responses=_stage_responses(history, "interpretation"),
             stage_report=StageReport.model_validate(
                 {
                     "concerns": {},
@@ -45,126 +38,42 @@ def _answer(
                 }
             ),
         ),
-        workspace_output=artifact,  # type: ignore[arg-type]
+        workspace_output=artifact,
     )
 
 
-def _renamed_hole() -> OperationPlan:
-    plan = _operations()
-    plan.proposal[1].name = "op_bore"
-    return plan
-
-
-def test_an_operation_renamed_outside_the_tickets_needs_a_reason() -> None:
+def test_a_feature_changed_outside_the_tickets_needs_a_reason() -> None:
     run = _revision("interpretation", "sem_feature_1")
-    run = _answer(run, "interpretation", interpretation("the base", "the hole"))
+    wider = interpretation("the base", "a wider hole")
 
-    with pytest.raises(
-        SubmissionValidationError, match=r"op_bore \(added\), op_hole \(removed\)"
-    ):
-        _answer(run, "operations", _renamed_hole())
-    _answer(
-        run,
-        "operations",
-        _renamed_hole(),
-        unticketed_changes={"op_hole": "Renamed to op_bore.", "op_bore": "Renamed."},
-    )
-
-
-def test_reordering_operations_outside_the_tickets_needs_a_reason() -> None:
-    run = _revision("interpretation", "sem_feature_1")
-    run = _answer(run, "interpretation", interpretation("the base", "the hole"))
-    reordered = _operations()
-    reordered.proposal.reverse()
-
-    with pytest.raises(SubmissionValidationError, match=r"op_hole \(changed\)"):
-        _answer(run, "operations", reordered)
-    _answer(run, "operations", reordered, unticketed_changes={"op_hole": "Moved."})
+    with pytest.raises(SubmissionValidationError, match=r"sem_feature_2 \(changed\)"):
+        _answer(run, wider)
+    _answer(run, wider, unticketed_changes={"sem_feature_2": "The hole is wider."})
 
 
 def test_a_reason_for_a_member_that_did_not_change_is_refused() -> None:
     run = _revision("interpretation", "sem_feature_1")
-    run = _answer(run, "interpretation", interpretation("the base", "the hole"))
 
-    with pytest.raises(SubmissionValidationError, match="did not change: op_base"):
-        _answer(run, "operations", _operations(), unticketed_changes={"op_base": "."})
-
-
-def test_an_operation_follows_a_feature_changed_this_round() -> None:
-    run = _revision("interpretation", "sem_feature_1")
-    run = _answer(
-        run,
-        "interpretation",
-        interpretation("the base", "a wider hole"),
-        unticketed_changes={"sem_feature_2": "The drawing shows a wider hole."},
-    )
-    plan = _operations()
-    plan.proposal[1].detail = "Cut the wider hole through the base."
-
-    _answer(run, "operations", plan)
+    with pytest.raises(
+        SubmissionValidationError, match="did not change: sem_feature_2"
+    ):
+        _answer(
+            run,
+            interpretation("the base", "the hole"),
+            unticketed_changes={"sem_feature_2": "."},
+        )
 
 
-def test_an_operation_follows_a_feature_that_cites_the_ticketed_view() -> None:
+def test_a_feature_that_cites_the_ticketed_view_may_change() -> None:
     run = _revision("interpretation", "view_front")
-    run = _answer(run, "interpretation", interpretation("the base", "the hole"))
-    plan = _operations()
-    plan.proposal[0].detail = "Extrude a thicker base."
 
-    _answer(run, "operations", plan)
+    _answer(run, interpretation("a thicker base", "the hole"))
 
 
 def test_a_whole_stage_ticket_opens_that_stage() -> None:
-    run = _revision("operations", None)
-    run = _answer(run, "interpretation", interpretation("the base", "the hole"))
+    run = _revision("interpretation", None)
 
-    _answer(run, "operations", _renamed_hole())
-
-
-def test_a_program_statement_follows_its_operation() -> None:
-    run = _revision("operations", "op_hole")
-    run = _answer(run, "interpretation", interpretation("the base", "the hole"))
-    run = _answer(run, "operations", _operations())
-    hole = _SOURCE.replace("ret_base.cut(object())", "ret_base.cut(object()).clean()")
-    base = hole.replace("ret_base = object()", "ret_base = object().clean()")
-
-    _answer(run, "coding", _verified(hole), dimension_checks={})
-    with pytest.raises(SubmissionValidationError, match=r"ret_base \(changed\)"):
-        _answer(run, "coding", _verified(base), dimension_checks={})
-
-
-def test_a_coding_report_can_explain_a_changed_helper() -> None:
-    source = "depth = 5.0\n" + _SOURCE.replace(
-        "ret_base = object()", "ret_base = object(depth)"
-    )
-    run = open_next_round(
-        _completed_run(verification=_verified(source)),
-        _report(target=_ref("operations", "op_hole")),
-    )
-    run = _answer(run, "interpretation", interpretation("the base", "the hole"))
-    run = _answer(run, "operations", _operations())
-
-    _answer(
-        run,
-        "coding",
-        _verified(source.replace("depth = 5.0", "depth = 0.05")),
-        dimension_checks={},
-        unticketed_changes={"ret_base": "Reduced the helper depth from 5 to 0.05."},
-    )
-
-
-def test_a_coding_report_cannot_explain_an_unknown_return() -> None:
-    run = _revision("operations", "op_hole")
-    run = _answer(run, "interpretation", interpretation("the base", "the hole"))
-    run = _answer(run, "operations", _operations())
-
-    with pytest.raises(SubmissionValidationError, match="did not change: ret_missing"):
-        _answer(
-            run,
-            "coding",
-            _verified(_SOURCE),
-            dimension_checks={},
-            unticketed_changes={"ret_missing": "Changed its helper."},
-        )
+    _answer(run, interpretation("a thicker base", "a wider hole"))
 
 
 def test_fields_validation_derives_are_not_changes() -> None:
@@ -172,33 +81,17 @@ def test_fields_validation_derives_are_not_changes() -> None:
     calibrated = interpretation("the base", "the hole")
     calibrated.views[0].scale = 0.5
     calibrated.views[0].image_size = (10, 10)
-    _answer(run, "interpretation", calibrated)
+    _answer(run, calibrated)
 
     located = interpretation("the base", "the hole")
     evidence = located.features[1].evidence[0]
     located.features[1].evidence[0] = evidence.model_copy(
         update={"box_uv": (0.0, 0.0, 5.0, 5.0)}
     )
-    _answer(run, "interpretation", located)
+    _answer(run, located)
 
     located.features[1].evidence[0] = evidence.model_copy(
         update={"box_px": (1, 1, 9, 9)}
     )
     with pytest.raises(SubmissionValidationError, match=r"sem_feature_2 \(changed\)"):
-        _answer(run, "interpretation", located)
-
-
-def _verified(source: str) -> VerifyOutputResult:
-    return VerifyOutputResult(
-        exec_report=CadQueryExecutionReport(
-            status=ExecutionStatus.VERIFIED, source=source, returncode=0
-        )
-    )
-
-
-def test_value_annotations_are_not_changes() -> None:
-    written, annotated = _operations(), _operations()
-    written.proposal[1].detail = "Cut sem_feature_2.radius deep."
-    annotated.proposal[1].detail = "Cut sem_feature_2.radius (= 3.0) deep."
-
-    assert written.members() == annotated.members()
+        _answer(run, located)

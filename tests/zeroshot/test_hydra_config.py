@@ -31,7 +31,6 @@ def test_default_config_instantiates_artifact_presenter(mode) -> None:
         "output_renders": "path" if mode == "none" else mode,
         "unmatched": "path" if mode == "none" else mode,
         "overlay": mode,
-        "intermediates": mode,
     }
 
     with initialize_config_dir(
@@ -162,7 +161,6 @@ def test_the_backend_chosen_decides_how_every_agent_is_asked_for_structured_outp
 
     builders = [
         "interpretation_agent_builder",
-        "operations_agent_builder",
         "coding_agent_builder",
         "audit_agent_builder",
     ]
@@ -288,7 +286,6 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     # contracts to the code.
     assert set(graph_factory.keywords) == {
         "interpretation_agent_builder",
-        "operations_agent_builder",
         "coding_agent_builder",
         "audit_agent_builder",
         "max_audit_reject_count",
@@ -325,10 +322,6 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert stage.keywords["response_format_strategy"] == "provider"
     assert stage.keywords["model"].model_name == "gemma4:e2b"
 
-    operations = graph_factory.keywords["operations_agent_builder"]
-    assert operations.func is create_agent
-    assert operations.keywords["role"] == "operation_planner"
-    assert ROLE_PATHS["operation_planner"].is_file()
     assert "output_schema" not in stage.keywords
     assert "agent" not in config
 
@@ -353,8 +346,8 @@ def test_fresh_coder_can_be_selected_in_workflow_config(workflow, fresh) -> None
 
 def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None:
     """The variant is the staged graph with the thread shared, so it has to
-    inherit staged's settings rather than restate them, and it has to give all
-    four reasoning stages one role."""
+    inherit staged's settings rather than restate them, and it has to give both
+    reasoning stages one role."""
     with initialize_config_dir(
         config_dir=str(CONFIG_DIR.resolve()),
         version_base="1.3",
@@ -369,7 +362,6 @@ def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None
 
     roles = {
         graph_factory.keywords["interpretation_agent_builder"].keywords["role"],
-        graph_factory.keywords["operations_agent_builder"].keywords["role"],
         graph_factory.keywords["coding_agent_builder"].keywords["role"],
     }
     assert roles == {"cad_reconstructor"}
@@ -380,7 +372,6 @@ def test_the_continued_workflow_runs_the_reasoning_stages_as_one_agent() -> None
     # against its callable now so configuration drift fails in this test.
     for key in (
         "interpretation_agent_builder",
-        "operations_agent_builder",
         "coding_agent_builder",
         "audit_agent_builder",
     ):

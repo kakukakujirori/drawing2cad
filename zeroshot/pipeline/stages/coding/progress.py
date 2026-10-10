@@ -83,11 +83,8 @@ class ProgressOutputVerifier(OutputVerifier):
             or report.sandbox_verification_dir is None
             or not (report.host_verification_dir / self.source_filename).is_file()
             or (report.host_verification_dir / self.source_filename).is_symlink()
-            or self.operations is None
         ):
-            return None, "STEP or OperationPlan checks are not satisfied"
-        if faults := self._program_faults(report):
-            return None, "submission is blocked: " + " ".join(faults)
+            return None, "STEP checks are not satisfied"
         try:
             saved_source = (
                 report.host_verification_dir / self.source_filename

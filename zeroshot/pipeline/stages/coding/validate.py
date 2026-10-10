@@ -2,9 +2,8 @@ from collections.abc import Mapping
 
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
-from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.verification import ExecutionStatus, check_program
+from zeroshot.pipeline.verification import ExecutionStatus
 
 
 def validate_dimension_checks(
@@ -36,26 +35,10 @@ def validate_dimension_checks(
         )
 
 
-def validate_coding(
-    snapshot: ReconstructionSnapshot,
-    verification: VerifyOutputResult,
-) -> None:
+def validate_coding(verification: VerifyOutputResult) -> None:
+    """A failed build stays auditable; only an unfinished one is refused."""
     exec_report = verification.exec_report
     if exec_report is None:
         raise SubmissionValidationError("coding verification is not complete")
     if exec_report.status is ExecutionStatus.UNINITIALIZED:
         raise SubmissionValidationError("coding verification must be terminal")
-    if snapshot.operations is None:
-        raise SubmissionValidationError("coding requires an integrated OperationPlan")
-
-    # A missing or syntactically invalid source is already represented by a
-    # terminal verification failure and must remain auditable. When readable
-    # source exists, reject plan-to-code identity drift as early as possible.
-    if exec_report.source is None:
-        return
-    try:
-        program_check = check_program(exec_report.source, snapshot.operations)
-    except SyntaxError:
-        return
-    if program_check.faults:
-        raise SubmissionValidationError("\n".join(program_check.faults))

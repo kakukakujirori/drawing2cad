@@ -144,7 +144,7 @@ def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving(
 def test_write_validate_review_rewrite_and_confirm_only_current_attempt(strategy, mode):
     history = _completed_run()
     snapshot = history.snapshots[-1]
-    report = _report(target=_ref("coding", "ret_hole"))
+    report = _report(target=_ref("coding", None))
     report.findings[0].evidence = [AuditRegion(file="input.png", box=(0, 0, 10, 10))]
     corrected = report.model_copy(deep=True)
     corrected.findings[0].evidence = [
@@ -243,7 +243,7 @@ def test_invalid_report_and_crop_failure_cannot_leave_an_accepted_audit(monkeypa
         assert "invalid" in str(verifier.feedback())
         assert not verifier.confirmed
 
-        report = _report(target=_ref("coding", "ret_hole"))
+        report = _report(target=_ref("coding", None))
         report.findings[0].evidence = [
             AuditRegion(file="input.png", box=(0, 0, 10, 10))
         ]

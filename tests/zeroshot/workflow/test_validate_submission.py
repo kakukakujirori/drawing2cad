@@ -1,6 +1,5 @@
 """Contextual validation shared by all reconstruction stages."""
 
-import re
 from collections.abc import Sequence
 
 import pytest
@@ -15,11 +14,6 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     Dimension,
     DrawingInterpretation,
     Region,
-)
-from zeroshot.pipeline.stages.operations.contracts import (
-    Operation,
-    OperationPlan,
-    OperationVerb,
 )
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
@@ -51,38 +45,6 @@ from zeroshot.pipeline.workflow.lifecycle import (
 
 def _interpretation() -> DrawingInterpretation:
     return interpretation("the base")
-
-
-def _operations(*, semantics: list[str] | None = None) -> OperationPlan:
-    return OperationPlan(
-        proposal=[
-            Operation(
-                name="op_base",
-                verb=OperationVerb.EXTRUDE,
-                detail="Extrude the base.",
-                semantics=(semantics if semantics is not None else ["sem_feature_1"]),
-            )
-        ],
-        rationale="The base is one extrusion.",
-    )
-
-
-def _plan_for(
-    semantics: list[str],
-    *,
-    detail: str = "Build the feature.",
-) -> OperationPlan:
-    return OperationPlan(
-        proposal=[
-            Operation(
-                name="op_feature",
-                verb=OperationVerb.EXTRUDE,
-                detail=detail,
-                semantics=semantics,
-            )
-        ],
-        rationale="The operation constructs the named features.",
-    )
 
 
 def _response(ticket_id: str, stage: ReasoningStage) -> TicketResponse:
@@ -126,7 +88,7 @@ def _snapshot(
         VerifyOutputResult(
             exec_report=CadQueryExecutionReport(
                 status=ExecutionStatus.VERIFIED,
-                source="ret_base = object()\nresult = ret_base\n",
+                source="result = object()\n",
                 returncode=0,
             )
         )
@@ -139,9 +101,6 @@ def _snapshot(
         last_completed_stage=completed_stage,
         interpretation=(held if held is not None else _interpretation())
         if completed
-        else None,
-        operations=_operations()
-        if completed_stage in (PipelineStage.OPERATIONS, PipelineStage.CODING)
         else None,
         program_source=verification.exec_report.source
         if verification is not None and verification.exec_report is not None
@@ -156,7 +115,6 @@ def _verified_and_validate(output, snapshot, *, workspace_output=None):
     if deliverable is None:
         deliverable = {
             PipelineStage.INTERPRETATION: _interpretation(),
-            PipelineStage.OPERATIONS: _operations(),
         }.get(next_stage(snapshot.last_completed_stage))
     validate_submission(output, snapshot, deliverable=deliverable)
 
@@ -173,21 +131,12 @@ def test_every_reasoning_stage_accepts_its_expected_deliverable() -> None:
     )
     _verified_and_validate(
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
-            responses=_answer_for("ticket_initial", PipelineStage.OPERATIONS),
-        ),
-        _snapshot(PipelineStage.INTERPRETATION),
-    )
-    _verified_and_validate(
-        TicketAnswers(
             responses=_answer_for("ticket_initial", PipelineStage.CODING),
             stage_report=StageReport(
                 concerns={}, unticketed_changes={}, dimension_checks={}
             ),
         ),
-        _snapshot(PipelineStage.OPERATIONS),
+        _snapshot(PipelineStage.INTERPRETATION),
         workspace_output=VerifyOutputResult(
             exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
         ),
@@ -302,22 +251,8 @@ def test_the_current_snapshot_decides_which_deliverable_type_is_valid() -> None:
     with pytest.raises(
         SubmissionValidationError, match="verified DrawingInterpretation"
     ):
-        _verified_and_validate(answers, _snapshot(None), workspace_output=_operations())
-
-
-def test_operations_must_cover_only_current_semantic_features() -> None:
-    submission = TicketAnswers(
-        stage_report=StageReport(
-            concerns={}, dimension_checks=None, unticketed_changes={}
-        ),
-        responses=_answer_for("ticket_initial", PipelineStage.OPERATIONS),
-    )
-
-    with pytest.raises(SubmissionValidationError, match="sem_feature_1"):
         _verified_and_validate(
-            submission,
-            _snapshot(PipelineStage.INTERPRETATION),
-            workspace_output=_operations(semantics=["sem_absent"]),
+            answers, _snapshot(None), workspace_output=VerifyOutputResult()
         )
 
 
@@ -336,163 +271,6 @@ def test_interpretation_rejects_an_evidence_view_absent_from_the_artifact() -> N
                 )
             ]
         )
-
-
-def _validate_plan(plan: OperationPlan, held: DrawingInterpretation) -> None:
-    _verified_and_validate(
-        TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
-            responses=_answer_for("ticket_initial", PipelineStage.OPERATIONS),
-        ),
-        _snapshot(PipelineStage.INTERPRETATION, held=held),
-        workspace_output=plan,
-    )
-
-
-def test_operation_validation_names_both_missing_and_invented_features() -> None:
-    semantics = interpretation("base", "bore")
-    plan = _plan_for(["sem_feature_1", "sem_absent"])
-    plan.rationale = "The part is complete without sem_feature_2."
-
-    with pytest.raises(SubmissionValidationError) as caught:
-        _validate_plan(plan, semantics)
-
-    message = str(caught.value)
-    assert "no operation in the plan builds" in message
-    assert "sem_feature_2" in message
-    assert "the interpretation does not contain" in message
-    assert "sem_absent" in message
-    assert "rationale" not in message
-    assert len(message.splitlines()) == 2
-
-
-def _measured_blend() -> DrawingInterpretation:
-    return interpretation(
-        features=[
-            interpreted_feature(
-                "sem_shoulder_blend",
-                "shoulder blend",
-                parameters={
-                    "major_radius": 11.31245992416,
-                    "tube_radius": 3.39440063713,
-                },
-            )
-        ]
-    )
-
-
-@pytest.mark.parametrize(
-    "literal",
-    ["11.31245992416", "-11.31245992416", "11.31245992416e-6", "5.65622996208"],
-)
-def test_operation_validation_does_not_infer_copying_from_numeric_literals(
-    literal: str,
-) -> None:
-    _validate_plan(
-        _plan_for(["sem_shoulder_blend"], detail=f"Use an offset of {literal}."),
-        _measured_blend(),
-    )
-
-
-def test_operation_validation_accepts_derived_and_short_numbers() -> None:
-    _validate_plan(
-        _plan_for(
-            ["sem_shoulder_blend"],
-            detail="Cut 5.65622996208 deep, half of sem_shoulder_blend.major_radius.",
-        ),
-        _measured_blend(),
-    )
-    _validate_plan(
-        _plan_for(["sem_boss"], detail="Extrude 25 mm."),
-        interpretation(
-            features=[
-                interpreted_feature("sem_boss", "boss", parameters={"radius": 25.0})
-            ]
-        ),
-    )
-
-
-def test_operation_validation_rejects_a_nonexistent_parameter_address() -> None:
-    address = "sem_shoulder_blend.height"
-
-    with pytest.raises(SubmissionValidationError, match=address):
-        _validate_plan(
-            _plan_for(
-                ["sem_shoulder_blend"],
-                detail=f"Sweep {address} along +z, offset by 11.31245992416.",
-            ),
-            _measured_blend(),
-        )
-
-
-def test_operation_validation_accepts_a_whole_position_parameter() -> None:
-    held = interpretation(
-        features=[
-            interpreted_feature(
-                "sem_main_bore", "main bore", parameters={"center": [1.5, 2.5, 0.0]}
-            )
-        ]
-    )
-    _validate_plan(
-        _plan_for(["sem_main_bore"], detail="Cut from sem_main_bore.center."), held
-    )
-
-
-def test_operation_validation_rejects_a_coordinate_of_a_single_number() -> None:
-    """A scalar parameter cannot be treated as a coordinate vector."""
-    address = "sem_shoulder_blend.major_radius.x"
-
-    with pytest.raises(SubmissionValidationError, match=re.escape(address)):
-        _validate_plan(
-            _plan_for(["sem_shoulder_blend"], detail=f"Sweep {address} along +z."),
-            _measured_blend(),
-        )
-
-
-def test_operation_validation_accepts_a_printed_dimension_reference() -> None:
-    held = interpretation(
-        features=[
-            interpreted_feature(
-                "sem_main_bore", "main bore", dimension_refs=["dim_depth"]
-            )
-        ],
-        views=[
-            _interpretation()
-            .views[0]
-            .model_copy(
-                update={
-                    "dimensions": [
-                        Dimension(
-                            name="dim_depth",
-                            kind="linear",
-                            text="10",
-                            nominal_value=10,
-                            region=Region(view="view_front", box_px=(0, 0, 10, 10)),
-                            quantity=1,
-                            note=None,
-                        )
-                    ]
-                }
-            )
-        ],
-    )
-    _validate_plan(
-        _plan_for(["sem_main_bore"], detail="Extrude dim_depth.nominal_value."), held
-    )
-
-
-def test_operation_validation_accepts_a_reference_with_its_resolved_value() -> None:
-    _validate_plan(
-        _plan_for(
-            ["sem_shoulder_blend"],
-            detail=(
-                "Sweep a blend of sem_shoulder_blend.major_radius (= 11.31245992416)."
-            ),
-        ),
-        _measured_blend(),
-    )
 
 
 def test_only_coding_accepts_a_separate_terminal_verification() -> None:
@@ -518,37 +296,18 @@ def test_only_coding_accepts_a_separate_terminal_verification() -> None:
             ),
         )
     with pytest.raises(SubmissionValidationError, match="requires"):
-        _verified_and_validate(coding_submission, _snapshot(PipelineStage.OPERATIONS))
+        _verified_and_validate(
+            coding_submission, _snapshot(PipelineStage.INTERPRETATION)
+        )
     with pytest.raises(SubmissionValidationError, match="not complete"):
         _verified_and_validate(
             coding_submission,
-            _snapshot(PipelineStage.OPERATIONS),
+            _snapshot(PipelineStage.INTERPRETATION),
             workspace_output=VerifyOutputResult(),
         )
 
 
-def test_coding_checks_the_submitted_program_against_current_round_operations() -> None:
-    submission = TicketAnswers(
-        responses=_answer_for("ticket_initial", PipelineStage.CODING),
-        stage_report=StageReport(
-            concerns={}, unticketed_changes={}, dimension_checks={}
-        ),
-    )
-
-    with pytest.raises(SubmissionValidationError, match="missing.*op_base"):
-        _verified_and_validate(
-            submission,
-            _snapshot(PipelineStage.OPERATIONS),
-            workspace_output=VerifyOutputResult(
-                exec_report=CadQueryExecutionReport(
-                    status=ExecutionStatus.REJECTED,
-                    source="ret_other = object()\nresult = ret_other\n",
-                )
-            ),
-        )
-
-
-def test_coding_reports_dimension_and_program_faults_together() -> None:
+def test_coding_reports_an_unknown_dimension_check() -> None:
     submission = TicketAnswers(
         responses=_answer_for("ticket_initial", PipelineStage.CODING),
         stage_report=StageReport(
@@ -560,15 +319,15 @@ def test_coding_reports_dimension_and_program_faults_together() -> None:
 
     with pytest.raises(
         SubmissionValidationError,
-        match=r"(?s)unknown: \['dim_r16'\].*concerns.*op_base",
+        match=r"(?s)unknown: \['dim_r16'\].*concerns",
     ):
         _verified_and_validate(
             submission,
-            _snapshot(PipelineStage.OPERATIONS),
+            _snapshot(PipelineStage.INTERPRETATION),
             workspace_output=VerifyOutputResult(
                 exec_report=CadQueryExecutionReport(
                     status=ExecutionStatus.REJECTED,
-                    source="ret_other = object()\nresult = ret_other\n",
+                    source="result = object()\n",
                 )
             ),
         )
@@ -584,7 +343,7 @@ def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
 
     _verified_and_validate(
         submission,
-        _snapshot(PipelineStage.OPERATIONS),
+        _snapshot(PipelineStage.INTERPRETATION),
         workspace_output=VerifyOutputResult(
             exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
         ),
@@ -599,7 +358,7 @@ def test_coding_keeps_a_terminal_unreadable_program_auditable() -> None:
                     )
                 }
             ),
-            _snapshot(PipelineStage.OPERATIONS),
+            _snapshot(PipelineStage.INTERPRETATION),
             workspace_output=VerifyOutputResult(
                 exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
             ),
@@ -648,10 +407,10 @@ def test_coding_checks_all_dimensions_once_across_tickets_even_without_a_program
 ):
     held = _dimensioned_interpretation()
     snapshot = _snapshot(
-        PipelineStage.OPERATIONS,
+        PipelineStage.INTERPRETATION,
         held=held,
         tickets=[
-            _ticket(name, PipelineStage.INTERPRETATION, PipelineStage.OPERATIONS)
+            _ticket(name, PipelineStage.INTERPRETATION)
             for name in ("ticket_one", "ticket_two")
         ],
     )
@@ -666,7 +425,7 @@ def test_coding_checks_all_dimensions_once_across_tickets_even_without_a_program
                 "concern_no_solid": "The program failed before a solid was available."
             },
             dimension_checks={
-                "dim_width": "Not established: ret_base has not produced a solid.",
+                "dim_width": "Not established: the program has not produced a solid.",
                 "dim_equal": "Not checked: same intended extent as dim_width, but no final solid.",
                 "dim_unreadable": "Not established: the printed value is unreadable.",
             },
@@ -712,20 +471,16 @@ def test_coding_dimension_coverage_uses_ids_including_equal_and_unreadable_value
     with pytest.raises(SubmissionValidationError, match=message):
         validate_submission(
             submission,
-            _snapshot(PipelineStage.OPERATIONS, held=_dimensioned_interpretation()),
+            _snapshot(PipelineStage.INTERPRETATION, held=_dimensioned_interpretation()),
             deliverable=VerifyOutputResult(
                 exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
             ),
         )
 
 
-@pytest.mark.parametrize(
-    "stage", [PipelineStage.INTERPRETATION, PipelineStage.OPERATIONS]
-)
-def test_non_coding_stages_cannot_submit_dimension_checks_even_when_empty(stage):
-    snapshot = _snapshot(
-        None if stage is PipelineStage.INTERPRETATION else PipelineStage.INTERPRETATION
-    )
+def test_interpretation_cannot_submit_dimension_checks_even_when_empty():
+    stage = PipelineStage.INTERPRETATION
+    snapshot = _snapshot(None)
     with pytest.raises(
         SubmissionValidationError, match="dimension_checks must be null"
     ):
@@ -745,7 +500,7 @@ def test_coding_saves_concerns_and_resolved_dimension_checks_together(tmp_path):
         run_id="run_dimension_checks",
         input_drawings=drawing(),
         snapshots=[
-            _snapshot(PipelineStage.OPERATIONS, held=_dimensioned_interpretation())
+            _snapshot(PipelineStage.INTERPRETATION, held=_dimensioned_interpretation())
         ],
     )
     submission = TicketAnswers(
@@ -756,7 +511,7 @@ def test_coding_saves_concerns_and_resolved_dimension_checks_together(tmp_path):
                 "concern_width": "The adopted width remains dim_width.nominal_value."
             },
             dimension_checks={
-                "dim_width": "Not established: ret_base was intended to span dim_width.nominal_value.",
+                "dim_width": "Not established: the base was intended to span dim_width.nominal_value.",
                 "dim_equal": "Not checked: no solid to compare against dim_equal.nominal_value.",
                 "dim_unreadable": "Not established: dim_unreadable.nominal_value is unreadable.",
             },
@@ -784,7 +539,7 @@ def test_coding_saves_concerns_and_resolved_dimension_checks_together(tmp_path):
         "dimension_checks",
         "unticketed_changes",
     }
-    assert len(restored.snapshots[-1].open_tickets[0].responses) == 3
+    assert len(restored.snapshots[-1].open_tickets[0].responses) == 2
     assert submission.stage_report.dimension_checks["dim_width"].endswith(
         "dim_width.nominal_value."
     )
@@ -862,56 +617,50 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
     assert interpreted.snapshots[-1].stage_reports == snapshot.stage_reports
 
     before = interpreted.model_dump_json()
+    failed_build = VerifyOutputResult(
+        exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
+    )
     with pytest.raises(SubmissionValidationError, match="missing ticket responses"):
         advance_reconstruction(
             interpreted,
             TicketAnswers(
                 responses={},
                 stage_report=StageReport(
-                    dimension_checks=None,
+                    dimension_checks={},
                     unticketed_changes={},
                     concerns={"concern_other": "This does not answer the ticket."},
                 ),
             ),
-            workspace_output=_operations(),
+            workspace_output=failed_build,
         )
     assert interpreted.model_dump_json() == before
-    planned = advance_reconstruction(
+    coding_report = StageReport(concerns={}, dimension_checks={}, unticketed_changes={})
+    coded = advance_reconstruction(
         interpreted,
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
-            responses=_answer_for("ticket_initial", PipelineStage.OPERATIONS),
+            stage_report=coding_report,
+            responses=_answer_for("ticket_initial", PipelineStage.CODING),
         ),
-        workspace_output=_operations(),
+        workspace_output=failed_build,
     )
-    assert planned.snapshots[-1].stage_reports == {
+    assert coded.snapshots[-1].stage_reports == {
         PipelineStage.INTERPRETATION: report,
-        PipelineStage.OPERATIONS: StageReport(
-            concerns={}, dimension_checks=None, unticketed_changes={}
-        ),
+        PipelineStage.CODING: coding_report,
     }
 
     for reports in (
-        {
-            PipelineStage.OPERATIONS: StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            )
-        },
+        {PipelineStage.CODING: coding_report},
         {
             PipelineStage.INTERPRETATION: StageReport(
                 dimension_checks=None,
                 unticketed_changes={},
                 concerns={"concern_upstream": "Rewritten upstream."},
             ),
-            PipelineStage.OPERATIONS: StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            PipelineStage.CODING: coding_report,
         },
     ):
         tampered = ReconstructionSnapshot.model_validate(
-            {**dict(planned.snapshots[-1]), "stage_reports": reports}
+            {**dict(coded.snapshots[-1]), "stage_reports": reports}
         )
         with pytest.raises(
             ValueError, match="preserve the current interpretation stage report"

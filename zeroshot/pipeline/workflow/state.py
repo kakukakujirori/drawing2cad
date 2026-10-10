@@ -26,7 +26,6 @@ from zeroshot.pipeline.workflow.components.agent import AgentState
 
 class ReconstructionState(TypedDict):
     interpretation_state: NotRequired[AgentState]
-    operations_state: NotRequired[AgentState]
     coding_state: NotRequired[AgentState]
     audit_state: NotRequired[AgentState]
 
@@ -42,7 +41,6 @@ class ReconstructionState(TypedDict):
 # the thread. The one place that knows which channel belongs to which stage.
 _LEAD_TRANSCRIPT: Mapping[ReasoningStage, str] = {
     PipelineStage.INTERPRETATION: "interpretation_state",
-    PipelineStage.OPERATIONS: "operations_state",
     PipelineStage.CODING: "coding_state",
 }
 

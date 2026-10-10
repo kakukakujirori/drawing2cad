@@ -1,8 +1,6 @@
 import ast
-import json
 import shutil
 import traceback
-from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -12,11 +10,6 @@ from zeroshot.pipeline.sandbox import (
     SandboxStatus,
     SandboxWorkdir,
 )
-from zeroshot.pipeline.verification._run_program import (
-    INTERMEDIATE_RETURNS_DIR,
-    METADATA_SUFFIX,
-)
-from zeroshot.pipeline.verification.check_program import assigned_names
 from zeroshot.pipeline.verification.shape_census import ShapeCensus, read_census
 
 _RUNNER = "_run_program.py"
@@ -32,19 +25,6 @@ class ExecutionStatus(StrEnum):
 
 
 @dataclass(frozen=True)
-class IntermediateReturn:
-    """One `ret_*` as the program left it, on finishing or on raising."""
-
-    name: str
-    step_path: Path | None = None
-    error: str | None = None
-    census: ShapeCensus | None = None
-    # Of the BRep before export; None when it could not be checked.
-    valid: bool | None = None
-    validity_reason: str | None = None
-
-
-@dataclass(frozen=True)
 class CadQueryExecutionReport:
     source: str | None = None
     status: ExecutionStatus = ExecutionStatus.INFRA_ERROR
@@ -55,8 +35,6 @@ class CadQueryExecutionReport:
     stdout: str = ""
     stderr: str = ""
     census: ShapeCensus | None = None
-    # In program order, and empty unless `execute` was asked to keep them.
-    intermediate_returns: tuple[IntermediateReturn, ...] = ()
 
 
 def _rejection(error: SyntaxError | ValueError) -> str:
@@ -70,80 +48,6 @@ def _rejection(error: SyntaxError | ValueError) -> str:
     return "".join(traceback.format_exception_only(type(error), error)).strip()
 
 
-def _returned_names(source: str, filename: str) -> list[str]:
-    """List the `ret_*` names the program assigns, in the order it assigns them."""
-    tree = ast.parse(source, filename=filename, mode="exec")
-    names: list[str] = []
-    for statement in tree.body:
-        for name in sorted(assigned_names(statement)):
-            if name.startswith("ret_") and name not in names:
-                names.append(name)
-    return names
-
-
-def _read_one_return(
-    name: str,
-    sandbox_temp_returns_dir: Path,
-    host_dest_returns_dir: Path,
-) -> IntermediateReturn:
-    # JSON check
-    try:
-        metadata = json.loads(
-            (sandbox_temp_returns_dir / f"{name}{METADATA_SUFFIX}").read_text(
-                encoding="utf-8"
-            )
-        )
-    except (OSError, ValueError) as error:
-        return IntermediateReturn(
-            name, error=f"metadata unreadable: {type(error).__name__}"
-        )
-
-    validity = {
-        "valid": metadata.get("valid"),
-        "validity_reason": metadata.get("validity_reason"),
-    }
-
-    # STEP check. A partial file the failed export left behind is not an output,
-    # so the reason comes first: a readable STEP would otherwise hide it.
-    if export_error := metadata.get("export_error"):
-        return IntermediateReturn(name, error=export_error, **validity)
-    built = sandbox_temp_returns_dir / f"{name}.step"
-    if not built.is_file():
-        return IntermediateReturn(name, error="no step file was written", **validity)
-
-    # STEP copy to host (One directory per return, laid out like the attempt that holds it)
-    kept = host_dest_returns_dir / name / "output.step"
-    try:
-        kept.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(built, kept)
-    except OSError as error:
-        return IntermediateReturn(name, error=f"not kept: {error}", **validity)
-    return IntermediateReturn(
-        name, step_path=kept, census=read_census(kept), **validity
-    )
-
-
-def _read_returns(
-    ret_names: Sequence[str],
-    sandbox_temp_returns_dir: Path,
-    host_dest_returns_dir: Path,
-) -> tuple[IntermediateReturn, ...]:
-    """Keep a STEP for each named output, or the reason the program wrote none.
-
-    A program that raised still leaves the outputs it assigned before raising.
-    An output never assigned left no metadata and is left out.
-    """
-    if not sandbox_temp_returns_dir.is_dir():
-        return ()
-    # No mkdir here: each kept return makes its own directory and reports its own
-    # failure. Raising would lose the CAD result the caller has yet to read.
-    return tuple(
-        _read_one_return(name, sandbox_temp_returns_dir, host_dest_returns_dir)
-        for name in ret_names
-        if (sandbox_temp_returns_dir / f"{name}{METADATA_SUFFIX}").exists()
-    )
-
-
 class CadQueryExecutor:
     def __init__(self, sandbox_runner: SandboxRunner) -> None:
         self.sandbox_runner = sandbox_runner
@@ -152,15 +56,11 @@ class CadQueryExecutor:
         self,
         model_path: Path,
         output_step_path: Path | None = None,
-        intermediate_returns_dir: Path | None = None,
     ) -> CadQueryExecutionReport:
         """Run the program in the sandbox and report what it built.
 
-        Both directories are host paths the caller keeps. The sandbox writes
-        to `output.step` and `intermediate_returns/` in its own workdir, which
-        is gone by the time this returns. Given a returns directory, one STEP
-        file is kept there for every `ret_*` the program holds once it has run
-        or raised; the failure itself stays in `status` and `stderr`.
+        `output_step_path` is a host path the caller keeps. The sandbox writes
+        `output.step` in its own workdir, which is gone by the time this returns.
         """
         # file read check
         try:
@@ -205,12 +105,6 @@ class CadQueryExecutor:
                 workdir.host_bind_dir / _RUNNER,
             )
 
-            # Enumerate intermediate ret_xxx
-            ret_names = (
-                []
-                if intermediate_returns_dir is None
-                else _returned_names(source, model_path.name)
-            )
             # Run
             sandbox_result = self.sandbox_runner.run(
                 command=" ".join(
@@ -218,20 +112,9 @@ class CadQueryExecutor:
                         "python",
                         str(workdir.sandbox_bind_dir / _RUNNER),
                         str(workdir.sandbox_bind_dir / model_path.name),
-                        *ret_names,
                     ]
                 ),
                 workdir=workdir,
-            )
-
-            intermediate_returns = (
-                ()
-                if intermediate_returns_dir is None
-                else _read_returns(
-                    ret_names,
-                    workdir.host_bind_dir / INTERMEDIATE_RETURNS_DIR,
-                    intermediate_returns_dir,
-                )
             )
 
             if sandbox_result.status is SandboxStatus.TIMEOUT:
@@ -241,7 +124,6 @@ class CadQueryExecutor:
                     returncode=sandbox_result.returncode,
                     stdout=sandbox_result.stdout,
                     stderr=sandbox_result.stderr,
-                    intermediate_returns=intermediate_returns,
                 )
 
             if sandbox_result.status is SandboxStatus.INFRA_ERROR:
@@ -251,7 +133,6 @@ class CadQueryExecutor:
                     returncode=sandbox_result.returncode,
                     stdout=sandbox_result.stdout,
                     stderr=sandbox_result.stderr,
-                    intermediate_returns=intermediate_returns,
                 )
 
             if sandbox_result.returncode != 0:
@@ -261,7 +142,6 @@ class CadQueryExecutor:
                     returncode=sandbox_result.returncode,
                     stdout=sandbox_result.stdout,
                     stderr=sandbox_result.stderr,
-                    intermediate_returns=intermediate_returns,
                 )
 
             # STEP file should be generated here
@@ -274,7 +154,6 @@ class CadQueryExecutor:
                     returncode=sandbox_result.returncode,
                     stdout=sandbox_result.stdout,
                     stderr=sandbox_result.stderr,
-                    intermediate_returns=intermediate_returns,
                 )
 
             # Keep a readable result even when STEP validation rejects its geometry.
@@ -306,7 +185,6 @@ class CadQueryExecutor:
             step_path=kept_step_path,
             stdout=sandbox_result.stdout,
             stderr=sandbox_result.stderr,
-            intermediate_returns=intermediate_returns,
             census=census,
         )
 

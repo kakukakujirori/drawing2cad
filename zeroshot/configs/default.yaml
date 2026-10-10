@@ -40,8 +40,6 @@ artifact_presenter:
   output_renders: "path"
   overlay: "path"
   unmatched: "image"
-  # for intermediates, "none" also skips intermediate STEP export and rendering.
-  intermediates: "path"
 
 sandbox_runner:
   python_executable: ${oc.env:CONDA_PREFIX}/bin/python

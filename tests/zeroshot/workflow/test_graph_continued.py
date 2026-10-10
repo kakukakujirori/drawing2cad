@@ -18,7 +18,6 @@ from tests.zeroshot.workflow.test_graph import (
     _interpretation_script,
     _interpretation_submission,
     _invalid_interpretation_submission,
-    _operations_script,
     _stub_verification,
     _verified,
     _write_interpretation,
@@ -42,7 +41,6 @@ _INPUT_MARKER = "[Input artifacts]"
 
 class _Models(TypedDict):
     interpreter: ScriptedChatModel
-    planner: ScriptedChatModel
     coder: ScriptedChatModel
     auditor: ScriptedChatModel
 
@@ -51,7 +49,6 @@ def _continued_graph(
     workdir: SandboxWorkdir,
     *,
     interpreter: ScriptedChatModel,
-    planner: ScriptedChatModel,
     coder: ScriptedChatModel,
     auditor: ScriptedChatModel,
     share_thread: bool = True,
@@ -72,13 +69,6 @@ def _continued_graph(
             create_agent,
             role=_ROLE,
             model=interpreter,
-            max_turns=5,
-            **common,
-        ),
-        operations_agent_builder=partial(
-            create_agent,
-            role=_ROLE,
-            model=planner,
             max_turns=5,
             **common,
         ),
@@ -120,7 +110,6 @@ def _continued_graph(
 def models() -> _Models:
     return {
         "interpreter": ScriptedChatModel(responses=_interpretation_script()),
-        "planner": ScriptedChatModel(responses=_operations_script()),
         "coder": ScriptedChatModel(responses=(_coding_submission(),)),
         "auditor": ScriptedChatModel(responses=_audit_script(_accepted_audit())),
     }
@@ -139,8 +128,6 @@ def _system_prompt(model: ScriptedChatModel) -> str:
 def _lead_thread(result: dict[str, Any], stage: PipelineStage) -> list[BaseMessage]:
     if stage is PipelineStage.INTERPRETATION:
         return list(result["interpretation_state"]["messages"])
-    if stage is PipelineStage.OPERATIONS:
-        return list(result["operations_state"]["messages"])
     return list(result["coding_state"]["messages"])
 
 
@@ -159,7 +146,6 @@ def test_system_context_precedes_only_the_roles_assigned_by_the_graph(
 
     for name, role in (
         ("interpreter", "drawing_interpreter"),
-        ("planner", "operation_planner"),
         ("coder", "coder"),
         ("auditor", "output_auditor"),
     ):
@@ -190,14 +176,11 @@ def test_each_reasoning_stage_continues_the_preceding_transcript(
         _continued_graph(workdir, **models).invoke({})
 
     interpretation_ask = models["interpreter"].received_messages[-1]
-    operation_ask = models["planner"].received_messages[0]
     coding_ask = models["coder"].received_messages[0]
     interpretation_text = "\n".join(_texts(interpretation_ask))
-    operation_text = "\n".join(_texts(operation_ask))
     coding_text = "\n".join(_texts(coding_ask))
 
-    assert interpretation_text in operation_text
-    assert operation_text in coding_text
+    assert interpretation_text in coding_text
 
 
 def test_shared_thread_retries_interpretation_before_handing_over(
@@ -225,8 +208,8 @@ def test_shared_thread_retries_interpretation_before_handing_over(
     retry_text = "\n".join(_texts(interpreter.received_messages[2]))
     assert "Interpretation Validation Error" in retry_text
     assert "ticket_absent" in retry_text
-    operation_text = "\n".join(_texts(models["planner"].received_messages[0]))
-    assert "Interpretation Validation Error" in operation_text
+    coding_text = "\n".join(_texts(models["coder"].received_messages[0]))
+    assert "Interpretation Validation Error" in coding_text
     assert (
         result["reconstruction"].snapshots[0].last_completed_stage
         is PipelineStage.CODING
@@ -242,7 +225,7 @@ def test_reasoning_states_end_with_the_same_latest_thread(
         result = _continued_graph(workdir, **models).invoke({})
 
     threads = [_texts(_lead_thread(result, stage)) for stage in REASONING_STAGES]
-    assert threads[0] == threads[1] == threads[2]
+    assert threads[0] == threads[1]
     # The answer itself, as its own JSON rather than wrapped in a tool call.
     assert any(
         "TicketAnswers" not in text and "in coding." in text for text in threads[0]
@@ -281,8 +264,8 @@ def test_compaction_hands_the_next_stage_notes_instead_of_full_turns(
             **models,
         ).invoke({})
 
-    planner_prompt = _texts(models["planner"].received_messages[0])
-    assert SUMMARY_PREAMBLE.format(notes="measured the source views") in planner_prompt
+    coder_prompt = _texts(models["coder"].received_messages[0])
+    assert SUMMARY_PREAMBLE.format(notes="measured the source views") in coder_prompt
     assert len(notetaker.received_messages) == len(REASONING_STAGES)
     assert all(
         asked[-1].text == COMPACTION_INSTRUCTION

@@ -26,15 +26,6 @@ def _by_kind(counted: Counter[str]) -> str:
     return ", ".join(f"{kind} {n}" for kind, n in counted.most_common())
 
 
-def _by_kind_change(now: Counter[str], before: Counter[str]) -> str:
-    changed = {kind: now[kind] - before[kind] for kind in now.keys() | before.keys()}
-    return ", ".join(
-        f"{kind} {delta:+d}"
-        for kind, delta in sorted(changed.items(), key=lambda kv: (-abs(kv[1]), kv[0]))
-        if delta
-    )
-
-
 # Smaller inner shells are numerical slivers, not cavities.
 _MIN_VOID_MM3 = 0.01
 
@@ -71,21 +62,16 @@ class ShapeCensus:
         """
         return "bbox " + " x ".join(f"{length:.2f}" for length in self.extent)
 
-    def _describe_voids(self, previous: "ShapeCensus | None" = None) -> list[str]:
-        """Count sealed voids; place them only where the count is new or changed."""
-        if not self.voids and not (previous and previous.voids):
+    def _describe_voids(self) -> list[str]:
+        """Count sealed voids and place each one."""
+        if not self.voids:
             return []
-        count = f"sealed voids {len(self.voids)}"
-        if previous is not None:
-            change = len(self.voids) - len(previous.voids)
-            count += f" ({change:+d})"
-            if change == 0:
-                return [count]
         where = ", ".join(void.describe() for void in self.voids)
         return [
-            f"{count} (cavities no opening reaches, bbox [xmin, ymin, zmin, xmax, ymax, zmax]: {where})"
-            if where
-            else count
+            (
+                f"sealed voids {len(self.voids)} (cavities no opening reaches, "
+                f"bbox [xmin, ymin, zmin, xmax, ymax, zmax]: {where})"
+            )
         ]
 
     def describe(self) -> str:
@@ -111,43 +97,6 @@ class ShapeCensus:
                     if counted
                 ),
             ]
-        )
-
-    def describe_change_from(self, previous: "ShapeCensus") -> str:
-        """Give the same counts, and after each one its change since `previous`.
-
-        An operation that built nothing shows `+0.0` volume and `+0` faces.
-        That is what an accidental identity looks like from the outside. An
-        operation that broke the part apart shows the solid count going up.
-        """
-        parts = [
-            *(
-                [f"solids {self.solids} ({self.solids - previous.solids:+d})"]
-                if self.solids != 1 or previous.solids != 1
-                else []
-            ),
-            f"volume {self.volume:.1f} ({self.volume - previous.volume:+.1f})",
-            self._describe_extent(),
-            *self._describe_voids(previous),
-        ]
-        for label, now, before in (
-            ("faces", self.faces, previous.faces),
-            ("edges", self.edges, previous.edges),
-        ):
-            total, delta = sum(now.values()), sum(now.values()) - sum(before.values())
-            kinds = _by_kind_change(now, before)
-            parts.append(f"{label} {total} ({delta:+d}{f': {kinds}' if kinds else ''})")
-        if self._same_shape_as(previous):
-            parts.append("NO CHANGE: this step left the shape as it was")
-        return "; ".join(parts)
-
-    def _same_shape_as(self, previous: "ShapeCensus") -> bool:
-        # A cutter that misses the part changes neither volume nor topology.
-        return (
-            self.solids == previous.solids
-            and abs(self.volume - previous.volume) <= 1e-6 * max(previous.volume, 1.0)
-            and self.faces == previous.faces
-            and self.edges == previous.edges
         )
 
 

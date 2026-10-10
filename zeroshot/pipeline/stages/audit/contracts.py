@@ -43,20 +43,17 @@ type RevisionAction = Literal[
 
 _FIND_NAME = re.compile(r"^find_[a-z0-9_]+$")
 _INTERPRETATION_NAME = re.compile(r"^(?:view|dim|sem)_[a-z0-9_]+$")
-_OPERATION_NAME = re.compile(r"^op_[a-z0-9_]+$")
-_CODE_NAME = re.compile(r"^ret_[a-z0-9_]+$")
 
 
 # References and revision actions: checks independent of the audited snapshot.
 
 
 def _valid_member_name(stage: ReasoningStage, name: str) -> bool:
-    pattern = {
-        PipelineStage.INTERPRETATION: _INTERPRETATION_NAME,
-        PipelineStage.OPERATIONS: _OPERATION_NAME,
-        PipelineStage.CODING: _CODE_NAME,
-    }[stage]
-    return pattern.fullmatch(name) is not None
+    """Only interpretation has named members; a program is referred to whole."""
+    return (
+        stage is PipelineStage.INTERPRETATION
+        and _INTERPRETATION_NAME.fullmatch(name) is not None
+    )
 
 
 class StageOutputRef(BaseModel):
@@ -74,9 +71,8 @@ class StageOutputRef(BaseModel):
         ...,
         description=(
             "The stable member name: view_..., dim_... or sem_... for "
-            "interpretation, op_... for operations, and ret_... for coding. The "
-            "terminal result variable is not a causal member; use null to "
-            "refer to the stage's complete output."
+            "interpretation. Coding has no named members; use null to refer to "
+            "the stage's complete output."
         ),
     )
 
@@ -100,8 +96,7 @@ class RevisionRequest(BaseModel):
         ...,
         description=(
             "The structural change requested. Use rename only when the stable "
-            "identity itself must change. Coding accepts only modify; changing "
-            "operation/return identities requires an operations revision."
+            "identity itself must change. Coding accepts only modify."
         ),
     )
     targets: list[StageOutputRef] = Field(
@@ -136,8 +131,8 @@ class RevisionRequest(BaseModel):
             "list. Proposed names must be unique across this report. Add and "
             "rename require new names; split and merge may retain their own "
             "target names. Every proposed name must follow the naming convention of "
-            "the target stage: view_..., dim_... or sem_... for interpretation, "
-            "op_... for operations. Coding only permits modify, so its list is empty."
+            "the target stage: view_..., dim_... or sem_... for interpretation. "
+            "Coding only permits modify, so its list is empty."
         ),
     )
 
@@ -157,9 +152,7 @@ class RevisionRequest(BaseModel):
             raise ValueError("all targets must belong to the same stage")
         stage = self.targets[0].stage
         if stage is PipelineStage.CODING and self.action != "modify":
-            raise ValueError(
-                "coding accepts only modify; request structural changes at operations"
-            )
+            raise ValueError("coding accepts only modify")
 
         if len(set(self.proposed_names)) != len(self.proposed_names):
             raise ValueError("proposed_names must not contain duplicates")
@@ -245,7 +238,7 @@ class CausalHop(BaseModel):
         if distance not in (0, 1):
             raise ValueError(
                 "a causal hop must stay within one stage or move to the adjacent "
-                "upstream stage: coding -> operations -> interpretation"
+                "upstream stage: coding -> interpretation"
             )
         if not self.rationale.strip():
             raise ValueError("rationale must not be blank")
@@ -267,7 +260,7 @@ class AuditRegion(BaseModel):
         description=(
             "The workspace path of the drawing this was measured on. Use the "
             "input drawing, projection DXF or PNG, or perspective image of the "
-            "built solid, including files under intermediate_returns/."
+            "built solid."
         ),
     )
     box: tuple[StrictInt | StrictFloat, ...] = Field(
@@ -342,13 +335,13 @@ class AuditFinding(BaseModel):
             "The causal path from the observed effect to the revision root, as "
             "adjacent effect-to-cause steps in traversal order. Each hop's cause "
             "moves within a stage or one step upstream along coding -> "
-            "operations -> interpretation. An interpretation-internal hop "
+            "interpretation. An interpretation-internal hop "
             "may name a feature's cited view or dimension. "
             "Each hop's cause "
             "must equal the next hop's effect, and the last cause must be one of "
             "the revision targets. Leave it empty when the defect is already at "
             "its root. Do not revisit an output. Take at most one named-to-named "
-            "hop within each prefix (ret_, op_, sem_, dim_, view_); crossing "
+            "hop within each prefix (sem_, dim_, view_); crossing "
             "prefixes, such as sem_ -> dim_ -> view_, is allowed. Whole-stage "
             "references have no prefix and do not count toward that limit."
         ),

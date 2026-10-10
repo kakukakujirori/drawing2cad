@@ -21,7 +21,6 @@ from tests.zeroshot.contracts import interpretation, view
 from zeroshot import interactive_debug as debug
 from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
-from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
 from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
     TicketAnswers,
@@ -57,23 +56,15 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
         "run_test", "Build the part", [view("full_page", file="/work/inputs/page.png")]
     )
     snapshot = history.snapshots[-1]
-    snapshot.last_completed_stage = PipelineStage.OPERATIONS
+    snapshot.last_completed_stage = PipelineStage.INTERPRETATION
     snapshot.interpretation = interpretation("block")
     snapshot.interpretation.views[0].file = "/work/inputs/page.png"
-    snapshot.operations = OperationPlan(
-        proposal=[
-            Operation(
-                name="op_block",
-                verb="extrude",
-                detail="Build a block",
-                semantics=["sem_feature_1"],
-            )
-        ],
-        rationale="One block",
-    )
     snapshot.open_tickets[0].responses = [
-        TicketResponse(ticket_id="ticket_initial", stage=stage, summary="Done")
-        for stage in (PipelineStage.INTERPRETATION, PipelineStage.OPERATIONS)
+        TicketResponse(
+            ticket_id="ticket_initial",
+            stage=PipelineStage.INTERPRETATION,
+            summary="Done",
+        )
     ]
     completed = history.model_copy(deep=True)
     final = completed.snapshots[-1]
@@ -178,7 +169,6 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
     (work / "reconstruction.json").write_text(completed.model_dump_json())
     (work / "model.py").write_text("FUTURE SUBMISSION MUST NOT LEAK")
     (work / "interpretation.json").write_text("future")
-    (work / "operations.json").write_text("future")
     (work / "future.png").write_bytes(picture.read_bytes())
     config = {
         "model": {"_target_": "tests.zeroshot.chat_models.ScriptedChatModel"},
@@ -199,7 +189,6 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
             "_target_": "zeroshot.pipeline.messages.artifact.ArtifactPresenter",
             "input": "path",
             "output_renders": "path",
-            "intermediates": "none",
         },
     }
     (run / ".hydra").mkdir()
@@ -245,7 +234,7 @@ def test_workspace_contains_selected_assets_not_submitted_or_future_files(tmp_pa
     assert (work / "attempts/round_000/coding/000/output.step").is_file()
     assert not any(
         (work / name).exists()
-        for name in ["model.py", "interpretation.json", "operations.json", "future.png"]
+        for name in ["model.py", "interpretation.json", "future.png"]
     )
     record = json.loads((work / "reconstruction.json").read_text())
     assert (

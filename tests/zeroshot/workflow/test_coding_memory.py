@@ -36,7 +36,6 @@ from zeroshot.pipeline.stages.coding.stage import create_coding_stage
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.interpretation.contracts import View
-from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
 from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
     Ticket,
@@ -61,12 +60,12 @@ from zeroshot.pipeline.workflow.middleware.output_limit_budget import (
     OutputLimitBudgetExceeded,
 )
 
-SOURCE = "ret_base = object()\nresult = ret_base\n"
+SOURCE = "result = object()\n"
 
 
 def answers(ticket="ticket_initial", coding=True):
     return TicketAnswers(
-        responses={ticket: "Reviewed ret_base"},
+        responses={ticket: "Reviewed the base"},
         stage_report=StageReport(
             concerns={"concern_scale": "Scale needs checking"},
             dimension_checks={} if coding else None,
@@ -82,23 +81,16 @@ def setup(tmp_path, monkeypatch):
     drawing = tmp_path / "inputs/front.png"
     Image.new("RGB", (20, 20), "white").save(drawing)
     ir = interpretation(views=[view("front", scale=0.1, file="/work/inputs/front.png")])
-    plan = OperationPlan(
-        rationale="Base",
-        proposal=[
-            Operation(name="op_base", verb="extrude", detail="base", semantics=[])
-        ],
-    )
     history = start_reconstruction("run_memory", "Build the drawing", [ir.views[0]])
-    for artifact in (ir, plan):
-        history = advance_reconstruction(
-            history, answers(coding=False), workspace_output=artifact
-        )
+    history = advance_reconstruction(
+        history, answers(coding=False), workspace_output=ir
+    )
     state = {"reconstruction": history}
     store = AttemptStore(
         workdir, round_source=lambda: state["reconstruction"].snapshots[-1].round
     )
     presenter = ArtifactPresenter(
-        input="image", output_renders="path", unmatched="path", intermediates="none"
+        input="image", output_renders="path", unmatched="path"
     )
     instructions = StageInstructions(
         input_artifact=[register_view("view_input", View.FULL_PAGE, drawing)],
@@ -167,7 +159,7 @@ def setup(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ProgressOutputVerifier, "feedback", feedback)
     verifier = ProgressOutputVerifier(None, workdir, None, None, presenter, store)
-    verifier.interpretation, verifier.operations = ir, plan
+    verifier.interpretation = ir
     middleware = FreshCodingMiddleware(verifier, fingerprint=verifier.source_digest)
     middleware._set_context(state, instructions)
 
@@ -286,7 +278,7 @@ def test_stage_flag_and_new_round_baseline_and_validation_instruction(setup, fre
     current = previous.model_copy(
         update={
             "round": 1,
-            "last_completed_stage": PipelineStage.OPERATIONS,
+            "last_completed_stage": PipelineStage.INTERPRETATION,
             "program_source": None,
             "verification": None,
             "open_tickets": [
@@ -499,12 +491,7 @@ def test_graph_applies_fresh_memory_only_to_coder_and_shares_the_budget(setup, f
     create_reconstruction_graph(
         *[
             partial(builder, role=role, max_turns=1)
-            for role in (
-                "drawing_interpreter",
-                "operation_planner",
-                "coder",
-                "output_auditor",
-            )
+            for role in ("drawing_interpreter", "coder", "output_auditor")
         ],
         sandbox_runner=SandboxRunner(Path(sys.executable), default_timeout_s=30),
         sandbox_workdir=verifier.workdir,
@@ -520,10 +507,5 @@ def test_graph_applies_fresh_memory_only_to_coder_and_shares_the_budget(setup, f
             for middleware in kwargs["extra_middleware"]
         )
         assert uses_fresh is (fresh and role == "coder")
-    assert set(captured) == {
-        "drawing_interpreter",
-        "operation_planner",
-        "coder",
-        "output_auditor",
-    }
+    assert set(captured) == {"drawing_interpreter", "coder", "output_auditor"}
     assert len({id(kwargs["output_limit_budget"]) for kwargs in captured.values()}) == 1

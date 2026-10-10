@@ -8,7 +8,6 @@ from zeroshot.pipeline.stages._base.validate import raise_together
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
 from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
@@ -19,7 +18,7 @@ from zeroshot.pipeline.stages.tickets.validate import validate_revision_scope
 from zeroshot.pipeline.stages.types import ArtifactField, PipelineStage, ReasoningStage
 from zeroshot.pipeline.stages.validate import validate_submission
 
-type WorkspaceOutput = DrawingInterpretation | OperationPlan | VerifyOutputResult
+type WorkspaceOutput = DrawingInterpretation | VerifyOutputResult
 
 _LOG_LIMIT = 4000
 
@@ -72,16 +71,12 @@ def build_snapshot_update(
         if isinstance(deliverable, DrawingInterpretation)
         else current.interpretation
     )
-    if isinstance(deliverable, OperationPlan):
-        deliverable = resolve_references(deliverable, interpretation)
     submission = resolve_references(submission, interpretation)
 
     artifacts: dict[ArtifactField, object]
     match stage:
         case PipelineStage.INTERPRETATION:
             artifacts = {"interpretation": deliverable}
-        case PipelineStage.OPERATIONS:
-            artifacts = {"operations": deliverable}
         case PipelineStage.CODING:
             terminal = cast(VerifyOutputResult, deliverable)
             assert terminal.exec_report is not None

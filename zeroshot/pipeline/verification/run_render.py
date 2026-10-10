@@ -6,10 +6,6 @@ own corner: nothing is composed onto a sheet.
 OCC HLR and VTK can hang in native code, so every render runs in a fresh
 ``spawn`` process.  The caller owns artifact naming and directory layout; this
 module only runs the render stages and supervises those processes.
-
-A build reports one drawing per planned operation, so the renders come in
-batches of twenty-odd; they are independent, and ``render_many`` runs them
-several at a time.
 """
 
 from __future__ import annotations

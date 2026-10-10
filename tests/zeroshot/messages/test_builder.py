@@ -282,9 +282,7 @@ def test_withholding_the_feedback_also_withholds_why_it_is_missing(
     assert blocks == []
 
 
-@pytest.mark.parametrize(
-    "kind", ["output_renders", "overlay", "unmatched", "intermediates"]
-)
+@pytest.mark.parametrize("kind", ["output_renders", "overlay", "unmatched"])
 @pytest.mark.parametrize("mode", [True, "unknown"])
 def test_feedback_modes_reject_booleans_and_unknown_strings(kind, mode):
     with pytest.raises(ValueError, match=f"invalid {kind}"):

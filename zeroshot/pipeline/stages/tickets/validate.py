@@ -14,7 +14,6 @@ from zeroshot.pipeline.stages.contracts import (
     ReconstructionSnapshot,
 )
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
     Ticket,
@@ -28,9 +27,8 @@ from zeroshot.pipeline.stages.types import (
     ReasoningStage,
     next_stage,
 )
-from zeroshot.pipeline.verification.check_program import program_members
 
-type StageArtifact = DrawingInterpretation | OperationPlan | str
+type StageArtifact = DrawingInterpretation | str
 
 
 def validate_ticket_answers(
@@ -135,8 +133,6 @@ def validate_revision_scope(
         and name not in report.unticketed_changes
     )
 
-    # 4. Coding's AST comparison cannot see helper changes; allow their explanation
-    #    against an existing return, while still rejecting unknown member names.
     errors = []
     if uncovered:
         errors.append(
@@ -144,10 +140,7 @@ def validate_revision_scope(
             f"{', '.join(uncovered)}. Undo them, or give each a reason in "
             "stage_report.unticketed_changes."
         )
-    unexplained_names = report.unticketed_changes.keys() - changes.keys()
-    if isinstance(artifact, str):
-        unexplained_names -= before.keys() | after.keys()
-    if unchanged := sorted(unexplained_names):
+    if unchanged := sorted(report.unticketed_changes.keys() - changes.keys()):
         errors.append(
             "stage_report.unticketed_changes names members this stage did not "
             f"change: {', '.join(unchanged)}"
@@ -161,20 +154,14 @@ def _artifact(
 ) -> StageArtifact | None:
     return {
         PipelineStage.INTERPRETATION: snapshot.interpretation,
-        PipelineStage.OPERATIONS: snapshot.operations,
         PipelineStage.CODING: snapshot.program_source,
     }[stage]
 
 
 def _members(artifact: StageArtifact | None) -> dict[str, Member] | None:
-    """None when there is nothing to compare, such as a program that does not parse."""
-    if isinstance(artifact, DrawingInterpretation | OperationPlan):
+    """None when there is nothing to compare: a program has no named members."""
+    if isinstance(artifact, DrawingInterpretation):
         return artifact.members()
-    if isinstance(artifact, str):
-        try:
-            return program_members(artifact)
-        except SyntaxError:
-            return None
     return None
 
 

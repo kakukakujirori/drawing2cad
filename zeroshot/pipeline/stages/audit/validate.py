@@ -19,12 +19,10 @@ from zeroshot.pipeline.stages.audit.contracts import (
 from zeroshot.pipeline.stages.coding.verify import unmatched_items
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.operations.contracts import Operation
 from zeroshot.pipeline.stages.resolve_refs import close_names
 from zeroshot.pipeline.stages.tickets.contracts import reported_concerns
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import AttemptStore, ExecutionStatus
-from zeroshot.pipeline.verification.check_program import program_output_names
 
 
 def validate_audit_report(
@@ -52,28 +50,17 @@ def validate_audit_report(
             "report the verification failure and the root that must change"
         )
     # Index the committed members and the interpretation's explicit sources.
-    # Snapshot validation guarantees interpretation and operations after coding.
+    # Snapshot validation guarantees an interpretation after coding.
     interpretation = cast(DrawingInterpretation, snapshot.interpretation)
     references = tuple(_iter_references(report.findings))
-    operations_by_name = (
-        {operation.name: operation for operation in snapshot.operations.proposal}
-        if snapshot.operations is not None
-        else {}
-    )
-    coding_names, coding_error = _inspect_coding_outputs(
-        snapshot.program_source,
-        references,
-    )
-
     interpretation_links = {
         name: member.cites for name, member in interpretation.members().items()
     }
-    known_members = {
+    known_members: dict[PipelineStage, set[str]] = {
         PipelineStage.INTERPRETATION: set(interpretation_links),
-        PipelineStage.OPERATIONS: set(operations_by_name),
-        PipelineStage.CODING: coding_names,
+        PipelineStage.CODING: set(),
     }
-    errors = [coding_error] if coding_error is not None else []
+    errors: list[str] = []
     if attempts is not None:
         drawn = _drawings_of(snapshot, attempts)
         for finding in report.findings:
@@ -89,7 +76,6 @@ def validate_audit_report(
             error = _causal_hop_error(
                 hop,
                 known_members=known_members,
-                operations_by_name=operations_by_name,
                 interpretation_links=interpretation_links,
             )
             if error is not None:
@@ -229,30 +215,6 @@ def _iter_references(
         yield from finding.revision_request.targets
 
 
-def _inspect_coding_outputs(
-    program_source: str | None,
-    references: Iterable[StageOutputRef],
-) -> tuple[set[str], str | None]:
-    """Return named code outputs and any syntax failure that hides them."""
-    needs_named_outputs = any(
-        reference.stage is PipelineStage.CODING and reference.name is not None
-        for reference in references
-    )
-    if not needs_named_outputs or program_source is None:
-        return set(), None
-
-    try:
-        return program_output_names(program_source), None
-    except SyntaxError as error:
-        location = (
-            f"line {error.lineno}" if error.lineno is not None else "an unknown line"
-        )
-        return set(), (
-            "named coding outputs cannot be checked because model.py has "
-            f"invalid syntax at {location}"
-        )
-
-
 def _missing_reference_errors(
     references: Iterable[StageOutputRef],
     known_members: Mapping[PipelineStage, set[str]],
@@ -300,7 +262,6 @@ def _causal_hop_error(
     hop: CausalHop,
     *,
     known_members: Mapping[PipelineStage, set[str]],
-    operations_by_name: Mapping[str, Operation],
     interpretation_links: Mapping[str, frozenset[str]],
 ) -> str | None:
     """Validate only causal relations represented by an explicit contract."""
@@ -317,49 +278,15 @@ def _causal_hop_error(
     ):
         return None
 
-    if effect.stage is PipelineStage.CODING and cause.stage is PipelineStage.OPERATIONS:
-        expected_return = f"ret_{cause.name.removeprefix('op_')}"
-        if effect.name != expected_return:
-            return (
-                f"coding-to-operations hop {effect.name!r} -> "
-                f"{cause.name!r} must use {expected_return!r}"
-            )
-
-    elif (
-        effect.stage is PipelineStage.OPERATIONS
-        and cause.stage is PipelineStage.OPERATIONS
-    ):
-        # Each operation changes what the earlier ones left, so any earlier
-        # operation can be the cause and a later one cannot.
-        order = list(operations_by_name)
-        if order.index(cause.name) >= order.index(effect.name):
-            return (
-                f"operations hop {effect.name!r} -> {cause.name!r} must name "
-                f"an operation listed before {effect.name}"
-            )
-
-    elif (
-        effect.stage is PipelineStage.OPERATIONS
-        and cause.stage is PipelineStage.INTERPRETATION
-    ):
-        operation = operations_by_name[effect.name]
-        if cause.name not in operation.semantics:
-            return (
-                f"operations-to-interpretation hop {effect.name!r} -> "
-                f"{cause.name!r} is not supported by {effect.name}.semantics"
-            )
-
-    elif (
+    if (
         effect.stage is PipelineStage.INTERPRETATION
         and cause.stage is PipelineStage.INTERPRETATION
+        and cause.name not in interpretation_links[effect.name]
     ):
-        if cause.name not in interpretation_links[effect.name]:
-            return (
-                f"interpretation hop {effect.name!r} -> {cause.name!r} "
-                "is not supported by the member's evidence, dimension_refs or "
-                "view region. For an omission with no existing citation, "
-                "report the defect directly at its root."
-            )
-
-    # Coding-internal dependencies have no machine-readable contract here.
+        return (
+            f"interpretation hop {effect.name!r} -> {cause.name!r} "
+            "is not supported by the member's evidence, dimension_refs or "
+            "view region. For an omission with no existing citation, "
+            "report the defect directly at its root."
+        )
     return None

@@ -7,14 +7,12 @@ from typing import Literal, NamedTuple, cast
 
 class PipelineStage(StrEnum):
     INTERPRETATION = "interpretation"
-    OPERATIONS = "operations"
     CODING = "coding"
     AUDIT = "audit"
 
 
 type ReasoningStage = Literal[
     PipelineStage.INTERPRETATION,
-    PipelineStage.OPERATIONS,
     PipelineStage.CODING,
 ]
 
@@ -26,12 +24,9 @@ REASONING_STAGES = cast(tuple[ReasoningStage, ...], PIPELINE_STAGES[:-1])
 # In particular, a failed coding attempt may have no readable program source.
 STAGE_ARTIFACT_FIELDS: Mapping[ReasoningStage, tuple[ArtifactField, ...]] = {
     PipelineStage.INTERPRETATION: ("interpretation",),
-    PipelineStage.OPERATIONS: ("operations",),
     PipelineStage.CODING: ("program_source", "verification"),
 }
-type ArtifactField = Literal[
-    "interpretation", "operations", "program_source", "verification"
-]
+type ArtifactField = Literal["interpretation", "program_source", "verification"]
 
 
 class Member(NamedTuple):

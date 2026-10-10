@@ -32,9 +32,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     View,
     cross_axis,
 )
-from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
 from zeroshot.pipeline.stages.types import PipelineStage
-from zeroshot.pipeline.verification._run_program import INTERMEDIATE_RETURNS_DIR
 from zeroshot.pipeline.verification.render.orthographic import STANDARD_VIEW_FRAMES
 from zeroshot.pipeline.workflow.lifecycle import (
     open_next_round,
@@ -67,8 +65,6 @@ _RUN_PATHS = {
     "audit_schema": json.dumps(AuditReport.model_json_schema()),
     "interpretation_output_path": "/work/interpretation.json",
     "interpretation_schema": json.dumps(DrawingInterpretation.model_json_schema()),
-    "operations_output_path": "/work/operations.json",
-    "operations_schema": json.dumps(OperationPlan.model_json_schema()),
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
     "dimension_inventory": "[]",
@@ -137,7 +133,7 @@ def test_a_reused_builder_reads_the_latest_round_and_ticket_ownership(
     assert "Tickets assigned to coding this round: ticket_initial" in first
 
     state["reconstruction"] = open_next_round(
-        _completed_run(), _report(target=_ref("coding", "ret_hole"))
+        _completed_run(), _report(target=_ref("coding", None))
     )
     coding = instructions.build(state, PipelineStage.CODING, append_inputs=False).text
     interpreted = instructions.build(
@@ -150,7 +146,7 @@ def test_a_reused_builder_reads_the_latest_round_and_ticket_ownership(
     assert "ticket_initial" not in coding + interpreted
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding"])
+@pytest.mark.parametrize("stage", ["interpretation", "coding"])
 def test_assigned_evidence_paths_reach_the_round_instruction(
     instructions: StageInstructions,
     state: ReconstructionState,
@@ -165,7 +161,7 @@ def test_assigned_evidence_paths_reach_the_round_instruction(
         "/work/tickets/evidence_1.png",
     ]
 
-    for recipient in ("interpretation", "operations", "coding"):
+    for recipient in ("interpretation", "coding"):
         text = instructions.build(
             state, PipelineStage(recipient), append_inputs=False
         ).text
@@ -241,7 +237,7 @@ def test_stage_instructions_resolve_all_template_placeholders(
     rendered = render_stage(stage.value)
 
     assert rendered
-    for schema in ("interpretation_schema", "operations_schema", "audit_schema"):
+    for schema in ("interpretation_schema", "audit_schema"):
         rendered = rendered.replace(_RUN_PATHS[schema], "")
     assert not re.search(r"\$[a-zA-Z_][a-zA-Z_0-9]*|\$\{", rendered)
 
@@ -254,7 +250,6 @@ def test_reconstruction_guide_keeps_only_the_working_contract() -> None:
         "snapshots",
         "open_tickets",
         "interpretation",
-        "operations",
         "program_source",
         "verification",
         "responses",
@@ -299,22 +294,10 @@ def test_audit_explains_how_to_report_a_missing_semantic_feature(
     assert "proposing one or more stable `sem_...` names" in rendered
 
 
-def test_the_returns_section_says_what_the_directory_is_for(
-    render_stage: Callable[..., str],
-) -> None:
-    """The layout line alone does not say which `ret_` a defect belongs to."""
-    section = render_stage("audit")
-
-    assert INTERMEDIATE_RETURNS_DIR in section
-    assert "ret_" in section
-    assert "what the plan meant it to" in section
-
-
 def test_the_audit_reads_the_attempt_directory_the_build_actually_wrote(
     render_stage: Callable[..., str],
 ) -> None:
-    """The per-operation views are what localise a defect to one `ret_...`, and
-    the auditor only looks in a directory it was told about."""
+    """The auditor only looks in a directory it was told about."""
     rendered = render_stage(
         "audit",
         attempt_dir="/work/attempts/001",
@@ -338,12 +321,12 @@ def test_audit_reads_ticket_bodies_from_history_without_echoing_them(
     assert "BODY_MUST_NOT_BE_ECHOED" not in rendered
 
 
-def test_auditor_keeps_result_out_of_the_backtrace_graph(
+def test_auditor_refers_to_the_program_as_a_whole(
     render_stage: Callable[..., str],
 ) -> None:
     rendered = render_stage("audit")
 
-    assert "`result` is the terminal export, not a causal member" in rendered
+    assert "Coding has no named members" in rendered
     assert "whole coding stage with `name: null`" in rendered
 
 
@@ -364,7 +347,7 @@ def test_the_coding_round_carries_the_history_and_result_contract(
 ) -> None:
     rendered = render_stage("coding")
 
-    assert "`ret_` variable by replacing its `op_` prefix" in rendered
+    assert "Store the final completed CadQuery solid in `result`" in rendered
     assert "# ----" not in rendered
     assert "Lxx-Lyy" not in rendered
 
@@ -400,19 +383,6 @@ def test_the_auditor_reviews_every_open_ticket_including_bootstrap_work(
     assert "Round 0 has one ticket" in guide
     assert "Cover every unsolved ticket" in rendered
     assert "root may have changed" in rendered
-
-
-def test_the_operations_round_uses_json_for_the_plan_and_answer_for_tickets(
-    render_stage: Callable[..., str],
-) -> None:
-    rendered = render_stage("operations")
-
-    assert "/work/operations.json" in rendered
-    assert "`TicketAnswers`" in rendered
-    assert "contents when you answer become this round's plan" in rendered
-    assert "`edits`" not in rendered
-    assert "`deleted`" not in rendered
-    assert "deliverable" not in rendered
 
 
 def test_the_coding_round_keeps_code_in_the_workspace_and_reports_concerns(
@@ -465,7 +435,7 @@ def test_the_audit_names_concerns_the_way_its_contract_does(
     assert "round prompt" not in schema
 
 
-def test_coding_receives_all_dimension_readings_even_when_the_plan_omits_them(
+def test_coding_receives_all_dimension_readings(
     instructions: StageInstructions,
     state: ReconstructionState,
 ) -> None:
@@ -483,7 +453,7 @@ def test_coding_receives_all_dimension_readings_even_when_the_plan_omits_them(
         ]
     )
     state["reconstruction"].snapshots[0] = _snapshot(
-        PipelineStage.OPERATIONS, held=held
+        PipelineStage.INTERPRETATION, held=held
     )
     agent = Mock()
     agent.invoke.return_value = {}
@@ -526,7 +496,7 @@ def test_the_interpretation_round_uses_json_for_the_artifact_and_answer_for_tick
     assert "`edits`" not in rendered
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding", "audit"])
+@pytest.mark.parametrize("stage", ["interpretation", "coding", "audit"])
 def test_every_round_has_explicit_instruction_sections(
     render_stage: Callable[..., str], stage: str
 ) -> None:
@@ -541,12 +511,7 @@ def test_every_round_has_explicit_instruction_sections(
 
 @pytest.mark.parametrize(
     "role",
-    [
-        "drawing_interpreter",
-        "operation_planner",
-        "coder",
-        "output_auditor",
-    ],
+    ["drawing_interpreter", "coder", "output_auditor"],
 )
 def test_a_proposer_role_says_who_it_is_and_leaves_the_rest_to_the_instruction(
     role: str,
@@ -688,41 +653,16 @@ def test_coordinate_markdown_agrees_with_the_projection_contract() -> None:
         assert STANDARD_VIEW_FRAMES[view] == (u_axis, v_axis), view
 
 
-def test_the_plan_the_prompt_asks_for_is_the_one_the_schema_takes(
+def test_the_coding_prompt_uses_interpreted_features_and_preserves_the_datum(
     render_stage: Callable[..., str],
 ) -> None:
-    instructions = render_stage("operations")
-
-    assert "build order" in instructions
-    assert "`semantics`" in instructions
-    assert "`verb`" in instructions
-    assert set(Operation.model_fields) == {
-        "name",
-        "verb",
-        "detail",
-        "semantics",
-    }
-
-
-def test_the_coder_is_told_to_build_in_list_order(
-    render_stage: Callable[..., str],
-) -> None:
-    assert "Build the operations in list order" in render_stage("coding")
-
-
-def test_downstream_prompts_use_interpreted_features_and_preserve_the_datum(
-    render_stage: Callable[..., str],
-) -> None:
-    for stage in ("operations", "coding"):
-        instructions = render_stage(stage)
-        assert "sem_main_bore.radius" in instructions
-        assert "sem_main_bore.center" in instructions
-        assert "datum" in instructions
-        assert re.search(
-            r"null means unknown, (?:never|not) zero", instructions.lower()
-        )
-        assert "ev_" not in instructions
-        assert "geo_" not in instructions
+    instructions = render_stage("coding")
+    assert "sem_main_bore.radius" in instructions
+    assert "sem_main_bore.center" in instructions
+    assert "datum" in instructions
+    assert re.search(r"null means unknown, (?:never|not) zero", instructions.lower())
+    assert "ev_" not in instructions
+    assert "geo_" not in instructions
 
 
 @pytest.mark.parametrize("role", list(ROLE_PATHS))
@@ -766,7 +706,6 @@ def test_coder_tests_predictions_and_inspects_the_latest_candidate(
         "Scratch files are not automatically executed, verified or submitted"
         in instruction
     )
-    assert "unticketed_changes" in instruction
     assert "Compare feature extent, placement and connections" in instruction
     assert "Treat stroke thickness as a drawing convention" in instruction
     assert (

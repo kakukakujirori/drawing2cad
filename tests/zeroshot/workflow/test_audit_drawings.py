@@ -25,7 +25,6 @@ from zeroshot.pipeline.stages.audit.validate import _region_error, validate_audi
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
     Ticket,
@@ -55,18 +54,7 @@ def snapshot() -> ReconstructionSnapshot:
         round=0,
         last_completed_stage=PipelineStage.CODING,
         interpretation=interpretation(),
-        operations=OperationPlan(
-            proposal=[
-                Operation(
-                    name="op_bore",
-                    verb="hole",
-                    detail="Cut the bore.",
-                    semantics=["sem_bore"],
-                )
-            ],
-            rationale="One bore.",
-        ),
-        program_source="ret_bore = object()\nresult = ret_bore\n",
+        program_source="result = object()\n",
         verification=VerifyOutputResult(
             verification_id="000",
             exec_report=CadQueryExecutionReport(
@@ -81,7 +69,7 @@ def ref(stage: str, name: str | None) -> StageOutputRef:
 
 
 def report(
-    *hops: tuple[str, str, str, str],
+    *hops: tuple[str, str | None, str, str | None],
     target: str | None = None,
     add: str | None = None,
     cites: list[AuditRegion] | None = None,
@@ -117,13 +105,10 @@ def report(
 
 
 @pytest.mark.parametrize("cause", ["view_front", "dim_diameter"])
-def test_audit_traces_code_through_operation_feature_and_its_evidence(
-    cause: str,
-) -> None:
+def test_audit_traces_code_through_a_feature_and_its_evidence(cause: str) -> None:
     validate_audit_report(
         report(
-            ("coding", "ret_bore", "operations", "op_bore"),
-            ("operations", "op_bore", "interpretation", "sem_bore"),
+            ("coding", None, "interpretation", "sem_bore"),
             ("interpretation", "sem_bore", "interpretation", cause),
         ),
         snapshot(),
@@ -187,14 +172,6 @@ def test_dimension_can_trace_to_its_source_view() -> None:
     )
 
 
-def test_operation_cannot_skip_its_feature_link_to_a_dimension() -> None:
-    with pytest.raises(SubmissionValidationError, match="op_bore.semantics"):
-        validate_audit_report(
-            report(("operations", "op_bore", "interpretation", "dim_diameter")),
-            snapshot(),
-        )
-
-
 def test_interpretation_hops_require_an_explicit_evidence_link() -> None:
     with pytest.raises(SubmissionValidationError, match="not supported"):
         validate_audit_report(
@@ -224,8 +201,7 @@ def test_feature_can_trace_through_a_dimension_to_another_view() -> None:
 
     validate_audit_report(
         report(
-            ("coding", "ret_bore", "operations", "op_bore"),
-            ("operations", "op_bore", "interpretation", "sem_bore"),
+            ("coding", None, "interpretation", "sem_bore"),
             ("interpretation", "sem_bore", "interpretation", "dim_diameter"),
             ("interpretation", "dim_diameter", "interpretation", "view_top"),
         ),

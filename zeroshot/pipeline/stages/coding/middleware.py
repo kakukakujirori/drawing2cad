@@ -98,7 +98,6 @@ class FreshCodingMiddleware(CodingMiddleware):
         self._context = {
             "round": snapshot.round,
             "interpretation": snapshot.interpretation.model_dump(mode="json"),
-            "operations": snapshot.operations.model_dump(mode="json"),
             "open_tickets": [
                 ticket.model_dump(mode="json") for ticket in snapshot.open_tickets
             ],

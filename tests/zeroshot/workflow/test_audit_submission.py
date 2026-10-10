@@ -35,9 +35,7 @@ _UNREVIEWED = AuditReport(
 
 
 def _revision_snapshot():
-    first = open_next_round(
-        _completed_run(), _report(target=_ref("coding", "ret_hole"))
-    )
+    first = open_next_round(_completed_run(), _report(target=_ref("coding", None)))
     return _completed_run(first).snapshots[-1]
 
 
@@ -80,7 +78,7 @@ def _answer(payload: dict[str, Any], strategy: str, call_id: str) -> AIMessage:
         ({"accepted": True, "findings": []}, "$: field 'ticket_reviews' is required"),
         (_UNREVIEWED.model_dump(mode="json"), f"missing=['{_TICKET}']"),
         (
-            _report(target=_ref("coding", "ret_hole")).model_dump(mode="json"),
+            _report(target=_ref("coding", None)).model_dump(mode="json"),
             f"missing=['{_TICKET}']",
         ),
     ],

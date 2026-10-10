@@ -2,25 +2,17 @@
 
 import pytest
 
-from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.operations.contracts import (
-    Operation,
-    OperationPlan,
-    OperationVerb,
-)
-from zeroshot.pipeline.stages.operations.validate import validate_operations
 from zeroshot.pipeline.stages.resolve_refs import (
     _references_resolved_in_prose,
-    reference_suggestions,
     resolve_references,
-    unresolved_references,
 )
 from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
     TicketAnswers,
     TicketResponse,
 )
+from zeroshot.pipeline.stages.types import PipelineStage
 
 
 def interpretation() -> DrawingInterpretation:
@@ -81,7 +73,6 @@ def interpretation() -> DrawingInterpretation:
 )
 def test_scalar_array_null_and_dimension_references(address: str, value: str) -> None:
     held = interpretation()
-    assert unresolved_references(address, held) == []
     assert (
         _references_resolved_in_prose(f"Use {address}.", held)
         == f"Use {address} (= {value})."
@@ -100,7 +91,6 @@ def test_resolution_refreshes_annotations_and_preserves_unknown_vs_missing() -> 
         _references_resolved_in_prose(second, held)
         == "sem_bore.radius and sem_bore.depth (= null)"
     )
-    assert unresolved_references(second, held) == ["sem_bore.radius"]
 
 
 @pytest.mark.parametrize(
@@ -116,106 +106,31 @@ def test_resolution_refreshes_annotations_and_preserves_unknown_vs_missing() -> 
         "dim_missing.quantity",
     ],
 )
-def test_unknown_or_retired_addresses_are_rejected(address: str) -> None:
-    assert unresolved_references(address, interpretation()) == [address]
-
-
-@pytest.mark.parametrize(
-    ("address", "suggested"),
-    [
-        ("sem_bore.radus", ["sem_bore.radius"]),
-        ("sem_bor.radius", ["sem_bore.radius"]),
-        ("sem_bore.center_x", ["sem_bore.center"]),
-        ("dim_diameter.nominal", ["dim_diameter.nominal_value"]),
-        ("sem_bore.material", []),
-        ("dim_diameter.measured_length", []),
-    ],
-)
-def test_an_unknown_address_suggests_only_close_legal_ones(
-    address: str, suggested: list[str]
-) -> None:
-    assert reference_suggestions(address, interpretation()) == suggested
-
-
-def test_a_key_no_reference_can_name_is_not_suggested() -> None:
-    held = interpretation()
-    held.features[0].parameters.update(
-        {"Radius": 1.0, "radius-mm": 1.0, "radius_mm (= 1)": 1.0}
-    )
-    del held.features[0].parameters["radius"]
-    assert reference_suggestions("sem_bore.radius", held) == []
-
-
-def test_a_split_parameter_suggests_each_part_including_a_null_one() -> None:
-    held = interpretation()
-    parameters = held.features[0].parameters
-    del parameters["center"]
-    parameters.update(hole_center_x_mm=1.0, hole_center_z_mm=None)
-    assert reference_suggestions("sem_bore.center", held) == [
-        "sem_bore.hole_center_x_mm",
-        "sem_bore.hole_center_z_mm",
-    ]
-    # Once the member is corrected, an exact parameter needs no alternative.
-    assert reference_suggestions("sem_bor.hole_center_x_mm", held) == [
-        "sem_bore.hole_center_x_mm"
-    ]
-
-
-def test_an_operation_error_adds_close_addresses_but_accepts_a_null_one() -> None:
-    plan = OperationPlan(
-        proposal=[
-            Operation(
-                name="op_bore",
-                verb=OperationVerb.HOLE,
-                detail="Cut sem_bore.radus to sem_bore.depth.",
-                semantics=["sem_bore"],
-            )
-        ],
-        rationale="One bore.",
-    )
-    with pytest.raises(SubmissionValidationError) as caught:
-        validate_operations(plan, interpretation())
-    assert str(caught.value) == (
-        "op_bore: unknown reference sem_bore.radus. Maybe: sem_bore.radius?"
-    )
+def test_unknown_or_retired_addresses_stay_unannotated(address: str) -> None:
+    assert _references_resolved_in_prose(address, interpretation()) == address
 
 
 def test_identity_names_and_sentence_punctuation_are_not_parameter_addresses() -> None:
     text = "sem_bore uses dim_diameter. Then cut sem_bore.radius."
-    assert unresolved_references(text, interpretation()) == []
     assert _references_resolved_in_prose(text, interpretation()) == (
         "sem_bore uses dim_diameter. Then cut sem_bore.radius (= 6.000123456789123)."
     )
-    assert unresolved_references("sem_bore.depth", None) == ["sem_bore.depth"]
+    assert _references_resolved_in_prose("sem_bore.depth", None) == "sem_bore.depth"
 
 
 def test_whole_answers_are_copied_and_strenum_identity_survives() -> None:
-    plan = OperationPlan(
-        proposal=[
-            Operation(
-                name="op_bore",
-                verb=OperationVerb.HOLE,
-                detail="Cut sem_bore.radius at sem_bore.center.",
-                semantics=["sem_bore"],
-            )
-        ],
-        rationale="Use dim_diameter.quantity holes.",
-    )
-    original = plan.model_dump_json()
-    result = resolve_references(plan, interpretation())
-    assert plan.model_dump_json() == original
-    assert result.proposal[0].verb is OperationVerb.HOLE
-    assert result.proposal[0].name == "op_bore"
-    assert result.proposal[0].semantics == ["sem_bore"]
-    assert "(= [0.0 null 3.0])" in result.proposal[0].detail
-    assert "(= 2)" in result.rationale
-    assert resolve_references(result, interpretation()) == result
     response = TicketResponse(
         ticket_id="ticket_initial",
-        stage="operations",
-        summary="Reviewed sem_bore.depth.",
+        stage=PipelineStage.CODING,
+        summary="Cut sem_bore.radius at sem_bore.center; sem_bore.depth is open.",
     )
-    assert resolve_references(response, interpretation()).summary.endswith("(= null).")
+    original = response.model_dump_json()
+    result = resolve_references(response, interpretation())
+    assert response.model_dump_json() == original
+    assert result.stage is PipelineStage.CODING
+    assert "(= [0.0 null 3.0])" in result.summary
+    assert result.summary.endswith("(= null) is open.")
+    assert resolve_references(result, interpretation()) == result
 
 
 def test_ticket_summary_and_stage_report_references_resolve_without_mutating_submission():

@@ -159,14 +159,12 @@ class ArtifactPresenter:
     output_renders: Literal["path", "image"] = "path"
     overlay: Literal["none", "path", "image"] = "path"
     unmatched: Literal["path", "image"] = "path"
-    intermediates: Literal["none", "path", "image"] = "path"
 
     def __post_init__(self) -> None:
         if self.input not in {"path", "image"}:
             raise ValueError(f"invalid input: {self.input!r}")
-        for name in ("overlay", "intermediates"):
-            if getattr(self, name) not in {"none", "path", "image"}:
-                raise ValueError(f"invalid {name}: {getattr(self, name)!r}")
+        if self.overlay not in {"none", "path", "image"}:
+            raise ValueError(f"invalid overlay: {self.overlay!r}")
         for name in ("output_renders", "unmatched"):
             if getattr(self, name) not in {"path", "image"}:
                 raise ValueError(f"invalid {name}: {getattr(self, name)!r}")

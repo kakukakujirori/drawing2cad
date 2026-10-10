@@ -10,7 +10,6 @@ from zeroshot.pipeline.stages.coding.middleware import CodingMiddleware
 from zeroshot.pipeline.stages.coding.progress import ProgressOutputVerifier
 from zeroshot.pipeline.stages.coding.stage import CodingStage
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
-from zeroshot.pipeline.stages.operations.contracts import Operation, OperationPlan
 from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification.attempts import AttemptStore
@@ -21,7 +20,7 @@ from zeroshot.pipeline.verification.run_cadquery import (
 )
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 
-SOURCE = "ret_base = object()\nresult = ret_base\n"
+SOURCE = "result = object()\n"
 
 
 def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypatch):
@@ -31,7 +30,7 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
             workdir=workdir,
             renderer=None,
             diff_drawer=None,
-            artifact_presenter=ArtifactPresenter(input="path", intermediates="none"),
+            artifact_presenter=ArtifactPresenter(input="path"),
             attempt_store=AttemptStore(workdir, round_source=lambda: 0),
         )
         verifier.interpretation = interpretation(
@@ -39,12 +38,6 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
                 view(role, scale=0.1, file=f"inputs/{role}.png")
                 for role in ("front", "top", "right")
             ]
-        )
-        verifier.operations = OperationPlan(
-            rationale="base solid",
-            proposal=[
-                Operation(name="op_base", verb="extrude", detail="base", semantics=[])
-            ],
         )
         build_count = 0
         scores = [0.7, 0.7, 0.7]
@@ -166,10 +159,6 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
         patches = {"drawing_path": tmp_path / "a_different_input.png"}
         assert "Overall comparison unavailable" in attempt([0.1, 0.1, 0.1])
         patches = {}
-        assert "submission is blocked" in attempt(
-            [0.1, 0.1, 0.1], "result = object()\n"
-        )
-        assert verifier._best_candidate is best
         incomplete = replace(
             best[1],
             drawing_diff_report={
@@ -216,9 +205,8 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
             "reconstruction": SimpleNamespace(
                 snapshots=[
                     SimpleNamespace(
-                        last_completed_stage=PipelineStage.OPERATIONS,
+                        last_completed_stage=PipelineStage.INTERPRETATION,
                         interpretation=verifier.interpretation,
-                        operations=verifier.operations,
                     )
                 ]
             )

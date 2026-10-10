@@ -50,7 +50,7 @@ def test_audit_and_validation_are_recorded_as_their_raw_node_updates(
                 "backtrace": [],
                 "revision_request": {
                     "action": "modify",
-                    "targets": [{"stage": "coding", "name": "ret_bore"}],
+                    "targets": [{"stage": "coding", "name": None}],
                     "instruction": "Restore the bore.",
                     "proposed_names": [],
                 },

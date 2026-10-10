@@ -46,8 +46,7 @@ _ANSWER_A_TICKET = (
     "Do not restate the artifact's geometry or measurements: it "
     "remains authoritative. "
     "Cite the concrete stable names examined or changed: "
-    "view_..., dim_..., or sem_... in interpretation, op_... in "
-    "operations, and ret_... or result in coding."
+    "view_..., dim_..., or sem_... in interpretation."
 )
 
 
@@ -200,8 +199,8 @@ class StageReport(BaseModel):
         ...,
         description=(
             "Changes your tickets did not ask for, each with its reason. Use a "
-            "member name as the key: datum, view_..., dim_..., sem_..., op_... or "
-            "ret_.... The value describes the change and its justification. "
+            "member name as the key: datum, view_..., dim_... or sem_.... The "
+            "value describes the change and its justification. "
             "Leave this {} in round 0 and when your tickets asked for every change."
         ),
     )

@@ -207,7 +207,6 @@ def test_staged_workflow_shares_the_cap_across_stages_and_rounds(
         monkeypatch, staged_tests._verified("000"), staged_tests._verified("001")
     )
     interpretation = staged_tests._interpretation_script()
-    operations = staged_tests._operations_script()
     coding = (
         staged_tests._coding_submission(),
         staged_tests._coding_submission(staged_tests._ROUND_ONE_TICKET),
@@ -218,27 +217,25 @@ def test_staged_workflow_shares_the_cap_across_stages_and_rounds(
         audit[-1].response_metadata = {"finish_reason": "length"}
         coding[1].response_metadata = {"finish_reason": "length"}
     else:
-        operations[0].response_metadata = {"finish_reason": "length"}
         coding[0].response_metadata = {"finish_reason": "length"}
+    cap = 3 if cross_round else 2
     interpreter = ScriptedChatModel(responses=interpretation)
-    planner = ScriptedChatModel(responses=operations)
     coder = ScriptedChatModel(responses=coding)
     auditor = ScriptedChatModel(responses=audit)
     with SandboxWorkdir() as workdir:
         graph = staged_tests._graph(
             workdir,
             interpreter=interpreter,
-            planner=planner,
             coder=coder,
             auditor=auditor,
-            max_output_limit_failures=3,
+            max_output_limit_failures=cap,
             max_audit_reject_count=1,
         )
-        with pytest.raises(OutputLimitBudgetExceeded, match="3/3"):
+        with pytest.raises(OutputLimitBudgetExceeded, match=f"{cap}/{cap}"):
             graph.invoke({})
         history = load_reconstruction(workdir.host_bind_dir / "reconstruction.json")
         assert history.snapshots[-1].round == int(cross_round)
-    assert len(interpreter.received_messages) == len(planner.received_messages) == 2
+    assert len(interpreter.received_messages) == 2
     assert len(coder.received_messages) == (2 if cross_round else 1)
     assert len(auditor.received_messages) == (2 if cross_round else 0)
 

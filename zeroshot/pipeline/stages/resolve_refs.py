@@ -17,7 +17,6 @@ _REFERENCE = re.compile(
     rf"\.(?P<parameter>{_PARAMETER})\b(?!\.[a-z0-9_])"
     r"(?:\s*\(= [^()]*\))?"
 )
-_REFERENCE_LIKE = re.compile(r"\b(?:sem|ev|dim)_[a-z0-9_]+(?:\.[a-z0-9_]+)+\b")
 _MISSING = object()
 
 
@@ -28,45 +27,8 @@ def resolve_references[M: BaseModel](
     return cast(M, _references_resolved_within(answer, interpretation))
 
 
-def without_annotations(text: str) -> str:
-    """Drop the "(= value)" the pipeline appended after each reference.
-
-    `_REFERENCE` matches an address together with its annotation, and this
-    writes the address back alone: "sem_bore.radius (= 3.0)" -> "sem_bore.radius".
-    """
-    return _REFERENCE.sub(
-        lambda address: f"{address['member']}.{address['parameter']}", text
-    )
-
-
-def unresolved_references(
-    text: str, interpretation: DrawingInterpretation | None
-) -> list[str]:
-    """Return unknown addresses; a declared null parameter is still known."""
-    return [
-        match[0]
-        for match in _REFERENCE_LIKE.finditer(text)
-        if _value_named(_REFERENCE.fullmatch(match[0]), interpretation) is _MISSING
-    ]
-
-
-def reference_suggestions(
-    address: str, interpretation: DrawingInterpretation
-) -> list[str]:
-    """Up to three legal addresses like an unknown one, in its member if it exists."""
-    member, _, parameter = address.partition(".")
-    values = _values_by_member(interpretation)
-    suggestions: list[str] = []
-    for name in [member] if member in values else close_names(member, values):
-        # A corrected member may hold the parameter exactly as written.
-        known = values[name]
-        matches = [parameter] if parameter in known else _similar(parameter, known)
-        suggestions += [f"{name}.{match}" for match in matches]
-    return suggestions[:3]
-
-
 def close_names(name: str, known: Iterable[str]) -> list[str]:
-    """Up to three known names like a mistyped one, sharing its sem_/op_/... prefix."""
+    """Up to three known names like a mistyped one, sharing its sem_/dim_/... prefix."""
     prefix = name.partition("_")[0] + "_"
     return _similar(name, [other for other in known if other.startswith(prefix)])
 

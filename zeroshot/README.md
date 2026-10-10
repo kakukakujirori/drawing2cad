@@ -90,6 +90,6 @@ python -m zeroshot.run_pipeline --multirun \
 ```bash
 python -m interactive_debug \
   --run outputs/glm5.3_flash/xxx/checkpoints.sqlite \
-  --stage {interpretation, operations, coding, audit} \
+  --stage {interpretation, coding, audit} \
   --round 000
 ```

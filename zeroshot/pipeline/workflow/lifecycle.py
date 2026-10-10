@@ -18,7 +18,6 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
 )
-from zeroshot.pipeline.stages.operations.contracts import OperationPlan
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
 from zeroshot.pipeline.stages.snapshot_update import (
     WorkspaceOutput,
@@ -61,7 +60,6 @@ def start_reconstruction(
         round=0,
         last_completed_stage=None,
         interpretation=None,
-        operations=None,
         program_source=None,
         verification=None,
     )
@@ -120,7 +118,6 @@ def open_next_round(
         round=next_round,
         last_completed_stage=None,
         interpretation=None,
-        operations=None,
         program_source=None,
         verification=None,
     )
@@ -141,11 +138,6 @@ def interpretation_baseline(history: ReconstructionHistory) -> DrawingInterpreta
         views=list(history.input_drawings),
         features=[],
     )
-
-
-def operations_baseline(history: ReconstructionHistory) -> OperationPlan | None:
-    """The accepted operation plan from the preceding round, if any."""
-    return history.snapshots[-2].operations if len(history.snapshots) > 1 else None
 
 
 def _ticket_from_finding(

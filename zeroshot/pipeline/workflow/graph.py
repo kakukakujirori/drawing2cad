@@ -43,7 +43,6 @@ from zeroshot.pipeline.workflow.lifecycle import (
     interpretation_baseline,
     load_reconstruction,
     open_next_round,
-    operations_baseline,
     save_reconstruction,
     start_reconstruction,
 )
@@ -61,7 +60,6 @@ type AgentBuilder = partial[CompiledGraph]
 
 def create_reconstruction_graph(
     interpretation_agent_builder: AgentBuilder,
-    operations_agent_builder: AgentBuilder,
     coding_agent_builder: AgentBuilder,
     audit_agent_builder: AgentBuilder,
     sandbox_runner: SandboxRunner,
@@ -70,7 +68,6 @@ def create_reconstruction_graph(
     input_manifest: InputManifest,
     output_filename: str = "model.py",
     interpretation_filename: str = "interpretation.json",
-    operations_filename: str = "operations.json",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
     reconstruction_history_filename: str = "reconstruction.json",
     max_audit_reject_count: int = 3,
@@ -84,7 +81,7 @@ def create_reconstruction_graph(
     fresh_coder: bool = False,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
 ):
-    """Interpret and plan the part, implement it, then verify and audit it."""
+    """Interpret the drawing, implement the part, then verify and audit it."""
     if max_audit_reject_count < 0:
         raise ValueError(f"{max_audit_reject_count=} must be non-negative")
     if max_stage_validation_retries < 0:
@@ -124,9 +121,6 @@ def create_reconstruction_graph(
         "interpretation_output_path": str(
             sandbox_workdir.sandbox_bind_dir / interpretation_filename
         ),
-        "operations_output_path": str(
-            sandbox_workdir.sandbox_bind_dir / operations_filename
-        ),
         "verification_dir": str(
             sandbox_workdir.sandbox_bind_dir / verification_dirname
         ),
@@ -155,16 +149,6 @@ def create_reconstruction_graph(
         prompt_context=prompt_context,
         attempt_store=attempt_store,
         interpretation_filename=interpretation_filename,
-        input_after_compaction=compact_between_stages is not None,
-    )
-    operation_stage = stage_factory(PipelineStage.OPERATIONS)(
-        partial(operations_agent_builder, output_limit_budget=output_limit_budget),
-        tools=basic_tools,
-        role_path=(None if share_thread else stages_dir / "operations/prompts/role.md"),
-        instructions=stage_instructions,
-        prompt_context=prompt_context,
-        attempt_store=attempt_store,
-        operations_filename=operations_filename,
         input_after_compaction=compact_between_stages is not None,
     )
     coding_stage = stage_factory(PipelineStage.CODING)(
@@ -276,11 +260,6 @@ def create_reconstruction_graph(
                     interpretation_stage.interpretation_verifier.accepted_interpretation
                 )
                 filename = interpretation_filename
-            case PipelineStage.OPERATIONS:
-                if not tickets_assigned_to(tickets, PipelineStage.OPERATIONS):
-                    return operations_baseline(reconstruction)
-                accepted = operation_stage.operation_verifier.accepted_plan
-                filename = operations_filename
             case PipelineStage.CODING:
                 return coding_stage.output_verifier.verify()
             case _:
@@ -439,7 +418,6 @@ def create_reconstruction_graph(
     workflow = StateGraph(state_schema=ReconstructionState)  # type: ignore[type-var]
     workflow.add_node("initialize", initialize)
     workflow.add_node(PipelineStage.INTERPRETATION.value, interpretation_stage.run)
-    workflow.add_node(PipelineStage.OPERATIONS.value, operation_stage.run)
     workflow.add_node(PipelineStage.CODING.value, coding_stage.run)
     workflow.add_node(PipelineStage.AUDIT.value, audit_stage.run)
     workflow.add_node("integrate_stage_submission", integrate_stage_submission)

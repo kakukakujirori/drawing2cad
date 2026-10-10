@@ -17,11 +17,6 @@ from zeroshot.pipeline.stages.contracts import (
     ReconstructionHistory,
     ReconstructionSnapshot,
 )
-from zeroshot.pipeline.stages.operations.contracts import (
-    Operation,
-    OperationPlan,
-    OperationVerb,
-)
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
     StageReport,
@@ -36,20 +31,6 @@ from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
 
 def _interpretation():
     return interpretation("a base body")
-
-
-def _operations() -> OperationPlan:
-    return OperationPlan(
-        proposal=[
-            Operation(
-                name="op_base",
-                verb=OperationVerb.EXTRUDE,
-                detail="Extrude the base body.",
-                semantics=["sem_feature_1"],
-            )
-        ],
-        rationale="The base body is one extrusion.",
-    )
 
 
 def _finding() -> AuditFinding:
@@ -88,7 +69,7 @@ def _ticket(
     *,
     subject: BootstrapWork | AuditFinding | None = None,
     stages: tuple[str, ...] = (),
-    assigned: tuple[str, ...] = ("interpretation", "operations", "coding"),
+    assigned: tuple[str, ...] = ("interpretation", "coding"),
 ) -> Ticket:
     return Ticket(
         ticket_id=ticket_id,
@@ -107,18 +88,14 @@ def _snapshot(
 ) -> ReconstructionSnapshot:
     interpreted = (
         _interpretation()
-        if last_completed_stage in {"interpretation", "operations", "coding"}
+        if last_completed_stage in {"interpretation", "coding"}
         else None
-    )
-    operations = (
-        _operations() if last_completed_stage in {"operations", "coding"} else None
     )
     return ReconstructionSnapshot(
         open_tickets=[ticket or _ticket()],
         round=round,
         last_completed_stage=last_completed_stage,  # type: ignore[arg-type]
         interpretation=interpreted,
-        operations=operations,
         program_source=verification.exec_report.source
         if verification is not None and verification.exec_report is not None
         else None,
@@ -315,13 +292,13 @@ def test_a_round_checkpoint_requires_every_ticket_response_in_stage_order() -> N
     with pytest.raises(ValidationError, match="responses must be"):
         _snapshot(
             ticket=ticket,
-            last_completed_stage="operations",
+            last_completed_stage="coding",
         )
 
 
 @pytest.mark.parametrize(
     "assigned",
-    [(), ("interpretation",), ("interpretation", "coding"), ("coding", "operations")],
+    [(), ("interpretation",), ("coding", "interpretation")],
 )
 def test_a_ticket_assignment_runs_from_one_revision_root_through_coding(
     assigned: tuple[str, ...],
@@ -332,12 +309,12 @@ def test_a_ticket_assignment_runs_from_one_revision_root_through_coding(
 
 def test_a_ticket_rejects_a_response_from_a_stage_it_does_not_assign() -> None:
     with pytest.raises(ValidationError, match="not assigned to this ticket"):
-        _ticket(stages=("interpretation",), assigned=("operations", "coding"))
+        _ticket(stages=("interpretation",), assigned=("coding",))
 
 
 def test_a_completed_stage_leaves_no_response_on_a_ticket_it_is_not_assigned() -> None:
     snapshot = _snapshot(
-        ticket=_ticket(assigned=("operations", "coding")),
+        ticket=_ticket(assigned=("coding",)),
         last_completed_stage="interpretation",
     )
 
@@ -351,7 +328,6 @@ def test_a_ticket_rejects_a_response_for_another_ticket() -> None:
             subject=BootstrapWork(instruction="Reconstruct the part."),
             assigned_stages=[
                 PipelineStage.INTERPRETATION,
-                PipelineStage.OPERATIONS,
                 PipelineStage.CODING,
             ],
             responses=_responses("ticket_other", "interpretation"),
@@ -364,7 +340,7 @@ def test_a_failed_verification_is_a_valid_completed_coding_checkpoint() -> None:
             status=ExecutionStatus.REJECTED, executor_error="model.py was not found"
         )
     )
-    ticket = _ticket(stages=("interpretation", "operations", "coding"))
+    ticket = _ticket(stages=("interpretation", "coding"))
 
     snapshot = _snapshot(
         ticket=ticket,
@@ -377,7 +353,7 @@ def test_a_failed_verification_is_a_valid_completed_coding_checkpoint() -> None:
 
 
 def test_an_uninitialized_verification_does_not_complete_coding() -> None:
-    ticket = _ticket(stages=("interpretation", "operations", "coding"))
+    ticket = _ticket(stages=("interpretation", "coding"))
 
     with pytest.raises(ValidationError, match="must be completed"):
         _snapshot(
@@ -395,10 +371,9 @@ def test_an_uninitialized_verification_does_not_complete_coding() -> None:
     ("completed_stage", "field", "value"),
     [
         (None, "interpretation", _interpretation()),
-        ("interpretation", "operations", _operations()),
-        ("operations", "program_source", "result = object()\n"),
+        ("interpretation", "program_source", "result = object()\n"),
         (
-            "operations",
+            "interpretation",
             "verification",
             VerifyOutputResult(
                 exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
@@ -414,7 +389,6 @@ def test_snapshot_rejects_an_artifact_from_an_unfinished_stage(
     completed_stages = {
         None: (),
         "interpretation": ("interpretation",),
-        "operations": ("interpretation", "operations"),
     }[completed_stage]
     snapshot = _snapshot(
         ticket=_ticket(stages=completed_stages),
@@ -427,7 +401,7 @@ def test_snapshot_rejects_an_artifact_from_an_unfinished_stage(
         ReconstructionSnapshot.model_validate(data)
 
 
-@pytest.mark.parametrize("stage", ["interpretation", "operations", "coding"])
+@pytest.mark.parametrize("stage", ["interpretation", "coding"])
 def test_snapshot_rejects_reports_from_unfinished_stages(stage):
     data = _snapshot().model_dump()
     data["stage_reports"] = {
@@ -486,7 +460,7 @@ def test_round_zero_rejects_a_finding_in_place_of_bootstrap_work() -> None:
 
 def test_later_rounds_reject_bootstrap_tickets() -> None:
     first = _snapshot(
-        ticket=_ticket(stages=("interpretation", "operations", "coding")),
+        ticket=_ticket(stages=("interpretation", "coding")),
         last_completed_stage="coding",
         verification=VerifyOutputResult(
             exec_report=CadQueryExecutionReport(status=ExecutionStatus.REJECTED)
@@ -516,7 +490,7 @@ def test_round_numbers_follow_snapshot_order() -> None:
 
 def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None:
     first = _snapshot(
-        ticket=_ticket(stages=("interpretation", "operations", "coding")),
+        ticket=_ticket(stages=("interpretation", "coding")),
         last_completed_stage="coding",
         verification=VerifyOutputResult(
             verification_id="000",
@@ -537,7 +511,6 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
         round=1,
         last_completed_stage=None,
         interpretation=None,
-        operations=None,
         program_source=None,
         verification=None,
     )

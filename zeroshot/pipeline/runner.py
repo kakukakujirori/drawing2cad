@@ -201,7 +201,7 @@ class PipelineRunner:
                     raise FileNotFoundError(f"resume attempt is missing: {source}")
 
             for round_number in range(snapshot.round + 1):
-                for stage in ("interpretation", "operations", "coding", "audit"):
+                for stage in ("interpretation", "coding", "audit"):
                     relative = PurePosixPath(f"round_{round_number:03d}/{stage}")
                     source = resume_root / self.verification_dirname / relative
                     if source.is_dir():

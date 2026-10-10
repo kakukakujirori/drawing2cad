@@ -49,18 +49,16 @@ class CodingStage:
 
     def run(self, state: ReconstructionState, config: RunnableConfig) -> dict[str, Any]:
         snapshot = current_snapshot(state)
-        if snapshot.last_completed_stage is not PipelineStage.OPERATIONS:
-            raise RuntimeError("coding requires integrated operations")
+        if snapshot.last_completed_stage is not PipelineStage.INTERPRETATION:
+            raise RuntimeError("coding requires integrated interpretation")
         interpretation = snapshot.interpretation
         if interpretation is None:
             raise RuntimeError("coding requires integrated interpretation")
 
-        # The verifier checks the program against this round's operations and
-        # redraws the solid in the views the drawing names, guessing none. Set
-        # here because both the build inside the agent and the one at
-        # integration belong to this stage of this round.
+        # The verifier redraws the solid in the views the drawing names,
+        # guessing none. Set here because both the build inside the agent and
+        # the one at integration belong to this stage of this round.
         self.output_verifier.interpretation = interpretation
-        self.output_verifier.operations = snapshot.operations
 
         # A validation retry continues this round's verification state.
         retry = state.get("stage_validation_error") is not None

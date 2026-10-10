@@ -42,11 +42,6 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 from zeroshot.pipeline.stages.interpretation.contracts import (
     View as InterpretedView,
 )
-from zeroshot.pipeline.stages.operations.contracts import (
-    Operation,
-    OperationPlan,
-    OperationVerb,
-)
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
     StageReport,
@@ -58,7 +53,6 @@ from zeroshot.pipeline.stages.types import PipelineStage, ReasoningStage
 from zeroshot.pipeline.verification import ExecutionStatus
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
-    IntermediateReturn,
 )
 from zeroshot.pipeline.verification.run_drawing_diff import (
     AlignmentResult,
@@ -118,19 +112,7 @@ _A_INTERPRETATION.views[0].dimensions = [
     )
 ]
 _A_INTERPRETATION.features[1].dimension_refs = ["dim_bore"]
-_DIMENSION_CHECKS = {"dim_bore": "Unconfirmed: ret_base omits the interpreted bore."}
-
-_A_PLAN = OperationPlan(
-    proposal=[
-        Operation(
-            name="op_base",
-            verb=OperationVerb.EXTRUDE,
-            detail="Extrude the outline 25 mm along +z",
-            semantics=["sem_feature_1"],
-        )
-    ],
-    rationale="one extrude reaches the stated height",
-)
+_DIMENSION_CHECKS = {"dim_bore": "Unconfirmed: the program omits the bore."}
 
 _VERIFICATION = VerifyOutputResult(
     verification_id="v1",
@@ -138,10 +120,9 @@ _VERIFICATION = VerifyOutputResult(
     sandbox_verification_dir="/work/attempts/v1",
     exec_report=CadQueryExecutionReport(
         status=ExecutionStatus.VERIFIED,
-        source="ret_base = object()\nresult = ret_base\n",
+        source="result = object()\n",
         returncode=0,
         step_path=Path("/tmp/workspace/attempts/v1/output.step"),
-        intermediate_returns=(IntermediateReturn("ret_base"),),
         census=ShapeCensus(
             1,
             1.0,
@@ -201,19 +182,21 @@ _AUDIT_REPORT = AuditReport(
             related_ticket_ids=["ticket_missing_boss"],
             backtrace=[
                 CausalHop(
-                    effect=StageOutputRef(stage=PipelineStage.CODING, name="ret_base"),
+                    effect=StageOutputRef(stage=PipelineStage.CODING, name=None),
                     cause=StageOutputRef(
-                        stage=PipelineStage.OPERATIONS, name="op_base"
+                        stage=PipelineStage.INTERPRETATION, name="sem_feature_1"
                     ),
-                    rationale="the return implements the base operation",
+                    rationale="the program builds the flange as interpreted",
                 )
             ],
             revision_request=RevisionRequest(
                 action="modify",
                 targets=[
-                    StageOutputRef(stage=PipelineStage.OPERATIONS, name="op_base")
+                    StageOutputRef(
+                        stage=PipelineStage.INTERPRETATION, name="sem_feature_1"
+                    )
                 ],
-                instruction="add the omitted boss operation",
+                instruction="the flange omits the boss",
                 proposed_names=[],
             ),
         )
@@ -252,7 +235,6 @@ _RECONSTRUCTION = ReconstructionHistory(
                     subject=BootstrapWork(instruction="reconstruct the drawing"),
                     assigned_stages=[
                         PipelineStage.INTERPRETATION,
-                        PipelineStage.OPERATIONS,
                         PipelineStage.CODING,
                     ],
                     responses=[
@@ -263,13 +245,8 @@ _RECONSTRUCTION = ReconstructionHistory(
                         ),
                         TicketResponse(
                             ticket_id="ticket_initial",
-                            stage=PipelineStage.OPERATIONS,
-                            summary="established op_base",
-                        ),
-                        TicketResponse(
-                            ticket_id="ticket_initial",
                             stage=PipelineStage.CODING,
-                            summary="implemented ret_base and result",
+                            summary="implemented the flange and the hole",
                         ),
                     ],
                 )
@@ -277,7 +254,6 @@ _RECONSTRUCTION = ReconstructionHistory(
             round=0,
             last_completed_stage=PipelineStage.CODING,
             interpretation=_A_INTERPRETATION,
-            operations=_A_PLAN,
             program_source=_VERIFICATION.exec_report.source,
             verification=_VERIFICATION,
             stage_reports={
@@ -295,15 +271,11 @@ _INTERPRETATION_SUBMISSION = TicketAnswers(
     stage_report=StageReport(concerns={}, dimension_checks=None, unticketed_changes={}),
     responses={"ticket_initial": "established sem_feature_1 and sem_feature_2"},
 )
-_OPERATION_SUBMISSION = TicketAnswers(
-    stage_report=StageReport(concerns={}, dimension_checks=None, unticketed_changes={}),
-    responses={"ticket_initial": "established op_base"},
-)
 _CODING_SUBMISSION = TicketAnswers(
     stage_report=StageReport(
         concerns={}, unticketed_changes={}, dimension_checks=_DIMENSION_CHECKS
     ),
-    responses={"ticket_initial": "implemented ret_base and result"},
+    responses={"ticket_initial": "implemented the flange and the hole"},
 )
 
 _ARTIFACTS: dict[str, object] = {
@@ -313,13 +285,6 @@ _ARTIFACTS: dict[str, object] = {
     "interpretation_state": {
         "messages": [HumanMessage(content="interpret the drawing")],
         "structured_response": _INTERPRETATION_SUBMISSION,
-        "current_turn": 1,
-        "total_turns": 1,
-        "stop_reason": StopReason.COMPLETED,
-    },
-    "operations_state": {
-        "messages": [HumanMessage(content="propose operations")],
-        "structured_response": _OPERATION_SUBMISSION,
         "current_turn": 1,
         "total_turns": 1,
         "stop_reason": StopReason.COMPLETED,
@@ -348,9 +313,6 @@ _ARTIFACTS: dict[str, object] = {
 
 def test_custom_state_types_include_nested_runtime_values() -> None:
     assert set(CUSTOM_STATE_TYPES) == {
-        Operation,
-        OperationPlan,
-        OperationVerb,
         DrawingInterpretation,
         SemanticFeature,
         # The contract's enums ride in state too. An enum missing from the
@@ -361,7 +323,6 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         StopReason,
         VerifyOutputResult,
         CadQueryExecutionReport,
-        IntermediateReturn,
         ShapeCensus,
         Void,
         RenderReport,
@@ -451,9 +412,6 @@ def test_every_state_artifact_survives_a_checkpoint() -> None:
     assert type(interpretation_state["structured_response"]) is TicketAnswers
     assert type(interpretation_state["stop_reason"]) is StopReason
 
-    operations_state = restored["operations_state"]
-    assert type(operations_state["structured_response"]) is TicketAnswers
-
 
 def test_real_drawing_diff_survives_a_sqlite_checkpoint(tmp_path: Path) -> None:
     """JSON accepts NumPy float64 diagnostics that msgpack cannot encode."""
@@ -515,10 +473,6 @@ def _threaded_state(**stages: object) -> ReconstructionState:
     read = [HumanMessage(content="read the views")]
     state: dict[str, object] = {
         "interpretation_state": {"messages": read, "current_turn": 3},
-        "operations_state": {
-            "messages": read,
-            "current_turn": 2,
-        },
         "coding_state": {"current_turn": 4},
         "audit_state": {"messages": [HumanMessage(content="judge it")]},
     }
@@ -529,7 +483,6 @@ def _threaded_state(**stages: object) -> ReconstructionState:
     ("stage", "stage_state"),
     [
         (PipelineStage.INTERPRETATION, {"interpretation_state": {"messages": ["it"]}}),
-        (PipelineStage.OPERATIONS, {"operations_state": {"messages": ["it"]}}),
         (PipelineStage.CODING, {"coding_state": {"messages": ["it"]}}),
     ],
 )
@@ -551,13 +504,8 @@ def test_the_thread_reaches_every_reasoning_stage_but_not_the_audit() -> None:
 
     update = carry_thread(state, lead_transcript(state, PipelineStage.CODING))
 
-    assert set(update) == {
-        "interpretation_state",
-        "operations_state",
-        "coding_state",
-    }
+    assert set(update) == {"interpretation_state", "coding_state"}
     assert update["interpretation_state"]["messages"] == ["wrote the model"]
-    assert update["operations_state"]["messages"] == ["wrote the model"]
 
 
 def test_the_stage_that_wrote_the_thread_is_given_back_what_it_wrote() -> None:
@@ -579,7 +527,6 @@ def test_what_a_stage_holds_besides_its_messages_survives_the_thread() -> None:
     )
 
     assert update["interpretation_state"]["current_turn"] == 3
-    assert update["operations_state"]["current_turn"] == 2
 
 
 def test_the_prompt_log_is_told_where_the_inherited_thread_ends() -> None:

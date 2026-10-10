@@ -13,7 +13,6 @@ from zeroshot.pipeline.stages.types import (
 def test_the_pipeline_order_has_one_canonical_definition() -> None:
     assert PIPELINE_STAGES == (
         PipelineStage.INTERPRETATION,
-        PipelineStage.OPERATIONS,
         PipelineStage.CODING,
         PipelineStage.AUDIT,
     )
@@ -24,8 +23,7 @@ def test_the_pipeline_order_has_one_canonical_definition() -> None:
     ("completed", "following"),
     [
         (None, PipelineStage.INTERPRETATION),
-        (PipelineStage.INTERPRETATION, PipelineStage.OPERATIONS),
-        (PipelineStage.OPERATIONS, PipelineStage.CODING),
+        (PipelineStage.INTERPRETATION, PipelineStage.CODING),
         (PipelineStage.CODING, PipelineStage.AUDIT),
         (PipelineStage.AUDIT, None),
     ],
@@ -40,7 +38,6 @@ def test_next_stage_follows_that_order(
 def test_stage_values_remain_stable_json_strings() -> None:
     assert [stage.value for stage in PIPELINE_STAGES] == [
         "interpretation",
-        "operations",
         "coding",
         "audit",
     ]

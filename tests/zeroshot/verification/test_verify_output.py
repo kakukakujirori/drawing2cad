@@ -1,5 +1,4 @@
 import json
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -19,7 +18,6 @@ from zeroshot.pipeline.stages.coding.verify import (
     RESULT_NAME,
     OutputVerifier,
     VerifyOutputResult,
-    _census_table,
 )
 from zeroshot.pipeline.stages.interpretation.contracts import Axis, Region, View
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
@@ -33,7 +31,6 @@ from zeroshot.pipeline.verification.render.orthographic import STANDARD_VIEW_FRA
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     ExecutionStatus,
-    IntermediateReturn,
 )
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 from zeroshot.pipeline.verification.run_render import (
@@ -41,7 +38,7 @@ from zeroshot.pipeline.verification.run_render import (
     RenderRequest,
     RenderStatus,
 )
-from zeroshot.pipeline.verification.shape_census import ShapeCensus, read_census
+from zeroshot.pipeline.verification.shape_census import read_census
 
 RENDER3D_STYLES = (
     "hlg_perspective",
@@ -60,24 +57,14 @@ result = cq.Workplane("XY").box(10, 20, 30)
 
 
 class StubCadQueryExecutor:
-    def __init__(
-        self,
-        report: CadQueryExecutionReport,
-        return_names: tuple[str, ...] = (),
-    ) -> None:
+    def __init__(self, report: CadQueryExecutionReport) -> None:
         self.report = report
-        self.return_names = return_names
         self.calls: list[tuple[Path, Path | None]] = []
-        self.intermediate_returns_dirs: list[Path | None] = []
 
     def execute(
-        self,
-        model_path: Path,
-        output_step_path: Path | None = None,
-        intermediate_returns_dir: Path | None = None,
+        self, model_path: Path, output_step_path: Path | None = None
     ) -> CadQueryExecutionReport:
         self.calls.append((model_path, output_step_path))
-        self.intermediate_returns_dirs.append(intermediate_returns_dir)
         report = self.report
         # A verified run leaves the STEP behind, which is what gets rendered.
         if (
@@ -86,35 +73,7 @@ class StubCadQueryExecutor:
         ):
             output_step_path.write_text("ISO-10303-21;\nEND-ISO-10303-21;\n")
             report = replace(report, step_path=output_step_path)
-        # Kept whenever the program ran, as the real executor does: a
-        # `result` that fails to verify still leaves every ret_xxx behind.
-        if intermediate_returns_dir is None or not self.return_names:
-            return report
-        return replace(
-            report,
-            intermediate_returns=tuple(
-                self._keep(intermediate_returns_dir, index, name)
-                for index, name in enumerate(self.return_names)
-            ),
-        )
-
-    @staticmethod
-    def _keep(returns_dir: Path, index: int, name: str) -> IntermediateReturn:
-        step_path = returns_dir / name / "output.step"
-        step_path.parent.mkdir(parents=True, exist_ok=True)
-        step_path.write_text("ISO-10303-21;\nEND-ISO-10303-21;\n")
-        return IntermediateReturn(
-            name,
-            step_path=step_path,
-            valid=True,
-            census=ShapeCensus(
-                1,
-                100.0 * (index + 1),
-                (10.0, 20.0, 30.0),
-                Counter({"Plane": 6}),
-                Counter({"Line": 12}),
-            ),
-        )
+        return report
 
 
 def _execution_report(
@@ -146,7 +105,6 @@ def _create_verifier(
     source_filename: str = "model.py",
     output_dirname: PurePosixPath = PurePosixPath("attempts"),
     attempt_store: AttemptStore | None = None,
-    intermediates: Literal["none", "path", "image"] = "path",
     diff_drawer: object | None = None,
     projection_view_mode: Literal["interpreted", "standard"] = "interpreted",
     unmatched: Literal["path", "image"] = "image",
@@ -159,7 +117,6 @@ def _create_verifier(
         artifact_presenter=ArtifactPresenter(
             input="path",
             output_renders=output_renders,
-            intermediates=intermediates,
             unmatched=unmatched,
             overlay=overlay,
         ),
@@ -237,9 +194,7 @@ def test_real_cadquery_render_and_drawing_diff_reach_feedback(
             workdir=workdir,
             renderer=StepRenderer(max_workers=1),
             diff_drawer=DrawingDiffExecutor(),
-            artifact_presenter=ArtifactPresenter(
-                input="path", intermediates="none", unmatched="image"
-            ),
+            artifact_presenter=ArtifactPresenter(input="path", unmatched="image"),
             attempt_store=AttemptStore(workdir, round_source=lambda: 0),
         )
         verifier.interpretation = interpretation(
@@ -480,61 +435,6 @@ def test_preserves_failed_attempt_and_execution_report(tmp_path: Path) -> None:
     assert not (attempt_dir / "output.step").exists()
 
 
-def test_the_intermediate_returns_are_kept_beside_their_attempt(
-    tmp_path: Path,
-) -> None:
-    executor = StubCadQueryExecutor(_execution_report())
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    verifier = _create_verifier(executor, workdir)
-
-    report = verifier.verify()
-
-    assert report.verification_id is not None
-    assert executor.intermediate_returns_dirs == [
-        _coding_attempt(tmp_path, report.verification_id) / "intermediate_returns"
-    ]
-
-
-def test_the_returns_block_lists_results_and_where_to_find_their_drawings(
-    tmp_path: Path,
-) -> None:
-    """The census and artifact layout stay together in intermediate feedback."""
-    executor = StubCadQueryExecutor(
-        _execution_report(), return_names=("ret_base", "ret_hole")
-    )
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-
-    text = _text(_create_verifier(executor, workdir).feedback())
-
-    assert "[Intermediate results]" in text
-    assert "\nret_base " in text
-    assert "\nret_hole " in text
-    assert (
-        "\nFiles are under /work/attempts/round_000/coding/000/intermediate_returns/<name>/"
-        in text
-    )
-    assert "projection/<view>.dxf, projection/<view>.png" in text
-
-
-def test_a_run_with_the_returns_switched_off_says_nothing_about_them(
-    tmp_path: Path,
-) -> None:
-    executor = StubCadQueryExecutor(
-        _execution_report(), return_names=("ret_base", "ret_hole")
-    )
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    verifier = _create_verifier(executor, workdir, intermediates="none")
-
-    report = verifier.verify()
-
-    assert report.exec_report.intermediate_returns == ()
-    assert set(report.render_report) == {RESULT_NAME}
-    assert "[Intermediate results]" not in _text(verifier.feedback())
-
-
 def test_assigns_incrementing_verification_ids(tmp_path: Path) -> None:
     executor = StubCadQueryExecutor(_execution_report())
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
@@ -693,7 +593,7 @@ def test_diff_uses_final_render_and_feedback_formats_the_stored_reports(
 ):
     workdir = SandboxWorkdir(tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE)
-    executor = StubCadQueryExecutor(_execution_report(), return_names=("ret_base",))
+    executor = StubCadQueryExecutor(_execution_report())
     drawer = StubDiffDrawer()
     verifier = _create_verifier(
         executor,
@@ -706,7 +606,7 @@ def test_diff_uses_final_render_and_feedback_formats_the_stored_reports(
     verifier.interpretation.views[1].scale = 0.125
 
     report = verifier.verify()
-    assert set(report.render_report) == {"ret_base", RESULT_NAME}
+    assert set(report.render_report) == {RESULT_NAME}
     assert isinstance(report.drawing_diff_report["view_front"], DrawingDiffReport)
     assert drawer.calls == [
         [(tmp_path / "front.png", _coding_attempt(tmp_path) / "projection/front.png")]
@@ -719,7 +619,6 @@ def test_diff_uses_final_render_and_feedback_formats_the_stored_reports(
     headings = [
         "[Execution result]",
         "[Projected drawing]",
-        "[Intermediate results]",
         "[Drawing comparison]",
     ]
     positions = [text.index(heading) for heading in headings]
@@ -1183,55 +1082,6 @@ def test_without_image_attachments_the_model_still_sees_orthographic_pngs(
     assert (_coding_attempt(tmp_path) / "projection" / "front.dxf").is_file()
 
 
-def test_the_table_states_each_return_and_its_change() -> None:
-    returns = (
-        IntermediateReturn(
-            "ret_base",
-            valid=True,
-            census=ShapeCensus(
-                1,
-                6000.0,
-                (10.0, 20.0, 30.0),
-                Counter({"Plane": 6}),
-                Counter({"Line": 12}),
-            ),
-        ),
-        IntermediateReturn(
-            "ret_hole",
-            valid=True,
-            census=ShapeCensus(
-                1,
-                5880.0,
-                (10.0, 20.0, 30.0),
-                Counter({"Plane": 10}),
-                Counter({"Line": 20, "Circle": 4}),
-            ),
-        ),
-    )
-
-    assert _census_table(returns).splitlines() == [
-        "ret_base  volume 6000.0; bbox 10.00 x 20.00 x 30.00; faces 6 (Plane 6); edges 12 (Line 12)",
-        (
-            "ret_hole  volume 5880.0 (-120.0); bbox 10.00 x 20.00 x 30.00; faces 10 (+4: Plane +4); "
-            "edges 24 (+12: Line +8, Circle +4)"
-        ),
-    ]
-
-
-def test_an_operation_that_built_nothing_shows_no_change() -> None:
-    census = ShapeCensus(
-        1, 6000.0, (10.0, 20.0, 30.0), Counter({"Plane": 6}), Counter({"Line": 12})
-    )
-    returns = (
-        IntermediateReturn("ret_base", census=census, valid=True),
-        IntermediateReturn("ret_cleaned", census=census, valid=True),
-    )
-
-    assert _census_table(returns).splitlines()[1] == (
-        "ret_cleaned  volume 6000.0 (+0.0); bbox 10.00 x 20.00 x 30.00; faces 6 (+0); edges 12 (+0); NO CHANGE: this step left the shape as it was"
-    )
-
-
 def test_a_sealed_void_is_reported_with_its_place(tmp_path: Path) -> None:
     import cadquery as cq
 
@@ -1247,245 +1097,7 @@ def test_a_sealed_void_is_reported_with_its_place(tmp_path: Path) -> None:
     void = "sealed voids 1 (cavities no opening reaches, bbox [xmin, ymin, zmin, xmax, ymax, zmax]: 64.0 mm³ at [-2.0, -2.0, -2.0, 2.0, 2.0, 2.0])"
 
     assert f"bbox 20.00 x 20.00 x 20.00; {void}; faces" in census.describe()
-    solid = replace(census, voids=())
-    assert "sealed voids" not in solid.describe()
-    assert "sealed voids 1 (+1) (cavities" in census.describe_change_from(solid)
-    assert "sealed voids 0 (-1);" in solid.describe_change_from(census)
-    assert "sealed voids 1 (+0);" in census.describe_change_from(census)
-
-
-def test_a_return_that_was_not_exported_carries_the_reason() -> None:
-    returns = (
-        IntermediateReturn(
-            "ret_base",
-            valid=True,
-            census=ShapeCensus(
-                1,
-                6000.0,
-                (10.0, 20.0, 30.0),
-                Counter({"Plane": 6}),
-                Counter({"Line": 12}),
-            ),
-        ),
-        IntermediateReturn("ret_count", error="TypeError: not a shape", valid=True),
-        IntermediateReturn(
-            "ret_grown",
-            valid=True,
-            census=ShapeCensus(
-                1,
-                9000.0,
-                (10.0, 20.0, 45.0),
-                Counter({"Plane": 6}),
-                Counter({"Line": 12}),
-            ),
-        ),
-    )
-
-    lines = _census_table(returns).splitlines()
-
-    assert lines[1] == "ret_count  not exported: TypeError: not a shape"
-    # The change is measured from the last return that reached a STEP.
-    assert lines[2].startswith("ret_grown  volume 9000.0 (+3000.0)")
-
-
-def test_an_invalid_or_unchecked_brep_is_flagged_beside_its_census() -> None:
-    census = ShapeCensus(
-        1, 6000.0, (10.0, 20.0, 30.0), Counter({"Plane": 6}), Counter({"Line": 12})
-    )
-    returns = (
-        IntermediateReturn(
-            "ret_base",
-            census=census,
-            valid=False,
-            validity_reason="shape 1 of 1 is invalid",
-        ),
-        IntermediateReturn(
-            "ret_count",
-            error="TypeError: not a shape",
-            validity_reason="holds no shape",
-        ),
-    )
-
-    assert _census_table(returns).splitlines() == [
-        (
-            "ret_base   BRep INVALID before export (shape 1 of 1 is invalid); "
-            "volume 6000.0; bbox 10.00 x 20.00 x 30.00; faces 6 (Plane 6); edges 12 (Line 12)"
-        ),
-        (
-            "ret_count  BRep validity unknown (holds no shape); "
-            "not exported: TypeError: not a shape"
-        ),
-    ]
-
-
-def test_the_table_of_nothing_is_empty() -> None:
-    assert _census_table(()) == ""
-
-
-def test_an_exported_return_without_census_is_not_reported_as_missing() -> None:
-    output = IntermediateReturn("ret_nested", step_path=Path("output.step"), valid=True)
-
-    assert _census_table([output]) == (
-        "ret_nested  STEP exported; shape census unavailable"
-    )
-
-
-def test_every_kept_return_is_drawn_beside_its_step(tmp_path: Path) -> None:
-    executor = StubCadQueryExecutor(
-        _execution_report(), return_names=("ret_base", "ret_hole")
-    )
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    verifier = _create_verifier(executor, workdir)
-
-    report = verifier.verify()
-
-    assert report.verification_id is not None
-    returns_dir = (
-        _coding_attempt(tmp_path, report.verification_id) / "intermediate_returns"
-    )
-    for name in ("ret_base", "ret_hole"):
-        assert (returns_dir / name / "output.step").is_file()
-        for view in VIEWS:
-            assert (returns_dir / name / "projection" / f"{view}.dxf").is_file()
-        for style in RENDER3D_STYLES:
-            assert (returns_dir / name / "render_3d" / f"{style}.png").is_file()
-
-
-def test_the_feedback_states_the_returns_and_where_they_were_drawn(
-    tmp_path: Path,
-) -> None:
-    executor = StubCadQueryExecutor(
-        _execution_report(), return_names=("ret_base", "ret_hole")
-    )
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    verifier = _create_verifier(executor, workdir)
-
-    text = _text(verifier.feedback())
-
-    assert (
-        "ret_base  volume 100.0; bbox 10.00 x 20.00 x 30.00; faces 6 (Plane 6); edges 12 (Line 12)"
-        in text
-    )
-    assert (
-        "ret_hole  volume 200.0 (+100.0); bbox 10.00 x 20.00 x 30.00; faces 6 (+0); edges 12 (+0)"
-        in text
-    )
-    # Sandbox paths, and one sentence for a layout every return shares.
-    assert "/work/attempts/round_000/coding/000/intermediate_returns/<name>/" in text
-    # The table is a block of its own, not a JSON string full of escapes.
-    assert "intermediate_returns" not in _report_json(verifier.feedback())
-
-
-def test_a_return_whose_views_failed_is_named(tmp_path: Path) -> None:
-    executor = StubCadQueryExecutor(_execution_report(), return_names=("ret_base",))
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    verifier = _create_verifier(
-        executor,
-        workdir,
-        renderer=StubRenderer(skip_styles=("hlg_perspective",)),
-    )
-
-    text = _text(verifier.feedback())
-
-    assert "\nRender failures:\n" in text
-    assert "ret_base: RuntimeError: hlg_perspective failed" in text
-
-
-def test_a_program_that_kept_nothing_says_nothing_about_returns(
-    tmp_path: Path,
-) -> None:
-    executor = StubCadQueryExecutor(_execution_report())
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    verifier = _create_verifier(executor, workdir)
-
-    assert "[Intermediate results]" not in _text(verifier.feedback())
-
-
-def test_the_returns_are_neither_kept_nor_drawn_when_switched_off(
-    tmp_path: Path,
-) -> None:
-    executor = StubCadQueryExecutor(
-        _execution_report(), return_names=("ret_base", "ret_hole")
-    )
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    renderer = StubRenderer()
-    verifier = _create_verifier(
-        executor, workdir, renderer=renderer, intermediates="none"
-    )
-
-    text = _text(verifier.feedback())
-
-    # The executor is never asked for them, so nothing downstream can run.
-    assert executor.intermediate_returns_dirs == [None]
-    assert not (_coding_attempt(tmp_path) / "intermediate_returns").exists()
-    assert "[Intermediate results]" not in text
-    # One render, for the attempt itself.
-    assert len(renderer.calls) == 1
-
-
-def test_a_result_that_fails_still_reports_what_the_returns_built(
-    tmp_path: Path,
-) -> None:
-    executor = StubCadQueryExecutor(
-        _execution_report(status=ExecutionStatus.FAILED, returncode=1),
-        return_names=("ret_base", "ret_hole"),
-    )
-    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
-    (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
-    verifier = _create_verifier(executor, workdir)
-
-    text = _text(verifier.feedback())
-
-    # The program ran, so its returns are the diagnostic for why `result` is not
-    # one valid solid.
-    assert "ret_base  volume 100.0" in text
-    assert "ret_hole  volume 200.0 (+100.0)" in text
-    returns_dir = _coding_attempt(tmp_path) / "intermediate_returns"
-    assert (returns_dir / "ret_base" / "projection" / "front.dxf").is_file()
-    # No STEP of its own, so the attempt's own views are absent.
-    assert "attempts/round_000/coding/000/projection/front.dxf" not in text
-    # What the returns built never passes for the result.
-    assert _report_json(verifier.feedback())["status"] == "FAILED"
-    assert not verifier.confirmed
-    assert verifier.accepted_source is None
-
-
-def test_a_part_that_broke_apart_says_how_many_pieces() -> None:
-    returns = (
-        IntermediateReturn(
-            "ret_whole",
-            valid=True,
-            census=ShapeCensus(
-                1,
-                6000.0,
-                (10.0, 20.0, 30.0),
-                Counter({"Plane": 6}),
-                Counter({"Line": 12}),
-            ),
-        ),
-        IntermediateReturn(
-            "ret_split",
-            valid=True,
-            census=ShapeCensus(
-                3,
-                5000.0,
-                (10.0, 20.0, 30.0),
-                Counter({"Plane": 18}),
-                Counter({"Line": 36}),
-            ),
-        ),
-    )
-
-    lines = _census_table(returns).splitlines()
-
-    # One solid is the normal case and goes unsaid.
-    assert lines[0].startswith("ret_whole  volume 6000.0")
-    assert lines[1].startswith("ret_split  solids 3 (+2); volume 5000.0 (-1000.0)")
+    assert "sealed voids" not in replace(census, voids=()).describe()
 
 
 @pytest.mark.parametrize(
@@ -1547,53 +1159,13 @@ def test_only_verified_program_outcomes_are_confirmed(
     assert not verifier.confirmed
 
 
-def _verifier_with_one_operation(tmp_path: Path, executor: StubCadQueryExecutor):
-    from zeroshot.pipeline.stages.operations.contracts import (
-        Operation,
-        OperationPlan,
-        OperationVerb,
+def test_a_failed_build_blocks_only_by_its_status(tmp_path: Path) -> None:
+    executor = StubCadQueryExecutor(
+        _execution_report(status=ExecutionStatus.FAILED, returncode=1)
     )
-
     workdir = SandboxWorkdir(host_bind_dir=tmp_path)
     (tmp_path / "model.py").write_text(VALID_SOURCE, encoding="utf-8")
     verifier = _create_verifier(executor, workdir)
-    verifier.operations = OperationPlan(
-        proposal=[
-            Operation(
-                name="op_base",
-                verb=OperationVerb.EXTRUDE,
-                detail="build the base",
-                semantics=["sem_base"],
-            )
-        ],
-        rationale="one step",
-    )
-    return verifier
-
-
-def test_a_program_that_builds_but_misses_its_operations_is_not_confirmed(
-    tmp_path: Path,
-) -> None:
-    verifier = _verifier_with_one_operation(
-        tmp_path, StubCadQueryExecutor(_execution_report())
-    )
-
-    text = _text(verifier.feedback())
-
-    assert not verifier.confirmed
-    (fault,) = verifier.blockers
-    assert "does not match the current OperationPlan: missing=('op_base',)" in fault
-    # The refusal names it; the build report stays about the build.
-    assert fault not in text
-
-
-def test_a_failed_build_blocks_only_by_its_status(tmp_path: Path) -> None:
-    verifier = _verifier_with_one_operation(
-        tmp_path,
-        StubCadQueryExecutor(
-            _execution_report(status=ExecutionStatus.FAILED, returncode=1)
-        ),
-    )
 
     verifier.feedback()
 
@@ -1759,7 +1331,7 @@ def test_real_cadquery_render_reaches_feedback_in_six_standard_views(
             workdir=workdir,
             renderer=StepRenderer(max_workers=1),
             diff_drawer=None,
-            artifact_presenter=ArtifactPresenter(input="path", intermediates="none"),
+            artifact_presenter=ArtifactPresenter(input="path"),
             attempt_store=AttemptStore(workdir, round_source=lambda: 0),
             projection_view_mode="standard",
         )
@@ -1787,7 +1359,7 @@ def test_real_cadquery_render_reaches_feedback_in_six_standard_views(
     ("kind", "mode"),
     [
         (kind, mode)
-        for kind in ("output_renders", "overlay", "unmatched", "intermediates")
+        for kind in ("output_renders", "overlay", "unmatched")
         for mode in (
             ("path", "image")
             if kind in {"output_renders", "unmatched"}
@@ -1801,11 +1373,10 @@ def test_feedback_kinds_are_presented_independently(tmp_path, kind, mode):
         "output_renders": "path",
         "unmatched": "path",
         "overlay": "none",
-        "intermediates": "none",
     }
     modes[kind] = mode
     verifier = _create_verifier(
-        StubCadQueryExecutor(_execution_report(), return_names=("ret_base",)),
+        StubCadQueryExecutor(_execution_report()),
         SandboxWorkdir(tmp_path),
         diff_drawer=StubDiffDrawer(chamfers=[6.0]),
         **modes,
@@ -1817,7 +1388,6 @@ def test_feedback_kinds_are_presented_independently(tmp_path, kind, mode):
         "output_renders": "/coding/000/projection/front.png",
         "overlay": "front_overlay.png",
         "unmatched": "front_unmatched.png",
-        "intermediates": "intermediate_returns",
     }
     for name, path in paths.items():
         assert (path in text) == (modes[name] != "none")
@@ -1828,11 +1398,7 @@ def test_feedback_kinds_are_presented_independently(tmp_path, kind, mode):
         assert (legend in text) == (modes[name] != "none")
     assert "[Drawing comparison]" in text
     assert "line distance" in text
-    expected_images = (
-        (2 if kind in {"output_renders", "intermediates"} else 1)
-        if mode == "image"
-        else 0
-    )
+    expected_images = (2 if kind == "output_renders" else 1) if mode == "image" else 0
     assert sum(block["type"] == "image" for block in blocks) == expected_images
     # Presentation never suppresses execution or final STEP rendering.
     assert verifier.confirmed

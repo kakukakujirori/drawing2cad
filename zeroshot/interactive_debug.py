@@ -67,8 +67,6 @@ from zeroshot.pipeline.workflow.middleware import (
 STAGES = {
     "interpreter": "interpretation",
     "interpretation": "interpretation",
-    "planner": "operations",
-    "operations": "operations",
     "coder": "coding",
     "coding": "coding",
     "auditor": "audit",
@@ -160,9 +158,7 @@ def load_system_prompt(
                 namespace = event.get("namespace") or []
                 owner = namespace[0].split(":", 1)[0] if namespace else None
                 valid_owner = (
-                    owner in {"interpretation", "operations", "coding"}
-                    if shared
-                    else owner == stage
+                    owner in {"interpretation", "coding"} if shared else owner == stage
                 )
                 system = event.get("data", {}).get("system")
                 if event["event"] == "prompt" and valid_owner and system:
@@ -308,7 +304,6 @@ def build_agent(
         record = json.loads((workdir.host_bind_dir / "reconstruction.json").read_text())
         restored = ReconstructionHistory.model_validate(record).snapshots[-1]
         verifier.interpretation = restored.interpretation
-        verifier.operations = restored.operations
         tools.append(
             create_render_step_tool(
                 workdir,
