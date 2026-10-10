@@ -2,33 +2,34 @@
 
 ### Task and inputs
 
-Coding and verification for reconstruction round $current_round are complete. Audit that immutable snapshot against the input drawing.
+Coding and verification for reconstruction round $current_round are complete. Audit that snapshot against the input drawing.
 
-Read this round's `open_tickets`, including their subjects and stage responses, and `stage_reports` from `.snapshots[-1]` in `$reconstruction_path`.
+Read this round's `open_tickets`, including their subjects and stage responses, `stage_reports` and `interpretation` from `.snapshots[-1]` in `$reconstruction_path`.
 
 The program is at `$coding_output_path`. Built artifacts are in $attempt_dir:
 - `output.step`: the built solid.
 - `projection/<view>.dxf` and `projection/<view>.png`: projections for the orthographic views identified in the interpretation.
 - `render_3d/*.png`: perspective renders. List the directory for their names.
 
-The accompanying verification reports and images document the generated CAD model and its differences from the input drawing.
+The pipeline's verification report describes this build and how its projections differ from the input drawing.
 
 ### Artifact contract
 
 Write the complete `AuditReport` to `$audit_output_path`. Do not modify the program, reconstruction history, input files, verification report or generated artifacts.
 
-Review every ticket and every stage-report concern: give one `ticket_reviews` entry per ticket and one `concern_reviews` entry per concern, keyed `<reporting_stage>.<concern_id>`. Also give one `concern_reviews` entry per `drawing_diff.*` item in the drawing comparison, keyed as listed.
+Give one `ticket_reviews` entry per open ticket and one `concern_reviews` entry per stage-report concern, keyed `<reporting_stage>.<concern_id>`.
 
-- For each `drawing_diff.*` item, open its view's unmatched image. Name the finding that contains the item, or dismiss it with what the input drawing shows there, such as a dimension, a leader line, or the same edge a few pixels away. Blank input where an extra mismatch lies means the model has an edge or material the drawing lacks: a defect, not a drawing convention or a seam. The projection DXF shows what the model has, not where the input has it, so it cannot dismiss an item.
-- Report all material defects. Quantify the discrepancy when the source supports a measurement; do not invent a number when it does not.
-- Cover every unsolved ticket with the current findings' `related_ticket_ids`. Merge overlapping defects and recompute their backtraces from current artifacts: the root may have changed since the old ticket. Do not repeat the backtrace or revision request inside the ticket review.
-- Each finding describes one defect with one revision root stage. Separate roots in different stages; several members of one stage sharing the same defect may be requested together.
-- State the shape expected from the input, the shape observed in the output, the missing/extra geometry or position/dimension difference, and its location and measurement basis. Then follow the declared links to identify which stage introduced it.
-- Describe each defect, not its fix. The owning stage decides how to correct it, and a wrong fix you prescribe would mislead it.
-- Measure each evidence `box` in its referenced file's own frame: millimetres for DXF, integer pixels for raster images, including input drawings, projection PNGs and perspective images. At least one region per finding must cite a `.dxf` under this build's `projection/` directory.
-- If a feature visible in the drawing has no corresponding `sem_...` member, leave the `backtrace` empty and request `add` on the whole interpretation stage (`name: null`), proposing one or more stable `sem_...` names. Use the same whole-stage add for a missing view or printed figure, with new `view_...` or `dim_...` names. Correct existing members with `modify` on their stable names.
-- Coding has no named members: request `modify` on the whole coding stage with `name: null`.
-- Coding revisions use only `modify`, including changes that add or remove code. For interpretation, choose the action according to the schema; use rename only when identity must change.
+$drawing_diff_reviews
+
+Each finding is one defect:
+- `observation`: the shape the drawing shows, the shape the build's projections show, and where. Quantify the difference when the source supports a measurement; do not invent a number.
+- `evidence`: boxes measured in each file's own frame: millimetres for DXF, integer pixels for raster images. At least one region must cite a `.dxf` under this build's `projection/` directory.
+- `cause`: `interpretation` when the interpretation misreads or omits what the drawing shows and the program builds that error faithfully. `coding` when the interpretation is right but the program builds something else.
+- `targets`: the interpretation members the defect concerns. For an interpretation cause, name the wrong members: `sem_...` for a feature or its placement, `dim_...` for a misread printed figure, `view_...` for a wrong crop, role or calibration, `datum` for the shared frame. For something the interpretation omits, name the `view_...` where the drawing shows it. For a coding cause, name the members the program builds wrongly, or give `[]`.
+- `revision_request`: what is wrong, not how to fix it. The responsible stage decides the correction; a fix you prescribe may mislead it.
+- `related_ticket_ids`: the unsolved tickets this finding continues.
+
+Report all material defects. Give defects with different causes separate findings. Cover every unsolved ticket with the current findings' `related_ticket_ids`. Merge overlapping defects and judge their cause from the current artifacts: it may differ from the old ticket's. Do not repeat a finding inside its ticket review.
 
 AuditReport JSON schema:
 ```json
@@ -37,19 +38,25 @@ $audit_schema
 
 ### Work cycle
 
-- Check the doubts in ticket summaries, `concerns` and `unticketed_changes` against the artifacts; their placement does not determine whether a defect is new or which stage caused it. These are claims, not proof of correctness. Check whether each previously observed defect is resolved, not merely whether an edit was attempted. If no valid solid was produced, identify whether the failure comes from coding or an upstream artifact.
-- Compare the generated projections and perspective renders with every input view using load_image. Check silhouettes, visible/hidden edges, dimensions, feature positions and omissions. When aligning images, use already matching geometry; do not confuse image origins or scale differences with a model defect.
-- For widespread mismatch, inspect axes, mirroring, crop, scale and alignment before assigning a cause.
-- Check each interpretation feature against its `evidence` regions and `dimension_refs`. A Region uses the file and pixel/UV frame of its `view_` reference; it is not a model position. Check `parameters`, the described shape and termination, and the shared `datum` against the drawing. Also inspect the original drawing for features omitted from the interpretation.
-- Compare the interpretation with the program and the built solid. For resumed runs, confirm that recorded files still exist.
-- Check coding's `stage_reports.coding.dimension_checks` against the printed dimensions and final geometry. Coverage validation only ensures every ID has an explanation; it does not prove geometric correctness. Investigate unverified claims and doubtful evidence. Absent checks in an old snapshot mean no checks were recorded.
-- Trace each defect upstream to the output that introduced it. An output that faithfully implements incorrect upstream information is not the revision target. Use `sem_...` for an incorrect feature or placement, `dim_...` for a misread printed figure, and `view_...` for an incorrect view, crop or calibration. If the defect is established directly in that output, leave the `backtrace` empty.
-- Within interpretation, follow cited features, dimensions and views. Do not invent links through unrelated outputs.
+Check in two steps.
 
-After a turn that changes the file, the pipeline validates it and returns paths to evidence images. Each image displays the file named in an evidence entry, with that entry's `box` outlined in red. Open each evidence image with `load_image`: check that the red box covers the intended feature and any dimensions or edges needed to support the claim, and compare the input drawing with the built projections or renders to confirm the stated mismatch. Correct misplaced or insufficient boxes and unsupported findings in the report, then inspect the regenerated images. With no findings, review the report itself.
+1. Check the interpretation against the input drawing.
+   - Views: each crop holds its whole view, the role and axes match the projection, and the scale agrees with the printed dimensions.
+   - Dimensions: each printed figure is read correctly and measures the extent it claims.
+   - Features: each feature's shape, `parameters` and termination agree with its `evidence` regions, its `dimension_refs` and the shared `datum`. A region uses the file and pixel frame of its `view_`; it is not a model position.
+   - Look for features, views and figures the interpretation omits.
+2. Check the build against the interpretation and the drawing. Judge the built solid by its projections onto the drawing's views and by its perspective renders.
+   - Compare the projections and perspective renders with every input view using load_image: silhouettes, visible and hidden edges, dimensions, feature positions and omissions. Align images on geometry that already matches; do not mistake an image origin or scale difference for a model defect.
+   - For a widespread mismatch, check axes, mirroring, crop, scale and alignment before choosing a cause.
+   - A defect that comes from a wrong reading found in step 1 has cause `interpretation`. Otherwise it has cause `coding`.
+   - If no valid solid was produced, decide whether the failure comes from the program or from the interpretation.
+
+Ticket responses and `concerns` are claims, not proof. Check them against the artifacts. Check whether each earlier defect is resolved, not merely whether an edit was attempted.
+
+After a turn that changes the file, the pipeline validates it and returns paths to evidence images. Each image shows the file named in an evidence entry with that entry's `box` outlined in red. Open each one with `load_image`. Check that the box covers the feature and the dimensions or edges the claim needs, and that the stated mismatch is real. Correct misplaced boxes and unsupported findings, then check the new images. With no findings, review the report itself.
 
 ### Submission
 
-- Accept only when the solid was verified, matches the drawing in all material respects, and no stage output requires correction. Successful STEP export alone does not establish geometric correctness.
+Accept only when the build was verified, its projections match the drawing in all material respects, and no stage output needs correction. A successful STEP export alone does not establish geometric correctness.
 
 Once the file validates and you have checked the evidence, finish with one `AuditSubmission`: `accepted` is true exactly when findings is empty. The decision belongs only in the final response; do not put it in the report or repeat the report in your answer. Stay within the announced turn budget.

@@ -18,7 +18,6 @@ from tests.zeroshot.contracts import bootstrap_review
 from tests.zeroshot.prompt_paths import ROLE_PATHS
 from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _completed_run,
-    _ref,
     _report,
 )
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
@@ -45,9 +44,9 @@ def _answer(strategy, *, accepted=True):
     return tool_call("AuditSubmission", payload, "submit_audit")
 
 
-@pytest.mark.parametrize("unmatched", ["path", "image"])
+@pytest.mark.parametrize(("unmatched", "review"), [("path", True), ("image", False)])
 def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving(
-    unmatched,
+    unmatched, review
 ):
     history = _completed_run()
     report = AuditReport(
@@ -103,7 +102,9 @@ def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving(
                 overlay="none",
                 unmatched=unmatched,
             ),
+            review_drawing_diff_clusters=review,
         )
+        assert stage.audit_verifier.require_drawing_diff_reviews is review
         result = stage.run({"reconstruction": history}, {})
         assert result["audit_report"] == report
         blocks = model.received_messages[0][-1].content_blocks
@@ -130,6 +131,7 @@ def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving(
             < instruction.index("[Drawing comparison]")
         )
         assert "/work/front_unmatched.png" in instruction
+        assert ("`drawing_diff.*` item" in instruction) is review
         assert "`/work/review.json`" in instruction
         assert "`audit.json`" not in instruction
         assert "review.json: valid." in model.received_messages[1][-1].text
@@ -144,7 +146,7 @@ def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving(
 def test_write_validate_review_rewrite_and_confirm_only_current_attempt(strategy, mode):
     history = _completed_run()
     snapshot = history.snapshots[-1]
-    report = _report(target=_ref("coding", None))
+    report = _report("coding", [])
     report.findings[0].evidence = [AuditRegion(file="input.png", box=(0, 0, 10, 10))]
     corrected = report.model_copy(deep=True)
     corrected.findings[0].evidence = [
@@ -243,7 +245,7 @@ def test_invalid_report_and_crop_failure_cannot_leave_an_accepted_audit(monkeypa
         assert "invalid" in str(verifier.feedback())
         assert not verifier.confirmed
 
-        report = _report(target=_ref("coding", None))
+        report = _report("coding", [])
         report.findings[0].evidence = [
             AuditRegion(file="input.png", box=(0, 0, 10, 10))
         ]

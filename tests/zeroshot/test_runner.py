@@ -90,9 +90,7 @@ def _ticket_response(stage: str, summary: str) -> dict[str, str]:
 
 _A_READING = AIMessage(
     content=TicketAnswers(
-        stage_report=StageReport(
-            concerns={}, dimension_checks=None, unticketed_changes={}
-        ),
+        stage_report=StageReport(concerns={}),
         responses=_ticket_response("interpretation", "Established sem_feature_1."),
     ).model_dump_json()
 )
@@ -175,9 +173,7 @@ def _writing_model(call_id: str = "call-write-model") -> AIMessage:
 _CODING_ANSWER = AIMessage(
     content=TicketAnswers(
         responses=_ticket_response("coding", "Implemented the box."),
-        stage_report=StageReport(
-            concerns={}, unticketed_changes={}, dimension_checks={}
-        ),
+        stage_report=StageReport(concerns={}),
     ).model_dump_json()
 )
 
@@ -215,9 +211,7 @@ def _verified_resume_run():
     run = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            stage_report=StageReport(concerns={}),
             responses=_ticket_response("interpretation", "Established sem_feature_1."),
         ),
         workspace_output=interpretation("a box"),
@@ -226,9 +220,7 @@ def _verified_resume_run():
         run,
         TicketAnswers(
             responses=_ticket_response("coding", "Implemented the box."),
-            stage_report=StageReport(
-                concerns={}, unticketed_changes={}, dimension_checks={}
-            ),
+            stage_report=StageReport(concerns={}),
         ),
         workspace_output=VerifyOutputResult(
             verification_id="007",
@@ -418,9 +410,7 @@ def test_resume_restores_drawing_stage_crops(
     run = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            stage_report=StageReport(concerns={}),
             responses=_ticket_response("interpretation", "Read view_front."),
         ),
         workspace_output=interpretation(

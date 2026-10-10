@@ -1189,9 +1189,7 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
     verifier = _create_verifier(executor, workdir)
     answer = {
         "stage_report": {
-            "dimension_checks": {},
             "concerns": {},
-            "unticketed_changes": {},
         },
         "responses": {
             "ticket_initial": "The program still fails; audit must diagnose the operation."

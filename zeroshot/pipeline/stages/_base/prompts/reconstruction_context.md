@@ -6,7 +6,7 @@ The pipeline refines its deliverables through repeated rounds of:
 
 - `interpretation`: read the source drawing and register drawing views (e.g., front, top, right), dimension readings and a description of the part's 3D features.
 - `coding`: use the drawing and interpretation to produce an executable CadQuery program. Automatic verification executes it and renders the resulting solid.
-- `audit`: compare the resulting geometry and renders with the source drawing, trace mismatches to stage outputs, and produce an audit report requesting fixes from the responsible stages.
+- `audit`: compare the interpretation and the projections of the resulting solid with the source drawing, and report each mismatch with its cause: interpretation or coding.
 
 The auditor may issue revision tickets for another round. The round instructions specify your current stage and artifact. Edit only that stage's artifact and never start a later stage early.
 
@@ -33,28 +33,25 @@ Each round starts with null artifacts. Completed stages populate `.snapshots[-1]
 
 ### Tickets
 
-Round 0 has one ticket for the whole reconstruction. For revisions, the pipeline converts each audit finding into a new ticket, assigned from the target stage through coding.
+Round 0 has one ticket for the whole reconstruction. For revisions, the pipeline converts each audit finding into a new ticket. A finding caused by the interpretation is assigned to interpretation and coding; one caused by coding is assigned to coding alone.
 Assigned stages revise their artifacts and answer their tickets. The pipeline validates and records these before advancing.
 Audit reviews every ticket; unresolved and newly found defects supply the next round's tickets.
 Ticket fields:
 
 - `ticket_id`: stable `ticket_` identifier.
 - `subject`: the initial reconstruction task (`instruction`) in round 0; an audit finding in later rounds.
-- `subject.revision_request`: `action`, `targets`, `instruction` and new `proposed_names`. Targets identify members (e.g., `sem_x`) or whole stages (`name: null`).
-- `assigned_stages`: from the earliest target stage through coding.
+- `subject.cause`: the stage the defect comes from, `interpretation` or `coding`.
+- `subject.targets`: the interpretation members the defect concerns. For an omission, the view where the drawing shows it.
+- `subject.revision_request`: what is wrong.
+- `assigned_stages`: from the cause stage through coding.
 - `responses`: answers from assigned stages that have finished.
 - `evidence_renders`: paths to images of `subject.evidence`, in order; regions are marked with red boxes or cropped out.
 
 Scope of artifact revisions:
 
-- Edit only your own stage's artifact. Revise its members targeted or proposed by your assigned tickets. A whole-stage `modify` covers that artifact.
-- Also update members of your artifact that depend on ticket targets, proposed names or members changed this round. For example, the coder updates the code that builds a corrected feature. Read upstream artifacts as inputs; do not edit them.
-- The pipeline compares your artifact with its previous-round version. Changes outside this scope require an explanation in `stage_report.unticketed_changes`.
+- Edit only your own stage's artifact. Fix what your assigned tickets describe.
+- Also update what depends on members changed this round. For example, the coder updates the code that builds a corrected feature. Read upstream artifacts as inputs; do not edit them.
 
 ### Stage reports
 
-Each assigned stage answers through `TicketAnswers`: `responses` maps ticket IDs to free-text outcomes, including upstream blockers or provisional interpretations. `stage_report` contains:
-
-- `concerns`: further unresolved issues, suspects on the upstream agent judge, or provisional choices, one `concern_...` entry each, `{}` if none. The auditor reviews each.
-- `dimension_checks`: coding's per-dimension report; null in other stages.
-- `unticketed_changes`: `{member name: reason for a change outside ticket scope}`. Use `{}` in round 0 or when all changes are covered.
+Each assigned stage answers through `TicketAnswers`: `responses` maps ticket IDs to free-text outcomes, including upstream blockers or provisional interpretations. `stage_report.concerns` holds further unresolved issues, doubts about upstream judgements, or provisional choices, one `concern_...` entry each, `{}` if none. The auditor reviews each.

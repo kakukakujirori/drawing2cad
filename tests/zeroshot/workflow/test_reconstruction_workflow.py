@@ -12,10 +12,7 @@ from tests.zeroshot.contracts import (
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
-    CausalHop,
     ConcernReview,
-    RevisionRequest,
-    StageOutputRef,
     TicketReview,
 )
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
@@ -48,10 +45,6 @@ from zeroshot.pipeline.workflow.lifecycle import (
 )
 
 _SOURCE = "base = object()\nresult = base\n"
-
-
-def _ref(stage: str, name: str | None) -> StageOutputRef:
-    return StageOutputRef(stage=stage, name=name)  # type: ignore[arg-type]
 
 
 def _snapshot(
@@ -150,9 +143,7 @@ def _reread(history: ReconstructionHistory) -> ReconstructionHistory:
     return advance_reconstruction(
         history,
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            stage_report=StageReport(concerns={}),
             responses=_stage_responses(history, "interpretation"),
         ),
         workspace_output=interpretation_baseline(history)
@@ -170,9 +161,7 @@ def _completed_run(
     history = advance_reconstruction(
         history,
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            stage_report=StageReport(concerns={}),
             responses=_stage_responses(history, "interpretation"),
         ),
         workspace_output=interpretation("the base", "the hole"),
@@ -186,43 +175,20 @@ def _completed_run(
         history,
         TicketAnswers(
             responses=_stage_responses(history, "coding"),
-            stage_report=StageReport(
-                concerns={}, unticketed_changes={}, dimension_checks={}
-            ),
+            stage_report=StageReport(concerns={}),
         ),
         workspace_output=verification,
     )
     return history
 
 
-def _hop(
-    effect_stage: str,
-    effect_name: str,
-    cause_stage: str,
-    cause_name: str,
-) -> CausalHop:
-    return CausalHop(
-        effect=_ref(effect_stage, effect_name),
-        cause=_ref(cause_stage, cause_name),
-        rationale="The named cause produces the named effect.",
-    )
-
-
-def _hop_from(effect: StageOutputRef, cause: StageOutputRef) -> CausalHop:
-    return CausalHop(
-        effect=effect,
-        cause=cause,
-        rationale="The named cause produces the named effect.",
-    )
-
-
 def _report(
-    *hops: CausalHop,
-    target: StageOutputRef | None = None,
-    ticket_reviews: list[TicketReview] | None = None,
+    cause: str = "interpretation",
+    targets: list[str] | None = None,
+    *,
+    ticket_reviews: dict[str, TicketReview] | None = None,
     related_ticket_ids: list[str] | None = None,
 ) -> AuditReport:
-    revision_target = target or hops[-1].cause
     return AuditReport(
         concern_reviews={},
         ticket_reviews=bootstrap_review() if ticket_reviews is None else ticket_reviews,
@@ -231,14 +197,10 @@ def _report(
                 name="find_shape_mismatch",
                 observation="The rendered shape differs from the drawing.",
                 evidence=evidence("render_3d/hlg_front.png"),
-                backtrace=list(hops),
+                cause=cause,  # type: ignore[arg-type]
+                targets=["sem_feature_1"] if targets is None else targets,
+                revision_request="The source of the mismatch is wrong.",
                 related_ticket_ids=related_ticket_ids or [],
-                revision_request=RevisionRequest(
-                    action="modify",
-                    targets=[revision_target],
-                    instruction="Correct the source of the mismatch.",
-                    proposed_names=[],
-                ),
             )
         ],
     )
@@ -248,8 +210,6 @@ def _concerned_snapshot() -> ReconstructionSnapshot:
     snapshot = _snapshot()
     snapshot.stage_reports = {
         PipelineStage.INTERPRETATION: StageReport(
-            dimension_checks=None,
-            unticketed_changes={},
             concerns={"concern_web_thickness": "The web thickness is estimated."},
         )
     }
@@ -289,14 +249,10 @@ def test_a_concern_may_be_escalated_against_another_stage() -> None:
     snapshot = _snapshot()
     snapshot.stage_reports = {
         PipelineStage.CODING: StageReport(
-            unticketed_changes={},
             concerns={"concern_bore_diameter": "sem_bore looks too wide."},
-            dimension_checks={},
         )
     }
-    report = _report(
-        _hop_from(_ref("coding", None), _ref("interpretation", "sem_feature_1"))
-    )
+    report = _report("interpretation", ["sem_feature_1"])
     report.concern_reviews = {
         "coding.concern_bore_diameter": ConcernReview(
             finding_name="find_shape_mismatch",
@@ -307,9 +263,7 @@ def test_a_concern_may_be_escalated_against_another_stage() -> None:
 
 
 def test_a_disposition_for_a_concern_nobody_raised_is_refused() -> None:
-    report = _report(
-        _hop_from(_ref("coding", None), _ref("interpretation", "sem_feature_1"))
-    )
+    report = _report("interpretation", ["sem_feature_1"])
     report.concern_reviews = {
         "coding.concern_invented": ConcernReview(
             finding_name="find_shape_mismatch",
@@ -320,13 +274,10 @@ def test_a_disposition_for_a_concern_nobody_raised_is_refused() -> None:
         validate_submission(report, _snapshot())
 
 
-def test_audit_cross_validation_accepts_supported_backtrace_hops() -> None:
-    report = _report(
-        _hop_from(_ref("coding", None), _ref("interpretation", "sem_feature_1")),
-        _hop("interpretation", "sem_feature_1", "interpretation", "view_front"),
-    )
-
-    validate_submission(report, _snapshot())
+@pytest.mark.parametrize("targets", [["sem_feature_1", "view_front"], ["datum"]])
+def test_audit_targets_name_existing_interpretation_members(targets) -> None:
+    validate_submission(_report("interpretation", targets), _snapshot())
+    validate_submission(_report("coding", targets), _snapshot())
 
 
 @pytest.mark.parametrize(
@@ -348,72 +299,25 @@ def test_audit_cannot_accept_without_a_verified_solid(status: ExecutionStatus) -
         )
 
     # A diagnostic finding remains valid for the same failing program.
-    validate_submission(_report(target=_ref("coding", None)), snapshot)
+    validate_submission(_report("coding", []), snapshot)
 
 
-def test_audit_cross_validation_rejects_unsupported_contract_links() -> None:
-    hop = _hop("interpretation", "sem_feature_1", "interpretation", "sem_feature_2")
-    with pytest.raises(SubmissionValidationError, match="is not supported"):
-        validate_submission(_report(hop), _snapshot())
+@pytest.mark.parametrize("cause", ["interpretation", "coding"])
+def test_audit_cross_validation_rejects_a_missing_target(cause: str) -> None:
+    report = _report(cause, ["sem_feature_1", "sem_feature_9"])
 
-
-def test_audit_cross_validation_rejects_a_missing_revision_target() -> None:
-    target = _ref("interpretation", "sem_absent")
-    report = _report(target=target)
-
-    with pytest.raises(SubmissionValidationError, match="does not exist"):
-        validate_submission(report, _snapshot())
-
-
-@pytest.mark.parametrize(
-    ("action", "targets", "proposed", "collision"),
-    [
-        ("add", [None], ["sem_new"], False),
-        ("add", [None], ["sem_feature_1"], True),
-        ("rename", ["sem_feature_1"], ["sem_feature_2"], True),
-        ("split", ["sem_feature_1"], ["sem_feature_1", "sem_new"], False),
-        ("split", ["sem_feature_1"], ["sem_feature_1", "sem_feature_2"], True),
-        ("merge", ["sem_feature_1", "sem_feature_2"], ["sem_feature_1"], False),
-        ("merge", ["sem_feature_1", "sem_feature_2"], ["sem_new"], False),
-    ],
-)
-def test_audit_new_names_only_reuse_their_own_split_or_merge_targets(
-    action, targets, proposed, collision
-) -> None:
-    finding = _report(target=_ref("interpretation", targets[0])).findings[0]
-    finding.revision_request = RevisionRequest(
-        action=action,
-        targets=[_ref("interpretation", name) for name in targets],
-        instruction="Correct the feature identities.",
-        proposed_names=proposed,
-    )
-    report = AuditReport(
-        concern_reviews={},
-        ticket_reviews=bootstrap_review(),
-        findings=[finding],
-    )
-    if collision:
-        with pytest.raises(SubmissionValidationError, match="already exists"):
-            validate_submission(report, _snapshot())
-    else:
+    with pytest.raises(
+        SubmissionValidationError,
+        match="'sem_feature_9' is not an interpretation member. Maybe: sem_feature_2",
+    ):
         validate_submission(report, _snapshot())
 
 
 def test_whole_coding_reference_keeps_invalid_source_auditable() -> None:
     validate_submission(
-        _report(target=_ref("coding", None)),
+        _report("coding", []),
         _snapshot("base = (\n"),
     )
-
-
-def test_repeated_missing_audit_reference_is_reported_once() -> None:
-    report = _report(
-        _hop("interpretation", "sem_feature_1", "interpretation", "sem_absent")
-    )
-    with pytest.raises(SubmissionValidationError) as caught:
-        validate_submission(report, _snapshot())
-    message = "interpretation member 'sem_absent' does not exist"
-    assert str(caught.value).count(message) == 1
 
 
 def test_advance_reconstruction_integrates_each_stage_without_mutating_the_run() -> (
@@ -475,9 +379,7 @@ def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
     original_json = run.model_dump_json()
     answers = TicketAnswers(
-        stage_report=StageReport(
-            concerns={}, dimension_checks=None, unticketed_changes={}
-        ),
+        stage_report=StageReport(concerns={}),
         responses=_stage_responses(run, "interpretation"),
     )
 
@@ -491,7 +393,7 @@ def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
 
 def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     completed = _completed_run()
-    first_finding = _report(target=_ref("interpretation", "sem_feature_1")).findings[0]
+    first_finding = _report("interpretation", ["sem_feature_1"]).findings[0]
     second_finding = first_finding.model_copy(update={"name": "find_second_mismatch"})
     run = open_next_round(
         completed,
@@ -511,9 +413,7 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     advanced = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            stage_report=StageReport(concerns={}),
             responses=responses,
         ),
         workspace_output=interpretation("the base", "the hole"),
@@ -538,9 +438,7 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
         AuditReport(
             concern_reviews={},
             ticket_reviews=bootstrap_review(),
-            findings=[
-                _report(target=_ref("interpretation", "sem_feature_1")).findings[0]
-            ],
+            findings=[_report("interpretation", ["sem_feature_1"]).findings[0]],
         ),
     )
     current = run.snapshots[-1]
@@ -554,9 +452,7 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     advanced = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            stage_report=StageReport(concerns={}),
             responses={
                 ticket.ticket_id: "Restated sem_feature_1.radius."
                 for ticket in current.open_tickets
@@ -654,57 +550,25 @@ def test_snapshot_commit_preserves_artifacts_owned_by_other_stages(
 
 
 @pytest.mark.parametrize(
-    ("root", "member", "expected"),
+    ("cause", "expected"),
     [
-        ("interpretation", "sem_feature_2", ["interpretation", "coding"]),
-        ("coding", None, ["coding"]),
+        ("interpretation", ["interpretation", "coding"]),
+        ("coding", ["coding"]),
     ],
 )
-def test_a_ticket_is_assigned_from_its_revision_root_downstream(
-    root: str,
-    member: str | None,
+def test_a_ticket_is_assigned_from_its_cause_downstream(
+    cause: str,
     expected: list[str],
 ) -> None:
-    report = _report(target=_ref(root, member))
+    report = _report(cause, ["sem_feature_2"])
 
     run = open_next_round(_completed_run(), report)
 
     assert run.snapshots[-1].open_tickets[0].assigned_stages == expected
 
 
-def test_one_request_over_several_members_assigns_their_shared_stage() -> None:
-    finding = _report(target=_ref("interpretation", "sem_feature_2")).findings[0]
-    two_targets = finding.model_copy(
-        update={
-            "revision_request": RevisionRequest(
-                action="modify",
-                targets=[
-                    _ref("interpretation", "sem_feature_2"),
-                    _ref("interpretation", "sem_feature_1"),
-                ],
-                instruction="Correct both features.",
-                proposed_names=[],
-            )
-        }
-    )
-    report = AuditReport(
-        concern_reviews={},
-        ticket_reviews=bootstrap_review(),
-        findings=[two_targets],
-    )
-
-    run = open_next_round(_completed_run(), report)
-
-    assert run.snapshots[-1].open_tickets[0].assigned_stages == [
-        "interpretation",
-        "coding",
-    ]
-
-
 def test_an_unassigned_stage_leaves_the_ticket_untouched() -> None:
-    run = _reread(
-        open_next_round(_completed_run(), _report(target=_ref("coding", None)))
-    )
+    run = _reread(open_next_round(_completed_run(), _report("coding", [])))
     ticket = run.snapshots[-1].open_tickets[0]
     assert ticket.assigned_stages == ["coding"]
     assert ticket.responses == []
@@ -712,7 +576,7 @@ def test_an_unassigned_stage_leaves_the_ticket_untouched() -> None:
 
 def test_a_revision_round_replaces_the_complete_interpretation() -> None:
     run = open_next_round(
-        _completed_run(), _report(target=_ref("interpretation", "sem_feature_1"))
+        _completed_run(), _report("interpretation", ["sem_feature_1"])
     )
     previous = interpretation_baseline(run)
     assert previous is not None
@@ -727,9 +591,7 @@ def test_a_revision_round_replaces_the_complete_interpretation() -> None:
     advanced = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            stage_report=StageReport(concerns={}),
             responses=_stage_responses(run, "interpretation"),
         ),
         workspace_output=revised,
@@ -743,9 +605,7 @@ def test_a_revision_round_replaces_the_complete_interpretation() -> None:
 def test_rejected_audit_opens_a_fresh_round_without_mutating_history() -> None:
     run = _completed_run()
     original_json = run.model_dump_json()
-    report = _report(
-        _hop_from(_ref("coding", None), _ref("interpretation", "sem_feature_2"))
-    )
+    report = _report("interpretation", ["sem_feature_2"])
 
     updated = open_next_round(run, report)
     current = updated.snapshots[-1]
@@ -780,7 +640,7 @@ def test_supplied_evidence_must_cover_every_finding_region(crops) -> None:
     run = _completed_run()
     original = run.model_dump_json()
     with pytest.raises(ValueError, match="one path per region"):
-        open_next_round(run, _report(target=_ref("coding", None)), crops)
+        open_next_round(run, _report("coding", []), crops)
     assert run.model_dump_json() == original
 
 
@@ -792,13 +652,11 @@ def test_accepted_or_invalid_audit_does_not_open_a_round() -> None:
         ticket_reviews=bootstrap_review(),
         findings=[],
     )
-    invalid = _report(
-        _hop("interpretation", "sem_feature_1", "interpretation", "sem_feature_2")
-    )
+    invalid = _report("interpretation", ["sem_absent"])
 
     with pytest.raises(ValueError, match="accepted audit"):
         open_next_round(run, accepted)
-    with pytest.raises(SubmissionValidationError, match="is not supported"):
+    with pytest.raises(SubmissionValidationError, match="not an interpretation member"):
         open_next_round(run, invalid)
 
     assert run.model_dump_json() == original_json
@@ -844,7 +702,8 @@ def test_bootstrap_is_reviewed_like_any_other_open_ticket(ticket_id: str) -> Non
     snapshot = _snapshot(ticket_id=ticket_id)
     validate_submission(
         _report(
-            target=_ref("coding", None),
+            "coding",
+            [],
             ticket_reviews={
                 ticket_id: TicketReview(
                     summary="The reconstruction does not answer the order.",
@@ -857,9 +716,7 @@ def test_bootstrap_is_reviewed_like_any_other_open_ticket(ticket_id: str) -> Non
     )
 
     with pytest.raises(SubmissionValidationError, match=f"missing=.*{ticket_id}"):
-        validate_submission(
-            _report(target=_ref("coding", None), ticket_reviews={}), snapshot
-        )
+        validate_submission(_report("coding", [], ticket_reviews={}), snapshot)
 
 
 @pytest.mark.parametrize(
@@ -875,9 +732,7 @@ def test_bootstrap_is_reviewed_like_any_other_open_ticket(ticket_id: str) -> Non
 def test_audit_reviews_cover_every_open_ticket_even_on_acceptance(
     reviewed: list[str], valid: bool
 ) -> None:
-    run = _completed_run(
-        open_next_round(_completed_run(), _report(target=_ref("coding", None)))
-    )
+    run = _completed_run(open_next_round(_completed_run(), _report("coding", [])))
     report = AuditReport(
         concern_reviews={},
         findings=[],
@@ -902,10 +757,10 @@ def test_audit_reviews_cover_every_open_ticket_even_on_acceptance(
 
 
 @pytest.mark.parametrize("solved_second", [True, False])
-def test_current_findings_replace_old_tickets_and_choose_the_new_revision_root(
+def test_current_findings_replace_old_tickets_and_choose_the_new_cause(
     solved_second: bool,
 ) -> None:
-    first = _report(target=_ref("coding", None)).findings[0]
+    first = _report("coding", []).findings[0]
     second = first.model_copy(update={"name": "find_second_mismatch"})
     run = _completed_run(
         open_next_round(
@@ -926,7 +781,8 @@ def test_current_findings_replace_old_tickets_and_choose_the_new_revision_root(
         for index, name in enumerate(old_ids)
     }
     report = _report(
-        _hop_from(_ref("coding", None), _ref("interpretation", "sem_feature_2")),
+        "interpretation",
+        ["sem_feature_2"],
         ticket_reviews=reviews,
         related_ticket_ids=[
             name for name, review in reviews.items() if not review.solved

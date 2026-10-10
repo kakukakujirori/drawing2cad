@@ -22,6 +22,7 @@ class AuditVerifier:
         source_filename: str = "audit.json",
         *,
         evidence_mode: EvidenceMode = "mark",
+        require_drawing_diff_reviews: bool = False,
     ) -> None:
         source = PurePosixPath(source_filename)
         if source.is_absolute() or len(source.parts) != 1 or source.suffix != ".json":
@@ -29,6 +30,7 @@ class AuditVerifier:
         self.attempt_store = attempt_store
         self.source_filename = source_filename
         self.evidence_mode = evidence_mode
+        self.require_drawing_diff_reviews = require_drawing_diff_reviews
         self._snapshot: ReconstructionSnapshot | None = None
         self._checked: bytes | None = None
         self._accepted: AuditReport | None = None
@@ -86,7 +88,12 @@ class AuditVerifier:
                     f"Write the complete report to {self.source_filename}"
                 )
             report = AuditReport.model_validate_json(contents)
-            validate_audit_report(report, self._snapshot, self.attempt_store)
+            validate_audit_report(
+                report,
+                self._snapshot,
+                self.attempt_store,
+                require_drawing_diff_reviews=self.require_drawing_diff_reviews,
+            )
             renders = {
                 finding.name: render_evidence(
                     finding,

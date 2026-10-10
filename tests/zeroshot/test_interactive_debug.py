@@ -90,9 +90,7 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
     )
     answer = TicketAnswers(
         responses={"ticket_initial": "Done"},
-        stage_report=StageReport(
-            concerns={}, dimension_checks={}, unticketed_changes={}
-        ),
+        stage_report=StageReport(concerns={}),
     )
     image = "data:image/png;base64," + base64.b64encode(picture.read_bytes()).decode()
     messages = [

@@ -4,11 +4,7 @@ AuditReport
 ├── ticket_reviews: {ticket_id: TicketReview}
 ├── concern_reviews: {concern: ConcernReview}
 └── findings: AuditFinding[]
-    ├── backtrace: CausalHop[]
-    │   ├── effect: StageOutputRef
-    │   └── cause: StageOutputRef
-    └── revision_request: RevisionRequest
-        └── targets: StageOutputRef[]
+    └── evidence: AuditRegion[]
 """
 
 import re
@@ -25,224 +21,11 @@ from pydantic import (
 )
 
 from zeroshot.pipeline.stages._base.contracts import Submission
-from zeroshot.pipeline.stages.types import (
-    REASONING_STAGES,
-    PipelineStage,
-    ReasoningStage,
-)
 
-type RevisionAction = Literal[
-    "add",
-    "delete",
-    "modify",
-    "split",
-    "merge",
-    "rename",
-]
-
+type FindingCause = Literal["interpretation", "coding"]
 
 _FIND_NAME = re.compile(r"^find_[a-z0-9_]+$")
-_INTERPRETATION_NAME = re.compile(r"^(?:view|dim|sem)_[a-z0-9_]+$")
-
-
-# References and revision actions: checks independent of the audited snapshot.
-
-
-def _valid_member_name(stage: ReasoningStage, name: str) -> bool:
-    """Only interpretation has named members; a program is referred to whole."""
-    return (
-        stage is PipelineStage.INTERPRETATION
-        and _INTERPRETATION_NAME.fullmatch(name) is not None
-    )
-
-
-class StageOutputRef(BaseModel):
-    """A whole reasoning-stage output or one stable named member within it."""
-
-    model_config = ConfigDict(
-        extra="ignore", json_schema_extra={"additionalProperties": False}
-    )
-
-    stage: ReasoningStage = Field(
-        ...,
-        description="The reasoning stage that owns the referenced output.",
-    )
-    name: str | None = Field(
-        ...,
-        description=(
-            "The stable member name: view_..., dim_... or sem_... for "
-            "interpretation. Coding has no named members; use null to refer to "
-            "the stage's complete output."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def require_a_name_owned_by_the_stage(self) -> Self:
-        if self.name is not None and not _valid_member_name(self.stage, self.name):
-            raise ValueError(
-                f"{self.name!r} is not a valid member name for {self.stage}"
-            )
-        return self
-
-
-class RevisionRequest(BaseModel):
-    """The change one finding requires at the root its backtrace reaches."""
-
-    model_config = ConfigDict(
-        extra="ignore", json_schema_extra={"additionalProperties": False}
-    )
-
-    action: RevisionAction = Field(
-        ...,
-        description=(
-            "The structural change requested. Use rename only when the stable "
-            "identity itself must change. Coding accepts only modify."
-        ),
-    )
-    targets: list[StageOutputRef] = Field(
-        ...,
-        description=(
-            "The existing outputs affected by this request. For add, give one "
-            "whole-stage reference whose name is null. Modify and delete take "
-            "every named member that shares the defect; modify may instead take "
-            "one whole-stage reference, but not both at once. Split and rename "
-            "take exactly one named member, and merge at least two. Every "
-            "target must belong to the same stage. Without an explanation, the "
-            "owning stage changes only these targets, the proposed names and "
-            "members that cite them, so list every member that must change."
-        ),
-    )
-    instruction: str = Field(
-        ...,
-        description=(
-            "What is wrong with the target: what the drawing shows there and "
-            "what the build has instead. Take values from printed dimensions "
-            "where possible, and give directions as model axes with signs. State "
-            "the defect, not its correction: the owning stage decides how to "
-            "correct it. Supply no replacement artifact."
-        ),
-    )
-    proposed_names: list[str] = Field(
-        ...,
-        description=(
-            "Stable names proposed for the result of the action. Add requires "
-            "one or more names, split requires at least two, and merge and "
-            "rename require exactly one. Modify and delete require an empty "
-            "list. Proposed names must be unique across this report. Add and "
-            "rename require new names; split and merge may retain their own "
-            "target names. Every proposed name must follow the naming convention of "
-            "the target stage: view_..., dim_... or sem_... for interpretation. "
-            "Coding only permits modify, so its list is empty."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def require_targets_and_names_appropriate_for_the_action(self) -> Self:
-        """Check action shape; existing-name collisions need the snapshot."""
-        if not self.instruction.strip():
-            raise ValueError("instruction must not be blank")
-        if not self.targets:
-            raise ValueError("targets must not be empty")
-        target_keys = [(target.stage, target.name) for target in self.targets]
-        if len(set(target_keys)) != len(target_keys):
-            raise ValueError("targets must not contain duplicates")
-
-        stages = {target.stage for target in self.targets}
-        if len(stages) != 1:
-            raise ValueError("all targets must belong to the same stage")
-        stage = self.targets[0].stage
-        if stage is PipelineStage.CODING and self.action != "modify":
-            raise ValueError("coding accepts only modify")
-
-        if len(set(self.proposed_names)) != len(self.proposed_names):
-            raise ValueError("proposed_names must not contain duplicates")
-        invalid_names = [
-            name for name in self.proposed_names if not _valid_member_name(stage, name)
-        ]
-        if invalid_names:
-            raise ValueError(
-                f"invalid proposed names for {stage}: {', '.join(invalid_names)}"
-            )
-
-        named_targets = [target for target in self.targets if target.name is not None]
-        if self.action == "add":
-            if len(self.targets) != 1 or named_targets:
-                raise ValueError("add requires one whole-stage target")
-            if not self.proposed_names:
-                raise ValueError("add requires at least one proposed name")
-        elif self.action == "modify":
-            if named_targets and len(named_targets) != len(self.targets):
-                raise ValueError(
-                    "modify requires either named targets or one whole-stage "
-                    "target, not both"
-                )
-            if self.proposed_names:
-                raise ValueError("modify does not accept proposed names")
-        elif self.action == "delete":
-            if len(named_targets) != len(self.targets):
-                raise ValueError("delete requires named targets")
-            if self.proposed_names:
-                raise ValueError("delete does not accept proposed names")
-        elif self.action == "split":
-            if len(self.targets) != 1 or len(named_targets) != 1:
-                raise ValueError("split requires exactly one named target")
-            if len(self.proposed_names) < 2:
-                raise ValueError("split requires at least two proposed names")
-        elif self.action == "merge":
-            if len(self.targets) < 2 or len(named_targets) != len(self.targets):
-                raise ValueError("merge requires at least two named targets")
-            if len(self.proposed_names) != 1:
-                raise ValueError("merge requires exactly one proposed name")
-        elif self.action == "rename":
-            if len(self.targets) != 1 or len(named_targets) != 1:
-                raise ValueError("rename requires exactly one named target")
-            if len(self.proposed_names) != 1:
-                raise ValueError("rename requires exactly one proposed name")
-            if self.proposed_names[0] == self.targets[0].name:
-                raise ValueError("rename requires a different proposed name")
-
-        return self
-
-
-# Causal paths: topology is local; declared artifact links need the snapshot.
-
-
-class CausalHop(BaseModel):
-    """One reverse step from an observed downstream effect to its cause."""
-
-    model_config = ConfigDict(
-        extra="ignore", json_schema_extra={"additionalProperties": False}
-    )
-
-    effect: StageOutputRef = Field(
-        ...,
-        description="The downstream stage output in which the problem appears.",
-    )
-    cause: StageOutputRef = Field(
-        ...,
-        description="The adjacent output claimed to have caused the effect.",
-    )
-    rationale: str = Field(
-        ...,
-        description="Why this cause explains this effect.",
-    )
-
-    @model_validator(mode="after")
-    def require_a_meaningful_step(self) -> Self:
-        """Move within a stage or to its adjacent upstream stage."""
-        if self.effect == self.cause:
-            raise ValueError("a causal hop must move to a different output")
-        distance = REASONING_STAGES.index(self.effect.stage) - REASONING_STAGES.index(
-            self.cause.stage
-        )
-        if distance not in (0, 1):
-            raise ValueError(
-                "a causal hop must stay within one stage or move to the adjacent "
-                "upstream stage: coding -> interpretation"
-            )
-        if not self.rationale.strip():
-            raise ValueError("rationale must not be blank")
-        return self
+_MEMBER_NAME = re.compile(r"^(?:datum|(?:view|dim|sem)_[a-z0-9_]+)$")
 
 
 class AuditRegion(BaseModel):
@@ -329,27 +112,34 @@ class AuditFinding(BaseModel):
             "so the mismatch is measured and not only seen."
         ),
     )
-    backtrace: list[CausalHop] = Field(
+    cause: FindingCause = Field(
         ...,
         description=(
-            "The causal path from the observed effect to the revision root, as "
-            "adjacent effect-to-cause steps in traversal order. Each hop's cause "
-            "moves within a stage or one step upstream along coding -> "
-            "interpretation. An interpretation-internal hop "
-            "may name a feature's cited view or dimension. "
-            "Each hop's cause "
-            "must equal the next hop's effect, and the last cause must be one of "
-            "the revision targets. Leave it empty when the defect is already at "
-            "its root. Do not revisit an output. Take at most one named-to-named "
-            "hop within each prefix (sem_, dim_, view_); crossing "
-            "prefixes, such as sem_ -> dim_ -> view_, is allowed. Whole-stage "
-            "references have no prefix and do not count toward that limit."
+            "Where the defect originates. interpretation: interpretation.json "
+            "misreads or omits something in the drawing, and the program "
+            "faithfully builds that error. coding: interpretation.json is right "
+            "for this defect, but the program builds something else."
         ),
     )
-    revision_request: RevisionRequest = Field(
+    targets: list[str] = Field(
         ...,
         description=(
-            "The revision this defect requires, at the root its backtrace reaches."
+            "Existing interpretation members this defect concerns: datum, "
+            "view_..., dim_... or sem_.... For an interpretation cause, name at "
+            "least one: the members that are wrong, or for something the "
+            "interpretation omits, the view_ where the drawing shows it. For a "
+            "coding cause, name the members the program builds wrongly, or [] "
+            "when none applies."
+        ),
+    )
+    revision_request: str = Field(
+        ...,
+        description=(
+            "What is wrong at the cause: what the drawing shows and what the "
+            "artifact has instead. Take values from printed dimensions where "
+            "possible, and give directions as model axes with signs. State the "
+            "defect, not its correction: the owning stage decides how to correct "
+            "it."
         ),
     )
     related_ticket_ids: list[str] = Field(
@@ -358,65 +148,35 @@ class AuditFinding(BaseModel):
             "If this finding describes the remaining problem of an open ticket "
             "you reviewed as unsolved, list that ticket's ID. Use [] for a new defect. "
             "Several tickets may share a finding, and "
-            "one ticket may require several findings. These are review links, "
-            "not causal backtrace edges."
+            "one ticket may require several findings."
         ),
     )
 
     @model_validator(mode="after")
-    def require_evidence_and_a_revision_path(self) -> Self:
-        """Require evidence and a contiguous, acyclic path ending at the target."""
+    def require_evidence_and_targets(self) -> Self:
         if _FIND_NAME.fullmatch(self.name) is None:
             raise ValueError("name must be a find_... lower_snake_case name")
         if not self.observation.strip():
             raise ValueError("observation must not be blank")
+        if not self.revision_request.strip():
+            raise ValueError("revision_request must not be blank")
         if not self.evidence:
             raise ValueError("evidence must not be empty")
         if len(set(self.evidence)) != len(self.evidence):
             raise ValueError("evidence regions must not contain duplicates")
         if len(set(self.related_ticket_ids)) != len(self.related_ticket_ids):
             raise ValueError("related_ticket_ids must not contain duplicates")
-
-        # A path must be continuous and may not revisit an output.
-        for current, following in zip(self.backtrace, self.backtrace[1:], strict=False):
-            if current.cause != following.effect:
-                raise ValueError(
-                    "each causal hop's cause must equal the next hop's effect"
-                )
-        visited = (
-            {(self.backtrace[0].effect.stage, self.backtrace[0].effect.name)}
-            if self.backtrace
-            else set()
-        )
-        for hop in self.backtrace:
-            key = (hop.cause.stage, hop.cause.name)
-            if key in visited:
-                raise ValueError("a causal path must not contain a cycle")
-            visited.add(key)
-
-        # Limit walks within one member kind, allowing sem -> dim -> view.
-        walked_prefixes: set[str] = set()
-        for hop in self.backtrace:
-            if hop.effect.name is None or hop.cause.name is None:
-                continue
-            effect_prefix = hop.effect.name.partition("_")[0]
-            cause_prefix = hop.cause.name.partition("_")[0]
-            if effect_prefix != cause_prefix:
-                continue
-            if effect_prefix in walked_prefixes:
-                raise ValueError(
-                    f"a causal path must not step within the {effect_prefix}_ "
-                    "prefix more than once"
-                )
-            walked_prefixes.add(effect_prefix)
-
-        # The requested change must include the root reached by the path.
-        if (
-            self.backtrace
-            and self.backtrace[-1].cause not in self.revision_request.targets
-        ):
+        if invalid := [t for t in self.targets if _MEMBER_NAME.fullmatch(t) is None]:
             raise ValueError(
-                "the final causal cause must be one of the revision targets"
+                "targets must be datum, view_..., dim_... or sem_... names, got "
+                + ", ".join(map(repr, invalid))
+            )
+        if len(set(self.targets)) != len(self.targets):
+            raise ValueError("targets must not contain duplicates")
+        if self.cause == "interpretation" and not self.targets:
+            raise ValueError(
+                "an interpretation cause needs at least one target; for an "
+                "omission, name the view_ where the drawing shows it"
             )
         return self
 
@@ -438,7 +198,7 @@ class TicketReview(BaseModel):
         ...,
         description=(
             "The current check and why the ticket's issue is settled or remains. "
-            "Do not repeat a finding's backtrace or revision request here."
+            "Do not repeat a finding's revision request here."
         ),
     )
     solved: bool = Field(
@@ -511,8 +271,8 @@ class AuditReport(Submission):
     concern_reviews: dict[str, ConcernReview] = Field(
         ...,
         description=(
-            "Your answer to every concern the current stage_reports raise and "
-            "every drawing_diff item the drawing comparison lists, and no others. "
+            "Your answer to every concern the current stage_reports raise, and "
+            "to each drawing_diff item when the round instructions ask for them. "
             "Key a concern by <reporting_stage>.<concern_id> as it appears "
             "there: coding.concern_bore_diameter. The prefix names the stage "
             "that reported the concern, not the stage that must change. Key a "
@@ -524,7 +284,7 @@ class AuditReport(Submission):
 
     @model_validator(mode="after")
     def require_consistent_findings(self) -> Self:
-        """Require unambiguous reviews, finding names and proposed identities."""
+        """Require unambiguous reviews and finding names."""
         unsolved = {
             ticket_id
             for ticket_id, review in self.ticket_reviews.items()
@@ -550,13 +310,4 @@ class AuditReport(Submission):
                     f"concern_reviews for {concern} names a finding this "
                     f"report does not hold: {review.finding_name}"
                 )
-        proposed = [
-            (finding.revision_request.targets[0].stage, name)
-            for finding in self.findings
-            for name in finding.revision_request.proposed_names
-        ]
-        if len(set(proposed)) != len(proposed):
-            raise ValueError(
-                "proposed_names must be unique across findings for each stage"
-            )
         return self

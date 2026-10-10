@@ -13,7 +13,6 @@ from tests.zeroshot.prompt_paths import (
 )
 from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _completed_run,
-    _ref,
     _report,
 )
 from zeroshot.pipeline.sandbox import SandboxWorkdir
@@ -69,6 +68,9 @@ _RUN_PATHS = {
     "reconstruction_path": "/work/reconstruction.json",
     "dimension_inventory": "[]",
 }
+_DRAWING_DIFF_REVIEWS = PromptTemplate(
+    STAGES_DIR / "audit/prompts/drawing_diff_reviews.md"
+).render()
 
 
 @pytest.fixture
@@ -103,6 +105,7 @@ def render_stage(
             append_inputs=False,
             **{
                 "attempt_dir": "/work/attempts/001",
+                "drawing_diff_reviews": _DRAWING_DIFF_REVIEWS,
                 **context,
             },
         ).text
@@ -132,9 +135,7 @@ def test_a_reused_builder_reads_the_latest_round_and_ticket_ownership(
     assert "round 0" in first
     assert "Tickets assigned to coding this round: ticket_initial" in first
 
-    state["reconstruction"] = open_next_round(
-        _completed_run(), _report(target=_ref("coding", None))
-    )
+    state["reconstruction"] = open_next_round(_completed_run(), _report("coding", []))
     coding = instructions.build(state, PipelineStage.CODING, append_inputs=False).text
     interpreted = instructions.build(
         state, PipelineStage.INTERPRETATION, append_inputs=False
@@ -153,7 +154,7 @@ def test_assigned_evidence_paths_reach_the_round_instruction(
     stage: str,
 ) -> None:
     state["reconstruction"] = open_next_round(
-        _completed_run(), _report(target=_ref(stage, None))
+        _completed_run(), _report(stage, ["sem_feature_1"])
     )
     ticket = state["reconstruction"].snapshots[-1].open_tickets[0]
     ticket.evidence_renders = [
@@ -289,9 +290,7 @@ def test_audit_explains_how_to_report_a_missing_semantic_feature(
 ) -> None:
     rendered = render_stage("audit")
 
-    assert "leave the `backtrace` empty" in rendered
-    assert "whole interpretation stage (`name: null`)" in rendered
-    assert "proposing one or more stable `sem_...` names" in rendered
+    assert "name the `view_...` where the drawing shows it" in rendered
 
 
 def test_the_audit_reads_the_attempt_directory_the_build_actually_wrote(
@@ -321,13 +320,13 @@ def test_audit_reads_ticket_bodies_from_history_without_echoing_them(
     assert "BODY_MUST_NOT_BE_ECHOED" not in rendered
 
 
-def test_auditor_refers_to_the_program_as_a_whole(
+def test_auditor_tells_a_misreading_from_a_misbuild(
     render_stage: Callable[..., str],
 ) -> None:
     rendered = render_stage("audit")
 
-    assert "Coding has no named members" in rendered
-    assert "whole coding stage with `name: null`" in rendered
+    assert "the program builds that error faithfully" in rendered
+    assert "`coding` when the interpretation is right" in rendered
 
 
 def test_placeholders_are_filled_from_the_context(
@@ -352,15 +351,6 @@ def test_the_coding_round_carries_the_history_and_result_contract(
     assert "Lxx-Lyy" not in rendered
 
 
-def test_the_auditor_is_told_the_walk_rule_the_pipeline_would_reject_it_for(
-    render_stage: Callable[..., str],
-) -> None:
-    """Mechanical walk rules reach the model through the report schema."""
-    rendered = render_stage("audit")
-    assert "at most one named-to-named hop within each prefix" in rendered
-    assert "sem_ -> dim_ -> view_" in rendered
-
-
 def test_the_auditor_role_does_not_repeat_the_api_contract() -> None:
     rendered = build_system_prompt(
         ROLE_PATHS["output_auditor"],
@@ -379,10 +369,10 @@ def test_the_auditor_reviews_every_open_ticket_including_bootstrap_work(
     rendered = render_stage("audit")
     guide = build_system_prompt(ROLE_PATHS["output_auditor"], _RUN_PATHS).text
 
-    assert "one `ticket_reviews` entry per ticket" in rendered
+    assert "one `ticket_reviews` entry per open ticket" in rendered
     assert "Round 0 has one ticket" in guide
     assert "Cover every unsolved ticket" in rendered
-    assert "root may have changed" in rendered
+    assert "it may differ from the old ticket's" in rendered
 
 
 def test_the_coding_round_keeps_code_in_the_workspace_and_reports_concerns(
@@ -396,10 +386,10 @@ def test_the_coding_round_keeps_code_in_the_workspace_and_reports_concerns(
     assert "`deleted`" not in rendered
     assert "`rationale`" not in rendered
     assert (
-        "ticket responses, one `stage_report.concerns` entry per remaining "
+        "ticket responses and one `stage_report.concerns` entry per remaining "
         "concern those responses do not explain" in rendered
     )
-    assert "`dimension_checks`" in rendered
+    assert "dimension_checks" not in rendered
     assert "pipeline captures it through verification" in rendered
 
 
@@ -417,8 +407,7 @@ def test_audit_can_read_concerns_from_both_ticket_summaries_and_stage_reports(
     assert "further unresolved issues" in prompt
     assert "The auditor reviews each" in prompt
     instruction = render_stage("audit")
-    assert "ticket summaries, `concerns` and `unticketed_changes`" in instruction
-    assert "placement does not determine" in instruction
+    assert "Ticket responses and `concerns` are claims, not proof" in instruction
 
 
 def test_the_audit_names_concerns_the_way_its_contract_does(

@@ -6,7 +6,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -98,10 +97,11 @@ class Ticket(BaseModel):
         ...,
         description=(
             "The stages that must answer this ticket, assigned by the pipeline "
-            "from the revision roots the audit requested: the earliest root and "
-            "every stage downstream of it, because a corrected artifact has to "
-            "be carried through to the program. A stage that is not listed here "
-            "must leave this ticket alone. No agent writes this field."
+            "from the finding's cause: interpretation and coding for an "
+            "interpretation cause, because a corrected reading has to be "
+            "carried through to the program; coding alone for a coding cause. "
+            "A stage that is not listed here must leave this ticket alone. No "
+            "agent writes this field."
         ),
     )
     responses: list[TicketResponse] = Field(
@@ -133,7 +133,7 @@ class Ticket(BaseModel):
             != REASONING_STAGES[-len(self.assigned_stages) :]
         ):
             raise ValueError(
-                "assigned_stages must run from one revision root through coding, "
+                "assigned_stages must run from the finding's cause through coding, "
                 f"got {self.assigned_stages}"
             )
 
@@ -182,44 +182,18 @@ class StageReport(BaseModel):
             "still states its own outcome."
         ),
     )
-    dimension_checks: dict[str, str] | None = Field(
-        ...,
-        description=(
-            "Coding only: one entry for every dim_ name in the current "
-            "interpretation, including unreadable values and equal values under "
-            "different names. For each dimension identify where the final "
-            "geometry realizes it and the supporting check, or explain why it "
-            "is not established or not checked. Assigning a value to a variable "
-            "alone does not establish the geometry. Use {} when there are no "
-            "dimensions, and null in other stages. This is the coder's account, "
-            "not independent proof that the dimensions are satisfied."
-        ),
-    )
-    unticketed_changes: dict[str, str] = Field(
-        ...,
-        description=(
-            "Changes your tickets did not ask for, each with its reason. Use a "
-            "member name as the key: datum, view_..., dim_... or sem_.... The "
-            "value describes the change and its justification. "
-            "Leave this {} in round 0 and when your tickets asked for every change."
-        ),
-    )
 
-    @field_validator("concerns", "dimension_checks", "unticketed_changes")
+    @field_validator("concerns")
     @classmethod
-    def require_explanations(
-        cls, explanations: dict[str, str] | None, info: ValidationInfo
-    ) -> dict[str, str] | None:
-        for name, explanation in (explanations or {}).items():
-            if info.field_name == "concerns" and _CONCERN_ID.fullmatch(name) is None:
+    def require_explanations(cls, explanations: dict[str, str]) -> dict[str, str]:
+        for name, explanation in explanations.items():
+            if _CONCERN_ID.fullmatch(name) is None:
                 raise ValueError(
                     f"concerns key {name!r} must be a concern_... identifier in "
                     "lower_snake_case, naming the concern rather than describing it"
                 )
             if not explanation.strip():
-                raise ValueError(
-                    f"{info.field_name}.{name}: explanation must not be blank"
-                )
+                raise ValueError(f"concerns.{name}: explanation must not be blank")
         return explanations
 
 
@@ -250,9 +224,7 @@ class TicketAnswers(Submission):
     stage_report: StageReport = Field(
         ...,
         description=(
-            "Stage-wide observations and dimension checks. Include every field "
-            "even when empty: concerns={}, unticketed_changes={}, and "
-            "dimension_checks=null outside coding."
+            "Stage-wide observations. Include concerns even when empty: concerns={}."
         ),
     )
 

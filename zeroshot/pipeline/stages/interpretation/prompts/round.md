@@ -40,5 +40,3 @@ Successful verification fills the derived fields in that same file. Continue edi
 ### Submission
 
 After the major geometry is settled, its required geometric parameters have numeric estimates, and the current artifact validates, finish tool work and return one TicketAnswers with one `responses` entry per assigned ticket, keyed by its ticket ID and none for other tickets, plus one `stage_report.concerns` entry per remaining concern those responses do not explain. Claim only changes present in that artifact.
-
-Give the reason for any change outside your tickets in `stage_report.unticketed_changes`.

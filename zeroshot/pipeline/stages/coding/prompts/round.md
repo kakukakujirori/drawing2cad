@@ -51,8 +51,6 @@ Do not believe in your 3D reasoning blindly. Whenever deciding geometric design 
 - State which geometric conclusions you checked against the latest images or measurements. Keep untested predictions and unavailable views explicitly unverified.
 - If a feature cannot be made to work, leave the program in its best executable state and report exactly what remains incomplete in your final answer.
 
-Finish tool work and return one `TicketAnswers` with your ticket responses, one `stage_report.concerns` entry per remaining concern those responses do not explain, and `dimension_checks`. Revise the program in the workspace; the pipeline captures it through verification. Give one `responses` entry per assigned ticket, keyed by its ticket ID and none for any other.
+Finish tool work and return one `TicketAnswers` with your ticket responses and one `stage_report.concerns` entry per remaining concern those responses do not explain. Revise the program in the workspace; the pipeline captures it through verification. Give one `responses` entry per assigned ticket, keyed by its ticket ID and none for any other.
 
 Only the audit can open a ticket.
-
-- In `dimension_checks`, cover every supplied dim ID once. For each, identify its realization in the final geometry and the evidence that it holds, or explicitly state why it remains unestablished or unverified. When measured, name the geometry measured and the result; assigning a number to a variable alone does not prove it survived later operations. Use `{}` if no dimensions exist. Do not repeat this table in ticket summaries or concerns, or narrate routine unit/radius conversions.

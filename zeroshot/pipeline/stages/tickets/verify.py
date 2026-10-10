@@ -1,32 +1,20 @@
 """Check a stage's ticket answers against the reconstruction history."""
 
-from collections.abc import Callable
-from functools import partial
-
 from langchain_core.messages.content import ContentBlock, create_text_block
 
-from zeroshot.pipeline.stages._base.validate import (
-    SubmissionValidationError,
-    raise_together,
-)
+from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
-from zeroshot.pipeline.stages.tickets.validate import (
-    StageArtifact,
-    validate_revision_scope,
-    validate_ticket_answers,
-)
+from zeroshot.pipeline.stages.tickets.validate import validate_ticket_answers
 
 
 class TicketVerifier:
-    """Explain why ticket answers contradict their round or its revision scope.
+    """Explain why ticket answers contradict their round.
 
     Integration applies the same rules; this lets the agent fix them in its turn.
     """
 
-    def __init__(self, artifact: Callable[[], StageArtifact | None]) -> None:
-        # The stage's confirmed artifact, or None while it is not confirmed.
-        self.artifact = artifact
+    def __init__(self) -> None:
         self._history: ReconstructionHistory | None = None
 
     def reset(self, history: ReconstructionHistory) -> None:
@@ -37,15 +25,7 @@ class TicketVerifier:
         if self._history is None:
             raise RuntimeError("the ticket round is not prepared")
         try:
-            raise_together(
-                partial(validate_ticket_answers, answers, self._history.snapshots[-1]),
-                partial(
-                    validate_revision_scope,
-                    answers.stage_report,
-                    self._history,
-                    self.artifact(),
-                ),
-            )
+            validate_ticket_answers(answers, self._history.snapshots[-1])
         except SubmissionValidationError as error:
             return [
                 create_text_block(

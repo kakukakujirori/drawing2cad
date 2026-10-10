@@ -197,7 +197,7 @@ def test_best_candidate_eligibility_cache_and_stage_baseline(tmp_path, monkeypat
             agent,
             instructions,
             verifier,
-            TicketVerifier(lambda: None),
+            TicketVerifier(),
             middleware,
             False,
         )

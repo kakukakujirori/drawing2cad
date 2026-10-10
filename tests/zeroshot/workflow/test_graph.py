@@ -31,8 +31,6 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
     AuditSubmission,
-    RevisionRequest,
-    StageOutputRef,
     TicketReview,
 )
 from zeroshot.pipeline.stages.coding import stage as coding_stage_module
@@ -81,9 +79,7 @@ def _interpretation_submission(
 ) -> AIMessage:
     return _message(
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            stage_report=StageReport(concerns={}),
             responses=_responses(ticket_id, PipelineStage.INTERPRETATION),
         )
     )
@@ -92,9 +88,7 @@ def _interpretation_submission(
 def _invalid_interpretation_submission() -> AIMessage:
     return _message(
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            stage_report=StageReport(concerns={}),
             responses=_responses("ticket_absent", PipelineStage.INTERPRETATION),
         )
     )
@@ -153,9 +147,7 @@ def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
     return _message(
         TicketAnswers(
             responses=_responses(ticket_id, PipelineStage.CODING),
-            stage_report=StageReport(
-                concerns={}, unticketed_changes={}, dimension_checks={}
-            ),
+            stage_report=StageReport(concerns={}),
         )
     )
 
@@ -186,7 +178,9 @@ def _accepted_audit() -> AIMessage:
     )
 
 
-def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
+def _rejected_audit(
+    cause: str = "coding", targets: list[str] | None = None
+) -> AIMessage:
     return _message(
         AuditReport(
             concern_reviews={},
@@ -196,16 +190,9 @@ def _rejected_audit(root: StageOutputRef | None = None) -> AIMessage:
                     name="find_missing_hole",
                     observation="The drawing contains a hole that the model omits.",
                     evidence=evidence("projection/front.dxf"),
-                    backtrace=[],
-                    revision_request=RevisionRequest(
-                        action="modify",
-                        targets=[
-                            root
-                            or StageOutputRef(stage=PipelineStage.CODING, name=None)
-                        ],
-                        instruction="Implement the missing hole.",
-                        proposed_names=[],
-                    ),
+                    cause=cause,  # type: ignore[arg-type]
+                    targets=targets or [],
+                    revision_request="The model omits the hole.",
                     related_ticket_ids=[],
                 )
             ],
@@ -223,18 +210,9 @@ def _interpretation_rejected_audit() -> AIMessage:
                     name="find_wrong_edge",
                     observation="The front edge starts at the wrong coordinate.",
                     evidence=evidence("front.png", "projection/front.dxf"),
-                    backtrace=[],
-                    revision_request=RevisionRequest(
-                        action="modify",
-                        targets=[
-                            StageOutputRef(
-                                stage=PipelineStage.INTERPRETATION,
-                                name="view_front",
-                            )
-                        ],
-                        instruction="Correct the front sheet's edge reading.",
-                        proposed_names=[],
-                    ),
+                    cause="interpretation",
+                    targets=["view_front"],
+                    revision_request="The front sheet's edge reading is wrong.",
                     related_ticket_ids=[],
                 )
             ],
@@ -252,18 +230,9 @@ def _invalid_audit() -> AIMessage:
                     name="find_unknown_feature",
                     observation="The model is incorrect.",
                     evidence=evidence("projection/front.dxf"),
-                    backtrace=[],
-                    revision_request=RevisionRequest(
-                        action="modify",
-                        targets=[
-                            StageOutputRef(
-                                stage=PipelineStage.INTERPRETATION,
-                                name="sem_missing",
-                            )
-                        ],
-                        instruction="Correct the absent feature.",
-                        proposed_names=[],
-                    ),
+                    cause="interpretation",
+                    targets=["sem_missing"],
+                    revision_request="The absent feature is wrong.",
                     related_ticket_ids=[],
                 )
             ],
@@ -414,9 +383,7 @@ def _interpretation_seed() -> ReconstructionHistory:
     return advance_reconstruction(
         start_reconstruction("run_test", "Reconstruct the drawing.", drawing()),
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            stage_report=StageReport(concerns={}),
             responses=_response(_ROUND_ZERO_TICKET, PipelineStage.INTERPRETATION),
         ),
         workspace_output=interpretation("a plate"),
@@ -557,16 +524,12 @@ def test_a_coding_answer_that_contradicts_its_round_is_refused_inside_the_agent(
     calls = _stub_verification(monkeypatch, _verified())
     responses = _responses(_ROUND_ZERO_TICKET, PipelineStage.CODING)
     unchecked = TicketAnswers(
-        stage_report=StageReport(
-            concerns={}, dimension_checks=None, unticketed_changes={}
-        ),
-        responses=responses,
+        stage_report=StageReport(concerns={}),
+        responses={},
     )
     checked = TicketAnswers(
         responses=responses,
-        stage_report=StageReport(
-            concerns={}, unticketed_changes={}, dimension_checks={}
-        ),
+        stage_report=StageReport(concerns={}),
     )
     coder = ScriptedChatModel(
         responses=(
@@ -590,12 +553,11 @@ def test_a_coding_answer_that_contradicts_its_round_is_refused_inside_the_agent(
         if isinstance(message, HumanMessage)
         and "TicketAnswers are not ready" in message.text
     )
-    assert "coding requires dimension_checks" in refusal
+    assert "missing ticket responses" in refusal
     assert calls == ["verify"]
     assert result["stage_validation_failure_count"] == 0
     snapshot = result["reconstruction"].snapshots[-1]
     assert snapshot.last_completed_stage is PipelineStage.CODING
-    assert snapshot.stage_reports[PipelineStage.CODING].dimension_checks == {}
 
 
 def test_every_stage_reads_the_same_history_path_and_current_round(
@@ -862,9 +824,7 @@ def test_a_rejected_audit_opens_a_fresh_round_for_all_reasoning_stages(monkeypat
     )
     auditor = ScriptedChatModel(
         responses=_audit_script(
-            _rejected_audit(
-                StageOutputRef(stage=PipelineStage.INTERPRETATION, name="sem_feature_1")
-            ),
+            _rejected_audit("interpretation", ["sem_feature_1"]),
         )
     )
     with SandboxWorkdir() as workdir:

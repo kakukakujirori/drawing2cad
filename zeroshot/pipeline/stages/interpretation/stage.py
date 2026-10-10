@@ -58,9 +58,7 @@ class InterpretationStage:
         if not tickets_assigned_to(snapshot.open_tickets, PipelineStage.INTERPRETATION):
             return {
                 "stage_submission": TicketAnswers(
-                    stage_report=StageReport(
-                        concerns={}, dimension_checks=None, unticketed_changes={}
-                    ),
+                    stage_report=StageReport(concerns={}),
                     responses={},
                 )
             }
@@ -138,9 +136,7 @@ def create_interpretation_stage(
         input_artifact=instructions.input_artifact,
         source_filename=interpretation_filename,
     )
-    ticket_verifier = TicketVerifier(
-        lambda: interpretation_verifier.accepted_interpretation
-    )
+    ticket_verifier = TicketVerifier()
     middleware = VerifyOnWriteMiddleware(
         interpretation_verifier,
         ticket_verifier=ticket_verifier,

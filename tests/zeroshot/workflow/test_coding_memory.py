@@ -23,8 +23,6 @@ from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditRegion,
-    RevisionRequest,
-    StageOutputRef,
 )
 from zeroshot.pipeline.stages.coding.middleware import (
     CHECKPOINT_NAME,
@@ -63,13 +61,11 @@ from zeroshot.pipeline.workflow.middleware.output_limit_budget import (
 SOURCE = "result = object()\n"
 
 
-def answers(ticket="ticket_initial", coding=True):
+def answers(ticket="ticket_initial"):
     return TicketAnswers(
         responses={ticket: "Reviewed the base"},
         stage_report=StageReport(
             concerns={"concern_scale": "Scale needs checking"},
-            dimension_checks={} if coding else None,
-            unticketed_changes={},
         ),
     )
 
@@ -82,9 +78,7 @@ def setup(tmp_path, monkeypatch):
     Image.new("RGB", (20, 20), "white").save(drawing)
     ir = interpretation(views=[view("front", scale=0.1, file="/work/inputs/front.png")])
     history = start_reconstruction("run_memory", "Build the drawing", [ir.views[0]])
-    history = advance_reconstruction(
-        history, answers(coding=False), workspace_output=ir
-    )
+    history = advance_reconstruction(history, answers(), workspace_output=ir)
     state = {"reconstruction": history}
     store = AttemptStore(
         workdir, round_source=lambda: state["reconstruction"].snapshots[-1].round
@@ -265,13 +259,9 @@ def test_stage_flag_and_new_round_baseline_and_validation_instruction(setup, fre
         name="find_base",
         observation="Check the base",
         evidence=[AuditRegion(file="/work/inputs/front.png", box=(0, 0, 10, 10))],
-        backtrace=[],
-        revision_request=RevisionRequest(
-            action="modify",
-            targets=[StageOutputRef(stage=PipelineStage.CODING, name=None)],
-            instruction="Check base",
-            proposed_names=[],
-        ),
+        cause="coding",
+        targets=[],
+        revision_request="Check base",
         related_ticket_ids=[],
     )
     previous = completed.snapshots[0]

@@ -1,6 +1,5 @@
 """Check an audit against committed outputs; report-only rules live in contracts."""
 
-from collections.abc import Iterable, Iterator, Mapping
 from pathlib import PurePosixPath
 from typing import cast
 
@@ -13,8 +12,6 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditRegion,
     AuditReport,
-    CausalHop,
-    StageOutputRef,
 )
 from zeroshot.pipeline.stages.coding.verify import unmatched_items
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
@@ -29,8 +26,10 @@ def validate_audit_report(
     report: AuditReport,
     snapshot: ReconstructionSnapshot,
     attempts: AttemptStore | None = None,
+    *,
+    require_drawing_diff_reviews: bool = False,
 ) -> None:
-    """Check ticket coverage, verification, members, causal links and evidence.
+    """Check ticket and concern coverage, verification, targets and evidence.
 
     Evidence is checked against the files themselves, so it needs `attempts`.
     """
@@ -38,7 +37,7 @@ def validate_audit_report(
     if snapshot.last_completed_stage is not PipelineStage.CODING:
         raise SubmissionValidationError("audit requires a completed coding snapshot")
     _validate_ticket_coverage(report, snapshot)
-    _validate_concern_coverage(report, snapshot)
+    _validate_concern_coverage(report, snapshot, require_drawing_diff_reviews)
     if not report.findings and (  # i.e., accepted
         snapshot.verification is None
         or snapshot.verification.exec_report is None
@@ -47,45 +46,25 @@ def validate_audit_report(
     ):
         raise SubmissionValidationError(
             "audit cannot accept a reconstruction without a verified solid; "
-            "report the verification failure and the root that must change"
+            "report the verification failure and its cause"
         )
-    # Index the committed members and the interpretation's explicit sources.
     # Snapshot validation guarantees an interpretation after coding.
-    interpretation = cast(DrawingInterpretation, snapshot.interpretation)
-    references = tuple(_iter_references(report.findings))
-    interpretation_links = {
-        name: member.cites for name, member in interpretation.members().items()
-    }
-    known_members: dict[PipelineStage, set[str]] = {
-        PipelineStage.INTERPRETATION: set(interpretation_links),
-        PipelineStage.CODING: set(),
-    }
+    members = cast(DrawingInterpretation, snapshot.interpretation).members()
     errors: list[str] = []
     if attempts is not None:
         drawn = _drawings_of(snapshot, attempts)
         for finding in report.findings:
             errors.extend(_evidence_errors(finding, attempts.workdir, drawn))
-
-    # Existing references must resolve; proposed identities must not collide.
-    errors.extend(_missing_reference_errors(references, known_members))
-    errors.extend(_proposed_name_errors(report.findings, known_members))
-
-    # Path shape is checked by AuditFinding; here each hop must match its source.
     for finding in report.findings:
-        for hop in finding.backtrace:
-            error = _causal_hop_error(
-                hop,
-                known_members=known_members,
-                interpretation_links=interpretation_links,
-            )
-            if error is not None:
-                errors.append(error)
-
+        for target in finding.targets:
+            if target not in members:
+                maybe = close_names(target, members)
+                errors.append(
+                    f"{finding.name}: target {target!r} is not an interpretation "
+                    "member" + (f". Maybe: {', '.join(maybe)}?" if maybe else "")
+                )
     if errors:
-        # A repeated reference or hop should not make the model repair the
-        # same mechanical contradiction more than once.
-        unique_errors = list(dict.fromkeys(errors))
-        raise SubmissionValidationError("\n".join(unique_errors))
+        raise SubmissionValidationError("\n".join(errors))
 
 
 def _drawings_of(
@@ -164,24 +143,27 @@ def _region_error(region: AuditRegion, workdir: SandboxWorkdir) -> str | None:
 def _validate_concern_coverage(
     report: AuditReport,
     snapshot: ReconstructionSnapshot,
+    require_drawing_diff_reviews: bool,
 ) -> None:
-    """Every concern and drawing_diff item this round raised is disposed of, and only those."""
+    """Every concern this round raised is answered; drawing_diff items when required."""
     verification = snapshot.verification
-    diff_reports = verification.drawing_diff_report if verification else None
-    expected = set(reported_concerns(snapshot.stage_reports)) | set(
-        unmatched_items(diff_reports)
+    concerns = set(reported_concerns(snapshot.stage_reports))
+    diff_items = set(
+        unmatched_items(verification.drawing_diff_report if verification else None)
     )
+    required = concerns | diff_items if require_drawing_diff_reviews else concerns
     reviewed = set(report.concern_reviews)
-    if missing := sorted(expected - reviewed):
+    if missing := sorted(required - reviewed):
         raise SubmissionValidationError(
-            "concern_reviews must answer every stage-report concern and "
-            f"drawing_diff item this round raises; missing: {', '.join(missing)}"
+            "concern_reviews must answer every stage-report concern"
+            + (" and drawing_diff item" if require_drawing_diff_reviews else "")
+            + f" this round raises; missing: {', '.join(missing)}"
         )
-    if unknown := sorted(reviewed - expected):
+    if unknown := sorted(reviewed - concerns - diff_items):
         raise SubmissionValidationError(
             "concern_reviews names keys this round does not raise: "
             f"{', '.join(unknown)}. This round raises: "
-            f"{', '.join(sorted(expected)) or 'none'}"
+            f"{', '.join(sorted(required)) or 'none'}"
         )
 
 
@@ -202,91 +184,3 @@ def _validate_ticket_coverage(
             f"missing={sorted(expected - reviewed)}, "
             f"unexpected={sorted(reviewed - expected)}"
         )
-
-
-def _iter_references(
-    findings: Iterable[AuditFinding],
-) -> Iterator[StageOutputRef]:
-    """Every existing output that an audit report claims to address."""
-    for finding in findings:
-        for hop in finding.backtrace:
-            yield hop.effect
-            yield hop.cause
-        yield from finding.revision_request.targets
-
-
-def _missing_reference_errors(
-    references: Iterable[StageOutputRef],
-    known_members: Mapping[PipelineStage, set[str]],
-) -> list[str]:
-    """Report absent named outputs; the report combines duplicate errors."""
-    errors: list[str] = []
-    for reference in references:
-        if (
-            reference.name is not None
-            and reference.name not in known_members[reference.stage]
-        ):
-            maybe = close_names(reference.name, known_members[reference.stage])
-            errors.append(
-                f"{reference.stage} member {reference.name!r} does not exist "
-                "in the audited snapshot"
-                + (f". Maybe: {', '.join(maybe)}?" if maybe else "")
-            )
-    return errors
-
-
-def _proposed_name_errors(
-    findings: Iterable[AuditFinding],
-    known_members: Mapping[PipelineStage, set[str]],
-) -> list[str]:
-    """Only split/merge may retain an existing identity among their own targets."""
-    errors = []
-    for finding in findings:
-        request = finding.revision_request
-        stage = request.targets[0].stage
-        retained = (
-            {target.name for target in request.targets}
-            if request.action in {"split", "merge"}
-            else set()
-        )
-        collisions = (set(request.proposed_names) & known_members[stage]) - retained
-        for name in sorted(collisions):
-            errors.append(
-                f"{finding.name}: proposed {stage} name {name!r} already exists "
-                "in the audited snapshot and is not a retained split/merge target"
-            )
-    return errors
-
-
-def _causal_hop_error(
-    hop: CausalHop,
-    *,
-    known_members: Mapping[PipelineStage, set[str]],
-    interpretation_links: Mapping[str, frozenset[str]],
-) -> str | None:
-    """Validate only causal relations represented by an explicit contract."""
-    effect = hop.effect
-    cause = hop.cause
-
-    # A whole-stage reference has no member identity with which to prove a
-    # direct relation. Its existence was already checked above.
-    if effect.name is None or cause.name is None:
-        return None
-    if (
-        effect.name not in known_members[effect.stage]
-        or cause.name not in known_members[cause.stage]
-    ):
-        return None
-
-    if (
-        effect.stage is PipelineStage.INTERPRETATION
-        and cause.stage is PipelineStage.INTERPRETATION
-        and cause.name not in interpretation_links[effect.name]
-    ):
-        return (
-            f"interpretation hop {effect.name!r} -> {cause.name!r} "
-            "is not supported by the member's evidence, dimension_refs or "
-            "view region. For an omission with no existing citation, "
-            "report the defect directly at its root."
-        )
-    return None

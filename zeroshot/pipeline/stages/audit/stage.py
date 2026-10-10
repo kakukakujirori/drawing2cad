@@ -10,6 +10,7 @@ from langgraph.pregel import Pregel
 
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.stages._base.prompt import (
+    PromptTemplate,
     StageInstructions,
     build_system_prompt,
     schema_for_prompt,
@@ -36,6 +37,7 @@ class AuditStage:
     audit_verifier: AuditVerifier
     middleware: VerifyOnWriteMiddleware
     artifact_presenter: ArtifactPresenter
+    drawing_diff_reviews: str
 
     def run(self, state: ReconstructionState, config: RunnableConfig) -> dict[str, Any]:
         snapshot = current_snapshot(state)
@@ -66,6 +68,7 @@ class AuditStage:
             ),
             audit_schema=schema_for_prompt(AuditReport),
             attempt_dir=attempt_dir,
+            drawing_diff_reviews=self.drawing_diff_reviews,
             feedback=build_verification_feedback(
                 verification,
                 self.instructions.workdir,
@@ -106,10 +109,13 @@ def create_audit_stage(
     artifact_presenter: ArtifactPresenter,
     audit_filename: str = "audit.json",
     evidence_mode: EvidenceMode = "mark",
+    review_drawing_diff_clusters: bool = True,
 ) -> AuditStage:
-
     audit_verifier = AuditVerifier(
-        attempt_store, source_filename=audit_filename, evidence_mode=evidence_mode
+        attempt_store,
+        source_filename=audit_filename,
+        evidence_mode=evidence_mode,
+        require_drawing_diff_reviews=review_drawing_diff_clusters,
     )
     middleware = VerifyOnWriteMiddleware(audit_verifier)
     audit_agent = audit_agent_builder(
@@ -129,4 +135,11 @@ def create_audit_stage(
         audit_verifier=audit_verifier,
         middleware=middleware,
         artifact_presenter=artifact_presenter,
+        drawing_diff_reviews=(
+            PromptTemplate(
+                Path(__file__).parent / "prompts/drawing_diff_reviews.md"
+            ).render()
+            if review_drawing_diff_clusters
+            else ""
+        ),
     )

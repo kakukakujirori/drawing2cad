@@ -156,12 +156,10 @@ def _ticket_from_finding(
 
 
 def _assigned_stages(finding: AuditFinding) -> list[ReasoningStage]:
-    """The earliest stage the revision targets, and everything after it."""
-    root = min(
-        REASONING_STAGES.index(target.stage)
-        for target in finding.revision_request.targets
+    """The stage the defect originates in, and everything after it."""
+    return list(
+        REASONING_STAGES[REASONING_STAGES.index(PipelineStage(finding.cause)) :]
     )
-    return list(REASONING_STAGES[root:])
 
 
 def advance_reconstruction(

@@ -80,6 +80,7 @@ def create_reconstruction_graph(
     diff_drawer_config: Mapping[str, Any] | None = None,
     fresh_coder: bool = False,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
+    review_drawing_diff_clusters: bool = True,
 ):
     """Interpret the drawing, implement the part, then verify and audit it."""
     if max_audit_reject_count < 0:
@@ -175,6 +176,7 @@ def create_reconstruction_graph(
         attempt_store=attempt_store,
         evidence_mode=audit_evidence_mode,
         artifact_presenter=artifact_presenter,
+        review_drawing_diff_clusters=review_drawing_diff_clusters,
     )
 
     def save_history(history: ReconstructionHistory) -> None:

@@ -1,4 +1,4 @@
-"""Audit links through the interpretation, including direct missing-member tickets."""
+"""Audit targets and evidence, checked against the interpretation and the workspace."""
 
 from collections.abc import Iterator
 from dataclasses import replace
@@ -16,15 +16,11 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditRegion,
     AuditReport,
-    CausalHop,
     ConcernReview,
-    RevisionRequest,
-    StageOutputRef,
 )
 from zeroshot.pipeline.stages.audit.validate import _region_error, validate_audit_report
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
-from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
     Ticket,
@@ -64,25 +60,10 @@ def snapshot() -> ReconstructionSnapshot:
     )
 
 
-def ref(stage: str, name: str | None) -> StageOutputRef:
-    return StageOutputRef(stage=stage, name=name)
-
-
 def report(
-    *hops: tuple[str, str | None, str, str | None],
-    target: str | None = None,
-    add: str | None = None,
+    target: str = "sem_bore",
     cites: list[AuditRegion] | None = None,
 ) -> AuditReport:
-    backtrace = [
-        CausalHop(
-            effect=ref(es, en),
-            cause=ref(cs, cn),
-            rationale="Declared source of the mismatch.",
-        )
-        for es, en, cs, cn in hops
-    ]
-    root = backtrace[-1].cause if backtrace else ref("interpretation", target)
     return AuditReport(
         concern_reviews={},
         ticket_reviews=bootstrap_review(),
@@ -91,44 +72,29 @@ def report(
                 name="find_bore",
                 observation="The drawn bore is missing or incorrect.",
                 evidence=cites or evidence("front.png"),
-                backtrace=backtrace,
-                revision_request=RevisionRequest(
-                    action="add" if add else "modify",
-                    targets=[root],
-                    instruction="Correct the bore.",
-                    proposed_names=[add] if add else [],
-                ),
+                cause="interpretation",
+                targets=[target],
+                revision_request="The bore is wrong.",
                 related_ticket_ids=[],
             )
         ],
     )
 
 
-@pytest.mark.parametrize("cause", ["view_front", "dim_diameter"])
-def test_audit_traces_code_through_a_feature_and_its_evidence(cause: str) -> None:
-    validate_audit_report(
-        report(
-            ("coding", None, "interpretation", "sem_bore"),
-            ("interpretation", "sem_bore", "interpretation", cause),
-        ),
-        snapshot(),
-    )
+@pytest.mark.parametrize("target", ["view_front", "dim_diameter", "sem_bore", "datum"])
+def test_a_target_names_an_existing_member(target: str) -> None:
+    validate_audit_report(report(target), snapshot())
 
 
-@pytest.mark.parametrize("name", ["view_missing", "dim_missing", "sem_missing"])
-def test_missing_members_can_be_added_directly_without_inventing_a_chain(
-    name: str,
-) -> None:
-    validate_audit_report(report(add=name), snapshot())
-    with pytest.raises(SubmissionValidationError, match="does not exist"):
-        validate_audit_report(report(target=name), snapshot())
+@pytest.mark.parametrize("target", ["view_missing", "dim_missing", "sem_missing"])
+def test_a_target_the_interpretation_lacks_is_refused(target: str) -> None:
+    with pytest.raises(SubmissionValidationError, match="not an interpretation member"):
+        validate_audit_report(report(target), snapshot())
 
 
 def test_a_mistyped_member_suggests_a_close_existing_one() -> None:
-    with pytest.raises(
-        SubmissionValidationError, match=r"snapshot\. Maybe: sem_bore\?$"
-    ):
-        validate_audit_report(report(target="sem_bor"), snapshot())
+    with pytest.raises(SubmissionValidationError, match=r"Maybe: sem_bore\?$"):
+        validate_audit_report(report("sem_bor"), snapshot())
 
 
 def test_every_listed_drawing_diff_group_needs_an_answer() -> None:
@@ -148,71 +114,27 @@ def test_every_listed_drawing_diff_group_needs_an_answer() -> None:
     assert base.verification is not None
     verification = replace(base.verification, drawing_diff_report={"view_front": diff})
     listed = base.model_copy(update={"verification": verification})
-    unanswered = report(target="sem_bore")
+    unanswered = report()
+    answer = ConcernReview(
+        finding_name="find_bore", disposition="It is the missing bore."
+    )
+    answered = unanswered.model_copy(
+        update={"concern_reviews": {"drawing_diff.view_front.1": answer}}
+    )
+    invented = unanswered.model_copy(
+        update={"concern_reviews": {"drawing_diff.view_front.2": answer}}
+    )
 
     with pytest.raises(
         SubmissionValidationError, match="missing: drawing_diff.view_front.1"
     ):
-        validate_audit_report(unanswered, listed)
-    answer = ConcernReview(
-        finding_name="find_bore", disposition="It is the missing bore."
-    )
-    validate_audit_report(
-        unanswered.model_copy(
-            update={"concern_reviews": {"drawing_diff.view_front.1": answer}}
-        ),
-        listed,
-    )
-
-
-def test_dimension_can_trace_to_its_source_view() -> None:
-    validate_audit_report(
-        report(("interpretation", "dim_diameter", "interpretation", "view_front")),
-        snapshot(),
-    )
-
-
-def test_interpretation_hops_require_an_explicit_evidence_link() -> None:
-    with pytest.raises(SubmissionValidationError, match="not supported"):
-        validate_audit_report(
-            report(("interpretation", "view_front", "interpretation", "sem_bore")),
-            snapshot(),
-        )
-
-
-def test_feature_can_trace_through_a_dimension_to_another_view() -> None:
-    current = snapshot()
-    data = current.interpretation.model_dump()
-    front = data["views"][0]
-    data["views"].append(
-        {
-            **front,
-            "name": "view_top",
-            "role": "top",
-            "file": "top.png",
-            "v_axis": "+y",
-            "region": {**front["region"], "view": "view_top"},
-            "dimensions": front["dimensions"],
-        }
-    )
-    front["dimensions"] = []
-    data["views"][1]["dimensions"][0]["region"]["view"] = "view_top"
-    current.interpretation = DrawingInterpretation.model_validate(data)
-
-    validate_audit_report(
-        report(
-            ("coding", None, "interpretation", "sem_bore"),
-            ("interpretation", "sem_bore", "interpretation", "dim_diameter"),
-            ("interpretation", "dim_diameter", "interpretation", "view_top"),
-        ),
-        current,
-    )
-    # The two declared links must not become an invented direct reference.
-    with pytest.raises(SubmissionValidationError, match="not supported"):
-        validate_audit_report(
-            report(("interpretation", "sem_bore", "interpretation", "view_top")),
-            current,
-        )
+        validate_audit_report(unanswered, listed, require_drawing_diff_reviews=True)
+    validate_audit_report(answered, listed, require_drawing_diff_reviews=True)
+    # Without the duty, an answer is optional but must still name a listed item.
+    validate_audit_report(unanswered, listed)
+    validate_audit_report(answered, listed)
+    with pytest.raises(SubmissionValidationError, match="does not raise"):
+        validate_audit_report(invented, listed)
 
 
 DRAWN = "attempts/round_000/coding/000/projection/front.dxf"
@@ -251,7 +173,6 @@ def test_evidence_is_measured_on_the_files_it_names(
                 cite("front.png", (2, 2, 8, 8)),
                 cite(DRAWN, (2.0, 2.0, 8.0, 8.0)),
             ],
-            target="sem_bore",
         ),
         snapshot(),
         workspace,
@@ -271,9 +192,7 @@ def test_evidence_that_cannot_be_opened_and_measured_is_refused(
     workspace: AttemptStore, cited: AuditRegion, message: str
 ) -> None:
     with pytest.raises(SubmissionValidationError, match=message):
-        validate_audit_report(
-            report(cites=[cited], target="sem_bore"), snapshot(), workspace
-        )
+        validate_audit_report(report(cites=[cited]), snapshot(), workspace)
 
 
 def test_a_finding_measures_at_least_one_projection_dxf(
@@ -281,7 +200,7 @@ def test_a_finding_measures_at_least_one_projection_dxf(
 ) -> None:
     with pytest.raises(SubmissionValidationError, match="under a projection/"):
         validate_audit_report(
-            report(cites=[cite("front.png", (0, 0, 10, 10))], target="sem_bore"),
+            report(cites=[cite("front.png", (0, 0, 10, 10))]),
             snapshot(),
             workspace,
         )
@@ -293,7 +212,7 @@ def test_an_audit_of_a_build_that_drew_nothing_still_reports_it() -> None:
         attempts = AttemptStore(workdir, lambda: 0)
         attempts.issue("coding")
         validate_audit_report(
-            report(cites=[cite("front.png", (0, 0, 10, 10))], target="sem_bore"),
+            report(cites=[cite("front.png", (0, 0, 10, 10))]),
             snapshot(),
             attempts,
         )
@@ -307,7 +226,7 @@ def test_a_projection_of_an_earlier_attempt_does_not_measure_this_build(
     _draw_square(workspace.workdir.host_bind_dir / stale)
     with pytest.raises(SubmissionValidationError, match="coding/000"):
         validate_audit_report(
-            report(cites=[cite(stale, (2.0, 2.0, 8.0, 8.0))], target="sem_bore"),
+            report(cites=[cite(stale, (2.0, 2.0, 8.0, 8.0))]),
             snapshot(),
             workspace,
         )
@@ -319,7 +238,7 @@ def test_a_misplaced_box_does_not_also_demand_the_projection_it_cites(
     """Citing the drawing and measuring it wrongly are two different mistakes."""
     with pytest.raises(SubmissionValidationError) as refusal:
         validate_audit_report(
-            report(cites=[cite(DRAWN, (0.0, 0.0, 21.0, 1.0))], target="sem_bore"),
+            report(cites=[cite(DRAWN, (0.0, 0.0, 21.0, 1.0))]),
             snapshot(),
             workspace,
         )

@@ -31,6 +31,9 @@ workflow:
   # (input px, the unit of the score diff_drawer_config computes).
   match_margin_px: 0.5
 
+  # The auditor must answer every drawing_diff cluster in concern_reviews.
+  review_drawing_diff_clusters: true
+
   interpretation_agent_builder:
     _target_: zeroshot.pipeline.workflow.create_agent
     _partial_: true
@@ -38,7 +41,7 @@ workflow:
     model: ${model}
 
     response_format_strategy: ${response_format_strategy}
-    max_turns: 20
+    max_turns: 40
     announce_turns: true
     reset_turns_when_reentrant: true
     model_retries: 5

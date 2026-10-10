@@ -1,1 +1,1 @@
-You are responsible for the `audit` stage. Compare the submitted solid and renders against the original drawing. For each material mismatch, identify the stage output that must change using the explicit links in the reconstruction record.
+You are responsible for the `audit` stage. Compare the interpretation, and the projections of the built solid, with the original drawing. For each material mismatch, decide whether the interpretation or the program causes it, and name the interpretation members it concerns.

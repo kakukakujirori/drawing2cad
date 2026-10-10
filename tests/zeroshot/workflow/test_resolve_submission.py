@@ -139,12 +139,8 @@ def test_ticket_summary_and_stage_report_references_resolve_without_mutating_sub
             "ticket_initial": "Kept sem_bore.radius despite the ticket's ambiguity."
         },
         stage_report=StageReport(
-            unticketed_changes={},
             concerns={
                 "concern_checks": "Check dim_diameter.quantity and sem_bore.center."
-            },
-            dimension_checks={
-                "dim_diameter": "Not checked: compare dim_diameter.nominal_value with sem_bore.radius."
             },
         ),
     )
@@ -157,10 +153,4 @@ def test_ticket_summary_and_stage_report_references_resolve_without_mutating_sub
     concern = resolved.stage_report.concerns["concern_checks"]
     assert "dim_diameter.quantity (= 2)" in concern
     assert "sem_bore.center (= [0.0 null 3.0])" in concern
-    assert resolved.stage_report.dimension_checks == {
-        "dim_diameter": (
-            "Not checked: compare dim_diameter.nominal_value (= 12.0) "
-            "with sem_bore.radius (= 6.000123456789123)."
-        )
-    }
     assert submission.model_dump_json() == before

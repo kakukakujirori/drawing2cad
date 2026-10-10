@@ -1,10 +1,8 @@
 """Build validated artifact, ticket-response and report updates for a snapshot."""
 
 from dataclasses import dataclass, replace
-from functools import partial
 from typing import cast
 
-from zeroshot.pipeline.stages._base.validate import raise_together
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
@@ -14,7 +12,6 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     TicketAnswers,
     TicketResponse,
 )
-from zeroshot.pipeline.stages.tickets.validate import validate_revision_scope
 from zeroshot.pipeline.stages.types import ArtifactField, PipelineStage, ReasoningStage
 from zeroshot.pipeline.stages.validate import validate_submission
 
@@ -45,24 +42,7 @@ def build_snapshot_update(
     """
     current = history.snapshots[-1]
     deliverable = workspace_output
-    artifact = (
-        (
-            deliverable.exec_report.source
-            if deliverable.exec_report is not None
-            else None
-        )
-        if isinstance(deliverable, VerifyOutputResult)
-        else deliverable
-    )
-    raise_together(
-        partial(validate_submission, submission, current, deliverable=deliverable),
-        partial(
-            validate_revision_scope,
-            submission.stage_report,
-            history,
-            artifact,
-        ),
-    )
+    validate_submission(submission, current, deliverable=deliverable)
 
     # Validate the addresses before annotating them. A revised artifact is
     # cited against its own new contents, not the preceding round's values.

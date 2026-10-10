@@ -8,8 +8,6 @@ from tests.zeroshot.contracts import answered, drawing, evidence, interpretation
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
-    RevisionRequest,
-    StageOutputRef,
     TicketReview,
 )
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
@@ -34,21 +32,13 @@ def _interpretation():
 
 
 def _finding() -> AuditFinding:
-    target = StageOutputRef(
-        stage=PipelineStage.INTERPRETATION,
-        name="sem_feature_1",
-    )
     return AuditFinding(
         name="find_wrong_base",
         observation="The reconstructed base is too wide.",
         evidence=evidence("render_3d/hlg_front.png"),
-        backtrace=[],
-        revision_request=RevisionRequest(
-            action="modify",
-            targets=[target],
-            instruction="Correct the interpreted base width.",
-            proposed_names=[],
-        ),
+        cause="interpretation",
+        targets=["sem_feature_1"],
+        revision_request="The interpreted base width is wrong.",
         related_ticket_ids=[],
     )
 
@@ -111,17 +101,12 @@ def test_a_stage_carries_ticket_answers_and_optional_additional_concerns() -> No
 
     submission = TicketAnswers(
         responses=responses,
-        stage_report=StageReport(
-            concerns={}, unticketed_changes={}, dimension_checks={}
-        ),
+        stage_report=StageReport(concerns={}),
     )
 
     assert submission.responses == responses
     assert submission.stage_report.concerns == {}
-    assert submission.stage_report.dimension_checks == {}
-    assert submission.stage_report == StageReport(
-        concerns={}, unticketed_changes={}, dimension_checks={}
-    )
+    assert submission.stage_report == StageReport(concerns={})
     assert set(TicketAnswers.model_fields) == {
         "responses",
         "stage_report",
@@ -139,8 +124,6 @@ def test_a_member_the_provider_stringified_is_read_rather_than_refused() -> None
     """GLM sent `stage_report` as JSON text; the answer was whole, its encoding was not."""
     responses = answered(_responses("ticket_bootstrap", "coding"))
     report = StageReport(
-        dimension_checks=None,
-        unticketed_changes={},
         concerns={"concern_waist": "the profile must change"},
     )
 
@@ -169,8 +152,7 @@ def test_extra_audit_fields_are_ignored_without_changing_declared_content(
     )
     submitted = report.model_dump()
     submitted["findings"][0]["type"] = "wrong_geometry"
-    submitted["findings"][0]["revision_request"]["type"] = "object"
-    submitted["findings"][0]["revision_request"]["targets"][0]["type"] = None
+    submitted["findings"][0]["evidence"][0]["type"] = None
     if stringified:
         submitted["findings"] = json.dumps(submitted["findings"])
     original = deepcopy(submitted)
@@ -187,8 +169,8 @@ def test_extra_audit_fields_are_ignored_without_changing_declared_content(
     submitted["findings"][0]["severity"] = "high"
     assert AuditReport.model_validate(submitted) == report
 
-    target = submitted["findings"][0]["revision_request"]["targets"][0]
-    target["nmae"] = target.pop("name")
+    finding = submitted["findings"][0]
+    finding["targtes"] = finding.pop("targets")
     with pytest.raises(ValidationError, match="Field required"):
         AuditReport.model_validate(submitted)
 
@@ -200,8 +182,6 @@ def test_schema_words_used_as_dictionary_keys_are_preserved() -> None:
             "responses": {"type": "Keep this response."},
             "stage_report": {
                 "concerns": {},
-                "dimension_checks": None,
-                "unticketed_changes": {},
             },
         }
     )
@@ -214,14 +194,11 @@ def test_interpretation_carries_ticket_answers_while_json_carries_the_artifact()
     responses = answered(_responses("ticket_bootstrap", "interpretation"))
 
     submission = TicketAnswers(
-        stage_report=StageReport(
-            concerns={}, dimension_checks=None, unticketed_changes={}
-        ),
+        stage_report=StageReport(concerns={}),
         responses=responses,
     )
 
     assert submission.responses == responses
-    assert submission.stage_report.dimension_checks is None
     assert set(TicketAnswers.model_fields) == {
         "responses",
         "stage_report",
@@ -234,8 +211,6 @@ def test_a_stage_submission_does_not_keep_extra_fields() -> None:
             "responses": answered(_responses("ticket_bootstrap", "interpretation")),
             "stage_report": {
                 "concerns": {},
-                "dimension_checks": None,
-                "unticketed_changes": {},
                 "type": "empty",
             },
             "artifact": _interpretation(),
@@ -252,28 +227,20 @@ def test_the_shared_submission_schema_is_provider_safe() -> None:
 
 
 @pytest.mark.parametrize("explanation", ["", " ", "\t\n"])
-def test_dimension_checks_require_nonblank_explanations(explanation):
-    with pytest.raises(ValidationError, match="dim_width.*must not be blank"):
+def test_concerns_require_nonblank_explanations(explanation):
+    with pytest.raises(ValidationError, match="concern_width.*must not be blank"):
         TicketAnswers(
             responses={},
-            stage_report=StageReport(
-                concerns={},
-                unticketed_changes={},
-                dimension_checks={"dim_width": explanation},
-            ),
+            stage_report=StageReport(concerns={"concern_width": explanation}),
         )
 
 
-@pytest.mark.parametrize(
-    "missing", ["stage_report", "concerns", "dimension_checks", "unticketed_changes"]
-)
+@pytest.mark.parametrize("missing", ["stage_report", "concerns"])
 def test_missing_or_misspelled_reports_are_not_silently_empty(missing):
     payload = {
         "responses": {},
         "stage_report": {
             "concerns": {},
-            "dimension_checks": None,
-            "unticketed_changes": {},
         },
     }
     holder = payload if missing == "stage_report" else payload["stage_report"]
@@ -407,8 +374,6 @@ def test_snapshot_rejects_reports_from_unfinished_stages(stage):
     data["stage_reports"] = {
         stage: {
             "concerns": {"concern_web": "A concern."},
-            "dimension_checks": None,
-            "unticketed_changes": {},
         }
     }
     with pytest.raises(ValidationError, match="unfinished stages.*stage_reports"):
@@ -535,9 +500,7 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
 def test_a_stage_with_no_ticket_of_its_own_answers_nothing() -> None:
     assert (
         TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
+            stage_report=StageReport(concerns={}),
             responses={},
         ).responses
         == {}

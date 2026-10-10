@@ -1,6 +1,4 @@
-from tests.zeroshot.contracts import drawing, interpretation
-from tests.zeroshot.workflow.test_reconstruction_workflow import _stage_responses
-from tests.zeroshot.workflow.test_revision_scope import _revision
+from tests.zeroshot.contracts import drawing
 from tests.zeroshot.workflow.test_validate_submission import _answer_for, _snapshot
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.tickets.contracts import StageReport, TicketAnswers
@@ -9,50 +7,28 @@ from zeroshot.pipeline.stages.types import PipelineStage
 
 
 def test_answers_that_fit_the_round_need_no_feedback() -> None:
-    verifier = TicketVerifier(lambda: None)
+    verifier = TicketVerifier()
     verifier.reset(_planned_run())
     answers = TicketAnswers(
         responses=_answer_for("ticket_initial", PipelineStage.CODING),
-        stage_report=StageReport(
-            concerns={}, unticketed_changes={}, dimension_checks={}
-        ),
+        stage_report=StageReport(concerns={}),
     )
 
     assert verifier.feedback(answers) == []
 
 
 def test_every_contradiction_in_the_answers_is_explained_at_once() -> None:
-    verifier = TicketVerifier(lambda: None)
+    verifier = TicketVerifier()
     verifier.reset(_planned_run())
     copied = TicketAnswers(
-        stage_report=StageReport(
-            concerns={}, dimension_checks=None, unticketed_changes={}
-        ),
-        responses=_answer_for("ticket_initial", PipelineStage.CODING)
-        | _answer_for("ticket_absent", PipelineStage.CODING),
+        stage_report=StageReport(concerns={}),
+        responses=_answer_for("ticket_absent", PipelineStage.CODING),
     )
 
     (block,) = verifier.feedback(copied)
 
+    assert "missing ticket responses: ticket_initial" in block["text"]
     assert "unknown ticket responses: ticket_absent" in block["text"]
-    assert "coding requires dimension_checks" in block["text"]
-
-
-def test_changes_outside_the_tickets_are_explained_against_the_artifact() -> None:
-    run = _revision("interpretation", "sem_feature_1")
-    verifier = TicketVerifier(lambda: interpretation("the base", "a wider hole"))
-    verifier.reset(run)
-
-    (block,) = verifier.feedback(
-        TicketAnswers(
-            stage_report=StageReport(
-                concerns={}, dimension_checks=None, unticketed_changes={}
-            ),
-            responses=_stage_responses(run, "interpretation"),
-        )
-    )
-
-    assert "sem_feature_2 (changed)" in block["text"]
 
 
 def _planned_run() -> ReconstructionHistory:

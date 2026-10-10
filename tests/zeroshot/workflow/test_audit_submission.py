@@ -11,7 +11,6 @@ from tests.zeroshot.chat_models import ScriptedChatModel, unanswered_tool_calls
 from tests.zeroshot.contracts import bootstrap_review
 from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _completed_run,
-    _ref,
     _report,
     _snapshot,
 )
@@ -35,7 +34,7 @@ _UNREVIEWED = AuditReport(
 
 
 def _revision_snapshot():
-    first = open_next_round(_completed_run(), _report(target=_ref("coding", None)))
+    first = open_next_round(_completed_run(), _report("coding", []))
     return _completed_run(first).snapshots[-1]
 
 
@@ -78,7 +77,7 @@ def _answer(payload: dict[str, Any], strategy: str, call_id: str) -> AIMessage:
         ({"accepted": True, "findings": []}, "$: field 'ticket_reviews' is required"),
         (_UNREVIEWED.model_dump(mode="json"), f"missing=['{_TICKET}']"),
         (
-            _report(target=_ref("coding", None)).model_dump(mode="json"),
+            _report("coding", []).model_dump(mode="json"),
             f"missing=['{_TICKET}']",
         ),
     ],

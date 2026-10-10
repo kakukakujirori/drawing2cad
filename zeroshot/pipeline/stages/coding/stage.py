@@ -130,7 +130,7 @@ def create_coding_stage(
         source_filename=output_filename,
         match_margin_px=match_margin_px,
     )
-    ticket_verifier = TicketVerifier(lambda: output_verifier.accepted_source)
+    ticket_verifier = TicketVerifier()
     middleware_type = FreshCodingMiddleware if fresh_memory else CodingMiddleware
     coding_middleware = middleware_type(
         output_verifier,

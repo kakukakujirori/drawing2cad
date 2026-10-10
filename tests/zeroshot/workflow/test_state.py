@@ -18,10 +18,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
     AuditRegion,
     AuditReport,
     AuditSubmission,
-    CausalHop,
     ConcernReview,
-    RevisionRequest,
-    StageOutputRef,
     TicketReview,
 )
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
@@ -112,7 +109,6 @@ _A_INTERPRETATION.views[0].dimensions = [
     )
 ]
 _A_INTERPRETATION.features[1].dimension_refs = ["dim_bore"]
-_DIMENSION_CHECKS = {"dim_bore": "Unconfirmed: the program omits the bore."}
 
 _VERIFICATION = VerifyOutputResult(
     verification_id="v1",
@@ -180,25 +176,9 @@ _AUDIT_REPORT = AuditReport(
             observation="the boss is missing",
             evidence=evidence("attempts/v1/techdraw.dxf"),
             related_ticket_ids=["ticket_missing_boss"],
-            backtrace=[
-                CausalHop(
-                    effect=StageOutputRef(stage=PipelineStage.CODING, name=None),
-                    cause=StageOutputRef(
-                        stage=PipelineStage.INTERPRETATION, name="sem_feature_1"
-                    ),
-                    rationale="the program builds the flange as interpreted",
-                )
-            ],
-            revision_request=RevisionRequest(
-                action="modify",
-                targets=[
-                    StageOutputRef(
-                        stage=PipelineStage.INTERPRETATION, name="sem_feature_1"
-                    )
-                ],
-                instruction="the flange omits the boss",
-                proposed_names=[],
-            ),
+            cause="interpretation",
+            targets=["sem_feature_1"],
+            revision_request="the flange omits the boss",
         )
     ],
 )
@@ -258,9 +238,7 @@ _RECONSTRUCTION = ReconstructionHistory(
             verification=_VERIFICATION,
             stage_reports={
                 PipelineStage.CODING: StageReport(
-                    unticketed_changes={},
                     concerns={"concern_boss": "Check the boss."},
-                    dimension_checks=_DIMENSION_CHECKS,
                 )
             },
         )
@@ -268,13 +246,11 @@ _RECONSTRUCTION = ReconstructionHistory(
 )
 
 _INTERPRETATION_SUBMISSION = TicketAnswers(
-    stage_report=StageReport(concerns={}, dimension_checks=None, unticketed_changes={}),
+    stage_report=StageReport(concerns={}),
     responses={"ticket_initial": "established sem_feature_1 and sem_feature_2"},
 )
 _CODING_SUBMISSION = TicketAnswers(
-    stage_report=StageReport(
-        concerns={}, unticketed_changes={}, dimension_checks=_DIMENSION_CHECKS
-    ),
+    stage_report=StageReport(concerns={}),
     responses={"ticket_initial": "implemented the flange and the hole"},
 )
 
@@ -337,9 +313,6 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         ConcernReview,
         AuditRegion,
         TicketReview,
-        CausalHop,
-        RevisionRequest,
-        StageOutputRef,
         BootstrapWork,
         ReconstructionHistory,
         ReconstructionSnapshot,

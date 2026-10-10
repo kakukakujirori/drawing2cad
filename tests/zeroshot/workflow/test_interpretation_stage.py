@@ -30,8 +30,6 @@ def test_stage_requires_written_verified_json_before_ticket_submission(tmp_path)
     response = {
         "stage_report": {
             "concerns": {},
-            "dimension_checks": None,
-            "unticketed_changes": {},
         },
         "responses": {
             "ticket_initial": "Read view_front and localized sem_pin_upper_left."
@@ -134,8 +132,6 @@ def test_dxf_metadata_reaches_model_and_written_artifact_validates(tmp_path):
     response = {
         "stage_report": {
             "concerns": {},
-            "dimension_checks": None,
-            "unticketed_changes": {},
         },
         "responses": {
             "ticket_initial": "Interpreted view_front and view_detail in millimetres."
