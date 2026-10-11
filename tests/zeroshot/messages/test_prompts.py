@@ -621,10 +621,8 @@ def test_coder_tests_predictions_and_inspects_the_latest_candidate(
         "revise the geometry or coordinate hypothesis before another trial"
         in instruction
     )
-    assert (
-        "Scratch files are not automatically executed, verified or submitted"
-        in instruction
-    )
+    assert "evaluate_cad_hypothesis` builds it" in instruction
+    assert "Trials are not submitted" in instruction
     assert "Compare feature extent, placement and connections" in instruction
     assert "Treat stroke thickness as a drawing convention" in instruction
     assert (

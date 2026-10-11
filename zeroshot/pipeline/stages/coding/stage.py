@@ -3,14 +3,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages.content import create_text_block
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
-from omegaconf import DictConfig, OmegaConf
 
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import read_dxf_frame
@@ -35,10 +34,10 @@ from zeroshot.pipeline.stages.interpretation.verify import InterpretationVerifie
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
+from zeroshot.pipeline.tools.cad_hypothesis import create_cad_hypothesis_tool
 from zeroshot.pipeline.tools.calculate_drawing_scale import (
     create_calculate_drawing_scale_tool,
 )
-from zeroshot.pipeline.tools.render_step import create_render_step_tool
 from zeroshot.pipeline.verification import (
     AttemptStore,
     CadQueryExecutor,
@@ -149,6 +148,7 @@ def create_coding_stage(
     sandbox_runner: SandboxRunner,
     diff_drawer_config: dict[str, Any] | None,
     artifact_presenter: ArtifactPresenter,
+    trial_store: AttemptStore,
     output_filename: str = "model.py",
     interpretation_filename: str = "interpretation.json",
     input_after_compaction: bool = False,
@@ -156,11 +156,6 @@ def create_coding_stage(
     coding_trial_reminder: bool = True,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
 ) -> CodingStage:
-    if isinstance(diff_drawer_config, DictConfig):
-        diff_drawer_config = cast(
-            dict[str, Any], OmegaConf.to_container(diff_drawer_config, resolve=True)
-        )
-
     renderer = StepRenderer()
     workspace = CodingWorkspaceVerifier(
         InterpretationVerifier(
@@ -191,18 +186,19 @@ def create_coding_stage(
         ticket_verifier=ticket_verifier,
         fingerprint=workspace.source_digest,
     )
-    # Resolve frames on each call: they follow the latest valid interpretation.
+    # Resolve views on each call: they follow the latest valid interpretation.
     coding_tools = [
         *tools,
         create_calculate_drawing_scale_tool(),
-        create_render_step_tool(
-            instructions.workdir,
-            renderer,
-            drawing_frames=lambda: (
-                workspace.output.interpretation.view_frames()
-                if workspace.output.interpretation is not None
-                else {}
-            ),
+        create_cad_hypothesis_tool(
+            workdir=instructions.workdir,
+            sandbox_runner=sandbox_runner,
+            renderer=renderer,
+            diff_drawer_config=diff_drawer_config,
+            trial_store=trial_store,
+            stage="coding",
+            interpretation=lambda: workspace.output.interpretation,
+            reference=lambda: workspace.output.last_report,
         ),
     ]
     max_turns = coding_agent_builder.keywords["max_turns"]

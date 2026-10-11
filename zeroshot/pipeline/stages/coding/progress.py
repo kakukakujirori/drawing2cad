@@ -7,7 +7,9 @@ from typing import Any
 
 from langchain_core.messages.content import ContentBlock, create_text_block
 
+from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import OutputVerifier, VerifyOutputResult
+from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.verification.run_cadquery import ExecutionStatus
 
 # Match score changes below this are not measurable (input pixels).
@@ -73,12 +75,7 @@ class ProgressOutputVerifier(OutputVerifier):
         execution = report.exec_report
         if (
             execution is None
-            or execution.status != ExecutionStatus.VERIFIED
-            or execution.returncode != 0
             or execution.source is None
-            or execution.step_path is None
-            or not execution.step_path.is_file()
-            or execution.step_path.is_symlink()
             or report.host_verification_dir is None
             or report.sandbox_verification_dir is None
             or not (report.host_verification_dir / self.source_filename).is_file()
@@ -93,45 +90,7 @@ class ProgressOutputVerifier(OutputVerifier):
             return None, "the saved candidate program is unreadable"
         if saved_source != execution.source:
             return None, "the saved candidate differs from the measured program"
-        if self.interpretation is None:
-            return None, "the interpreted views are unavailable"
-        frames = self.interpretation.view_frames()
-        expected = {
-            view.name: view for view in self.interpretation.views if view.role in frames
-        }
-        diffs = report.drawing_diff_report or {}
-        if not expected or not set(expected).issubset(diffs):
-            return None, "not all registered views have drawing comparisons"
-        scores = []
-        for name in sorted(expected):
-            diff = diffs[name]
-            alignment = diff.alignment
-            stats = diff.stats
-            view = expected[name]
-            if (
-                diff.error
-                or diff.drawing_path != self.workdir.sandbox_to_host_path(view.file)
-                or view.scale is None
-                or not math.isfinite(view.scale)
-                or view.scale <= 0
-                or alignment is None
-                or alignment.status != "ok"
-                or alignment.H_drawing_to_projection is None
-                or alignment.diagnostics.get("scale_calibration", {}).get("status")
-                != "applied"
-                or stats.get("comparison_status") != "ok"
-                or stats.get("provisional") is not False
-                or stats.get("outside_count") != 0
-            ):
-                return (
-                    None,
-                    f"{name} is uncalibrated, provisional, or incompletely observed",
-                )
-            score = stats.get("match_score")
-            if type(score) not in (int, float) or not math.isfinite(score) or score < 0:
-                return None, f"{name} has no finite drawing comparison score"
-            scores.append(score)
-        return fmean(scores), ""
+        return match_score(report, self.interpretation, self.workdir)
 
     @property
     def best_report(self) -> VerifyOutputResult | None:
@@ -202,3 +161,58 @@ class ProgressOutputVerifier(OutputVerifier):
             create_text_block("[Candidate progress]\n" + self._progress_text),
             *blocks,
         ]
+
+
+def match_score(
+    report: VerifyOutputResult,
+    interpretation: DrawingInterpretation | None,
+    workdir: SandboxWorkdir,
+) -> tuple[float | None, str]:
+    """Mean match score of a verified build over its calibrated registered views."""
+    execution = report.exec_report
+    if (
+        execution is None
+        or execution.status != ExecutionStatus.VERIFIED
+        or execution.returncode != 0
+        or execution.step_path is None
+        or not execution.step_path.is_file()
+        or execution.step_path.is_symlink()
+    ):
+        return None, "STEP checks are not satisfied"
+    if interpretation is None:
+        return None, "the interpreted views are unavailable"
+    frames = interpretation.view_frames()
+    expected = {view.name: view for view in interpretation.views if view.role in frames}
+    diffs = report.drawing_diff_report or {}
+    if not expected or not set(expected).issubset(diffs):
+        return None, "not all registered views have drawing comparisons"
+    scores = []
+    for name in sorted(expected):
+        diff = diffs[name]
+        alignment = diff.alignment
+        stats = diff.stats
+        view = expected[name]
+        if (
+            diff.error
+            or diff.drawing_path != workdir.sandbox_to_host_path(view.file)
+            or view.scale is None
+            or not math.isfinite(view.scale)
+            or view.scale <= 0
+            or alignment is None
+            or alignment.status != "ok"
+            or alignment.H_drawing_to_projection is None
+            or alignment.diagnostics.get("scale_calibration", {}).get("status")
+            != "applied"
+            or stats.get("comparison_status") != "ok"
+            or stats.get("provisional") is not False
+            or stats.get("outside_count") != 0
+        ):
+            return (
+                None,
+                f"{name} is uncalibrated, provisional, or incompletely observed",
+            )
+        score = stats.get("match_score")
+        if type(score) not in (int, float) or not math.isfinite(score) or score < 0:
+            return None, f"{name} has no finite drawing comparison score"
+        scores.append(score)
+    return fmean(scores), ""

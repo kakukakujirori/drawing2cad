@@ -41,6 +41,11 @@ class AuditVerifier:
     def source_path(self) -> Path:
         return self.attempt_store.workdir.host_bind_dir / self.source_filename
 
+    @property
+    def snapshot(self) -> ReconstructionSnapshot | None:
+        """The coding snapshot under audit."""
+        return self._snapshot
+
     def reset(self, snapshot: ReconstructionSnapshot) -> None:
         if self.source_path.is_symlink():
             raise ValueError(f"{self.source_path} must not be a symlink")

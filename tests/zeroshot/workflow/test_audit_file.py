@@ -1,8 +1,10 @@
 """The auditor reviews file-derived evidence before completing the current audit."""
 
 import json
+import sys
 from dataclasses import replace
 from functools import partial
+from pathlib import Path
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
@@ -21,7 +23,7 @@ from tests.zeroshot.workflow.test_reconstruction_workflow import (
     _report,
 )
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
-from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditRegion,
@@ -30,6 +32,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
 )
 from zeroshot.pipeline.stages.audit.stage import create_audit_stage
 from zeroshot.pipeline.stages.audit.verify import AuditVerifier
+from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 from zeroshot.pipeline.workflow import create_agent
@@ -95,6 +98,9 @@ def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving(
             instructions=StageInstructions([], "path", context, workdir),
             prompt_context=context,
             attempt_store=AttemptStore(workdir, lambda: 0),
+            sandbox_runner=SandboxRunner(Path(sys.executable), default_timeout_s=10),
+            diff_drawer_config=None,
+            trial_store=AttemptStore(workdir, lambda: 0, root_dirname=TRIALS_DIRNAME),
             audit_filename="review.json",
             artifact_presenter=ArtifactPresenter(
                 input="path",

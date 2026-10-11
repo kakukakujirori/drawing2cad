@@ -69,9 +69,16 @@ class AttemptStore:
         existing = [
             int(path.name) for path in stage_dir.iterdir() if path.name.isdigit()
         ]
-        attempt_id = f"{max(existing, default=-1) + 1:03d}"
-        attempt_dir = stage_dir / attempt_id
-        attempt_dir.mkdir(exist_ok=False)
+        number = max(existing, default=-1) + 1
+        # A parallel call may take the number first; the next one is free then.
+        while True:
+            attempt_id = f"{number:03d}"
+            attempt_dir = stage_dir / attempt_id
+            try:
+                attempt_dir.mkdir()
+                break
+            except FileExistsError:
+                number += 1
         return (
             attempt_id,
             attempt_dir,

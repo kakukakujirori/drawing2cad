@@ -9,6 +9,7 @@ from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
+from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages._base.prompt import (
     PromptTemplate,
     StageInstructions,
@@ -19,7 +20,8 @@ from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmissio
 from zeroshot.pipeline.stages.audit.verify import AuditVerifier
 from zeroshot.pipeline.stages.coding.verify import build_verification_feedback
 from zeroshot.pipeline.stages.types import PipelineStage
-from zeroshot.pipeline.verification import AttemptStore
+from zeroshot.pipeline.tools.cad_hypothesis import create_cad_hypothesis_tool
+from zeroshot.pipeline.verification import AttemptStore, StepRenderer
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.evidence import EvidenceMode
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
@@ -107,6 +109,9 @@ def create_audit_stage(
     prompt_context: dict[str, str],
     attempt_store: AttemptStore,
     artifact_presenter: ArtifactPresenter,
+    sandbox_runner: SandboxRunner,
+    diff_drawer_config: dict[str, Any] | None,
+    trial_store: AttemptStore,
     audit_filename: str = "audit.json",
     evidence_mode: EvidenceMode = "mark",
     review_drawing_diff_clusters: bool = True,
@@ -118,8 +123,23 @@ def create_audit_stage(
         require_drawing_diff_reviews=review_drawing_diff_clusters,
     )
     middleware = VerifyOnWriteMiddleware(audit_verifier)
+
+    trial_tool = create_cad_hypothesis_tool(
+        workdir=instructions.workdir,
+        sandbox_runner=sandbox_runner,
+        renderer=StepRenderer(),
+        diff_drawer_config=diff_drawer_config,
+        trial_store=trial_store,
+        stage="audit",
+        interpretation=lambda: (
+            audit_verifier.snapshot.interpretation if audit_verifier.snapshot else None
+        ),
+        reference=lambda: (
+            audit_verifier.snapshot.verification if audit_verifier.snapshot else None
+        ),
+    )
     audit_agent = audit_agent_builder(
-        tools=tools,
+        tools=[*tools, trial_tool],
         system_prompt=build_system_prompt(
             role_path,
             prompt_context | {"max_turns": audit_agent_builder.keywords["max_turns"]},

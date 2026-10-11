@@ -303,6 +303,7 @@ def _stub_verification(
             self.interpretation = None
 
         accepted_source = None
+        last_report = None
 
         @property
         def confirmed(self) -> bool:
@@ -557,26 +558,34 @@ def test_stage_specific_tools_stay_with_their_assigned_stage(monkeypatch):
     auditor = ScriptedChatModel(responses=_audit_script(_accepted_audit()))
     with SandboxWorkdir() as workdir:
         _graph(workdir, coder=coder, auditor=auditor).invoke({})
-    assert auditor.bound_tool_names == ("run_shell", "load_image")
+    assert auditor.bound_tool_names == (
+        "run_shell",
+        "load_image",
+        "evaluate_cad_hypothesis",
+    )
     assert coder.bound_tool_names == (
         "run_shell",
         "load_image",
         "calculate_drawing_scale",
-        "render_step",
+        "evaluate_cad_hypothesis",
     )
 
 
-def test_coder_can_build_render_and_inspect_a_scratch_trial(monkeypatch):
+_TRIAL = "/work/trials/round_000/coding/000"
+
+
+def test_coder_can_build_score_and_inspect_a_trial(monkeypatch):
     calls = _stub_verification(monkeypatch, _verified())
     drawing = interpretation("a plate")
     drawing.views[0].role = View.RIGHT
     drawing.views[0].u_axis, drawing.views[0].v_axis = "-z", "+y"
     build = """python - <<'PY'
-import cadquery as cq
 from pathlib import Path
 p = Path('/work')
 (p / 'tmp/history_before.json').write_bytes((p / 'reconstruction.json').read_bytes())
-cq.exporters.export(cq.Workplane().box(30, 20, 10), '/work/tmp/trial.step')
+(p / 'tmp/trial.py').write_text(
+    "import cadquery as cq\\nresult = cq.Workplane().box(30, 20, 10)\\n"
+)
 PY"""
     unchanged = """python - <<'PY'
 from pathlib import Path
@@ -589,13 +598,13 @@ PY"""
             _write_interpretation(drawing),
             tool_call("run_shell", {"command": build}, "build-trial"),
             tool_call(
-                "render_step",
-                {"step_path": "/work/tmp/trial.step", "views": ["right", "left"]},
-                "render-trial",
+                "evaluate_cad_hypothesis",
+                {"source_path": "/work/tmp/trial.py"},
+                "trial",
             ),
             tool_call(
                 "load_image",
-                {"image_path": "/work/renders/000/right.png"},
+                {"image_path": f"{_TRIAL}/projection/right.png"},
                 "inspect-trial",
             ),
             tool_call("run_shell", {"command": unchanged}, "check-history"),
@@ -611,18 +620,21 @@ PY"""
             coder_options={"max_turns": 6},
         ).invoke({})
         assert (workdir.host_bind_dir / "model.py").read_text() == _PROGRAM
-        assert (workdir.host_bind_dir / "renders/000/shape.step").is_file()
+        trial = workdir.sandbox_to_host_path(_TRIAL)
+        assert (trial / "output.step").is_file()
+        assert "box(30, 20, 10)" in (trial / "hypothesis.py").read_text()
 
     results = {
         message.tool_call_id: message
         for message in coder.received_messages[-1]
         if isinstance(message, ToolMessage)
     }
-    rendered = json.loads(results["render-trial"].text)
-    assert rendered["status"] == "OK"
-    assert rendered["views"]["right"]["u_axis"] == "-z"
-    assert rendered["views"]["right"]["v_axis"] == "+y"
-    assert rendered["views"]["left"]["u_axis"] == "-y"
+    trial_text = results["trial"].text
+    assert trial_text.startswith("[Trial build]")
+    assert f"kept as {_TRIAL}/hypothesis.py" in trial_text
+    assert "No build to compare with yet." in trial_text
+    assert '"status":"VERIFIED"' in trial_text
+    assert f"{_TRIAL}/projection/right.dxf" in trial_text
     assert any(
         block["type"] == "image" for block in results["inspect-trial"].content_blocks
     )

@@ -32,6 +32,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     View,
 )
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
+from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.workflow.components.agent import create_agent
 from zeroshot.pipeline.workflow.lifecycle import start_reconstruction
@@ -70,6 +71,10 @@ def _workspace(tmp_path):
     workspace.reset(seed, ["ticket_initial"])
     output.source_path.write_text("result = object()\n")
     return workspace, output, candidate
+
+
+def _trials(workdir: SandboxWorkdir) -> AttemptStore:
+    return AttemptStore(workdir, lambda: 0, root_dirname=TRIALS_DIRNAME)
 
 
 def _text(blocks) -> str:
@@ -140,6 +145,7 @@ def _stage(builder, workdir, drawing, **flags):
         instructions=StageInstructions(drawing, "path", _PATHS, workdir),
         prompt_context={},
         attempt_store=AttemptStore(workdir, lambda: 0),
+        trial_store=_trials(workdir),
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable), default_timeout_s=1
         ),
@@ -219,6 +225,7 @@ def test_an_answer_waits_for_a_written_verified_interpretation(tmp_path, monkeyp
         instructions=StageInstructions(drawing, "path", _PATHS, verifier.workdir),
         prompt_context={},
         attempt_store=verifier.attempt_store,
+        trial_store=_trials(verifier.workdir),
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable), default_timeout_s=1
         ),
@@ -299,6 +306,7 @@ def test_dxf_metadata_reaches_the_coder_and_its_interpretation_validates(
         instructions=StageInstructions(drawing, "path", _PATHS, workdir),
         prompt_context={},
         attempt_store=AttemptStore(workdir, lambda: 0),
+        trial_store=_trials(workdir),
         sandbox_runner=SandboxRunner(
             python_executable=Path(sys.executable), default_timeout_s=1
         ),

@@ -43,11 +43,14 @@ from zeroshot.pipeline.event_logging import (
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import OutputVerifier
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
+from zeroshot.pipeline.tools.cad_hypothesis import (
+    TRIALS_DIRNAME,
+    create_cad_hypothesis_tool,
+)
 from zeroshot.pipeline.tools.calculate_drawing_scale import (
     create_calculate_drawing_scale_tool,
 )
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
-from zeroshot.pipeline.tools.render_step import create_render_step_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import (
     AttemptStore,
@@ -297,14 +300,21 @@ def build_agent(
         verifier.interpretation = restored.interpretation
         tools.append(create_calculate_drawing_scale_tool())
         tools.append(
-            create_render_step_tool(
-                workdir,
-                renderer,
-                drawing_frames=lambda: (
-                    verifier.interpretation.view_frames()
-                    if verifier.interpretation is not None
-                    else {}
+            create_cad_hypothesis_tool(
+                workdir=workdir,
+                sandbox_runner=runner,
+                renderer=renderer,
+                diff_drawer_config=cast(
+                    dict[str, Any], OmegaConf.to_container(diff_config, resolve=True)
+                )
+                if diff_config
+                else None,
+                trial_store=AttemptStore(
+                    workdir, lambda: snapshot.round, root_dirname=TRIALS_DIRNAME
                 ),
+                stage="coding",
+                interpretation=lambda: verifier.interpretation,
+                reference=lambda: verifier.last_report,
             )
         )
         middleware.append(

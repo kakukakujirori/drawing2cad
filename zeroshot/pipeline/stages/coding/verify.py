@@ -21,7 +21,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
 )
-from zeroshot.pipeline.verification.attempts import AttemptStore
+from zeroshot.pipeline.verification.attempts import AttemptStage, AttemptStore
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
@@ -90,6 +90,7 @@ class OutputVerifier:
         attempt_store: AttemptStore,
         source_filename: str = "model.py",
         projection_view_mode: Literal["interpreted", "standard"] = "interpreted",
+        attempt_stage: AttemptStage = "coding",
     ) -> None:
         source_path = PurePosixPath(source_filename)
         if (
@@ -111,6 +112,7 @@ class OutputVerifier:
         self.interpretation: DrawingInterpretation | None = None
         self.source_filename = source_filename
         self.attempt_store = attempt_store
+        self.attempt_stage = attempt_stage
         self.projection_view_mode = projection_view_mode
 
         self._last_feedback_report: VerifyOutputResult | None = None
@@ -187,7 +189,7 @@ class OutputVerifier:
 
         # prepare artifact save dir
         verification_id, host_verification_dir, sandbox_verification_dir = (
-            self.attempt_store.issue("coding")
+            self.attempt_store.issue(self.attempt_stage)
         )
 
         # execute -> render -> draw_diff
@@ -418,6 +420,21 @@ class OutputVerifier:
         )
 
 
+class TrialVerifier(OutputVerifier):
+    """Build one given workspace script, as the program is built."""
+
+    def __init__(
+        self, script: Path, interpretation: DrawingInterpretation, **kwargs: Any
+    ) -> None:
+        super().__init__(**kwargs)
+        self.script = script
+        self.interpretation = interpretation
+
+    @property
+    def source_path(self) -> Path:
+        return self.script
+
+
 def build_verification_feedback(
     report: VerifyOutputResult,
     workdir: SandboxWorkdir,
@@ -425,6 +442,7 @@ def build_verification_feedback(
     view_frames: ViewFrames,
     *,
     previous: VerifyOutputResult | None = None,
+    cluster_prefix: str = "drawing_diff",
 ) -> list[ContentBlock]:
     """Format saved verification reports in execution, render, comparison order.
 
@@ -493,6 +511,7 @@ def build_verification_feedback(
             previous,
             presenter=presenter,
             view_frames=view_frames,
+            cluster_prefix=cluster_prefix,
         )
     )
     return blocks
@@ -546,9 +565,11 @@ def chamfers(diff_reports: Mapping[str, DrawingDiffReport] | None) -> dict[str, 
     }
 
 
-def _view_unmatched(name: str, report: DrawingDiffReport) -> dict[str, dict[str, Any]]:
+def _view_unmatched(
+    name: str, report: DrawingDiffReport, prefix: str = "drawing_diff"
+) -> dict[str, dict[str, Any]]:
     return {
-        f"drawing_diff.{name}.{number}": item
+        f"{prefix}.{name}.{number}": item
         for number, item in enumerate(report.stats.get("unmatched", []), 1)
     }
 
@@ -573,6 +594,7 @@ def _drawing_diff_data(
     diff_reports: Mapping[str, DrawingDiffReport],
     previous: VerifyOutputResult | None,
     view_frames: ViewFrames | None,
+    cluster_prefix: str,
 ) -> dict[str, Any]:
     """Prepare comparison values and CAD bounds without generating prompt text."""
     current = chamfers(diff_reports)
@@ -597,7 +619,7 @@ def _drawing_diff_data(
                 "v": frame[1].upper(),
                 "depth": next(axis for axis in "XYZ" if axis not in axes),
             }
-        for key, item in _view_unmatched(name, report).items():
+        for key, item in _view_unmatched(name, report, cluster_prefix).items():
             bounds = None
             if frame and (box := item.get("box_model_uv")) is not None:
                 bounds = []
@@ -695,6 +717,7 @@ def describe_drawing_diffs(
     *,
     presenter: ArtifactPresenter,
     view_frames: ViewFrames | None = None,
+    cluster_prefix: str = "drawing_diff",
 ) -> list[ContentBlock]:
     """Build the complete comparison feedback: results, legends, paths and images.
 
@@ -702,7 +725,7 @@ def describe_drawing_diffs(
     """
     if not diff_reports:
         return []
-    data = _drawing_diff_data(diff_reports, previous, view_frames)
+    data = _drawing_diff_data(diff_reports, previous, view_frames, cluster_prefix)
 
     views = []
     for name, report in diff_reports.items():

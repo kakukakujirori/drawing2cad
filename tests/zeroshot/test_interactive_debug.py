@@ -270,19 +270,21 @@ def test_dialogue_tools_history_and_reset_without_submission_or_turn_limit(
             tool_call(
                 "run_shell",
                 {
-                    "command": "python - <<'PY'\nimport cadquery as cq\n"
-                    "cq.exporters.export(cq.Workplane('XY').box(8, 6, 4), '/work/trial.step')\nPY"
+                    "command": "printf 'import cadquery as cq\\nresult = "
+                    'cq.Workplane("XY").box(8, 6, 4)\\n\' > /work/trial_box.py'
                 },
-                "export_trial",
+                "write_trial",
             ),
             tool_call(
-                "render_step",
-                {"step_path": "/work/trial.step", "views": ["front"]},
+                "evaluate_cad_hypothesis",
+                {"source_path": "/work/trial_box.py"},
                 "render_trial",
             ),
             tool_call(
                 "load_image",
-                {"image_path": "/work/renders/000/front.png"},
+                {
+                    "image_path": "/work/trials/round_000/coding/000/projection/front.png"
+                },
                 "inspect_trial",
             ),
             tool_call("run_shell", {"command": "cp trial.py model.py"}, "candidate"),
@@ -341,15 +343,20 @@ def test_dialogue_tools_history_and_reset_without_submission_or_turn_limit(
     ]
     assert not unanswered_tool_calls(first.received_messages[-1])
     assert all("TicketAnswers" not in names for names in first.bound_tool_name_history)
-    assert all("render_step" in names for names in first.bound_tool_name_history)
-    render_result = next(
+    assert all(
+        "evaluate_cad_hypothesis" in names for names in first.bound_tool_name_history
+    )
+    trial_result = next(
         m
         for m in first.received_messages[-1]
         if isinstance(m, ToolMessage) and m.tool_call_id == "render_trial"
     )
-    assert json.loads(render_result.text)["status"] == "OK"
-    assert (output / "branch_000/workspace/renders/000/front.png").is_file()
-    assert not (output / "branch_001/workspace/renders/000").exists()
+    assert trial_result.text.startswith("[Trial build]")
+    assert '"status":"VERIFIED"' in trial_result.text
+    trial = output / "branch_000/workspace/trials/round_000/coding/000"
+    assert (trial / "projection/front.png").is_file()
+    assert (trial / "hypothesis.py").is_file()
+    assert not (output / "branch_001/workspace/trials/round_000").exists()
     assert not any(
         m.text.startswith("[turn ") for call in first.received_messages for m in call
     )

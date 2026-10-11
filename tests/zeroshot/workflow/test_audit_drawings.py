@@ -254,3 +254,13 @@ def test_generated_png_evidence_is_allowed_in_integer_pixels(folder):
         Image.new("RGB", (1248, 480), "white").save(directory / "front.png")
         region = AuditRegion(file=f"{folder}/front.png", box=(0, 12, 52, 20))
         assert _region_error(region, workdir) is None
+
+
+def test_a_finding_may_cite_a_trial_projection(workspace: AttemptStore) -> None:
+    trial = "trials/round_000/audit/000/projection/front.dxf"
+    _draw_square(workspace.workdir.host_bind_dir / trial)
+    validate_audit_report(
+        report(cites=[cite(DRAWN, (0, 0, 20, 20)), cite(trial, (0, 0, 20, 20))]),
+        snapshot(),
+        workspace,
+    )

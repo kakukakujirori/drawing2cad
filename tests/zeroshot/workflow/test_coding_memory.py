@@ -46,6 +46,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     TicketAnswers,
 )
 from zeroshot.pipeline.stages.types import PipelineStage
+from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.run_cadquery import (
@@ -348,6 +349,9 @@ def test_stage_flag_and_new_round_baseline_and_validation_instruction(setup, fre
         SandboxRunner(Path(sys.executable), default_timeout_s=30),
         None,
         verifier.artifact_presenter,
+        AttemptStore(
+            verifier.attempt_store.workdir, lambda: 0, root_dirname=TRIALS_DIRNAME
+        ),
         fresh_memory=fresh,
     )
     state["coding_state"] = {

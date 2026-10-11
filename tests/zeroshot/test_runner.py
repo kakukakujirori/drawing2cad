@@ -876,7 +876,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         "run_shell",
         "load_image",
         "calculate_drawing_scale",
-        "render_step",
+        "evaluate_cad_hypothesis",
     )
     # The interpretation, two inspections, the write, and the answer.
     assert len(model.received_messages) == 5

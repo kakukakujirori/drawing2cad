@@ -2,13 +2,14 @@ import re
 from collections.abc import Mapping
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import START, StateGraph
 from langgraph.pregel import Pregel
+from omegaconf import DictConfig, OmegaConf
 
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter, drawing_for_model
 from zeroshot.pipeline.messages.manifest import InputManifest
@@ -23,6 +24,7 @@ from zeroshot.pipeline.stages.stage import stage_factory
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.types import PipelineStage, next_stage
 from zeroshot.pipeline.stages.validate import validate_submission
+from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore
@@ -70,6 +72,10 @@ def create_reconstruction_graph(
         raise ValueError(f"{max_audit_reject_count=} must be non-negative")
     if max_stage_validation_retries < 0:
         raise ValueError(f"{max_stage_validation_retries=} must be non-negative")
+    if isinstance(diff_drawer_config, DictConfig):
+        diff_drawer_config = cast(
+            dict[str, Any], OmegaConf.to_container(diff_drawer_config, resolve=True)
+        )
 
     # Unlike stage validation retries, output limits recur inside a child agent's
     # wrap_model_call before any update reaches the parent workflow state. Share
@@ -92,6 +98,10 @@ def create_reconstruction_graph(
         sandbox_workdir,
         round_source=current_round,
         root_dirname=verification_dirname,
+    )
+    # Trial builds of both agents, numbered like attempts and read-only to them.
+    trial_store = AttemptStore(
+        sandbox_workdir, round_source=current_round, root_dirname=TRIALS_DIRNAME
     )
 
     # instantiate agents
@@ -128,6 +138,7 @@ def create_reconstruction_graph(
         sandbox_runner=sandbox_runner,
         artifact_presenter=artifact_presenter,
         diff_drawer_config=diff_drawer_config,
+        trial_store=trial_store,
         output_filename=output_filename,
         interpretation_filename=interpretation_filename,
         input_after_compaction=compact_between_stages is not None,
@@ -144,6 +155,9 @@ def create_reconstruction_graph(
         attempt_store=attempt_store,
         evidence_mode=audit_evidence_mode,
         artifact_presenter=artifact_presenter,
+        sandbox_runner=sandbox_runner,
+        diff_drawer_config=diff_drawer_config,
+        trial_store=trial_store,
         review_drawing_diff_clusters=review_drawing_diff_clusters,
     )
 
