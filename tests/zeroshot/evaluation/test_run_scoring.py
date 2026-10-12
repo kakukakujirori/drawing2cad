@@ -68,7 +68,7 @@ def test_the_scorer_survives_the_spawn_boundary() -> None:
 
 def test_picks_the_final_attempt(make_run_dir, solids: dict[str, Path]) -> None:
     run_dir = make_run_dir({"000": solids["box"], "001": solids["sphere"]})
-    found = latest_verified_step(run_dir)
+    found, _ = latest_verified_step(run_dir)
     assert found is not None and found.parent.name == "001"
 
 
@@ -78,30 +78,45 @@ def test_a_final_attempt_without_a_solid_is_no_prediction(
     """The run submitted its last attempt, not the last one that worked."""
 
     run_dir = make_run_dir({"000": solids["box"], "001": None})
-    assert latest_verified_step(run_dir) is None
+    assert latest_verified_step(run_dir)[0] is None
 
 
 def test_an_earlier_attempt_is_used_when_allowed(
     make_run_dir, solids: dict[str, Path]
 ) -> None:
     run_dir = make_run_dir({"000": solids["box"], "001": None})
-    found = latest_verified_step(run_dir, last_only=False)
+    found, _ = latest_verified_step(run_dir, last_only=False)
     assert found is not None and found.parent.name == "000"
 
 
+def test_skips_newer_attempts_that_fail_the_step_checks(
+    make_run_dir, solids: dict[str, Path], junk_step: Path
+) -> None:
+    run_dir = make_run_dir({"000": solids["box"], "001": junk_step})
+
+    found, skipped = latest_verified_step(run_dir, last_only=False)
+    document = score_run(run_dir, solids["box"], StepScorer(**_FAST), last_only=False)
+
+    assert found is not None and found.parent.name == "000"
+    assert "Failed to import STEP" in skipped["round_000/coding/001"]
+    assert document["pred_step"] == str(found)
+    assert document["skipped_attempts"] == skipped
+    assert latest_verified_step(run_dir, last_only=True)[0] is None
+
+
 def test_no_attempts_directory(tmp_path: Path) -> None:
-    assert latest_verified_step(tmp_path) is None
+    assert latest_verified_step(tmp_path)[0] is None
 
 
 def test_an_empty_attempts_directory(make_run_dir) -> None:
-    assert latest_verified_step(make_run_dir({})) is None
+    assert latest_verified_step(make_run_dir({}))[0] is None
 
 
 def test_ignores_non_numeric_attempt_names(
     make_run_dir, solids: dict[str, Path]
 ) -> None:
     run_dir = make_run_dir({"000": solids["box"], "final": solids["sphere"]})
-    found = latest_verified_step(run_dir)
+    found, _ = latest_verified_step(run_dir)
     assert found is not None and found.parent.name == "000"
 
 
@@ -117,7 +132,7 @@ def test_picks_the_latest_round_before_its_latest_coding_attempt(
     old.joinpath("output.step").write_bytes(solids["box"].read_bytes())
     new.joinpath("output.step").write_bytes(solids["sphere"].read_bytes())
 
-    found = latest_verified_step(tmp_path / "run")
+    found, _ = latest_verified_step(tmp_path / "run")
 
     assert found == new / "output.step"
 

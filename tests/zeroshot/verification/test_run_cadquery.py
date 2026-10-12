@@ -21,6 +21,7 @@ from zeroshot.pipeline.verification.run_cadquery import (
     StepVerificationError,
 )
 from zeroshot.pipeline.verification.shape_census import ShapeCensus
+from zeroshot.pipeline.verification.solid_mesh import UnjoinedMeshError
 
 VALID_BOX_SOURCE = """\
 import cadquery as cq
@@ -226,6 +227,30 @@ def test_verify_step_rejects_multiple_solids(tmp_path: Path) -> None:
 
     with pytest.raises(StepVerificationError, match="found 2"):
         CadQueryExecutor.verify_step(step_path)
+
+
+def test_verify_step_rejects_a_solid_the_scorer_cannot_mesh(tmp_path: Path) -> None:
+    # The slot's end arc bulges inward and crosses both walls; isValid still passes.
+    slot = (
+        cq.Workplane("XY")
+        .moveTo(0, 20)
+        .lineTo(1, 0)
+        .threePointArc((5, 8), (9, 0))
+        .lineTo(10, 20)
+        .close()
+        .extrude(3)
+    )
+    block = cq.Workplane("XY").box(30, 40, 10, centered=False).translate((-10, -10, 0))
+    step_path = tmp_path / "self-crossing-cut.step"
+    cq.exporters.export(block.cut(slot), str(step_path), exportType="STEP")
+
+    with pytest.raises(StepVerificationError, match="fails to join near x ") as caught:
+        CadQueryExecutor.verify_step(step_path)
+    # The smallest region named lies on the slot, whose walls the arc crosses.
+    unjoined = caught.value.__cause__
+    assert isinstance(unjoined, UnjoinedMeshError)
+    low, high = unjoined.regions[0]
+    assert (low > -0.01).all() and (high < (10.01, 20.01, 3.01)).all()
 
 
 def test_execute_writes_verified_step_to_requested_path(tmp_path: Path) -> None:

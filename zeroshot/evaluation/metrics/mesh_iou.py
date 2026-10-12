@@ -10,32 +10,10 @@ import manifold3d as manifold
 import numpy as np
 import trimesh
 
+from zeroshot.pipeline.verification.solid_mesh import require_solid, to_manifold
+
 # Manifold Booleans on coincident faces misstate volumes by about 1e-4.
 _IOU_SLACK = 1e-3
-
-
-def to_manifold(mesh: trimesh.Trimesh) -> manifold.Manifold:
-    """Require a finite, nonempty solid; Manifold decides mesh validity."""
-    if not len(mesh.vertices) or not len(mesh.faces):
-        raise ValueError("empty triangle mesh")
-    if not np.isfinite(mesh.vertices).all():
-        raise ValueError("nonfinite mesh vertices")
-    native = manifold.Manifold(
-        manifold.Mesh64(
-            vert_properties=np.ascontiguousarray(mesh.vertices, dtype=np.float64),
-            tri_verts=np.ascontiguousarray(mesh.faces, dtype=np.uint64),
-        )
-    )
-    require_solid(native)
-    return native
-
-
-def require_solid(solid: manifold.Manifold) -> None:
-    if solid.status() != manifold.Error.NoError:
-        raise ValueError(f"Manifold: {solid.status()}")
-    volume = solid.volume()
-    if solid.is_empty() or not np.isfinite(volume) or volume <= 0:
-        raise ValueError("mesh has no positive finite solid volume")
 
 
 def manifold_iou(pred: manifold.Manifold, gt: manifold.Manifold) -> float:

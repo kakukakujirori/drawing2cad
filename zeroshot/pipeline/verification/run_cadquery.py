@@ -1,6 +1,7 @@
 import ast
 import shutil
 import traceback
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -13,6 +14,24 @@ from zeroshot.pipeline.sandbox import (
 from zeroshot.pipeline.verification.shape_census import ShapeCensus, read_census
 
 _RUNNER = "_run_program.py"
+
+_UNMESHABLE = (
+    "The solid cannot be meshed for evaluation ({reason}). The check found no "
+    "single place where its surface fails. Find the operation that causes it: "
+    "build the program with its later operations left out, and see after which "
+    "operation this message first appears."
+)
+_UNJOINED = (
+    "The solid does not mesh as one closed surface ({reason}), so it cannot be "
+    "evaluated. Its surface fails to join near {regions}. Look there for a profile "
+    "whose edges cross each other, or for faces that touch tangentially or almost "
+    "coincide. Make profile edges meet only at their ends, and make faces that meet "
+    "either overlap clearly or stay apart. If these places do not point to one "
+    "operation, build the program with its later operations left out, and see "
+    "after which operation this message first appears."
+)
+_REGION = "x {x}, y {y}, z {z} mm"
+_MAX_REGIONS = 4
 
 
 class ExecutionStatus(StrEnum):
@@ -35,6 +54,29 @@ class CadQueryExecutionReport:
     stdout: str = ""
     stderr: str = ""
     census: ShapeCensus | None = None
+
+
+def _mm_span(low: float, high: float) -> str:
+    # + 0.0 turns a rounded -0.0 into 0.0
+    low_text, high_text = (f"{round(float(v), 1) + 0.0:.1f}" for v in (low, high))
+    return low_text if low_text == high_text else f"{low_text}–{high_text}"
+
+
+def _describe_region(low: Iterable[float], high: Iterable[float]) -> str:
+    x, y, z = map(_mm_span, low, high)
+    return _REGION.format(x=x, y=y, z=z)
+
+
+def _describe_unjoined(
+    reason: object, regions: Sequence[tuple[Iterable[float], Iterable[float]]]
+) -> str:
+    """Name the smallest places where the mesh fails to join, in model mm."""
+    if not regions:
+        return _UNMESHABLE.format(reason=reason)
+    places = [_describe_region(*region) for region in regions[:_MAX_REGIONS]]
+    if len(regions) > _MAX_REGIONS:
+        places.append(f"and {len(regions) - _MAX_REGIONS} more places")
+    return _UNJOINED.format(reason=reason, regions="; ".join(places))
 
 
 def _rejection(error: SyntaxError | ValueError) -> str:
@@ -220,6 +262,11 @@ class CadQueryExecutor:
     def verify_step(step_path: Path) -> None:
         import cadquery as cq
 
+        from zeroshot.pipeline.verification.solid_mesh import (
+            UnjoinedMeshError,
+            require_closed_mesh,
+        )
+
         if not step_path.is_file():
             raise StepVerificationError(f"STEP file not found: {step_path}")
         if step_path.is_symlink():
@@ -239,6 +286,14 @@ class CadQueryExecutor:
 
         if not cq.Shape(solids[0].wrapped).isValid():  # type: ignore[union-attr]
             raise StepVerificationError("STEP contains an invalid solid")
+
+        # isValid accepts some solids that the scorer cannot mesh.
+        try:
+            require_closed_mesh(solids[0])
+        except UnjoinedMeshError as exc:
+            raise StepVerificationError(_describe_unjoined(exc, exc.regions)) from exc
+        except Exception as exc:  # the scorer rejects any of these
+            raise StepVerificationError(_UNMESHABLE.format(reason=exc)) from exc
 
 
 class StepVerificationError(ValueError):

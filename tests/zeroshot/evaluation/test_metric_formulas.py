@@ -5,9 +5,10 @@ import pytest
 import trimesh
 
 from zeroshot.evaluation.metrics.itercad import aggregate_itercad, summarize_cds
-from zeroshot.evaluation.metrics.mesh_iou import mesh_iou, to_manifold
+from zeroshot.evaluation.metrics.mesh_iou import mesh_iou
 from zeroshot.evaluation.metrics.surface_distance import point_distances
-from zeroshot.evaluation.preprocess import PreprocessConfig, close_sliver_holes
+from zeroshot.evaluation.preprocess import PreprocessConfig
+from zeroshot.pipeline.verification.solid_mesh import close_sliver_holes, to_manifold
 
 
 def test_squared_distances_have_no_chamfer_half_factor():

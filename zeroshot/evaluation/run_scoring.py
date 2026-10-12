@@ -192,21 +192,26 @@ def latest_verified_step(
     run_dir: Path,
     last_only: bool = True,
     verification_dirname: str = "attempts",
-) -> Path | None:
-    """Return the STEP to score, or ``None`` when the run offers none.
+) -> tuple[Path | None, dict[str, str]]:
+    """Return the STEP to score, or ``None``, and why each newer attempt was skipped.
 
-    Rounds and coding attempts are numbered upwards. The largest coding attempt
-    in the latest round is therefore the run's submission.
+    Rounds and coding attempts are numbered upwards, so the newest attempt whose
+    STEP passes the pipeline's own STEP checks is the run's submission.
     """
 
     # Imported here rather than at module scope: `PipelineRunner` pulls in
     # langchain, langgraph and torch, and this module is re-imported by every
     # `spawn` scoring child, which needs none of them.
     from zeroshot.pipeline.runner import PipelineRunner
+    from zeroshot.pipeline.verification.run_cadquery import (
+        CadQueryExecutor,
+        StepVerificationError,
+    )
 
+    skipped: dict[str, str] = {}
     attempts_dir = run_dir / PipelineRunner.WORKSPACE_DIRNAME / verification_dirname
     if not attempts_dir.is_dir():
-        return None
+        return None, skipped
     round_dirs = sorted(
         (
             path
@@ -233,12 +238,15 @@ def latest_verified_step(
         )
         for attempt_dir in attempt_dirs:
             step_path = attempt_dir / "output.step"
-            if step_path.is_file():
-                return step_path
+            try:
+                CadQueryExecutor.verify_step(step_path)
+                return step_path, skipped
+            except StepVerificationError as error:
+                skipped[str(attempt_dir.relative_to(attempts_dir))] = str(error)
             if last_only:
-                return None
+                return None, skipped
 
-    return None
+    return None, skipped
 
 
 def score_run(
@@ -254,7 +262,7 @@ def score_run(
     produced it.
     """
 
-    pred_step = latest_verified_step(run_dir, last_only)
+    pred_step, skipped = latest_verified_step(run_dir, last_only)
     report = (
         ScoreReport(
             status=ScoreStatus.NO_PREDICTION,
@@ -272,6 +280,8 @@ def score_run(
     return {
         "run_dir": str(run_dir),
         "pred_step": None if pred_step is None else str(pred_step),
+        # Newer attempts, with the STEP check each failed.
+        "skipped_attempts": skipped,
         "target_step": str(target_step),
         "last_only": last_only,
         "scorer": asdict(scorer),
