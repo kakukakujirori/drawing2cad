@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from zeroshot.pipeline.event_logging.jsonl import JsonlEventWriter, has_run_completed
 from zeroshot.pipeline.event_logging.projections import (
@@ -26,6 +26,18 @@ def test_event_serialization_redacts_images_and_secrets() -> None:
     assert image["omitted"] == "base64"
     assert image["size_bytes"] == len("raw-image-data")
     assert serialized["openai_api_key"] == "<redacted>"
+
+
+def test_a_model_message_keeps_its_generation_id_and_cost() -> None:
+    message = AIMessage(
+        content="ok",
+        response_metadata={"id": "gen-1", "cost": 0.002, "model_name": "glm"},
+    )
+
+    serialized = _safe_value(message)
+
+    assert (serialized["generation_id"], serialized["cost"]) == ("gen-1", 0.002)
+    assert "response_metadata" not in serialized and "model_name" not in serialized
 
 
 @pytest.mark.parametrize("accepted", [True, False])

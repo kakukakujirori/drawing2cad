@@ -14,9 +14,9 @@ model:
   output_version: v1
   api_key: ${oc.env:OPENROUTER_API_KEY}
 
-  # Upstreams that support tool_choice, structured outputs and the full context.
+  # NOTE: Select upstreams that support tool_choice, structured outputs and the full context.
   openrouter_provider:
-    order: [Together, Fireworks, DeepInfra, Cloudflare]
+    order: [InferenceNet, Modal, Together, Fireworks, DeepInfra]
     allow_fallbacks: false
   image_history_limit: 8
 

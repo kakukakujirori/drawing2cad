@@ -11,7 +11,7 @@ import json
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from openai import APIStatusError
+from openai import APIConnectionError, APIStatusError
 from openrouter.errors.badrequestresponse_error import (
     BadRequestResponseError,
     BadRequestResponseErrorData,
@@ -25,6 +25,7 @@ from zeroshot.pipeline.workflow.middleware.agent_retry import (
     _rejected_arguments,
 )
 from zeroshot.pipeline.workflow.middleware.connection_retry import (
+    OFFLINE_PATIENCE_S,
     ModelConnectionRetry,
     _provider_error_detail,
     is_retryable_model_error,
@@ -518,6 +519,40 @@ def test_transient_400_retries_recover_or_stop_at_the_budget(
         events[0]["model_retry"]["provider_error"]["error_type"]
         == "provider_unavailable"
     )
+
+
+@pytest.mark.parametrize("back_after_s", [600, None])
+def test_an_offline_network_is_waited_out_past_the_budget(
+    monkeypatch, back_after_s
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(
+        "zeroshot.pipeline.workflow.middleware.connection_retry.time.monotonic",
+        lambda: clock[0],
+    )
+    monkeypatch.setattr(
+        "zeroshot.pipeline.workflow.middleware.connection_retry._backoff_delay",
+        lambda _: 0,
+    )
+    request = httpx.Request("POST", "https://example.invalid/responses")
+
+    def call():
+        clock[0] += 60
+        if back_after_s is not None and clock[0] > back_after_s:
+            return "answer"
+        try:
+            raise httpx.ConnectError("Temporary failure in name resolution")
+        except httpx.ConnectError as error:
+            raise APIConnectionError(request=request) from error
+
+    retry = ModelConnectionRetry(1, "coder", lambda _: None)
+    if back_after_s is not None:
+        assert retry.invoke(call) == "answer"
+    else:
+        with pytest.raises(APIConnectionError):
+            retry.invoke(call)
+        # The budget ran out at the second failure; the wait counts from there.
+        assert clock[0] - 120 >= OFFLINE_PATIENCE_S
 
 
 def test_provider_diagnostics_drop_request_echoes_and_redact_embedded_credentials():

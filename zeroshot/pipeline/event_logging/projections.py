@@ -83,10 +83,17 @@ def _redact(value: Any, field_name: str | None = None) -> Any:
 
 def _safe_value(value: Any) -> Any:
     if isinstance(value, BaseMessage):
+        # OpenRouter's generation API names the upstream that served a
+        # generation id; upstreams quantize differently.
+        metadata = value.response_metadata
         value = value.model_dump(
             mode="python",
             exclude={"additional_kwargs", "response_metadata", "artifact"},
         )
+        if "id" in metadata:
+            value["generation_id"] = metadata["id"]
+        if "cost" in metadata:
+            value["cost"] = metadata["cost"]
     serialized = to_jsonable_python(
         value,
         bytes_mode="base64",

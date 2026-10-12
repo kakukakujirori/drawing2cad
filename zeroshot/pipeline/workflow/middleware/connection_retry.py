@@ -16,21 +16,38 @@ from langgraph.runtime import get_runtime
 from openai import APIConnectionError, APIError, APIStatusError, LengthFinishReasonError
 from openrouter.errors import OpenRouterError
 
+# A request that never connected costs nothing to resend, and a dropped local
+# network (a phone hotspot losing DNS) can take minutes to come back.
+OFFLINE_PATIENCE_S = 15 * 60
+
 
 @dataclass
 class ModelConnectionRetry:
-    """One transport budget, retained across corrections to a model's answer."""
+    """One transport budget, retained across corrections to a model's answer.
+
+    Past the budget, connect failures go on retrying for OFFLINE_PATIENCE_S.
+    """
 
     max_retries: int
     role: str
     stream_writer: Callable[[Any], None] | None = None
     _retries: int = field(default=0, init=False)
+    _offline_since: float | None = field(default=None, init=False)
+
+    def _waiting_offline(self, error: Exception) -> bool:
+        if not _never_connected(error):
+            return False
+        if self._offline_since is None:
+            self._offline_since = time.monotonic()
+        return time.monotonic() - self._offline_since < OFFLINE_PATIENCE_S
 
     def _retry(self, error: Exception) -> bool:
         # Answer failures belong to the caller's correction loop and budget.
         if isinstance(error, (LengthFinishReasonError, StructuredOutputError)):
             return False
-        retrying = is_retryable_model_error(error) and self._retries < self.max_retries
+        retrying = is_retryable_model_error(error) and (
+            self._retries < self.max_retries or self._waiting_offline(error)
+        )
         report_model_retry(
             error,
             role=self.role,
@@ -61,6 +78,11 @@ class ModelConnectionRetry:
                 if not self._retry(error):
                     raise
                 await asyncio.sleep(_backoff_delay(self._retries))
+
+
+def _never_connected(error: Exception) -> bool:
+    unreachable = (httpx.ConnectError, httpx.ConnectTimeout)
+    return isinstance(error, unreachable) or isinstance(error.__cause__, unreachable)
 
 
 def _backoff_delay(retry_number: int) -> float:
