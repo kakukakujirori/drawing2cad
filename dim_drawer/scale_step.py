@@ -28,21 +28,14 @@ def drawing_extents(dxf_path):
     doc = ezdxf.readfile(dxf_path)
     if doc.units != ezdxf.units.MM:
         raise ValueError(f"DXF must use millimetres: {dxf_path}")
-    views = split_views(extract_doc(doc))
-    if len(views) != 3:
-        raise ValueError(f"expected three views, found {len(views)}: {dxf_path}")
-    top = max(views, key=lambda v: v["bbox"][1] + v["bbox"][3])
-    right = max(views, key=lambda v: v["bbox"][0] + v["bbox"][2])
-    if top is right:
-        raise ValueError(f"expected a third-angle L arrangement: {dxf_path}")
-    front = next(v for v in views if v is not top and v is not right)
+    try:
+        views = {v["name"]: v["bbox"] for v in split_views(extract_doc(doc))}
+    except ValueError as error:
+        raise ValueError(f"{error}: {dxf_path}") from error
     lengths = tuple(
         length
-        for v in (front, top, right)
-        for length in (
-            v["bbox"][2] - v["bbox"][0],
-            v["bbox"][3] - v["bbox"][1],
-        )
+        for x0, y0, x1, y1 in (views["front"], views["top"], views["right"])
+        for length in (x1 - x0, y1 - y0)
     )
     if not all(math.isfinite(v) and v > 0 for v in lengths):
         raise ValueError(f"invalid DXF view extents: {lengths}")
@@ -122,14 +115,21 @@ def main():
     steps = sorted(args.step_dir.glob("*.step"))
     if not steps:
         parser.error(f"no STEP files in {args.step_dir}")
+    skipped = 0
     for step in steps:
-        factor, error = scale_step(
-            step,
-            args.dxf_dir / f"{step.stem}.dxf",
-            args.out / step.name,
-            args.tolerance_mm,
-        )
+        try:
+            factor, error = scale_step(
+                step,
+                args.dxf_dir / f"{step.stem}.dxf",
+                args.out / step.name,
+                args.tolerance_mm,
+            )
+        except ValueError as reason:
+            skipped += 1
+            print(f"{step.stem}: skipped: {reason}")
+            continue
         print(f"{step.stem}: scale={factor:.9f} max_extent_error={error:.6f} mm")
+    print(f"scaled {len(steps) - skipped}, skipped {skipped}")
 
 
 if __name__ == "__main__":

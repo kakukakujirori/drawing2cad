@@ -93,8 +93,6 @@ def annotate(src_dxf, out_dir, seed=0, text_height=None, dpi=200):
     doc = ezdxf.readfile(src_dxf)
     msp = doc.modelspace()
     views = split_views(extract_doc(doc))
-    if not views:
-        raise ValueError(f"no geometry in {src_dxf}")
 
     create_text_styles(doc)
     if DIM_LAYER not in doc.layers:

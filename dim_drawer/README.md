@@ -40,6 +40,8 @@ STEP is read back and checked against every view within `--tolerance-mm`
 (default 0.01 mm) before it replaces the output; input STEPs are preserved.
 This assumes the third-angle front XY / top XZ / right ZY arrangement. The
 `target_step_ori` outputs are the millimetre-scale targets for this dataset.
+Parts that fail a check are skipped and printed as `<stem>: skipped: <reason>`.
+A skipped part keeps any earlier output, so write to an empty `--out`.
 
 Run the regression check with `python -m dim_drawer.test_geometry`.
 
@@ -49,7 +51,8 @@ Run the regression check with `python -m dim_drawer.test_geometry`.
    only, expanding blocks and polylines and splitting off dashed linetypes. The
    source document is not rebuilt from these. Center lines and center-mark
    blocks remain in the drawing but are excluded from measurements.
-2. `views.py` — separates the projections by recursive XY-cut on whitespace bands.
+2. `views.py` — splits front, top and right at the widest whitespace bands whose
+   views share their third-angle extents; other layouts raise `ValueError`.
 3. `placement.py` — per view, picks overall extents, significant axis-aligned
    edges, hole diameters and arc radii, and places them on the side facing away
    from the sheet centroid. Edge grouping preserves the actual anchor coordinates.

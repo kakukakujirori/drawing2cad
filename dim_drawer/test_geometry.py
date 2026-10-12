@@ -1,5 +1,6 @@
 """Runnable regression check: python -m dim_drawer.test_geometry."""
 
+import math
 import random
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -31,12 +32,33 @@ def test_geometry():
     msp.add_lwpolyline([(0, 0), (40, 0), (40, 20), (0, 20)], close=True)
     # A 30-degree circular arc must remain eligible for a radius dimension.
     msp.add_arc((20, 10), 4, 0, 30)
-    view = split_views(extract_doc(doc))[0]
+    view = {**extract_doc(doc), "bbox": (0, 0, 40, 20)}
     create_text_styles(doc)
     writer = DimensionWriter(doc, msp, sample_style(random.Random(0)))
     dimension_view(writer, view, [], (-100, -100, 200, 200), Occupancy())
     radii = [e.get_measurement() for e in msp.query("DIMENSION") if e.dimtype == 4]
     assert len(radii) == 1 and abs(radii[0] - 4) < 1e-8
+
+    # Stacked bodies leave a 4mm gap inside front and right; top is 1mm away.
+    doc = ezdxf.new(setup=True)
+    msp = doc.modelspace()
+    for x, y, w, h in [
+        (0, 0, 40, 8),
+        (0, 12, 40, 8),
+        (0, 21, 40, 10),
+        (60, 0, 10, 8),
+        (60, 12, 10, 8),
+    ]:
+        msp.add_lwpolyline([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], close=True)
+    # A near-duplicate edge leaves a noise-wide band that also aligns.
+    msp.add_line((40 + 1e-9, 0), (40 + 1e-9, 8))
+    views = {v["name"]: v["bbox"] for v in split_views(extract_doc(doc))}
+    expected = {
+        "front": (0, 0, 40, 20),
+        "top": (0, 21, 40, 31),
+        "right": (60, 0, 70, 20),
+    }
+    assert all(math.dist(views[name], box) < 1e-6 for name, box in expected.items())
 
     with TemporaryDirectory() as scratch:
         root = Path(scratch)
