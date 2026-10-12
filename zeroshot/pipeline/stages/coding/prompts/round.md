@@ -36,7 +36,7 @@ $interpretation_schema
 
 The source drawing is the authority. The interpretation is your record of it, not evidence for keeping current geometry or rejecting an alternative. When a trial build shows that a reading is wrong, correct the interpretation as well as the program.
 
-When a feature's shape is uncertain, try building each hypothesis you have by modifying `$coding_output_path` or by calling `evaluate_cad_hypothesis` on a scratch Python file, and compare its projections with the input. Adopt the hypothesis that matches best. Leaving the feature out is one of these hypotheses, not a safe default. Do not reject a hypothesis on a guess without evidence.
+When a feature's shape is uncertain, build each hypothesis you have, as the work cycle describes, and compare its projections with the input. Adopt the hypothesis that matches best. Leaving the feature out is one of these hypotheses, not a safe default. Do not reject a hypothesis on a guess without evidence.
 
 - Store the final completed CadQuery solid in `result`.
 - The script must be self-contained and must not load the input drawing or other external files at runtime.
@@ -47,7 +47,7 @@ When a feature's shape is uncertain, try building each hypothesis you have by mo
 
 ### Work cycle
 
-Use `load_image` to inspect drawings, `run_shell` to create crops and edit files, `calculate_drawing_scale` for raster scale checks, and `evaluate_cad_hypothesis` to build and score trial scripts.
+Use `load_image` to inspect drawings, `run_shell` to create crops and edit files, and `calculate_drawing_scale` for raster scale checks.
 
 After a tool turn changes either file, automatic verification checks the interpretation. Once it is valid, verification also executes the program and returns diagnostics and paths to STEP, orthographic PNG/DXF and perspective renders under `$verification_dir/round_NNN/coding/NNN/`. Each report lists the requirements your answer still has to meet. Verification uses no additional model turn.
 
@@ -60,12 +60,10 @@ After a tool turn changes either file, automatic verification checks the interpr
 
 #### [IMPORTANT] Test geometric hypotheses
 
-Do not believe in your 3D reasoning blindly. Whenever deciding geometric design details, build candidate CAD parts, render the relevant views, and compare the resulting images with the input drawing. This is especially important when you seek an alternative design hypothesis: do not reject it based only on your reasoning. Build and observe it first.
+Do not believe in your 3D reasoning blindly. Whenever deciding geometric design details, build candidates and compare their projections with the input drawing. This is especially important when you seek an alternative design hypothesis: do not reject it based only on your reasoning. Build and observe it first.
 
 - After any modifications, inspect the latest deciding views and overall scores before keeping or undoing the change. If the expected change is absent, revise the geometry or coordinate hypothesis before another trial.
-- Try alternatives as trial scripts separate from `$coding_output_path`, so the program keeps your current candidate while you explore. A trial script needs to store its shape in `result`. Then, calling `evaluate_cad_hypothesis` builds it, compares its projections with the input views and reports its match score next to that of your latest build. Trials are not submitted; each trial directory keeps the script it built as `hypothesis.py`.
-- A trial may hold the whole model, such as a copy of the program with one change, or only the part in question with enough surrounding geometry to check its extent and connections. A partial trial also gets a match score, but everything it omits counts as mismatch; ignore that score and inspect its projections around the part. Open the PNGs a trial lists with `load_image`.
-- Integrate any promising trials into `$coding_output_path` immediately to see whether the projections of the resulting shape give a better match with the input. Quick iteration is the key to fast improvements.
+$hypothesis_trials
 - Treat stroke thickness as a drawing convention, not a physical feature width.
 - Read the geometry census:
   - All faces of one kind or hundreds of edges may indicate an unintended approximation.

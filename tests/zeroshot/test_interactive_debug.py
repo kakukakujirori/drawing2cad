@@ -164,6 +164,7 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
         "workflow": {
             "share_thread": False,
             "diff_drawer_config": None,
+            "coding_trial_tool": True,
             "coding_agent_builder": {
                 "role": "coder",
                 "model": "${model}",

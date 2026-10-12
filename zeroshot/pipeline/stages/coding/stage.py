@@ -15,6 +15,7 @@ from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import read_dxf_frame
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages._base.prompt import (
+    PromptTemplate,
     StageInstructions,
     build_system_prompt,
     schema_for_prompt,
@@ -51,6 +52,8 @@ from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapsh
 type CompiledGraph = Pregel[Any, Any, Any, Any]
 type AgentBuilder = partial[CompiledGraph]
 
+_PROMPTS = Path(__file__).parent / "prompts"
+
 
 @dataclass(frozen=True)
 class CodingStage:
@@ -60,6 +63,7 @@ class CodingStage:
     ticket_verifier: TicketVerifier
     middleware: CodingMiddleware
     input_after_compaction: bool
+    hypothesis_trial_prompt: str
     dxf_context: str | None = None
 
     def run(self, state: ReconstructionState, config: RunnableConfig) -> dict[str, Any]:
@@ -87,6 +91,7 @@ class CodingStage:
                 / self.workspace.interpretation.source_filename
             ),
             interpretation_schema=schema_for_prompt(DrawingInterpretation),
+            hypothesis_trials=self.hypothesis_trial_prompt,
             feedback=(
                 [create_text_block(self.dxf_context)]
                 if self.dxf_context is not None and not retry
@@ -154,6 +159,7 @@ def create_coding_stage(
     input_after_compaction: bool = False,
     fresh_memory: bool = False,
     coding_trial_reminder: bool = True,
+    coding_trial_tool: bool = True,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
 ) -> CodingStage:
     renderer = StepRenderer()
@@ -186,21 +192,30 @@ def create_coding_stage(
         ticket_verifier=ticket_verifier,
         fingerprint=workspace.source_digest,
     )
+    # Hypotheses are tried with the trial tool or in the program alone; the
+    # tool and the prompt bullets that describe it are chosen together.
     # Resolve views on each call: they follow the latest valid interpretation.
-    coding_tools = [
-        *tools,
-        create_calculate_drawing_scale_tool(),
-        create_cad_hypothesis_tool(
-            workdir=instructions.workdir,
-            sandbox_runner=sandbox_runner,
-            renderer=renderer,
-            diff_drawer_config=diff_drawer_config,
-            trial_store=trial_store,
-            stage="coding",
-            interpretation=lambda: workspace.output.interpretation,
-            reference=lambda: workspace.output.last_report,
-        ),
-    ]
+    trial_tools = (
+        [
+            create_cad_hypothesis_tool(
+                workdir=instructions.workdir,
+                sandbox_runner=sandbox_runner,
+                renderer=renderer,
+                diff_drawer_config=diff_drawer_config,
+                trial_store=trial_store,
+                stage="coding",
+                interpretation=lambda: workspace.output.interpretation,
+                reference=lambda: workspace.output.last_report,
+            )
+        ]
+        if coding_trial_tool
+        else []
+    )
+    hypothesis_trial_prompt = PromptTemplate(
+        _PROMPTS
+        / ("trials_by_tool.md" if coding_trial_tool else "trials_in_program.md")
+    ).render(**instructions.prompt_context)
+    coding_tools = [*tools, create_calculate_drawing_scale_tool(), *trial_tools]
     max_turns = coding_agent_builder.keywords["max_turns"]
     extra_middleware: list[AgentMiddleware[Any, None, Any]] = [coding_middleware]
     if coding_trial_reminder:
@@ -228,5 +243,6 @@ def create_coding_stage(
         ticket_verifier=ticket_verifier,
         middleware=coding_middleware,
         input_after_compaction=input_after_compaction,
+        hypothesis_trial_prompt=hypothesis_trial_prompt,
         dxf_context=_dxf_context(instructions),
     )

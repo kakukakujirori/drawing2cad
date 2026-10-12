@@ -291,11 +291,13 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "diff_drawer_config",
         "fresh_coder",
         "coding_trial_reminder",
+        "coding_trial_tool",
         "match_margin_px",
         "review_drawing_diff_clusters",
     }
     assert graph_factory.keywords["fresh_coder"] is False
     assert graph_factory.keywords["coding_trial_reminder"] is True
+    assert graph_factory.keywords["coding_trial_tool"] is True
     assert graph_factory.keywords["review_drawing_diff_clusters"] is True
     assert graph_factory.keywords["match_margin_px"] == 0.5
     assert graph_factory.keywords["compact_between_stages"] is not None
@@ -331,7 +333,13 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
 
 
 @pytest.mark.parametrize(
-    "flag", ["fresh_coder", "coding_trial_reminder", "review_drawing_diff_clusters"]
+    "flag",
+    [
+        "fresh_coder",
+        "coding_trial_reminder",
+        "coding_trial_tool",
+        "review_drawing_diff_clusters",
+    ],
 )
 @pytest.mark.parametrize("value", [False, True])
 def test_each_workflow_flag_can_be_selected_in_config(flag, value) -> None:

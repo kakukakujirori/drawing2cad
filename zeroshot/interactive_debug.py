@@ -299,24 +299,26 @@ def build_agent(
         restored = ReconstructionHistory.model_validate(record).snapshots[-1]
         verifier.interpretation = restored.interpretation
         tools.append(create_calculate_drawing_scale_tool())
-        tools.append(
-            create_cad_hypothesis_tool(
-                workdir=workdir,
-                sandbox_runner=runner,
-                renderer=renderer,
-                diff_drawer_config=cast(
-                    dict[str, Any], OmegaConf.to_container(diff_config, resolve=True)
+        if config.workflow.coding_trial_tool:
+            tools.append(
+                create_cad_hypothesis_tool(
+                    workdir=workdir,
+                    sandbox_runner=runner,
+                    renderer=renderer,
+                    diff_drawer_config=cast(
+                        dict[str, Any],
+                        OmegaConf.to_container(diff_config, resolve=True),
+                    )
+                    if diff_config
+                    else None,
+                    trial_store=AttemptStore(
+                        workdir, lambda: snapshot.round, root_dirname=TRIALS_DIRNAME
+                    ),
+                    stage="coding",
+                    interpretation=lambda: verifier.interpretation,
+                    reference=lambda: verifier.last_report,
                 )
-                if diff_config
-                else None,
-                trial_store=AttemptStore(
-                    workdir, lambda: snapshot.round, root_dirname=TRIALS_DIRNAME
-                ),
-                stage="coding",
-                interpretation=lambda: verifier.interpretation,
-                reference=lambda: verifier.last_report,
             )
-        )
         middleware.append(
             VerifyOnWriteMiddleware(verifier, fingerprint=verifier.source_digest)
         )

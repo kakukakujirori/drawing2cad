@@ -1,0 +1,1 @@
+- Test each alternative in `$coding_output_path`; only its builds are compared with the drawing and scored. Quick iteration is the key to fast improvements.

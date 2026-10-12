@@ -15,6 +15,8 @@ workflow:
   fresh_coder: false
   # Remind the coder to test geometry by trial builds, once interpretation.json is valid.
   coding_trial_reminder: true
+  # Give the coder evaluate_cad_hypothesis; off, it tries hypotheses only in model.py.
+  coding_trial_tool: true
   # The auditor must answer every drawing_diff cluster in concern_reviews.
   review_drawing_diff_clusters: true
 

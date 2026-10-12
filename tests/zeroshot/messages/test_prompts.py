@@ -64,6 +64,9 @@ _RUN_PATHS = {
     "interpretation_schema": json.dumps(DrawingInterpretation.model_json_schema()),
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
+    "hypothesis_trials": PromptTemplate(
+        STAGES_DIR / "coding/prompts/trials_by_tool.md"
+    ).render(coding_output_path="/work/model.py"),
 }
 _DRAWING_DIFF_REVIEWS = PromptTemplate(
     STAGES_DIR / "audit/prompts/drawing_diff_reviews.md"

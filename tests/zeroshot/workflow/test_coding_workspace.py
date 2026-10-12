@@ -179,6 +179,26 @@ def test_the_flags_choose_the_coder_middleware_in_one_place(tmp_path, fresh, rem
     assert stage.middleware is built["extra_middleware"][0]
 
 
+@pytest.mark.parametrize("trial_tool", [False, True])
+def test_the_trial_flag_chooses_the_tool_with_its_prompt(tmp_path, trial_tool):
+    built = {}
+
+    def builder(**kwargs):
+        built.update(kwargs)
+        return object()
+
+    stage = _stage(
+        partial(builder, max_turns=5),
+        SandboxWorkdir(tmp_path),
+        [],
+        coding_trial_tool=trial_tool,
+    )
+    names = [tool.name for tool in built["tools"]]
+    assert ("evaluate_cad_hypothesis" in names) is trial_tool
+    assert ("evaluate_cad_hypothesis" in stage.hypothesis_trial_prompt) is trial_tool
+    assert "/work/model.py" in stage.hypothesis_trial_prompt
+
+
 _PATHS = {"coding_output_path": "/work/model.py", "verification_dir": "/work/attempts"}
 
 
