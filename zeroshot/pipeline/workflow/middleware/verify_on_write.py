@@ -108,7 +108,7 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         if _has_unrun_calls(response):
             # Unrun tools may still change the artifact. A HumanMessage here
             # would split their results, so only the acknowledgement changes.
-            return _refused(response, _ANSWER_WITH_TOOLS_REFUSED)
+            return refused_answer(response, _ANSWER_WITH_TOOLS_REFUSED)
 
         reasons = self._artifact_reasons()
         # Integration checks a text answer's tickets, and re-asks the stage.
@@ -117,7 +117,7 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         if not reasons:
             return response
 
-        refused = _refused(response, "Submission refused; see the message below.")
+        refused = refused_answer(response, "Submission refused; see the message below.")
         return ModelResponse(
             result=[*refused.result, HumanMessage(content_blocks=reasons)],
             structured_response=None,
@@ -167,7 +167,7 @@ def _answered_by_tool(response: ModelResponse[Any]) -> bool:
     return any(isinstance(message, ToolMessage) for message in response.result)
 
 
-def _refused(response: ModelResponse[Any], text: str) -> ModelResponse[Any]:
+def refused_answer(response: ModelResponse[Any], text: str) -> ModelResponse[Any]:
     """Replace the answer's acknowledgement so no message says it was received.
 
     LangChain's tools-to-model edge ends on a structured tool's name, even

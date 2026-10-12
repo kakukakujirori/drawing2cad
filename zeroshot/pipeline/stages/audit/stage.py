@@ -17,6 +17,7 @@ from zeroshot.pipeline.stages._base.prompt import (
     schema_for_prompt,
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
+from zeroshot.pipeline.stages.audit.middleware import DismissalCheckMiddleware
 from zeroshot.pipeline.stages.audit.verify import AuditVerifier
 from zeroshot.pipeline.stages.coding.verify import build_verification_feedback
 from zeroshot.pipeline.stages.types import PipelineStage
@@ -38,6 +39,7 @@ class AuditStage:
     attempt_store: AttemptStore
     audit_verifier: AuditVerifier
     middleware: VerifyOnWriteMiddleware
+    dismissal_check: DismissalCheckMiddleware
     artifact_presenter: ArtifactPresenter
     drawing_diff_reviews: str
 
@@ -51,6 +53,7 @@ class AuditStage:
         if state.get("stage_validation_error") is None:
             self.audit_verifier.reset(snapshot)
             self.middleware.reset()
+            self.dismissal_check.reset()
 
         attempt_dir = str(
             self.attempt_store.sandbox_attempt_dir(
@@ -123,6 +126,7 @@ def create_audit_stage(
         require_drawing_diff_reviews=review_drawing_diff_clusters,
     )
     middleware = VerifyOnWriteMiddleware(audit_verifier)
+    dismissal_check = DismissalCheckMiddleware(audit_verifier)
 
     trial_tool = create_cad_hypothesis_tool(
         workdir=instructions.workdir,
@@ -146,7 +150,9 @@ def create_audit_stage(
             AuditSubmission,
         ),
         output_schema=AuditSubmission,
-        extra_middleware=[middleware],
+        # The first is outermost: the check questions only answers the write
+        # check let through, so only a verified, reported audit.json.
+        extra_middleware=[dismissal_check, middleware],
     )
     return AuditStage(
         agent=audit_agent,
@@ -154,6 +160,7 @@ def create_audit_stage(
         attempt_store=attempt_store,
         audit_verifier=audit_verifier,
         middleware=middleware,
+        dismissal_check=dismissal_check,
         artifact_presenter=artifact_presenter,
         drawing_diff_reviews=(
             PromptTemplate(

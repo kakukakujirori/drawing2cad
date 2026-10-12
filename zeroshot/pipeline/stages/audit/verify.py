@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import ValidationError
@@ -10,9 +11,45 @@ from zeroshot.pipeline.stages._base.error_locations import file_errors
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.audit.validate import validate_audit_report
+from zeroshot.pipeline.stages.coding.verify import unmatched_items
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.workflow.evidence import EvidenceMode, render_evidence
+
+_DISMISSAL_CHECK = (
+    "[Dismissal check]\n"
+    "These reviews dismiss extra items: {items}. An extra item is an edge or "
+    "material the build draws but the input view lacks.\n"
+    "An input drawing omits a line only when the 3D shape is clear without it. "
+    "Keep a dismissal only if the rest of the input drawing shows that this edge "
+    "or material must exist, and the view only leaves it out. In the "
+    "disposition, name what in the drawing supports this. Without such evidence, "
+    "report the item as a defect in a finding; the coder decides the correction."
+)
+
+
+def dismissal_check_text(items: list[str]) -> str:
+    return _DISMISSAL_CHECK.format(items=", ".join(items))
+
+
+def dismissed_extras(
+    report: AuditReport, snapshot: ReconstructionSnapshot
+) -> list[str]:
+    """Reviews that dismiss an edge or material the input view does not show.
+
+    An "extra" cluster lies beyond the comparison margin of every input line,
+    or outside the input silhouette, so the input is blank where it is.
+    """
+    verification = snapshot.verification
+    items: dict[str, dict[str, Any]] = unmatched_items(
+        verification.drawing_diff_report if verification else None
+    )
+    return [
+        key
+        for key, review in report.concern_reviews.items()
+        if review.finding_name is None
+        and items.get(key, {}).get("direction") == "extra"
+    ]
 
 
 class AuditVerifier:
@@ -76,6 +113,13 @@ class AuditVerifier:
     def accepted_report(self) -> AuditReport | None:
         return self._accepted if self.confirmed else None
 
+    @property
+    def dismissed_extras(self) -> list[str]:
+        """Extra items the verified audit.json dismisses without a finding."""
+        if self._accepted is None or self._snapshot is None:
+            return []
+        return dismissed_extras(self._accepted, self._snapshot)
+
     def feedback(self) -> list[ContentBlock]:
         contents = self._contents()
         self._checked = contents
@@ -133,4 +177,7 @@ class AuditVerifier:
                 text += f"{name}: {', '.join(paths)}\n"
             if self.evidence_renders:
                 text += "Check these evidence images with load_image against the findings and source drawing."
-        return [create_text_block(text)]
+        blocks: list[ContentBlock] = [create_text_block(text)]
+        if dismissed := self.dismissed_extras:
+            blocks.append(create_text_block(dismissal_check_text(dismissed)))
+        return blocks
