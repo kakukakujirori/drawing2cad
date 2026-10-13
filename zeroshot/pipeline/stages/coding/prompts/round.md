@@ -47,7 +47,7 @@ When a feature's shape is uncertain, build each hypothesis you have, as the work
 
 ### Work cycle
 
-Use `load_image` to inspect drawings, `run_shell` to create crops and edit files, and `calculate_drawing_scale` for raster scale checks.
+Use `load_image` to inspect drawings, `run_shell` to create crops and edit files, and `calculate_drawing_scale` for raster scale checks. Measure lines, holes and arcs on raster drawings with `fit_edge` instead of scanning pixels with `run_shell`. Printed dimensions must be prioritized over measured sizes. When a size you measure disagrees with a printed dimension, check that you read the number right, then build the printed value and note the disagreement in `concerns`.
 
 After a tool turn changes either file, automatic verification checks the interpretation. Once it is valid, verification also executes the program and returns diagnostics and paths to STEP, orthographic PNG/DXF and perspective renders under `$verification_dir/round_NNN/coding/NNN/`. Each report lists the requirements your answer still has to meet. Verification uses no additional model turn.
 

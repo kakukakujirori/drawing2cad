@@ -20,11 +20,15 @@ _DISMISSAL_CHECK = (
     "[Dismissal check]\n"
     "These reviews dismiss extra items: {items}. An extra item is an edge or "
     "material the build draws but the input view lacks.\n"
-    "An input drawing omits a line only when the 3D shape is clear without it. "
-    "Keep a dismissal only if the rest of the input drawing shows that this edge "
-    "or material must exist, and the view only leaves it out. In the "
-    "disposition, name what in the drawing supports this. Without such evidence, "
-    "report the item as a defect in a finding; the coder decides the correction."
+    "Whether a view omits a line depends on the input drawing alone. An input "
+    "drawing omits a line only when the 3D shape is clear without it, so a real "
+    "omission leaves no doubt. Keep a dismissal only if the rest of the input "
+    "drawing shows that this edge or material must exist, and the view only "
+    "leaves it out. In the disposition, name what in the drawing supports this.\n"
+    "Never infer an omission from the build or from trials. When no trial "
+    "removes an extra item, the trials are wrong too, not the drawing.\n"
+    "Without such evidence, report the item as a defect in a finding; the coder "
+    "decides the correction."
 )
 
 

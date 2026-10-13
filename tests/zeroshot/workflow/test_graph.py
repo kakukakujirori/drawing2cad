@@ -561,11 +561,13 @@ def test_stage_specific_tools_stay_with_their_assigned_stage(monkeypatch):
     assert auditor.bound_tool_names == (
         "run_shell",
         "load_image",
+        "fit_edge",
         "evaluate_cad_hypothesis",
     )
     assert coder.bound_tool_names == (
         "run_shell",
         "load_image",
+        "fit_edge",
         "calculate_drawing_scale",
         "evaluate_cad_hypothesis",
     )

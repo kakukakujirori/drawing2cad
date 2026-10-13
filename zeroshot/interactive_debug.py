@@ -50,6 +50,7 @@ from zeroshot.pipeline.tools.cad_hypothesis import (
 from zeroshot.pipeline.tools.calculate_drawing_scale import (
     create_calculate_drawing_scale_tool,
 )
+from zeroshot.pipeline.tools.fit_edge import create_fit_edge_tool
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import (
@@ -266,7 +267,11 @@ def build_agent(
     )
     runner_config["python_executable"] = Path(runner_config["python_executable"])
     runner = SandboxRunner(**runner_config)
-    tools = [create_run_shell_tool(runner, workdir), create_load_image_tool(workdir)]
+    tools = [
+        create_run_shell_tool(runner, workdir),
+        create_load_image_tool(workdir),
+        create_fit_edge_tool(workdir),
+    ]
     middleware: list[AgentMiddleware[Any, None, Any]] = [
         ToolErrorMiddleware(on_error=_handle_tool_error),
         PromptLogMiddleware(settings.role),

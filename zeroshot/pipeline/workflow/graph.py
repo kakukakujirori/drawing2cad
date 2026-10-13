@@ -25,6 +25,7 @@ from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.types import PipelineStage, next_stage
 from zeroshot.pipeline.stages.validate import validate_submission
 from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
+from zeroshot.pipeline.tools.fit_edge import create_fit_edge_tool
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore
@@ -88,6 +89,7 @@ def create_reconstruction_graph(
     basic_tools = [
         create_run_shell_tool(sandbox_runner, sandbox_workdir),
         create_load_image_tool(sandbox_workdir),
+        create_fit_edge_tool(sandbox_workdir),
     ]
     history_path = sandbox_workdir.host_bind_dir / reconstruction_history_filename
 

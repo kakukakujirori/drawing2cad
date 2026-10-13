@@ -667,7 +667,10 @@ _OVERLAY = (
     "far from them. Blue does not prove a correct match."
 )
 _UNMATCHED = cleandoc("""
-    Unmatched images: input gray, projection light blue, overlap blue. Colored bands mark the clusters below by color and ID suffix; hatching marks material (silhouette) differences. Missing = input only; extra = projection only. Missing dimension, leader and text lines are not defects.
+    Unmatched images: input gray, projection light blue, overlap blue.
+    Colored bands mark the clusters below by color and ID suffix; hatching marks material (silhouette) differences.
+    Missing = input only; extra = projection only. Missing dimension, leader and text lines are not defects.
+    Clusters list only the largest differences in each view; a difference without a cluster can still be a defect.
     Mismatch clusters (box in input-view pixels):
     {clusters}
 """)

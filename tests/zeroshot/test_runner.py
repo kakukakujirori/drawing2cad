@@ -875,6 +875,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     assert model.bound_tool_names == (
         "run_shell",
         "load_image",
+        "fit_edge",
         "calculate_drawing_scale",
         "evaluate_cad_hypothesis",
     )
