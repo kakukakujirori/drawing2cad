@@ -5,6 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from scipy.ndimage import binary_fill_holes
+from skimage.morphology import skeletonize
 
 
 def foreground_mask(gray: np.ndarray) -> np.ndarray:
@@ -23,6 +24,45 @@ def foreground_mask(gray: np.ndarray) -> np.ndarray:
     if np.count_nonzero(mask) < 8 or mask.mean() > 0.65:
         raise ValueError("No usable line drawing, or foreground polarity is wrong")
     return mask
+
+
+# Two-tone drawings print the part dark and its annotation (dimension, extension
+# and leader lines, arrows, text) in light gray. Antialiasing alone spreads one
+# tone's line centres over less than this, measured on low-resolution scans.
+TONE_GAP = 100
+# Each tone must be a real population, not a few stray pixels.
+MIN_TONE_SHARE = 0.05
+# Light ink this close to a part line belongs to it: a pale stretch of the line.
+PART_REACH_PX = 3
+
+
+def annotation_mask(gray: np.ndarray, ink: np.ndarray) -> np.ndarray:
+    """Ink in a separate lighter tone than the part's lines; empty if single-tone.
+
+    Each pixel takes the darkest value around it, so a dark line's antialiased
+    rim stays with its line. Where the line centres do not form two clearly
+    separate tones, every line is treated as the part's.
+    """
+    core = cv2.erode(gray, np.ones((3, 3), np.uint8))
+    centres = core[skeletonize(ink)]
+    none = np.zeros_like(ink, dtype=bool)
+    if centres.size < 2 or np.ptp(centres) == 0:
+        return none
+    threshold, _ = cv2.threshold(
+        centres.reshape(-1, 1), 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU
+    )
+    dark, light = centres[centres <= threshold], centres[centres > threshold]
+    if (
+        min(dark.size, light.size) < MIN_TONE_SHARE * centres.size
+        or light.mean() - dark.mean() < TONE_GAP
+    ):
+        return none
+    # Blur can pale a part line where it curves; that must not open its outline.
+    part = (ink & (core <= threshold)).astype(np.uint8)
+    near_part = cv2.dilate(
+        part, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * PART_REACH_PX + 1,) * 2)
+    )
+    return ink & (core > threshold) & ~near_part.astype(bool)
 
 
 def distance_map(foreground: np.ndarray) -> np.ndarray:

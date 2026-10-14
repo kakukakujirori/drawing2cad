@@ -6,6 +6,8 @@ import numpy as np
 import pytest
 
 from zeroshot.pipeline.verification.drawing_diff.unmatched import (
+    ANNOTATION_GRAY,
+    BOTH_BLUE,
     COLORS,
     INPUT_GRAY,
     Unmatched,
@@ -627,3 +629,29 @@ def test_region_score_keeps_a_thin_misalignment_instead_of_reporting_zero():
 
     assert error["missing_px2"] + error["extra_px2"] == 3696
     assert error["ratio"] > 0.05
+
+
+def test_thin_input_lines_keep_their_width_and_still_mark_shared_strokes():
+    drawing = _lines(*OUTLINE, INNER)  # one pixel wide, like small print
+    output = _lines(*OUTLINE)
+    image = draw_unmatched(np.uint8(~drawing) * 255, output, [])
+
+    # Widening would fill small text; the input-only line stays one pixel wide.
+    gray = np.all(image == INPUT_GRAY, axis=-1)
+    assert gray[100, 70:130].all() and not gray[[99, 101], 70:130].any()
+    # The output stroke along an input line is still drawn by both.
+    assert np.all(image[40, 70:130] == BOTH_BLUE)
+
+
+def test_annotation_is_never_missing_and_an_output_along_it_is_not_extra():
+    leader = ((60, 100), (190, 100))  # crosses the part into the margin
+    note = ((80, 80), (150, 80))  # an output edge an annotation line happens to trace
+    drawing = _lines(*OUTLINE, leader, note, width=3)
+    annotation = _lines(leader, note, width=3) & ~_lines(*OUTLINE, width=3)
+    output = _lines(*OUTLINE, note)
+
+    assert find_unmatched(drawing, output) != []
+    assert find_unmatched(drawing, output, annotation=annotation) == []
+
+    image = draw_unmatched(np.uint8(~drawing) * 255, output, [], annotation)
+    assert np.all(image[100, 170:190] == ANNOTATION_GRAY)
