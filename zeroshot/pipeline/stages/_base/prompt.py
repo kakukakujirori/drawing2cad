@@ -19,7 +19,7 @@ from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import (
-    PLACEMENT,
+    VIEW_PLACEMENT,
     DrawingView,
     ProjectionMethod,
 )
@@ -139,7 +139,7 @@ def describe_placement(method: ProjectionMethod) -> str:
     """Where the method draws each side view, as validation holds it."""
     placed = [
         f"the {view.value} view {_SIDES[side]} front"
-        for view, side in PLACEMENT[method].items()
+        for view, side in VIEW_PLACEMENT[method].items()
     ]
     return (
         f"This drawing uses {method.replace('_', '-')} projection: it draws "

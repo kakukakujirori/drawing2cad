@@ -110,13 +110,15 @@ _THIRD_ANGLE_SIDES = {
     View.LEFT: (-1, 0),
 }
 # The side of front each method draws a view on: page x rightwards, y upwards.
-PLACEMENT: Mapping[ProjectionMethod, Mapping[View, tuple[int, int]]] = MappingProxyType(
-    {
-        ProjectionMethod.THIRD_ANGLE: MappingProxyType(_THIRD_ANGLE_SIDES),
-        ProjectionMethod.FIRST_ANGLE: MappingProxyType(
-            {view: (-x, -y) for view, (x, y) in _THIRD_ANGLE_SIDES.items()}
-        ),
-    }
+VIEW_PLACEMENT: Mapping[ProjectionMethod, Mapping[View, tuple[int, int]]] = (
+    MappingProxyType(
+        {
+            ProjectionMethod.THIRD_ANGLE: MappingProxyType(_THIRD_ANGLE_SIDES),
+            ProjectionMethod.FIRST_ANGLE: MappingProxyType(
+                {view: (-x, -y) for view, (x, y) in _THIRD_ANGLE_SIDES.items()}
+            ),
+        }
+    )
 )
 
 # A pictorial is offered for context: it fixes no axes, so nothing lifts a coordinate from one.

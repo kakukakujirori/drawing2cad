@@ -14,8 +14,8 @@ from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.validate import KeyLocation, LocatedError
 from zeroshot.pipeline.stages.interpretation.contracts import (
     ORTHOGRAPHIC_VIEWS,
-    PLACEMENT,
     UNDECIDED,
+    VIEW_PLACEMENT,
     DrawingInterpretation,
     DrawingView,
     ProjectionMethod,
@@ -130,7 +130,7 @@ def _require_conventional_placement(
         return
     fx, fy = _page_centre(front.region)
     for index, view in enumerate(views):
-        step = PLACEMENT[method].get(view.role)
+        step = VIEW_PLACEMENT[method].get(view.role)
         if step is None or view.region.view != front.region.view:
             continue
         x, y = _page_centre(view.region)

@@ -24,8 +24,8 @@ from zeroshot.pipeline.stages._base.prompt import (
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.interpretation.contracts import (
-    PLACEMENT,
     TOWARD_VIEWER,
+    VIEW_PLACEMENT,
     DrawingInterpretation,
     DrawingView,
     ProjectionMethod,
@@ -603,7 +603,9 @@ def test_every_stage_is_told_where_validation_expects_each_view(
         ).text
         assert f"uses {method.replace('_', '-')} projection" in rendered
         placed = re.findall(rf"the (\w+) view ({'|'.join(sides)}) front", rendered)
-        assert {View(role): sides[side] for role, side in placed} == PLACEMENT[method]
+        assert {View(role): sides[side] for role, side in placed} == VIEW_PLACEMENT[
+            method
+        ]
 
 
 def test_the_coding_prompt_uses_interpreted_features_and_preserves_the_datum(
