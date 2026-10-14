@@ -622,6 +622,21 @@ FIRST_ANGLE_PLACES = {
 }
 
 
+# How the refusal names those sides.
+THIRD_ANGLE_SIDES = {
+    "top": "above",
+    "bottom": "below",
+    "right": "to the right of",
+    "left": "to the left of",
+}
+OPPOSITE = {
+    "above": "below",
+    "below": "above",
+    "to the right of": "to the left of",
+    "to the left of": "to the right of",
+}
+
+
 @pytest.mark.parametrize("method", list(ProjectionMethod))
 @pytest.mark.parametrize("role", list(THIRD_ANGLE_PLACES))
 def test_a_role_drawn_on_the_far_side_of_front_is_refused(
@@ -639,10 +654,13 @@ def test_a_role_drawn_on_the_far_side_of_front_is_refused(
     )
     assert accepted.views[2].role is View(role)
 
+    expected = THIRD_ANGLE_SIDES[role]
+    if method is ProjectionMethod.FIRST_ANGLE:
+        expected = OPPOSITE[expected]
     with pytest.raises(
         LocatedError,
-        match=f"far side of view_front from where {method.replace('_', '-')} "
-        f"projection puts a {role} view",
+        match=f"view_{role} sits {OPPOSITE[expected]} view_front, but "
+        f"{method.replace('_', '-')} projection draws the {role} view {expected} front",
     ):
         validate_by_method(
             _page_layout(tmp_path, {"role": role, "box_px": elsewhere[role]}),

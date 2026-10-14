@@ -106,6 +106,14 @@ def _region(
     return {**region, "box_uv": sheet.millimetres(box)}
 
 
+_SIDE_OF = {
+    (0, 1): "above",
+    (0, -1): "below",
+    (1, 0): "to the right of",
+    (-1, 0): "to the left of",
+}
+
+
 def _require_conventional_placement(
     views: list[DrawingView], method: ProjectionMethod
 ) -> None:
@@ -137,9 +145,10 @@ def _require_conventional_placement(
         if (x - fx) * step[0] + (y - fy) * step[1] < 0:
             raise LocatedError.at(
                 ("views", index, "role"),
-                f"{view.name} is drawn on the far side of {front.name} from where "
-                f"{method.replace('_', '-')} projection puts a {view.role.value} "
-                "view; re-read the roles or the arrangement, "
+                f"{view.name} sits {_SIDE_OF[(-step[0], -step[1])]} {front.name}, "
+                f"but {method.replace('_', '-')} projection draws the "
+                f"{view.role.value} view {_SIDE_OF[step]} front; "
+                "re-read the roles or the arrangement, "
                 "and if you change the u/v-axis assignment, update any inconsistencies in "
                 "the affected feature descriptions, XYZ positions, direction parameters, "
                 "and evidence as well.",
