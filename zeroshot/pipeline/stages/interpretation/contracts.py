@@ -109,6 +109,8 @@ _THIRD_ANGLE_SIDES = {
     View.RIGHT: (1, 0),
     View.LEFT: (-1, 0),
 }
+# The views a projection method places, each on its own side of front.
+PLACED_VIEWS = frozenset(_THIRD_ANGLE_SIDES)
 # The side of front each method draws a view on: page x rightwards, y upwards.
 PLACEMENT: Mapping[ProjectionMethod, Mapping[View, tuple[int, int]]] = MappingProxyType(
     {
@@ -278,6 +280,18 @@ class DrawingView(Contract):
         default=None,
         description="Model axis this sheet's +V (upwards) points along, for an orthographic view; null for any other. The front view is +z.",
     )
+    free_placement: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Null for a view drawn where the drawing's projection method puts its role "
+            "beside the front view. A top, bottom, left or right view the drawing puts "
+            "elsewhere, such as a labelled view moved under a viewing-direction arrow "
+            "or a view on a free-style page, states here what fixes its role instead: "
+            "the printed label and arrow, or the features its projection shares with "
+            "the other views."
+        ),
+    )
 
     @model_validator(mode="after")
     def require_stable_name(self) -> Self:
@@ -307,6 +321,15 @@ class DrawingView(Contract):
             )
         if self.role is View.FRONT and (u, v) != ("+x", "+z"):
             raise ValueError(f"{self.name}: the front view is drawn u=+x, v=+z")
+        return self
+
+    @model_validator(mode="after")
+    def require_a_placed_role_to_place_freely(self) -> Self:
+        if self.free_placement is not None and self.role not in PLACED_VIEWS:
+            raise ValueError(
+                f"{self.name}: free_placement belongs to a top, bottom, left or "
+                f"right view; nothing holds a {self.role.value} view to a place"
+            )
         return self
 
 

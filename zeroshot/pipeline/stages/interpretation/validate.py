@@ -112,7 +112,8 @@ def _require_conventional_placement(
     """Refuse a view drawn where the projection method puts another role.
 
     A third-angle top view below front, or a first-angle one above it, is a
-    misread role: the mirrored reading projects just as well.
+    misread role: the mirrored reading projects just as well. A view the
+    drawing itself places freely says so, with its evidence, and is let be.
     """
 
     def _page_centre(region: Region) -> tuple[float, float]:
@@ -131,7 +132,11 @@ def _require_conventional_placement(
     fx, fy = _page_centre(front.region)
     for index, view in enumerate(views):
         step = PLACEMENT[method].get(view.role)
-        if step is None or view.region.view != front.region.view:
+        if (
+            step is None
+            or view.region.view != front.region.view
+            or view.free_placement is not None
+        ):
             continue
         x, y = _page_centre(view.region)
         if (x - fx) * step[0] + (y - fy) * step[1] < 0:
@@ -142,7 +147,10 @@ def _require_conventional_placement(
                 "view; re-read the roles or the arrangement, "
                 "and if you change the u/v-axis assignment, update any inconsistencies in "
                 "the affected feature descriptions, XYZ positions, direction parameters, "
-                "and evidence as well.",
+                "and evidence as well. Only if the drawing itself puts this view "
+                "there, as a labelled view moved under a viewing-direction arrow or on "
+                "a free-style page, keep the role and state that evidence in "
+                f"{view.name}.free_placement.",
             )
 
 

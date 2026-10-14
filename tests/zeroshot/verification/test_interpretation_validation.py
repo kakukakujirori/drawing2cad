@@ -651,6 +651,45 @@ def test_a_role_drawn_on_the_far_side_of_front_is_refused(
         )
 
 
+@pytest.mark.parametrize("method", list(ProjectionMethod))
+def test_a_view_the_drawing_places_freely_keeps_its_role(
+    tmp_path: Path, method: ProjectionMethod
+) -> None:
+    """A labelled view may stand anywhere; the views around it are still placed."""
+    elsewhere = (
+        FIRST_ANGLE_PLACES
+        if method is ProjectionMethod.THIRD_ANGLE
+        else THIRD_ANGLE_PLACES
+    )
+    free = {
+        "role": "top",
+        "box_px": elsewhere["top"],
+        "free_placement": "Captioned TOP VIEW, with its arrow on the front view",
+    }
+    with pytest.raises(LocatedError, match="view_top.free_placement"):
+        validate_by_method(
+            _page_layout(tmp_path, {**free, "free_placement": None}),
+            workdir=SandboxWorkdir(tmp_path),
+            projection_method=method,
+        )
+
+    accepted, _ = validate_by_method(
+        _page_layout(tmp_path, free),
+        workdir=SandboxWorkdir(tmp_path),
+        projection_method=method,
+    )
+    assert accepted.views[2].free_placement == free["free_placement"]
+
+    with pytest.raises(LocatedError, match="far side of view_front"):
+        validate_by_method(
+            _page_layout(
+                tmp_path, free, {"role": "right", "box_px": elsewhere["right"]}
+            ),
+            workdir=SandboxWorkdir(tmp_path),
+            projection_method=method,
+        )
+
+
 def test_crops_of_views_drawn_close_together_may_overlap(tmp_path: Path) -> None:
     """A tight page cannot crop each view with its dimensions and keep them apart."""
     accepted, _ = validate_interpretation(

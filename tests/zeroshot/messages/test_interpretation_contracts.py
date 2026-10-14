@@ -229,6 +229,7 @@ def test_schema_describes_fields_and_preserves_file_backed_views() -> None:
         "scale",
         "u_axis",
         "v_axis",
+        "free_placement",
     }
     assert {"file", "region"} <= set(view_schema["required"])
     assert set(schema["$defs"]["Region"]["properties"]) == {"view", "box_px", "box_uv"}
@@ -332,6 +333,18 @@ def test_only_an_orthographic_view_carries_sheet_axes() -> None:
 
     with pytest.raises(ValidationError, match="belong to an orthographic view"):
         DrawingView.model_validate(_view("perspective", "+x", "+z"))
+
+
+def test_only_a_view_a_method_places_can_be_placed_freely() -> None:
+    labelled = _view("top", "+x", "+y") | {"free_placement": "Labelled VIEW A"}
+    assert DrawingView.model_validate(labelled).free_placement == "Labelled VIEW A"
+
+    with pytest.raises(ValidationError, match="free_placement belongs to a top"):
+        DrawingView.model_validate(
+            _view("front", "+x", "+z") | {"free_placement": "Upper right"}
+        )
+    with pytest.raises(ValidationError, match="at least 1 character"):
+        DrawingView.model_validate(labelled | {"free_placement": ""})
 
 
 def test_the_frames_to_redraw_in_are_the_declared_ones() -> None:
