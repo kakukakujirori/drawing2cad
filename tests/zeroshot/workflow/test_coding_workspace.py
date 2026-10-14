@@ -29,6 +29,7 @@ from zeroshot.pipeline.stages.coding.stage import create_coding_stage
 from zeroshot.pipeline.stages.coding.workspace import CodingWorkspaceVerifier
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
+    ProjectionMethod,
     View,
 )
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
@@ -142,7 +143,13 @@ def _stage(builder, workdir, drawing, **flags):
         builder,
         tools=[],
         role_path=ROLE_PATHS["coder"],
-        instructions=StageInstructions(drawing, "path", _PATHS, workdir),
+        instructions=StageInstructions(
+            drawing,
+            "path",
+            _PATHS,
+            workdir,
+            projection_method=ProjectionMethod.THIRD_ANGLE,
+        ),
         prompt_context={},
         attempt_store=AttemptStore(workdir, lambda: 0),
         trial_store=_trials(workdir),
@@ -242,7 +249,13 @@ def test_an_answer_waits_for_a_written_verified_interpretation(tmp_path, monkeyp
         _coder(model, 5),
         tools=[write_interpretation],
         role_path=ROLE_PATHS["coder"],
-        instructions=StageInstructions(drawing, "path", _PATHS, verifier.workdir),
+        instructions=StageInstructions(
+            drawing,
+            "path",
+            _PATHS,
+            verifier.workdir,
+            projection_method=ProjectionMethod.THIRD_ANGLE,
+        ),
         prompt_context={},
         attempt_store=verifier.attempt_store,
         trial_store=_trials(verifier.workdir),
@@ -323,7 +336,13 @@ def test_dxf_metadata_reaches_the_coder_and_its_interpretation_validates(
         _coder(model, 4),
         tools=[write_dxf_interpretation],
         role_path=ROLE_PATHS["coder"],
-        instructions=StageInstructions(drawing, "path", _PATHS, workdir),
+        instructions=StageInstructions(
+            drawing,
+            "path",
+            _PATHS,
+            workdir,
+            projection_method=ProjectionMethod.THIRD_ANGLE,
+        ),
         prompt_context={},
         attempt_store=AttemptStore(workdir, lambda: 0),
         trial_store=_trials(workdir),

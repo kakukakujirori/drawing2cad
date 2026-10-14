@@ -168,6 +168,7 @@ def create_coding_stage(
             workdir=instructions.workdir,
             attempt_store=attempt_store,
             input_artifact=instructions.input_artifact,
+            projection_method=instructions.projection_method,
             source_filename=interpretation_filename,
         ),
         ProgressOutputVerifier(

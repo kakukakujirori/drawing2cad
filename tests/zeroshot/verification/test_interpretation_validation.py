@@ -1,6 +1,7 @@
 """Validate real sheet files, calibration and evidence without model calls."""
 
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 
 import ezdxf
@@ -13,9 +14,17 @@ from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.validate import LocatedError
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
+    ProjectionMethod,
     View,
 )
-from zeroshot.pipeline.stages.interpretation.validate import validate_interpretation
+from zeroshot.pipeline.stages.interpretation.validate import (
+    validate_interpretation as validate_by_method,
+)
+
+# Pages are laid out third-angle unless a test names its method.
+validate_interpretation = partial(
+    validate_by_method, projection_method=ProjectionMethod.THIRD_ANGLE
+)
 
 MEASUREMENTS = [(4.2, 42), (10, 100), (20, 200)]
 
@@ -597,23 +606,67 @@ def test_a_view_off_its_row_or_column_is_still_placed_correctly(
     ]
 
 
-@pytest.mark.parametrize(
-    ("role", "box_px"),
-    [
-        ("top", (100, 2850, 1300, 2950)),
-        ("bottom", (100, 300, 1300, 1300)),
-        ("right", (0, 1800, 400, 2800)),
-        ("left", (1500, 1800, 2300, 2800)),
-    ],
-)
+# Where third-angle projection draws each role around the front view at
+# (100, 1400, 1300, 2800); first-angle draws each one on the opposite side.
+THIRD_ANGLE_PLACES = {
+    "top": (100, 300, 1300, 1300),
+    "bottom": (100, 2850, 1300, 2950),
+    "right": (1500, 1800, 2300, 2800),
+    "left": (0, 1800, 400, 2800),
+}
+FIRST_ANGLE_PLACES = {
+    "top": THIRD_ANGLE_PLACES["bottom"],
+    "bottom": THIRD_ANGLE_PLACES["top"],
+    "right": THIRD_ANGLE_PLACES["left"],
+    "left": THIRD_ANGLE_PLACES["right"],
+}
+
+
+@pytest.mark.parametrize("method", list(ProjectionMethod))
+@pytest.mark.parametrize("role", list(THIRD_ANGLE_PLACES))
 def test_a_role_drawn_on_the_far_side_of_front_is_refused(
-    tmp_path: Path, role: str, box_px: tuple
+    tmp_path: Path, method: ProjectionMethod, role: str
 ) -> None:
-    with pytest.raises(LocatedError, match="far side of view_front"):
-        validate_interpretation(
-            _page_layout(tmp_path, {"role": role, "box_px": box_px}),
+    places, elsewhere = (
+        (THIRD_ANGLE_PLACES, FIRST_ANGLE_PLACES)
+        if method is ProjectionMethod.THIRD_ANGLE
+        else (FIRST_ANGLE_PLACES, THIRD_ANGLE_PLACES)
+    )
+    accepted, _ = validate_by_method(
+        _page_layout(tmp_path, {"role": role, "box_px": places[role]}),
+        workdir=SandboxWorkdir(tmp_path),
+        projection_method=method,
+    )
+    assert accepted.views[2].role is View(role)
+
+    with pytest.raises(
+        LocatedError,
+        match=f"far side of view_front from where {method.replace('_', '-')} "
+        f"projection puts a {role} view",
+    ):
+        validate_by_method(
+            _page_layout(tmp_path, {"role": role, "box_px": elsewhere[role]}),
             workdir=SandboxWorkdir(tmp_path),
+            projection_method=method,
         )
+
+
+def test_crops_of_views_drawn_close_together_may_overlap(tmp_path: Path) -> None:
+    """A tight page cannot crop each view with its dimensions and keep them apart."""
+    accepted, _ = validate_interpretation(
+        _page_layout(
+            tmp_path,
+            {"role": "top", "box_px": (100, 300, 1300, 1500)},
+            {"role": "right", "box_px": (1200, 1300, 2300, 2800)},
+        ),
+        workdir=SandboxWorkdir(tmp_path),
+    )
+    assert [view.role for view in accepted.views] == [
+        View.FULL_PAGE,
+        View.FRONT,
+        View.TOP,
+        View.RIGHT,
+    ]
 
 
 def test_a_page_without_a_front_view_is_placed_against_nothing(tmp_path: Path) -> None:

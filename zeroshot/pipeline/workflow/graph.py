@@ -126,6 +126,7 @@ def create_reconstruction_graph(
         input_artifact=input_manifest.drawing,
         input_presentation_mode=artifact_presenter.input,
         workdir=sandbox_workdir,
+        projection_method=input_manifest.projection_method,
     )
 
     stages_dir = Path(__file__).resolve().parents[1] / "stages"

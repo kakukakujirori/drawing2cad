@@ -11,7 +11,7 @@ from PIL import Image
 from zeroshot import run_pipeline
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest, register_view
-from zeroshot.pipeline.stages.interpretation.contracts import View
+from zeroshot.pipeline.stages.interpretation.contracts import ProjectionMethod, View
 from zeroshot.pipeline.workflow import (
     ReconstructionState,
 )
@@ -50,13 +50,14 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
             "sample_id": "sample-1",
             "max_input_image_side": 2000,
             "drawing": {
+                "projection_method": "third_angle",
                 "sheets": [
                     {
                         "name": "view_drawing",
                         "role": "full_page",
                         "file": str(dxf_path),
                     }
-                ]
+                ],
             },
         },
     }
@@ -126,13 +127,14 @@ def test_run_composes_dependencies_and_manifest(
                 "sample_id": "sample-1",
                 "max_input_image_side": 2000,
                 "drawing": {
+                    "projection_method": "third_angle",
                     "sheets": [
                         {
                             "name": "view_drawing",
                             "role": "full_page",
                             "file": str(dxf_path),
                         }
-                    ]
+                    ],
                 },
             },
         }
@@ -166,6 +168,7 @@ def test_run_composes_dependencies_and_manifest(
     assert captured["manifest"] == InputManifest(
         sample_id="sample-1",
         drawing=[register_view("view_drawing", View.FULL_PAGE, dxf_path)],
+        projection_method=ProjectionMethod.THIRD_ANGLE,
     )
     assert result is not None
     assert result == {}

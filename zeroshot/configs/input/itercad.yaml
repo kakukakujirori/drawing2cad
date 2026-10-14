@@ -2,6 +2,9 @@
 
 sample:
   drawing:
+    # Where the sheets put each view around front. Not checked against the
+    # dataset: the method every sheet was read with before this setting existed.
+    projection_method: third_angle
     sheets:
       - name: view_drawing
         role: full_page

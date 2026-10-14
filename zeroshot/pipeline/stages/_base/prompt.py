@@ -18,7 +18,11 @@ from zeroshot.pipeline.messages.artifact import SandboxedArtifact
 from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
-from zeroshot.pipeline.stages.interpretation.contracts import DrawingView
+from zeroshot.pipeline.stages.interpretation.contracts import (
+    PLACEMENT,
+    DrawingView,
+    ProjectionMethod,
+)
 from zeroshot.pipeline.stages.types import (
     REASONING_STAGES,
     PipelineStage,
@@ -50,6 +54,7 @@ class StageInstructions:
     input_presentation_mode: Literal["path", "image"]
     prompt_context: Mapping[str, str]
     workdir: SandboxWorkdir
+    projection_method: ProjectionMethod
 
     def __post_init__(self) -> None:
         if self.input_presentation_mode not in ("path", "image"):
@@ -83,6 +88,7 @@ class StageInstructions:
                 **self.prompt_context,
                 "current_round": str(snapshot.round),
                 "assigned_tickets": _assigned_ticket_ids(snapshot, stage),
+                "projection_placement": describe_placement(self.projection_method),
                 **extra_context,
             }
             stages_dir = Path(__file__).parent.parent
@@ -119,6 +125,26 @@ class StageInstructions:
             )
 
         return blocks
+
+
+_SIDES = {
+    (0, 1): "above",
+    (0, -1): "below",
+    (1, 0): "to the right of",
+    (-1, 0): "to the left of",
+}
+
+
+def describe_placement(method: ProjectionMethod) -> str:
+    """Where the method draws each side view, as validation holds it."""
+    placed = [
+        f"the {view.value} view {_SIDES[side]} front"
+        for view, side in PLACEMENT[method].items()
+    ]
+    return (
+        f"This drawing uses {method.replace('_', '-')} projection: it draws "
+        f"{', '.join(placed[:-1])} and {placed[-1]}."
+    )
 
 
 def _assigned_ticket_ids(

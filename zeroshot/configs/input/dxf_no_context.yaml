@@ -6,6 +6,9 @@
 # renders at once, and neither could be attributed.
 sample:
   drawing:
+    # Where the sheets put each view around front: test_vlm's TechDraw sheets
+    # are laid out by src/data/render/techdraw.py.
+    projection_method: third_angle
     sheets:
       - name: view_drawing
         role: full_page

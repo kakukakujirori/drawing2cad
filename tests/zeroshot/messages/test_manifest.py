@@ -17,6 +17,7 @@ from zeroshot.pipeline.messages.manifest import (
 )
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
+    ProjectionMethod,
     Region,
     View,
 )
@@ -68,6 +69,7 @@ def _sample_manifest(tmp_path: Path, **overrides: object) -> InputManifest:
             _write(tmp_path / "input.dxf", b"DXF"),
             _write(tmp_path / "input.png", b"PNG"),
         ),
+        "projection_method": ProjectionMethod.THIRD_ANGLE,
     }
     values.update(overrides)
     return InputManifest(**values)  # type: ignore[arg-type]
@@ -95,6 +97,13 @@ def test_a_sample_refuses_an_empty_or_unsafe_id(tmp_path: Path, sample_id: str) 
         _sample_manifest(tmp_path, sample_id=sample_id)
 
 
+def test_a_sample_takes_its_projection_method_as_config_text(tmp_path: Path) -> None:
+    manifest = _sample_manifest(tmp_path, projection_method="first_angle")
+    assert manifest.projection_method is ProjectionMethod.FIRST_ANGLE
+    with pytest.raises(ValueError, match="'second_angle' is not a valid"):
+        _sample_manifest(tmp_path, projection_method="second_angle")
+
+
 def test_a_sample_refuses_a_sheet_whose_file_is_not_there(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         _sample_manifest(tmp_path, drawing=_drawing(tmp_path / "missing.dxf"))
@@ -104,7 +113,11 @@ def test_a_sample_rejects_duplicate_names_before_inputs_can_be_copied(tmp_path):
     first = _drawing(_write(tmp_path / "first.png"))[0]
     second = _drawing(_write(tmp_path / "second.png"))[0]
     with pytest.raises(ValueError, match="duplicate names in input views: view_0"):
-        InputManifest(sample_id="sample", drawing=[first, second])
+        InputManifest(
+            sample_id="sample",
+            drawing=[first, second],
+            projection_method=ProjectionMethod.THIRD_ANGLE,
+        )
 
 
 def test_registration_rejects_images_the_presenter_cannot_attach(tmp_path):
@@ -113,7 +126,11 @@ def test_registration_rejects_images_the_presenter_cannot_attach(tmp_path):
     with pytest.raises(ValueError, match="unsupported drawing file"):
         register_view("view_input", View.FULL_PAGE, path)
     with pytest.raises(ValueError, match="unsupported drawing file"):
-        InputManifest(sample_id="sample", drawing=_drawing(path))
+        InputManifest(
+            sample_id="sample",
+            drawing=_drawing(path),
+            projection_method=ProjectionMethod.THIRD_ANGLE,
+        )
 
 
 @pytest.mark.parametrize(
@@ -139,10 +156,14 @@ def test_input_image_size_limit_preserves_pixels(tmp_path, size, limit, rejected
                 sample_id="sample",
                 drawing=_drawing(dxf, image),
                 max_input_image_side=limit,
+                projection_method=ProjectionMethod.THIRD_ANGLE,
             )
     else:
         manifest = InputManifest(
-            sample_id="sample", drawing=_drawing(dxf, image), max_input_image_side=limit
+            sample_id="sample",
+            drawing=_drawing(dxf, image),
+            max_input_image_side=limit,
+            projection_method=ProjectionMethod.THIRD_ANGLE,
         )
         assert manifest.max_input_image_side == limit
     assert image.read_bytes() == original

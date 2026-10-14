@@ -41,6 +41,7 @@ from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
     DrawingView,
+    ProjectionMethod,
     Region,
     View,
 )
@@ -255,6 +256,7 @@ def _graph(
     history_filename: str = "reconstruction.json",
     coder_options: dict[str, Any] | None = None,
     auditor_options: dict[str, Any] | None = None,
+    projection_method: ProjectionMethod = ProjectionMethod.THIRD_ANGLE,
     **overrides: Any,
 ):
     from PIL import Image
@@ -282,6 +284,7 @@ def _graph(
         input_manifest=InputManifest(
             sample_id="test",
             drawing=[register_view("view_input", View.FULL_PAGE, path)],
+            projection_method=projection_method,
         ),
         reconstruction_history_filename=history_filename,
         **overrides,
@@ -550,6 +553,35 @@ def test_every_stage_reads_the_same_history_path_and_current_round(
         prompt = "\n".join(message.text for message in model.received_messages[0])
         assert "/work/history.json" in prompt
         assert "round 0" in prompt
+
+
+def test_the_samples_projection_method_reaches_every_prompt_and_the_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_verification(monkeypatch, _verified())
+    methods: list[ProjectionMethod] = []
+    verifier = coding_stage_module.InterpretationVerifier
+
+    def recorded(**kwargs: Any) -> Any:
+        methods.append(kwargs["projection_method"])
+        return verifier(**kwargs)
+
+    monkeypatch.setattr(coding_stage_module, "InterpretationVerifier", recorded)
+    coder = ScriptedChatModel(responses=_coding_script())
+    auditor = ScriptedChatModel(responses=_audit_script(_accepted_audit()))
+
+    with SandboxWorkdir() as workdir:
+        _graph(
+            workdir,
+            coder=coder,
+            auditor=auditor,
+            projection_method=ProjectionMethod.FIRST_ANGLE,
+        ).invoke({})
+
+    assert methods == [ProjectionMethod.FIRST_ANGLE]
+    for model in (coder, auditor):
+        prompt = "\n".join(message.text for message in model.received_messages[0])
+        assert "uses first-angle projection" in prompt
 
 
 def test_stage_specific_tools_stay_with_their_assigned_stage(monkeypatch):

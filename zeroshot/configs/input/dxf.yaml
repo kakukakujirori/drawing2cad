@@ -10,6 +10,9 @@
 # target, so `input/dxf_no_context.yaml` leaves them out.
 sample:
   drawing:
+    # Where the sheets put each view around front: test_vlm's TechDraw sheets
+    # are laid out by src/data/render/techdraw.py.
+    projection_method: third_angle
     sheets:
       - name: view_drawing
         role: full_page

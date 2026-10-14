@@ -2,6 +2,8 @@
 
 sample:
   drawing:
+    # Where the sheets put each view around front. GB (Chinese standard) drawings.
+    projection_method: first_angle
     sheets:
       - name: view_drawing
         role: full_page

@@ -14,9 +14,11 @@ from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.validate import KeyLocation, LocatedError
 from zeroshot.pipeline.stages.interpretation.contracts import (
     ORTHOGRAPHIC_VIEWS,
+    PLACEMENT,
     UNDECIDED,
     DrawingInterpretation,
     DrawingView,
+    ProjectionMethod,
     Region,
     View,
 )
@@ -104,8 +106,14 @@ def _region(
     return {**region, "box_uv": sheet.millimetres(box)}
 
 
-def _require_third_angle_placement(views: list[DrawingView]) -> None:
-    """Refuse wrong configurations such as top view being placed below the front view, etc."""
+def _require_conventional_placement(
+    views: list[DrawingView], method: ProjectionMethod
+) -> None:
+    """Refuse a view drawn where the projection method puts another role.
+
+    A third-angle top view below front, or a first-angle one above it, is a
+    misread role: the mirrored reading projects just as well.
+    """
 
     def _page_centre(region: Region) -> tuple[float, float]:
         """The region's middle on its parent sheet, x rightwards and y upwards."""
@@ -122,27 +130,25 @@ def _require_third_angle_placement(views: list[DrawingView]) -> None:
         return
     fx, fy = _page_centre(front.region)
     for index, view in enumerate(views):
-        step = {
-            View.TOP: (0, 1),
-            View.BOTTOM: (0, -1),
-            View.RIGHT: (1, 0),
-            View.LEFT: (-1, 0),
-        }.get(view.role)
+        step = PLACEMENT[method].get(view.role)
         if step is None or view.region.view != front.region.view:
             continue
         x, y = _page_centre(view.region)
         if (x - fx) * step[0] + (y - fy) * step[1] < 0:
             raise LocatedError.at(
                 ("views", index, "role"),
-                f"{view.name} is drawn on the far side of {front.name} from where a "
-                f"{view.role.value} view belongs; re-read the roles or the arrangement, "
+                f"{view.name} is drawn on the far side of {front.name} from where "
+                f"{method.replace('_', '-')} projection puts a {view.role.value} "
+                "view; re-read the roles or the arrangement, "
                 "and if you change the u/v-axis assignment, update any inconsistencies in "
                 "the affected feature descriptions, XYZ positions, direction parameters, "
                 "and evidence as well.",
             )
 
 
-def _require_a_readable_submission(interpretation: DrawingInterpretation) -> None:
+def _require_a_readable_submission(
+    interpretation: DrawingInterpretation, method: ProjectionMethod
+) -> None:
     """Refuse a submission no file can calibrate or lay out."""
     if UNDECIDED in interpretation.datum:
         raise LocatedError.at(
@@ -168,7 +174,7 @@ def _require_a_readable_submission(interpretation: DrawingInterpretation) -> Non
             "If you cannot locate the entity that annotation measures, "
             "remove it from dimensions and report it in concerns.",
         )
-    _require_third_angle_placement(interpretation.views)
+    _require_conventional_placement(interpretation.views, method)
 
 
 def _require_distinct_view_files(
@@ -451,6 +457,7 @@ def validate_interpretation(
     interpretation: DrawingInterpretation,
     *,
     workdir: SandboxWorkdir,
+    projection_method: ProjectionMethod,
 ) -> tuple[DrawingInterpretation, dict[str, dict[str, Any]]]:
     """Validate and enrich without mutating model output or the input files.
 
@@ -468,7 +475,7 @@ def validate_interpretation(
     RANSAC with pixel tolerances.
     """
     interpretation = DrawingInterpretation.model_validate(interpretation.model_dump())
-    _require_a_readable_submission(interpretation)
+    _require_a_readable_submission(interpretation, projection_method)
     paths = {
         view.name: _readable_path(view, ("views", index), workdir)
         for index, view in enumerate(interpretation.views)
