@@ -8,8 +8,8 @@ sample:
     sheets:
       - name: view_drawing
         role: full_page
-        file: data/itercad/benchmark/IterCAD-Draw_1k/images/draw_${sample.sample_id}.png
-  target_step_path: data/itercad/benchmark/IterCAD-Draw_1k/stl/draw_${sample.sample_id}.stl
+        file: data/test_itercad/techdraw/draw_${sample.sample_id}.png
+  target_step_path: data/test_itercad/target_step/draw_${sample.sample_id}.step
 
 artifact_presenter:
   input: "image"
