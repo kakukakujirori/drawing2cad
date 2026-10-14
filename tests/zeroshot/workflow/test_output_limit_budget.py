@@ -19,7 +19,7 @@ from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest, register_view
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.stages.interpretation.contracts import View
+from zeroshot.pipeline.stages.interpretation.contracts import ProjectionMethod, View
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.lifecycle import load_reconstruction
@@ -274,6 +274,7 @@ def test_runner_preserves_artifacts_and_new_runs_start_with_a_fresh_cap(tmp_path
         return InputManifest(
             sample_id=name,
             drawing=[register_view("view_drawing", View.FULL_PAGE, input_path)],
+            projection_method=ProjectionMethod.THIRD_ANGLE,
         )
 
     for name in ["sample-1", "sample-2", "sample-1"]:

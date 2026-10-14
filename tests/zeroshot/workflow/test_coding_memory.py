@@ -38,6 +38,7 @@ from zeroshot.pipeline.stages.coding.workspace import CodingWorkspaceVerifier
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingInterpretation,
+    ProjectionMethod,
     View,
 )
 from zeroshot.pipeline.stages.tickets.contracts import (
@@ -131,6 +132,7 @@ def setup(tmp_path, monkeypatch):
             "reconstruction_path": "/work/reconstruction.json",
         },
         workdir=workdir,
+        projection_method=ProjectionMethod.THIRD_ANGLE,
     )
 
     def build(verifier):
@@ -528,7 +530,9 @@ def test_graph_applies_fresh_memory_only_to_coder_and_shares_the_budget(setup, f
         sandbox_workdir=verifier.workdir,
         artifact_presenter=verifier.artifact_presenter,
         input_manifest=InputManifest(
-            sample_id="memory", drawing=instructions.input_artifact
+            sample_id="memory",
+            drawing=instructions.input_artifact,
+            projection_method=ProjectionMethod.THIRD_ANGLE,
         ),
         fresh_coder=fresh,
     )

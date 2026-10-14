@@ -32,6 +32,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
 )
 from zeroshot.pipeline.stages.audit.stage import create_audit_stage
 from zeroshot.pipeline.stages.audit.verify import AuditVerifier
+from zeroshot.pipeline.stages.interpretation.contracts import ProjectionMethod
 from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
@@ -95,7 +96,13 @@ def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving(
             ),
             tools=[write_report],
             role_path=ROLE_PATHS["output_auditor"],
-            instructions=StageInstructions([], "path", context, workdir),
+            instructions=StageInstructions(
+                [],
+                "path",
+                context,
+                workdir,
+                projection_method=ProjectionMethod.THIRD_ANGLE,
+            ),
             prompt_context=context,
             attempt_store=AttemptStore(workdir, lambda: 0),
             sandbox_runner=SandboxRunner(Path(sys.executable), default_timeout_s=10),

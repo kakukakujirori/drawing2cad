@@ -1,6 +1,7 @@
 import json
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,12 +20,15 @@ from zeroshot.pipeline.stages._base.prompt import (
     PromptTemplate,
     StageInstructions,
     build_system_prompt,
+    describe_placement,
 )
 from zeroshot.pipeline.stages.audit.contracts import AuditReport
 from zeroshot.pipeline.stages.interpretation.contracts import (
     TOWARD_VIEWER,
+    VIEW_PLACEMENT,
     DrawingInterpretation,
     DrawingView,
+    ProjectionMethod,
     Region,
     View,
     cross_axis,
@@ -82,6 +86,7 @@ def instructions(tmp_path: Path) -> StageInstructions:
         input_presentation_mode="path",
         input_artifact=source,
         workdir=SandboxWorkdir(host_bind_dir=tmp_path),
+        projection_method=ProjectionMethod.THIRD_ANGLE,
     )
 
 
@@ -548,7 +553,7 @@ def test_every_stage_receives_one_copy_of_the_fixed_coordinate_convention(
     rendered = render_stage(stage.value)
     convention = PromptTemplate(
         STAGES_DIR / "_base/prompts/coordinate_frames.md"
-    ).render()
+    ).render(projection_placement=describe_placement(ProjectionMethod.THIRD_ANGLE))
 
     assert rendered.count(convention) == 1
     assert "directions, not a shared origin" in rendered
@@ -557,7 +562,7 @@ def test_every_stage_receives_one_copy_of_the_fixed_coordinate_convention(
 def test_coordinate_markdown_agrees_with_the_projection_contract() -> None:
     convention = PromptTemplate(
         STAGES_DIR / "_base/prompts/coordinate_frames.md"
-    ).render()
+    ).render(projection_placement=describe_placement(ProjectionMethod.THIRD_ANGLE))
     rows = re.findall(
         r"^\| (\w+) \| ([+-][XYZ]) \| ([+-][XYZ]) \| ([+-][XYZ]) \|$",
         convention,
@@ -573,6 +578,36 @@ def test_coordinate_markdown_agrees_with_the_projection_contract() -> None:
         assert cross_axis(u_axis, v_axis) == out, view
         # The standard projections are drawn in the frames the table teaches.
         assert STANDARD_VIEW_FRAMES[view] == (u_axis, v_axis), view
+
+
+@pytest.mark.parametrize("method", list(ProjectionMethod))
+def test_every_stage_is_told_where_validation_expects_each_view(
+    method: ProjectionMethod,
+    instructions: StageInstructions,
+    state: ReconstructionState,
+) -> None:
+    sides = {
+        "above": (0, 1),
+        "below": (0, -1),
+        "on the right": (1, 0),
+        "on the left": (-1, 0),
+    }
+    told = replace(instructions, projection_method=method)
+    for stage in PipelineStage:
+        rendered = told.build(
+            state,
+            stage,
+            append_inputs=False,
+            attempt_dir="/work/attempts/001",
+            drawing_diff_reviews=_DRAWING_DIFF_REVIEWS,
+        ).text
+        assert f"uses {method.replace('_', '-')} projection" in rendered
+        listed = re.search(r"\(relative to front: ([^)]*)\)", rendered)
+        assert listed is not None
+        placed = re.findall(rf"(\w+) ({'|'.join(sides)})", listed.group(1))
+        assert {View(role): sides[side] for role, side in placed} == VIEW_PLACEMENT[
+            method
+        ]
 
 
 def test_the_coding_prompt_uses_interpreted_features_and_preserves_the_datum(

@@ -24,6 +24,7 @@ from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
+    ProjectionMethod,
     Region,
     View,
 )
@@ -70,6 +71,7 @@ def _input_manifest(tmp_path: Path, *sheets: DrawingView) -> InputManifest:
     return InputManifest(
         sample_id="sample-1",
         drawing=list(sheets) or [_drawing_sheet(tmp_path)],
+        projection_method=ProjectionMethod.THIRD_ANGLE,
     )
 
 
@@ -85,6 +87,7 @@ def _input_blocks(
             input_presentation_mode=mode,
             prompt_context={},
             workdir=workdir,
+            projection_method=ProjectionMethod.THIRD_ANGLE,
         )
         .create_artifact_message()
         .content_blocks

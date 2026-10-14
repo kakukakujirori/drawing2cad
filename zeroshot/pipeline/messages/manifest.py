@@ -16,6 +16,7 @@ from PIL import Image
 from zeroshot.pipeline.stages.interpretation.contracts import (
     Axis,
     DrawingView,
+    ProjectionMethod,
     Region,
     View,
     require_unique,
@@ -120,11 +121,16 @@ class InputManifest:
 
     sample_id: str
     drawing: Sequence[DrawingView]
+    # Where the sheets put each view around front; a dataset draws one way.
+    projection_method: ProjectionMethod
     max_input_image_side: int = 2000
 
     def __post_init__(self) -> None:
         if not self.drawing:
             raise ValueError("a sample needs at least one view")
+        object.__setattr__(
+            self, "projection_method", ProjectionMethod(self.projection_method)
+        )
         require_unique((view.name for view in self.drawing), "input views")
         _present(view.file for view in self.drawing)
         object.__setattr__(

@@ -18,6 +18,7 @@ from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.audit.contracts import AuditReport, ConcernReview
 from zeroshot.pipeline.stages.audit.stage import create_audit_stage
 from zeroshot.pipeline.stages.audit.verify import dismissed_extras
+from zeroshot.pipeline.stages.interpretation.contracts import ProjectionMethod
 from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
@@ -122,7 +123,13 @@ def _run(history, report: AuditReport, script: tuple[str, ...]) -> tuple:
             ),
             tools=[write_report],
             role_path=ROLE_PATHS["output_auditor"],
-            instructions=StageInstructions([], "path", context, workdir),
+            instructions=StageInstructions(
+                [],
+                "path",
+                context,
+                workdir,
+                projection_method=ProjectionMethod.THIRD_ANGLE,
+            ),
             prompt_context=context,
             attempt_store=AttemptStore(workdir, lambda: 0),
             artifact_presenter=ArtifactPresenter(input="path"),

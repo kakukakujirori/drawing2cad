@@ -21,6 +21,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     PICTORIAL_VIEWS,
     DrawingInterpretation,
     DrawingView,
+    ProjectionMethod,
     View,
 )
 from zeroshot.pipeline.stages.interpretation.validate import validate_interpretation
@@ -46,6 +47,7 @@ class InterpretationVerifier:
         workdir: SandboxWorkdir,
         attempt_store: AttemptStore,
         input_artifact: Sequence[DrawingView],
+        projection_method: ProjectionMethod,
         source_filename: str = "interpretation.json",
     ) -> None:
         source = PurePosixPath(source_filename)
@@ -54,6 +56,7 @@ class InterpretationVerifier:
         self.workdir = workdir
         self.attempt_store = attempt_store
         self.source_filename = source_filename
+        self.projection_method = projection_method
         self._original_views = [
             view.model_copy(
                 update={"file": str(workdir.host_to_sandbox_path(view.file))},
@@ -188,6 +191,7 @@ class InterpretationVerifier:
             validated_interpretation, reports = validate_interpretation(
                 submitted_interpretation,
                 workdir=self.workdir,
+                projection_method=self.projection_method,
             )
             enriched = validated_interpretation.model_dump_json(indent=2) + "\n"
             (attempt_dir / self.source_filename).write_text(enriched, encoding="utf-8")

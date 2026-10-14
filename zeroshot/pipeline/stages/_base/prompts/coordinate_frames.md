@@ -28,5 +28,5 @@ Every orthographic DrawingView states the model axes its sheet +U (rightwards) a
 | Right | Bottom | +Z | -Y |
 | Left | Bottom | -Z | -Y |
 
-### Which is the front view?
-In a third-angle L arrangement the lower-left view is front, the view above it is top, and the view to its right is right. Explicit labels and projection symbols take precedence. Do not move front to another view because its silhouette is more informative or more familiar, and do not call a conventional arrangement free-style for that reason. Treat the arrangement as free-style only when labels, symbols and the agreement between views do not fix the roles; then choose roles whose projections agree with each other.
+### Which view is which?
+$projection_placement In an L of three unturned views, the corner view is front. Explicit view labels take precedence. Do not move front to another view because its silhouette is more informative or more familiar, and do not call a conventional arrangement free-style for that reason. Treat the arrangement as free-style only when labels and the agreement between views do not fix the roles; then choose roles whose projections agree with each other.

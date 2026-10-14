@@ -27,6 +27,7 @@ def run(config: DictConfig) -> ReconstructionState | None:
             )
             for sheet in config.sample.drawing.sheets
         ],
+        projection_method=config.sample.drawing.projection_method,
         max_input_image_side=config.sample.max_input_image_side,
     )
 

@@ -92,6 +92,35 @@ TOWARD_VIEWER: Mapping[View, Axis] = MappingProxyType(
 )
 ORTHOGRAPHIC_VIEWS = tuple(TOWARD_VIEWER)
 
+
+class ProjectionMethod(StrEnum):
+    """How a drawing lays its views out around the front view.
+
+    The methods draw each view alike and differ only in where they put it.
+    """
+
+    FIRST_ANGLE = "first_angle"
+    THIRD_ANGLE = "third_angle"
+
+
+_THIRD_ANGLE_SIDES = {
+    View.TOP: (0, 1),
+    View.BOTTOM: (0, -1),
+    View.RIGHT: (1, 0),
+    View.LEFT: (-1, 0),
+}
+# The side of front each method draws a view on: page x rightwards, y upwards.
+VIEW_PLACEMENT: Mapping[ProjectionMethod, Mapping[View, tuple[int, int]]] = (
+    MappingProxyType(
+        {
+            ProjectionMethod.THIRD_ANGLE: MappingProxyType(_THIRD_ANGLE_SIDES),
+            ProjectionMethod.FIRST_ANGLE: MappingProxyType(
+                {view: (-x, -y) for view, (x, y) in _THIRD_ANGLE_SIDES.items()}
+            ),
+        }
+    )
+)
+
 # A pictorial is offered for context: it fixes no axes, so nothing lifts a coordinate from one.
 PICTORIAL_VIEWS = frozenset({View.PERSPECTIVE, View.ISOMETRIC})
 

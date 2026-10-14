@@ -15,6 +15,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     UNDECIDED,
     DrawingInterpretation,
     DrawingView,
+    ProjectionMethod,
     View,
 )
 from zeroshot.pipeline.stages.interpretation.verify import InterpretationVerifier
@@ -68,6 +69,7 @@ def _case(
         workdir,
         AttemptStore(workdir, round_source=lambda: 0),
         given,
+        projection_method=ProjectionMethod.THIRD_ANGLE,
     )
     seed = DrawingInterpretation(datum=UNDECIDED, views=given, features=[])
     return verifier, DrawingInterpretation.model_validate(data), seed
@@ -534,7 +536,10 @@ def test_native_dxf_input_and_derived_dxf_do_not_require_raster_crop_checks(
         candidate.views.append(child)
     workdir = SandboxWorkdir(tmp_path)
     verifier = InterpretationVerifier(
-        workdir, AttemptStore(workdir, round_source=lambda: 0), [original]
+        workdir,
+        AttemptStore(workdir, round_source=lambda: 0),
+        [original],
+        projection_method=ProjectionMethod.THIRD_ANGLE,
     )
     verifier.reset(candidate)
 

@@ -36,6 +36,7 @@ from zeroshot.pipeline.stages.coding.validate import CodingOutput
 from zeroshot.pipeline.stages.coding.verify import RESULT_NAME, VerifyOutputResult
 from zeroshot.pipeline.stages.interpretation.contracts import (
     DrawingView,
+    ProjectionMethod,
     Region,
     View,
 )
@@ -483,6 +484,7 @@ def _resume_input_case(tmp_path: Path, same_workspace: bool):
     manifest = InputManifest(
         sample_id=sample_id,
         drawing=[register_view("view_drawing", View.FULL_PAGE, supplied)],
+        projection_method=ProjectionMethod.THIRD_ANGLE,
     )
     runner = _runner_for_rerun(
         artifact_root, "retry" if same_workspace else "fail", resume_from=resume_path
@@ -748,6 +750,7 @@ def _manifest_without_renders(tmp_path: Path, sample_id: str) -> InputManifest:
     return InputManifest(
         sample_id=sample_id,
         drawing=[register_view("view_drawing", View.FULL_PAGE, dxf_path)],
+        projection_method=ProjectionMethod.THIRD_ANGLE,
     )
 
 
@@ -759,6 +762,7 @@ def test_staging_preserves_the_samples_image_size_limit(tmp_path):
         sample_id="sample",
         drawing=[register_view("view_drawing", View.FULL_PAGE, image)],
         max_input_image_side=3000,
+        projection_method=ProjectionMethod.THIRD_ANGLE,
     )
 
     def forbidden(**kwargs):
@@ -805,6 +809,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
             register_view("view_drawing", View.FULL_PAGE, dxf_path),
             register_view("view_style_a", View.PERSPECTIVE, selected_render_path),
         ],
+        projection_method=ProjectionMethod.THIRD_ANGLE,
     )
     inspect_inputs = cleandoc(
         """
