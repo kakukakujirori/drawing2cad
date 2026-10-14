@@ -5,7 +5,11 @@ import pytest
 
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.drawing_diff.diff import compute_diff
-from zeroshot.pipeline.verification.drawing_diff.image_ops import drawing_area
+from zeroshot.pipeline.verification.drawing_diff.image_ops import (
+    annotation_mask,
+    drawing_area,
+    foreground_mask,
+)
 
 
 def _white(size=64):
@@ -326,3 +330,64 @@ def test_a_thin_walled_outline_has_no_silhouette():
     solid = np.zeros((120, 160), bool)
     cv2.rectangle(solid.view(np.uint8), (20, 20), (140, 100), 1, 1)
     assert drawing_area(solid).sum() > 0.9 * 121 * 81
+
+
+def _dimensioned_part(annotation_color):
+    """A part with a hole; its dimension lines close a box beside it."""
+    image = _white(300)
+    for y in (60, 240):  # extension lines continuing the top and bottom edges
+        cv2.line(image, (150, y), (270, y), annotation_color, 2)
+    cv2.line(image, (250, 50), (250, 250), annotation_color, 2)
+    cv2.line(image, (200, 20), (95, 150), annotation_color, 2)  # leader to the hole
+    cv2.putText(
+        image, "R0.13", (175, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, annotation_color, 1
+    )
+    cv2.rectangle(image, (40, 60), (150, 240), (0, 0, 0), 5)
+    cv2.circle(image, (95, 150), 20, (0, 0, 0), 5)
+    return image
+
+
+def test_light_annotation_neither_encloses_material_nor_joins_a_missing_hole():
+    output = _white(300)
+    cv2.rectangle(output, (40, 60), (150, 240), (0, 0, 0), 1)
+
+    two_tone = compute_diff(_dimensioned_part((120, 120, 120)), output, _alignment())
+    one_tone = compute_diff(_dimensioned_part((0, 0, 0)), output, _alignment())
+
+    # In one tone the box the dimension lines close reads as missing material.
+    assert one_tone.stats["material_error"]["missing_px2"] > 15000
+    assert two_tone.stats["material_error"]["missing_px2"] < 2500
+    assert two_tone.stats["match_score"] < one_tone.stats["match_score"] / 3
+    # The hole is the only difference, and the leader ending on it is not part of it.
+    [hole] = two_tone.stats["unmatched"]
+    assert hole["kind"] == "lines" and hole["direction"] == "missing"
+    assert hole["box_px"] == pytest.approx([75, 130, 116, 171], abs=3)
+    assert one_tone.stats["unmatched"][0]["box_px"][1] < 110  # leader joined in
+
+
+def _gray(image):
+    return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+
+@pytest.mark.parametrize("antialiased", [False, True])
+def test_one_tone_drawings_have_no_annotation(antialiased):
+    image = _dimensioned_part((0, 0, 0))
+    if antialiased:  # a downscaled print: thin lines turn gray, but not as one tone
+        image = cv2.resize(image, (100, 100), interpolation=cv2.INTER_AREA)
+    gray = _gray(image)
+
+    assert not annotation_mask(gray, foreground_mask(gray)).any()
+
+
+def test_light_annotation_is_masked_but_a_pale_stretch_of_a_part_line_is_not():
+    image = _dimensioned_part((120, 120, 120))
+    image[140:160, 40:44] = 125  # blur paling the part's left edge
+    gray = _gray(image)
+    ink = foreground_mask(gray)
+
+    annotation = annotation_mask(gray, ink)
+
+    assert annotation[150, 250] and annotation[60, 200]  # dimension, extension
+    assert annotation[5:17, 175:230].any()  # text
+    assert not annotation[145:155, 40:44].any()
+    assert not (annotation & (gray < 60)).any()

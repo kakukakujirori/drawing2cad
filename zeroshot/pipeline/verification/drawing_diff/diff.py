@@ -12,7 +12,7 @@ from ezdxf.layouts import Modelspace
 from scipy.spatial import cKDTree
 
 from .align import AlignmentResult, _validate_rgb, opencv_transform
-from .image_ops import distance_map, foreground_mask
+from .image_ops import annotation_mask, distance_map, foreground_mask
 from .unmatched import (
     describe_unmatched,
     detail_geometry,
@@ -46,21 +46,28 @@ def _distance_summary(distances: np.ndarray) -> dict[str, Any]:
 
 
 def _chamfers(
-    drawing_ink: np.ndarray, output_ink: np.ndarray, matrix: np.ndarray
+    drawing_ink: np.ndarray,
+    output_ink: np.ndarray,
+    matrix: np.ndarray,
+    annotation: np.ndarray | None = None,
 ) -> dict[str, float | None]:
     """Mean line distance both ways in drawing pixels, to compare builds of one part.
 
-    Every drawing line counts, and the unit does not change with the output's
-    size. Output lines outside the drawing are not evaluated. The bounded mean
-    caps each distance at CHAMFER_CAP_PX; the unbounded mean does not.
+    Every part line of the drawing counts, and the unit does not change with the
+    output's size. Annotation lines are not part lines the output should reach,
+    but an output line along one is still near the drawing. Output lines outside
+    the drawing are not evaluated. The bounded mean caps each distance at
+    CHAMFER_CAP_PX; the unbounded mean does not.
     """
     unavailable = {
         "bounded_chamfer_drawing_px": None,
         "unbounded_chamfer_drawing_px": None,
     }
-    if not (drawing_ink.any() and output_ink.any()):
+    part_ink = drawing_ink if annotation is None else drawing_ink & ~annotation
+    if not (part_ink.any() and output_ink.any()):
         return unavailable
     drawing_xy = np.argwhere(drawing_ink)[:, ::-1].astype(np.float64)
+    part_xy = np.argwhere(part_ink)[:, ::-1].astype(np.float64)
     output_xy = cv2.perspectiveTransform(
         np.argwhere(output_ink)[None, :, ::-1].astype(np.float64),
         np.linalg.inv(matrix),
@@ -69,7 +76,7 @@ def _chamfers(
     inside = np.all((output_xy >= 0) & (output_xy <= (width - 1, height - 1)), axis=1)
     if not inside.any():
         return unavailable
-    missing = cKDTree(output_xy).query(drawing_xy)[0]
+    missing = cKDTree(output_xy).query(part_xy)[0]
     extra = cKDTree(drawing_xy).query(output_xy[inside])[0]
     bounded = (
         np.minimum(missing, CHAMFER_CAP_PX).mean()
@@ -245,6 +252,8 @@ def compute_diff(
         projection_gray = cv2.cvtColor(projection_rgb, cv2.COLOR_RGB2GRAY)
         drawing_ink = foreground_mask(drawing_gray)
         output_ink = foreground_mask(projection_gray)
+        # A light second tone is annotation: the output need not draw it.
+        annotation = annotation_mask(drawing_gray, drawing_ink)
         matrix = opencv_transform(alignment.H_drawing_to_projection)
         aligned_ink, valid, aligned_gray = _warp_drawing(
             drawing_gray, drawing_ink, matrix, projection_gray.shape
@@ -252,10 +261,10 @@ def compute_diff(
         # Measure both directions; output pixels outside input coverage are unknown.
         output_distances, measured = _measure_distances(aligned_ink, output_ink, valid)
         stats.update(measured)
-        stats.update(_chamfers(drawing_ink, output_ink, matrix))
+        stats.update(_chamfers(drawing_ink, output_ink, matrix, annotation))
         # Cluster distances to highlight unmatched output lines and regions.
         output_seen = warp_output_to_drawing(output_ink, matrix, drawing_ink.shape)
-        material = measure_material_error(drawing_ink, output_seen)
+        material = measure_material_error(drawing_ink & ~annotation, output_seen)
         stats["material_error"] = material
         # Both terms are lengths in drawing pixels: the mean distance between
         # the line sets, and the mismatched silhouette area per unit of outline.
@@ -281,9 +290,9 @@ def compute_diff(
                 drawing_ink.shape,
             )
 
-        groups = find_unmatched(drawing_ink, output_seen, geometry)
+        groups = find_unmatched(drawing_ink, output_seen, geometry, annotation)
         stats["unmatched"] = describe_unmatched(groups)
-        unmatched = draw_unmatched(drawing_gray, output_seen, groups)
+        unmatched = draw_unmatched(drawing_gray, output_seen, groups, annotation)
 
         # An automatic display scale is unavailable when no output line is measured.
         if distance_clip_px is None:

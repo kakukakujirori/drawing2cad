@@ -49,6 +49,7 @@ MAX_LOCAL_GROUPS = 2
 # Wider than the displayed strokes, so the band shows on both sides of them.
 BAND_PX = 5
 INPUT_GRAY = (110, 110, 110)
+ANNOTATION_GRAY = (185, 185, 185)
 OUTPUT_SKY = (90, 190, 255)
 # Where both draw a line, the gray over the light blue deepens it to pure blue.
 BOTH_BLUE = (0, 0, 255)
@@ -398,16 +399,22 @@ def find_unmatched(
     drawing_ink: np.ndarray,
     output: np.ndarray,
     geometry: DetailGeometry | None = None,
+    annotation: np.ndarray | None = None,
 ) -> list[Unmatched]:
     """Collect material/coarse defects, merge fine errors, then select display groups.
 
     Material outlines suppress duplicate line groups. Fine tails extend coarse
     groups before independent locals pass the size and curvature/corner checks.
+    Annotation ink is never missing and never encloses material, but output
+    lines along it are not extra either.
     """
+    annotated = annotation is not None and annotation.any()
+    part_ink = drawing_ink & ~annotation if annotated else drawing_ink
     # Thin both line sets so cluster size does not depend on stroke width.
-    drawing_lines, output_lines = skeletonize(drawing_ink), skeletonize(output)
+    drawing_lines, output_lines = skeletonize(part_ink), skeletonize(output)
     if not (drawing_lines.any() and output_lines.any()):
         return []
+    all_lines = skeletonize(drawing_ink) if annotated else drawing_lines
     # Limit input-only candidates to the output's vicinity to avoid far annotations.
     ys, xs = np.nonzero(output_lines)
     part = np.zeros_like(drawing_lines)
@@ -417,7 +424,7 @@ def find_unmatched(
     ] = True
 
     # Filled silhouettes expose broad material differences beyond individual lines.
-    input_area, output_area = drawing_area(drawing_ink), _filled(output)
+    input_area, output_area = drawing_area(part_ink), _filled(output)
     material = (
         _material_groups(input_area & ~output_area & part, "missing")
         + _material_groups(output_area & ~input_area, "extra")
@@ -427,7 +434,7 @@ def find_unmatched(
 
     # Coarse comparison works in both directions; material outlines are shown once.
     far_from_output = distance_map(output_lines) > UNMATCHED_PX
-    output_distances = distance_map(drawing_lines)
+    output_distances = distance_map(all_lines)
     far_from_drawing = output_distances > UNMATCHED_PX
     lines = _line_groups(drawing_lines & part & far_from_output, "missing")
     lines += _line_groups(output_lines & far_from_drawing, "extra")
@@ -485,13 +492,17 @@ def describe_unmatched(groups: list[Unmatched]) -> list[dict[str, Any]]:
 
 
 def draw_unmatched(
-    drawing_gray: np.ndarray, output: np.ndarray, groups: list[Unmatched]
+    drawing_gray: np.ndarray,
+    output: np.ndarray,
+    groups: list[Unmatched],
+    annotation: np.ndarray | None = None,
 ) -> np.ndarray:
     """Each group as a colored band under the gray drawing and the light blue output.
 
     A band is wider than the lines drawn over it, so they show which image a
     group came from; lines both images draw are pure blue. Material is banded along
-    its outline and hatched inside.
+    its outline and hatched inside. Annotation ink, which the comparison does
+    not count as the part, is drawn in a lighter gray.
     """
     image = np.full((*drawing_gray.shape, 3), 255, np.uint8)
     # Paint bands underneath the source lines so their mismatch remains readable.
@@ -509,12 +520,22 @@ def draw_unmatched(
             image[cv2.dilate(mask, _disk(BAND_PX)) > 0] = color
 
     # Restore source context: input gray, output sky blue, overlap pure blue.
-    drawn = skeletonize(drawing_gray < 128).astype(np.uint8)
-    drawn = cv2.dilate(drawn, np.ones((3, 3), np.uint8)) > 0
+    ink = drawing_gray < 128
+    centre = skeletonize(ink).astype(np.uint8)
+    centre = cv2.dilate(centre, np.ones((3, 3), np.uint8)) > 0
+    # Thick lines narrow to show the band beside them; thin ones keep their width,
+    # since widening would fill small text and details.
+    drawn = centre & ink
     shown = cv2.dilate(output.astype(np.uint8), np.ones((2, 2), np.uint8)) > 0
+    if annotation is not None:
+        image[annotation] = ANNOTATION_GRAY
+        drawn &= ~annotation
+        centre &= ~annotation
     image[drawn] = INPUT_GRAY
     image[shown] = OUTPUT_SKY
-    image[drawn & shown] = BOTH_BLUE
+    # Overlap is judged on the centre band, so a thin input line still marks
+    # the output stroke it shares as drawn by both.
+    image[centre & shown] = BOTH_BLUE
 
     occupied = []
     # ponytail: greedy placement for at most six labels; no full layout solver.
