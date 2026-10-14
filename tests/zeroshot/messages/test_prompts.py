@@ -589,8 +589,8 @@ def test_every_stage_is_told_where_validation_expects_each_view(
     sides = {
         "above": (0, 1),
         "below": (0, -1),
-        "to the right of": (1, 0),
-        "to the left of": (-1, 0),
+        "on the right": (1, 0),
+        "on the left": (-1, 0),
     }
     told = replace(instructions, projection_method=method)
     for stage in PipelineStage:
@@ -602,7 +602,9 @@ def test_every_stage_is_told_where_validation_expects_each_view(
             drawing_diff_reviews=_DRAWING_DIFF_REVIEWS,
         ).text
         assert f"uses {method.replace('_', '-')} projection" in rendered
-        placed = re.findall(rf"the (\w+) view ({'|'.join(sides)}) front", rendered)
+        listed = re.search(r"\(relative to front: ([^)]*)\)", rendered)
+        assert listed is not None
+        placed = re.findall(rf"(\w+) ({'|'.join(sides)})", listed.group(1))
         assert {View(role): sides[side] for role, side in placed} == VIEW_PLACEMENT[
             method
         ]

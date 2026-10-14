@@ -130,20 +130,19 @@ class StageInstructions:
 _SIDES = {
     (0, 1): "above",
     (0, -1): "below",
-    (1, 0): "to the right of",
-    (-1, 0): "to the left of",
+    (1, 0): "on the right",
+    (-1, 0): "on the left",
 }
 
 
 def describe_placement(method: ProjectionMethod) -> str:
     """Where the method draws each side view, as validation holds it."""
-    placed = [
-        f"the {view.value} view {_SIDES[side]} front"
-        for view, side in VIEW_PLACEMENT[method].items()
-    ]
+    placed = ", ".join(
+        f"{view.value} {_SIDES[side]}" for view, side in VIEW_PLACEMENT[method].items()
+    )
     return (
-        f"This drawing uses {method.replace('_', '-')} projection: it draws "
-        f"{', '.join(placed[:-1])} and {placed[-1]}."
+        f"This drawing uses {method.replace('_', '-')} projection "
+        f"(relative to front: {placed})."
     )
 
 
