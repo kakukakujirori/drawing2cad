@@ -225,7 +225,7 @@ def create_coding_stage(
                 workspace,
                 max_turns=max_turns,
                 remind_after_turns=coding_draft_check_after_n_turns,
-                trial_tool=trial_tools[0].name if trial_tools else None,
+                trial_tool_name=trial_tools[0].name if trial_tools else None,
             )
         )
     coding_agent = coding_agent_builder(

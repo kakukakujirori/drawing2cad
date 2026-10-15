@@ -277,7 +277,7 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         *,
         max_turns: int,
         remind_after_turns: int,
-        trial_tool: str | None,
+        trial_tool_name: str | None,
     ) -> None:
         super().__init__()
         if remind_after_turns < 1:
@@ -287,7 +287,7 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         self.remind_after_turns = remind_after_turns
         self._try = _TRY.format(
             program=workspace.output.source_filename,
-            or_trial_tool=f" or calling {trial_tool}" if trial_tool else "",
+            or_trial_tool=f" or calling {trial_tool_name}" if trial_tool_name else "",
         )
 
     @override
