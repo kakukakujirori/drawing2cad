@@ -244,7 +244,6 @@ def test_valid_writes_replace_only_inference_and_keep_between_write_work(setup):
             append_inputs=True,
             interpretation_schema="{}",
             hypothesis_trials="",
-            draft_turn="20",
         ).model_copy(update={"name": INSTRUCTIONS_NAME}),
     ]
     result = agent.stream_events(

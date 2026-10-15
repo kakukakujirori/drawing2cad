@@ -68,7 +68,6 @@ _RUN_PATHS = {
     "interpretation_schema": json.dumps(DrawingInterpretation.model_json_schema()),
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
-    "draft_turn": "20",
     "hypothesis_trials": PromptTemplate(
         STAGES_DIR / "coding/prompts/trials_by_tool.md"
     ).render(coding_output_path="/work/model.py"),
@@ -538,9 +537,10 @@ def test_interpretation_prioritises_a_verified_draft_and_source_pixel_measuremen
 ) -> None:
     rendered = render_stage("coding")
     assert "current feature descriptions with numeric parameters" in rendered
-    # Saved after one look at each view, provisionally, and by the draft turn.
+    # Saved provisionally after one look at each view, for validation to check.
     assert "As soon as you have looked at each view" in rendered
-    assert "both files within your first 20 turns" in rendered
+    assert "Write provisional versions of both files early" in rendered
+    assert "scale it fits to your measured lengths by RANSAC" in rendered
     assert "Reserve turns to read the automatic validation" in rendered
     assert "top left, x right, y down" in rendered
     assert "native pixels, not a resized display" in rendered

@@ -21,9 +21,8 @@ from zeroshot.pipeline.stages._base.prompt import (
     schema_for_prompt,
 )
 from zeroshot.pipeline.stages.coding.middleware import (
-    CodingDraftMiddleware,
     CodingMiddleware,
-    CodingTrialMiddleware,
+    CodingReminderMiddleware,
     FreshCodingMiddleware,
 )
 from zeroshot.pipeline.stages.coding.progress import (
@@ -65,8 +64,6 @@ class CodingStage:
     middleware: CodingMiddleware
     input_after_compaction: bool
     hypothesis_trial_prompt: str
-    # The turn by which the prompt asks for both files, and the reminder starts.
-    draft_turn: int
     dxf_context: str | None = None
 
     def run(self, state: ReconstructionState, config: RunnableConfig) -> dict[str, Any]:
@@ -95,7 +92,6 @@ class CodingStage:
             ),
             interpretation_schema=schema_for_prompt(DrawingInterpretation),
             hypothesis_trials=self.hypothesis_trial_prompt,
-            draft_turn=str(self.draft_turn),
             feedback=(
                 [create_text_block(self.dxf_context)]
                 if self.dxf_context is not None and not retry
@@ -164,7 +160,7 @@ def create_coding_stage(
     fresh_memory: bool = False,
     coding_trial_reminder: bool = True,
     coding_trial_tool: bool = True,
-    coding_draft_turn: int = 20,
+    coding_draft_check_every_n_turns: int | None = 20,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
 ) -> CodingStage:
     renderer = StepRenderer()
@@ -223,21 +219,16 @@ def create_coding_stage(
     ).render(**instructions.prompt_context)
     coding_tools = [*tools, create_calculate_drawing_scale_tool(), *trial_tools]
     max_turns = coding_agent_builder.keywords["max_turns"]
-    extra_middleware: list[AgentMiddleware[Any, None, Any]] = [
-        coding_middleware,
-        CodingDraftMiddleware(
-            workspace.source_digest,
-            files=(interpretation_filename, output_filename),
-            first_turn=coding_draft_turn,
-            max_turns=max_turns,
-        ),
-    ]
-    if coding_trial_reminder:
+    extra_middleware: list[AgentMiddleware[Any, None, Any]] = [coding_middleware]
+    if coding_trial_reminder or coding_draft_check_every_n_turns is not None:
         extra_middleware.append(
-            CodingTrialMiddleware(
+            CodingReminderMiddleware(
                 tool_names=[tool.name for tool in coding_tools],
                 max_turns=max_turns,
                 ready=lambda: workspace.interpretation_ready,
+                trials=coding_trial_reminder,
+                draft_every=coding_draft_check_every_n_turns,
+                draft=workspace.draft_reminder,
             )
         )
     coding_agent = coding_agent_builder(
@@ -258,6 +249,5 @@ def create_coding_stage(
         middleware=coding_middleware,
         input_after_compaction=input_after_compaction,
         hypothesis_trial_prompt=hypothesis_trial_prompt,
-        draft_turn=coding_draft_turn,
         dxf_context=_dxf_context(instructions),
     )

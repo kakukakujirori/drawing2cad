@@ -66,7 +66,7 @@ def create_reconstruction_graph(
     fresh_coder: bool = False,
     coding_trial_reminder: bool = True,
     coding_trial_tool: bool = True,
-    coding_draft_turn: int = 20,
+    coding_draft_check_every_n_turns: int | None = 20,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
     review_drawing_diff_clusters: bool = True,
 ):
@@ -150,7 +150,7 @@ def create_reconstruction_graph(
         fresh_memory=fresh_coder,
         coding_trial_reminder=coding_trial_reminder,
         coding_trial_tool=coding_trial_tool,
-        coding_draft_turn=coding_draft_turn,
+        coding_draft_check_every_n_turns=coding_draft_check_every_n_turns,
         match_margin_px=match_margin_px,
     )
     audit_stage = stage_factory(PipelineStage.AUDIT)(

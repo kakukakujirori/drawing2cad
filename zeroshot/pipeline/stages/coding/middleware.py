@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, override
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock, create_text_block
 from langgraph.runtime import Runtime
 
@@ -254,101 +254,43 @@ class FreshCodingMiddleware(CodingMiddleware):
         return super().wrap_model_call(request.override(messages=selected), handler)
 
 
-_REMINDER_NAME = "coding_trial_reminder"
-_REMINDER = (
+_TRIAL_NAME = "coding_trial_reminder"
+_TRIAL = (
     "If geometry remains unresolved, make trial fixes rather than long speculation. "
     "Inspect the latest relevant views and scores before deciding. If the expected "
     "change is absent, revise the geometry or coordinate hypothesis before another trial."
 )
+_DRAFT_NAME = "coding_draft_reminder"
+_NAMES = frozenset((_TRIAL_NAME, _DRAFT_NAME))
 
 
-class CodingTrialMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
-    """Give one short reminder per tool batch once `ready`, independently of writes."""
+class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
+    """Push the coder to write its files early, then to test geometry by trials.
+
+    At most one reminder precedes a turn. On every `draft_every`-th turn, `draft`
+    names a file that cannot be the answer yet. Otherwise, with `trials` and once
+    `ready`, a finished batch of these tools gets the trial reminder.
+    """
 
     def __init__(
         self,
         tool_names: Iterable[str],
         max_turns: int,
         ready: Callable[[], bool] = lambda: True,
+        *,
+        trials: bool = True,
+        draft_every: int | None = None,
+        draft: Callable[[], str | None] = lambda: None,
     ) -> None:
         super().__init__()
+        if draft_every is not None and draft_every < 1:
+            raise ValueError(f"{draft_every=} must be at least 1")
         self.tool_names = frozenset(tool_names)
         self.max_turns = max_turns
         self.ready = ready
-
-    @override
-    def before_model(
-        self, state: TurnBudgetState, runtime: Runtime[None]
-    ) -> dict[str, Any] | None:
-        del runtime
-        # No old-batch reminder on entry, or new trial on the answer-only turn.
-        if not 0 < state.get("current_turn", 0) < self.max_turns - 1:
-            return None
-        if not self.ready():
-            return None
-
-        # Inspect only the latest response and its results; the notice itself
-        # marks an already-reminded batch, including after a checkpoint resume.
-        answered: set[str] = set()
-        for message in reversed(state["messages"]):
-            if isinstance(message, HumanMessage) and message.name == _REMINDER_NAME:
-                return None
-            if isinstance(message, ToolMessage):
-                answered.add(message.tool_call_id)
-            elif isinstance(message, AIMessage):
-                calls = message.tool_calls
-                if not any(call["name"] in self.tool_names for call in calls):
-                    return None
-                if not all(call["id"] in answered for call in calls):
-                    return None
-                return {
-                    "messages": [HumanMessage(content=_REMINDER, name=_REMINDER_NAME)]
-                }
-        return None
-
-
-_DRAFT_NAME = "coding_draft_reminder"
-_DRAFT = (
-    "Neither {interpretation} nor {program} has changed in this stage. Write your "
-    "current reading into {interpretation} now, provisional where you are unsure, "
-    "then the program into {program}. Verifying a write costs no turn: it checks "
-    "the interpretation, builds the program on a valid one and compares the "
-    "solid's projections with the drawing. Correct the files from that feedback "
-    "rather than measuring further first. An answer is refused until both files "
-    "validate."
-)
-# Turns between reminders while the files stay unchanged.
-_DRAFT_EVERY = 10
-
-
-class CodingDraftMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
-    """From `first_turn`, remind the coder to write its files while neither changes."""
-
-    def __init__(
-        self,
-        digest: Callable[[], str],
-        files: tuple[str, str],
-        first_turn: int,
-        max_turns: int,
-    ) -> None:
-        super().__init__()
-        if first_turn < 1:
-            raise ValueError(f"{first_turn=} must be at least 1")
-        self.digest = digest
-        interpretation, program = files
-        self.text = _DRAFT.format(interpretation=interpretation, program=program)
-        self.first_turn = first_turn
-        self.max_turns = max_turns
-        self._start: str | None = None
-
-    @override
-    def before_agent(
-        self, state: TurnBudgetState, runtime: Runtime[None]
-    ) -> dict[str, Any] | None:
-        del state, runtime
-        # The seeded files, with the fields the opening report derived.
-        self._start = self.digest()
-        return None
+        self.trials = trials
+        self.draft_every = draft_every
+        self.draft = draft
 
     @override
     def before_model(
@@ -356,9 +298,33 @@ class CodingDraftMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
     ) -> dict[str, Any] | None:
         del runtime
         turn = state.get("current_turn", 0) + 1
-        # Nothing can be written on the answer-only final turn.
-        if not self.first_turn <= turn < self.max_turns:
+        # Nothing on entry, or on the answer-only final turn.
+        if not 1 < turn < self.max_turns:
             return None
-        if (turn - self.first_turn) % _DRAFT_EVERY or self.digest() != self._start:
+        batch = self._latest_batch(state["messages"])
+        if batch is None:
             return None
-        return {"messages": [HumanMessage(content=self.text, name=_DRAFT_NAME)]}
+        due = self.draft_every is not None and turn % self.draft_every == 0
+        if due and (text := self.draft()) is not None:
+            return {"messages": [HumanMessage(content=text, name=_DRAFT_NAME)]}
+        if self.trials and batch and self.ready():
+            return {"messages": [HumanMessage(content=_TRIAL, name=_TRIAL_NAME)]}
+        return None
+
+    def _latest_batch(self, messages: list[AnyMessage]) -> bool | None:
+        """Whether the latest response ran these tools, all answered; None if reminded.
+
+        A reminder after that response marks it, including after a checkpoint resume.
+        """
+        answered: set[str] = set()
+        for message in reversed(messages):
+            if isinstance(message, HumanMessage) and message.name in _NAMES:
+                return None
+            if isinstance(message, ToolMessage):
+                answered.add(message.tool_call_id)
+            elif isinstance(message, AIMessage):
+                calls = message.tool_calls
+                return any(call["name"] in self.tool_names for call in calls) and all(
+                    call["id"] in answered for call in calls
+                )
+        return False

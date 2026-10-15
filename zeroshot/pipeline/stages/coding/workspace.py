@@ -18,6 +18,19 @@ _GATED = (
 _NO_FEATURES = (
     "{interpretation} lists no features. Record the part's features before answering."
 )
+_DRAFT_INTERPRETATION = (
+    "{interpretation} has not validated yet. Save your current reading to it now, "
+    "provisional where you are unsure; verification costs no turn. Validation "
+    "checks your view crops and their arrangement, and fits each view's "
+    "mm-per-pixel scale to your measured dimension lengths, naming the readings "
+    "that disagree. A valid interpretation lets {program} be built and compared "
+    "with the drawing."
+)
+_DRAFT_PROGRAM = (
+    "{program} has no successful build yet. Write a provisional program now; "
+    "verification costs no turn. Its projections are compared with the drawing "
+    "view by view, which shows a misreading faster than more measuring by hand."
+)
 
 
 def _build_inputs(interpretation: DrawingInterpretation) -> list[dict[str, Any]]:
@@ -85,6 +98,14 @@ class CodingWorkspaceVerifier:
                 blocks += self.output.feedback()
                 self._output_reported = self.output.source_digest()
         return [*blocks, create_text_block(self._pending())]
+
+    def draft_reminder(self) -> str | None:
+        """Ask for the first file in writing order that is not in place yet."""
+        if self.interpretation.accepted_interpretation is None:
+            return self._format(_DRAFT_INTERPRETATION)
+        if self.output.blockers:
+            return self._format(_DRAFT_PROGRAM)
+        return None
 
     def _pending(self) -> str:
         items = (

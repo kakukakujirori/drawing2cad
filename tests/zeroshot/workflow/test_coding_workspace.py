@@ -21,9 +21,8 @@ from zeroshot.pipeline.messages.manifest import register_view
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.coding.middleware import (
-    CodingDraftMiddleware,
     CodingMiddleware,
-    CodingTrialMiddleware,
+    CodingReminderMiddleware,
     FreshCodingMiddleware,
 )
 from zeroshot.pipeline.stages.coding.stage import create_coding_stage
@@ -126,6 +125,22 @@ def test_only_a_change_of_views_rebuilds_an_unchanged_program(tmp_path):
     assert rebuilt_on.views[1].role is View.TOP
 
 
+def test_the_draft_reminder_asks_for_the_first_file_not_in_place(tmp_path, monkeypatch):
+    workspace, output, candidate = _workspace(tmp_path)
+
+    first = workspace.draft_reminder()
+    assert first is not None
+    assert first.startswith("interpretation.json has not validated yet.")
+    workspace.interpretation.source_path.write_text(candidate.model_dump_json())
+    workspace.feedback()
+    assert workspace.draft_reminder() is None
+
+    monkeypatch.setattr(type(output), "blockers", property(lambda self: ["broken"]))
+    second = workspace.draft_reminder()
+    assert second is not None
+    assert second.startswith("model.py has no successful build yet.")
+
+
 def test_an_answer_needs_features(tmp_path):
     workspace, output, candidate = _workspace(tmp_path)
     workspace.interpretation.source_path.write_text(
@@ -182,9 +197,9 @@ def test_the_flags_choose_the_coder_middleware_in_one_place(tmp_path, fresh, rem
     kinds = [type(middleware) for middleware in built["extra_middleware"]]
     assert kinds == [
         FreshCodingMiddleware if fresh else CodingMiddleware,
-        CodingDraftMiddleware,
-        *([CodingTrialMiddleware] if reminder else []),
+        CodingReminderMiddleware,
     ]
+    assert built["extra_middleware"][1].trials is reminder
     assert stage.middleware is built["extra_middleware"][0]
 
 

@@ -15,11 +15,14 @@ from tests.zeroshot.workflow.test_agent import (
     _writing_tool,
     echo,
 )
-from zeroshot.pipeline.stages.coding.middleware import (
-    CodingDraftMiddleware,
-    CodingTrialMiddleware,
-)
+from zeroshot.pipeline.stages.coding.middleware import CodingReminderMiddleware
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
+
+_TRIAL = (
+    "If geometry remains unresolved, make trial fixes rather than long speculation. "
+    "Inspect the latest relevant views and scores before deciding. If the expected "
+    "change is absent, revise the geometry or coordinate hypothesis before another trial."
+)
 
 
 def _reminders(messages):
@@ -59,7 +62,7 @@ def test_read_only_tools_and_verification_share_one_reminder_per_batch(tmp_path)
         response_format_strategy="tool",
         extra_middleware=[
             VerifyOnWriteMiddleware(verifier),
-            CodingTrialMiddleware(("echo", "write"), max_turns=4),
+            CodingReminderMiddleware(("echo", "write"), max_turns=4),
         ],
     )
     result = agent.invoke({"messages": [HumanMessage(content="reconstruct")]})
@@ -104,7 +107,7 @@ def test_read_only_tools_and_verification_share_one_reminder_per_batch(tmp_path)
 
 
 def test_reminder_waits_for_results_and_does_not_repeat_on_reentry():
-    middleware = CodingTrialMiddleware(("echo",), max_turns=4)
+    middleware = CodingReminderMiddleware(("echo",), max_turns=4)
     call = AIMessage(
         content="",
         tool_calls=[
@@ -149,7 +152,7 @@ def test_reminder_waits_for_results_and_does_not_repeat_on_reentry():
 def test_no_reminder_before_the_interpretation_is_ready():
     """Trial builds mean nothing while interpretation.json still blocks the build."""
     ready = False
-    middleware = CodingTrialMiddleware(("echo",), max_turns=4, ready=lambda: ready)
+    middleware = CodingReminderMiddleware(("echo",), max_turns=4, ready=lambda: ready)
     state = {
         "current_turn": 1,
         "messages": [
@@ -171,69 +174,88 @@ def _draft_reminders(messages):
     ]
 
 
-def _drafting_agent(model, source, max_turns):
-    return _subgraph(
+def test_every_nth_turn_asks_for_the_missing_file_instead_of_a_trial(tmp_path):
+    missing = ["write interpretation.json"]
+    model = ScriptedChatModel(
+        responses=(
+            *[tool_call("echo", {"value": "look"}, f"look{n}") for n in range(7)],
+            tool_call(
+                "ExampleProposal",
+                {"proposal": ["candidate"], "rationale": "checked"},
+                "submit",
+            ),
+        )
+    )
+    agent = _subgraph(
         model,
-        tools=(echo, _writing_tool(source)),
-        max_turns=max_turns,
+        tools=(echo,),
+        max_turns=8,
         output_schema=ExampleProposal,
         response_format_strategy="tool",
         extra_middleware=[
-            CodingDraftMiddleware(
-                lambda: source.read_text() if source.is_file() else "",
-                files=("interpretation.json", "model.py"),
-                first_turn=2,
-                max_turns=max_turns,
+            CodingReminderMiddleware(
+                ("echo",),
+                max_turns=8,
+                draft_every=3,
+                draft=lambda: missing[0] if missing else None,
             )
         ],
     )
+    seen = model.received_messages
 
+    def turn_reminders(turn):
+        """The reminders added just before the given turn."""
+        new = seen[turn - 1][len(seen[turn - 2]) :]
+        return [m.text for m in new if isinstance(m, HumanMessage) and m.name]
 
-_SUBMIT = tool_call(
-    "ExampleProposal", {"proposal": ["candidate"], "rationale": "checked"}, "submit"
-)
+    agent.invoke({"messages": [HumanMessage(content="reconstruct")]})
 
-
-def test_draft_reminder_repeats_every_ten_turns_while_nothing_is_written(tmp_path):
-    inspections = [tool_call("echo", {"value": "look"}, f"look{n}") for n in range(22)]
-    model = ScriptedChatModel(responses=(*inspections, _SUBMIT))
-
-    _drafting_agent(model, tmp_path / "model.py", max_turns=23).invoke(
-        {"messages": [HumanMessage(content="reconstruct")]}
-    )
-    counts = [len(_draft_reminders(messages)) for messages in model.received_messages]
-
-    # Turns 2, 12 and 22; the answer-only turn 23 gets none.
-    assert [turn for turn in range(2, 24) if counts[turn - 1] > counts[turn - 2]] == [
-        2,
-        12,
-        22,
+    # Turns 3 and 6 name the file; the others remind of trials after each batch,
+    # and the answer-only turn 8 gets nothing.
+    assert [turn_reminders(turn) for turn in range(2, 9)] == [
+        [_TRIAL],
+        ["write interpretation.json"],
+        [_TRIAL],
+        [_TRIAL],
+        ["write interpretation.json"],
+        [_TRIAL],
+        [],
     ]
-    assert counts[-1] == 3
-    [reminder, *_] = _draft_reminders(model.received_messages[-1])
-    assert "Neither interpretation.json nor model.py has changed" in reminder.text
 
 
-def test_draft_reminder_stops_once_a_file_changes(tmp_path):
-    source = tmp_path / "model.py"
-    source.write_text("seeded", encoding="utf-8")
-    model = ScriptedChatModel(
-        responses=(
-            tool_call("echo", {"value": "look"}, "look"),
-            tool_call("write", {"text": "draft"}, "write"),
-            *[tool_call("echo", {"value": "look"}, f"look{n}") for n in range(11)],
-            _SUBMIT,
-        )
+def test_a_file_in_place_turns_the_draft_check_back_into_a_trial_reminder():
+    files = {"draft": "write model.py"}
+    middleware = CodingReminderMiddleware(
+        ("echo",), max_turns=30, draft_every=10, draft=lambda: files["draft"]
     )
+    state = {
+        "current_turn": 9,
+        "messages": [
+            tool_call("echo", {"value": "front"}, "front"),
+            ToolMessage(content="front", tool_call_id="front"),
+        ],
+    }
 
-    _drafting_agent(model, source, max_turns=14).invoke(
-        {"messages": [HumanMessage(content="reconstruct")]}
-    )
+    update = middleware.before_model(state, None)
+    assert [m.text for m in _draft_reminders(update["messages"])] == ["write model.py"]
+    # A replay of the hook after that reminder adds nothing.
+    replay = {**state, "messages": [*state["messages"], *update["messages"]]}
+    assert middleware.before_model(replay, None) is None
 
-    # Only turn 2's, sent before the write: the seeded file is the start.
-    assert len(_draft_reminders(model.received_messages[-1])) == 1
+    files["draft"] = None
+    assert _reminders(middleware.before_model(state, None)["messages"])
 
 
-def test_draft_reminder_needs_a_turn_to_start_on():
-    with pytest.raises(ValueError, match="first_turn"):
-        CodingDraftMiddleware(lambda: "", ("a", "b"), first_turn=0, max_turns=60)
+def test_the_draft_check_can_be_off_but_not_every_zero_turns():
+    off = CodingReminderMiddleware(("echo",), max_turns=30, trials=False)
+    state = {
+        "current_turn": 9,
+        "messages": [
+            tool_call("echo", {"value": "front"}, "front"),
+            ToolMessage(content="front", tool_call_id="front"),
+        ],
+    }
+
+    assert off.before_model(state, None) is None
+    with pytest.raises(ValueError, match="draft_every"):
+        CodingReminderMiddleware(("echo",), max_turns=30, draft_every=0)
