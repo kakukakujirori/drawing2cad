@@ -14,7 +14,6 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import least_squares
-from skimage.morphology import skeletonize
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.tools.errors import ToolFeedbackError
@@ -58,7 +57,7 @@ class Sheet:
     threshold: float
     line_width: float
     # Ink in a lighter tone than the part's lines, left out of `ink`.
-    light: np.ndarray
+    light_ink: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -131,8 +130,6 @@ class Finding:
     strokes: list[Stroke]
     reason: str | None = None
     more: bool = False
-    # The box also holds lighter strokes, which are not fitted.
-    light: bool = False
 
 
 def load_sheet(path: Path) -> Sheet:
@@ -151,8 +148,8 @@ def _load_sheet(path: str, mtime_ns: int, size: int) -> Sheet:
     threshold, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     ink = gray < threshold
     # Two-tone drawings print dimensions and leaders lighter than the part.
-    light = annotation_mask(gray, ink)
-    ink &= ~light
+    light_ink = annotation_mask(gray, ink)
+    ink &= ~light_ink
     run_width = np.minimum(_run_lengths(ink), _run_lengths(ink.T).T)
     widths = run_width[ink & (run_width <= 12)]
     return Sheet(
@@ -161,7 +158,7 @@ def _load_sheet(path: str, mtime_ns: int, size: int) -> Sheet:
         run_width=run_width,
         threshold=float(threshold),
         line_width=float(np.percentile(widths, 90)) if widths.size else 1.0,
-        light=light,
+        light_ink=light_ink,
     )
 
 
@@ -501,18 +498,14 @@ def _more(
     return score >= scale.min_support
 
 
-def _holds_light(sheet: Sheet, box: tuple[int, int, int, int], scale: _Scale) -> bool:
-    """Whether lighter strokes in the box add up to a stroke's worth of length."""
-    x0, y0, x1, y1 = box
-    return int(skeletonize(sheet.light[y0:y1, x0:x1]).sum()) >= scale.min_support
-
-
 def find_strokes(sheet: Sheet, box: tuple[int, int, int, int], kind: Kind) -> Finding:
-    scale = _Scale(sheet.line_width)
-    light = _holds_light(sheet, box, scale)
+    x0, y0, x1, y1 = box
+    # Lighter strokes are left out of the fit; with nothing fitted, name them.
+    light = sheet.light_ink[y0:y1, x0:x1].any()
     points = centre_points(sheet, box)
     if not len(points.xy):
         return Finding([], _LIGHT if light else _NO_INK)
+    scale = _Scale(sheet.line_width)
     rng = np.random.default_rng(0)
     diagonal = math.hypot(box[2] - box[0], box[3] - box[1])
     alive = np.ones(len(points.xy), bool)
@@ -546,13 +539,12 @@ def find_strokes(sheet: Sheet, box: tuple[int, int, int, int], kind: Kind) -> Fi
     if strokes:
         rest = points.take(np.flatnonzero(alive))
         full = len(strokes) == MAX_STROKES
-        more = full and _more(rest, kind, diagonal, rng, scale)
-        return Finding(strokes, more=more, light=light)
+        return Finding(strokes, more=full and _more(rest, kind, diagonal, rng, scale))
     # The strongest candidate comes first; a flat one means the ink is straight.
     if kind == "circle" and (not reasons or reasons[0] == _FLAT):
         lines = find_strokes(sheet, box, "line")
         if lines.strokes:
-            return Finding(lines.strokes, _STRAIGHT, lines.more, lines.light)
+            return Finding(lines.strokes, _STRAIGHT, lines.more)
     if light and not reasons:
         return Finding([], _LIGHT)
     return Finding(
@@ -560,7 +552,6 @@ def find_strokes(sheet: Sheet, box: tuple[int, int, int, int], kind: Kind) -> Fi
         reasons[0]
         if reasons
         else _NO_STROKE.format(kind=kind, min_support=scale.min_support),
-        light=light,
     )
 
 
@@ -786,8 +777,6 @@ def fit_report(
         lines += _spacings(finding.strokes, mm_per_px)
         if finding.more:
             lines.append(_MORE)
-        if finding.light:
-            lines.append(_NOTE.format(reason=_LIGHT))
     return "\n".join(lines)
 
 
@@ -860,8 +849,8 @@ _DESCRIPTION = cleandoc(
     - "dashed or broken" means hidden or centre lines, or crossings; gaps under
       3 px read as solid.
     - "spacing" is the distance between parallel lines, such as a wall's faces.
-    - Strokes lighter than the part's lines are not fitted. A box holding them
-      reports "Could they be dimension lines?"
+    - Strokes in a clearly lighter tone than the part's lines are not fitted.
+      A box holding only those reports "Could they be dimension lines?"
     - Arc ends at a tangent joint are approximate.
     - If the stroke you mean is missing or more strokes remain, narrow the box.
     """

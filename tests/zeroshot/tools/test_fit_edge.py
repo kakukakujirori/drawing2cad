@@ -38,10 +38,14 @@ def _line(img, a, b, thickness=3, tone=0):
 
 
 def _dimension(img, a, b, offset):
-    """A light dimension of a horizontal span: extension lines, then the line."""
+    """A light dimension `offset` px above a horizontal span, below if negative.
+
+    Its extension lines start on the span and end 5 px past the dimension line.
+    """
     (ax, ay), (bx, by) = a, b
-    _line(img, (ax, ay - 5), (ax, ay - offset - 5), thickness=2, tone=LIGHT)
-    _line(img, (bx, by - 5), (bx, by - offset - 5), thickness=2, tone=LIGHT)
+    past = offset + math.copysign(5, offset)
+    _line(img, (ax, ay), (ax, ay - past), thickness=2, tone=LIGHT)
+    _line(img, (bx, by), (bx, by - past), thickness=2, tone=LIGHT)
     _line(img, (ax, ay - offset), (bx, by - offset), thickness=2, tone=LIGHT)
 
 
@@ -200,12 +204,12 @@ def test_empty_box_is_not_measured(tmp_path):
 
 def test_light_dimension_lines_are_not_fitted_and_the_report_says_so(tmp_path):
     def draw(img):
+        _dimension(img, (100, 300), (400, 300), 60)
+        _dimension(img, (100, 400), (400, 400), -60)
         _line(img, (100, 300), (400, 300), thickness=2)
         _line(img, (100, 400), (400, 400), thickness=2)
         _line(img, (100, 300), (100, 400), thickness=2)
         _line(img, (400, 300), (400, 400), thickness=2)
-        _dimension(img, (100, 300), (400, 300), 60)
-        _dimension(img, (100, 400), (400, 400), -60)
 
     sheet = load_sheet(_sheet(tmp_path, draw))
     # The part's left edge runs on into its light extension line above.
@@ -214,11 +218,14 @@ def test_light_dimension_lines_are_not_fitted_and_the_report_says_so(tmp_path):
 
     [edge] = beside.strokes
     assert isinstance(edge.model, Line) and edge.model.x == pytest.approx(100, abs=1)
-    # Not up the extension line, which runs from y 295 to 235.
+    # Not up the extension line, which runs from y 300 to 235.
     assert min(edge.model.point(edge.start)[1], edge.model.point(edge.end)[1]) > 290
-    assert beside.light
+    assert beside.reason is None
     assert alone.strokes == []
-    assert "Could they be dimension lines?" in alone.reason
+    assert alone.reason == (
+        "strokes here lighter than the part's lines are not fitted. "
+        "Could they be dimension lines?"
+    )
 
 
 @pytest.fixture
@@ -326,10 +333,10 @@ def test_skeleton_gives_position_and_direction(tmp_path):
 
 def test_skeleton_leaves_out_light_dimension_lines(tmp_path):
     def draw(img):
-        _line(img, (100, 300), (400, 300), thickness=2)
-        _line(img, (100, 400), (400, 400), thickness=2)
         _dimension(img, (100, 300), (400, 300), 60)
         _dimension(img, (100, 400), (400, 400), -60)
+        _line(img, (100, 300), (400, 300), thickness=2)
+        _line(img, (100, 400), (400, 400), thickness=2)
         cv2.putText(img, "300", (220, 230), cv2.FONT_HERSHEY_SIMPLEX, 0.8, LIGHT, 2)
 
     save_skeleton(_sheet(tmp_path, draw), tmp_path / "skeleton.npz")
