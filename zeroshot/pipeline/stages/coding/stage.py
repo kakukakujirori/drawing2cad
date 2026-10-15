@@ -222,9 +222,9 @@ def create_coding_stage(
     if coding_draft_check_after_n_turns is not None:
         extra_middleware.append(
             CodingReminderMiddleware(
+                workspace,
                 max_turns=max_turns,
-                after=coding_draft_check_after_n_turns,
-                unwritten=workspace.unwritten_file,
+                remind_after_turns=coding_draft_check_after_n_turns,
             )
         )
     coding_agent = coding_agent_builder(

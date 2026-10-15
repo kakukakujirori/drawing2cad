@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, override
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
@@ -256,7 +255,7 @@ class FreshCodingMiddleware(CodingMiddleware):
 
 _REMINDER_NAME = "coding_reminder"
 _REMINDER = (
-    "Rather than long speculation, {action} quickly: it gets you useful "
+    "Rather than long speculation, quickly {action}: it gets you useful "
     "verification feedback from the pipeline."
 )
 _WRITE = "write a provisional {file}"
@@ -264,21 +263,25 @@ _TRY = "try any unresolved geometry as a trial"
 
 
 class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
-    """After `after` turns, push the coder each turn to act rather than speculate.
+    """After some turns, push the coder each turn to act rather than speculate.
 
-    The reminder names the first file `unwritten` reports; once both files are
-    written, it asks for a trial of any unresolved geometry.
+    The reminder names the first file this round has not written yet; once the
+    round has written both, it asks for a trial of any unresolved geometry.
     """
 
     def __init__(
-        self, max_turns: int, after: int, unwritten: Callable[[], str | None]
+        self,
+        workspace: CodingWorkspaceVerifier,
+        *,
+        max_turns: int,
+        remind_after_turns: int,
     ) -> None:
         super().__init__()
-        if after < 1:
-            raise ValueError(f"{after=} must be at least 1")
+        if remind_after_turns < 1:
+            raise ValueError(f"{remind_after_turns=} must be at least 1")
+        self.workspace = workspace
         self.max_turns = max_turns
-        self.after = after
-        self.unwritten = unwritten
+        self.remind_after_turns = remind_after_turns
 
     @override
     def before_model(
@@ -287,9 +290,11 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         del runtime
         turn = state.get("current_turn", 0) + 1
         # Nothing can be written on the answer-only final turn.
-        if not self.after < turn < self.max_turns or _reminded(state["messages"]):
+        if not self.remind_after_turns < turn < self.max_turns:
             return None
-        file = self.unwritten()
+        if _reminded(state["messages"]):
+            return None
+        file = self.workspace.unwritten_file()
         action = _TRY if file is None else _WRITE.format(file=file)
         text = _REMINDER.format(action=action)
         return {"messages": [HumanMessage(content=text, name=_REMINDER_NAME)]}

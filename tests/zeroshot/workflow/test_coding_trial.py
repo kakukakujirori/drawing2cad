@@ -21,13 +21,23 @@ from zeroshot.pipeline.stages.coding.middleware import CodingReminderMiddleware
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
 _WRITE = (
-    "Rather than long speculation, write a provisional {file} quickly: it gets "
+    "Rather than long speculation, quickly write a provisional {file}: it gets "
     "you useful verification feedback from the pipeline."
 )
 _TRY = (
-    "Rather than long speculation, try any unresolved geometry as a trial "
-    "quickly: it gets you useful verification feedback from the pipeline."
+    "Rather than long speculation, quickly try any unresolved geometry as a "
+    "trial: it gets you useful verification feedback from the pipeline."
 )
+
+
+class _Workspace:
+    """Stands in for the coding workspace: which file the round has not written."""
+
+    def __init__(self, unwritten):
+        self.unwritten = unwritten
+
+    def unwritten_file(self):
+        return self.unwritten()
 
 
 def _reminders(messages):
@@ -64,9 +74,9 @@ def test_after_the_threshold_each_turn_asks_to_write_then_to_try(tmp_path):
         extra_middleware=[
             VerifyOnWriteMiddleware(verifier),
             CodingReminderMiddleware(
+                _Workspace(lambda: None if source.is_file() else "model.py"),  # type: ignore[arg-type]
                 max_turns=6,
-                after=2,
-                unwritten=lambda: None if source.is_file() else "model.py",
+                remind_after_turns=2,
             ),
         ],
     )
@@ -85,7 +95,9 @@ def test_after_the_threshold_each_turn_asks_to_write_then_to_try(tmp_path):
 
 def test_a_replayed_hook_adds_no_second_reminder():
     middleware = CodingReminderMiddleware(
-        max_turns=30, after=5, unwritten=lambda: "interpretation.json"
+        _Workspace(lambda: "interpretation.json"),  # type: ignore[arg-type]
+        max_turns=30,
+        remind_after_turns=5,
     )
     state = {
         "current_turn": 9,
@@ -104,5 +116,9 @@ def test_a_replayed_hook_adds_no_second_reminder():
 
 
 def test_the_reminder_cannot_start_on_the_first_turn():
-    with pytest.raises(ValueError, match="after"):
-        CodingReminderMiddleware(max_turns=30, after=0, unwritten=lambda: None)
+    with pytest.raises(ValueError, match="remind_after_turns"):
+        CodingReminderMiddleware(
+            _Workspace(lambda: None),  # type: ignore[arg-type]
+            max_turns=30,
+            remind_after_turns=0,
+        )
