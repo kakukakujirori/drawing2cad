@@ -21,6 +21,7 @@ from zeroshot.pipeline.messages.manifest import register_view
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.coding.middleware import (
+    CodingDraftMiddleware,
     CodingMiddleware,
     CodingTrialMiddleware,
     FreshCodingMiddleware,
@@ -181,6 +182,7 @@ def test_the_flags_choose_the_coder_middleware_in_one_place(tmp_path, fresh, rem
     kinds = [type(middleware) for middleware in built["extra_middleware"]]
     assert kinds == [
         FreshCodingMiddleware if fresh else CodingMiddleware,
+        CodingDraftMiddleware,
         *([CodingTrialMiddleware] if reminder else []),
     ]
     assert stage.middleware is built["extra_middleware"][0]

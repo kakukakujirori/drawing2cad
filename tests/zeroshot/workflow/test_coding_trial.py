@@ -1,5 +1,6 @@
 """Coder reminders run after tools, even when the program was not edited."""
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from tests.zeroshot.chat_models import (
@@ -14,7 +15,10 @@ from tests.zeroshot.workflow.test_agent import (
     _writing_tool,
     echo,
 )
-from zeroshot.pipeline.stages.coding.middleware import CodingTrialMiddleware
+from zeroshot.pipeline.stages.coding.middleware import (
+    CodingDraftMiddleware,
+    CodingTrialMiddleware,
+)
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 
 
@@ -157,3 +161,79 @@ def test_no_reminder_before_the_interpretation_is_ready():
     assert middleware.before_model(state, None) is None
     ready = True
     assert _reminders(middleware.before_model(state, None)["messages"])
+
+
+def _draft_reminders(messages):
+    return [
+        message
+        for message in messages
+        if isinstance(message, HumanMessage) and message.name == "coding_draft_reminder"
+    ]
+
+
+def _drafting_agent(model, source, max_turns):
+    return _subgraph(
+        model,
+        tools=(echo, _writing_tool(source)),
+        max_turns=max_turns,
+        output_schema=ExampleProposal,
+        response_format_strategy="tool",
+        extra_middleware=[
+            CodingDraftMiddleware(
+                lambda: source.read_text() if source.is_file() else "",
+                files=("interpretation.json", "model.py"),
+                first_turn=2,
+                max_turns=max_turns,
+            )
+        ],
+    )
+
+
+_SUBMIT = tool_call(
+    "ExampleProposal", {"proposal": ["candidate"], "rationale": "checked"}, "submit"
+)
+
+
+def test_draft_reminder_repeats_every_ten_turns_while_nothing_is_written(tmp_path):
+    inspections = [tool_call("echo", {"value": "look"}, f"look{n}") for n in range(22)]
+    model = ScriptedChatModel(responses=(*inspections, _SUBMIT))
+
+    _drafting_agent(model, tmp_path / "model.py", max_turns=23).invoke(
+        {"messages": [HumanMessage(content="reconstruct")]}
+    )
+    counts = [len(_draft_reminders(messages)) for messages in model.received_messages]
+
+    # Turns 2, 12 and 22; the answer-only turn 23 gets none.
+    assert [turn for turn in range(2, 24) if counts[turn - 1] > counts[turn - 2]] == [
+        2,
+        12,
+        22,
+    ]
+    assert counts[-1] == 3
+    [reminder, *_] = _draft_reminders(model.received_messages[-1])
+    assert "Neither interpretation.json nor model.py has changed" in reminder.text
+
+
+def test_draft_reminder_stops_once_a_file_changes(tmp_path):
+    source = tmp_path / "model.py"
+    source.write_text("seeded", encoding="utf-8")
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("echo", {"value": "look"}, "look"),
+            tool_call("write", {"text": "draft"}, "write"),
+            *[tool_call("echo", {"value": "look"}, f"look{n}") for n in range(11)],
+            _SUBMIT,
+        )
+    )
+
+    _drafting_agent(model, source, max_turns=14).invoke(
+        {"messages": [HumanMessage(content="reconstruct")]}
+    )
+
+    # Only turn 2's, sent before the write: the seeded file is the start.
+    assert len(_draft_reminders(model.received_messages[-1])) == 1
+
+
+def test_draft_reminder_needs_a_turn_to_start_on():
+    with pytest.raises(ValueError, match="first_turn"):
+        CodingDraftMiddleware(lambda: "", ("a", "b"), first_turn=0, max_turns=60)

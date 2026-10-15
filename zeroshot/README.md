@@ -71,6 +71,7 @@ auditor compares both with the drawing and names each defect's cause. Flags in
 
 - `review_drawing_diff_clusters`: the auditor must answer every drawing_diff cluster.
 - `coding_trial_reminder`: remind the coder to make trial builds once the interpretation is valid.
+- `coding_draft_turn`: the turn by which the coder is asked to write both files; from it, the coder is reminded every ten turns while neither has changed.
 - `fresh_coder`: drop coder history older than the latest verified build.
 
 The four-agent version is at the git tag `pipeline-4agent-20261010`.

@@ -305,3 +305,60 @@ class CodingTrialMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
                     "messages": [HumanMessage(content=_REMINDER, name=_REMINDER_NAME)]
                 }
         return None
+
+
+_DRAFT_NAME = "coding_draft_reminder"
+_DRAFT = (
+    "Neither {interpretation} nor {program} has changed in this stage. Write your "
+    "current reading into {interpretation} now, provisional where you are unsure, "
+    "then the program into {program}. Verifying a write costs no turn: it checks "
+    "the interpretation, builds the program on a valid one and compares the "
+    "solid's projections with the drawing. Correct the files from that feedback "
+    "rather than measuring further first. An answer is refused until both files "
+    "validate."
+)
+# Turns between reminders while the files stay unchanged.
+_DRAFT_EVERY = 10
+
+
+class CodingDraftMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
+    """From `first_turn`, remind the coder to write its files while neither changes."""
+
+    def __init__(
+        self,
+        digest: Callable[[], str],
+        files: tuple[str, str],
+        first_turn: int,
+        max_turns: int,
+    ) -> None:
+        super().__init__()
+        if first_turn < 1:
+            raise ValueError(f"{first_turn=} must be at least 1")
+        self.digest = digest
+        interpretation, program = files
+        self.text = _DRAFT.format(interpretation=interpretation, program=program)
+        self.first_turn = first_turn
+        self.max_turns = max_turns
+        self._start: str | None = None
+
+    @override
+    def before_agent(
+        self, state: TurnBudgetState, runtime: Runtime[None]
+    ) -> dict[str, Any] | None:
+        del state, runtime
+        # The seeded files, with the fields the opening report derived.
+        self._start = self.digest()
+        return None
+
+    @override
+    def before_model(
+        self, state: TurnBudgetState, runtime: Runtime[None]
+    ) -> dict[str, Any] | None:
+        del runtime
+        turn = state.get("current_turn", 0) + 1
+        # Nothing can be written on the answer-only final turn.
+        if not self.first_turn <= turn < self.max_turns:
+            return None
+        if (turn - self.first_turn) % _DRAFT_EVERY or self.digest() != self._start:
+            return None
+        return {"messages": [HumanMessage(content=self.text, name=_DRAFT_NAME)]}

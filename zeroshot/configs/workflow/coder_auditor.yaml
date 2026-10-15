@@ -17,6 +17,9 @@ workflow:
   coding_trial_reminder: true
   # Give the coder evaluate_cad_hypothesis; off, it tries hypotheses only in model.py.
   coding_trial_tool: true
+  # The coder is asked to write both files by this turn, and reminded every ten
+  # turns from it while neither has changed.
+  coding_draft_turn: 20
   # The auditor must answer every drawing_diff cluster in concern_reviews.
   review_drawing_diff_clusters: true
 

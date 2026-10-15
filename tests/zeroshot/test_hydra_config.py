@@ -292,12 +292,14 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "fresh_coder",
         "coding_trial_reminder",
         "coding_trial_tool",
+        "coding_draft_turn",
         "match_margin_px",
         "review_drawing_diff_clusters",
     }
     assert graph_factory.keywords["fresh_coder"] is False
     assert graph_factory.keywords["coding_trial_reminder"] is True
     assert graph_factory.keywords["coding_trial_tool"] is True
+    assert graph_factory.keywords["coding_draft_turn"] == 20
     assert graph_factory.keywords["review_drawing_diff_clusters"] is True
     assert graph_factory.keywords["match_margin_px"] == 0.5
     assert graph_factory.keywords["compact_between_stages"] is not None
