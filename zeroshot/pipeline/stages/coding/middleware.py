@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, override
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
@@ -254,45 +254,31 @@ class FreshCodingMiddleware(CodingMiddleware):
         return super().wrap_model_call(request.override(messages=selected), handler)
 
 
-_TRIAL_NAME = "coding_trial_reminder"
-_TRIAL = (
-    "If geometry remains unresolved, make trial fixes rather than long speculation. "
-    "Inspect the latest relevant views and scores before deciding. If the expected "
-    "change is absent, revise the geometry or coordinate hypothesis before another trial."
+_REMINDER_NAME = "coding_reminder"
+_REMINDER = (
+    "Rather than long speculation, {action} quickly: it gets you useful "
+    "verification feedback from the pipeline."
 )
-_DRAFT_NAME = "coding_draft_reminder"
-_DRAFT = (
-    "{file} has not passed verification yet. Write a provisional version quickly: "
-    "each write gets useful verification feedback from the pipeline at no turn cost."
-)
-_NAMES = frozenset((_TRIAL_NAME, _DRAFT_NAME))
+_WRITE = "write a provisional {file}"
+_TRY = "try any unresolved geometry as a trial"
 
 
 class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
-    """Push the coder to write its files early, then to test geometry by trials.
+    """After `after` turns, push the coder each turn to act rather than speculate.
 
-    At most one reminder precedes a turn. After `draft_after` turns, each turn
-    names the first file that `unverified` reports. Otherwise, once `ready`, a
-    finished batch of these tools gets the trial reminder.
+    The reminder names the first file `unwritten` reports; once both files are
+    written, it asks for a trial of any unresolved geometry.
     """
 
     def __init__(
-        self,
-        tool_names: Iterable[str],
-        max_turns: int,
-        ready: Callable[[], bool] = lambda: True,
-        *,
-        draft_after: int | None = None,
-        unverified: Callable[[], str | None] = lambda: None,
+        self, max_turns: int, after: int, unwritten: Callable[[], str | None]
     ) -> None:
         super().__init__()
-        if draft_after is not None and draft_after < 0:
-            raise ValueError(f"{draft_after=} must not be negative")
-        self.tool_names = frozenset(tool_names)
+        if after < 1:
+            raise ValueError(f"{after=} must be at least 1")
         self.max_turns = max_turns
-        self.ready = ready
-        self.draft_after = draft_after
-        self.unverified = unverified
+        self.after = after
+        self.unwritten = unwritten
 
     @override
     def before_model(
@@ -300,34 +286,20 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
     ) -> dict[str, Any] | None:
         del runtime
         turn = state.get("current_turn", 0) + 1
-        # Nothing on entry, or on the answer-only final turn.
-        if not 1 < turn < self.max_turns:
+        # Nothing can be written on the answer-only final turn.
+        if not self.after < turn < self.max_turns or _reminded(state["messages"]):
             return None
-        batch = self._latest_batch(state["messages"])
-        if batch is None:
-            return None
-        late = self.draft_after is not None and turn > self.draft_after
-        if late and (file := self.unverified()) is not None:
-            text = _DRAFT.format(file=file)
-            return {"messages": [HumanMessage(content=text, name=_DRAFT_NAME)]}
-        if batch and self.ready():
-            return {"messages": [HumanMessage(content=_TRIAL, name=_TRIAL_NAME)]}
-        return None
+        file = self.unwritten()
+        action = _TRY if file is None else _WRITE.format(file=file)
+        text = _REMINDER.format(action=action)
+        return {"messages": [HumanMessage(content=text, name=_REMINDER_NAME)]}
 
-    def _latest_batch(self, messages: list[AnyMessage]) -> bool | None:
-        """Whether the latest response ran these tools, all answered; None if reminded.
 
-        A reminder after that response marks it, including after a checkpoint resume.
-        """
-        answered: set[str] = set()
-        for message in reversed(messages):
-            if isinstance(message, HumanMessage) and message.name in _NAMES:
-                return None
-            if isinstance(message, ToolMessage):
-                answered.add(message.tool_call_id)
-            elif isinstance(message, AIMessage):
-                calls = message.tool_calls
-                return any(call["name"] in self.tool_names for call in calls) and all(
-                    call["id"] in answered for call in calls
-                )
-        return False
+def _reminded(messages: list[AnyMessage]) -> bool:
+    """Whether a reminder follows the latest response already, as on a replay."""
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            return False
+        if isinstance(message, HumanMessage) and message.name == _REMINDER_NAME:
+            return True
+    return False

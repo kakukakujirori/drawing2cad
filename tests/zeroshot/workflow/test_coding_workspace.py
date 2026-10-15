@@ -125,16 +125,25 @@ def test_only_a_change_of_views_rebuilds_an_unchanged_program(tmp_path):
     assert rebuilt_on.views[1].role is View.TOP
 
 
-def test_the_first_unverified_file_follows_the_writing_order(tmp_path, monkeypatch):
-    workspace, output, candidate = _workspace(tmp_path)
+def test_a_file_counts_as_written_once_this_round_changes_it(tmp_path):
+    verifier, candidate, seed = _case(tmp_path)
+    output = _Output(verifier.workdir)
+    workspace = CodingWorkspaceVerifier(verifier, output)  # type: ignore[arg-type]
 
-    assert workspace.unverified_file() == "interpretation.json"
-    workspace.interpretation.source_path.write_text(candidate.model_dump_json())
+    # Round 0 opens on the seeded interpretation and no program.
+    workspace.reset(seed, ["ticket_initial"])
+    assert workspace.unwritten_file() == "interpretation.json"
+    verifier.source_path.write_text("{}")  # Written, though not yet valid.
+    assert workspace.unwritten_file() == "model.py"
+    output.source_path.write_text("result = object()\n")
+    assert workspace.unwritten_file() is None
+
+    # A later round opens on a valid interpretation and last round's program.
+    workspace.reset(candidate, ["ticket_001"])
     workspace.feedback()
-    assert workspace.unverified_file() is None
-
-    monkeypatch.setattr(type(output), "blockers", property(lambda self: ["broken"]))
-    assert workspace.unverified_file() == "model.py"
+    assert workspace.unwritten_file() == "model.py"
+    output.source_path.write_text("result = object()  # revised\n")
+    assert workspace.unwritten_file() is None
 
 
 def test_an_answer_needs_features(tmp_path):

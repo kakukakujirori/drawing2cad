@@ -15,10 +15,9 @@ workflow:
   fresh_coder: false
   # Give the coder evaluate_cad_hypothesis; off, it tries hypotheses only in model.py.
   coding_trial_tool: true
-  # After this many turns, ask the coder each turn for the first of
-  # interpretation.json and model.py that has not passed verification. The same
-  # middleware reminds it to test geometry by trial builds once
-  # interpretation.json is valid; null turns both reminders off.
+  # After this many turns, remind the coder each turn to act rather than speculate:
+  # to write the first of interpretation.json and model.py this round has not
+  # written, then to try unresolved geometry as a trial. null: no reminder.
   coding_draft_check_after_n_turns: 20
   # The auditor must answer every drawing_diff cluster in concern_reviews.
   review_drawing_diff_clusters: true

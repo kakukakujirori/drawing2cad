@@ -70,7 +70,7 @@ auditor compares both with the drawing and names each defect's cause. Flags in
 `zeroshot/configs/workflow/coder_auditor.yaml`:
 
 - `review_drawing_diff_clusters`: the auditor must answer every drawing_diff cluster.
-- `coding_draft_check_after_n_turns`: after this many turns, ask the coder each turn for the first of `interpretation.json` and `model.py` that has not passed verification. The same reminder asks for trial builds once the interpretation is valid; `null` turns both off.
+- `coding_draft_check_after_n_turns`: after this many turns, remind the coder each turn to write the first of `interpretation.json` and `model.py` this round has not written, then to try unresolved geometry as a trial; `null` turns the reminder off.
 - `fresh_coder`: drop coder history older than the latest verified build.
 
 The four-agent version is at the git tag `pipeline-4agent-20261010`.

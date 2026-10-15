@@ -37,6 +37,7 @@ class CodingWorkspaceVerifier:
         self.interpretation_ready = False  # valid once in this invocation
         self._interpretation_reported: str | None = None
         self._output_reported: str | None = None
+        self._opened: tuple[str | None, str | None] = (None, None)
 
     @property
     def source_path(self) -> Path:
@@ -56,6 +57,11 @@ class CodingWorkspaceVerifier:
         self.interpretation_ready = False
         self._interpretation_reported = None
         self._output_reported = None
+        # The round opens on the seed and on last round's program, or none.
+        self._opened = (
+            self.interpretation.source_digest(),
+            self.output.source_digest(),
+        )
 
     @property
     def blockers(self) -> list[str]:
@@ -86,11 +92,20 @@ class CodingWorkspaceVerifier:
                 self._output_reported = self.output.source_digest()
         return [*blocks, create_text_block(self._pending())]
 
-    def unverified_file(self) -> str | None:
-        """The first file in writing order that has not passed verification."""
-        if self.interpretation.accepted_interpretation is None:
+    def unwritten_file(self) -> str | None:
+        """The first file in writing order that this round has yet to write.
+
+        The interpretation counts once it is valid or changed, so one carried
+        valid from the last round counts; the program once it differs from the
+        last round's.
+        """
+        interpretation, program = self._opened
+        if (
+            not self.interpretation_ready
+            and self.interpretation.source_digest() == interpretation
+        ):
             return self.interpretation.source_filename
-        if self.output.blockers:
+        if self.output.source_digest() == program:
             return self.output.source_filename
         return None
 
