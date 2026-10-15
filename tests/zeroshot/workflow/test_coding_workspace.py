@@ -125,20 +125,16 @@ def test_only_a_change_of_views_rebuilds_an_unchanged_program(tmp_path):
     assert rebuilt_on.views[1].role is View.TOP
 
 
-def test_the_draft_reminder_asks_for_the_first_file_not_in_place(tmp_path, monkeypatch):
+def test_the_first_unverified_file_follows_the_writing_order(tmp_path, monkeypatch):
     workspace, output, candidate = _workspace(tmp_path)
 
-    first = workspace.draft_reminder()
-    assert first is not None
-    assert first.startswith("interpretation.json has not validated yet.")
+    assert workspace.unverified_file() == "interpretation.json"
     workspace.interpretation.source_path.write_text(candidate.model_dump_json())
     workspace.feedback()
-    assert workspace.draft_reminder() is None
+    assert workspace.unverified_file() is None
 
     monkeypatch.setattr(type(output), "blockers", property(lambda self: ["broken"]))
-    second = workspace.draft_reminder()
-    assert second is not None
-    assert second.startswith("model.py has no successful build yet.")
+    assert workspace.unverified_file() == "model.py"
 
 
 def test_an_answer_needs_features(tmp_path):
@@ -179,8 +175,10 @@ def _stage(builder, workdir, drawing, **flags):
 
 
 @pytest.mark.parametrize("fresh", [False, True])
-@pytest.mark.parametrize("reminder", [False, True])
-def test_the_flags_choose_the_coder_middleware_in_one_place(tmp_path, fresh, reminder):
+@pytest.mark.parametrize("draft_after", [None, 20])
+def test_the_flags_choose_the_coder_middleware_in_one_place(
+    tmp_path, fresh, draft_after
+):
     built = {}
 
     def builder(**kwargs):
@@ -192,14 +190,13 @@ def test_the_flags_choose_the_coder_middleware_in_one_place(tmp_path, fresh, rem
         SandboxWorkdir(tmp_path),
         [],
         fresh_memory=fresh,
-        coding_trial_reminder=reminder,
+        coding_draft_check_after_n_turns=draft_after,
     )
     kinds = [type(middleware) for middleware in built["extra_middleware"]]
     assert kinds == [
         FreshCodingMiddleware if fresh else CodingMiddleware,
-        CodingReminderMiddleware,
+        *([CodingReminderMiddleware] if draft_after is not None else []),
     ]
-    assert built["extra_middleware"][1].trials is reminder
     assert stage.middleware is built["extra_middleware"][0]
 
 

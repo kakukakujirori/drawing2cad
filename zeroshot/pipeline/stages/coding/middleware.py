@@ -261,15 +261,19 @@ _TRIAL = (
     "change is absent, revise the geometry or coordinate hypothesis before another trial."
 )
 _DRAFT_NAME = "coding_draft_reminder"
+_DRAFT = (
+    "{file} has not passed verification yet. Write a provisional version quickly: "
+    "each write gets useful verification feedback from the pipeline at no turn cost."
+)
 _NAMES = frozenset((_TRIAL_NAME, _DRAFT_NAME))
 
 
 class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
     """Push the coder to write its files early, then to test geometry by trials.
 
-    At most one reminder precedes a turn. On every `draft_every`-th turn, `draft`
-    names a file that cannot be the answer yet. Otherwise, with `trials` and once
-    `ready`, a finished batch of these tools gets the trial reminder.
+    At most one reminder precedes a turn. After `draft_after` turns, each turn
+    names the first file that `unverified` reports. Otherwise, once `ready`, a
+    finished batch of these tools gets the trial reminder.
     """
 
     def __init__(
@@ -278,19 +282,17 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         max_turns: int,
         ready: Callable[[], bool] = lambda: True,
         *,
-        trials: bool = True,
-        draft_every: int | None = None,
-        draft: Callable[[], str | None] = lambda: None,
+        draft_after: int | None = None,
+        unverified: Callable[[], str | None] = lambda: None,
     ) -> None:
         super().__init__()
-        if draft_every is not None and draft_every < 1:
-            raise ValueError(f"{draft_every=} must be at least 1")
+        if draft_after is not None and draft_after < 0:
+            raise ValueError(f"{draft_after=} must not be negative")
         self.tool_names = frozenset(tool_names)
         self.max_turns = max_turns
         self.ready = ready
-        self.trials = trials
-        self.draft_every = draft_every
-        self.draft = draft
+        self.draft_after = draft_after
+        self.unverified = unverified
 
     @override
     def before_model(
@@ -304,10 +306,11 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         batch = self._latest_batch(state["messages"])
         if batch is None:
             return None
-        due = self.draft_every is not None and turn % self.draft_every == 0
-        if due and (text := self.draft()) is not None:
+        late = self.draft_after is not None and turn > self.draft_after
+        if late and (file := self.unverified()) is not None:
+            text = _DRAFT.format(file=file)
             return {"messages": [HumanMessage(content=text, name=_DRAFT_NAME)]}
-        if self.trials and batch and self.ready():
+        if batch and self.ready():
             return {"messages": [HumanMessage(content=_TRIAL, name=_TRIAL_NAME)]}
         return None
 

@@ -174,8 +174,7 @@ def _draft_reminders(messages):
     ]
 
 
-def test_every_nth_turn_asks_for_the_missing_file_instead_of_a_trial(tmp_path):
-    missing = ["write interpretation.json"]
+def test_after_n_turns_each_turn_asks_for_the_unverified_file_instead(tmp_path):
     model = ScriptedChatModel(
         responses=(
             *[tool_call("echo", {"value": "look"}, f"look{n}") for n in range(7)],
@@ -196,8 +195,8 @@ def test_every_nth_turn_asks_for_the_missing_file_instead_of_a_trial(tmp_path):
             CodingReminderMiddleware(
                 ("echo",),
                 max_turns=8,
-                draft_every=3,
-                draft=lambda: missing[0] if missing else None,
+                draft_after=3,
+                unverified=lambda: "interpretation.json",
             )
         ],
     )
@@ -209,24 +208,29 @@ def test_every_nth_turn_asks_for_the_missing_file_instead_of_a_trial(tmp_path):
         return [m.text for m in new if isinstance(m, HumanMessage) and m.name]
 
     agent.invoke({"messages": [HumanMessage(content="reconstruct")]})
+    draft = (
+        "interpretation.json has not passed verification yet. Write a provisional "
+        "version quickly: each write gets useful verification feedback from the "
+        "pipeline at no turn cost."
+    )
 
-    # Turns 3 and 6 name the file; the others remind of trials after each batch,
-    # and the answer-only turn 8 gets nothing.
+    # Trial reminders follow each batch until turn 3; from turn 4 every turn names
+    # the file instead, and the answer-only turn 8 gets nothing.
     assert [turn_reminders(turn) for turn in range(2, 9)] == [
         [_TRIAL],
-        ["write interpretation.json"],
         [_TRIAL],
-        [_TRIAL],
-        ["write interpretation.json"],
-        [_TRIAL],
+        [draft],
+        [draft],
+        [draft],
+        [draft],
         [],
     ]
 
 
-def test_a_file_in_place_turns_the_draft_check_back_into_a_trial_reminder():
-    files = {"draft": "write model.py"}
+def test_a_verified_file_turns_the_draft_check_back_into_a_trial_reminder():
+    files = {"unverified": "model.py"}
     middleware = CodingReminderMiddleware(
-        ("echo",), max_turns=30, draft_every=10, draft=lambda: files["draft"]
+        ("echo",), max_turns=30, draft_after=5, unverified=lambda: files["unverified"]
     )
     state = {
         "current_turn": 9,
@@ -237,25 +241,16 @@ def test_a_file_in_place_turns_the_draft_check_back_into_a_trial_reminder():
     }
 
     update = middleware.before_model(state, None)
-    assert [m.text for m in _draft_reminders(update["messages"])] == ["write model.py"]
+    [draft] = _draft_reminders(update["messages"])
+    assert draft.text.startswith("model.py has not passed verification yet.")
     # A replay of the hook after that reminder adds nothing.
     replay = {**state, "messages": [*state["messages"], *update["messages"]]}
     assert middleware.before_model(replay, None) is None
 
-    files["draft"] = None
+    files["unverified"] = None
     assert _reminders(middleware.before_model(state, None)["messages"])
 
 
-def test_the_draft_check_can_be_off_but_not_every_zero_turns():
-    off = CodingReminderMiddleware(("echo",), max_turns=30, trials=False)
-    state = {
-        "current_turn": 9,
-        "messages": [
-            tool_call("echo", {"value": "front"}, "front"),
-            ToolMessage(content="front", tool_call_id="front"),
-        ],
-    }
-
-    assert off.before_model(state, None) is None
-    with pytest.raises(ValueError, match="draft_every"):
-        CodingReminderMiddleware(("echo",), max_turns=30, draft_every=0)
+def test_the_draft_check_cannot_start_before_the_first_turn():
+    with pytest.raises(ValueError, match="draft_after"):
+        CodingReminderMiddleware(("echo",), max_turns=30, draft_after=-1)
