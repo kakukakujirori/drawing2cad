@@ -16,6 +16,12 @@ from PIL import Image
 from pydantic import PrivateAttr
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
+from zeroshot.pipeline_native.connection_retry import (
+    ConnectionRetryMiddleware,
+)
+from zeroshot.pipeline_native.turn_limit import (
+    TurnLimitMiddleware,
+)
 from zeroshot.pipeline.workflow.middleware.stateless_reasoning import (
     StatelessReasoningMiddleware,
 )
@@ -120,8 +126,13 @@ def test_native_runs_two_tools_preserves_reasoning_and_requires_model_file(
     )
     result = runner.run(config, model=model)
     assert [tuple(type(m) for m in call["middleware"]) for call in created] == [
-        (ToolErrorMiddleware, StatelessReasoningMiddleware),
-        (StatelessReasoningMiddleware,),
+        (
+            ToolErrorMiddleware,
+            ConnectionRetryMiddleware,
+            StatelessReasoningMiddleware,
+            TurnLimitMiddleware,
+        ),
+        (ConnectionRetryMiddleware, StatelessReasoningMiddleware),
     ]
     assert [[tool.name for tool in call["tools"]] for call in created] == [
         ["run_shell", "load_image"],
@@ -524,3 +535,128 @@ def test_native_hydra_multirun_skips_completed_samples(tmp_path, on_existing):
         assert (directory / "events.jsonl").read_bytes() == previous_events
         assert (directory / ".hydra/config.yaml").is_file()
         assert not (directory / "workspace").exists()
+
+
+def test_native_retries_connection_error_and_succeeds(tmp_path, monkeypatch):
+    import httpx
+    from openai import APIConnectionError
+
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    config = _config(tmp_path)
+    script = 'import cadquery as cq\npart = cq.Workplane("XY").box(1, 2, 3)\n'
+    retrospective = "Completed with retry."
+
+    fail_request = httpx.Request("POST", "https://api.openai.com")
+    flaky_error = APIConnectionError(request=fail_request)
+
+    class _Flaky(ScriptedChatModel):
+        _attempts: int = PrivateAttr(default=0)
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self._attempts += 1
+            if self._attempts == 1:
+                raise flaky_error
+            return super()._generate(messages, stop, run_manager, **kwargs)
+
+    model = _Flaky(
+        responses=(
+            tool_call(
+                "run_shell",
+                {"command": "cat > model.py <<'PY'\n" + script + "PY"},
+                "write",
+            ),
+            AIMessage(content="Saved model.py."),
+            AIMessage(content=retrospective),
+        )
+    )
+
+    result = runner.run(config, model=model)
+    assert result is not None
+    directory = Path(config.artifact_root) / config.sample.sample_id
+    assert (directory / "workspace/model.py").read_text() == script
+    assert (directory / "reasoning_traj.md").read_text().strip() == retrospective
+    assert model._attempts == 4  # 1 fail + 2 generator + 1 retrospective
+
+
+def test_native_connection_error_exhausts_retries_and_fails(tmp_path, monkeypatch):
+    import httpx
+    from openai import APIConnectionError
+
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    config = _config(tmp_path, "model_retries=1")
+
+    fail_request = httpx.Request("POST", "https://api.openai.com")
+    flaky_error = APIConnectionError(request=fail_request)
+
+    class _AlwaysFails(ScriptedChatModel):
+        _attempts: int = PrivateAttr(default=0)
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self._attempts += 1
+            raise flaky_error
+
+    model = _AlwaysFails(responses=())
+    with pytest.raises(APIConnectionError):
+        runner.run(config, model=model)
+
+    assert model._attempts == 2  # 1 initial + 1 retry
+    events = _events(config)
+    assert events[-1]["event"] == "run_failed"
+    assert events[-1]["data"]["error_type"] == "APIConnectionError"
+
+
+def test_native_non_retryable_error_fails_immediately(tmp_path, monkeypatch):
+    import httpx
+    from openai import BadRequestError
+
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    config = _config(tmp_path, "model_retries=3")
+
+    fail_request = httpx.Request("POST", "https://api.openai.com")
+    fail_response = httpx.Response(400, request=fail_request)
+    bad_request_error = BadRequestError(
+        message="Bad Request", response=fail_response, body=None
+    )
+
+    class _BadRequestModel(ScriptedChatModel):
+        _attempts: int = PrivateAttr(default=0)
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self._attempts += 1
+            raise bad_request_error
+
+    model = _BadRequestModel(responses=())
+    with pytest.raises(BadRequestError):
+        runner.run(config, model=model)
+
+    assert model._attempts == 1  # No retry for HTTP 400
+    events = _events(config)
+    assert events[-1]["event"] == "run_failed"
+    assert events[-1]["data"]["error_type"] == "BadRequestError"
+
+
+def test_native_turn_limit_exceeded_marks_completed_and_skips_retrospective(tmp_path):
+    config = _config(tmp_path, "max_turns=2", "on_existing=skip")
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("load_image", {"image_path": "/work/missing.png"}, "c1"),
+            tool_call("load_image", {"image_path": "/work/missing.png"}, "c2"),
+            tool_call("load_image", {"image_path": "/work/missing.png"}, "c3"),
+        )
+    )
+    result = runner.run(config, model=model)
+    assert result is not None
+    assert result.get("status") == "turn_limit_exceeded"
+
+    directory = Path(config.artifact_root) / config.sample.sample_id
+    assert (directory / "workspace/model.py").is_file()
+    assert (directory / "messages.json").is_file()
+    assert not (directory / "reasoning_traj.md").exists()
+
+    events = _events(config)
+    assert events[-1]["event"] == "run_completed"
+    assert events[-1]["data"]["status"] == "turn_limit_exceeded"
+    assert any(e["event"] == "turn_limit_exceeded" for e in events)
+
+    # Running again with on_existing=skip must return None (skipped as completed)
+    assert runner.run(config, model=model) is None

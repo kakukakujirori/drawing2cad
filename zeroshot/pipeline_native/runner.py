@@ -30,10 +30,17 @@ from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.workflow.middleware.stateless_reasoning import (
     StatelessReasoningMiddleware,
 )
+from zeroshot.pipeline_native.connection_retry import (
+    ConnectionRetryMiddleware,
+)
 from zeroshot.pipeline_native.event_logging import (
     EventLog,
     has_run_completed,
     write_json,
+)
+from zeroshot.pipeline_native.turn_limit import (
+    TurnLimitExceededError,
+    TurnLimitMiddleware,
 )
 
 _PROMPT = Path(__file__).parent / "prompts" / "generator.md"
@@ -228,40 +235,81 @@ def run(
                 log.write("prompt", {"system": prompt, "messages": messages})
                 if model is None:
                     model = instantiate(config.model)
+                model_retries = (
+                    int(retries)
+                    if (retries := config.get("model_retries")) is not None
+                    else 5
+                )
+                max_turns = (
+                    int(mt) if (mt := config.get("max_turns")) is not None else 20
+                )
+                turn_limit = TurnLimitMiddleware(workspace, max_turns=max_turns)
                 agent = create_agent(
                     model=model,
                     tools=[create_run_shell_tool(sandbox, workdir), load_image],
                     system_prompt=prompt,
                     middleware=[
                         ToolErrorMiddleware(on_error=_tool_error),
+                        ConnectionRetryMiddleware(
+                            max_retries=model_retries, role="generator"
+                        ),
                         StatelessReasoningMiddleware(),
+                        turn_limit,
                     ],
                     name="generator",
                     checkpointer=False,
                 ).with_config(recursion_limit=sys.maxsize)
-                with agent.stream_events(
-                    {"messages": messages}, version="v3"
-                ) as stream:
-                    for event in stream:
-                        log.record_protocol(event)
-                    result = stream.output
-                if result is None:
-                    raise RuntimeError("Agent ended without a final state")
-                write_json(run_dir / "messages.json", result["messages"])
+                turn_limit_exceeded = False
+                try:
+                    with agent.stream_events(
+                        {"messages": messages}, version="v3"
+                    ) as stream:
+                        for event in stream:
+                            log.record_protocol(event)
+                        result = stream.output
+                    if result is None:
+                        raise RuntimeError("Agent ended without a final state")
+                    saved_messages = result["messages"]
+                except TurnLimitExceededError as error:
+                    turn_limit_exceeded = True
+                    saved_messages = turn_limit.last_messages or messages
+                    log.write(
+                        "turn_limit_exceeded",
+                        {
+                            "max_turns": max_turns,
+                            "turn_count": turn_limit.turn_count,
+                            "error": str(error),
+                        },
+                    )
+
+                write_json(run_dir / "messages.json", saved_messages)
                 output = workspace / "model.py"
                 if (
                     output.is_symlink()
                     or not output.is_file()
                     or output.stat().st_size == 0
                 ):
-                    raise FileNotFoundError(
-                        "Agent did not write a nonempty /work/model.py"
-                    )
+                    if turn_limit_exceeded:
+                        output.write_text(
+                            "# Failed: Turn limit exceeded before /work/model.py was written.\n"
+                            "import cadquery as cq\n"
+                            "result = None\n",
+                            encoding="utf-8",
+                        )
+                    else:
+                        raise FileNotFoundError(
+                            "Agent did not write a nonempty /work/model.py"
+                        )
                 log.write(
                     "run_completed",
                     {
                         "model_path": "workspace/model.py",
                         "model_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+                        **(
+                            {"status": "turn_limit_exceeded"}
+                            if turn_limit_exceeded
+                            else {}
+                        ),
                     },
                 )
         except BaseException as error:
@@ -274,10 +322,20 @@ def run(
             )
             raise
 
-    _write_retrospective(
-        model, result["messages"], prompt, run_dir, bool(config.console)
+    if not turn_limit_exceeded:
+        _write_retrospective(
+            model,
+            saved_messages,
+            prompt,
+            run_dir,
+            bool(config.console),
+            model_retries=model_retries,
+        )
+    return (
+        result
+        if not turn_limit_exceeded
+        else {"messages": saved_messages, "status": "turn_limit_exceeded"}
     )
-    return result
 
 
 def _write_retrospective(
@@ -286,6 +344,8 @@ def _write_retrospective(
     system_prompt: str,
     run_dir: Path,
     console: bool,
+    *,
+    model_retries: int = 5,
 ) -> None:
     """Ask only after generation is saved; tools cannot modify its artifacts."""
     with EventLog(run_dir / "retrospective_events.jsonl", console=console) as log:
@@ -311,7 +371,12 @@ def _write_retrospective(
                 model=model,
                 tools=[],
                 system_prompt=system_prompt,
-                middleware=[StatelessReasoningMiddleware()],
+                middleware=[
+                    ConnectionRetryMiddleware(
+                        max_retries=model_retries, role="retrospective"
+                    ),
+                    StatelessReasoningMiddleware(),
+                ],
                 name="retrospective",
                 checkpointer=False,
             )
