@@ -910,10 +910,7 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
     messages = [
         message
         for message in model.received_messages[-1]
-        if not (
-            isinstance(message, HumanMessage)
-            and message.name == "coding_trial_reminder"
-        )
+        if not (isinstance(message, HumanMessage) and message.name == "coding_reminder")
     ]
     assert [type(message) for message in messages] == [
         *[type(message) for message in initial_messages],

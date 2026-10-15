@@ -13,10 +13,13 @@ workflow:
 
   # Drop coder history older than the latest verified build from each request.
   fresh_coder: false
-  # Remind the coder to test geometry by trial builds, once interpretation.json is valid.
-  coding_trial_reminder: true
   # Give the coder evaluate_cad_hypothesis; off, it tries hypotheses only in model.py.
   coding_trial_tool: true
+  # After this many turns, suggest each turn what the coder still owes:
+  # interpretation.json until it is valid, then model.py until it differs from
+  # the round's starting program, then testing unresolved geometry in code.
+  # null: no suggestion.
+  coding_draft_check_after_n_turns: 20
   # The auditor must answer every drawing_diff cluster in concern_reviews.
   review_drawing_diff_clusters: true
 

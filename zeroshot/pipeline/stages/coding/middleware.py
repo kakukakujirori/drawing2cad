@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, override
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock, create_text_block
 from langgraph.runtime import Runtime
 
@@ -254,54 +253,82 @@ class FreshCodingMiddleware(CodingMiddleware):
         return super().wrap_model_call(request.override(messages=selected), handler)
 
 
-_REMINDER_NAME = "coding_trial_reminder"
+_REMINDER_NAME = "coding_reminder"
 _REMINDER = (
-    "If geometry remains unresolved, make trial fixes rather than long speculation. "
-    "Inspect the latest relevant views and scores before deciding. If the expected "
-    "change is absent, revise the geometry or coordinate hypothesis before another trial."
+    "Suggestion: {advice} It gets you useful verification feedback from the pipeline."
+)
+_WRITE_INTERPRETATION = (
+    "Quickly write a provisional {interpretation}, even with parts still uncertain."
+)
+# A revision round may owe a reading change before the program change.
+_WRITE_PROGRAM = (
+    "Quickly revise {interpretation} if it needs it, then write a provisional "
+    "{program}, even with parts still uncertain."
+)
+_TRY = (
+    "If you have unresolved or ambiguous geometry, quickly write and run test "
+    "code by updating {program}{or_trial_tool}."
 )
 
 
-class CodingTrialMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
-    """Give one short reminder per tool batch once `ready`, independently of writes."""
+class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
+    """After some turns, suggest each turn what to submit for verification next.
+
+    The suggestion names the first file the round still owes; once both are
+    submitted, it suggests testing unresolved geometry in code.
+    """
 
     def __init__(
         self,
-        tool_names: Iterable[str],
+        workspace: CodingWorkspaceVerifier,
+        *,
         max_turns: int,
-        ready: Callable[[], bool] = lambda: True,
+        remind_after_turns: int,
+        trial_tool_name: str | None,
     ) -> None:
         super().__init__()
-        self.tool_names = frozenset(tool_names)
+        if remind_after_turns < 1:
+            raise ValueError(f"{remind_after_turns=} must be at least 1")
+        self.workspace = workspace
         self.max_turns = max_turns
-        self.ready = ready
+        self.remind_after_turns = remind_after_turns
+        interpretation = workspace.interpretation.source_filename
+        program = workspace.output.source_filename
+        # The advice for each file the round may still owe, or for none.
+        self._advice: dict[str | None, str] = {
+            interpretation: _WRITE_INTERPRETATION.format(interpretation=interpretation),
+            program: _WRITE_PROGRAM.format(
+                interpretation=interpretation, program=program
+            ),
+            None: _TRY.format(
+                program=program,
+                or_trial_tool=f" or calling {trial_tool_name}"
+                if trial_tool_name
+                else "",
+            ),
+        }
 
     @override
     def before_model(
         self, state: TurnBudgetState, runtime: Runtime[None]
     ) -> dict[str, Any] | None:
         del runtime
-        # No old-batch reminder on entry, or new trial on the answer-only turn.
-        if not 0 < state.get("current_turn", 0) < self.max_turns - 1:
+        turn = state.get("current_turn", 0) + 1
+        # Nothing can be written on the answer-only final turn.
+        if not self.remind_after_turns < turn < self.max_turns:
             return None
-        if not self.ready():
+        if _reminded(state["messages"]):
             return None
+        advice = self._advice[self.workspace.unsubmitted_file()]
+        text = _REMINDER.format(advice=advice)
+        return {"messages": [HumanMessage(content=text, name=_REMINDER_NAME)]}
 
-        # Inspect only the latest response and its results; the notice itself
-        # marks an already-reminded batch, including after a checkpoint resume.
-        answered: set[str] = set()
-        for message in reversed(state["messages"]):
-            if isinstance(message, HumanMessage) and message.name == _REMINDER_NAME:
-                return None
-            if isinstance(message, ToolMessage):
-                answered.add(message.tool_call_id)
-            elif isinstance(message, AIMessage):
-                calls = message.tool_calls
-                if not any(call["name"] in self.tool_names for call in calls):
-                    return None
-                if not all(call["id"] in answered for call in calls):
-                    return None
-                return {
-                    "messages": [HumanMessage(content=_REMINDER, name=_REMINDER_NAME)]
-                }
-        return None
+
+def _reminded(messages: list[AnyMessage]) -> bool:
+    """Whether a reminder follows the latest response already, as on a replay."""
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            return False
+        if isinstance(message, HumanMessage) and message.name == _REMINDER_NAME:
+            return True
+    return False

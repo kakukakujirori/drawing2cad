@@ -290,14 +290,14 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "max_output_limit_failures",
         "diff_drawer_config",
         "fresh_coder",
-        "coding_trial_reminder",
         "coding_trial_tool",
+        "coding_draft_check_after_n_turns",
         "match_margin_px",
         "review_drawing_diff_clusters",
     }
     assert graph_factory.keywords["fresh_coder"] is False
-    assert graph_factory.keywords["coding_trial_reminder"] is True
     assert graph_factory.keywords["coding_trial_tool"] is True
+    assert graph_factory.keywords["coding_draft_check_after_n_turns"] == 20
     assert graph_factory.keywords["review_drawing_diff_clusters"] is True
     assert graph_factory.keywords["match_margin_px"] == 0.5
     assert graph_factory.keywords["compact_between_stages"] is not None
@@ -336,7 +336,6 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     "flag",
     [
         "fresh_coder",
-        "coding_trial_reminder",
         "coding_trial_tool",
         "review_drawing_diff_clusters",
     ],
@@ -351,6 +350,19 @@ def test_each_workflow_flag_can_be_selected_in_config(flag, value) -> None:
             overrides=[f"workflow.{flag}={str(value).lower()}"],
         )
     assert instantiate(config.workflow).keywords[flag] is value
+
+
+@pytest.mark.parametrize(("value", "expected"), [("null", None), ("5", 5)])
+def test_the_draft_check_can_move_or_be_turned_off_in_config(value, expected):
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()), version_base="1.3"
+    ):
+        config = compose(
+            config_name="default",
+            overrides=[f"workflow.coding_draft_check_after_n_turns={value}"],
+        )
+    keywords = instantiate(config.workflow).keywords
+    assert keywords["coding_draft_check_after_n_turns"] == expected
 
 
 @pytest.mark.parametrize("cap", [3, 2])

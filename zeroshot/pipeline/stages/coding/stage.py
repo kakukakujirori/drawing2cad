@@ -22,7 +22,7 @@ from zeroshot.pipeline.stages._base.prompt import (
 )
 from zeroshot.pipeline.stages.coding.middleware import (
     CodingMiddleware,
-    CodingTrialMiddleware,
+    CodingReminderMiddleware,
     FreshCodingMiddleware,
 )
 from zeroshot.pipeline.stages.coding.progress import (
@@ -158,8 +158,8 @@ def create_coding_stage(
     interpretation_filename: str = "interpretation.json",
     input_after_compaction: bool = False,
     fresh_memory: bool = False,
-    coding_trial_reminder: bool = True,
     coding_trial_tool: bool = True,
+    coding_draft_check_after_n_turns: int | None = 20,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
 ) -> CodingStage:
     renderer = StepRenderer()
@@ -219,12 +219,13 @@ def create_coding_stage(
     coding_tools = [*tools, create_calculate_drawing_scale_tool(), *trial_tools]
     max_turns = coding_agent_builder.keywords["max_turns"]
     extra_middleware: list[AgentMiddleware[Any, None, Any]] = [coding_middleware]
-    if coding_trial_reminder:
+    if coding_draft_check_after_n_turns is not None:
         extra_middleware.append(
-            CodingTrialMiddleware(
-                tool_names=[tool.name for tool in coding_tools],
+            CodingReminderMiddleware(
+                workspace,
                 max_turns=max_turns,
-                ready=lambda: workspace.interpretation_ready,
+                remind_after_turns=coding_draft_check_after_n_turns,
+                trial_tool_name=trial_tools[0].name if trial_tools else None,
             )
         )
     coding_agent = coding_agent_builder(

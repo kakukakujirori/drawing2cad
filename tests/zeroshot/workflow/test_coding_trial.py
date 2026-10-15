@@ -1,45 +1,47 @@
-"""Coder reminders run after tools, even when the program was not edited."""
+"""After a threshold, each coder turn is pushed to write, then to try, not speculate."""
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from itertools import pairwise
+
+import pytest
+from langchain_core.messages import HumanMessage, ToolMessage
 
 from tests.zeroshot.chat_models import (
     ScriptedChatModel,
     tool_call,
     unanswered_tool_calls,
 )
-from tests.zeroshot.workflow.test_agent import (
-    ExampleProposal,
-    _CountingVerifier,
-    _subgraph,
-    _writing_tool,
-    echo,
+from tests.zeroshot.workflow.test_agent import ExampleProposal, _subgraph, echo
+from tests.zeroshot.workflow.test_coding_workspace import _workspace
+from zeroshot.pipeline.stages.coding.middleware import CodingReminderMiddleware
+
+_FEEDBACK = " It gets you useful verification feedback from the pipeline."
+_WRITE_INTERPRETATION = (
+    "Suggestion: Quickly write a provisional interpretation.json, even with parts "
+    "still uncertain." + _FEEDBACK
 )
-from zeroshot.pipeline.stages.coding.middleware import CodingTrialMiddleware
-from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
+_WRITE_PROGRAM = (
+    "Suggestion: Quickly revise interpretation.json if it needs it, then write a "
+    "provisional model.py, even with parts still uncertain." + _FEEDBACK
+)
+_TRY = (
+    "Suggestion: If you have unresolved or ambiguous geometry, quickly write and "
+    "run test code by updating model.py{tool}." + _FEEDBACK
+)
 
 
 def _reminders(messages):
     return [
-        message
+        message.text
         for message in messages
-        if isinstance(message, HumanMessage) and message.name == "coding_trial_reminder"
+        if isinstance(message, HumanMessage) and message.name == "coding_reminder"
     ]
 
 
-def test_read_only_tools_and_verification_share_one_reminder_per_batch(tmp_path):
-    source = tmp_path / "model.py"
-    verifier = _CountingVerifier(source)
+def test_after_the_threshold_each_turn_gets_one_reminder(tmp_path):
+    workspace, _, _ = _workspace(tmp_path)
     model = ScriptedChatModel(
         responses=(
-            AIMessage(
-                content="Measure first",
-                tool_calls=[
-                    {"name": "echo", "args": {"value": "front"}, "id": "front"},
-                    {"name": "echo", "args": {"value": "top"}, "id": "top"},
-                ],
-            ),
-            tool_call("write", {"text": "candidate"}, "write"),
-            tool_call("echo", {"value": "inspect candidate"}, "inspect"),
+            *[tool_call("echo", {"value": "look"}, f"look{n}") for n in range(5)],
             tool_call(
                 "ExampleProposal",
                 {"proposal": ["candidate"], "rationale": "checked"},
@@ -49,111 +51,84 @@ def test_read_only_tools_and_verification_share_one_reminder_per_batch(tmp_path)
     )
     agent = _subgraph(
         model,
-        tools=(echo, _writing_tool(source)),
-        max_turns=4,
+        tools=(echo,),
+        max_turns=6,
         output_schema=ExampleProposal,
         response_format_strategy="tool",
         extra_middleware=[
-            VerifyOnWriteMiddleware(verifier),
-            CodingTrialMiddleware(("echo", "write"), max_turns=4),
+            CodingReminderMiddleware(
+                workspace, max_turns=6, remind_after_turns=2, trial_tool_name=None
+            )
         ],
     )
-    result = agent.invoke({"messages": [HumanMessage(content="reconstruct")]})
+    agent.invoke({"messages": [HumanMessage(content="reconstruct")]})
     seen = model.received_messages
+    added = [_reminders(now[len(before) :]) for before, now in pairwise(seen)]
 
-    assert [len(_reminders(messages)) for messages in seen] == [0, 1, 2, 2]
-    assert verifier.seen == ["candidate"]
-    assert not any("[verified]" in message.text for message in seen[1])
-    assert sum("[verified]" in message.text for message in seen[2]) == 1
-    assert result["structured_response"].proposal == ["candidate"]
-    assert model.bound_tool_name_history[-1] == ("ExampleProposal",)
-
-    # Both parallel results precede the first reminder; all provider requests
-    # have complete call/result pairs, including the final submission.
-    reminder_index = seen[1].index(_reminders(seen[1])[0])
-    assert {
-        message.tool_call_id
-        for message in seen[1][:reminder_index]
-        if isinstance(message, ToolMessage)
-    } == {"front", "top"}
+    # Turns 2 to 6: from turn 3, but not on the answer-only turn 6.
+    write = _WRITE_INTERPRETATION
+    assert added == [[], [write], [write], [write], []]
+    # The reminder follows the last tool result and the turn's count.
+    tool_result, count, reminder = seen[2][-3:]
+    assert isinstance(tool_result, ToolMessage)
+    assert (count.text, reminder.text) == ("[turn 3/6]", write)
     assert all(not unanswered_tool_calls(messages) for messages in seen)
 
-    # Re-entering on the retained transcript must not replay the old reminder.
-    model.responses = (
-        *model.responses,
-        tool_call(
-            "ExampleProposal",
-            {"proposal": ["candidate"], "rationale": "still checked"},
-            "submit-again",
-        ),
+
+@pytest.mark.parametrize("trial_tool_name", [None, "evaluate_cad_hypothesis"])
+def test_the_reminder_follows_what_the_round_still_owes(tmp_path, trial_tool_name):
+    workspace, output, candidate = _workspace(tmp_path)
+    output.source_path.unlink()  # Round 0 has no program yet.
+    middleware = CodingReminderMiddleware(
+        workspace, max_turns=30, remind_after_turns=5, trial_tool_name=trial_tool_name
     )
-    agent.invoke(
-        {
-            **result,
-            "messages": [
-                *result["messages"],
-                HumanMessage(content="review the answer"),
-            ],
-        }
-    )
-    assert len(_reminders(model.received_messages[-1])) == 2
-
-
-def test_reminder_waits_for_results_and_does_not_repeat_on_reentry():
-    middleware = CodingTrialMiddleware(("echo",), max_turns=4)
-    call = AIMessage(
-        content="",
-        tool_calls=[
-            {"name": "echo", "args": {}, "id": "a"},
-            {"name": "echo", "args": {}, "id": "b"},
-        ],
-    )
-    partial = [call, ToolMessage(content="front", tool_call_id="a")]
-    complete = [*partial, ToolMessage(content="top", tool_call_id="b")]
-
-    for turn, messages in (
-        (0, complete),  # Old batch at stage entry.
-        (1, partial),  # One tool still pending.
-        (3, complete),  # Next turn is answer-only.
-        (4, complete),  # Budget exhausted.
-        (1, [AIMessage(content="finished")]),  # No tools.
-        (
-            1,
-            [
-                tool_call("TicketAnswers", {}, "submission"),
-                ToolMessage(content="refused", tool_call_id="submission"),
-            ],
-        ),  # Submission is not a trial tool.
-    ):
-        assert (
-            middleware.before_model({"messages": messages, "current_turn": turn}, None)
-            is None
-        )
-
-    update = middleware.before_model({"messages": complete, "current_turn": 1}, None)
-    assert update is not None
-    assert len(_reminders(update["messages"])) == 1
-    # A retry/checkpoint replay may revisit this hook without new tools.
-    assert (
-        middleware.before_model(
-            {"messages": [*complete, *update["messages"]], "current_turn": 1}, None
-        )
-        is None
-    )
-
-
-def test_no_reminder_before_the_interpretation_is_ready():
-    """Trial builds mean nothing while interpretation.json still blocks the build."""
-    ready = False
-    middleware = CodingTrialMiddleware(("echo",), max_turns=4, ready=lambda: ready)
     state = {
-        "current_turn": 1,
+        "current_turn": 9,
         "messages": [
             tool_call("echo", {"value": "front"}, "front"),
             ToolMessage(content="front", tool_call_id="front"),
         ],
     }
 
-    assert middleware.before_model(state, None) is None
-    ready = True
-    assert _reminders(middleware.before_model(state, None)["messages"])
+    def reminder():
+        update = middleware.before_model(state, None)
+        return [] if update is None else _reminders(update["messages"])
+
+    assert reminder() == [_WRITE_INTERPRETATION]
+    workspace.interpretation.source_path.write_text("{}")
+    workspace.feedback()
+    assert reminder() == [_WRITE_INTERPRETATION]
+    workspace.interpretation.source_path.write_text(candidate.model_dump_json())
+    workspace.feedback()
+    assert reminder() == [_WRITE_PROGRAM]
+    output.source_path.write_text("result = object()\n")
+    tool = f" or calling {trial_tool_name}" if trial_tool_name else ""
+    assert reminder() == [_TRY.format(tool=tool)]
+    # Turn 5 is not yet after 5 turns.
+    assert middleware.before_model({**state, "current_turn": 4}, None) is None
+
+
+def test_a_replayed_hook_adds_no_second_reminder(tmp_path):
+    workspace, _, _ = _workspace(tmp_path)
+    middleware = CodingReminderMiddleware(
+        workspace, max_turns=30, remind_after_turns=5, trial_tool_name=None
+    )
+    state = {
+        "current_turn": 9,
+        "messages": [
+            tool_call("echo", {"value": "front"}, "front"),
+            ToolMessage(content="front", tool_call_id="front"),
+        ],
+    }
+
+    update = middleware.before_model(state, None)
+    replay = {**state, "messages": [*state["messages"], *update["messages"]]}
+    assert middleware.before_model(replay, None) is None
+
+
+def test_the_reminder_cannot_start_on_the_first_turn(tmp_path):
+    workspace, _, _ = _workspace(tmp_path)
+    with pytest.raises(ValueError, match="remind_after_turns"):
+        CodingReminderMiddleware(
+            workspace, max_turns=30, remind_after_turns=0, trial_tool_name=None
+        )

@@ -22,7 +22,7 @@ from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import StageInstructions
 from zeroshot.pipeline.stages.coding.middleware import (
     CodingMiddleware,
-    CodingTrialMiddleware,
+    CodingReminderMiddleware,
     FreshCodingMiddleware,
 )
 from zeroshot.pipeline.stages.coding.stage import create_coding_stage
@@ -89,14 +89,14 @@ def test_the_build_waits_for_a_valid_interpretation(tmp_path):
     assert "[Interpretation verification]" in gated
     assert "[Build skipped]" in gated
     assert output.builds == []
-    assert not workspace.interpretation_ready
+    assert workspace.interpretation.accepted_interpretation is None
     assert any("is built only after" in b for b in workspace.blockers)
 
     workspace.interpretation.source_path.write_text(candidate.model_dump_json())
     built = _text(workspace.feedback())
     assert "[Execution result]" in built
     assert len(output.builds) == 1 and output.builds[0] is not None
-    assert workspace.interpretation_ready
+    assert workspace.interpretation.accepted_interpretation is not None
     assert workspace.blockers == []
     assert built.endswith(
         "[Pending answer requirements]\n"
@@ -123,6 +123,31 @@ def test_only_a_change_of_views_rebuilds_an_unchanged_program(tmp_path):
     rebuilt_on = output.builds[-1]
     assert len(output.builds) == 2 and rebuilt_on is not None
     assert rebuilt_on.views[1].role is View.TOP
+
+
+def test_the_round_owes_a_valid_interpretation_then_a_changed_program(tmp_path):
+    verifier, candidate, seed = _case(tmp_path)
+    output = _Output(verifier.workdir)
+    workspace = CodingWorkspaceVerifier(verifier, output)  # type: ignore[arg-type]
+
+    # Round 0 starts with the seeded interpretation and no program.
+    workspace.reset(seed, ["ticket_initial"])
+    assert workspace.unsubmitted_file() == "interpretation.json"
+    verifier.source_path.write_text("{}")
+    workspace.feedback()
+    assert workspace.unsubmitted_file() == "interpretation.json"
+    verifier.source_path.write_text(candidate.model_dump_json())
+    workspace.feedback()
+    assert workspace.unsubmitted_file() == "model.py"
+    output.source_path.write_text("result = object()\n")
+    assert workspace.unsubmitted_file() is None
+
+    # A later round starts with a valid interpretation and last round's program.
+    workspace.reset(candidate, ["ticket_001"])
+    workspace.feedback()
+    assert workspace.unsubmitted_file() == "model.py"
+    output.source_path.write_text("result = object()  # revised\n")
+    assert workspace.unsubmitted_file() is None
 
 
 def test_an_answer_needs_features(tmp_path):
@@ -163,8 +188,10 @@ def _stage(builder, workdir, drawing, **flags):
 
 
 @pytest.mark.parametrize("fresh", [False, True])
-@pytest.mark.parametrize("reminder", [False, True])
-def test_the_flags_choose_the_coder_middleware_in_one_place(tmp_path, fresh, reminder):
+@pytest.mark.parametrize("draft_after", [None, 20])
+def test_the_flags_choose_the_coder_middleware_in_one_place(
+    tmp_path, fresh, draft_after
+):
     built = {}
 
     def builder(**kwargs):
@@ -176,12 +203,12 @@ def test_the_flags_choose_the_coder_middleware_in_one_place(tmp_path, fresh, rem
         SandboxWorkdir(tmp_path),
         [],
         fresh_memory=fresh,
-        coding_trial_reminder=reminder,
+        coding_draft_check_after_n_turns=draft_after,
     )
     kinds = [type(middleware) for middleware in built["extra_middleware"]]
     assert kinds == [
         FreshCodingMiddleware if fresh else CodingMiddleware,
-        *([CodingTrialMiddleware] if reminder else []),
+        *([CodingReminderMiddleware] if draft_after is not None else []),
     ]
     assert stage.middleware is built["extra_middleware"][0]
 

@@ -537,8 +537,10 @@ def test_interpretation_prioritises_a_verified_draft_and_source_pixel_measuremen
 ) -> None:
     rendered = render_stage("coding")
     assert "current feature descriptions with numeric parameters" in rendered
-    # Ordered by the pass it follows, not by a turn number picked in advance.
-    assert "After inspecting all views once" in rendered
+    # Saved provisionally after one look at each view, for validation to check.
+    assert "As soon as you have looked at each view" in rendered
+    assert "Write provisional versions of both files early" in rendered
+    assert "scale it fits to your measured lengths by RANSAC" in rendered
     assert "Reserve turns to read the automatic validation" in rendered
     assert "top left, x right, y down" in rendered
     assert "native pixels, not a resized display" in rendered
