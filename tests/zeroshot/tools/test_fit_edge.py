@@ -25,14 +25,24 @@ from zeroshot.pipeline.tools.fit_edge import (
 SHIFT = 4  # cv2 draws at 1/16 px; pixel centres sit at +0.5 in tool coordinates
 # cv2 renders thick anti-aliased strokes up to 0.2 px off their nominal centre.
 TOLERANCE_PX = 0.3
+# Two-tone drawings print dimensions in about this gray.
+LIGHT = 130
 
 
 def _at(x: float, y: float) -> tuple[int, int]:
     return round((x - 0.5) * 2**SHIFT), round((y - 0.5) * 2**SHIFT)
 
 
-def _line(img, a, b, thickness=3):
-    cv2.line(img, _at(*a), _at(*b), 0, thickness, cv2.LINE_AA, SHIFT)
+def _line(img, a, b, thickness=3, tone=0):
+    cv2.line(img, _at(*a), _at(*b), tone, thickness, cv2.LINE_AA, SHIFT)
+
+
+def _dimension(img, a, b, offset):
+    """A light dimension of a horizontal span: extension lines, then the line."""
+    (ax, ay), (bx, by) = a, b
+    _line(img, (ax, ay - 5), (ax, ay - offset - 5), thickness=2, tone=LIGHT)
+    _line(img, (bx, by - 5), (bx, by - offset - 5), thickness=2, tone=LIGHT)
+    _line(img, (ax, ay - offset), (bx, by - offset), thickness=2, tone=LIGHT)
 
 
 def _arc(img, centre, r, start_deg, end_deg, thickness=3):
@@ -188,6 +198,29 @@ def test_empty_box_is_not_measured(tmp_path):
     assert finding.reason == "no ink in the box."
 
 
+def test_light_dimension_lines_are_not_fitted_and_the_report_says_so(tmp_path):
+    def draw(img):
+        _line(img, (100, 300), (400, 300), thickness=2)
+        _line(img, (100, 400), (400, 400), thickness=2)
+        _line(img, (100, 300), (100, 400), thickness=2)
+        _line(img, (400, 300), (400, 400), thickness=2)
+        _dimension(img, (100, 300), (400, 300), 60)
+        _dimension(img, (100, 400), (400, 400), -60)
+
+    sheet = load_sheet(_sheet(tmp_path, draw))
+    # The part's left edge runs on into its light extension line above.
+    beside = find_strokes(sheet, (90, 210, 110, 360), "line")
+    alone = find_strokes(sheet, (150, 225, 350, 255), "line")
+
+    [edge] = beside.strokes
+    assert isinstance(edge.model, Line) and edge.model.x == pytest.approx(100, abs=1)
+    # Not up the extension line, which runs from y 295 to 235.
+    assert min(edge.model.point(edge.start)[1], edge.model.point(edge.end)[1]) > 290
+    assert beside.light
+    assert alone.strokes == []
+    assert "Could they be dimension lines?" in alone.reason
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> SandboxWorkdir:
     def draw(img):
@@ -289,3 +322,22 @@ def test_skeleton_gives_position_and_direction(tmp_path):
         assert near.any()
         turn = np.abs(angle[near] - expected_angle) % 180
         assert np.minimum(turn, 180 - turn).max() < 2
+
+
+def test_skeleton_leaves_out_light_dimension_lines(tmp_path):
+    def draw(img):
+        _line(img, (100, 300), (400, 300), thickness=2)
+        _line(img, (100, 400), (400, 400), thickness=2)
+        _dimension(img, (100, 300), (400, 300), 60)
+        _dimension(img, (100, 400), (400, 400), -60)
+        cv2.putText(img, "300", (220, 230), cv2.FONT_HERSHEY_SIMPLEX, 0.8, LIGHT, 2)
+
+    save_skeleton(_sheet(tmp_path, draw), tmp_path / "skeleton.npz")
+    points = np.load(tmp_path / "skeleton.npz")
+    x, y = points["x"], points["y"]
+
+    assert set(points.files) == {"x", "y", "angle"}
+    for edge in (300, 400):
+        along = np.abs(y - edge) < 1
+        assert x[along].min() < 105 and x[along].max() > 395
+    assert not ((y < 290) | (y > 410)).any()
