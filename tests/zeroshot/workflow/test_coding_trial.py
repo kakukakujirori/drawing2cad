@@ -14,13 +14,14 @@ from tests.zeroshot.workflow.test_agent import ExampleProposal, _subgraph, echo
 from tests.zeroshot.workflow.test_coding_workspace import _workspace
 from zeroshot.pipeline.stages.coding.middleware import CodingReminderMiddleware
 
+_FEEDBACK = " It gets you useful verification feedback from the pipeline."
 _WRITE = (
-    "Rather than long speculation, quickly write a provisional {file}: it gets "
-    "you useful verification feedback from the pipeline."
+    "Suggestion: Quickly write a provisional {file}, even with parts still "
+    "uncertain." + _FEEDBACK
 )
 _TRY = (
-    "Rather than long speculation, quickly try any unresolved geometry as a "
-    "trial: it gets you useful verification feedback from the pipeline."
+    "Suggestion: If you have unresolved or ambiguous geometry, quickly write and "
+    "run test code by updating model.py{tool}." + _FEEDBACK
 )
 
 
@@ -51,7 +52,9 @@ def test_after_the_threshold_each_turn_gets_one_reminder(tmp_path):
         output_schema=ExampleProposal,
         response_format_strategy="tool",
         extra_middleware=[
-            CodingReminderMiddleware(workspace, max_turns=6, remind_after_turns=2)
+            CodingReminderMiddleware(
+                workspace, max_turns=6, remind_after_turns=2, trial_tool=None
+            )
         ],
     )
     agent.invoke({"messages": [HumanMessage(content="reconstruct")]})
@@ -68,10 +71,13 @@ def test_after_the_threshold_each_turn_gets_one_reminder(tmp_path):
     assert all(not unanswered_tool_calls(messages) for messages in seen)
 
 
-def test_the_reminder_follows_what_the_round_has_written(tmp_path):
-    # Round 0 opens on the seeded interpretation; the helper then writes model.py.
-    workspace, _, candidate = _workspace(tmp_path)
-    middleware = CodingReminderMiddleware(workspace, max_turns=30, remind_after_turns=5)
+@pytest.mark.parametrize("trial_tool", [None, "evaluate_cad_hypothesis"])
+def test_the_reminder_follows_what_the_round_still_owes(tmp_path, trial_tool):
+    workspace, output, candidate = _workspace(tmp_path)
+    output.source_path.unlink()  # Round 0 has no program yet.
+    middleware = CodingReminderMiddleware(
+        workspace, max_turns=30, remind_after_turns=5, trial_tool=trial_tool
+    )
     state = {
         "current_turn": 9,
         "messages": [
@@ -85,20 +91,24 @@ def test_the_reminder_follows_what_the_round_has_written(tmp_path):
         return [] if update is None else _reminders(update["messages"])
 
     assert reminder() == [_WRITE.format(file="interpretation.json")]
-    # Written but invalid: nothing builds, and its own report says what to fix.
     workspace.interpretation.source_path.write_text("{}")
     workspace.feedback()
-    assert reminder() == []
+    assert reminder() == [_WRITE.format(file="interpretation.json")]
     workspace.interpretation.source_path.write_text(candidate.model_dump_json())
     workspace.feedback()
-    assert reminder() == [_TRY]
+    assert reminder() == [_WRITE.format(file="model.py")]
+    output.source_path.write_text("result = object()\n")
+    tool = f" or calling {trial_tool}" if trial_tool else ""
+    assert reminder() == [_TRY.format(tool=tool)]
     # Turn 5 is not yet after 5 turns.
     assert middleware.before_model({**state, "current_turn": 4}, None) is None
 
 
 def test_a_replayed_hook_adds_no_second_reminder(tmp_path):
     workspace, _, _ = _workspace(tmp_path)
-    middleware = CodingReminderMiddleware(workspace, max_turns=30, remind_after_turns=5)
+    middleware = CodingReminderMiddleware(
+        workspace, max_turns=30, remind_after_turns=5, trial_tool=None
+    )
     state = {
         "current_turn": 9,
         "messages": [
@@ -115,4 +125,6 @@ def test_a_replayed_hook_adds_no_second_reminder(tmp_path):
 def test_the_reminder_cannot_start_on_the_first_turn(tmp_path):
     workspace, _, _ = _workspace(tmp_path)
     with pytest.raises(ValueError, match="remind_after_turns"):
-        CodingReminderMiddleware(workspace, max_turns=30, remind_after_turns=0)
+        CodingReminderMiddleware(
+            workspace, max_turns=30, remind_after_turns=0, trial_tool=None
+        )

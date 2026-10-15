@@ -34,10 +34,10 @@ class CodingWorkspaceVerifier:
         self.interpretation = interpretation
         self.output = output
         self.ticket_ids: Sequence[str] = ()
-        self.interpretation_ready = False  # valid once in this invocation
         self._interpretation_reported: str | None = None
         self._output_reported: str | None = None
-        self._opened: tuple[str | None, str | None] = (None, None)
+        # The program the round started with: last round's, or none in round 0.
+        self._round_start_program_digest: str | None = None
 
     @property
     def source_path(self) -> Path:
@@ -54,14 +54,9 @@ class CodingWorkspaceVerifier:
         self.output.reset()
         self.output.interpretation = None
         self.ticket_ids = ticket_ids
-        self.interpretation_ready = False
         self._interpretation_reported = None
         self._output_reported = None
-        # The round opens on the seed and on last round's program, or none.
-        self._opened = (
-            self.interpretation.source_digest(),
-            self.output.source_digest(),
-        )
+        self._round_start_program_digest = self.output.source_digest()
 
     @property
     def blockers(self) -> list[str]:
@@ -81,7 +76,6 @@ class CodingWorkspaceVerifier:
         if accepted is None:
             blocks.append(create_text_block("[Build skipped]\n" + self._format(_GATED)))
         else:
-            self.interpretation_ready = True
             built_on = self.output.interpretation
             if built_on is None or _build_inputs(built_on) != _build_inputs(accepted):
                 self.output.reset()
@@ -92,20 +86,15 @@ class CodingWorkspaceVerifier:
                 self._output_reported = self.output.source_digest()
         return [*blocks, create_text_block(self._pending())]
 
-    def unwritten_file(self) -> str | None:
-        """The first file in writing order that this round has yet to write.
+    def unsubmitted_file(self) -> str | None:
+        """The first file this round still owes, in the order they are written.
 
-        The interpretation counts once it is valid or changed, so one carried
-        valid from the last round counts; the program once it differs from the
-        last round's.
+        interpretation.json until it is valid, then model.py until it differs
+        from the program the round started with.
         """
-        interpretation, program = self._opened
-        if (
-            not self.interpretation_ready
-            and self.interpretation.source_digest() == interpretation
-        ):
+        if self.interpretation.accepted_interpretation is None:
             return self.interpretation.source_filename
-        if self.output.source_digest() == program:
+        if self.output.source_digest() == self._round_start_program_digest:
             return self.output.source_filename
         return None
 

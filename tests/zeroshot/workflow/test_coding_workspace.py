@@ -89,14 +89,14 @@ def test_the_build_waits_for_a_valid_interpretation(tmp_path):
     assert "[Interpretation verification]" in gated
     assert "[Build skipped]" in gated
     assert output.builds == []
-    assert not workspace.interpretation_ready
+    assert workspace.interpretation.accepted_interpretation is None
     assert any("is built only after" in b for b in workspace.blockers)
 
     workspace.interpretation.source_path.write_text(candidate.model_dump_json())
     built = _text(workspace.feedback())
     assert "[Execution result]" in built
     assert len(output.builds) == 1 and output.builds[0] is not None
-    assert workspace.interpretation_ready
+    assert workspace.interpretation.accepted_interpretation is not None
     assert workspace.blockers == []
     assert built.endswith(
         "[Pending answer requirements]\n"
@@ -125,25 +125,29 @@ def test_only_a_change_of_views_rebuilds_an_unchanged_program(tmp_path):
     assert rebuilt_on.views[1].role is View.TOP
 
 
-def test_a_file_counts_as_written_once_this_round_changes_it(tmp_path):
+def test_the_round_owes_a_valid_interpretation_then_a_changed_program(tmp_path):
     verifier, candidate, seed = _case(tmp_path)
     output = _Output(verifier.workdir)
     workspace = CodingWorkspaceVerifier(verifier, output)  # type: ignore[arg-type]
 
-    # Round 0 opens on the seeded interpretation and no program.
+    # Round 0 starts with the seeded interpretation and no program.
     workspace.reset(seed, ["ticket_initial"])
-    assert workspace.unwritten_file() == "interpretation.json"
-    verifier.source_path.write_text("{}")  # Written, though not yet valid.
-    assert workspace.unwritten_file() == "model.py"
+    assert workspace.unsubmitted_file() == "interpretation.json"
+    verifier.source_path.write_text("{}")
+    workspace.feedback()
+    assert workspace.unsubmitted_file() == "interpretation.json"
+    verifier.source_path.write_text(candidate.model_dump_json())
+    workspace.feedback()
+    assert workspace.unsubmitted_file() == "model.py"
     output.source_path.write_text("result = object()\n")
-    assert workspace.unwritten_file() is None
+    assert workspace.unsubmitted_file() is None
 
-    # A later round opens on a valid interpretation and last round's program.
+    # A later round starts with a valid interpretation and last round's program.
     workspace.reset(candidate, ["ticket_001"])
     workspace.feedback()
-    assert workspace.unwritten_file() == "model.py"
+    assert workspace.unsubmitted_file() == "model.py"
     output.source_path.write_text("result = object()  # revised\n")
-    assert workspace.unwritten_file() is None
+    assert workspace.unsubmitted_file() is None
 
 
 def test_an_answer_needs_features(tmp_path):

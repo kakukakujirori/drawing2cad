@@ -255,20 +255,20 @@ class FreshCodingMiddleware(CodingMiddleware):
 
 _REMINDER_NAME = "coding_reminder"
 _REMINDER = (
-    "Rather than long speculation, quickly {action}: it gets you useful "
-    "verification feedback from the pipeline."
+    "Suggestion: {advice} It gets you useful verification feedback from the pipeline."
 )
-_WRITE = "write a provisional {file}"
-_TRY = "try any unresolved geometry as a trial"
+_WRITE = "Quickly write a provisional {file}, even with parts still uncertain."
+_TRY = (
+    "If you have unresolved or ambiguous geometry, quickly write and run test "
+    "code by updating {program}{or_trial_tool}."
+)
 
 
 class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
-    """After some turns, push the coder each turn to act rather than speculate.
+    """After some turns, suggest each turn what to submit for verification next.
 
-    The reminder names the first file this round has not written yet. Once the
-    round has written both, it asks for a trial of any unresolved geometry, but
-    only while the interpretation is valid: until then nothing is built, and
-    the interpretation's own report says what to fix.
+    The suggestion names the first file the round still owes; once both are
+    submitted, it suggests testing unresolved geometry in code.
     """
 
     def __init__(
@@ -277,6 +277,7 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         *,
         max_turns: int,
         remind_after_turns: int,
+        trial_tool: str | None,
     ) -> None:
         super().__init__()
         if remind_after_turns < 1:
@@ -284,6 +285,10 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         self.workspace = workspace
         self.max_turns = max_turns
         self.remind_after_turns = remind_after_turns
+        self._try = _TRY.format(
+            program=workspace.output.source_filename,
+            or_trial_tool=f" or calling {trial_tool}" if trial_tool else "",
+        )
 
     @override
     def before_model(
@@ -296,13 +301,9 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
             return None
         if _reminded(state["messages"]):
             return None
-        if (file := self.workspace.unwritten_file()) is not None:
-            action = _WRITE.format(file=file)
-        elif self.workspace.interpretation.accepted_interpretation is not None:
-            action = _TRY
-        else:
-            return None
-        text = _REMINDER.format(action=action)
+        file = self.workspace.unsubmitted_file()
+        advice = self._try if file is None else _WRITE.format(file=file)
+        text = _REMINDER.format(advice=advice)
         return {"messages": [HumanMessage(content=text, name=_REMINDER_NAME)]}
 
 
