@@ -265,8 +265,10 @@ _TRY = "try any unresolved geometry as a trial"
 class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
     """After some turns, push the coder each turn to act rather than speculate.
 
-    The reminder names the first file this round has not written yet; once the
-    round has written both, it asks for a trial of any unresolved geometry.
+    The reminder names the first file this round has not written yet. Once the
+    round has written both, it asks for a trial of any unresolved geometry, but
+    only while the interpretation is valid: until then nothing is built, and
+    the interpretation's own report says what to fix.
     """
 
     def __init__(
@@ -294,8 +296,12 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
             return None
         if _reminded(state["messages"]):
             return None
-        file = self.workspace.unwritten_file()
-        action = _TRY if file is None else _WRITE.format(file=file)
+        if (file := self.workspace.unwritten_file()) is not None:
+            action = _WRITE.format(file=file)
+        elif self.workspace.interpretation.accepted_interpretation is not None:
+            action = _TRY
+        else:
+            return None
         text = _REMINDER.format(action=action)
         return {"messages": [HumanMessage(content=text, name=_REMINDER_NAME)]}
 
