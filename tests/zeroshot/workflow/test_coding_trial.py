@@ -15,9 +15,13 @@ from tests.zeroshot.workflow.test_coding_workspace import _workspace
 from zeroshot.pipeline.stages.coding.middleware import CodingReminderMiddleware
 
 _FEEDBACK = " It gets you useful verification feedback from the pipeline."
-_WRITE = (
-    "Suggestion: Quickly write a provisional {file}, even with parts still "
-    "uncertain." + _FEEDBACK
+_WRITE_INTERPRETATION = (
+    "Suggestion: Quickly write a provisional interpretation.json, even with parts "
+    "still uncertain." + _FEEDBACK
+)
+_WRITE_PROGRAM = (
+    "Suggestion: Quickly revise interpretation.json if it needs it, then write a "
+    "provisional model.py, even with parts still uncertain." + _FEEDBACK
 )
 _TRY = (
     "Suggestion: If you have unresolved or ambiguous geometry, quickly write and "
@@ -62,7 +66,7 @@ def test_after_the_threshold_each_turn_gets_one_reminder(tmp_path):
     added = [_reminders(now[len(before) :]) for before, now in pairwise(seen)]
 
     # Turns 2 to 6: from turn 3, but not on the answer-only turn 6.
-    write = _WRITE.format(file="interpretation.json")
+    write = _WRITE_INTERPRETATION
     assert added == [[], [write], [write], [write], []]
     # The reminder follows the last tool result and the turn's count.
     tool_result, count, reminder = seen[2][-3:]
@@ -90,13 +94,13 @@ def test_the_reminder_follows_what_the_round_still_owes(tmp_path, trial_tool_nam
         update = middleware.before_model(state, None)
         return [] if update is None else _reminders(update["messages"])
 
-    assert reminder() == [_WRITE.format(file="interpretation.json")]
+    assert reminder() == [_WRITE_INTERPRETATION]
     workspace.interpretation.source_path.write_text("{}")
     workspace.feedback()
-    assert reminder() == [_WRITE.format(file="interpretation.json")]
+    assert reminder() == [_WRITE_INTERPRETATION]
     workspace.interpretation.source_path.write_text(candidate.model_dump_json())
     workspace.feedback()
-    assert reminder() == [_WRITE.format(file="model.py")]
+    assert reminder() == [_WRITE_PROGRAM]
     output.source_path.write_text("result = object()\n")
     tool = f" or calling {trial_tool_name}" if trial_tool_name else ""
     assert reminder() == [_TRY.format(tool=tool)]

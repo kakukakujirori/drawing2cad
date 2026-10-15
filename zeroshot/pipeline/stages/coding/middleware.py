@@ -257,7 +257,14 @@ _REMINDER_NAME = "coding_reminder"
 _REMINDER = (
     "Suggestion: {advice} It gets you useful verification feedback from the pipeline."
 )
-_WRITE = "Quickly write a provisional {file}, even with parts still uncertain."
+_WRITE_INTERPRETATION = (
+    "Quickly write a provisional {interpretation}, even with parts still uncertain."
+)
+# A revision round may owe a reading change before the program change.
+_WRITE_PROGRAM = (
+    "Quickly revise {interpretation} if it needs it, then write a provisional "
+    "{program}, even with parts still uncertain."
+)
 _TRY = (
     "If you have unresolved or ambiguous geometry, quickly write and run test "
     "code by updating {program}{or_trial_tool}."
@@ -285,10 +292,21 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         self.workspace = workspace
         self.max_turns = max_turns
         self.remind_after_turns = remind_after_turns
-        self._try = _TRY.format(
-            program=workspace.output.source_filename,
-            or_trial_tool=f" or calling {trial_tool_name}" if trial_tool_name else "",
-        )
+        interpretation = workspace.interpretation.source_filename
+        program = workspace.output.source_filename
+        # The advice for each file the round may still owe, or for none.
+        self._advice: dict[str | None, str] = {
+            interpretation: _WRITE_INTERPRETATION.format(interpretation=interpretation),
+            program: _WRITE_PROGRAM.format(
+                interpretation=interpretation, program=program
+            ),
+            None: _TRY.format(
+                program=program,
+                or_trial_tool=f" or calling {trial_tool_name}"
+                if trial_tool_name
+                else "",
+            ),
+        }
 
     @override
     def before_model(
@@ -301,8 +319,7 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
             return None
         if _reminded(state["messages"]):
             return None
-        file = self.workspace.unsubmitted_file()
-        advice = self._try if file is None else _WRITE.format(file=file)
+        advice = self._advice[self.workspace.unsubmitted_file()]
         text = _REMINDER.format(advice=advice)
         return {"messages": [HumanMessage(content=text, name=_REMINDER_NAME)]}
 
