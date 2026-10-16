@@ -71,6 +71,7 @@ _RUN_PATHS = {
     "hypothesis_trials": PromptTemplate(
         STAGES_DIR / "coding/prompts/trials_by_tool.md"
     ).render(coding_output_path="/work/model.py"),
+    "semantic_feature_search": "",  # the coder's round without a region index
 }
 _DRAWING_DIFF_REVIEWS = PromptTemplate(
     STAGES_DIR / "audit/prompts/drawing_diff_reviews.md"

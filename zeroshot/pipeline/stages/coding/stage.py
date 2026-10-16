@@ -15,6 +15,8 @@ from langgraph.pregel import Pregel
 
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import read_dxf_frame
+from zeroshot.pipeline.retrieval.evidence import EvidenceLookup
+from zeroshot.pipeline.retrieval.index import RegionIndex
 from zeroshot.pipeline.sandbox import SandboxRunner
 from zeroshot.pipeline.stages._base.prompt import (
     PromptTemplate,
@@ -33,7 +35,10 @@ from zeroshot.pipeline.stages.coding.progress import (
 )
 from zeroshot.pipeline.stages.coding.workspace import CodingWorkspaceVerifier
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.interpretation.verify import InterpretationVerifier
+from zeroshot.pipeline.stages.interpretation.verify import (
+    InterpretationVerifier,
+    LookupInterpretationVerifier,
+)
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
@@ -72,6 +77,7 @@ class CodingStage:
     middleware: CodingMiddleware
     input_after_compaction: bool
     hypothesis_trial_prompt: str
+    semantic_feature_search_prompt: str
     dxf_context: str | None = None
     compaction_model: BaseChatModel | None = None
     retry_compaction: RetryCompaction = RetryCompaction.NEVER
@@ -161,6 +167,7 @@ class CodingStage:
             ),
             interpretation_schema=schema_for_prompt(DrawingInterpretation),
             hypothesis_trials=self.hypothesis_trial_prompt,
+            semantic_feature_search=self.semantic_feature_search_prompt,
             feedback=(
                 [create_text_block(self.dxf_context)]
                 if self.dxf_context is not None and not retry
@@ -216,19 +223,32 @@ def create_coding_stage(
     output_limit_budget: OutputLimitBudget | None = None,
     compaction_model: BaseChatModel | None = None,
     retry_compaction: RetryCompaction | str = RetryCompaction.NEVER,
+    retrieval_db: str | None = None,
 ) -> CodingStage:
     retry_compaction = RetryCompaction(retry_compaction)
     if retry_compaction is not RetryCompaction.NEVER and compaction_model is None:
         raise ValueError(f"{retry_compaction=} needs a compaction model")
     renderer = StepRenderer(ignore_hidden_lines=instructions.ignore_hidden_lines)
+    # With a region index, each valid reading is also looked up feature by feature.
+    verifier_type = (
+        InterpretationVerifier
+        if retrieval_db is None
+        else partial(
+            LookupInterpretationVerifier,
+            lookup=EvidenceLookup(
+                RegionIndex(retrieval_db), instructions.workdir.host_bind_dir
+            ),
+        )
+    )
+    interpretation_verifier = verifier_type(
+        workdir=instructions.workdir,
+        attempt_store=attempt_store,
+        input_artifact=instructions.input_artifact,
+        projection_method=instructions.projection_method,
+        source_filename=interpretation_filename,
+    )
     workspace = CodingWorkspaceVerifier(
-        InterpretationVerifier(
-            workdir=instructions.workdir,
-            attempt_store=attempt_store,
-            input_artifact=instructions.input_artifact,
-            projection_method=instructions.projection_method,
-            source_filename=interpretation_filename,
-        ),
+        interpretation_verifier,
         ProgressOutputVerifier(
             executor=CadQueryExecutor(sandbox_runner=sandbox_runner),
             workdir=instructions.workdir,
@@ -274,6 +294,11 @@ def create_coding_stage(
         _PROMPTS
         / ("trials_by_tool.md" if coding_trial_tool else "trials_in_program.md")
     ).render(**instructions.prompt_context)
+    semantic_feature_search_prompt = (
+        ""
+        if retrieval_db is None
+        else " " + PromptTemplate(_PROMPTS / "search_semantic_features.md").render()
+    )
     coding_tools = [*tools, create_calculate_drawing_scale_tool(), *trial_tools]
     max_turns = coding_agent_builder.keywords["max_turns"]
     extra_middleware: list[AgentMiddleware[Any, None, Any]] = [coding_middleware]
@@ -305,6 +330,7 @@ def create_coding_stage(
         middleware=coding_middleware,
         input_after_compaction=input_after_compaction,
         hypothesis_trial_prompt=hypothesis_trial_prompt,
+        semantic_feature_search_prompt=semantic_feature_search_prompt,
         dxf_context=_dxf_context(instructions),
         compaction_model=compaction_model,
         retry_compaction=retry_compaction,

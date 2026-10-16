@@ -26,6 +26,9 @@ workflow:
   coding_draft_check_after_n_turns: 20
   # The auditor must answer every drawing_diff cluster in concern_reviews.
   review_drawing_diff_clusters: true
+  # A region index (zeroshot/pipeline/retrieval/build_from_runs.py) gives both
+  # agents search_semantic_features; null leaves the tool out.
+  retrieval_db: null
 
   # Set diff_drawer_config: null to disable drawing comparison.
   diff_drawer_config:

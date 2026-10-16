@@ -53,6 +53,9 @@ from zeroshot.pipeline.tools.calculate_drawing_scale import (
 from zeroshot.pipeline.tools.fit_edge import create_fit_edge_tool
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
+from zeroshot.pipeline.tools.search_semantic_features import (
+    create_search_semantic_features_tool,
+)
 from zeroshot.pipeline.verification import (
     AttemptStore,
     CadQueryExecutor,
@@ -272,6 +275,8 @@ def build_agent(
         create_load_image_tool(workdir),
         create_fit_edge_tool(workdir),
     ]
+    if retrieval_db := config.workflow.get("retrieval_db"):
+        tools.append(create_search_semantic_features_tool(workdir, retrieval_db))
     middleware: list[AgentMiddleware[Any, None, Any]] = [
         ToolErrorMiddleware(on_error=_handle_tool_error),
         PromptLogMiddleware(settings.role),
