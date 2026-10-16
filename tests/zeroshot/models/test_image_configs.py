@@ -20,8 +20,8 @@ def _image_urls(value):
             return [value["image_url"]["url"]]
         if value.get("type") == "input_image":
             return [value["image_url"]]
-        if value.get("type") == "image" and "url" in value:  # ChatClaude
-            return [value["url"]]
+        if value.get("type") == "image" and "source" in value:  # ChatClaude
+            return [value["source"]["url"]]
         return [url for item in value.values() for url in _image_urls(item)]
     if isinstance(value, list):
         return [url for item in value for url in _image_urls(item)]

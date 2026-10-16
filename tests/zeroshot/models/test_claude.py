@@ -77,6 +77,10 @@ def _serve(monkeypatch, replies):
         ({"type": "tool", "name": "run_shell"}, {"type": "auto"}),
         ("auto", {"type": "auto"}),
         ("none", {"type": "none"}),
+        (
+            {"type": "any", "disable_parallel_tool_use": True},
+            {"type": "auto", "disable_parallel_tool_use": True},
+        ),
     ],
 )
 def test_forced_tool_choice_is_sent_as_auto(tool_choice, sent):
@@ -130,11 +134,11 @@ def test_a_prose_answer_is_asked_again_for_the_answer_tool(monkeypatch):
     assert "call TicketAnswers" in str(requests[1]["messages"][-1]["content"])
 
 
-def test_provider_strategy_never_reaches_the_api(monkeypatch):
+def test_provider_strategy_is_refused_before_the_api(monkeypatch):
     """Why the Claude configs use `tool`: ChatClaude sends no response format, and
     TicketAnswers' free-form maps are outside what Anthropic structured outputs
     accept (every object must set additionalProperties to false)."""
-    requests = _serve(monkeypatch, [[{"type": "text", "text": "I built the box."}]])
+    requests = _serve(monkeypatch, [])
     agent = create_agent(
         role="coder",
         model=_model(),
@@ -144,10 +148,32 @@ def test_provider_strategy_never_reaches_the_api(monkeypatch):
         max_turns=3,
         model_retries=0,
     )
-    result = agent.invoke({"messages": [HumanMessage("go")]})
+    with pytest.raises(ValueError, match="response_format_strategy: tool"):
+        agent.invoke({"messages": [HumanMessage("go")]})
+    assert requests == []
 
-    assert result.get("structured_response") is None
-    assert "TicketAnswers" not in str(requests[0])
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        # How the staged prompt attaches an input drawing.
+        create_image_block(base64="ZHJhd2luZw==", mime_type="image/png", id="x"),
+        # How the native prompt does.
+        create_image_block(url="data:image/png;base64,ZHJhd2luZw==", id="x"),
+    ],
+)
+def test_langchain_image_blocks_are_sent_in_anthropic_form(block):
+    sent = _model()._build_payload([HumanMessage(content=[block])])["messages"]
+    assert sent[0]["content"] == [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "ZHJhd2luZw==",
+            },
+        }
+    ]
 
 
 def test_image_history_keeps_the_drawing_and_the_newest_tool_images():
@@ -184,7 +210,7 @@ def test_image_history_keeps_the_drawing_and_the_newest_tool_images():
         )
         if part.get("type") == "image"
     ]
-    assert images[0]["url"] == drawing
+    assert images[0]["source"]["data"] == "ZHJhd2luZw=="
     assert [image["source"]["data"] for image in images[1:]] == [
         f"{i}AAA" for i in range(2, 9)
     ]

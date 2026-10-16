@@ -172,24 +172,46 @@ def read_events(events_path: Path, sample_id: str) -> SampleRow:
     )
 
 
+# A native log line carrying a streamed delta, which nothing here reads; most
+# lines are these, so they are dropped before being parsed.
+_NATIVE_DELTA = '"data": [{"event": "content-block-'
+
+
 def read_native_events(events_path: Path, sample_id: str) -> SampleRow:
     """What a native run (`zeroshot.pipeline_native`) recorded, in its own schema.
 
-    Model and tool calls and token usage come from the final transcript,
-    `messages.json`: its log streams deltas beside the finished messages, and
-    counting both would count a call twice. A run that failed mid-stream may
-    have no transcript, so its calls go uncounted rather than half-counted.
+    A model call is counted once: a streamed call by its `message-finish`, which
+    carries its usage, and a call that did not stream by its complete message.
+    The log has both even for a run that failed before writing messages.json.
     """
     row = SampleRow(sample_id=sample_id, terminal=Terminal.INTERRUPTED)
     started = None
+    usages: list[Mapping[str, Any]] = []
+    calls = 0
+    tool_calls: Counter[str] = Counter()
     with events_path.open(encoding="utf-8") as handle:
         for line in handle:
+            if _NATIVE_DELTA in line:
+                continue
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:  # the record a kill cut short
                 continue
             name, data, at = event["event"], event["data"], event["timestamp"]
-            if name == "run_started":
+            if name == "messages":
+                payload = data[0] if isinstance(data, list) and data else {}
+                if payload.get("event") == "message-finish":
+                    usage = payload.get("usage")
+                elif payload.get("type") == "ai":
+                    usage = payload.get("usage_metadata")
+                else:
+                    continue
+                calls += 1
+                if usage:
+                    usages.append(usage)
+            elif name == "tools" and data.get("event") == "tool-started":
+                tool_calls[f"{data.get('tool_name')}:generator"] += 1
+            elif name == "run_started":
                 started = at
             elif name == "turn_limit_exceeded":
                 row = replace(
@@ -208,30 +230,13 @@ def read_native_events(events_path: Path, sample_id: str) -> SampleRow:
                     error=data.get("error"),
                 )
 
-    transcript = events_path.with_name("messages.json")
-    calls = (
-        [
-            message
-            for message in json.loads(transcript.read_text(encoding="utf-8"))
-            if message.get("type") == "ai"
-        ]
-        if transcript.is_file()
-        else []
-    )
-    usages = [call["usage_metadata"] for call in calls if call.get("usage_metadata")]
     return replace(
         row,
-        agent_turns=len(calls),
-        model_calls=len(calls),
+        agent_turns=calls,
+        model_calls=calls,
         calls_with_usage=len(usages),
         tokens=Tokens.summed(usages),
-        tool_calls=dict(
-            Counter(
-                f"{tool_call['name']}:generator"
-                for call in calls
-                for tool_call in call.get("tool_calls") or ()
-            )
-        ),
+        tool_calls=dict(tool_calls),
     )
 
 

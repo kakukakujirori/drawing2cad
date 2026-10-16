@@ -30,13 +30,12 @@ _TWO_BOXES = (
 def native_run(tmp_path: Path):
     """A sample directory as `zeroshot.pipeline_native` leaves it."""
 
-    def build(program: str | None, name: str = "run") -> Path:
+    def build(program: str | None, name: str = "run", **sandbox: object) -> Path:
         run_dir = tmp_path / name
         (run_dir / "workspace").mkdir(parents=True)
         (run_dir / "events.jsonl").touch()
-        (run_dir / "run.json").write_text(
-            json.dumps({"config": {"workflow": {"name": "native"}}})
-        )
+        config = {"workflow": {"name": "native"}, "sandbox_runner": sandbox}
+        (run_dir / "run.json").write_text(json.dumps({"config": config}))
         if program is not None:
             (run_dir / "workspace/model.py").write_text(program)
         return run_dir
@@ -109,6 +108,35 @@ def test_a_staged_program_that_never_verified_is_not_built(
     assert not (run_dir / NATIVE_BUILD_DIRNAME).exists()
 
 
+def test_a_native_build_gets_the_time_its_run_gave_the_agent(
+    native_run, solids
+) -> None:
+    program = "import time\n" + _BOX + "time.sleep(3)\n"
+    run_dir = native_run(program, default_timeout_s=1.0)
+    document = score_run(run_dir, solids["box"], StepScorer(**_FAST))
+
+    assert document["native_build_status"] == "TIMEOUT"
+    assert document["status"] == "NO_PREDICTION"
+
+
+def test_a_sandbox_that_cannot_run_is_the_evaluators_failure(
+    native_run, solids, monkeypatch
+) -> None:
+    """Not the model's: the scorer reports it, rather than a zero for the arm."""
+    from zeroshot.pipeline.sandbox import SandboxResult, SandboxRunner, SandboxStatus
+
+    monkeypatch.setattr(
+        SandboxRunner,
+        "run",
+        lambda self, **kwargs: SandboxResult(SandboxStatus.INFRA_ERROR, None, "", "x"),
+    )
+    document = score_run(native_run(_BOX), solids["box"], StepScorer(**_FAST))
+
+    assert document["native_build_status"] == "INFRA_ERROR"
+    assert document["status"] == "FAILED"
+    assert document["errors"]["build"]["kind"] == "evaluation_error"
+
+
 def test_the_cli_scores_a_native_run(native_run, solids, tmp_path) -> None:
     run_dir = native_run(_BOX, name="000364")
     targets = tmp_path / "targets"
@@ -143,30 +171,22 @@ def _native_log(run_dir: Path, *events: tuple[str, dict, int]) -> None:
             handle.write(json.dumps({**record, "event": name, "data": data}) + "\n")
 
 
+_USAGE = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+
+
 def test_aggregation_reads_a_native_run(native_run, tmp_path) -> None:
-    """Calls and tokens come from the transcript, not from streamed deltas."""
+    """A streamed call counts once, by its finish; a whole message counts once."""
     run_dir = native_run(_BOX, name="000364")
     _native_log(
         run_dir,
         ("run_started", {}, 1_000),
-        ("messages", [{"event": "delta"}, {}], 1_500),
+        ("messages", [{"event": "message-start"}, {}], 1_100),
+        ("messages", [{"event": "content-block-delta", "index": 0}, {}], 1_200),
+        ("messages", [{"event": "message-finish", "usage": _USAGE}, {}], 1_300),
+        ("tools", {"event": "tool-started", "tool_name": "run_shell"}, 1_400),
+        ("tools", {"event": "tool-finished", "tool_call_id": "a"}, 1_500),
+        ("messages", [{"type": "ai", "usage_metadata": _USAGE}, {}], 1_600),
         ("run_completed", {"model_path": "workspace/model.py"}, 61_000),
-    )
-    usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
-    (run_dir / "messages.json").write_text(
-        json.dumps(
-            [
-                {"type": "human", "content": "drawing"},
-                {
-                    "type": "ai",
-                    "content": "",
-                    "tool_calls": [{"name": "run_shell", "args": {}, "id": "a"}],
-                    "usage_metadata": usage,
-                },
-                {"type": "tool", "content": "ok"},
-                {"type": "ai", "content": "Saved.", "usage_metadata": usage},
-            ]
-        )
     )
     (run_dir / "score.json").write_text(
         json.dumps({"status": "OK", "native_build_status": "VERIFIED"})
@@ -179,6 +199,23 @@ def test_aggregation_reads_a_native_run(native_run, tmp_path) -> None:
     assert (row.model_calls, row.calls_with_usage) == (2, 2)
     assert (row.tokens.input, row.tokens.output) == (20, 10)
     assert row.tool_calls == {"run_shell:generator": 1}
+
+
+def test_aggregation_counts_a_failed_native_run_that_left_no_transcript(
+    native_run, tmp_path
+) -> None:
+    """A run that raised writes no messages.json; its spending is in the log."""
+    run_dir = native_run(None)
+    _native_log(
+        run_dir,
+        ("run_started", {}, 0),
+        ("messages", [{"event": "message-finish", "usage": _USAGE}, {}], 10),
+        ("run_failed", {"error": "usage limit"}, 20),
+    )
+
+    (row,) = collect(tmp_path)
+    assert row.terminal is Terminal.FAILED
+    assert (row.model_calls, row.tokens.input) == (1, 10)
 
 
 def test_aggregation_counts_a_native_turn_limit_as_budget_exhausted(

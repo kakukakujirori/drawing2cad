@@ -97,6 +97,39 @@ def _convert_tool_to_anthropic(tool: Any) -> dict[str, Any]:
     }
 
 
+def _anthropic_image(block: dict[str, Any]) -> dict[str, Any]:
+    """A LangChain v1 image block in Anthropic's `source` form.
+
+    The prompt attaches input drawings as `base64` + `mime_type` (staged) or
+    as a data `url` (native); Anthropic takes neither key directly.
+    """
+    if "source" in block:  # already Anthropic's
+        return {"type": "image", "source": block["source"]}
+    if block.get("base64") is not None:
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": block.get("mime_type") or "image/png",
+                "data": block["base64"],
+            },
+        }
+    url = block.get("url")
+    if isinstance(url, str) and url.startswith("data:"):
+        header, b64_data = url.split(",", 1)
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": header.split(";")[0].split(":")[1],
+                "data": b64_data,
+            },
+        }
+    if isinstance(url, str) and url:
+        return {"type": "image", "source": {"type": "url", "url": url}}
+    raise ValueError(f"Unsupported image block: {sorted(block)}")
+
+
 def _format_messages_for_anthropic(
     messages: Sequence[BaseMessage],
 ) -> tuple[str | None, list[dict[str, Any]]]:
@@ -139,7 +172,7 @@ def _format_messages_for_anthropic(
                                     f"Unsupported image_url format (expected data URL): {url[:40]}..."
                                 )
                         elif item_type == "image":
-                            parts.append(item)
+                            parts.append(_anthropic_image(item))
                         else:
                             parts.append(item)
             formatted_messages.append({"role": "user", "content": parts})
@@ -195,7 +228,7 @@ def _format_messages_for_anthropic(
                                     }
                                 )
                         elif itype == "image":
-                            tool_parts.append(item)
+                            tool_parts.append(_anthropic_image(item))
                         else:
                             tool_parts.append(item)
                 tool_content = tool_parts if tool_parts else str(msg.content)
@@ -379,12 +412,14 @@ class ChatClaude(BaseChatModel):
                 # a named tool, as ToolStrategy sends) with a 400, so ask for
                 # "auto". ModelCallRetryMiddleware re-asks a turn that answers in
                 # text instead of calling the answer tool.
-                kind = (
-                    tool_choice.get("type")
-                    if isinstance(tool_choice, dict)
-                    else tool_choice
-                )
-                payload["tool_choice"] = {"type": "none" if kind == "none" else "auto"}
+                options = tool_choice if isinstance(tool_choice, dict) else {}
+                kind = options.get("type", tool_choice)
+                choice: dict[str, Any] = {"type": "none" if kind == "none" else "auto"}
+                if kind != "none" and "disable_parallel_tool_use" in options:
+                    choice["disable_parallel_tool_use"] = options[
+                        "disable_parallel_tool_use"
+                    ]
+                payload["tool_choice"] = choice
         return payload
 
     @override
@@ -396,6 +431,12 @@ class ChatClaude(BaseChatModel):
         **kwargs: Any,
     ) -> RunnableBinding:
         """Bind tool definitions to the chat model for LangGraph compatibility."""
+        if "response_format" in kwargs:
+            # ProviderStrategy binds its schema here. Nothing sends it, so every
+            # answer would come back unstructured; fail on the first call instead.
+            raise ValueError(
+                "ChatClaude sends no response format; use response_format_strategy: tool"
+            )
         formatted_tools = [_convert_tool_to_anthropic(t) for t in tools]
         return self.bind(tools=formatted_tools, tool_choice=tool_choice, **kwargs)
 

@@ -179,15 +179,18 @@ python -m zeroshot.evaluation.run_scoring \
 python -m zeroshot.evaluation.aggregate_run --run-dir outputs/native_opus_5.5
 ```
 
-`run.json` marks a sample as native. Its `workspace/model.py` is built in the
-sandbox by the staged pipeline's executor into `scoring_build/output.step`, and
-held to the same STEP checks as a staged attempt (exactly one valid, meshable
-solid). Unlike a staged program it may catch exceptions, which the native
-prompt never forbids. A program that builds nothing scorable, including the
-turn-limit stub, is `NO_PREDICTION`, with the reason under `skipped_attempts`;
-`native_build_status` is what `aggregate_run` reports as its verification.
-`--build-timeout-s` (default 30, the sandbox default of both pipelines) bounds
-the build.
+`run.json` marks a sample as native. Its `workspace/model.py` is built by the
+staged pipeline's executor into `scoring_build/output.step`, in the sandbox the
+run recorded (`sandbox_runner` in `run.json`; an unset interpreter is the
+scorer's), and held to the same STEP checks as a staged attempt (exactly one
+valid, meshable solid). Unlike a staged program it may catch exceptions, which
+the native prompt never forbids. A program that builds nothing scorable,
+including the turn-limit stub, is `NO_PREDICTION`, with the reason under
+`skipped_attempts`; a sandbox that could not run the build is `FAILED`, the
+evaluator's failure. `native_build_status` is what `aggregate_run` reports as
+its verification, and its call and token counts come from `events.jsonl`, so a
+run that raised before writing `messages.json` is still counted.
+`--build-timeout-s` overrides the recorded `default_timeout_s`.
 
 ## Checks
 
