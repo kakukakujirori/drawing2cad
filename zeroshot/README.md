@@ -28,7 +28,9 @@ Rescore finished samples without rerunning the agents. A rerun with
 `on_existing=retry` skips completed samples, so it does not rescore them. Each
 sample is scored against `<target-dir>/<sample_id>.step`. Directories without
 `events.jsonl` or a target are skipped. For f360, pass
-`data/ortho2cad/test100_gt_steps_f360`:
+`data/ortho2cad/test100_gt_steps_f360`. Native baseline runs
+(`zeroshot.pipeline_native`) are scored the same way; their `model.py` is built
+first (see `zeroshot/pipeline_native/README.md`):
 
 ```bash
 python -m zeroshot.evaluation.run_scoring \

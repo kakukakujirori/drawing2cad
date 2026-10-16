@@ -7,6 +7,7 @@ from langchain_core.messages.content import create_image_block
 from langchain_openai.chat_models.codex import _ChatOpenAICodex
 from omegaconf import OmegaConf
 
+from zeroshot.pipeline.models.claude import ChatClaude
 from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 from zeroshot.pipeline.models.openrouter import ChatOpenRouter
 
@@ -19,6 +20,8 @@ def _image_urls(value):
             return [value["image_url"]["url"]]
         if value.get("type") == "input_image":
             return [value["image_url"]]
+        if value.get("type") == "image" and "source" in value:  # ChatClaude
+            return [value["source"]["url"]]
         return [url for item in value.values() for url in _image_urls(item)]
     if isinstance(value, list):
         return [url for item in value for url in _image_urls(item)]
@@ -54,14 +57,15 @@ def test_every_model_config_limits_request_images_to_eight(config_path, monkeypa
         ],
     ]
     before = [message.model_dump() for message in messages]
-    payload = (
-        model._create_message_dicts(messages, None)[0]
-        if isinstance(model, ChatOpenRouter)
-        else model._get_request_payload(messages)
-    )
+    if isinstance(model, ChatOpenRouter):
+        payload = model._create_message_dicts(messages, None)[0]
+    elif isinstance(model, ChatClaude):
+        payload = model._build_payload(messages)
+    else:
+        payload = model._get_request_payload(messages)
     assert _image_urls(payload) == [
         "https://example.test/drawing.png",
         *[f"https://example.test/{i}.png" for i in range(1, 8)],
     ]
     assert [message.model_dump() for message in messages] == before
-    assert "image_history_limit" not in model.model_kwargs
+    assert "image_history_limit" not in getattr(model, "model_kwargs", {})

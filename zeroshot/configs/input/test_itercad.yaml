@@ -1,15 +1,16 @@
 # @package _global_
 
+# The sample id is the file stem, draw_<n>, as in every other dataset: a sweep
+# lists target_step/ for its ids, and scoring finds <target-dir>/<sample_id>.step.
 sample:
   drawing:
-    # Where the sheets put each view around front. Not checked against the
-    # dataset: the method every sheet was read with before this setting existed.
+    # Where the sheets put each view around front. Checked against the dataset.
     projection_method: third_angle
     sheets:
       - name: view_drawing
         role: full_page
-        file: data/test_itercad/techdraw/draw_${sample.sample_id}.png
-  target_step_path: data/test_itercad/target_step/draw_${sample.sample_id}.step
+        file: data/test_itercad/techdraw/${sample.sample_id}.png
+  target_step_path: data/test_itercad/target_step/${sample.sample_id}.step
 
 artifact_presenter:
   input: "image"

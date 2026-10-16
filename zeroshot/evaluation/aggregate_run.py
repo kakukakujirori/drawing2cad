@@ -20,7 +20,7 @@ from typing import Any
 
 from zeroshot.evaluation.metrics.itercad import aggregate_itercad
 from zeroshot.evaluation.metrics.surface_distance import DISTANCE_METRICS
-from zeroshot.evaluation.run_scoring import ScoreStatus, StepScorer
+from zeroshot.evaluation.run_scoring import ScoreStatus, StepScorer, is_native_run
 from zeroshot.pipeline.workflow import StopReason
 
 
@@ -172,6 +172,74 @@ def read_events(events_path: Path, sample_id: str) -> SampleRow:
     )
 
 
+# A native log line carrying a streamed delta, which nothing here reads; most
+# lines are these, so they are dropped before being parsed.
+_NATIVE_DELTA = '"data": [{"event": "content-block-'
+
+
+def read_native_events(events_path: Path, sample_id: str) -> SampleRow:
+    """What a native run (`zeroshot.pipeline_native`) recorded, in its own schema.
+
+    A model call is counted once: a streamed call by its `message-finish`, which
+    carries its usage, and a call that did not stream by its complete message.
+    The log has both even for a run that failed before writing messages.json.
+    """
+    row = SampleRow(sample_id=sample_id, terminal=Terminal.INTERRUPTED)
+    started = None
+    usages: list[Mapping[str, Any]] = []
+    calls = 0
+    tool_calls: Counter[str] = Counter()
+    with events_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if _NATIVE_DELTA in line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:  # the record a kill cut short
+                continue
+            name, data, at = event["event"], event["data"], event["timestamp"]
+            if name == "messages":
+                payload = data[0] if isinstance(data, list) and data else {}
+                if payload.get("event") == "message-finish":
+                    usage = payload.get("usage")
+                elif payload.get("type") == "ai":
+                    usage = payload.get("usage_metadata")
+                else:
+                    continue
+                calls += 1
+                if usage:
+                    usages.append(usage)
+            elif name == "tools" and data.get("event") == "tool-started":
+                tool_calls[f"{data.get('tool_name')}:generator"] += 1
+            elif name == "run_started":
+                started = at
+            elif name == "turn_limit_exceeded":
+                row = replace(
+                    row,
+                    stop_reasons={"generator": StopReason.BUDGET_EXHAUSTED.value},
+                )
+            elif name in {"run_completed", "run_failed"}:
+                row = replace(
+                    row,
+                    terminal=(
+                        Terminal.COMPLETED
+                        if name == "run_completed"
+                        else Terminal.FAILED
+                    ),
+                    wall_ms=None if started is None else at - started,
+                    error=data.get("error"),
+                )
+
+    return replace(
+        row,
+        agent_turns=calls,
+        model_calls=calls,
+        calls_with_usage=len(usages),
+        tokens=Tokens.summed(usages),
+        tool_calls=dict(tool_calls),
+    )
+
+
 def collect(run_dir: Path) -> list[SampleRow]:
     """One row per attempted sample. Dropping the crashed ones would let every
     rate below flatter itself by shrinking its own denominator."""
@@ -184,9 +252,16 @@ def collect(run_dir: Path) -> list[SampleRow]:
         score = (
             json.loads(score_path.read_text("utf-8")) if score_path.is_file() else {}
         )
+        native = is_native_run(sample_dir)
+        row = (read_native_events if native else read_events)(
+            events_path, sample_dir.name
+        )
+        if native:
+            # Its program is built only when scored, so that is its verification.
+            row = replace(row, verify=score.get("native_build_status"))
         rows.append(
             replace(
-                read_events(events_path, sample_dir.name),
+                row,
                 score_status=score.get("status"),
                 metrics=score.get("metrics", {}),
                 build_valid=score.get("build_valid"),

@@ -16,17 +16,19 @@ from PIL import Image
 from pydantic import PrivateAttr
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
-from zeroshot.pipeline_native.connection_retry import (
-    ConnectionRetryMiddleware,
-)
-from zeroshot.pipeline_native.turn_limit import (
-    TurnLimitMiddleware,
-)
+from zeroshot.pipeline.stages._base.prompt import PromptTemplate, describe_placement
+from zeroshot.pipeline.stages.interpretation.contracts import ProjectionMethod
 from zeroshot.pipeline.workflow.middleware.stateless_reasoning import (
     StatelessReasoningMiddleware,
 )
 from zeroshot.pipeline_native import runner
+from zeroshot.pipeline_native.connection_retry import (
+    ConnectionRetryMiddleware,
+)
 from zeroshot.pipeline_native.event_logging import EventLog
+from zeroshot.pipeline_native.turn_limit import (
+    TurnLimitMiddleware,
+)
 
 _ROOT = Path(__file__).resolve().parents[3]
 
@@ -54,6 +56,23 @@ def _events(config, name="events.jsonl"):
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
+def _system_prompt(config):
+    """The system prompt the generator was given, from a run that writes a stub."""
+    model = ScriptedChatModel(
+        responses=(
+            tool_call(
+                "run_shell", {"command": "echo 'result = None' > model.py"}, "write"
+            ),
+            AIMessage(content="Saved model.py."),
+            AIMessage(content="A report."),
+        )
+    )
+    runner.run(config, model=model)
+    system = model.received_messages[0][0]
+    assert system.type == "system"
+    return system.text
+
+
 class _ToolAwareModel(ScriptedChatModel):
     _request_tools: list[tuple[str, ...]] = PrivateAttr(default_factory=list)
 
@@ -70,6 +89,58 @@ def test_native_rejects_oversized_input_before_creating_workspace(tmp_path):
     config = _config(tmp_path, "sample.max_input_image_side=15")
     model = ScriptedChatModel(responses=())
     with pytest.raises(ValueError, match="sample.max_input_image_side=15"):
+        runner.run(config, model=model)
+    assert not Path(config.artifact_root).exists()
+    assert model.received_messages == []
+
+
+@pytest.mark.parametrize("method", list(ProjectionMethod))
+def test_native_states_view_roles_as_the_staged_pipeline_does(tmp_path, method):
+    """Both arms read a drawing under one convention. A change to the staged
+    pipeline's wording fails here until the native prompt carries it too."""
+    staged = PromptTemplate(
+        _ROOT / "zeroshot/pipeline/stages/_base/prompts/coordinate_frames.md"
+    ).render(projection_placement=describe_placement(method))
+    section = staged[staged.index("### Which view is which?") :]
+    system = _system_prompt(
+        _config(tmp_path, f"sample.drawing.projection_method={method}")
+    )
+    assert section in system
+    (other,) = set(ProjectionMethod) - {method}
+    assert describe_placement(other) not in system
+    assert "$" not in system
+
+
+def test_native_builds_curves_as_the_staged_coder_is_told(tmp_path):
+    """Word for word, so a change to the staged wording fails here too."""
+    staged = (_ROOT / "zeroshot/pipeline/stages/coding/prompts/round.md").read_text()
+    system = _system_prompt(_config(tmp_path))
+    (paragraph,) = [
+        part for part in system.split("\n\n") if part.startswith("Build curves")
+    ]
+    assert paragraph in staged
+
+
+@pytest.mark.parametrize(
+    ("input_config", "method"),
+    [
+        ("png_dimensioned", ProjectionMethod.THIRD_ANGLE),
+        ("test_ortho2cad_f360_mdim", ProjectionMethod.FIRST_ANGLE),
+    ],
+)
+def test_native_follows_the_input_configs_projection_method(
+    tmp_path, input_config, method
+):
+    system = _system_prompt(_config(tmp_path, f"input={input_config}"))
+    assert describe_placement(method) in system
+
+
+def test_native_rejects_unknown_projection_method_before_creating_workspace(
+    tmp_path,
+):
+    config = _config(tmp_path, "sample.drawing.projection_method=second_angle")
+    model = ScriptedChatModel(responses=())
+    with pytest.raises(ValueError, match="second_angle"):
         runner.run(config, model=model)
     assert not Path(config.artifact_root).exists()
     assert model.received_messages == []
@@ -341,8 +412,10 @@ with initialize_config_dir(config_dir=str(Path("zeroshot/configs").resolve()), v
     for model in (
         "gpt6_sol_codex",
         "gpt6_astra_codex",
-        "opus5.5_openrouter",
-        "sonnet5_openrouter",
+        "gpt6.1_sol_codex",
+        "opus5.5_claude",
+        "sonnet5.5_claude",
+        "haiku5.5_claude",
         "glm5.3_flash_openrouter",
     ):
         cfg = compose(config_name="workflow/native", overrides=[f"model={model}"])

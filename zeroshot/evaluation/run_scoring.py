@@ -9,6 +9,10 @@ Rescore finished samples with::
 
     python -m zeroshot.evaluation.run_scoring \\
         --run-dir outputs/<run>/*/ --target-dir data/test_vlm/target_step_ori
+
+A staged run is scored by its newest verified attempt. A native run
+(`zeroshot.pipeline_native`) leaves only `workspace/model.py`, so that program
+is built first, in the same sandbox and through the same STEP checks.
 """
 
 from __future__ import annotations
@@ -16,13 +20,24 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing as mp
+import sys
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from math import isfinite
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from zeroshot.pipeline.sandbox import SandboxRunner
+
+# A native run's program is built beside its workspace, not in it, so the
+# workspace stays as the agent left it.
+NATIVE_BUILD_DIRNAME = "scoring_build"
+# Build time for a run whose run.json records no `sandbox_runner.default_timeout_s`:
+# what both pipelines' configs give a program.
+DEFAULT_BUILD_TIMEOUT_S = 30.0
 
 
 class ScoreStatus(Enum):
@@ -249,22 +264,122 @@ def latest_verified_step(
     return None, skipped
 
 
+def _native_config(run_dir: Path) -> dict[str, Any]:
+    """The resolved config the native runner recorded in run.json, or {}."""
+    try:
+        document = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        config = document["config"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
+def is_native_run(run_dir: Path) -> bool:
+    """Whether `zeroshot.pipeline_native` made this sample, as its run.json says.
+
+    Asked of run.json rather than read off a missing `attempts/`: a staged run
+    whose interpretation never validated has a `model.py` and no attempt either,
+    and building that program would score what the staged pipeline never did.
+    """
+    workflow = _native_config(run_dir).get("workflow")
+    return isinstance(workflow, dict) and workflow.get("name") == "native"
+
+
+def sandbox_for_builds(run_dir: Path, timeout_s: float | None = None) -> SandboxRunner:
+    """The sandbox a native run gave its agent, as its run.json records it.
+
+    An unset interpreter is this one, as it was for the native runner.
+    `timeout_s` overrides the recorded `default_timeout_s`.
+    """
+    from zeroshot.pipeline.sandbox import SandboxRunner
+
+    settings = _native_config(run_dir).get("sandbox_runner") or {}
+    return SandboxRunner(
+        python_executable=Path(settings.get("python_executable") or sys.executable),
+        default_timeout_s=(
+            timeout_s or settings.get("default_timeout_s") or DEFAULT_BUILD_TIMEOUT_S
+        ),
+        max_stdout_bytes=settings.get("max_stdout_bytes") or 1024 * 1024,
+        max_stderr_bytes=settings.get("max_stderr_bytes") or 1024 * 1024,
+    )
+
+
+def native_step(
+    run_dir: Path, sandbox_runner: SandboxRunner
+) -> tuple[Path | None, dict[str, str], str | None]:
+    """Build a native run's `workspace/model.py`, or say why it gave no solid.
+
+    Also returns the build's status, `None` when there is no program to build.
+
+    The staged pipeline's executor builds it, so its STEP export and checks are
+    the ones a staged attempt passes. Catching exceptions is allowed: the native
+    agent was never told otherwise, as the staged coder is.
+    """
+    from zeroshot.pipeline.verification.run_cadquery import (
+        CadQueryExecutor,
+        ExecutionStatus,
+    )
+
+    # Where zeroshot.pipeline_native.runner leaves the program.
+    relative = Path("workspace") / "model.py"
+    program = run_dir / relative
+    # The native runner records a symlinked or missing program as a failure.
+    if program.is_symlink() or not program.is_file():
+        return None, {}, None
+    build_dir = run_dir / NATIVE_BUILD_DIRNAME
+    build_dir.mkdir(exist_ok=True)
+    step_path = build_dir / "output.step"
+    step_path.unlink(missing_ok=True)
+    report = CadQueryExecutor(sandbox_runner, forbid_try_except=False).execute(
+        program, step_path
+    )
+    if report.status is ExecutionStatus.VERIFIED and report.step_path is not None:
+        return report.step_path, {}, report.status.value
+    reason = (
+        report.executor_error
+        or report.stderr.strip()[-2000:]
+        or f"exit code {report.returncode}"
+    )
+    return None, {str(relative): f"{report.status}: {reason}"}, report.status.value
+
+
 def score_run(
     run_dir: Path,
     target_step: Path,
     scorer: StepScorer,
     last_only: bool = True,
+    sandbox_runner: SandboxRunner | None = None,
 ) -> dict[str, object]:
     """Score what a finished run submitted, as a JSON-ready document.
 
     The settings are recorded next to the numbers because a metric value only
     means something together with the threshold, seed and attempt choice that
-    produced it.
+    produced it. A native run's program is built in `sandbox_runner`, by
+    default `sandbox_for_builds(run_dir)`; `last_only` has no choice to make
+    there. A sandbox that could not run the build is the evaluator's failure,
+    not the model's.
     """
 
-    pred_step, skipped = latest_verified_step(run_dir, last_only)
-    report = (
-        ScoreReport(
+    build: dict[str, object] = {}
+    infra_error = None
+    if is_native_run(run_dir):
+        pred_step, skipped, status = native_step(
+            run_dir, sandbox_runner or sandbox_for_builds(run_dir)
+        )
+        # What the staged pipeline's final verification says of its program.
+        build = {"native_build_status": status}
+        if status == "INFRA_ERROR":
+            infra_error = "; ".join(skipped.values())
+    else:
+        pred_step, skipped = latest_verified_step(run_dir, last_only)
+    if infra_error is not None:
+        report = ScoreReport(
+            status=ScoreStatus.FAILED,
+            errors={"build": {"kind": "evaluation_error", "message": infra_error}},
+            details={"build_valid": None},
+        )
+    elif pred_step is None:
+        report = ScoreReport(
             status=ScoreStatus.NO_PREDICTION,
             errors={
                 "prediction": {
@@ -274,9 +389,8 @@ def score_run(
             },
             details={"build_valid": False},
         )
-        if pred_step is None
-        else scorer.score(pred_step, target_step)
-    )
+    else:
+        report = scorer.score(pred_step, target_step)
     return {
         "run_dir": str(run_dir),
         "pred_step": None if pred_step is None else str(pred_step),
@@ -284,6 +398,7 @@ def score_run(
         "skipped_attempts": skipped,
         "target_step": str(target_step),
         "last_only": last_only,
+        **build,
         "scorer": asdict(scorer),
         **report.as_dict(),
     }
@@ -310,6 +425,15 @@ def main() -> None:
         help="ground-truth STEPs named <sample_id>.step",
     )
     parser.add_argument("--timeout-s", type=float, default=StepScorer.timeout_s)
+    parser.add_argument(
+        "--build-timeout-s",
+        type=float,
+        default=None,
+        help=(
+            "sandbox time to build a native run's model.py; default: the run's "
+            f"sandbox_runner.default_timeout_s, else {DEFAULT_BUILD_TIMEOUT_S:g}"
+        ),
+    )
     parser.add_argument(
         "--last-only",
         action=argparse.BooleanOptionalAction,
@@ -366,7 +490,15 @@ def main() -> None:
             print(f"skip       {run_dir}: no target {target_step}")
             continue
         print(f"sample     {run_dir}")
-        document = score_run(run_dir, target_step, scorer, args.last_only)
+        # Per run, as each records its own sandbox; staged runs never need one.
+        sandbox_runner = (
+            sandbox_for_builds(run_dir, args.build_timeout_s)
+            if is_native_run(run_dir)
+            else None
+        )
+        document = score_run(
+            run_dir, target_step, scorer, args.last_only, sandbox_runner
+        )
         output_path = run_dir / "score.json"
         output_path.write_text(
             json.dumps(document, indent=2, allow_nan=False), encoding="utf-8"
