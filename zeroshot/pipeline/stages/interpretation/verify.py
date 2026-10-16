@@ -13,6 +13,7 @@ from typing import Any
 from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import ValidationError
 
+from zeroshot.pipeline.retrieval.evidence import EvidenceLookup
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.error_locations import file_errors, semantic_errors
 from zeroshot.pipeline.stages._base.validate import LocatedError
@@ -268,3 +269,20 @@ class InterpretationVerifier:
                 "Deduce them by = pix_len * RANSAC scale (mm/px)."
             ),
         ]
+
+
+class LookupInterpretationVerifier(InterpretationVerifier):
+    """Also show what the region index finds for each valid feature's evidence."""
+
+    def __init__(self, *args: Any, lookup: EvidenceLookup, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.lookup = lookup
+
+    def feedback(self) -> list[ContentBlock]:
+        blocks = super().feedback()
+        accepted = self.accepted_interpretation
+        if accepted is not None and (
+            found := self.lookup.report(accepted.model_dump(mode="json"))
+        ):
+            blocks.append(create_text_block(found))
+        return blocks

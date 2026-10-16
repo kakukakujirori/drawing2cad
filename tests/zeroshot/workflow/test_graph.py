@@ -603,6 +603,30 @@ def test_stage_specific_tools_stay_with_their_assigned_stage(monkeypatch):
         "calculate_drawing_scale",
         "evaluate_cad_hypothesis",
     )
+    prompt = "\n".join(message.text for message in coder.received_messages[0])
+    assert "search_semantic_features" not in prompt
+
+
+def test_both_agents_get_the_retrieval_tool_when_an_index_is_given(
+    monkeypatch, tmp_path
+):
+    from zeroshot.pipeline.retrieval.index import RegionIndex
+
+    RegionIndex(tmp_path / "regions.sqlite")
+    _stub_verification(monkeypatch, _verified())
+    coder = ScriptedChatModel(responses=_coding_script())
+    auditor = ScriptedChatModel(responses=_audit_script(_accepted_audit()))
+    with SandboxWorkdir() as workdir:
+        _graph(
+            workdir,
+            coder=coder,
+            auditor=auditor,
+            retrieval_db=str(tmp_path / "regions.sqlite"),
+        ).invoke({})
+    for model in (coder, auditor):
+        assert "search_semantic_features" in model.bound_tool_names
+    prompt = "\n".join(message.text for message in coder.received_messages[0])
+    assert "call `search_semantic_features` with its box" in prompt
 
 
 _TRIAL = "/work/trials/round_000/coding/000"

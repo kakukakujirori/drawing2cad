@@ -28,6 +28,9 @@ from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
 from zeroshot.pipeline.tools.fit_edge import create_fit_edge_tool
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
+from zeroshot.pipeline.tools.search_semantic_features import (
+    create_search_semantic_features_tool,
+)
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.evidence import EvidenceMode
@@ -68,6 +71,7 @@ def create_reconstruction_graph(
     coding_draft_check_after_n_turns: int | None = 20,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
     review_drawing_diff_clusters: bool = True,
+    retrieval_db: str | None = None,
 ):
     """Interpret the drawing and implement the part, then verify and audit it."""
     if max_audit_reject_count < 0:
@@ -91,6 +95,10 @@ def create_reconstruction_graph(
         create_load_image_tool(sandbox_workdir),
         create_fit_edge_tool(sandbox_workdir),
     ]
+    if retrieval_db is not None:
+        basic_tools.append(
+            create_search_semantic_features_tool(sandbox_workdir, retrieval_db)
+        )
     history_path = sandbox_workdir.host_bind_dir / reconstruction_history_filename
 
     def current_round() -> int:
@@ -150,6 +158,7 @@ def create_reconstruction_graph(
         coding_trial_tool=coding_trial_tool,
         coding_draft_check_after_n_turns=coding_draft_check_after_n_turns,
         match_margin_px=match_margin_px,
+        retrieval_db=retrieval_db,
     )
     audit_stage = stage_factory(PipelineStage.AUDIT)(
         partial(audit_agent_builder, output_limit_budget=output_limit_budget),

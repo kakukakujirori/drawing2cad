@@ -294,7 +294,9 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "coding_draft_check_after_n_turns",
         "match_margin_px",
         "review_drawing_diff_clusters",
+        "retrieval_db",
     }
+    assert graph_factory.keywords["retrieval_db"] is None
     assert graph_factory.keywords["fresh_coder"] is False
     assert graph_factory.keywords["coding_trial_tool"] is True
     assert graph_factory.keywords["coding_draft_check_after_n_turns"] == 20
