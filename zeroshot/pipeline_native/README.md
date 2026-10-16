@@ -1,12 +1,22 @@
 # Native drawing-to-CadQuery baseline
 
 A single LangGraph agent receives the PNG drawing and writes `/work/model.py`.
-The prompt requires the final shape to be assigned to `result` and forbids STEP
-export code in `model.py`.
+The prompt requires the final solid, in mm, to be assigned to `result`, a
+self-contained script that loads no file, a valid STEP-exportable solid, and no
+STEP export code in `model.py`. It also carries the staged coder's instruction
+to build curves as curves, word for word.
+It also states the input config's `sample.drawing.projection_method` in the same
+"Which view is which?" section the staged pipeline gives its agents (rendered by
+`describe_placement`), so both arms read a drawing under one convention. A test
+fails if the staged pipeline's wording of that section changes without this one.
 Only `run_shell` and `load_image` are exposed. The agent chooses its own workflow;
-there is no auditor, verifier, turn budget, structured submission, compaction,
-or answer-correction retry. An ordinary final answer ends generation. A missing,
+there is no auditor, verifier, structured submission, compaction, or
+answer-correction retry. An ordinary final answer ends generation. A missing,
 empty, or symlinked `model.py` is recorded as failure without asking again.
+`max_turns` (150 in `workflow/native.yaml`) caps model calls: past it,
+generation stops, `run_completed` carries `status: turn_limit_exceeded`, a
+missing `model.py` is replaced by a `result = None` stub, and no retrospective
+is requested.
 
 The existing sandbox, two tools, OpenRouter and direct Claude adapters, and stateless-reasoning
 middleware are reused unchanged. The native runner and logging remain separate.
@@ -46,32 +56,28 @@ Prepared model configs (select with `model=...`):
 | `gpt6_sol_codex` | GPT-6 Sol (6.0) | `max` | Codex connection |
 | `gpt6.1_sol_codex` | GPT-6.1 Sol (6.1) | `max` | Codex connection |
 | `gpt6_astra_codex` | GPT-6 Astra | `max` | Codex connection |
-| `opus5.5_claude` | Claude Opus 5.5 | `high` (adaptive) | Direct Claude (`zeroshot.pipeline.models.claude`) |
-| `opus5.5_openrouter` | Claude Opus 5.5 | `max` | OpenRouter (`OPENROUTER_API_KEY`) |
-| `sonnet5.5_claude` | Claude Sonnet 5.5 | `high` (adaptive) | Direct Claude (`zeroshot.pipeline.models.claude`) |
-| `sonnet5_openrouter` | Claude Sonnet 5 | `max` | OpenRouter (`OPENROUTER_API_KEY`) |
+| `opus5.5_claude` | Claude Opus 5.5 | `xhigh` (adaptive) | Direct Claude (`zeroshot.pipeline.models.claude`) |
+| `sonnet5.5_claude` | Claude Sonnet 5.5 | `xhigh` (adaptive) | Direct Claude (`zeroshot.pipeline.models.claude`) |
+| `haiku5.5_claude` | Claude Haiku 5.5 | `xhigh` (adaptive) | Direct Claude (`zeroshot.pipeline.models.claude`) |
 
 The GPT configurations use the Codex connection. Claude direct configurations use
-OAuth / Anthropic API credentials (`claude auth login`). Claude OpenRouter configurations use
-OpenRouter and `OPENROUTER_API_KEY`; they request reasoning output and keep
-128,000 output tokens available for thinking plus the response. `model_retries`
+OAuth / Anthropic API credentials (`claude auth login`) and keep 128,000 output
+tokens available for thinking plus the response. `model_retries`
 (default: `5`) controls the number of transport retry attempts on dropped streams or rate limits.
 
 Maximum efforts were checked against the official [Luna](https://developers.openai.com/api/docs/models/gpt-6-luna),
 [Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
 [Astra](https://developers.openai.com/api/docs/models/gpt-6-astra), and
 [Claude effort](https://platform.claude.com/docs/en/build-with-claude/effort) specifications.
-OpenRouter documents [summarized thinking by default](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#summarized-thinking)
-for newer Claude models; `reasoning.exclude=false` keeps that trace in responses.
 
 For GLM, use the existing standalone `model=glm5.3_flash_openrouter` config and
-`OPENROUTER_API_KEY`. Both GLM and Claude use
+`OPENROUTER_API_KEY`. GLM uses
 `zeroshot.pipeline.models.openrouter.ChatOpenRouter` directly.
 Every model config is independently defined; none inherits another model config.
 Do not pass a secret on the command line.
 
 All native run settings live in `zeroshot/configs/workflow/native.yaml`,
-alongside the existing `workflow/single.yaml`. The native entrypoint loads it
+alongside the staged pipeline's `workflow/coder_auditor.yaml`. The native entrypoint loads it
 with `config_name="workflow/native"` from `zeroshot/configs/`, using the shared
 model/input groups. The commands above use this config by default; select
 alternatives with `model=...` or `input=...`. Native uses only the input sheets
@@ -113,7 +119,7 @@ python -m zeroshot.pipeline_native \
 The sandbox Python defaults to the Python launching the runner. Override
 `sandbox_runner.python_executable` if CadQuery is in a different environment.
 Shell/API timeouts remain configured; LangGraph's required integer recursion
-limit is set to `sys.maxsize`, with no agent turn-budget policy.
+limit is set to `sys.maxsize`, and `max_turns` alone bounds the agent.
 
 ## Records
 
@@ -160,12 +166,28 @@ Images in logs are replaced by hashes/lengths and known secret fields are
 redacted. `console=false` disables printing, not logging.
 
 Generation success means a nonempty `model.py` was submitted, not that its
-geometry is correct. For an execution smoke check, run the generated file in
-the shared sandbox after the agent has stopped, and export `result` from a
-separate checking script. There is no automated geometry feedback. The native
-runner does not touch the target STEP or invoke the staged scorer. Any execution
-check artifacts (such as `smoke/` or `smoke_result.json`) come from separate
-post-run checks; the native runner does not create them.
+geometry is correct. There is no automated geometry feedback, and the native
+runner does not touch the target STEP or invoke the scorer.
+
+Score a finished sweep with the staged pipeline's scorer and aggregate it the
+same way:
+
+```bash
+python -m zeroshot.evaluation.run_scoring \
+  --run-dir outputs/native_opus_5.5/*/ \
+  --target-dir data/test_vlm/target_step_ori
+python -m zeroshot.evaluation.aggregate_run --run-dir outputs/native_opus_5.5
+```
+
+`run.json` marks a sample as native. Its `workspace/model.py` is built in the
+sandbox by the staged pipeline's executor into `scoring_build/output.step`, and
+held to the same STEP checks as a staged attempt (exactly one valid, meshable
+solid). Unlike a staged program it may catch exceptions, which the native
+prompt never forbids. A program that builds nothing scorable, including the
+turn-limit stub, is `NO_PREDICTION`, with the reason under `skipped_attempts`;
+`native_build_status` is what `aggregate_run` reports as its verification.
+`--build-timeout-s` (default 30, the sandbox default of both pipelines) bounds
+the build.
 
 ## Checks
 

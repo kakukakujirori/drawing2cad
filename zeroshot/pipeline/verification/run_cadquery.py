@@ -91,8 +91,13 @@ def _rejection(error: SyntaxError | ValueError) -> str:
 
 
 class CadQueryExecutor:
-    def __init__(self, sandbox_runner: SandboxRunner) -> None:
+    def __init__(
+        self, sandbox_runner: SandboxRunner, forbid_try_except: bool = True
+    ) -> None:
         self.sandbox_runner = sandbox_runner
+        # The staged coder is told not to catch exceptions; a program written
+        # under no such rule (the native baseline's) is built as it stands.
+        self.forbid_try_except = forbid_try_except
 
     def execute(
         self,
@@ -126,7 +131,11 @@ class CadQueryExecutor:
 
         # Static check (syntax and self-containedness)
         try:
-            self.validate_source(source, filename=model_path.name)
+            self.validate_source(
+                source,
+                filename=model_path.name,
+                forbid_try_except=self.forbid_try_except,
+            )
         except (SyntaxError, ValueError) as e:
             return CadQueryExecutionReport(
                 source=source,

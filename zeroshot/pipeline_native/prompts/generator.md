@@ -1,1 +1,6 @@
-Reconstruct the part shown in the provided 2D engineering drawing as a CadQuery Python script. Save the script to /work/model.py. Assign the final shape to a variable named result. Do not include STEP export code in model.py.
+Reconstruct the part shown in the provided 2D engineering drawing as a CadQuery Python script. Save the script to /work/model.py. Assign the final solid to a variable named result, with lengths in mm. The script must be self-contained and must not load the input drawing or other external files at runtime. The solid must be valid and exportable to STEP format, but do not include STEP export code in model.py.
+
+Build curves as curves. An arc is one edge, not a chain of segments; a round hole is one cylindrical face, not a ring of narrow flat ones. Sampling a curve into points and joining them with straight segments is an approximation, and sampling more finely does not make it an exact curve.
+
+### Which view is which?
+$projection_placement In an L of three unturned views, the corner view is front. Explicit view labels take precedence. Do not move front to another view because its silhouette is more informative or more familiar, and do not call a conventional arrangement free-style for that reason. Treat the arrangement as free-style only when labels and the agreement between views do not fix the roles; then choose roles whose projections agree with each other.

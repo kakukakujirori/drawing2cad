@@ -1,5 +1,10 @@
 # @package _global_
 
+# Provider structured output cannot reach Claude: ChatClaude sends no response
+# format, and Anthropic's json_schema needs closed objects, which the stage
+# answers' free-form maps are not. The answer is a tool call instead.
+response_format_strategy: tool
+
 model:
   _target_: zeroshot.pipeline.models.claude.ChatClaude
   model: claude-haiku-5-5
@@ -8,6 +13,6 @@ model:
     type: adaptive
     display: summarized
     effort: xhigh
-  max_images_per_request: 4
+  image_history_limit: 8
   timeout: 600.0
   max_retries: 0

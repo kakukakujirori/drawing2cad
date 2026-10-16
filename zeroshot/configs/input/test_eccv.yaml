@@ -10,8 +10,8 @@
 # presenter shows.
 sample:
   drawing:
-    # Where the sheets put each view around front: test_vlm's TechDraw sheets
-    # are laid out by src/data/render/techdraw.py.
+    # Where the sheets put each view around front: test_eccv extends test_vlm,
+    # whose TechDraw sheets are laid out by src/data/render/techdraw.py.
     projection_method: third_angle
     sheets:
       - name: view_drawing

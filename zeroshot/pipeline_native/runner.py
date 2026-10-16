@@ -24,6 +24,8 @@ from PIL import Image
 
 from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages._base.prompt import PromptTemplate, describe_placement
+from zeroshot.pipeline.stages.interpretation.contracts import ProjectionMethod
 from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
@@ -148,6 +150,8 @@ def run(
     if len(set(names)) != len(names):
         raise ValueError("Input drawing names must be unique")
     sources = [Path(to_absolute_path(str(sheet.file))) for sheet in sheets]
+    # The staged pipeline tells its agents the same; a dataset draws one way.
+    projection_method = ProjectionMethod(str(config.sample.drawing.projection_method))
 
     # Ensure that the input image is not too large.
     max_side = config.sample.max_input_image_side
@@ -229,7 +233,9 @@ def run(
                         }
                     )
 
-                prompt = _PROMPT.read_text(encoding="utf-8").strip()
+                prompt = PromptTemplate(_PROMPT).render(
+                    projection_placement=describe_placement(projection_method)
+                )
                 messages = [HumanMessage(content=blocks)]
                 write_json(run_dir / "run.json", metadata)
                 log.write("prompt", {"system": prompt, "messages": messages})
@@ -241,7 +247,7 @@ def run(
                     else 5
                 )
                 max_turns = (
-                    int(mt) if (mt := config.get("max_turns")) is not None else 20
+                    int(mt) if (mt := config.get("max_turns")) is not None else 150
                 )
                 turn_limit = TurnLimitMiddleware(workspace, max_turns=max_turns)
                 agent = create_agent(

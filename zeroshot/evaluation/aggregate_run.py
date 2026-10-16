@@ -20,7 +20,7 @@ from typing import Any
 
 from zeroshot.evaluation.metrics.itercad import aggregate_itercad
 from zeroshot.evaluation.metrics.surface_distance import DISTANCE_METRICS
-from zeroshot.evaluation.run_scoring import ScoreStatus, StepScorer
+from zeroshot.evaluation.run_scoring import ScoreStatus, StepScorer, is_native_run
 from zeroshot.pipeline.workflow import StopReason
 
 
@@ -172,6 +172,69 @@ def read_events(events_path: Path, sample_id: str) -> SampleRow:
     )
 
 
+def read_native_events(events_path: Path, sample_id: str) -> SampleRow:
+    """What a native run (`zeroshot.pipeline_native`) recorded, in its own schema.
+
+    Model and tool calls and token usage come from the final transcript,
+    `messages.json`: its log streams deltas beside the finished messages, and
+    counting both would count a call twice. A run that failed mid-stream may
+    have no transcript, so its calls go uncounted rather than half-counted.
+    """
+    row = SampleRow(sample_id=sample_id, terminal=Terminal.INTERRUPTED)
+    started = None
+    with events_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:  # the record a kill cut short
+                continue
+            name, data, at = event["event"], event["data"], event["timestamp"]
+            if name == "run_started":
+                started = at
+            elif name == "turn_limit_exceeded":
+                row = replace(
+                    row,
+                    stop_reasons={"generator": StopReason.BUDGET_EXHAUSTED.value},
+                )
+            elif name in {"run_completed", "run_failed"}:
+                row = replace(
+                    row,
+                    terminal=(
+                        Terminal.COMPLETED
+                        if name == "run_completed"
+                        else Terminal.FAILED
+                    ),
+                    wall_ms=None if started is None else at - started,
+                    error=data.get("error"),
+                )
+
+    transcript = events_path.with_name("messages.json")
+    calls = (
+        [
+            message
+            for message in json.loads(transcript.read_text(encoding="utf-8"))
+            if message.get("type") == "ai"
+        ]
+        if transcript.is_file()
+        else []
+    )
+    usages = [call["usage_metadata"] for call in calls if call.get("usage_metadata")]
+    return replace(
+        row,
+        agent_turns=len(calls),
+        model_calls=len(calls),
+        calls_with_usage=len(usages),
+        tokens=Tokens.summed(usages),
+        tool_calls=dict(
+            Counter(
+                f"{tool_call['name']}:generator"
+                for call in calls
+                for tool_call in call.get("tool_calls") or ()
+            )
+        ),
+    )
+
+
 def collect(run_dir: Path) -> list[SampleRow]:
     """One row per attempted sample. Dropping the crashed ones would let every
     rate below flatter itself by shrinking its own denominator."""
@@ -184,9 +247,16 @@ def collect(run_dir: Path) -> list[SampleRow]:
         score = (
             json.loads(score_path.read_text("utf-8")) if score_path.is_file() else {}
         )
+        native = is_native_run(sample_dir)
+        row = (read_native_events if native else read_events)(
+            events_path, sample_dir.name
+        )
+        if native:
+            # Its program is built only when scored, so that is its verification.
+            row = replace(row, verify=score.get("native_build_status"))
         rows.append(
             replace(
-                read_events(events_path, sample_dir.name),
+                row,
                 score_status=score.get("status"),
                 metrics=score.get("metrics", {}),
                 build_valid=score.get("build_valid"),

@@ -6,6 +6,7 @@ an OAuth access token from an active Claude subscription (minted via Claude Code
 
 Handles:
 - Base64 PNG images formatted by LangGraph (converts `image_url` data URLs to Anthropic `image` source)
+- Image history trimmed to the input drawings and the newest others (`image_history_limit`)
 - Native Anthropic tool calling (`bind_tools`, `tool_use`, `tool_result`)
 - SSE streaming with `AIMessageChunk` and `ToolCallChunk` merging
 - OAuth token discovery from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`
@@ -42,6 +43,8 @@ from langchain_core.runnables import RunnableBinding
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field
+
+from .image_history import trim_image_history
 
 logger = logging.getLogger(__name__)
 
@@ -94,73 +97,8 @@ def _convert_tool_to_anthropic(tool: Any) -> dict[str, Any]:
     }
 
 
-def _image_parts(content: Any) -> list[dict[str, Any]]:
-    if not isinstance(content, list):
-        return []
-    parts = []
-    for part in content:
-        if isinstance(part, dict):
-            if part.get("type") in {"image_url", "image"}:
-                parts.append(part)
-            elif part.get("type") == "tool_result" and isinstance(
-                part.get("content"), list
-            ):
-                for subpart in part["content"]:
-                    if isinstance(subpart, dict) and subpart.get("type") in {
-                        "image_url",
-                        "image",
-                    }:
-                        parts.append(subpart)
-    return parts
-
-
-def _cap_tool_images(messages: list[dict[str, Any]], limit: int) -> None:
-    """Keep inputs and newest tool images on the wire, trimming older tool images when capped."""
-    originals = sum(
-        len(_image_parts(msg.get("content")))
-        for msg in messages
-        if msg.get("role") != "user"
-        or not any(
-            isinstance(p, dict) and p.get("type") == "tool_result"
-            for p in (
-                msg.get("content") if isinstance(msg.get("content"), list) else []
-            )
-        )
-    )
-    if originals > limit:
-        raise ValueError(
-            f"Original image attachments ({originals}) exceed limit ({limit}); none dropped."
-        )
-    remaining = limit - originals
-    for msg in reversed(messages):
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "tool_result":
-                subcontent = part.get("content")
-                if isinstance(subcontent, list):
-                    new_subcontent = []
-                    for subpart in subcontent:
-                        if isinstance(subpart, dict) and subpart.get("type") == "image":
-                            if remaining > 0:
-                                remaining -= 1
-                                new_subcontent.append(subpart)
-                            else:
-                                new_subcontent.append(
-                                    {
-                                        "type": "text",
-                                        "text": "[Previous tool image trimmed to stay within context limit]",
-                                    }
-                                )
-                        else:
-                            new_subcontent.append(subpart)
-                    part["content"] = new_subcontent
-
-
 def _format_messages_for_anthropic(
     messages: Sequence[BaseMessage],
-    max_images_per_request: int | None = None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
     """Convert LangChain messages into Anthropic's top-level system prompt and messages list."""
     system_parts: list[str] = []
@@ -294,9 +232,6 @@ def _format_messages_for_anthropic(
         else:
             merged_messages.append(m)
 
-    if max_images_per_request is not None:
-        _cap_tool_images(merged_messages, max_images_per_request)
-
     system_prompt = "\n\n".join(system_parts) if system_parts else None
     return system_prompt, merged_messages
 
@@ -336,11 +271,8 @@ class ChatClaude(BaseChatModel):
         default=0,
         description="Max internal HTTP retries. Kept at 0 so agent middleware handles retry policy.",
     )
-    max_images_per_request: int | None = Field(
-        default=4,
-        gt=0,
-        description="Optional limit on total image blocks sent per request.",
-    )
+    # None sends every image; anchors remain even if they exceed this budget.
+    image_history_limit: int | None = Field(default=None, gt=0, strict=True)
 
     @property
     @override
@@ -392,9 +324,11 @@ class ChatClaude(BaseChatModel):
         tool_choice: Any = None,
         stream: bool = False,
     ) -> dict[str, Any]:
-        system_prompt, formatted_messages = _format_messages_for_anthropic(
-            messages, max_images_per_request=self.max_images_per_request
-        )
+        # Prune copies of the same LangChain messages the other backends see;
+        # stored conversation messages stay intact.
+        if self.image_history_limit is not None:
+            messages = trim_image_history(messages, self.image_history_limit)
+        system_prompt, formatted_messages = _format_messages_for_anthropic(messages)
         prompt_id = str(uuid.uuid4())
         billing_header = (
             f"x-anthropic-billing-header: cc_version=2.1.284.12a; cc_entrypoint=sdk-cli; "
@@ -441,14 +375,16 @@ class ChatClaude(BaseChatModel):
         if tools:
             payload["tools"] = [_convert_tool_to_anthropic(t) for t in tools]
             if tool_choice:
-                if tool_choice == "auto":
-                    payload["tool_choice"] = {"type": "auto"}
-                elif tool_choice == "any":
-                    payload["tool_choice"] = {"type": "any"}
-                elif isinstance(tool_choice, str):
-                    payload["tool_choice"] = {"type": "tool", "name": tool_choice}
-                elif isinstance(tool_choice, dict):
-                    payload["tool_choice"] = tool_choice
+                # Claude Opus 5.5 and Sonnet 5.5 answer a forced choice ("any" or
+                # a named tool, as ToolStrategy sends) with a 400, so ask for
+                # "auto". ModelCallRetryMiddleware re-asks a turn that answers in
+                # text instead of calling the answer tool.
+                kind = (
+                    tool_choice.get("type")
+                    if isinstance(tool_choice, dict)
+                    else tool_choice
+                )
+                payload["tool_choice"] = {"type": "none" if kind == "none" else "auto"}
         return payload
 
     @override
