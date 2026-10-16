@@ -2,7 +2,7 @@
 
 defaults:
   - _self_
-  - input: png_dimensioned  # dxf
+  - input: test_eccv  # png_dimensioned, dxf, ...
   - workflow: coder_auditor
 
 artifact_root: outputs/zeroshot

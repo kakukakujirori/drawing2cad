@@ -18,6 +18,7 @@ model:
   openrouter_provider:
     order: [InferenceNet, Modal, Together, Fireworks, DeepInfra]
     allow_fallbacks: false
+  # Always 8, whatever the workflow allows: the upstreams reject more.
   image_history_limit: 8
 
   # Hard turns reason for ~30k tokens; the rest leaves room for a whole program.

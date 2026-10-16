@@ -4,6 +4,10 @@ defaults:
   - /model: gemma4_ollama
   - _self_
 
+# Images per request, input drawings included, for the model configs that defer
+# to the workflow (Claude, GPT). Outside `workflow`, which is instantiated.
+image_history_limit: 8
+
 # The graph is a config group so a run records which one it used, in the
 # `.hydra/config.yaml` beside its own artifacts. Everything a graph decides
 # lives here; the runner only supplies the run environment.

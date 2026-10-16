@@ -62,8 +62,23 @@ Prepared model configs (select with `model=...`):
 
 The GPT configurations use the Codex connection. Claude direct configurations use
 OAuth / Anthropic API credentials (`claude auth login`) and keep 128,000 output
-tokens available for thinking plus the response. `model_retries`
-(default: `5`) controls the number of transport retry attempts on dropped streams or rate limits.
+tokens available for thinking plus the response. They send each turn's thinking
+blocks back with their signatures. A replayed block counts as input at its full
+thinking size, so past `thinking_replay_budget` (500,000 tokens) the oldest
+turns' thinking is withheld, half a budget at a time. They use automatic prompt caching
+(`prompt_cache_ttl`, default `5m`); their usage is reported as `usage_metadata`.
+`model_retries` (default: `5`) controls the number of transport retry attempts on
+dropped streams or rate limits. For Claude these are HTTP 429/5xx/529, an
+`error` event inside the stream, and a stream that ends before `message_stop`.
+
+`workflow/native.yaml` lets Claude and GPT requests carry 20 images
+(`image_history_limit`, input drawings included); the staged pipeline keeps 8,
+and OpenRouter models keep 8 under either. Claude reads a replayed thinking
+block only while every turn before it is unchanged. Once a run holds more than
+`image_history_limit` images, each new one
+replaces the oldest with a text notice. That edit drops, without an error, every
+thinking block written before it (except those before the first replaced image),
+and it restarts the prompt cache.
 
 Maximum efforts were checked against the official [Luna](https://developers.openai.com/api/docs/models/gpt-6-luna),
 [Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
@@ -80,7 +95,9 @@ All native run settings live in `zeroshot/configs/workflow/native.yaml`,
 alongside the staged pipeline's `workflow/coder_auditor.yaml`. The native entrypoint loads it
 with `config_name="workflow/native"` from `zeroshot/configs/`, using the shared
 model/input groups. The commands above use this config by default; select
-alternatives with `model=...` or `input=...`. Native uses only the input sheets
+alternatives with `model=...` or `input=...`. The default input is `test_eccv`;
+another dataset needs its own `input=` (e.g. `test_itercad`,
+`test_ortho2cad_f360_mdim`) and its own sweep. Native uses only the input sheets
 and model fields; shared
 presenter/response-format settings do not add behavior. Hydra `--multirun`
 works with the usual overrides.
@@ -92,7 +109,7 @@ python -m zeroshot.pipeline_native --multirun \
   model=gpt6_luna_codex \
   artifact_root=outputs/native_luna_6.0 \
   on_existing=retry \
-  sample.sample_id=$(ls data/test_vlm/target_step | sed 's/\.step//' | paste -sd,)
+  sample.sample_id=$(ls data/test_eccv/target_step_ori | sed 's/\.step//' | paste -sd,)
 ```
 
 `on_existing` follows the staged pipeline's policies:
@@ -175,7 +192,7 @@ same way:
 ```bash
 python -m zeroshot.evaluation.run_scoring \
   --run-dir outputs/native_opus_5.5/*/ \
-  --target-dir data/test_vlm/target_step_ori
+  --target-dir data/test_eccv/target_step_ori
 python -m zeroshot.evaluation.aggregate_run --run-dir outputs/native_opus_5.5
 ```
 

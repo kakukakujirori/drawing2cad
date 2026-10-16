@@ -1,7 +1,7 @@
 # @package _global_
 
 defaults:
-  - /input: png_dimensioned
+  - /input: test_eccv
   - /model: gpt6_luna_codex
   - _self_
 
@@ -12,6 +12,11 @@ artifact_root: outputs/zeroshot_native
 console: true
 model_retries: 5
 max_turns: 150
+# Images per request, input drawings included, for the model configs that defer
+# to the workflow (Claude, GPT). Above 8, Claude seldom has a turn edited, which
+# withholds its earlier thinking and restarts the prompt cache. Claude allows
+# images over 2000 px only up to 20 per request, and the drawings are 2337 px.
+image_history_limit: 20
 
 # fail: refuse existing runs; skip: skip completed generations, refuse incomplete
 # ones; retry: skip completed generations and restart failed/interrupted ones.

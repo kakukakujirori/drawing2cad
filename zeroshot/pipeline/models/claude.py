@@ -9,8 +9,13 @@ Handles:
 - Image history trimmed to the input drawings and the newest others (`image_history_limit`)
 - Native Anthropic tool calling (`bind_tools`, `tool_use`, `tool_result`)
 - SSE streaming with `AIMessageChunk` and `ToolCallChunk` merging
+- Thinking blocks sent back with their signatures, so Claude keeps its reasoning,
+  the oldest withheld past `thinking_replay_budget`
+- Top-level automatic prompt caching (`prompt_cache_ttl`)
+- Anthropic usage reported as LangChain `usage_metadata`
 - OAuth token discovery from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`
-- Friendly 429 usage limit and 401 token expiration error messaging
+- Friendly 429 usage limit and 401 token expiration error messaging, raised as
+  `ClaudeAPIError` so that transport retry can tell transient failures apart
 """
 
 from __future__ import annotations
@@ -19,9 +24,9 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, override
+from typing import Any, Literal, override
 
 import httpx
 from langchain_core.callbacks import (
@@ -37,12 +42,13 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_core.messages.ai import UsageMetadata
 from langchain_core.messages.tool import ToolCallChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import RunnableBinding
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 
 from .image_history import trim_image_history
 
@@ -53,6 +59,72 @@ DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_ANTHROPIC_BETA = (
     "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14"
 )
+
+# The HTTP status each Anthropic error type stands for, so that an error event
+# inside a 200 stream is judged as the same error returned as a status would be.
+_ERROR_TYPE_STATUS = {
+    "invalid_request_error": 400,
+    "authentication_error": 401,
+    "permission_error": 403,
+    "not_found_error": 404,
+    "request_too_large": 413,
+    "rate_limit_error": 429,
+    "api_error": 500,
+    "timeout_error": 504,
+    "overloaded_error": 529,
+}
+
+
+class ClaudeAPIError(RuntimeError):
+    """A failure the Messages API reported, as an HTTP status or mid-stream.
+
+    `status_code` is None for a stream that ended before `message_stop`.
+    """
+
+    def __init__(
+        self, message: str, *, status_code: int | None, error_type: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_type = error_type
+
+    @property
+    def retryable(self) -> bool:
+        """Rate limits, overload, server faults and cut streams can clear unchanged."""
+        return (
+            self.status_code is None
+            or self.status_code == 429
+            or self.status_code >= 500
+        )
+
+
+def usage_metadata_from_anthropic(
+    usage: Mapping[str, Any] | None,
+) -> UsageMetadata | None:
+    """Anthropic's `usage` in LangChain's terms.
+
+    Anthropic counts cache reads and writes apart from `input_tokens`; LangChain's
+    `input_tokens` includes both, as the other backends here report it.
+    """
+    if not usage:
+        return None
+    cache_read = usage.get("cache_read_input_tokens") or 0
+    cache_creation = usage.get("cache_creation_input_tokens") or 0
+    input_tokens = (usage.get("input_tokens") or 0) + cache_read + cache_creation
+    output_tokens = usage.get("output_tokens") or 0
+    metadata = UsageMetadata(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+        input_token_details={
+            "cache_read": cache_read,
+            "cache_creation": cache_creation,
+        },
+    )
+    thinking = (usage.get("output_tokens_details") or {}).get("thinking_tokens")
+    if thinking is not None:
+        metadata["output_token_details"] = {"reasoning": thinking}
+    return metadata
 
 
 def _resolve_oauth_token(
@@ -130,6 +202,95 @@ def _anthropic_image(block: dict[str, Any]) -> dict[str, Any]:
     raise ValueError(f"Unsupported image block: {sorted(block)}")
 
 
+def _anthropic_thinking(block: dict[str, Any]) -> dict[str, Any] | None:
+    """A stored reasoning block as Claude wrote it, or None if it cannot go back.
+
+    The API accepts a thinking block only unchanged and signed; an unsigned one
+    (never from this model) could not be verified.
+    """
+    if "redacted" in block:
+        return {"type": "redacted_thinking", "data": block["redacted"]}
+    if not block.get("signature"):
+        return None
+    return {
+        "type": "thinking",
+        "thinking": block.get("reasoning", ""),
+        "signature": block["signature"],
+    }
+
+
+def _anthropic_tool_use(call: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "tool_use",
+        "id": call["id"],
+        "name": call["name"],
+        "input": call["args"],
+    }
+
+
+def _is_reasoning(block: Any) -> bool:
+    return isinstance(block, dict) and block.get("type") == "reasoning"
+
+
+def _thinking_tokens(message: AIMessage) -> int:
+    """What the turn's thinking costs as input when replayed: its full count.
+
+    The summary text is far shorter than the thinking a signature stands for.
+    """
+    usage = message.usage_metadata or usage_metadata_from_anthropic(
+        message.response_metadata.get("usage")
+    )
+    return ((usage or {}).get("output_token_details") or {}).get("reasoning") or 0
+
+
+def trim_thinking_history(
+    messages: Sequence[BaseMessage], budget: int | None
+) -> list[BaseMessage]:
+    """Withhold the oldest turns' thinking once replayed thinking passes `budget`.
+
+    Every replayed block counts as input at its full thinking count, so a long
+    run outgrows the context window. Only a leading run of thinking can go
+    without invalidating the blocks after it, so turns lose theirs oldest
+    first. They go half a budget at a time: the cut moves only when the total
+    crosses another half budget, so the prompt cache restarts at the cut a few
+    times a run rather than on every request. ``None`` replays everything.
+    """
+    outgoing = list(messages)
+    if budget is None:
+        return outgoing
+    costs = [
+        (index, _thinking_tokens(message))
+        for index, message in enumerate(messages)
+        if isinstance(message, AIMessage)
+        and isinstance(message.content, list)
+        and any(_is_reasoning(block) for block in message.content)
+    ]
+    total = sum(cost for _, cost in costs)
+    if total <= budget:
+        return outgoing
+
+    step = max(1, budget // 2)
+    target = -(-(total - budget) // step) * step  # rounded up to whole steps
+    dropped = turns = 0
+    for index, cost in costs:
+        if dropped >= target:
+            break
+        message = messages[index]
+        outgoing[index] = message.model_copy(
+            update={"content": [b for b in message.content if not _is_reasoning(b)]}
+        )
+        dropped += cost
+        turns += 1
+    logger.info(
+        "Thinking history: withheld %s of %s turns (%s of %s tokens)",
+        turns,
+        len(costs),
+        dropped,
+        total,
+    )
+    return outgoing
+
+
 def _format_messages_for_anthropic(
     messages: Sequence[BaseMessage],
 ) -> tuple[str | None, list[dict[str, Any]]]:
@@ -177,25 +338,27 @@ def _format_messages_for_anthropic(
                             parts.append(item)
             formatted_messages.append({"role": "user", "content": parts})
         elif isinstance(msg, AIMessage):
+            # Blocks go back in the order Claude wrote them, thinking included:
+            # its earlier reasoning reaches it only through these blocks.
             parts: list[dict[str, Any]] = []
+            calls = {tc["id"]: tc for tc in msg.tool_calls}
             if isinstance(msg.content, str) and msg.content:
                 parts.append({"type": "text", "text": msg.content})
             elif isinstance(msg.content, list):
                 for item in msg.content:
                     if isinstance(item, str):
                         parts.append({"type": "text", "text": item})
-                    elif isinstance(item, dict) and item.get("type") == "text":
+                    elif not isinstance(item, dict):
+                        continue
+                    elif item.get("type") == "text":
                         parts.append({"type": "text", "text": item.get("text", "")})
-            if msg.tool_calls:
-                for tc in msg.tool_calls:
-                    parts.append(
-                        {
-                            "type": "tool_use",
-                            "id": tc["id"],
-                            "name": tc["name"],
-                            "input": tc["args"],
-                        }
-                    )
+                    elif item.get("type") == "reasoning":
+                        if (thinking := _anthropic_thinking(item)) is not None:
+                            parts.append(thinking)
+                    elif item.get("type") == "tool_call" and item.get("id") in calls:
+                        parts.append(_anthropic_tool_use(calls.pop(item["id"])))
+            # Calls the content does not place go last, as tool_use blocks do.
+            parts += [_anthropic_tool_use(tc) for tc in calls.values()]
             formatted_messages.append({"role": "assistant", "content": parts})
         elif isinstance(msg, ToolMessage):
             tool_content: Any
@@ -306,6 +469,20 @@ class ChatClaude(BaseChatModel):
     )
     # None sends every image; anchors remain even if they exceed this budget.
     image_history_limit: int | None = Field(default=None, gt=0, strict=True)
+    # Top-level automatic caching: its breakpoint follows the end of the
+    # conversation, so each request reads the prefix the one before it wrote.
+    # A cache entry lives this long from the start of the request that last
+    # used it. None sends no cache_control.
+    prompt_cache_ttl: Literal["5m", "1h"] | None = "5m"
+    # Replayed thinking tokens past which the oldest turns' thinking is
+    # withheld (`trim_thinking_history`). None replays all, as the API would.
+    thinking_replay_budget: int | None = Field(default=None, gt=0, strict=True)
+
+    # Fixed for the life of this instance, so a run's requests differ only in
+    # what was appended. The API leaves the billing header out of both the
+    # cache key and thinking-block binding (checked live on 2026-10-16), so a
+    # fresh id per request cost nothing; it only made requests harder to diff.
+    _prompt_id: str = PrivateAttr(default_factory=lambda: str(uuid.uuid4()))
 
     @property
     @override
@@ -361,11 +538,11 @@ class ChatClaude(BaseChatModel):
         # stored conversation messages stay intact.
         if self.image_history_limit is not None:
             messages = trim_image_history(messages, self.image_history_limit)
+        messages = trim_thinking_history(messages, self.thinking_replay_budget)
         system_prompt, formatted_messages = _format_messages_for_anthropic(messages)
-        prompt_id = str(uuid.uuid4())
         billing_header = (
             f"x-anthropic-billing-header: cc_version=2.1.284.12a; cc_entrypoint=sdk-cli; "
-            f"cch=00000; cc_prompt_id={prompt_id}; cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;"
+            f"cch=00000; cc_prompt_id={self._prompt_id}; cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;"
         )
         system_blocks: list[dict[str, Any]] = [{"type": "text", "text": billing_header}]
         if system_prompt:
@@ -378,6 +555,11 @@ class ChatClaude(BaseChatModel):
             "system": system_blocks,
             "stream": stream,
         }
+        if self.prompt_cache_ttl is not None:
+            payload["cache_control"] = {
+                "type": "ephemeral",
+                "ttl": self.prompt_cache_ttl,
+            }
         if self.temperature is not None:
             payload["temperature"] = self.temperature
 
@@ -477,6 +659,10 @@ class ChatClaude(BaseChatModel):
                         "signature": block.get("signature", ""),
                     }
                 )
+            elif btype == "redacted_thinking":
+                content_parts.append(
+                    {"type": "reasoning", "redacted": block.get("data", "")}
+                )
             elif btype == "text":
                 content_parts.append(
                     {
@@ -503,6 +689,7 @@ class ChatClaude(BaseChatModel):
                 "stop_reason": data.get("stop_reason"),
                 "usage": data.get("usage"),
             },
+            usage_metadata=usage_metadata_from_anthropic(data.get("usage")),
         )
         return ChatResult(generations=[ChatGeneration(message=ai_msg)])
 
@@ -531,126 +718,14 @@ class ChatClaude(BaseChatModel):
                     resp.read()
                     self._handle_error(resp)
 
-                current_block_index: int = 0
+                decoder = _StreamDecoder()
                 for line in resp.iter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-                    data_str = line[len("data: ") :].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        event = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
-
-                    etype = event.get("type")
-                    if etype == "content_block_start":
-                        current_block_index = event.get("index", 0)
-                        block = event.get("content_block", {})
-                        btype = block.get("type")
-                        if btype == "tool_use":
-                            chunk = AIMessageChunk(
-                                content="",
-                                tool_call_chunks=[
-                                    ToolCallChunk(
-                                        name=block.get("name"),
-                                        args="",
-                                        id=block.get("id"),
-                                        index=current_block_index,
-                                    )
-                                ],
-                            )
-                            if run_manager:
-                                run_manager.on_llm_new_token(
-                                    "",
-                                    chunk=ChatGenerationChunk(message=chunk),
-                                )
-                            yield ChatGenerationChunk(message=chunk)
-                        elif btype == "thinking" and block.get("thinking"):
-                            chunk = AIMessageChunk(
-                                content=[
-                                    {
-                                        "type": "reasoning",
-                                        "reasoning": block.get("thinking", ""),
-                                        "index": current_block_index,
-                                    }
-                                ]
-                            )
-                            yield ChatGenerationChunk(message=chunk)
-                    elif etype == "content_block_delta":
-                        delta = event.get("delta", {})
-                        dtype = delta.get("type")
-                        if dtype == "thinking_delta":
-                            text = delta.get("thinking", "")
-                            chunk = AIMessageChunk(
-                                content=[
-                                    {
-                                        "type": "reasoning",
-                                        "reasoning": text,
-                                        "index": current_block_index,
-                                    }
-                                ]
-                            )
-                            if run_manager:
-                                run_manager.on_llm_new_token(
-                                    text,
-                                    chunk=ChatGenerationChunk(message=chunk),
-                                )
-                            yield ChatGenerationChunk(message=chunk)
-                        elif dtype == "signature_delta":
-                            sig = delta.get("signature", "")
-                            chunk = AIMessageChunk(
-                                content=[
-                                    {
-                                        "type": "reasoning",
-                                        "signature": sig,
-                                        "index": current_block_index,
-                                    }
-                                ]
-                            )
-                            yield ChatGenerationChunk(message=chunk)
-                        elif dtype == "text_delta":
-                            text = delta.get("text", "")
-                            chunk = AIMessageChunk(
-                                content=[
-                                    {
-                                        "type": "text",
-                                        "text": text,
-                                        "index": current_block_index,
-                                    }
-                                ]
-                            )
-                            if run_manager:
-                                run_manager.on_llm_new_token(
-                                    text,
-                                    chunk=ChatGenerationChunk(message=chunk),
-                                )
-                            yield ChatGenerationChunk(message=chunk)
-                        elif dtype == "input_json_delta":
-                            partial_json = delta.get("partial_json", "")
-                            chunk = AIMessageChunk(
-                                content="",
-                                tool_call_chunks=[
-                                    ToolCallChunk(
-                                        name=None,
-                                        args=partial_json,
-                                        id=None,
-                                        index=current_block_index,
-                                    )
-                                ],
-                            )
-                            yield ChatGenerationChunk(message=chunk)
-                    elif etype == "message_delta":
-                        usage = event.get("usage", {})
-                        stop_reason = event.get("delta", {}).get("stop_reason")
-                        chunk = AIMessageChunk(
-                            content="",
-                            response_metadata={
-                                "stop_reason": stop_reason,
-                                "usage": usage,
-                            },
-                        )
-                        yield ChatGenerationChunk(message=chunk)
+                    for chunk, token in decoder.feed(line):
+                        generation = ChatGenerationChunk(message=chunk)
+                        if run_manager and token is not None:
+                            run_manager.on_llm_new_token(token, chunk=generation)
+                        yield generation
+                decoder.finish()
 
     @override
     async def _astream(
@@ -677,144 +752,165 @@ class ChatClaude(BaseChatModel):
                     await resp.aread()
                     self._handle_error(resp)
 
-                current_block_index: int = 0
+                decoder = _StreamDecoder()
                 async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-                    data_str = line[len("data: ") :].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        event = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
-
-                    etype = event.get("type")
-                    if etype == "content_block_start":
-                        current_block_index = event.get("index", 0)
-                        block = event.get("content_block", {})
-                        btype = block.get("type")
-                        if btype == "tool_use":
-                            chunk = AIMessageChunk(
-                                content="",
-                                tool_call_chunks=[
-                                    ToolCallChunk(
-                                        name=block.get("name"),
-                                        args="",
-                                        id=block.get("id"),
-                                        index=current_block_index,
-                                    )
-                                ],
-                            )
-                            if run_manager:
-                                await run_manager.on_llm_new_token(
-                                    "",
-                                    chunk=ChatGenerationChunk(message=chunk),
-                                )
-                            yield ChatGenerationChunk(message=chunk)
-                        elif btype == "thinking" and block.get("thinking"):
-                            chunk = AIMessageChunk(
-                                content=[
-                                    {
-                                        "type": "reasoning",
-                                        "reasoning": block.get("thinking", ""),
-                                        "index": current_block_index,
-                                    }
-                                ]
-                            )
-                            yield ChatGenerationChunk(message=chunk)
-                    elif etype == "content_block_delta":
-                        delta = event.get("delta", {})
-                        dtype = delta.get("type")
-                        if dtype == "thinking_delta":
-                            text = delta.get("thinking", "")
-                            chunk = AIMessageChunk(
-                                content=[
-                                    {
-                                        "type": "reasoning",
-                                        "reasoning": text,
-                                        "index": current_block_index,
-                                    }
-                                ]
-                            )
-                            if run_manager:
-                                await run_manager.on_llm_new_token(
-                                    text,
-                                    chunk=ChatGenerationChunk(message=chunk),
-                                )
-                            yield ChatGenerationChunk(message=chunk)
-                        elif dtype == "signature_delta":
-                            sig = delta.get("signature", "")
-                            chunk = AIMessageChunk(
-                                content=[
-                                    {
-                                        "type": "reasoning",
-                                        "signature": sig,
-                                        "index": current_block_index,
-                                    }
-                                ]
-                            )
-                            yield ChatGenerationChunk(message=chunk)
-                        elif dtype == "text_delta":
-                            text = delta.get("text", "")
-                            chunk = AIMessageChunk(
-                                content=[
-                                    {
-                                        "type": "text",
-                                        "text": text,
-                                        "index": current_block_index,
-                                    }
-                                ]
-                            )
-                            if run_manager:
-                                await run_manager.on_llm_new_token(
-                                    text,
-                                    chunk=ChatGenerationChunk(message=chunk),
-                                )
-                            yield ChatGenerationChunk(message=chunk)
-                        elif dtype == "input_json_delta":
-                            partial_json = delta.get("partial_json", "")
-                            chunk = AIMessageChunk(
-                                content="",
-                                tool_call_chunks=[
-                                    ToolCallChunk(
-                                        name=None,
-                                        args=partial_json,
-                                        id=None,
-                                        index=current_block_index,
-                                    )
-                                ],
-                            )
-                            yield ChatGenerationChunk(message=chunk)
-                    elif etype == "message_delta":
-                        usage = event.get("usage", {})
-                        stop_reason = event.get("delta", {}).get("stop_reason")
-                        chunk = AIMessageChunk(
-                            content="",
-                            response_metadata={
-                                "stop_reason": stop_reason,
-                                "usage": usage,
-                            },
-                        )
-                        yield ChatGenerationChunk(message=chunk)
+                    for chunk, token in decoder.feed(line):
+                        generation = ChatGenerationChunk(message=chunk)
+                        if run_manager and token is not None:
+                            await run_manager.on_llm_new_token(token, chunk=generation)
+                        yield generation
+                decoder.finish()
 
     def _handle_error(self, resp: httpx.Response) -> None:
         try:
-            err = resp.json()
-            err_msg = err.get("error", {}).get("message", resp.text)
+            err = resp.json().get("error", {})
+            err_msg = err.get("message", resp.text)
+            err_type = err.get("type")
         except Exception:
             err_msg = resp.text
+            err_type = None
 
         if resp.status_code == 429:
-            raise RuntimeError(
-                f"Claude subscription usage limit / rate limit exceeded (HTTP 429): {err_msg}"
-            )
+            message = f"Claude subscription usage limit / rate limit exceeded (HTTP 429): {err_msg}"
         elif resp.status_code == 401:
-            raise RuntimeError(
+            message = (
                 f"Claude OAuth token expired or unauthorized (HTTP 401): {err_msg}. "
                 f"Please run 'claude auth login' in terminal to refresh credentials."
             )
         else:
-            raise RuntimeError(
+            message = (
                 f"Anthropic API request failed (HTTP {resp.status_code}): {err_msg}"
             )
+        raise ClaudeAPIError(message, status_code=resp.status_code, error_type=err_type)
+
+
+class _StreamDecoder:
+    """Turn the Messages API's server-sent events into LangChain chunks.
+
+    Shared by the sync and async streams, which differ only in how lines
+    arrive. A content block's chunks carry the index the API gave it, so they
+    merge into one block. `finish` raises unless the stream reached
+    `message_stop`: one cut short would otherwise pass for a whole answer.
+    """
+
+    def __init__(self) -> None:
+        self._index = 0
+        self._message: dict[str, Any] = {}
+        self._usage: dict[str, Any] = {}
+        self._stopped = False
+
+    def feed(self, line: str) -> list[tuple[AIMessageChunk, str | None]]:
+        """The chunks one SSE line yields, each with the token to report, if any."""
+        if not line or not line.startswith("data: "):
+            return []
+        data = line[len("data: ") :].strip()
+        if data == "[DONE]":
+            self._stopped = True
+            return []
+        try:
+            event = json.loads(data)
+        except json.JSONDecodeError:
+            return []
+
+        etype = event.get("type")
+        if etype == "message_start":
+            message = event.get("message") or {}
+            self._message = {"id": message.get("id"), "model": message.get("model")}
+            self._usage = dict(message.get("usage") or {})
+            return []
+        if etype == "content_block_start":
+            self._index = event.get("index", 0)
+            return self._block_start(event.get("content_block") or {})
+        if etype == "content_block_delta":
+            return self._block_delta(event.get("delta") or {})
+        if etype == "message_delta":
+            # Counts here are cumulative; message_start's fill in any left out.
+            usage = {**self._usage, **(event.get("usage") or {})}
+            chunk = AIMessageChunk(
+                content="",
+                response_metadata={
+                    **self._message,
+                    "stop_reason": (event.get("delta") or {}).get("stop_reason"),
+                    "usage": usage,
+                },
+                usage_metadata=usage_metadata_from_anthropic(usage),
+            )
+            return [(chunk, None)]
+        if etype == "message_stop":
+            self._stopped = True
+        elif etype == "error":
+            error = event.get("error") or {}
+            error_type = error.get("type")
+            raise ClaudeAPIError(
+                f"Claude stream failed ({error_type}): {error.get('message')}",
+                # An error that arrives mid-stream is the server's, unless typed.
+                status_code=_ERROR_TYPE_STATUS.get(error_type, 500),
+                error_type=error_type,
+            )
+        return []
+
+    def finish(self) -> None:
+        if not self._stopped:
+            raise ClaudeAPIError(
+                "Claude stream ended before message_stop",
+                status_code=None,
+                error_type="incomplete_stream",
+            )
+
+    def _block_start(
+        self, block: Mapping[str, Any]
+    ) -> list[tuple[AIMessageChunk, str | None]]:
+        btype = block.get("type")
+        if btype == "tool_use":
+            chunk = AIMessageChunk(
+                content="",
+                tool_call_chunks=[
+                    ToolCallChunk(
+                        name=block.get("name"),
+                        args="",
+                        id=block.get("id"),
+                        index=self._index,
+                    )
+                ],
+            )
+            return [(chunk, "")]
+        if btype == "thinking" and block.get("thinking"):
+            return [(self._reasoning(reasoning=block["thinking"]), None)]
+        if btype == "redacted_thinking":
+            return [(self._reasoning(redacted=block.get("data", "")), None)]
+        return []
+
+    def _block_delta(
+        self, delta: Mapping[str, Any]
+    ) -> list[tuple[AIMessageChunk, str | None]]:
+        dtype = delta.get("type")
+        if dtype == "thinking_delta":
+            text = delta.get("thinking", "")
+            return [(self._reasoning(reasoning=text), text)]
+        if dtype == "signature_delta":
+            return [(self._reasoning(signature=delta.get("signature", "")), None)]
+        if dtype == "text_delta":
+            text = delta.get("text", "")
+            chunk = AIMessageChunk(
+                content=[{"type": "text", "text": text, "index": self._index}]
+            )
+            return [(chunk, text)]
+        if dtype == "input_json_delta":
+            chunk = AIMessageChunk(
+                content="",
+                tool_call_chunks=[
+                    ToolCallChunk(
+                        name=None,
+                        args=delta.get("partial_json", ""),
+                        id=None,
+                        index=self._index,
+                    )
+                ],
+            )
+            return [(chunk, None)]
+        return []
+
+    def _reasoning(self, **fields: str) -> AIMessageChunk:
+        return AIMessageChunk(
+            content=[{"type": "reasoning", **fields, "index": self._index}]
+        )

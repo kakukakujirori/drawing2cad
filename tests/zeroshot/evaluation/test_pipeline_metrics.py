@@ -59,7 +59,9 @@ def test_default_config_uses_corrected_target_and_new_scorer():
     directory = Path(__file__).resolve().parents[3] / "zeroshot" / "configs"
     with initialize_config_dir(config_dir=str(directory), version_base="1.3"):
         config = compose(config_name="default")
-    assert config.sample.target_step_path == "data/test_vlm/target_step_ori/000364.step"
+    assert (
+        config.sample.target_step_path == "data/test_eccv/target_step_ori/000364.step"
+    )
     scorer = instantiate(config.evaluation.scorer)
     assert isinstance(scorer, StepScorer)
     assert scorer.reference_extent == 1.8

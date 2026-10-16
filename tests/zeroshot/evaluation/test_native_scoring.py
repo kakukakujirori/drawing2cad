@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from zeroshot.evaluation.aggregate_run import Terminal, collect, summarize
+from zeroshot.evaluation.aggregate_run import Terminal, Tokens, collect, summarize
 from zeroshot.evaluation.run_scoring import (
     NATIVE_BUILD_DIRNAME,
     StepScorer,
@@ -216,6 +216,34 @@ def test_aggregation_counts_a_failed_native_run_that_left_no_transcript(
     (row,) = collect(tmp_path)
     assert row.terminal is Terminal.FAILED
     assert (row.model_calls, row.tokens.input) == (1, 10)
+
+
+def test_aggregation_reads_claude_usage_left_in_response_metadata(
+    native_run, tmp_path
+) -> None:
+    """Claude runs from before usage_metadata kept Anthropic's counts, which
+    leave cache reads and writes out of input_tokens."""
+    run_dir = native_run(None)
+    usage = {
+        "input_tokens": 10,
+        "cache_read_input_tokens": 80,
+        "cache_creation_input_tokens": 5,
+        "output_tokens": 7,
+        "output_tokens_details": {"thinking_tokens": 4},
+    }
+    finish = {"event": "message-finish", "metadata": {"usage": usage}}
+    _native_log(
+        run_dir,
+        ("run_started", {}, 0),
+        ("messages", [finish, {}], 10),
+        ("run_failed", {"error": "usage limit"}, 20),
+    )
+
+    (row,) = collect(tmp_path)
+    assert row.calls_with_usage == 1
+    assert row.tokens == Tokens(
+        input=95, output=7, reasoning=4, cache_read=80, cache_creation=5
+    )
 
 
 def test_aggregation_counts_a_native_turn_limit_as_budget_exhausted(

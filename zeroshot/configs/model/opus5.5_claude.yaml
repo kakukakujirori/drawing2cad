@@ -13,6 +13,11 @@ model:
     type: adaptive
     display: summarized
     effort: xhigh
-  image_history_limit: 8
+  # The workflow's choice: 20 for pipeline_native, 8 for the staged pipeline.
+  image_history_limit: ${oc.select:image_history_limit,8}
+  # Automatic prompt caching; an entry outlives a 5m gap between calls only at 1h.
+  prompt_cache_ttl: 5m
+  # Replayed thinking counts as input at full size; past this the oldest goes.
+  thinking_replay_budget: 500000
   timeout: 600.0
   max_retries: 0

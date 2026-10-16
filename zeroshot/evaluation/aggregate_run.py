@@ -21,6 +21,7 @@ from typing import Any
 from zeroshot.evaluation.metrics.itercad import aggregate_itercad
 from zeroshot.evaluation.metrics.surface_distance import DISTANCE_METRICS
 from zeroshot.evaluation.run_scoring import ScoreStatus, StepScorer, is_native_run
+from zeroshot.pipeline.models.claude import usage_metadata_from_anthropic
 from zeroshot.pipeline.workflow import StopReason
 
 
@@ -34,10 +35,11 @@ class Terminal(str, Enum):
 class Tokens:
     """`None` throughout when the backend reported no usage; never 0."""
 
-    input: int | None = None  # already includes `cache_read`
+    input: int | None = None  # already includes `cache_read` and `cache_creation`
     output: int | None = None
     reasoning: int | None = None
     cache_read: int | None = None
+    cache_creation: int | None = None
 
     @classmethod
     def summed(cls, usages: Sequence[Mapping[str, Any]]) -> Tokens:
@@ -55,7 +57,26 @@ class Tokens:
             output=total("output_tokens"),
             reasoning=total("reasoning", "output_token_details"),
             cache_read=total("cache_read", "input_token_details"),
+            cache_creation=total("cache_creation", "input_token_details"),
         )
+
+
+def _call_usage(
+    usage: Mapping[str, Any] | None, metadata: Mapping[str, Any] | None
+) -> Mapping[str, Any] | None:
+    """A call's LangChain usage, or its Anthropic usage in those terms.
+
+    ChatClaude reported only the provider's `usage` until it filled
+    `usage_metadata`; runs from then have the counts in their response metadata.
+    """
+    if usage:
+        return usage
+    raw = (metadata or {}).get("usage")
+    if isinstance(raw, Mapping) and (
+        "cache_read_input_tokens" in raw or "cache_creation_input_tokens" in raw
+    ):
+        return usage_metadata_from_anthropic(raw)
+    return None
 
 
 @dataclass(frozen=True)
@@ -130,7 +151,13 @@ def read_events(events_path: Path, sample_id: str) -> SampleRow:
             if name == "message" and data.get("node") == "model":
                 calls = [m for m in data["messages"] if m.get("type") == "ai"]
                 usages += [
-                    m["usage_metadata"] for m in calls if m.get("usage_metadata")
+                    usage
+                    for m in calls
+                    if (
+                        usage := _call_usage(
+                            m.get("usage_metadata"), m.get("response_metadata")
+                        )
+                    )
                 ]
                 row = replace(
                     row,
@@ -201,9 +228,11 @@ def read_native_events(events_path: Path, sample_id: str) -> SampleRow:
             if name == "messages":
                 payload = data[0] if isinstance(data, list) and data else {}
                 if payload.get("event") == "message-finish":
-                    usage = payload.get("usage")
+                    usage = _call_usage(payload.get("usage"), payload.get("metadata"))
                 elif payload.get("type") == "ai":
-                    usage = payload.get("usage_metadata")
+                    usage = _call_usage(
+                        payload.get("usage_metadata"), payload.get("response_metadata")
+                    )
                 else:
                     continue
                 calls += 1
@@ -464,6 +493,11 @@ def format_report(
             f"in_tok {_cell(summary.tokens.input)}"
             f"   out_tok {_cell(summary.tokens.output)}"
             f"   wall {round(summary.wall_ms / 1000):,}s"
+        ),
+        (
+            f"  of which cache_read {_cell(summary.tokens.cache_read)}"
+            f"   cache_creation {_cell(summary.tokens.cache_creation)}"
+            f"   reasoning {_cell(summary.tokens.reasoning)}"
         ),
     ]
     if summary.itercad:

@@ -14,14 +14,14 @@ python -m zeroshot.run_pipeline --multirun \
     model=gpt6_luna_codex \
     artifact_root=outputs/gpt6_luna \
     on_existing=retry \
-    sample.sample_id=$(ls data/test_vlm/target_step_ori | sed 's/\.step//' | paste -sd,)
+    sample.sample_id=$(ls data/test_eccv/target_step_ori | sed 's/\.step//' | paste -sd,)
 
 # glm5.3-flash
 python -m zeroshot.run_pipeline --multirun \
     model=glm5.3_flash_openrouter \
     artifact_root=outputs/glm5.3_flash \
     on_existing=retry \
-    sample.sample_id=$(ls data/test_vlm/target_step_ori | sed 's/\.step//' | paste -sd,)
+    sample.sample_id=$(ls data/test_eccv/target_step_ori | sed 's/\.step//' | paste -sd,)
 ```
 
 Rescore finished samples without rerunning the agents. A rerun with
@@ -35,7 +35,7 @@ first (see `zeroshot/pipeline_native/README.md`):
 ```bash
 python -m zeroshot.evaluation.run_scoring \
     --run-dir outputs/gpt6_luna/*/ \
-    --target-dir data/test_vlm/target_step_ori
+    --target-dir data/test_eccv/target_step_ori
 ```
 
 Evaluate:
@@ -46,8 +46,9 @@ python -m zeroshot.evaluation.aggregate_run \
 ```
 
 After each sample, `StepScorer` writes mesh IoU, squared Chamfer/Hausdorff,
-reference ECCV F1 and official Ortho2CAD IoU to `score.json`. The default GT is
-`data/test_vlm/target_step_ori`, whose dimensions match the DXF drawings. Main
+reference ECCV F1 and official Ortho2CAD IoU to `score.json`. The GT is the
+input config's `target_step_path`: `data/test_eccv/target_step_ori` for the
+default `test_eccv` input, whose dimensions match the drawings. Main
 metrics share the GT-derived scale (`reference_extent=1.8`) and maximum-IoU
 alignment over 24 cube rotations; Ortho2CAD uses its own official preprocessing.
 Rotations within 1e-3 IoU of the best are the same geometry, so ECCV F1 takes the

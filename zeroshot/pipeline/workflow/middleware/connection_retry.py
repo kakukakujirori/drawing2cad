@@ -16,6 +16,8 @@ from langgraph.runtime import get_runtime
 from openai import APIConnectionError, APIError, APIStatusError, LengthFinishReasonError
 from openrouter.errors import OpenRouterError
 
+from zeroshot.pipeline.models.claude import ClaudeAPIError
+
 # A request that never connected costs nothing to resend, and a dropped local
 # network (a phone hotspot losing DNS) can take minutes to come back.
 OFFLINE_PATIENCE_S = 15 * 60
@@ -115,7 +117,7 @@ def report_model_retry(
     }
     status = (
         error.status_code
-        if isinstance(error, (APIStatusError, OpenRouterError))
+        if isinstance(error, (APIStatusError, OpenRouterError, ClaudeAPIError))
         else _openrouter_stream_status(error)
     )
     if status is not None:
@@ -235,6 +237,8 @@ def is_retryable_model_error(exception: Exception) -> bool:
     """
     if (status := _openrouter_stream_status(exception)) is not None:
         return status == 429 or status >= 500
+    if isinstance(exception, ClaudeAPIError):
+        return exception.retryable
     if type(exception) is APIError:
         return True
     if isinstance(exception, APIConnectionError):
