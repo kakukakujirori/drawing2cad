@@ -13,7 +13,7 @@ Only `run_shell` and `load_image` are exposed. The agent chooses its own workflo
 there is no auditor, verifier, structured submission, compaction, or
 answer-correction retry. An ordinary final answer ends generation. A missing,
 empty, or symlinked `model.py` is recorded as failure without asking again.
-`max_turns` (150 in `workflow/native.yaml`) caps model calls: past it,
+`max_turns` (150 in `native.yaml`) caps model calls: past it,
 generation stops, `run_completed` carries `status: turn_limit_exceeded`, a
 missing `model.py` is replaced by a `result = None` stub, and no retrospective
 is requested.
@@ -71,7 +71,7 @@ turns' thinking is withheld, half a budget at a time. They use automatic prompt 
 dropped streams or rate limits. For Claude these are HTTP 429/5xx/529, an
 `error` event inside the stream, and a stream that ends before `message_stop`.
 
-`workflow/native.yaml` lets Claude and GPT requests carry 20 images
+`native.yaml` lets Claude and GPT requests carry 20 images
 (`image_history_limit`, input drawings included); the staged pipeline keeps 8,
 and OpenRouter models keep 8 under either. Claude reads a replayed thinking
 block only while every turn before it is unchanged. Once a run holds more than
@@ -91,11 +91,12 @@ For GLM, use the existing standalone `model=glm5.3_flash_openrouter` config and
 Every model config is independently defined; none inherits another model config.
 Do not pass a secret on the command line.
 
-All native run settings live in `zeroshot/configs/workflow/native.yaml`,
-alongside the staged pipeline's `workflow/coder_auditor.yaml`. The native entrypoint loads it
-with `config_name="workflow/native"` from `zeroshot/configs/`, using the shared
-model/input groups. The commands above use this config by default; select
-alternatives with `model=...` or `input=...`. The default input is `test_eccv`;
+All native run settings live in `zeroshot/configs/native.yaml`, the
+counterpart of the staged pipeline's `default.yaml`. The native entrypoint loads it
+with `config_name="native"` from `zeroshot/configs/`, using the shared
+model/input/evaluation groups. It selects no `workflow`: that group holds the
+staged pipeline's graphs, and the native baseline has none. The commands above
+use this config by default; select alternatives with `model=...` or `input=...`. The default input is `test_eccv`;
 another dataset needs its own `input=` (e.g. `test_itercad`,
 `test_ortho2cad_f360_mdim`) and its own sweep. Native uses only the input sheets
 and model fields; shared
@@ -109,7 +110,7 @@ python -m zeroshot.pipeline_native --multirun \
   model=gpt6_luna_codex \
   artifact_root=outputs/native_luna_6.0 \
   on_existing=retry \
-  sample.sample_id=$(ls data/test_eccv/target_step_ori | sed 's/\.step//' | paste -sd,)
+  sample.sample_id=$(ls data/test_eccv/target_step_ori | sed "s/\.step$//; s/.*/'&'/" | paste -sd,)
 ```
 
 `on_existing` follows the staged pipeline's policies:
@@ -124,11 +125,13 @@ after `run_completed` still counts as completed and is skipped by `skip`/`retry`
 Use a new `artifact_root` to regenerate a completed sample.
 
 A worktree does not contain the ignored dataset. Point directly to the source
-PNG; the runner copies only this file into the sandbox:
+PNG; the runner copies only this file into the sandbox. Without the target STEP
+there is nothing to score against, so turn scoring off:
 
 ```bash
 python -m zeroshot.pipeline_native \
   sample.drawing.sheets.0.file=/absolute/path/000364_dim.png \
+  sample.target_step_path=null \
   artifact_root=/absolute/path/native_run \
   console=false
 ```
@@ -186,8 +189,16 @@ Generation success means a nonempty `model.py` was submitted, not that its
 geometry is correct. There is no automated geometry feedback, and the native
 runner does not touch the target STEP or invoke the scorer.
 
-Score a finished sweep with the staged pipeline's scorer and aggregate it the
-same way:
+Once the runner returns, the entrypoint scores the sample against the input
+config's `sample.target_step_path` with the staged pipeline's scorer
+(`configs/evaluation/default.yaml`, which the staged pipeline loads too),
+writes `score.json`, and prints the headline metrics unless `console=false`.
+The target and scorer are checked before generation, so a bad one costs no
+model calls. As in the staged pipeline, a run that raised is scored too and the
+error is then re-raised. A sample that `on_existing` refuses or skips, or whose
+inputs fail the checks, never starts and keeps its directory and `score.json`
+as they were, so runs that finished before scoring was added need
+`run_scoring`. Rescore and aggregate a sweep the same way as a staged one:
 
 ```bash
 python -m zeroshot.evaluation.run_scoring \
@@ -196,7 +207,8 @@ python -m zeroshot.evaluation.run_scoring \
 python -m zeroshot.evaluation.aggregate_run --run-dir outputs/native_opus_5.5
 ```
 
-`run.json` marks a sample as native. Its `workspace/model.py` is built by the
+`run.json` marks a sample as native (`"pipeline": "native"`; earlier runs carry
+`workflow.name: native` in its config instead). Its `workspace/model.py` is built by the
 staged pipeline's executor into `scoring_build/output.step`, in the sandbox the
 run recorded (`sandbox_runner` in `run.json`; an unset interpreter is the
 scorer's), and held to the same STEP checks as a staged attempt (exactly one

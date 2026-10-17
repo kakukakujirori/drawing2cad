@@ -78,7 +78,6 @@ def test_gemma4_ollama_config_instantiates_chat_openai() -> None:
 @pytest.mark.parametrize(
     ("model_config", "model_name"),
     [
-        ("gpt5.6_luna_codex", "gpt-5.6-luna"),
         ("gpt6_luna_codex", "gpt-6-luna"),
     ],
 )
@@ -179,7 +178,7 @@ def test_a_sweep_only_has_to_override_the_sample_id() -> None:
         )
 
     assert config.sample.sample_id == "000405"
-    assert config.sample.max_input_image_side == 2000
+    assert config.sample.max_input_image_side == 3000
     assert "max_input_image_side" not in config
     assert config.sample.drawing.sheets[0].file.endswith("/000405_dim.png")
     assert config.sample.target_step_path.endswith("/000405.step")

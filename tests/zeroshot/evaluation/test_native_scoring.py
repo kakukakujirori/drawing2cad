@@ -6,7 +6,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from hydra import compose, initialize_config_dir
+from hydra.errors import InstantiationException
+from PIL import Image
 
+import zeroshot.pipeline_native.__main__ as entry
 from zeroshot.evaluation.aggregate_run import Terminal, Tokens, collect, summarize
 from zeroshot.evaluation.run_scoring import (
     NATIVE_BUILD_DIRNAME,
@@ -14,6 +18,8 @@ from zeroshot.evaluation.run_scoring import (
     is_native_run,
     score_run,
 )
+from zeroshot.pipeline_native import runner
+from zeroshot.pipeline_native.event_logging import EventLog
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 # Supervision checks need no ECCV or Ortho2CAD columns.
@@ -34,8 +40,10 @@ def native_run(tmp_path: Path):
         run_dir = tmp_path / name
         (run_dir / "workspace").mkdir(parents=True)
         (run_dir / "events.jsonl").touch()
-        config = {"workflow": {"name": "native"}, "sandbox_runner": sandbox}
-        (run_dir / "run.json").write_text(json.dumps({"config": config}))
+        config = {"sandbox_runner": sandbox}
+        (run_dir / "run.json").write_text(
+            json.dumps({"pipeline": "native", "config": config})
+        )
         if program is not None:
             (run_dir / "workspace/model.py").write_text(program)
         return run_dir
@@ -106,6 +114,18 @@ def test_a_staged_program_that_never_verified_is_not_built(
     assert document["status"] == "NO_PREDICTION"
     assert "native_build_status" not in document
     assert not (run_dir / NATIVE_BUILD_DIRNAME).exists()
+
+
+def test_a_native_run_recorded_before_its_marker_is_still_native(
+    native_run,
+) -> None:
+    """Earlier runs said so only through `workflow.name` in their config."""
+    run_dir = native_run(_BOX)
+    (run_dir / "run.json").write_text(
+        json.dumps({"config": {"workflow": {"name": "native"}}})
+    )
+
+    assert is_native_run(run_dir)
 
 
 def test_a_native_build_gets_the_time_its_run_gave_the_agent(
@@ -277,3 +297,133 @@ def test_aggregation_survives_a_native_run_killed_mid_stream(
     (row,) = collect(tmp_path)
     assert row.terminal is Terminal.INTERRUPTED
     assert row.model_calls == 0
+
+
+def _entrypoint_config(tmp_path: Path, target: Path | None, *overrides: str):
+    drawing = tmp_path / "drawing.png"
+    Image.new("RGB", (16, 16), "white").save(drawing)
+    with initialize_config_dir(
+        config_dir=str(REPO_ROOT / "zeroshot/configs"), version_base="1.3"
+    ):
+        return compose(
+            config_name="native",
+            overrides=[
+                f"artifact_root={tmp_path}",
+                "sample.sample_id=000364",
+                f"sample.drawing.sheets.0.file={drawing}",
+                f"sample.target_step_path={'null' if target is None else target}",
+                "evaluation.scorer.include_eccv=false",
+                "evaluation.scorer.include_ortho2cad=false",
+                *overrides,
+            ],
+        )
+
+
+def _earlier_run_with_score(run_dir: Path, terminal: str) -> str:
+    """A sample an earlier run ended and scored; returns its score.json."""
+    run_dir.mkdir(parents=True)
+    with EventLog(run_dir / "events.jsonl") as log:
+        log.write("run_started", {"run_id": "earlier"})
+        log.write(terminal, {})
+    (run_dir / "score.json").write_text('{"status": "EARLIER"}')
+    return (run_dir / "score.json").read_text()
+
+
+def test_the_native_entrypoint_scores_what_it_generated(
+    native_run, solids, tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(entry, "run", lambda config: native_run(_BOX, "000364"))
+
+    entry.main(_entrypoint_config(tmp_path, solids["box"]))
+
+    document = json.loads((tmp_path / "000364" / "score.json").read_text())
+    assert document["status"] == "OK"
+    assert document["metrics"]["mesh_iou"] == pytest.approx(1.0, abs=1e-3)
+    assert "  mesh_iou" in capsys.readouterr().out
+
+
+def test_a_native_run_that_raised_is_scored_then_reraised(
+    native_run, solids, tmp_path, monkeypatch
+) -> None:
+    def crash(config):
+        native_run(None, "000364")
+        raise RuntimeError("stream dropped")
+
+    monkeypatch.setattr(entry, "run", crash)
+
+    with pytest.raises(RuntimeError, match="stream dropped"):
+        entry.main(_entrypoint_config(tmp_path, solids["box"]))
+    document = json.loads((tmp_path / "000364" / "score.json").read_text())
+    assert document["status"] == "NO_PREDICTION"
+
+
+def test_a_scoring_error_does_not_hide_why_the_run_failed(
+    native_run, solids, tmp_path, monkeypatch
+) -> None:
+    def crash(config):
+        native_run(None, "000364")
+        raise RuntimeError("stream dropped")
+
+    def broken_scorer(*args):
+        raise ValueError("scorer bug")
+
+    monkeypatch.setattr(entry, "run", crash)
+    monkeypatch.setattr(entry, "score_run", broken_scorer)
+
+    with pytest.raises(RuntimeError, match="stream dropped"):
+        entry.main(_entrypoint_config(tmp_path, solids["box"]))
+
+
+@pytest.mark.parametrize(
+    ("terminal", "on_existing", "refused"),
+    [
+        ("run_completed", "fail", True),
+        ("run_completed", "skip", False),
+        ("run_completed", "retry", False),
+        ("run_failed", "fail", True),
+        ("run_failed", "skip", True),
+    ],
+)
+def test_a_sample_the_runner_does_not_start_keeps_its_earlier_score(
+    solids, tmp_path, monkeypatch, terminal, on_existing, refused
+) -> None:
+    """Refused or skipped, the sample's directory is an earlier run's."""
+    before = _earlier_run_with_score(tmp_path / "000364", terminal)
+    monkeypatch.setattr(runner, "instantiate", pytest.fail)
+    config = _entrypoint_config(tmp_path, solids["box"], f"on_existing={on_existing}")
+
+    if refused:
+        with pytest.raises(FileExistsError):
+            entry.main(config)
+    else:
+        entry.main(config)
+    assert (tmp_path / "000364" / "score.json").read_text() == before
+
+
+@pytest.mark.parametrize(
+    ("override", "error"),
+    [
+        ("sample.target_step_path=/nonexistent/000364.step", FileNotFoundError),
+        ("evaluation.scorer.timeout_s=0", InstantiationException),
+    ],
+    ids=["missing_target", "bad_scorer"],
+)
+def test_a_bad_target_or_scorer_fails_before_generation(
+    solids, tmp_path, monkeypatch, override, error
+) -> None:
+    monkeypatch.setattr(entry, "run", pytest.fail)
+
+    with pytest.raises(error):
+        entry.main(_entrypoint_config(tmp_path, solids["box"], override))
+    assert not (tmp_path / "000364").exists()
+
+
+def test_an_untargeted_native_run_is_not_scored(
+    native_run, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(entry, "run", lambda config: native_run(_BOX, "000364"))
+
+    entry.main(_entrypoint_config(tmp_path, None))
+
+    assert (tmp_path / "000364" / "workspace/model.py").is_file()
+    assert not (tmp_path / "000364" / "score.json").exists()

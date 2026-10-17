@@ -6,6 +6,8 @@ import pytest
 from zeroshot.evaluation.run_scoring import (
     ScoreStatus,
     StepScorer,
+    format_metric,
+    format_score,
     latest_verified_step,
     score_run,
 )
@@ -21,23 +23,56 @@ def test_scores_a_valid_pair(solids: dict[str, Path]) -> None:
     assert report.metrics["mesh_iou"] == pytest.approx(1.0)
 
 
-def test_each_family_leads_with_its_most_telling_column(
+def test_every_headline_is_a_column_the_scorer_returns(
     solids: dict[str, Path],
 ) -> None:
-    """Reports show each family's first column, so metric order is not cosmetic."""
+    """A renamed column would otherwise drop out of every report unnoticed."""
     metrics = StepScorer().score(solids["box"], solids["fillet"]).metrics
-    leading = {
-        family: next(n for n in metrics if n == family or n.startswith(f"{family}_"))
-        for family in StepScorer.families()
+
+    assert set(StepScorer.headlines()) <= set(metrics)
+
+
+def test_ortho2cad_iou_is_scored_but_not_a_headline(solids: dict[str, Path]) -> None:
+    metrics = StepScorer().score(solids["box"], solids["box"]).metrics
+
+    assert "ortho2cad_iou" in metrics
+    assert "ortho2cad_iou" not in StepScorer.headlines()
+
+
+def test_the_report_shows_hausdorff_to_six_places_and_the_f1_breakdown() -> None:
+    document = {
+        "status": "OK",
+        "pred_step": "pred.step",
+        "metrics": {
+            "hausdorff": 0.0123456789,
+            "eccv_mean_f1": 0.5,
+            "eccv_surface_f1": 0.8,
+            "eccv_edge_f1": 0.6,
+            "eccv_vertex_f1": 0.4,
+            "eccv_topology_f1": 0.2,
+            "eccv_surface_precision": 0.9,
+            "ortho2cad_iou": 0.7,
+        },
+        "errors": {},
     }
 
-    assert leading == {
-        "mesh": "mesh_iou",
-        "chamfer": "chamfer",
-        "hausdorff": "hausdorff",
-        "eccv": "eccv_mean_f1",
-        "ortho2cad": "ortho2cad_iou",
-    }
+    lines = format_score(document).splitlines()
+
+    assert "  hausdorff          0.012346" in lines
+    assert [line.split()[0] for line in lines[3:]] == [
+        "eccv_mean_f1",
+        "eccv_surface_f1",
+        "eccv_edge_f1",
+        "eccv_vertex_f1",
+        "eccv_topology_f1",
+    ]
+    assert not any("ortho2cad" in line or "precision" in line for line in lines)
+
+
+def test_a_value_that_would_show_as_zero_keeps_three_figures() -> None:
+    assert format_metric(0.000012345) == "1.23e-05"
+    assert format_metric(0.000012345, decimals=6) == "0.000012"
+    assert format_metric(0.0, decimals=6) == "0.000000"
 
 
 def test_a_missing_prediction_is_reported(

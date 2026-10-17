@@ -20,7 +20,14 @@ from typing import Any
 
 from zeroshot.evaluation.metrics.itercad import aggregate_itercad
 from zeroshot.evaluation.metrics.surface_distance import DISTANCE_METRICS
-from zeroshot.evaluation.run_scoring import ScoreStatus, StepScorer, is_native_run
+from zeroshot.evaluation.run_scoring import (
+    DISTANCE_DECIMALS,
+    Headline,
+    ScoreStatus,
+    StepScorer,
+    format_metric,
+    is_native_run,
+)
 from zeroshot.pipeline.models.claude import usage_metadata_from_anthropic
 from zeroshot.pipeline.workflow import StopReason
 
@@ -387,23 +394,16 @@ def summarize(rows: Sequence[SampleRow]) -> RunSummary:
     )
 
 
-def headline_columns(rows: Sequence[SampleRow], families: Iterable[str]) -> list[str]:
-    """One column per family: the first it returned.
+def headline_columns(
+    rows: Sequence[SampleRow], headlines: Mapping[str, Headline]
+) -> dict[str, Headline]:
+    """The scorer's headlines that some sample has, in the scorer's order.
 
-    `families()` names the measurements and each orders its own columns
-    most-telling first, so both halves of the choice already live with the
-    metric. A list here would be a copy of them.
+    `headlines()` names the columns and how to show them, so the choice lives
+    with the metrics. A list here would be a copy of it.
     """
-    seen = dict.fromkeys(name for row in rows for name in row.metrics)
-    return [
-        column
-        for family in dict.fromkeys(families)
-        if (
-            column := next(
-                (n for n in seen if n == family or n.startswith(f"{family}_")), None
-            )
-        )
-    ]
+    seen = {name for row in rows for name in row.metrics}
+    return {name: headline for name, headline in headlines.items() if name in seen}
 
 
 def notes(rows: Sequence[SampleRow]) -> list[str]:
@@ -433,13 +433,11 @@ def notes(rows: Sequence[SampleRow]) -> list[str]:
     return lines
 
 
-def _cell(value: object) -> str:
+def _cell(value: object, decimals: int = 3) -> str:
     if value is None:
         return "-"
     if isinstance(value, float):
-        if 0 < abs(value) < 0.001:
-            return f"{value:.3g}"
-        return f"{value:.3f}"
+        return format_metric(value, decimals)
     return f"{value:,}" if isinstance(value, int) else str(value)
 
 
@@ -452,17 +450,29 @@ def _aligned(rows: Sequence[Sequence[str]]) -> list[str]:
 
 
 def format_report(
-    rows: Sequence[SampleRow], summary: RunSummary, headlines: Sequence[str]
+    rows: Sequence[SampleRow],
+    summary: RunSummary,
+    headlines: Mapping[str, Headline],
 ) -> str:
     lines = _aligned(
         [
-            ("sample", "turns", "verify", *headlines, "in_tok", "wall_s"),
+            (
+                "sample",
+                "turns",
+                "verify",
+                *(headline.label for headline in headlines.values()),
+                "in_tok",
+                "wall_s",
+            ),
             *(
                 (
                     row.sample_id,
                     _cell(row.agent_turns),
                     row.verify or "-",
-                    *(_cell(row.metrics.get(name)) for name in headlines),
+                    *(
+                        _cell(row.metrics.get(name), headline.decimals)
+                        for name, headline in headlines.items()
+                    ),
                     _cell(row.tokens.input),
                     _cell(round((row.wall_ms or 0) / 1000)),
                 )
@@ -480,13 +490,15 @@ def format_report(
         rule,
         "   ".join(f"{name} {getattr(summary, name)}/{total}" for name in rates),
         *(
-            f"{name}  mean {_cell(means.scored)} (measured n={means.measured})"
+            f"{name}  mean {_cell(means.scored, headline.decimals)}"
+            f" (measured n={means.measured})"
             + (
                 " (valid only)"
                 if name in DISTANCE_METRICS
-                else f"   {_cell(means.overall)} (all n={evaluated}, invalid=0)"
+                else f"   {_cell(means.overall, headline.decimals)}"
+                f" (all n={evaluated}, invalid=0)"
             )
-            for name in headlines
+            for name, headline in headlines.items()
             if (means := summary.metrics.get(name)) is not None
         ),
         (
@@ -505,7 +517,8 @@ def format_report(
         lines += [
             (
                 f"AUC-TR {_cell(stats['auc_tr'])}"
-                f"   Mean CD {_cell(stats['mean_cd'])}   Med. CD {_cell(stats['median_cd'])}"
+                f"   Mean CD {_cell(stats['mean_cd'], DISTANCE_DECIMALS)}"
+                f"   Med. CD {_cell(stats['median_cd'], DISTANCE_DECIMALS)}"
             ),
             (
                 f"  CD in GT bbox diagonals; tolerances [{stats['auc_tr_min_cd']:g},"
@@ -532,7 +545,7 @@ def main() -> None:
     if not rows:
         raise SystemExit(f"no sample with events.jsonl under {args.run_dir}")
     summary = summarize(rows)
-    headlines = headline_columns(rows, StepScorer().families())
+    headlines = headline_columns(rows, StepScorer.headlines())
 
     print(format_report(rows, summary, headlines))
 

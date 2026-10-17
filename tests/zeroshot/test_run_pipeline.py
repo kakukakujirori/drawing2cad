@@ -246,7 +246,8 @@ def test_a_run_that_raised_is_still_described_and_scored(
     called: list[str] = []
 
     def _raise(config) -> None:
-        del config
+        sample_dir = Path(config.artifact_root) / config.sample.sample_id
+        (sample_dir / "events.jsonl").write_text('{"event": "run_started"}\n')
         raise RuntimeError("stream finished without producing a message")
 
     monkeypatch.setattr(run_pipeline, "run", _raise)
@@ -287,3 +288,36 @@ def test_a_run_is_recorded_before_it_is_scored(tmp_path: Path, monkeypatch) -> N
     run_pipeline.main.__wrapped__(config)
 
     assert called == ["record", "score"]
+
+
+@pytest.mark.parametrize("earlier_log", [False, True], ids=["new", "earlier_run"])
+def test_a_sample_the_runner_refused_is_neither_recorded_nor_scored(
+    tmp_path: Path, monkeypatch, earlier_log
+) -> None:
+    """Hydra has already made the directory; an earlier run's log is not this one's.
+
+    Re-issuing a sweep under `on_existing=fail` must not rescore the samples it
+    refuses, nor record them under the current commit.
+    """
+    called: list[str] = []
+
+    def _refuse(config) -> None:
+        raise FileExistsError("sample already ran")
+
+    monkeypatch.setattr(run_pipeline, "run", _refuse)
+    monkeypatch.setattr(
+        run_pipeline, "record_run", lambda *args: called.append("record")
+    )
+    monkeypatch.setattr(run_pipeline, "score", lambda config: called.append("score"))
+
+    config = _config(tmp_path, tmp_path / "input.dxf")
+    config.sample.target_step_path = str(tmp_path / "target.step")
+    sample_dir = Path(config.artifact_root) / config.sample.sample_id
+    (sample_dir / ".hydra").mkdir(parents=True)
+    if earlier_log:
+        (sample_dir / "events.jsonl").write_text('{"event": "run_started"}\n')
+
+    with pytest.raises(FileExistsError):
+        run_pipeline.main.__wrapped__(config)
+
+    assert called == []

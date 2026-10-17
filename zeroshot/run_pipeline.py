@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import hydra
@@ -8,7 +7,7 @@ from omegaconf import DictConfig
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-from zeroshot.evaluation.run_scoring import score_run
+from zeroshot.evaluation.run_scoring import score_run, write_score
 from zeroshot.pipeline.messages.manifest import InputManifest, register_view
 from zeroshot.pipeline.runner import PipelineRunner
 from zeroshot.pipeline.sandbox import SandboxRunner
@@ -71,9 +70,20 @@ def score(config: DictConfig) -> None:
         scorer=instantiate(config.evaluation.scorer),
         last_only=config.evaluation.last_only,
     )
-    (run_dir / "score.json").write_text(
-        json.dumps(document, indent=2, allow_nan=False), "utf-8"
-    )
+    write_score(run_dir, document)
+
+
+def _first_event(events_path: Path) -> str | None:
+    """The log's first line, which names the run that wrote it, or None.
+
+    The runner opens a new log for every run it starts and writes its
+    `run_id` first, so this changes exactly when a run started.
+    """
+    try:
+        with events_path.open(encoding="utf-8") as handle:
+            return handle.readline()
+    except FileNotFoundError:
+        return None
 
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="default")
@@ -82,9 +92,13 @@ def main(config: DictConfig) -> None:
 
     The exit code reports whether the pipeline ran, not whether the model
     succeeded. A run that reaches no valid solid is a result, recorded in
-    `events.jsonl` and `score.json`; exiting non-zero for it would abort a
-    Hydra sweep at the first such sample and lose every one after it.
+    `events.jsonl` and `score.json`, not an error. A run that raised is
+    re-raised once scored; Hydra's basic launcher still runs the rest of a
+    sweep and exits non-zero after the last job.
     """
+    artifact_root = Path(to_absolute_path(config.artifact_root))
+    events_path = artifact_root / config.sample.sample_id / "events.jsonl"
+    earlier_run = _first_event(events_path)
     failure: Exception | None = None
     try:
         if run(config) is None:
@@ -95,10 +109,10 @@ def main(config: DictConfig) -> None:
         # becomes a comparable result rather than a hole.
         failure = error
 
-    artifact_root = Path(to_absolute_path(config.artifact_root))
-    # A run that raised may have failed before it had anywhere to write, and
-    # there is nothing to describe until it did.
-    if failure is None or (artifact_root / config.sample.sample_id).is_dir():
+    # Hydra makes the sample directory before the job runs, so only a new log
+    # says this run started. One the runner refused leaves an earlier run's
+    # log, record and score as they were.
+    if failure is None or _first_event(events_path) != earlier_run:
         record_run(artifact_root, config.sample.sample_id)
         if config.sample.target_step_path is not None:
             score(config)

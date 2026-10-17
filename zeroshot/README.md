@@ -14,14 +14,14 @@ python -m zeroshot.run_pipeline --multirun \
     model=gpt6_luna_codex \
     artifact_root=outputs/gpt6_luna \
     on_existing=retry \
-    sample.sample_id=$(ls data/test_eccv/target_step_ori | sed 's/\.step//' | paste -sd,)
+    sample.sample_id=$(ls data/test_eccv/target_step_ori | sed "s/\.step$//; s/.*/'&'/" | paste -sd,)
 
 # glm5.3-flash
 python -m zeroshot.run_pipeline --multirun \
     model=glm5.3_flash_openrouter \
     artifact_root=outputs/glm5.3_flash \
     on_existing=retry \
-    sample.sample_id=$(ls data/test_eccv/target_step_ori | sed 's/\.step//' | paste -sd,)
+    sample.sample_id=$(ls data/test_eccv/target_step_ori | sed "s/\.step$//; s/.*/'&'/" | paste -sd,)
 ```
 
 Rescore finished samples without rerunning the agents. A rerun with
@@ -55,6 +55,12 @@ Rotations within 1e-3 IoU of the best are the same geometry, so ECCV F1 takes th
 best of them: a symmetric part's seams otherwise make its F1 depend on the pose.
 Rotations within 1e-3 IoU of the best are ties. ECCV takes the best of them,
 because a symmetric part's B-Rep seams make its F1 depend on the tied pose.
+
+The terminal (`run_scoring`, `aggregate_run` and the native entrypoint) shows
+the columns `StepScorer.headlines()` names: mesh IoU, Chamfer, Hausdorff to six
+decimal places, and ECCV mean F1 followed by the surface, edge, vertex and
+topology F1s it averages. Ortho2CAD IoU proved too unreliable to show; it stays
+in `score.json`.
 
 `aggregate_run` reports AUC-TR and valid-only mean/median CD, in IterCAD's unit
 (GT bbox diagonal = 1) rather than `reference_extent`. Generation failures

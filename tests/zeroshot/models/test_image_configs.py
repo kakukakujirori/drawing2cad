@@ -75,9 +75,9 @@ def test_every_model_config_limits_request_images_to_eight(config_path, monkeypa
 @pytest.mark.parametrize(
     ("config_name", "model", "limit"),
     [
-        ("workflow/native", "haiku5.5_claude", 20),
-        ("workflow/native", "gpt6_luna_codex", 20),
-        ("workflow/native", "glm5.3_flash_openrouter", 8),
+        ("native", "haiku5.5_claude", 20),
+        ("native", "gpt6_luna_codex", 20),
+        ("native", "glm5.3_flash_openrouter", 8),
         ("default", "haiku5.5_claude", 8),
         ("default", "gpt6_luna_codex", 8),
         ("default", "glm5.3_flash_openrouter", 8),

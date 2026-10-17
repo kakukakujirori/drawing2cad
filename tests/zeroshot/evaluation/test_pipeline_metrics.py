@@ -103,7 +103,7 @@ def test_pipeline_score_and_aggregate_include_failed_builds(tmp_path):
     assert summary.metrics["mesh_iou"].overall == pytest.approx(0.5)
     assert summary.metrics["chamfer"].overall is None
     rendered = format_report(
-        rows, summary, headline_columns(rows, StepScorer().families())
+        rows, summary, headline_columns(rows, StepScorer.headlines())
     )
     assert "AUC-TR" in rendered and "Med. CD" in rendered
     assert "generation_failure" in rendered

@@ -4,6 +4,7 @@ defaults:
   - _self_
   - input: test_eccv  # png_dimensioned, dxf, ...
   - workflow: coder_auditor
+  - evaluation: default
 
 artifact_root: outputs/zeroshot
 
@@ -46,25 +47,6 @@ sandbox_runner:
   default_timeout_s: 30.0
   max_stdout_bytes: 1048576
   max_stderr_bytes: 1048576
-
-# How to score, not what to score: the target lives with the sample it belongs
-# to, so switching samples cannot leave a stale target behind.
-evaluation:
-  last_only: false
-  scorer:
-    _target_: zeroshot.evaluation.run_scoring.StepScorer
-    timeout_s: 600.0
-    f1_threshold: 0.1
-    reference_extent: 1.8
-    mesh_tolerance: 0.001
-    angular_tolerance: 0.1
-    sample_points: 8192
-    seed: 0
-    include_eccv: true
-    include_ortho2cad: true
-    auc_tr_min_cd: 1.0e-5
-    auc_tr_max_cd: 1.0e-1
-    auc_tr_num_points: 401
 
 # Every path derives from `sample_id`, so a sweep overrides that alone:
 #   python -m zeroshot.run_pipeline -m sample.sample_id=000364,000405,000775

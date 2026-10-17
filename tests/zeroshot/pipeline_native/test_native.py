@@ -16,6 +16,7 @@ from PIL import Image
 from pydantic import PrivateAttr
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
+from zeroshot.evaluation.run_scoring import is_native_run
 from zeroshot.pipeline.stages._base.prompt import PromptTemplate, describe_placement
 from zeroshot.pipeline.stages.interpretation.contracts import ProjectionMethod
 from zeroshot.pipeline.workflow.middleware.stateless_reasoning import (
@@ -40,7 +41,7 @@ def _config(tmp_path, *overrides):
         config_dir=str(_ROOT / "zeroshot/configs"), version_base="1.3"
     ):
         config = compose(
-            config_name="workflow/native",
+            config_name="native",
             overrides=[
                 f"artifact_root={tmp_path / 'runs'}",
                 "console=false",
@@ -83,6 +84,13 @@ class _ToolAwareModel(ScriptedChatModel):
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         self._request_tools.append(kwargs.pop("_native_tools", ()))
         return super()._generate(messages, stop, run_manager, **kwargs)
+
+
+def test_the_scorer_recognises_what_the_runner_leaves(tmp_path):
+    config = _config(tmp_path)
+    _system_prompt(config)
+
+    assert is_native_run(Path(config.artifact_root) / config.sample.sample_id)
 
 
 def test_native_rejects_oversized_input_before_creating_workspace(tmp_path):
@@ -402,11 +410,12 @@ class Guard(importlib.abc.MetaPathFinder):
             raise AssertionError("Unexpected pipeline dependency: " + fullname)
 sys.meta_path.insert(0, Guard())
 from zeroshot.pipeline_native.runner import run
+import zeroshot.pipeline_native.__main__
 from hydra import compose, initialize_config_dir
 from hydra.utils import get_class
 from pathlib import Path
 with initialize_config_dir(config_dir=str(Path("zeroshot/configs").resolve()), version_base="1.3"):
-    gpt = compose(config_name="workflow/native")
+    gpt = compose(config_name="native")
     assert gpt.model.model == "gpt-6-luna"
     get_class(gpt.model._target_)
     for model in (
@@ -418,7 +427,7 @@ with initialize_config_dir(config_dir=str(Path("zeroshot/configs").resolve()), v
         "haiku5.5_claude",
         "glm5.3_flash_openrouter",
     ):
-        cfg = compose(config_name="workflow/native", overrides=[f"model={model}"])
+        cfg = compose(config_name="native", overrides=[f"model={model}"])
         get_class(cfg.model._target_)
 """
     subprocess.run(

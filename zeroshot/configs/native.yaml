@@ -1,12 +1,12 @@
 # @package _global_
 
+# The native baseline's counterpart of `default.yaml`: one agent, no graph, so
+# it selects no `workflow`. `zeroshot.pipeline_native` loads it.
 defaults:
-  - /input: test_eccv
-  - /model: gpt6_luna_codex
+  - input: test_eccv
+  - model: gpt6_luna_codex
+  - evaluation: default
   - _self_
-
-workflow:
-  name: native
 
 artifact_root: outputs/zeroshot_native
 console: true

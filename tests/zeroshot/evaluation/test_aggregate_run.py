@@ -14,9 +14,9 @@ from zeroshot.evaluation.aggregate_run import (
     read_events,
     summarize,
 )
-from zeroshot.evaluation.run_scoring import StepScorer
+from zeroshot.evaluation.run_scoring import Headline, StepScorer
 
-FAMILIES = list(StepScorer().families())
+HEADLINES = StepScorer.headlines()
 
 
 def _event(name: str, timestamp_ms: int = 0, **data: Any) -> dict[str, Any]:
@@ -220,7 +220,7 @@ def test_the_table_stays_narrow_enough_to_read(tmp_path: Path) -> None:
     )
 
     rows = collect(tmp_path)
-    report = format_report(rows, summarize(rows), headline_columns(rows, FAMILIES))
+    report = format_report(rows, summarize(rows), headline_columns(rows, HEADLINES))
     table = [
         line for line in report.splitlines() if line.startswith(("sample", "000364"))
     ]
@@ -230,35 +230,84 @@ def test_the_table_stays_narrow_enough_to_read(tmp_path: Path) -> None:
     assert "0.040" in table[1]
 
 
-def test_a_family_is_represented_by_the_column_it_returned_first() -> None:
-    """Not by the alphabetically first one, and not by a list kept here."""
+def test_the_report_shows_the_f1_breakdown_and_distances_to_six_places(
+    tmp_path: Path,
+) -> None:
+    metrics = {
+        "eccv_topology_f1": 0.2,
+        "eccv_vertex_f1": 0.4,
+        "eccv_edge_f1": 0.6,
+        "eccv_surface_f1": 0.8,
+        "eccv_mean_f1": 0.5,
+        "hausdorff": 0.0123456789,
+        "chamfer": 0.0011252817,
+        "ortho2cad_iou": 0.7,
+    }
+    _write_sample(
+        tmp_path,
+        "000364",
+        _completed_events(_USAGE),
+        {"status": "OK", "metrics": metrics},
+    )
+
+    rows = collect(tmp_path)
+    report = format_report(rows, summarize(rows), headline_columns(rows, HEADLINES))
+    header, _, row = report.splitlines()[:3]
+
+    assert header.split()[3:10] == [
+        "chamfer",
+        "hausdorff",
+        "eccv_mean_f1",
+        "surface",
+        "edge",
+        "vertex",
+        "topology",
+    ]
+    assert row.split()[3:10] == [
+        "0.001125",
+        "0.012346",
+        "0.500",
+        "0.800",
+        "0.600",
+        "0.400",
+        "0.200",
+    ]
+    assert "chamfer  mean 0.001125 (measured n=1)" in report
+    assert "hausdorff  mean 0.012346 (measured n=1)" in report
+    assert "eccv_surface_f1  mean 0.800" in report
+    assert "ortho2cad" not in report
+
+
+def test_columns_follow_the_scorer_not_the_score() -> None:
+    """Not by the order a score happens to list them, and not by a list kept here."""
     rows = [
         SampleRow(
             sample_id="s",
             terminal=Terminal.COMPLETED,
-            metrics={"zeta_recall": 0.1, "zeta_f1": 0.2, "iou_score": 0.3},
+            metrics={"zeta_f1": 0.2, "iou_score": 0.3},
         )
     ]
+    headlines = {"iou_score": Headline("iou"), "zeta_f1": Headline("f1")}
 
-    assert headline_columns(rows, ["zeta", "iou"]) == ["zeta_recall", "iou_score"]
+    assert list(headline_columns(rows, headlines)) == ["iou_score", "zeta_f1"]
 
 
-def test_a_family_that_produced_no_column_takes_none() -> None:
+def test_a_headline_no_sample_has_takes_no_column() -> None:
     """A family can fail on its own without emptying the table."""
     rows = [
         SampleRow(sample_id="s", terminal=Terminal.COMPLETED, metrics={"mesh_iou": 0.3})
     ]
 
-    assert headline_columns(rows, ["eccv", "mesh"]) == ["mesh_iou"]
+    assert list(headline_columns(rows, HEADLINES)) == ["mesh_iou"]
 
 
-def test_the_scorer_decides_which_metrics_the_table_leads_with(
+def test_the_scorer_decides_which_metrics_the_table_shows(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    """A second list of metric names here would drift the moment a family does.
+    """A second list of metric names here would drift the moment the scorer's does.
 
-    Adding, renaming or reordering a family has to move the column with no edit
-    in this module.
+    Adding, renaming or reordering a headline has to move the column with no
+    edit in this module.
     """
     _write_sample(
         tmp_path,
@@ -267,18 +316,19 @@ def test_the_scorer_decides_which_metrics_the_table_leads_with(
         {"status": "OK", "metrics": {"renamed_iou": 0.25}},
     )
 
-    class OneFamilyScorer:
-        def families(self) -> dict[str, Any]:
-            return {"renamed": object()}
+    class OneHeadlineScorer:
+        @staticmethod
+        def headlines() -> dict[str, Headline]:
+            return {"renamed_iou": Headline("renamed")}
 
-    monkeypatch.setattr(aggregate_run, "StepScorer", OneFamilyScorer)
+    monkeypatch.setattr(aggregate_run, "StepScorer", OneHeadlineScorer)
     monkeypatch.setattr(sys, "argv", ["aggregate_run", "--run-dir", str(tmp_path)])
 
     aggregate_run.main()
 
     header = capsys.readouterr().out.splitlines()[0]
-    assert "renamed_iou" in header
-    assert not any(name in header for name in FAMILIES)
+    assert "renamed" in header
+    assert not any(headline.label in header for headline in HEADLINES.values())
     assert json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
 
 
@@ -286,4 +336,4 @@ def test_no_metric_name_is_written_into_this_module() -> None:
     """The scorer owns them; a literal here is a duplicate by definition."""
     source = Path(aggregate_run.__file__).read_text(encoding="utf-8")
 
-    assert not [name for name in FAMILIES if f"{name}_" in source]
+    assert not [name for name in HEADLINES if name in source]

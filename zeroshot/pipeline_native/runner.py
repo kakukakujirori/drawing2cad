@@ -124,8 +124,6 @@ def run(
     config: DictConfig, *, model: BaseChatModel | None = None
 ) -> dict[str, Any] | None:
     """Run one sample, returning None when a completed generation is skipped."""
-    if config.workflow.name != "native":
-        raise ValueError("This entrypoint requires workflow=native")
     on_existing = config.get("on_existing", "fail")
     if on_existing not in _ON_EXISTING:
         raise ValueError(f"on_existing must be one of {_ON_EXISTING}: {on_existing!r}")
@@ -177,6 +175,8 @@ def run(
         try:
             status = _git("status", "--porcelain")
             metadata = {
+                # How `run_scoring.is_native_run` tells this layout apart.
+                "pipeline": "native",
                 "run_id": run_id,
                 "sample_id": sample_id,
                 "config": OmegaConf.to_container(config, resolve=True),

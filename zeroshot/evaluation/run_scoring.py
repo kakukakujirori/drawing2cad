@@ -27,7 +27,7 @@ from enum import Enum
 from math import isfinite
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from zeroshot.pipeline.sandbox import SandboxRunner
@@ -114,6 +114,17 @@ def _isolated_score(scorer: StepScorer, pred_step: Path, gt_step: Path) -> Score
     )
 
 
+# Squared distances are mostly below 1e-3, so three places would hide them.
+DISTANCE_DECIMALS = 6
+
+
+class Headline(NamedTuple):
+    """How a terminal report shows one metric column."""
+
+    label: str
+    decimals: int = 3
+
+
 @dataclass(frozen=True)
 class StepScorer:
     """Score a predicted STEP against a target STEP under a wall-clock budget."""
@@ -156,8 +167,22 @@ class StepScorer:
             raise ValueError("auc_tr_min_cd must be smaller than auc_tr_max_cd")
 
     @staticmethod
-    def families() -> tuple[str, ...]:
-        return ("mesh", "chamfer", "hausdorff", "eccv", "ortho2cad")
+    def headlines() -> dict[str, Headline]:
+        """The metrics terminal reports show, in order; score.json keeps them all.
+
+        ECCV's mean F1 is followed by the four F1s it averages. Ortho2CAD IoU
+        is still scored, but proved too unreliable to show.
+        """
+        return {
+            "mesh_iou": Headline("mesh_iou"),
+            "chamfer": Headline("chamfer", DISTANCE_DECIMALS),
+            "hausdorff": Headline("hausdorff", DISTANCE_DECIMALS),
+            "eccv_mean_f1": Headline("eccv_mean_f1"),
+            "eccv_surface_f1": Headline("surface"),
+            "eccv_edge_f1": Headline("edge"),
+            "eccv_vertex_f1": Headline("vertex"),
+            "eccv_topology_f1": Headline("topology"),
+        }
 
     def _run_families(self, pred_step: Path, gt_step: Path) -> ScoreReport:
         from zeroshot.evaluation.preprocess import PreprocessConfig
@@ -264,13 +289,18 @@ def latest_verified_step(
     return None, skipped
 
 
-def _native_config(run_dir: Path) -> dict[str, Any]:
-    """The resolved config the native runner recorded in run.json, or {}."""
+def _native_record(run_dir: Path) -> dict[str, Any]:
+    """What the native runner recorded in run.json, or {}."""
     try:
         document = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-        config = document["config"]
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError):
         return {}
+    return document if isinstance(document, dict) else {}
+
+
+def _native_config(record: dict[str, Any]) -> dict[str, Any]:
+    """The resolved config in a native run's record, or {}."""
+    config = record.get("config")
     return config if isinstance(config, dict) else {}
 
 
@@ -280,8 +310,13 @@ def is_native_run(run_dir: Path) -> bool:
     Asked of run.json rather than read off a missing `attempts/`: a staged run
     whose interpretation never validated has a `model.py` and no attempt either,
     and building that program would score what the staged pipeline never did.
+    Runs recorded before `pipeline` was written carry `workflow.name: native`
+    in their config instead.
     """
-    workflow = _native_config(run_dir).get("workflow")
+    record = _native_record(run_dir)
+    if record.get("pipeline") == "native":
+        return True
+    workflow = _native_config(record).get("workflow")
     return isinstance(workflow, dict) and workflow.get("name") == "native"
 
 
@@ -293,7 +328,7 @@ def sandbox_for_builds(run_dir: Path, timeout_s: float | None = None) -> Sandbox
     """
     from zeroshot.pipeline.sandbox import SandboxRunner
 
-    settings = _native_config(run_dir).get("sandbox_runner") or {}
+    settings = _native_config(_native_record(run_dir)).get("sandbox_runner") or {}
     return SandboxRunner(
         python_executable=Path(settings.get("python_executable") or sys.executable),
         default_timeout_s=(
@@ -404,6 +439,36 @@ def score_run(
     }
 
 
+def write_score(run_dir: Path, document: Mapping[str, object]) -> Path:
+    """Save `score_run`'s document where `aggregate_run` looks for it."""
+    path = run_dir / "score.json"
+    path.write_text(json.dumps(document, indent=2, allow_nan=False), encoding="utf-8")
+    return path
+
+
+def format_metric(value: float, decimals: int = 3) -> str:
+    """`decimals` places, or three significant figures where those would show 0."""
+    if 0 < abs(value) < 10**-decimals:
+        return f"{value:.3g}"
+    return f"{value:.{decimals}f}"
+
+
+def format_score(document: Mapping[str, Any]) -> str:
+    """What `score_run` found, as a terminal shows it: the headlines and any error."""
+    metrics = document["metrics"]
+    lines = [
+        f"status     {document['status']}",
+        f"prediction {document['pred_step']}",
+        *(
+            f"  {name:<18} {format_metric(metrics[name], headline.decimals)}"
+            for name, headline in StepScorer.headlines().items()
+            if name in metrics
+        ),
+        *(f"  ! {name}: {message}" for name, message in document["errors"].items()),
+    ]
+    return "\n".join(lines)
+
+
 def main() -> None:
     """Score sample directories against ``<target-dir>/<sample_id>.step``.
 
@@ -499,16 +564,8 @@ def main() -> None:
         document = score_run(
             run_dir, target_step, scorer, args.last_only, sandbox_runner
         )
-        output_path = run_dir / "score.json"
-        output_path.write_text(
-            json.dumps(document, indent=2, allow_nan=False), encoding="utf-8"
-        )
-        print(f"status     {document['status']}")
-        print(f"prediction {document['pred_step']}")
-        for key, value in document["metrics"].items():  # type: ignore[attr-defined]
-            print(f"  {key:<26} {value}")
-        for name, message in document["errors"].items():  # type: ignore[attr-defined]
-            print(f"  ! {name}: {message}")
+        output_path = write_score(run_dir, document)
+        print(format_score(document))
         print(f"written    {output_path}")
         scorer_failed |= document["status"] in {
             ScoreStatus.FAILED.value,
