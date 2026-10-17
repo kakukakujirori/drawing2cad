@@ -222,7 +222,9 @@ def test_the_table_stays_narrow_enough_to_read(tmp_path: Path) -> None:
     rows = collect(tmp_path)
     report = format_report(rows, summarize(rows), headline_columns(rows, HEADLINES))
     table = [
-        line for line in report.splitlines() if line.startswith(("sample", "000364"))
+        line
+        for line in report.splitlines()
+        if line.lstrip().startswith(("sample", "000364"))
     ]
 
     assert len(table[0].split()) == 7
@@ -272,9 +274,8 @@ def test_the_report_shows_the_f1_breakdown_and_distances_to_six_places(
         "0.400",
         "0.200",
     ]
-    assert "chamfer  mean 0.001125 (measured n=1)" in report
-    assert "hausdorff  mean 0.012346 (measured n=1)" in report
-    assert "eccv_surface_f1  mean 0.800" in report
+    median = next(line for line in report.splitlines() if line.split()[0] == "median")
+    assert median.split()[1:4] == ["0.001125", "0.012346", "0.500"]
     assert "ortho2cad" not in report
 
 

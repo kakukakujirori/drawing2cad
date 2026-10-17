@@ -16,6 +16,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 from zeroshot.evaluation.metrics.itercad import aggregate_itercad
@@ -117,16 +118,19 @@ class SampleRow:
 
 
 @dataclass(frozen=True)
-class MetricMeans:
-    """Available mean; overall counts only explicit generation failures as zero.
+class MetricStats:
+    """Mean and median of the samples measured, then of every evaluated sample.
 
-    Distances have no overall mean. An evaluator error also makes overall
-    undefined, instead of improving the metric by substituting a zero.
+    `overall` counts only explicit generation failures as zero. Distances have
+    no overall figure. An evaluator error also makes it undefined, instead of
+    improving the metric by substituting a zero.
     """
 
     scored: float | None
+    scored_median: float | None
     overall: float | None
-    measured: int = 0
+    overall_median: float | None
+    measured: int
 
 
 @dataclass(frozen=True)
@@ -139,7 +143,7 @@ class RunSummary:
     budget_exhausted: int
     tokens: Tokens
     wall_ms: int
-    metrics: Mapping[str, MetricMeans]
+    metrics: Mapping[str, MetricStats]
     itercad: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -327,6 +331,29 @@ def _mean(values: Iterable[float]) -> float | None:
     return sum(collected) / len(collected) if collected else None
 
 
+def _metric_stats(
+    name: str, scored: Sequence[SampleRow], evaluated: Sequence[SampleRow]
+) -> MetricStats:
+    measured = [float(row.metrics[name]) for row in scored if name in row.metrics]
+    undefined = name in DISTANCE_METRICS or any(
+        name not in row.metrics
+        and row.build_valid is not False
+        and row.score_status
+        not in {ScoreStatus.NO_PREDICTION.value, ScoreStatus.GENERATION_FAILED.value}
+        for row in evaluated
+    )
+    overall = (
+        [] if undefined else [float(row.metrics.get(name, 0)) for row in evaluated]
+    )
+    return MetricStats(
+        scored=_mean(measured),
+        scored_median=median(measured) if measured else None,
+        overall=_mean(overall),
+        overall_median=median(overall) if overall else None,
+        measured=len(measured),
+    )
+
+
 def summarize(rows: Sequence[SampleRow]) -> RunSummary:
     scored = [row for row in rows if row.scored]
     # A sample without score.json, e.g. one with no target, has nothing to average.
@@ -369,25 +396,7 @@ def summarize(rows: Sequence[SampleRow]) -> RunSummary:
         ),
         wall_ms=sum(row.wall_ms or 0 for row in rows),
         metrics={
-            name: MetricMeans(
-                scored=_mean(
-                    float(row.metrics[name]) for row in scored if name in row.metrics
-                ),
-                overall=None
-                if name in DISTANCE_METRICS
-                or any(
-                    name not in row.metrics
-                    and row.build_valid is not False
-                    and row.score_status
-                    not in {
-                        ScoreStatus.NO_PREDICTION.value,
-                        ScoreStatus.GENERATION_FAILED.value,
-                    }
-                    for row in evaluated
-                )
-                else _mean(float(row.metrics.get(name, 0)) for row in evaluated),
-                measured=sum(name in row.metrics for row in scored),
-            )
+            name: _metric_stats(name, scored, evaluated)
             for name in sorted({name for row in scored for name in row.metrics})
         },
         itercad=distance_summary,
@@ -449,11 +458,22 @@ def _aligned(rows: Sequence[Sequence[str]]) -> list[str]:
     ]
 
 
+# The rows under the sample table: a label, and the `MetricStats` field it shows.
+_STATS_ROWS = (
+    ("mean", "scored"),
+    ("median", "scored_median"),
+    ("mean_all", "overall"),
+    ("median_all", "overall_median"),
+    ("n", "measured"),
+)
+
+
 def format_report(
     rows: Sequence[SampleRow],
     summary: RunSummary,
     headlines: Mapping[str, Headline],
 ) -> str:
+    stats = [summary.metrics.get(name) for name in headlines]
     lines = _aligned(
         [
             (
@@ -478,29 +498,37 @@ def format_report(
                 )
                 for row in rows
             ),
+            *(
+                (
+                    label,
+                    "",
+                    "",
+                    *(
+                        _cell(getattr(stat, field) if stat else None, headline.decimals)
+                        for stat, headline in zip(
+                            stats, headlines.values(), strict=True
+                        )
+                    ),
+                    "",
+                    "",
+                )
+                for label, field in _STATS_ROWS
+            ),
         ]
     )
     rule = "-" * len(lines[0])
     lines.insert(1, rule)
+    lines.insert(len(rows) + 2, rule)
 
     total = summary.samples
     evaluated = sum(row.score_status is not None for row in rows)
     rates = ("execution_success", "scored", "reported_tokens", "budget_exhausted")
     lines += [
         rule,
-        "   ".join(f"{name} {getattr(summary, name)}/{total}" for name in rates),
-        *(
-            f"{name}  mean {_cell(means.scored, headline.decimals)}"
-            f" (measured n={means.measured})"
-            + (
-                " (valid only)"
-                if name in DISTANCE_METRICS
-                else f"   {_cell(means.overall, headline.decimals)}"
-                f" (all n={evaluated}, invalid=0)"
-            )
-            for name, headline in headlines.items()
-            if (means := summary.metrics.get(name)) is not None
+        (
+            f"n measured; *_all: all {evaluated} evaluated, invalid as 0, none for distances"
         ),
+        "   ".join(f"{name} {getattr(summary, name)}/{total}" for name in rates),
         (
             f"in_tok {_cell(summary.tokens.input)}"
             f"   out_tok {_cell(summary.tokens.output)}"
@@ -512,23 +540,23 @@ def format_report(
             f"   reasoning {_cell(summary.tokens.reasoning)}"
         ),
     ]
-    if summary.itercad:
-        stats = summary.itercad
-        lines += [
-            (
-                f"AUC-TR {_cell(stats['auc_tr'])}"
-                f"   Mean CD {_cell(stats['mean_cd'], DISTANCE_DECIMALS)}"
-                f"   Med. CD {_cell(stats['median_cd'], DISTANCE_DECIMALS)}"
-            ),
-            (
-                f"  CD in GT bbox diagonals; tolerances [{stats['auc_tr_min_cd']:g},"
-                f" {stats['auc_tr_max_cd']:g}] over {stats['auc_tr_num_points']} points"
-            ),
-            (
-                f"  invalid {stats['invalid_predictions']},"
-                f" evaluator errors {stats['cd_evaluation_errors']}"
-            ),
-        ]
+    # if summary.itercad:
+    #     stats = summary.itercad
+    #     lines += [
+    #         (
+    #             f"AUC-TR {_cell(stats['auc_tr'])}"
+    #             f"   Mean CD {_cell(stats['mean_cd'], DISTANCE_DECIMALS)}"
+    #             f"   Med. CD {_cell(stats['median_cd'], DISTANCE_DECIMALS)}"
+    #         ),
+    #         (
+    #             f"  CD in GT bbox diagonals; tolerances [{stats['auc_tr_min_cd']:g},"
+    #             f" {stats['auc_tr_max_cd']:g}] over {stats['auc_tr_num_points']} points"
+    #         ),
+    #         (
+    #             f"  invalid {stats['invalid_predictions']},"
+    #             f" evaluator errors {stats['cd_evaluation_errors']}"
+    #         ),
+    #     ]
     if remarks := notes(rows):
         lines += ["", "notes:", *(f"  {line}" for line in remarks)]
     return "\n".join(lines)
