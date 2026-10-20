@@ -26,6 +26,7 @@ from zeroshot.pipeline.verification import AttemptStore, StepRenderer
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.evidence import EvidenceMode
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
+from zeroshot.pipeline.workflow.middleware.output_limit_budget import OutputLimitBudget
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
@@ -120,6 +121,7 @@ def create_audit_stage(
     audit_filename: str = "audit.json",
     evidence_mode: EvidenceMode = "mark",
     review_drawing_diff_clusters: bool = True,
+    output_limit_budget: OutputLimitBudget | None = None,
 ) -> AuditStage:
     audit_verifier = AuditVerifier(
         attempt_store,
@@ -155,6 +157,7 @@ def create_audit_stage(
         # The first is outermost: the check questions only answers the write
         # check let through, so only a verified, reported audit.json.
         extra_middleware=[dismissal_check, middleware],
+        output_limit_budget=output_limit_budget,
     )
     return AuditStage(
         agent=audit_agent,

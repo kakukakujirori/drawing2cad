@@ -1,6 +1,7 @@
 import sys
 from inspect import signature
 from pathlib import Path
+from typing import Any
 
 import pytest
 from hydra import compose, initialize_config_dir
@@ -9,15 +10,23 @@ from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.codex import _ChatOpenAICodex
 from langchain_openrouter import ChatOpenRouter
 from omegaconf import OmegaConf
+from PIL import Image
 
 from tests.zeroshot.prompt_paths import RECONSTRUCTION_CONTEXT_PATH, ROLE_PATHS
 from zeroshot.pipeline.event_logging import ConsoleReporter
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
+from zeroshot.pipeline.messages.manifest import InputManifest, register_view
 from zeroshot.pipeline.runner import PipelineRunner
-from zeroshot.pipeline.sandbox import SandboxRunner
+from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
+from zeroshot.pipeline.stages.interpretation.contracts import ProjectionMethod, View
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffExecutor
 from zeroshot.pipeline.workflow import create_agent
+from zeroshot.pipeline.workflow.components import agent as agent_module
 from zeroshot.pipeline.workflow.graph import create_reconstruction_graph
+from zeroshot.pipeline.workflow.middleware import (
+    ModelCallRetryMiddleware,
+    TurnBudgetMiddleware,
+)
 
 CONFIG_DIR = Path(__file__).parents[2] / "zeroshot" / "configs"
 
@@ -283,7 +292,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert set(graph_factory.keywords) == {
         "coding_agent_builder",
         "audit_agent_builder",
-        "compact_between_stages",
+        "compaction_model",
         "max_audit_reject_count",
         "max_stage_validation_retries",
         "max_output_limit_failures",
@@ -299,7 +308,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert graph_factory.keywords["coding_draft_check_after_n_turns"] == 20
     assert graph_factory.keywords["review_drawing_diff_clusters"] is True
     assert graph_factory.keywords["match_margin_px"] == 0.5
-    assert graph_factory.keywords["compact_between_stages"] is not None
+    assert graph_factory.keywords["compaction_model"] is not None
     assert (
         graph_factory.keywords["diff_drawer_config"]["backend"] == "directional_chamfer"
     )
@@ -331,6 +340,66 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert "agent" not in config
 
 
+@pytest.mark.parametrize("model_config", ["gemma4_ollama", "glm5.3_flash_openrouter"])
+def test_hydra_builders_preserve_turn_limits_and_share_the_output_limit_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model_config: str
+) -> None:
+    """Construct the stages too: wrapping Hydra builders can hide their keywords."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()), version_base="1.3"
+    ):
+        config = compose(
+            config_name="default",
+            overrides=[
+                f"model={model_config}",
+                "workflow.coding_agent_builder.max_turns=7",
+                "workflow.audit_agent_builder.max_turns=3",
+                "workflow.max_output_limit_failures=2",
+            ],
+        )
+    graph_factory = instantiate(config.workflow)
+    agents: list[dict[str, Any]] = []
+    build_agent = agent_module._create_agent
+
+    def capture_agent(**kwargs: Any) -> Any:
+        agents.append(kwargs)
+        return build_agent(**kwargs)
+
+    monkeypatch.setattr(agent_module, "_create_agent", capture_agent)
+    path = tmp_path / "drawing.png"
+    Image.new("RGB", (20, 20), "white").save(path)
+    with SandboxWorkdir(host_bind_dir=tmp_path) as workdir:
+        graph_factory(
+            sandbox_runner=SandboxRunner(
+                python_executable=Path(sys.executable), default_timeout_s=30
+            ),
+            sandbox_workdir=workdir,
+            artifact_presenter=instantiate(config.artifact_presenter),
+            input_manifest=InputManifest(
+                sample_id="test",
+                drawing=[register_view("view_input", View.FULL_PAGE, path)],
+                projection_method=ProjectionMethod.THIRD_ANGLE,
+            ),
+        )
+
+    budgets = []
+    assert [agent["name"] for agent in agents] == ["coder", "output_auditor"]
+    for agent, max_turns in zip(agents, [7, 3], strict=True):
+        middleware = agent["middleware"]
+        turns = next(
+            item for item in middleware if isinstance(item, TurnBudgetMiddleware)
+        )
+        retry = next(
+            item for item in middleware if isinstance(item, ModelCallRetryMiddleware)
+        )
+        assert turns.max_turns == max_turns
+        budgets.append(retry.output_limit_budget)
+    assert budgets[0] is budgets[1]
+    assert budgets[0] is not None
+    assert budgets[0].maximum == 2
+
+
 def test_compaction_follows_the_run_model_under_its_own_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -343,13 +412,13 @@ def test_compaction_follows_the_run_model_under_its_own_cap(
             overrides=["model=glm5.3_flash_openrouter", "model.temperature=0.5"],
         )
 
-    note_taker = instantiate(config.workflow).keywords["compact_between_stages"]
+    compaction_model = instantiate(config.workflow).keywords["compaction_model"]
 
-    assert isinstance(note_taker, ChatOpenRouter)
+    assert isinstance(compaction_model, ChatOpenRouter)
     assert config.model.max_tokens == 60000
-    assert note_taker.max_tokens == config.workflow.compact_between_stages.max_tokens
-    assert note_taker.max_tokens == 32000
-    assert note_taker.temperature == 0.5
+    assert compaction_model.max_tokens == config.workflow.compaction_model.max_tokens
+    assert compaction_model.max_tokens == 32000
+    assert compaction_model.temperature == 0.5
 
 
 @pytest.mark.parametrize(

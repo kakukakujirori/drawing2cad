@@ -1064,7 +1064,7 @@ def test_the_coder_starts_its_next_round_from_notes(monkeypatch, rounds):
             workdir,
             coder=coder,
             auditor=auditor,
-            compact_between_stages=notetaker,
+            compaction_model=notetaker,
             max_audit_reject_count=rounds - 1,
         ).invoke({})
 

@@ -47,6 +47,7 @@ from zeroshot.pipeline.verification import (
 )
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.lifecycle import interpretation_baseline
+from zeroshot.pipeline.workflow.middleware.output_limit_budget import OutputLimitBudget
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
 type CompiledGraph = Pregel[Any, Any, Any, Any]
@@ -162,6 +163,7 @@ def create_coding_stage(
     coding_trial_tool: bool = True,
     coding_draft_check_after_n_turns: int | None = 20,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
+    output_limit_budget: OutputLimitBudget | None = None,
 ) -> CodingStage:
     renderer = StepRenderer()
     workspace = CodingWorkspaceVerifier(
@@ -238,6 +240,7 @@ def create_coding_stage(
         ),
         output_schema=TicketAnswers,
         extra_middleware=extra_middleware,
+        output_limit_budget=output_limit_budget,
     )
     return CodingStage(
         agent=coding_agent,

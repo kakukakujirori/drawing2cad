@@ -60,7 +60,7 @@ def create_reconstruction_graph(
     max_audit_reject_count: int = 3,
     max_stage_validation_retries: int = 3,
     max_output_limit_failures: int = 3,
-    compact_between_stages: BaseChatModel | None = None,
+    compaction_model: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     audit_evidence_mode: EvidenceMode = "mark",
     diff_drawer_config: Mapping[str, Any] | None = None,
@@ -132,9 +132,10 @@ def create_reconstruction_graph(
 
     stages_dir = Path(__file__).resolve().parents[1] / "stages"
 
-    # Bind the shared budget into builders; each stage adds its tools and schema.
+    # Pass the shared budget to both stages; each adds its tools and schema.
     coding_stage = stage_factory(PipelineStage.CODING)(
-        partial(coding_agent_builder, output_limit_budget=output_limit_budget),
+        coding_agent_builder,
+        output_limit_budget=output_limit_budget,
         tools=basic_tools,
         role_path=stages_dir / "coding/prompts/role.md",
         instructions=stage_instructions,
@@ -146,14 +147,15 @@ def create_reconstruction_graph(
         trial_store=trial_store,
         output_filename=output_filename,
         interpretation_filename=interpretation_filename,
-        input_after_compaction=compact_between_stages is not None,
+        input_after_compaction=compaction_model is not None,
         fresh_memory=fresh_coder,
         coding_trial_tool=coding_trial_tool,
         coding_draft_check_after_n_turns=coding_draft_check_after_n_turns,
         match_margin_px=match_margin_px,
     )
     audit_stage = stage_factory(PipelineStage.AUDIT)(
-        partial(audit_agent_builder, output_limit_budget=output_limit_budget),
+        audit_agent_builder,
+        output_limit_budget=output_limit_budget,
         tools=basic_tools,
         role_path=stages_dir / "audit/prompts/role.md",
         instructions=stage_instructions,
@@ -301,7 +303,7 @@ def create_reconstruction_graph(
             raise RuntimeError("successful stage integration did not complete coding")
         if snapshot.round >= max_audit_reject_count:
             return "__end__"
-        if compact_between_stages is not None:
+        if compaction_model is not None:
             return "coding_handover"
         return PipelineStage.AUDIT.value
 
@@ -379,11 +381,11 @@ def create_reconstruction_graph(
         state: ReconstructionState, config: RunnableConfig
     ) -> dict[str, Any]:
         """Trade the coder's working turns for notes before its next round."""
-        assert compact_between_stages is not None
+        assert compaction_model is not None
         coding_state = state.get("coding_state") or {}
         thread = compact_transcript(
             list(coding_state.get("messages") or []),
-            model=compact_between_stages,
+            model=compaction_model,
             config=config,
         )
         return {
@@ -401,7 +403,7 @@ def create_reconstruction_graph(
     workflow.add_node(PipelineStage.AUDIT.value, audit_stage.run)
     workflow.add_node("integrate_stage_submission", integrate_stage_submission)
     workflow.add_node("integrate_audit_report", integrate_audit_report)
-    if compact_between_stages is not None:
+    if compaction_model is not None:
         workflow.add_node("coding_handover", coding_handover)
         workflow.add_edge("coding_handover", PipelineStage.AUDIT.value)
 
