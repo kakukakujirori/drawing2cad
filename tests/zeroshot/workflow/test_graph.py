@@ -267,7 +267,7 @@ def _graph(
     _write_projection_dxf(workdir.host_bind_dir / "projection" / "front.dxf")
     common = {
         "announce_turns": False,
-        "model_retries": 0,
+        "model_call_retries": 0,
         "checkpointer": False,
         "max_turns": 5,
     }
@@ -711,6 +711,34 @@ def test_invalid_answers_retry_or_exhaust_before_audit(monkeypatch, recovers):
         assert "ticket_absent" in result["stage_validation_error"]
 
 
+@pytest.mark.parametrize("role", ["coder", "auditor"])
+def test_an_agent_out_of_turns_is_told_so_and_retried_with_its_retry_turns(
+    monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
+    _stub_verification(monkeypatch, _verified())
+    looks = tuple(
+        tool_call("run_shell", {"command": "true"}, f"look-{n}") for n in range(2)
+    )
+    script = _coding_script() if role == "coder" else _audit_script(_accepted_audit())
+    agent = ScriptedChatModel(responses=(*looks, *script))
+    options = {"max_turns": 2, "retry_turns": 2}
+    with SandboxWorkdir() as workdir:
+        graph = _graph(
+            workdir,
+            coder=agent if role == "coder" else ScriptedChatModel(responses=()),
+            auditor=agent if role == "auditor" else ScriptedChatModel(responses=()),
+            coder_options=options,
+            auditor_options=options,
+            max_audit_reject_count=0 if role == "coder" else 1,
+        )
+        result = graph.invoke({} if role == "coder" else {"reconstruction": _coded_seed()})
+
+    retry = [message.text for message in agent.received_messages[2]]
+    assert "before the turn budget ran out" in retry[-2]
+    assert retry[-1] == "[turn set back to 0/2 to correct the refused answer]"
+    assert result["stage_validation_error"] is None
+
+
 def test_a_persisted_unfinished_round_can_restart_the_graph(monkeypatch):
     _stub_verification(monkeypatch, *([_verified()] * 3))
     with SandboxWorkdir() as workdir:
@@ -754,7 +782,7 @@ def test_an_invalid_audit_is_corrected_before_the_agent_answers(
             workdir,
             coder=ScriptedChatModel(responses=_coding_script()),
             auditor=auditor,
-            auditor_options={"model_retries": 1},
+            auditor_options={"model_call_retries": 1},
             max_stage_validation_retries=0,
         ).invoke({})
 
@@ -911,7 +939,7 @@ def test_revision_audit_corrects_missing_reviews_without_opening_another_round(
                 )
             ),
             auditor=auditor,
-            auditor_options={"model_retries": 1},
+            auditor_options={"model_call_retries": 1},
             max_audit_reject_count=2,
             max_stage_validation_retries=0,
         ).invoke({})

@@ -38,6 +38,7 @@ class AgentState(_AgentState[Any]):
         - current_turn: int
         - total_turns: int
         - stop_reason: StopReason
+        - retry: bool
         - reported_message_count: int
 
     The first three are included in _AgentState.
@@ -46,6 +47,7 @@ class AgentState(_AgentState[Any]):
     current_turn: NotRequired[int]
     total_turns: NotRequired[int]
     stop_reason: NotRequired[StopReason | None]
+    retry: NotRequired[bool]
     reported_message_count: NotRequired[int]
 
 
@@ -87,9 +89,10 @@ def create_agent(
     output_schema: type[BaseModel] | None = None,
     response_format_strategy: Literal["provider", "tool"] = "provider",
     max_turns: int = 30,
+    retry_turns: int | None = None,
     announce_turns: bool = True,
     reset_turns_when_reentrant: bool = True,
-    model_retries: int = 5,
+    model_call_retries: int = 5,
     checkpointer: Checkpointer = False,
     extra_middleware: Sequence[AgentMiddleware[Any, None, Any]] = (),
     output_limit_budget: OutputLimitBudget | None = None,
@@ -106,11 +109,12 @@ def create_agent(
             # Retries must see the final turn's reduced tool set.
             TurnBudgetMiddleware(
                 max_turns,
+                retry_turns=retry_turns,
                 announce_turns=announce_turns,
                 reset_turns_when_reentrant=reset_turns_when_reentrant,
             ),
             ModelCallRetryMiddleware(
-                max_retries=model_retries,
+                max_retries=model_call_retries,
                 role=role,
                 output_limit_budget=output_limit_budget,
             ),

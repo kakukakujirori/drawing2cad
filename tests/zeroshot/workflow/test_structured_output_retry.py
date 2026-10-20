@@ -74,7 +74,7 @@ def _answering_twice(call_id: str) -> AIMessage:
     )
 
 
-def _agent(model: ScriptedChatModel, *, model_retries: int = 5):
+def _agent(model: ScriptedChatModel, *, model_call_retries: int = 5):
     return create_agent(
         role="coder",
         model=model,
@@ -83,7 +83,7 @@ def _agent(model: ScriptedChatModel, *, model_retries: int = 5):
         response_format_strategy="tool",
         max_turns=5,
         announce_turns=False,
-        model_retries=model_retries,
+        model_call_retries=model_call_retries,
         checkpointer=False,
     )
 
@@ -108,7 +108,7 @@ def test_an_answer_that_stays_malformed_ends_the_stage_and_says_why() -> None:
         responses=tuple(_answering("T1", "call") for _ in range(3))
     )
 
-    result = _agent(model, model_retries=2).invoke({"messages": []})
+    result = _agent(model, model_call_retries=2).invoke({"messages": []})
 
     assert len(model.received_messages) == 3
     assert result.get("structured_response") is None
@@ -255,7 +255,7 @@ def test_a_model_that_never_answers_ends_the_stage_without_failing_the_run() -> 
     end a run the pipeline can still recover."""
     model = ScriptedChatModel(responses=tuple(AIMessage(content="") for _ in range(3)))
 
-    result = _agent(model, model_retries=2).invoke({"messages": []})
+    result = _agent(model, model_call_retries=2).invoke({"messages": []})
 
     assert result.get("structured_response") is None
     assert len(model.received_messages) == 3

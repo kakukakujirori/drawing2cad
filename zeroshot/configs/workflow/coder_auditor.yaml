@@ -53,9 +53,12 @@ workflow:
 
     response_format_strategy: ${response_format_strategy}
     max_turns: 60
+    # A retry of a refused answer keeps the turn count, set back if fewer than
+    # this many turns remain. null: a retry is handled like any re-entry.
+    retry_turns: 10
     announce_turns: true
     reset_turns_when_reentrant: true
-    model_retries: 5
+    model_call_retries: 5
     checkpointer: false
 
   audit_agent_builder:
@@ -66,9 +69,10 @@ workflow:
 
     response_format_strategy: ${response_format_strategy}
     max_turns: 20
+    retry_turns: 10
     announce_turns: true
     reset_turns_when_reentrant: true
-    model_retries: 5
+    model_call_retries: 5
     checkpointer: false
 
   # The coder's transcript is compacted before audit when another round may

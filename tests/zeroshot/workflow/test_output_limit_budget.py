@@ -42,7 +42,7 @@ def agent(model, **kwargs):
         tools=kwargs.pop("tools", []),
         max_turns=5,
         announce_turns=False,
-        model_retries=5,
+        model_call_retries=5,
         **kwargs,
     )
 

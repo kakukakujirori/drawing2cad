@@ -108,7 +108,7 @@ def test_tool_strategy_answers_through_the_answer_tool(monkeypatch):
         output_schema=TicketAnswers,
         response_format_strategy="tool",
         max_turns=3,
-        model_retries=1,
+        model_call_retries=1,
     )
     result = agent.invoke({"messages": [HumanMessage("go")]})
 
@@ -132,7 +132,7 @@ def test_a_prose_answer_is_asked_again_for_the_answer_tool(monkeypatch):
         output_schema=TicketAnswers,
         response_format_strategy="tool",
         max_turns=3,
-        model_retries=1,
+        model_call_retries=1,
     )
     result = agent.invoke({"messages": [HumanMessage("go")]})
 
@@ -152,7 +152,7 @@ def test_provider_strategy_is_refused_before_the_api(monkeypatch):
         output_schema=TicketAnswers,
         response_format_strategy="provider",
         max_turns=3,
-        model_retries=0,
+        model_call_retries=0,
     )
     with pytest.raises(ValueError, match="response_format_strategy: tool"):
         agent.invoke({"messages": [HumanMessage("go")]})

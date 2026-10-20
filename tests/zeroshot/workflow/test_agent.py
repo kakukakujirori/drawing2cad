@@ -386,6 +386,87 @@ def test_a_second_ask_can_keep_spending_the_first_ones_budget() -> None:
     assert _countdowns(second["messages"]) == ["[turn 1/3]", "[turn 2/3]"]
 
 
+def _retried(model: ScriptedChatModel, first: dict[str, Any], **agent_options: Any):
+    """Re-ask an agent for the answer its workflow refused, as a stage retry does."""
+    return _subgraph(model, **agent_options).invoke(
+        {
+            "messages": [*first["messages"], HumanMessage(content="refused: fix it")],
+            "current_turn": first["current_turn"],
+            "total_turns": first["total_turns"],
+            "retry": True,
+        }
+    )
+
+
+def test_a_retry_continues_the_refused_asks_count() -> None:
+    """A refused answer is corrected within the ask that gave it, so its turns
+    are not handed out a second time over the same transcript."""
+    model = ScriptedChatModel(
+        responses=(AIMessage(content="first"), AIMessage(content="corrected"))
+    )
+    options = {"max_turns": 3, "retry_turns": 1}
+    first = _subgraph(model, **options).invoke(
+        {"messages": [HumanMessage(content="propose")]}
+    )
+
+    second = _retried(model, first, **options)
+
+    assert (first["current_turn"], second["current_turn"]) == (1, 2)
+    assert _countdowns(second["messages"]) == ["[turn 1/3]", "[turn 2/3]"]
+
+
+def test_a_retry_after_the_budget_ran_out_gets_its_turns_only() -> None:
+    """The count is set back just far enough to leave the retry its turns."""
+    model = ScriptedChatModel(
+        responses=(
+            *(tool_call("echo", {"value": "looking"}, f"call-{n}") for n in range(3)),
+            AIMessage(content="corrected"),
+        )
+    )
+    options = {"max_turns": 3, "retry_turns": 1}
+    first = _subgraph(model, **options).invoke(
+        {"messages": [HumanMessage(content="propose")]}
+    )
+    assert first["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+
+    second = _retried(model, first, **options)
+
+    assert second["current_turn"] == 3
+    assert second["stop_reason"] is StopReason.COMPLETED
+    assert _countdowns(second["messages"])[3:] == [
+        "[turn set back to 2/3 to correct the refused answer]",
+        "[turn 3/3]",
+    ]
+
+
+def test_retry_turns_beyond_the_budget_give_the_whole_budget() -> None:
+    model = ScriptedChatModel(
+        responses=(
+            *(tool_call("echo", {"value": "looking"}, f"call-{n}") for n in range(2)),
+            AIMessage(content="corrected"),
+        )
+    )
+    options = {"max_turns": 2, "retry_turns": 5}
+    first = _subgraph(model, **options).invoke(
+        {"messages": [HumanMessage(content="propose")]}
+    )
+
+    second = _retried(model, first, **options)
+
+    assert second["current_turn"] == 1
+    assert _countdowns(second["messages"])[2:] == [
+        "[turn set back to 0/2 to correct the refused answer]",
+        "[turn 1/2]",
+    ]
+
+
+def test_retry_turns_must_be_positive() -> None:
+    model = ScriptedChatModel(responses=(AIMessage(content="done"),))
+
+    with pytest.raises(ValueError, match="retry_turns"):
+        _subgraph(model, max_turns=3, retry_turns=0)
+
+
 def test_agent_rejects_a_budget_below_one() -> None:
     model = ScriptedChatModel(responses=(AIMessage(content="done"),))
 
@@ -487,7 +568,7 @@ def test_agent_refuses_an_answer_that_breaks_its_output_contract() -> None:
         model,
         announce_turns=False,
         output_schema=ExampleProposal,
-        model_retries=0,
+        model_call_retries=0,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
     assert result.get("structured_response") is None
@@ -503,7 +584,7 @@ def test_agent_retries_an_empty_structured_output() -> None:
         model,
         announce_turns=False,
         output_schema=ExampleProposal,
-        model_retries=1,
+        model_call_retries=1,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
     assert result["structured_response"] == ExampleProposal(
@@ -527,7 +608,7 @@ def test_agent_returns_invalid_structured_output_to_the_model_for_correction() -
         model,
         announce_turns=False,
         output_schema=ExampleProposal,
-        model_retries=1,
+        model_call_retries=1,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
     retry_messages = model.received_messages[1]
@@ -552,7 +633,7 @@ def test_a_rejected_structured_response_is_preserved_in_the_retry_event() -> Non
         model,
         announce_turns=False,
         output_schema=ExampleProposal,
-        model_retries=1,
+        model_call_retries=1,
     ).stream({"messages": [HumanMessage(content="go")]}, stream_mode="custom"):
         if "model_retry" in chunk:
             reports.append(chunk["model_retry"])
@@ -571,7 +652,7 @@ def test_agent_bounds_invalid_structured_output_retries() -> None:
         model,
         announce_turns=False,
         output_schema=ExampleProposal,
-        model_retries=1,
+        model_call_retries=1,
     ).invoke({"messages": [HumanMessage(content="go")]})
 
     assert len(model.received_messages) == 2
@@ -589,7 +670,7 @@ def test_async_agent_retries_invalid_structured_output() -> None:
             model,
             announce_turns=False,
             output_schema=ExampleProposal,
-            model_retries=1,
+            model_call_retries=1,
         ).ainvoke({"messages": [HumanMessage(content="go")]})
 
     result = asyncio.run(invoke())
@@ -607,7 +688,7 @@ def test_agent_retries_a_dropped_connection() -> None:
         errors=(httpx.RemoteProtocolError("peer closed connection"),),
     )
 
-    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
+    result = _subgraph(model, announce_turns=False, model_call_retries=2).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
@@ -626,7 +707,7 @@ def test_agent_retries_a_generic_stream_api_error() -> None:
         errors=(APIError("backend overloaded", request, body=None),),
     )
 
-    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
+    result = _subgraph(model, announce_turns=False, model_call_retries=2).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
@@ -641,7 +722,7 @@ def test_agent_retries_an_openai_connection_error() -> None:
         errors=(APIConnectionError(request=request),),
     )
 
-    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
+    result = _subgraph(model, announce_turns=False, model_call_retries=2).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
@@ -656,7 +737,7 @@ def test_agent_retries_a_transient_api_status_error(status_code: int) -> None:
     error = APIStatusError("temporarily unavailable", response=response, body=None)
     model = _FlakyChatModel(responses=(AIMessage(content="done"),), errors=(error,))
 
-    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
+    result = _subgraph(model, announce_turns=False, model_call_retries=2).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
@@ -670,7 +751,7 @@ def test_openrouter_http_failures_use_the_transport_retry_policy(status: int) ->
 
     error = OpenRouterError("provider error", httpx.Response(status))
     model = _FlakyChatModel(responses=(AIMessage(content="done"),), errors=(error,))
-    graph = _subgraph(model, announce_turns=False, model_retries=1)
+    graph = _subgraph(model, announce_turns=False, model_call_retries=1)
     if status == 429 or status >= 500:
         result = graph.invoke({"messages": [HumanMessage(content="go")]})
         assert result["stop_reason"] is StopReason.COMPLETED
@@ -688,7 +769,7 @@ def test_agent_does_not_retry_an_api_status_error() -> None:
     model = _FlakyChatModel(responses=(AIMessage(content="unused"),), errors=(error,))
 
     with pytest.raises(APIStatusError, match="bad request"):
-        _subgraph(model, announce_turns=False, model_retries=2).invoke(
+        _subgraph(model, announce_turns=False, model_call_retries=2).invoke(
             {"messages": [HumanMessage(content="go")]}
         )
 
@@ -720,7 +801,7 @@ def test_agent_retries_a_length_limited_output_with_concise_feedback() -> None:
         errors=(_length_failure(),),
     )
 
-    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
+    result = _subgraph(model, announce_turns=False, model_call_retries=2).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
@@ -741,7 +822,7 @@ def test_agent_bounds_length_limited_output_retries() -> None:
         errors=(_length_failure(), _length_failure()),
     )
 
-    result = _subgraph(model, announce_turns=False, model_retries=1).invoke(
+    result = _subgraph(model, announce_turns=False, model_call_retries=1).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
@@ -763,7 +844,7 @@ def test_a_dropped_stream_does_not_spend_a_correction() -> None:
         errors=(_generic_api_error(), _length_failure()),
     )
 
-    result = _subgraph(model, announce_turns=False, model_retries=1).invoke(
+    result = _subgraph(model, announce_turns=False, model_call_retries=1).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
@@ -778,7 +859,7 @@ def test_async_dropped_stream_does_not_spend_a_correction() -> None:
     )
 
     async def invoke() -> Any:
-        return await _subgraph(model, announce_turns=False, model_retries=1).ainvoke(
+        return await _subgraph(model, announce_turns=False, model_call_retries=1).ainvoke(
             {"messages": [HumanMessage(content="go")]}
         )
 
@@ -796,7 +877,7 @@ def test_transport_retries_are_bounded_on_their_own() -> None:
     )
 
     with pytest.raises(APIError, match="backend overloaded"):
-        _subgraph(model, announce_turns=False, model_retries=1).invoke(
+        _subgraph(model, announce_turns=False, model_call_retries=1).invoke(
             {"messages": [HumanMessage(content="go")]}
         )
 
@@ -813,7 +894,7 @@ def test_every_abandoned_attempt_reports_itself() -> None:
         errors=(httpx.RemoteProtocolError("peer closed connection"),),
     )
 
-    for chunk in _subgraph(model, announce_turns=False, model_retries=2).stream(
+    for chunk in _subgraph(model, announce_turns=False, model_call_retries=2).stream(
         {"messages": [HumanMessage(content="go")]}, stream_mode="custom"
     ):
         if "model_retry" in chunk:
@@ -835,7 +916,7 @@ def test_a_budget_that_runs_out_says_it_gave_up() -> None:
 
     reports: list[dict[str, Any]] = []
     with pytest.raises(ValueError, match="malformed request"):
-        for chunk in _subgraph(model, announce_turns=False, model_retries=2).stream(
+        for chunk in _subgraph(model, announce_turns=False, model_call_retries=2).stream(
             {"messages": [HumanMessage(content="go")]}, stream_mode="custom"
         ):
             if "model_retry" in chunk:
@@ -858,7 +939,7 @@ def test_agent_retries_a_stalled_stream() -> None:
         errors=(httpx.ReadTimeout("too slow"),),
     )
 
-    result = _subgraph(model, announce_turns=False, model_retries=2).invoke(
+    result = _subgraph(model, announce_turns=False, model_call_retries=2).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
@@ -878,7 +959,7 @@ def test_agent_does_not_retry_an_ineligible_failure(error: Exception) -> None:
     model = _FlakyChatModel(responses=(AIMessage(content="done"),), errors=(error,))
 
     with pytest.raises(type(error), match=str(error)):
-        _subgraph(model, announce_turns=False, model_retries=2).invoke(
+        _subgraph(model, announce_turns=False, model_call_retries=2).invoke(
             {"messages": [HumanMessage(content="go")]}
         )
 
@@ -894,7 +975,7 @@ def test_agent_retries_are_bounded() -> None:
     )
 
     with pytest.raises(httpx.RemoteProtocolError):
-        _subgraph(model, announce_turns=False, model_retries=1).invoke(
+        _subgraph(model, announce_turns=False, model_call_retries=1).invoke(
             {"messages": [HumanMessage(content="go")]}
         )
 
@@ -905,7 +986,7 @@ def test_agent_rejects_a_negative_retry_count() -> None:
     model = ScriptedChatModel(responses=(AIMessage(content="done"),))
 
     with pytest.raises(ValueError, match="max_retries must be >= 0"):
-        _subgraph(model, model_retries=-1)
+        _subgraph(model, model_call_retries=-1)
 
 
 def _broken_tool(error: Exception) -> BaseTool:
@@ -1573,7 +1654,7 @@ def test_a_length_truncated_answer_earns_the_length_correction() -> None:
     )
 
     # No tools, so the turn had nothing to do but answer.
-    _subgraph(model, tools=(), announce_turns=False, model_retries=1).invoke(
+    _subgraph(model, tools=(), announce_turns=False, model_call_retries=1).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
@@ -1596,7 +1677,7 @@ def test_final_turn_retry_sees_the_tools_removed_by_the_budget() -> None:
     result = _subgraph(
         model,
         max_turns=1,
-        model_retries=1,
+        model_call_retries=1,
         output_schema=_Answer,
         response_format_strategy="tool",
     ).invoke({"messages": [HumanMessage(content="go")]})
@@ -1619,7 +1700,7 @@ def test_a_working_turn_that_ran_long_is_not_told_to_stop_using_tools() -> None:
         responses=(_empty("length"), AIMessage(content="done")),
     )
 
-    _subgraph(model, announce_turns=False, model_retries=1).invoke(
+    _subgraph(model, announce_turns=False, model_call_retries=1).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
@@ -1640,7 +1721,7 @@ def test_a_tool_call_cut_off_by_the_limit_is_told_to_write_in_pieces() -> None:
     }
     model = ScriptedChatModel(responses=(cut_off, AIMessage(content="done")))
 
-    _subgraph(model, announce_turns=False, model_retries=1).invoke(
+    _subgraph(model, announce_turns=False, model_call_retries=1).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
@@ -1658,7 +1739,7 @@ def test_an_empty_answer_earns_a_retry_notice_without_replaying_it() -> None:
         responses=(_empty("stop"), AIMessage(content="done")),
     )
 
-    _subgraph(model, announce_turns=False, model_retries=1).invoke(
+    _subgraph(model, announce_turns=False, model_call_retries=1).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 

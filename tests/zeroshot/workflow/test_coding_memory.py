@@ -345,7 +345,7 @@ def test_stage_flag_and_new_round_baseline_and_validation_instruction(setup, fre
             model=model,
             max_turns=4,
             reset_turns_when_reentrant=False,
-            model_retries=0,
+            model_call_retries=0,
         ),
         tools,
         None,
@@ -468,7 +468,7 @@ def test_retry_feedback_and_shared_budget_are_retained(setup, failure):
         output_schema=TicketAnswers,
         response_format_strategy="provider",
         max_turns=1,
-        model_retries=1,
+        model_call_retries=1,
         extra_middleware=[middleware],
         output_limit_budget=budget,
     ).invoke({"messages": [AIMessage(content="stale judgment"), checkpoint]})
@@ -502,7 +502,7 @@ def test_fresh_coder_stops_at_the_existing_output_limit_cap(setup):
         tools,
         output_schema=TicketAnswers,
         max_turns=1,
-        model_retries=5,
+        model_call_retries=5,
         extra_middleware=[middleware],
         output_limit_budget=budget,
     )

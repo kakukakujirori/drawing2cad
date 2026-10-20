@@ -108,6 +108,7 @@ class CodingStage:
             {
                 **previous,
                 "messages": messages,
+                "retry": retry,
             },
             config=_child_graph_config(config),
         )

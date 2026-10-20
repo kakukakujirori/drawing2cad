@@ -271,7 +271,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
                 # is an experiment, not a test failure.
                 "workflow.coding_agent_builder.max_turns=5",
                 "workflow.coding_agent_builder.announce_turns=true",
-                "workflow.coding_agent_builder.model_retries=1",
+                "workflow.coding_agent_builder.model_call_retries=1",
             ],
         )
 
@@ -312,7 +312,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert ROLE_PATHS[coder.keywords["role"]].is_file()
     assert coder.keywords["max_turns"] == 5
     assert coder.keywords["announce_turns"] is True
-    assert coder.keywords["model_retries"] == 1
+    assert coder.keywords["model_call_retries"] == 1
     # `model: ${model}` follows the run, so one override still swaps every
     # agent that did not ask for a backend of its own.
     coder_model = coder.keywords["model"]

@@ -208,7 +208,7 @@ def test_write_validate_review_rewrite_and_confirm_only_current_attempt(strategy
             output_schema=AuditSubmission,
             response_format_strategy=strategy,
             max_turns=8,
-            model_retries=1,
+            model_call_retries=1,
             announce_turns=False,
             checkpointer=False,
             extra_middleware=[middleware],

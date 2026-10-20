@@ -38,6 +38,7 @@ from zeroshot.pipeline.workflow.lifecycle import (
     save_reconstruction,
     start_reconstruction,
 )
+from zeroshot.pipeline.workflow.middleware import StopReason
 from zeroshot.pipeline.workflow.middleware.output_limit_budget import OutputLimitBudget
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
@@ -234,6 +235,15 @@ def create_reconstruction_graph(
             "stage_submission": None,
         }
 
+    def _unanswered(agent_state: Mapping[str, Any] | None, error: str) -> str:
+        """The refusal for an agent that stopped without an answer."""
+        if (agent_state or {}).get("stop_reason") is StopReason.BUDGET_EXHAUSTED:
+            return (
+                f"{error} before the turn budget ran out. "
+                "Finish with what you have so far."
+            )
+        return error
+
     def _workspace_output() -> CodingOutput:
         """The verified files the coder left: its reading and the build of its program."""
         workspace = coding_stage.workspace
@@ -252,7 +262,10 @@ def create_reconstruction_graph(
         if not isinstance(submission, TicketAnswers):
             return _rejected_stage_submission(
                 state,
-                "the reasoning stage did not return its ticket answers",
+                _unanswered(
+                    state.get("coding_state"),
+                    "the reasoning stage did not return its ticket answers",
+                ),
             )
 
         reconstruction = state.get("reconstruction")
@@ -305,7 +318,11 @@ def create_reconstruction_graph(
         ):
             return _validation_failure(
                 state,
-                "the auditor did not finish a validated audit report file with AuditSubmission",
+                _unanswered(
+                    state.get("audit_state"),
+                    "the auditor did not finish a validated audit report file "
+                    "with AuditSubmission",
+                ),
             )
         try:
             validate_submission(report, current_snapshot(state))

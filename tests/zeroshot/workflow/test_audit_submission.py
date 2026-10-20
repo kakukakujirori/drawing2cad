@@ -43,7 +43,7 @@ def _agent(
     strategy: str,
     *,
     tools: list[BaseTool] | None = None,
-    model_retries: int = 1,
+    model_call_retries: int = 1,
 ):
     return create_agent(
         role="output_auditor",
@@ -53,7 +53,7 @@ def _agent(
         response_format_strategy=strategy,  # type: ignore[arg-type]
         max_turns=5,
         announce_turns=False,
-        model_retries=model_retries,
+        model_call_retries=model_call_retries,
         checkpointer=False,
         extra_middleware=[VerifyOnSubmitMiddleware(validate_audit_report)],
     )

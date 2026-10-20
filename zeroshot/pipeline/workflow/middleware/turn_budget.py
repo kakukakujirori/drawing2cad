@@ -2,7 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from enum import Enum
-from typing import Any, NotRequired, override
+from typing import Any, NotRequired, cast, override
 
 from langchain.agents import AgentState as _AgentState
 from langchain.agents.middleware import (
@@ -26,6 +26,8 @@ class TurnBudgetState(_AgentState[Any]):
     current_turn: NotRequired[int]
     total_turns: NotRequired[int]
     stop_reason: NotRequired[StopReason | None]
+    # Set by the caller when it re-asks for an answer it refused.
+    retry: NotRequired[bool]
 
 
 class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
@@ -39,13 +41,17 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
     def __init__(
         self,
         max_turns: int,
+        retry_turns: int | None = None,
         announce_turns: bool = True,
         reset_turns_when_reentrant: bool = True,
     ) -> None:
         super().__init__()
         if max_turns < 1:
             raise ValueError("max_turns must be at least 1")
+        if retry_turns is not None and retry_turns < 1:
+            raise ValueError("retry_turns must be at least 1")
         self.max_turns = max_turns
+        self.retry_turns = retry_turns
         self.announce_turns = announce_turns
         self.reset_turns_when_reentrant = reset_turns_when_reentrant
 
@@ -62,8 +68,26 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         """
         del runtime
         update: dict[str, Any] = {"stop_reason": None}
+        turns = state.get("current_turn", 0)
+        if state.get("retry") and self.retry_turns is not None:
+            # A retry corrects the refused answer rather than redoing the work:
+            # it keeps the count, set back only as far as leaves `retry_turns`.
+            resumed = min(turns, max(0, self.max_turns - self.retry_turns))
+            if resumed < turns:
+                update |= {
+                    "messages": [
+                        HumanMessage(
+                            content=(
+                                f"[turn set back to {resumed}/{self.max_turns} "
+                                "to correct the refused answer]"
+                            )
+                        )
+                    ],
+                    "current_turn": resumed,
+                }
+            return update
         # `current_turn > 0` checks that this is 're'entrant
-        if self.reset_turns_when_reentrant and state.get("current_turn", 0) > 0:
+        if self.reset_turns_when_reentrant and turns > 0:
             update |= {
                 "messages": [
                     HumanMessage(content=f"[turn reset to 0/{self.max_turns}]")
@@ -122,7 +146,8 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         The announcement states the same boundary. The answer contract is
         bound separately from the ordinary tools, so it survives.
         """
-        if request.state.get("current_turn", 0) < self.max_turns - 1:
+        turns = cast(TurnBudgetState, request.state).get("current_turn", 0)
+        if turns < self.max_turns - 1:
             return request
         return request.override(tools=[])
 

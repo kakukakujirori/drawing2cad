@@ -276,7 +276,7 @@ def build_agent(
         ToolErrorMiddleware(on_error=_handle_tool_error),
         PromptLogMiddleware(settings.role),
         ModelCallRetryMiddleware(
-            max_retries=settings.get("model_retries", 5), role=settings.role
+            max_retries=settings.get("model_call_retries", 5), role=settings.role
         ),
         StatelessReasoningMiddleware(),
     ]

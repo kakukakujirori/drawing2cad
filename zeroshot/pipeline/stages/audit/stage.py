@@ -50,7 +50,8 @@ class AuditStage:
         verification = snapshot.verification
         if verification is None:
             raise RuntimeError("audit requires verification")
-        if state.get("stage_validation_error") is None:
+        retry = state.get("stage_validation_error") is not None
+        if not retry:
             self.audit_verifier.reset(snapshot)
             self.middleware.reset()
             self.dismissal_check.reset()
@@ -90,6 +91,7 @@ class AuditStage:
                     *list(previous.get("messages") or []),
                     instruction,
                 ],
+                "retry": retry,
             },
             config=_child_graph_config(config),
         )

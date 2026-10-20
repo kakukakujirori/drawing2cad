@@ -168,7 +168,7 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
             "coding_agent_builder": {
                 "role": "coder",
                 "model": "${model}",
-                "model_retries": 0,
+                "model_call_retries": 0,
             },
         },
         "sandbox_runner": {
