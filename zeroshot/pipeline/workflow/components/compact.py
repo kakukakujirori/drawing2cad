@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from functools import partial
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import create_text_block
 from langchain_core.runnables import RunnableConfig
 from openai import LengthFinishReasonError
@@ -17,6 +17,26 @@ from zeroshot.pipeline.workflow.middleware.connection_retry import (
 
 class InvalidCompactionSummary(ValueError):
     """A summary that cannot safely replace the original conversation."""
+
+
+def compaction_model(
+    model: BaseChatModel, max_tokens: int | None = None
+) -> BaseChatModel:
+    """The model that writes the notes, its output capped at `max_tokens`.
+
+    A model whose own max_tokens is lower or unset keeps it; None leaves the
+    model as it is.
+    """
+    if max_tokens is None:
+        return model
+    if max_tokens < 1:
+        raise ValueError(f"{max_tokens=} must be positive")
+    if "max_tokens" not in type(model).model_fields:
+        raise ValueError(f"{type(model).__name__} has no max_tokens to cap")
+    own = getattr(model, "max_tokens", None)
+    if own is None or own <= max_tokens:
+        return model
+    return model.model_copy(update={"max_tokens": max_tokens})
 
 
 COMPACTION_INSTRUCTION = """\
@@ -57,6 +77,30 @@ from the notes as you would have worked from the turns they stand for.
 {notes}
 </summary>
 """
+
+
+_SECTIONS = ("## OBJECTIVE", "## FINDINGS", "## WORK DONE", "## OPEN QUESTIONS")
+
+
+def _extract_summary_from_reasoning(message: AIMessage) -> str:
+    """Notes delivered in the reasoning channel, the reply left empty.
+
+    Taken only when the reasoning is the notes alone: it opens with the first
+    section, holds it once, and has every section. Thinking before a draft, or
+    a second draft, is no summary.
+    """
+    blocks = message.content if isinstance(message.content, list) else []
+    reasoning = "".join(
+        block.get("reasoning", "")
+        for block in blocks
+        if isinstance(block, dict) and block.get("type") == "reasoning"
+    ) or str(message.additional_kwargs.get("reasoning_content") or "")
+    notes = reasoning.strip()
+    if not notes.startswith(_SECTIONS[0]) or notes.count(_SECTIONS[0]) != 1:
+        return ""
+    if any(section not in notes for section in _SECTIONS[1:]):
+        return ""
+    return notes
 
 
 def _past_answers_to_earlier_calls(transcript: Sequence[AnyMessage], index: int) -> int:
@@ -126,7 +170,7 @@ def compact_transcript(
                     config=config,
                 )
             )
-            summary = notes.text.strip()
+            summary = notes.text.strip() or _extract_summary_from_reasoning(notes)
             metadata = notes.response_metadata
             if metadata.get("finish_reason") in {
                 "length",

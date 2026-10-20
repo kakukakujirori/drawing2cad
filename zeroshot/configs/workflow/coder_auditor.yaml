@@ -77,7 +77,12 @@ workflow:
 
   # The coder's transcript is compacted before audit when another round may
   # follow, so that round starts from notes rather than raw turns.
-  compact_between_stages: ${model}
+  compact_between_stages:
+    _target_: zeroshot.pipeline.workflow.components.compact.compaction_model
+    model: ${model}
+    # At most this many output tokens for the notes, leaving the rest of the
+    # context window to the transcript. A lower or unset model max_tokens stays.
+    max_tokens: 32000
 
   # How many rejected audits may open a fresh round.
   max_audit_reject_count: 1

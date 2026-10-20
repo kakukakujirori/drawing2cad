@@ -368,3 +368,79 @@ def test_compaction_keeps_rejections_open_rather_than_settled() -> None:
     assert "Do not list rejected alternatives here" in findings
     assert "List each rejected alternative here" in open_questions
     assert "artifact paths" in open_questions
+
+
+_NOTES = "## OBJECTIVE\nrebuild\n## FINDINGS\n100mm\n## WORK DONE\nfit\n## OPEN QUESTIONS\nNone"
+
+
+def _reasoned(reasoning: str) -> ScriptedChatModel:
+    """A reply left empty, whatever it wrote put in the reasoning."""
+    return ScriptedChatModel(
+        responses=(AIMessage(content=[{"type": "reasoning", "reasoning": reasoning}]),)
+    )
+
+
+def test_notes_delivered_in_the_reasoning_are_taken() -> None:
+    (summary,) = compact_transcript(
+        _worked_transcript(), model=_reasoned(f"\n{_NOTES}\n")
+    )
+
+    assert summary.text == SUMMARY_PREAMBLE.format(notes=_NOTES)
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        pytest.param(
+            f"Let me summarise first.\n{_NOTES}", id="thinking-before-a-draft"
+        ),
+        pytest.param(f"{_NOTES}\n\nRevised:\n{_NOTES}", id="second-draft"),
+        pytest.param(_NOTES.split("## OPEN QUESTIONS")[0], id="missing-section"),
+    ],
+)
+def test_reasoning_that_is_more_or_less_than_the_notes_is_no_summary(
+    reasoning: str,
+) -> None:
+    with pytest.raises(InvalidCompactionSummary, match="empty"):
+        compact_transcript(
+            _worked_transcript(), model=_reasoned(reasoning), max_retries=0
+        )
+
+
+def test_the_sections_looked_for_are_the_ones_asked_for() -> None:
+    from zeroshot.pipeline.workflow.components.compact import _SECTIONS
+
+    assert all(f"\n{section}\n" in COMPACTION_INSTRUCTION for section in _SECTIONS)
+
+
+def test_the_compaction_model_is_capped_at_max_tokens() -> None:
+    from langchain_openrouter import ChatOpenRouter
+
+    from zeroshot.pipeline.workflow.components.compact import compaction_model
+
+    def model(max_tokens: int | None) -> ChatOpenRouter:
+        return ChatOpenRouter(
+            model="z-ai/glm", api_key="test-key", max_tokens=max_tokens
+        )
+
+    large, small, unset = model(60_000), model(4_000), model(None)
+
+    capped = compaction_model(large, max_tokens=32_000)
+    assert isinstance(capped, ChatOpenRouter)
+    assert capped.max_tokens == 32_000
+    assert large.max_tokens == 60_000
+    assert compaction_model(small, max_tokens=32_000) is small
+    assert compaction_model(unset, max_tokens=32_000) is unset
+    assert compaction_model(large) is large
+
+
+def test_a_cap_must_be_positive_and_applicable() -> None:
+    from langchain_openrouter import ChatOpenRouter
+
+    from zeroshot.pipeline.workflow.components.compact import compaction_model
+
+    model = ChatOpenRouter(model="z-ai/glm", api_key="test-key", max_tokens=60_000)
+    with pytest.raises(ValueError, match="positive"):
+        compaction_model(model, max_tokens=0)
+    with pytest.raises(ValueError, match="no max_tokens"):
+        compaction_model(ScriptedChatModel(responses=()), max_tokens=100)

@@ -731,7 +731,9 @@ def test_an_agent_out_of_turns_is_told_so_and_retried_with_its_retry_turns(
             auditor_options=options,
             max_audit_reject_count=0 if role == "coder" else 1,
         )
-        result = graph.invoke({} if role == "coder" else {"reconstruction": _coded_seed()})
+        result = graph.invoke(
+            {} if role == "coder" else {"reconstruction": _coded_seed()}
+        )
 
     retry = [message.text for message in agent.received_messages[2]]
     assert "before the turn budget ran out" in retry[-2]

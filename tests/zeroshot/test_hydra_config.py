@@ -331,6 +331,27 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert "agent" not in config
 
 
+def test_compaction_follows_the_run_model_under_its_own_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()), version_base="1.3"
+    ):
+        config = compose(
+            config_name="default",
+            overrides=["model=glm5.3_flash_openrouter", "model.temperature=0.5"],
+        )
+
+    note_taker = instantiate(config.workflow).keywords["compact_between_stages"]
+
+    assert isinstance(note_taker, ChatOpenRouter)
+    assert config.model.max_tokens == 60000
+    assert note_taker.max_tokens == config.workflow.compact_between_stages.max_tokens
+    assert note_taker.max_tokens == 32000
+    assert note_taker.temperature == 0.5
+
+
 @pytest.mark.parametrize(
     "flag",
     [
