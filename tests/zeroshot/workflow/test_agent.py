@@ -859,9 +859,9 @@ def test_async_dropped_stream_does_not_spend_a_correction() -> None:
     )
 
     async def invoke() -> Any:
-        return await _subgraph(model, announce_turns=False, model_call_retries=1).ainvoke(
-            {"messages": [HumanMessage(content="go")]}
-        )
+        return await _subgraph(
+            model, announce_turns=False, model_call_retries=1
+        ).ainvoke({"messages": [HumanMessage(content="go")]})
 
     result = asyncio.run(invoke())
 
@@ -916,9 +916,9 @@ def test_a_budget_that_runs_out_says_it_gave_up() -> None:
 
     reports: list[dict[str, Any]] = []
     with pytest.raises(ValueError, match="malformed request"):
-        for chunk in _subgraph(model, announce_turns=False, model_call_retries=2).stream(
-            {"messages": [HumanMessage(content="go")]}, stream_mode="custom"
-        ):
+        for chunk in _subgraph(
+            model, announce_turns=False, model_call_retries=2
+        ).stream({"messages": [HumanMessage(content="go")]}, stream_mode="custom"):
             if "model_retry" in chunk:
                 reports.append(chunk["model_retry"])
 
@@ -1454,7 +1454,7 @@ def test_refused_text_answers_spend_the_turn_budget(tmp_path: Path) -> None:
 
     result = graph.invoke({"messages": [HumanMessage(content="go")]})
 
-    assert "structured_response" not in result
+    assert result.get("structured_response") is None
     assert result["current_turn"] == 3
     assert result["stop_reason"] == StopReason.BUDGET_EXHAUSTED
 

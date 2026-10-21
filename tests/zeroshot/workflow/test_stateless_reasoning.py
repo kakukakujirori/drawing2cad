@@ -156,12 +156,11 @@ def test_original_messages_are_not_mutated() -> None:
 
 
 def test_no_bare_reasoning_id_reaches_the_wire() -> None:
-    """The end this exists for: the 404 the backend would otherwise raise."""
-    sent = _construct_responses_api_input(conversation(""), store=False)
-    assert [item["id"] for item in sent if item.get("type") == "reasoning"] == [
-        "rs_abc"
-    ], "precondition: langchain replays the bare id"
+    """The end this exists for: the 404 the backend would otherwise raise.
 
+    Some langchain-openai versions replay the bare id and others drop it;
+    either way none reaches the wire.
+    """
     guarded = _construct_responses_api_input(
         run(conversation(""), store=False), store=False
     )

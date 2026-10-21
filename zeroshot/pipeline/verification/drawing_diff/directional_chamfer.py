@@ -515,6 +515,10 @@ def grid_search(objective: Objective, target: np.ndarray) -> list[np.ndarray]:
             cells = np.rint(offsets - corner).astype(int)
             shape = cells.max(axis=0)[::-1] + 1
             th, tw = shape
+            # A template far larger than the drawing cannot match it, and
+            # correlating one that large can crash OpenCV.
+            if max(th, tw) > 2 * max(losses[0].shape):
+                continue
             score = None
             for loss, weight in zip(losses, weights, strict=True):
                 template = np.zeros(shape, np.float32)
@@ -541,6 +545,8 @@ def grid_search(objective: Objective, target: np.ndarray) -> list[np.ndarray]:
             found.append(
                 (score[y, x], np.array([tx[y, x], ty[y, x], log_scale, theta]))
             )
+    if not found:
+        raise ValueError("the projection fits the drawing at no allowed scale")
     found.sort(key=lambda item: item[0])
     return [params for _, params in found[:_COARSE_KEPT]]
 

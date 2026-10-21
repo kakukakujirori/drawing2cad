@@ -264,3 +264,21 @@ def test_rgb_loader_composites_alpha_without_exif_rotation(tmp_path):
         loaded, [[[255, 0, 0], [255, 255, 255], [127, 127, 255]]]
     )
     assert loaded.dtype == np.uint8
+
+
+def test_grid_search_skips_templates_far_larger_than_the_drawing():
+    target = np.zeros((40, 40), bool)
+    target[10:30, 10:30] = True
+    points = np.column_stack([np.linspace(0, 200, 50), np.full(50, 20.0)])
+    objective = SimpleNamespace(
+        cfg=chamfer.Config(),
+        weights=np.ones(len(points)),
+        target_outline=None,
+        visible_points=points,
+        center=points.mean(axis=0),
+        Ls=1.0,
+        Lt=40.0,
+    )
+
+    with pytest.raises(ValueError, match="no allowed scale"):
+        chamfer.grid_search(objective, target)
