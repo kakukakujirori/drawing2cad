@@ -10,8 +10,8 @@ It also states the input config's `sample.drawing.projection_method` in the same
 `describe_placement`), so both arms read a drawing under one convention. A test
 fails if the staged pipeline's wording of that section changes without this one.
 Only `run_shell` and `load_image` are exposed. The agent chooses its own workflow;
-there is no auditor, verifier, structured submission, compaction, or
-answer-correction retry. An ordinary final answer ends generation. A missing,
+there is no auditor, verifier, structured submission, compaction, or answer
+validation. An ordinary final answer ends generation. A missing,
 empty, or symlinked `model.py` is recorded as failure without asking again.
 `max_turns` (150 in `native.yaml`) caps model calls: past it,
 generation stops, `run_completed` carries `status: turn_limit_exceeded`, a
@@ -21,7 +21,18 @@ is requested.
 The existing sandbox, two tools, OpenRouter and direct Claude adapters, and stateless-reasoning
 middleware are reused unchanged. The native runner and logging remain separate.
 The native agent installs the stateless guard, tool-error handling, and `ConnectionRetryMiddleware`
-to retry transport failures (dropped streams, timeouts, HTTP 429/5xx) with backoff (`model_retries`, default 5).
+to retry transport failures (dropped streams, timeouts, HTTP 429/5xx) and responses
+with `finish_reason=error` with backoff (`model_retries`, default 5).
+Generator responses with `finish_reason=length` are retried with one sentence:
+"Your response reached the output limit; save your best current CadQuery model
+to /work/model.py now, then finish." The retry uses the history before the
+truncated response; repeated truncations do not accumulate reminders. These
+retries share `model_retries` with transport failures and still count toward
+`max_turns`. Retrospective calls retry errors but receive no model-submission
+reminder on output limits.
+The submission reminder is supplied by the runner. Each `model_retry` log records
+`request_adjusted`; when a reminder is added, `retry_prompt` records its exact text.
+The reminder belongs to the retry request, not the saved final conversation.
 No new dependencies are required.
 
 After generation is saved, the runner asks the same model once for a chronological

@@ -48,6 +48,10 @@ from zeroshot.pipeline_native.turn_limit import (
 _PROMPT = Path(__file__).parent / "prompts" / "generator.md"
 _RETROSPECTIVE_PROMPT = _PROMPT.with_name("retrospective.md")
 _ON_EXISTING = ("fail", "skip", "retry")
+_LENGTH_RETRY_PROMPT = (
+    "Your response reached the output limit; save your best current CadQuery "
+    "model to /work/model.py now, then finish."
+)
 
 
 def _basename(value: str) -> str:
@@ -257,7 +261,9 @@ def run(
                     middleware=[
                         ToolErrorMiddleware(on_error=_tool_error),
                         ConnectionRetryMiddleware(
-                            max_retries=model_retries, role="generator"
+                            max_retries=model_retries,
+                            role="generator",
+                            length_retry_prompt=_LENGTH_RETRY_PROMPT,
                         ),
                         StatelessReasoningMiddleware(),
                         turn_limit,
