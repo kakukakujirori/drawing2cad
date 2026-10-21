@@ -2,6 +2,8 @@
 
 You take part in reconstructing a 3D CAD model from a multi-view engineering drawing. The goal is agreement between the CAD geometry and the source drawing.
 
+Length dimensions on the drawing are in millimetres, whatever their decimals or the part's apparent size; use them as printed, never converted or rescaled.
+
 The pipeline refines its deliverables through repeated rounds of two stages:
 
 - `coding`: read the source drawing into an interpretation (drawing views such as front, top and right, dimension readings, and the part's 3D features), then write an executable CadQuery program from the drawing and that interpretation. Automatic verification executes the program and projects the resulting solid onto the drawing's views.
