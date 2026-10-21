@@ -3,9 +3,14 @@
 import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
 from langchain.agents.middleware import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage
+from openrouter.errors.badrequestresponse_error import (
+    BadRequestResponseError,
+    BadRequestResponseErrorData,
+)
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.pipeline_native.test_native import _config, _events
@@ -158,3 +163,26 @@ def test_native_response_retries_still_count_toward_the_turn_limit(tmp_path):
     assert result["status"] == "turn_limit_exceeded"
     assert len(model.received_messages) == 2
     assert any(event["event"] == "turn_limit_exceeded" for event in _events(config))
+
+
+def test_a_refused_request_is_logged_with_what_the_provider_said(caplog):
+    said = {"provider_name": "InferenceNet", "raw": "context length exceeded"}
+    data = BadRequestResponseErrorData.model_validate(
+        {"error": {"code": 400, "message": "Provider returned error", "metadata": said}}
+    )
+    error = BadRequestResponseError(data, httpx.Response(400))
+
+    def refuse(_request):
+        raise error
+
+    request = ModelRequest(
+        model=ScriptedChatModel(responses=()),
+        messages=[HumanMessage(content="Build the model.")],
+    )
+    with pytest.raises(BadRequestResponseError):
+        ConnectionRetryMiddleware(max_retries=1).wrap_model_call(request, refuse)
+
+    retry = caplog.records[-1].args
+    assert retry["retrying"] is False
+    assert retry["status_code"] == 400
+    assert retry["provider_error"] == said

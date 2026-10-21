@@ -15,6 +15,7 @@ from langchain_core.messages import HumanMessage
 from zeroshot.pipeline.workflow.middleware.connection_retry import (
     _backoff_delay,
     is_retryable_model_error,
+    report_model_retry,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,20 +80,24 @@ class ConnectionRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
             and isinstance(error, ModelResponseError)
             and error.finish_reason == "length"
         )
-        payload: dict[str, Any] = {
-            "role": self.role,
-            "attempt": attempt + 1,
-            "max_attempts": self.max_retries + 1,
-            "error_type": type(error).__qualname__,
-            "error": str(error)[:500],
-            "retrying": retrying,
-            "request_adjusted": request_adjusted,
-        }
+        details: dict[str, object] = {}
         if isinstance(error, ModelResponseError):
-            payload["finish_reason"] = error.finish_reason
+            details["finish_reason"] = error.finish_reason
         if request_adjusted:
-            payload["retry_prompt"] = self.length_retry_prompt
-        logger.warning("model_retry: %s", payload)
+            details["retry_prompt"] = self.length_retry_prompt
+        report_model_retry(
+            error,
+            role=self.role,
+            attempt=attempt,
+            max_retries=self.max_retries,
+            retrying=retrying,
+            adjusted=request_adjusted,
+            details=details,
+            # The native event log records no custom stream events.
+            stream_writer=lambda event: logger.warning(
+                "model_retry: %s", event["model_retry"]
+            ),
+        )
         return retrying
 
     @override

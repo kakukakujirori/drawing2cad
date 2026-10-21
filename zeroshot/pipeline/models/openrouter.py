@@ -17,6 +17,8 @@ of `"unknown"` in a single transcript, replayed on every later request.
 single merged entry this produces, so it does not reach either problem here.
 """
 
+import logging
+import re
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from typing import Any, override
 
@@ -30,9 +32,12 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_openrouter.chat_models import ChatOpenRouter as _ChatOpenRouter
+from openrouter.errors import OpenRouterError
 from pydantic import BaseModel, Field
 
 from .image_history import trim_image_history
+
+logger = logging.getLogger(__name__)
 
 # Constant across a block's deltas, and concatenated by the chunk merge because
 # it is a string the merge has no exemption for. `type` is already exempt in
@@ -41,6 +46,17 @@ _CONSTANT_DETAIL_FIELDS = ("format", "signature", "provider", "model")
 
 # Enough to name the field; a request holding an image must not be printed.
 _SUSPECT_LIMIT = 20
+
+# How a provider refuses input plus max_tokens beyond its context, which can be
+# smaller than the one OpenRouter lists for the model.
+_CONTEXT_EXCEEDED = re.compile(
+    r"maximum context length of (\d+) tokens\. You requested a total of \d+ "
+    r"tokens: (\d+) tokens from the input messages"
+)
+# A provider may refuse a total equal to its context, so some is left spare.
+_SPARE_CONTEXT_TOKENS = 1024
+# Less room to answer than this would cut most turns short.
+_MIN_FITTED_MAX_TOKENS = 8192
 
 
 def _thin_reasoning_details(details: Any, kept: set[Any]) -> None:
@@ -136,7 +152,9 @@ class ChatOpenRouter(_ChatOpenRouter):
     ) -> Iterator[ChatGenerationChunk]:
         kept: set[Any] = set()
         try:
-            for chunk in super()._stream(messages, stop, run_manager, **kwargs):
+            for chunk in self._stream_within_context(
+                messages, stop, run_manager, **kwargs
+            ):
                 _thin_chunk(chunk, kept)
                 yield chunk
         except ValueError as error:
@@ -152,11 +170,60 @@ class ChatOpenRouter(_ChatOpenRouter):
     ) -> AsyncIterator[ChatGenerationChunk]:
         kept: set[Any] = set()
         try:
-            async for chunk in super()._astream(messages, stop, run_manager, **kwargs):
+            async for chunk in self._astream_within_context(
+                messages, stop, run_manager, **kwargs
+            ):
                 _thin_chunk(chunk, kept)
                 yield chunk
         except ValueError as error:
             raise self._named(error, messages, stop) from error
+
+    def _stream_within_context(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None,
+        run_manager: CallbackManagerForLLMRun | None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        """Send again with less room to answer if the provider's context refused it.
+
+        The refusal comes before any chunk, so nothing has been yielded yet.
+        """
+        try:
+            chunks = super()._stream(messages, stop, run_manager, **kwargs)
+            first = next(chunks, None)
+        except OpenRouterError as error:
+            if (max_tokens := _fitted_max_tokens(error)) is None:
+                raise
+            chunks = super()._stream(
+                messages, stop, run_manager, **{**kwargs, "max_tokens": max_tokens}
+            )
+            first = next(chunks, None)
+        if first is not None:
+            yield first
+        yield from chunks
+
+    async def _astream_within_context(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None,
+        run_manager: AsyncCallbackManagerForLLMRun | None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        try:
+            chunks = super()._astream(messages, stop, run_manager, **kwargs)
+            first = await anext(chunks, None)
+        except OpenRouterError as error:
+            if (max_tokens := _fitted_max_tokens(error)) is None:
+                raise
+            chunks = super()._astream(
+                messages, stop, run_manager, **{**kwargs, "max_tokens": max_tokens}
+            )
+            first = await anext(chunks, None)
+        if first is not None:
+            yield first
+        async for chunk in chunks:
+            yield chunk
 
     def _named(
         self,
@@ -200,6 +267,18 @@ class ChatOpenRouter(_ChatOpenRouter):
                 ):
                     message_dict["content"] = _tool_result_text(content, 0)
         return _lift_tool_images(message_dicts), params
+
+
+def _fitted_max_tokens(error: OpenRouterError) -> int | None:
+    """The max_tokens that fits a request refused for its context, if worth it."""
+    found = _CONTEXT_EXCEEDED.search(error.body) if error.status_code == 400 else None
+    if found is None:
+        return None
+    max_tokens = int(found[1]) - int(found[2]) - _SPARE_CONTEXT_TOKENS
+    if max_tokens < _MIN_FITTED_MAX_TOKENS:
+        return None
+    logger.warning("max_tokens lowered to %d to fit: %s", max_tokens, found[0])
+    return max_tokens
 
 
 def _thin_chunk(chunk: ChatGenerationChunk, kept: set[Any]) -> None:

@@ -1,6 +1,8 @@
+import asyncio
 import json
 from typing import Any
 
+import httpx
 import pytest
 from langchain_core.messages import (
     AIMessage,
@@ -14,6 +16,7 @@ from langchain_core.messages.content import (
     create_text_block,
 )
 from langchain_core.outputs import ChatGenerationChunk
+from openrouter.errors import OpenRouterError
 from pydantic import BaseModel
 
 from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
@@ -469,3 +472,115 @@ def test_image_cap_keeps_input_drawings_and_the_newest_images():
 def test_image_cap_requires_a_positive_integer(limit):
     with pytest.raises(ValueError, match="image_history_limit"):
         ChatOpenRouter(model="test", api_key="EMPTY", image_history_limit=limit)
+
+
+def _refusal(input_tokens: int) -> str:
+    """An InferenceNet refusal as OpenRouter relays it."""
+    total = input_tokens + 60000
+    said = (
+        "Requested token count exceeds the model's maximum context length of 327680"
+        f" tokens. You requested a total of {total} tokens: {input_tokens} tokens"
+        " from the input messages and 60000 tokens for the completion."
+    )
+    raw = json.dumps({"error": {"message": f"non-200 status code returned: {said}"}})
+    return json.dumps(
+        {
+            "error": {
+                "code": 400,
+                "message": "Provider returned error",
+                "metadata": {"provider_name": "InferenceNet", "raw": raw},
+            }
+        }
+    )
+
+
+_ANSWER = (
+    "data: "
+    + json.dumps(
+        {
+            "id": "gen",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "test",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": "done"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
+    + "\n\ndata: [DONE]\n\n"
+)
+
+
+def _served(refusals: int, body: str) -> tuple[Any, list[Any]]:
+    """A model whose first `refusals` requests get `body` back; later ones an answer.
+
+    Returns the max_tokens of each request as it went out.
+    """
+    sent: list[Any] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content).get("max_tokens"))
+        if len(sent) <= refusals:
+            return httpx.Response(
+                400, text=body, headers={"content-type": "application/json"}
+            )
+        return httpx.Response(
+            200, text=_ANSWER, headers={"content-type": "text/event-stream"}
+        )
+
+    model = ChatOpenRouter(model="test", api_key="EMPTY", max_tokens=60000)
+    transport = httpx.MockTransport(respond)
+    model.client.sdk_configuration.client = httpx.Client(transport=transport)
+    model.client.sdk_configuration.async_client = httpx.AsyncClient(transport=transport)
+    return model, sent
+
+
+def _stream_all(model: Any, asynchronous: bool) -> str:
+    messages = [HumanMessage(content="Build the model.")]
+    if not asynchronous:
+        return "".join(chunk.text for chunk in model.stream(messages))
+
+    async def collect() -> str:
+        return "".join([chunk.text async for chunk in model.astream(messages)])
+
+    return asyncio.run(collect())
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_a_request_beyond_the_providers_context_is_sent_again_to_fit(
+    asynchronous: bool,
+) -> None:
+    model, sent = _served(1, _refusal(273580))
+
+    assert _stream_all(model, asynchronous) == "done"
+    assert sent == [60000, 327680 - 273580 - 1024]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_a_request_refused_again_is_raised_after_the_second_send(
+    asynchronous: bool,
+) -> None:
+    model, sent = _served(2, _refusal(273580))
+
+    with pytest.raises(OpenRouterError):
+        _stream_all(model, asynchronous)
+
+    assert len(sent) == 2
+
+
+@pytest.mark.parametrize(
+    "body",
+    [_refusal(320000), json.dumps({"error": {"message": "Provider returned error"}})],
+    ids=["too little room left", "another refusal"],
+)
+def test_other_refusals_are_raised_without_sending_again(body: str) -> None:
+    model, sent = _served(1, body)
+
+    with pytest.raises(OpenRouterError):
+        _stream_all(model, asynchronous=False)
+
+    assert sent == [60000]
