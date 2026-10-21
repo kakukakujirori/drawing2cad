@@ -1,5 +1,6 @@
 """Message Compaction"""
 
+import re
 from collections.abc import Sequence
 from functools import partial
 
@@ -80,6 +81,14 @@ from the notes as you would have worked from the turns they stand for.
 
 
 _SECTIONS = ("## OBJECTIVE", "## FINDINGS", "## WORK DONE", "## OPEN QUESTIONS")
+
+
+def _has_every_section(notes: str) -> bool:
+    """Whether every section asked for heads a line, however it is marked up."""
+    return all(
+        re.search(rf"(?im)^[#*\s]*{re.escape(section.removeprefix('## '))}\b", notes)
+        for section in _SECTIONS
+    )
 
 
 def _extract_summary_from_reasoning(message: AIMessage) -> str:
@@ -183,6 +192,10 @@ def compact_transcript(
                 )
             if not summary:
                 raise InvalidCompactionSummary("Compaction returned an empty summary")
+            if not _has_every_section(summary):
+                raise InvalidCompactionSummary(
+                    "Compaction returned notes without every section"
+                )
             if notes.tool_calls or notes.invalid_tool_calls:
                 raise InvalidCompactionSummary(
                     "Compaction returned tool calls, not notes"

@@ -32,7 +32,10 @@ def _worked_transcript() -> list[AnyMessage]:
     ]
 
 
-def _notes(text: str = "measured 100mm across the front view") -> ScriptedChatModel:
+_NOTES = "## OBJECTIVE\nrebuild\n## FINDINGS\n100mm\n## WORK DONE\nfit\n## OPEN QUESTIONS\nNone"
+
+
+def _notes(text: str = _NOTES) -> ScriptedChatModel:
     return ScriptedChatModel(responses=(AIMessage(content=text),))
 
 
@@ -42,18 +45,16 @@ def test_everything_is_traded_away_by_default() -> None:
     compacted = compact_transcript(_worked_transcript(), model=_notes())
 
     assert len(compacted) == 1
-    assert compacted[0].text == SUMMARY_PREAMBLE.format(
-        notes="measured 100mm across the front view"
-    )
+    assert compacted[0].text == SUMMARY_PREAMBLE.format(notes=_NOTES)
 
 
 def test_the_notes_come_back_saying_they_stand_in_for_turns_that_are_gone() -> None:
     """Handed a bare summary, a model reads its own notes as something it was
     told; and without delimiters, the framing reads as part of them."""
-    (summary,) = compact_transcript(_worked_transcript(), model=_notes("NOTES"))
+    (summary,) = compact_transcript(_worked_transcript(), model=_notes())
 
     assert "replaced" in summary.text
-    assert summary.text.rstrip().endswith("<summary>\nNOTES\n</summary>")
+    assert summary.text.rstrip().endswith(f"<summary>\n{_NOTES}\n</summary>")
     # Nothing offers the turns back, because nothing kept them.
     assert "saved to" not in summary.text
 
@@ -187,7 +188,7 @@ def test_transport_retries_preserve_every_request_and_config(
     error: Exception, retry_sleeps: list[float]
 ) -> None:
     model = Mock(spec=BaseChatModel)
-    model.invoke.side_effect = [error, error, AIMessage(content="NOTES")]
+    model.invoke.side_effect = [error, error, AIMessage(content=_NOTES)]
     transcript = _worked_transcript()
     before = [message.model_dump() for message in transcript]
     config = {"tags": ["compaction-test"]}
@@ -203,7 +204,7 @@ def test_transport_retries_preserve_every_request_and_config(
     assert calls[0].kwargs["config"] is config
     assert retry_sleeps == [2.0, 4.0]
     assert result[0] is transcript[0] and result[-1] is transcript[-1]
-    assert result[1].text == SUMMARY_PREAMBLE.format(notes="NOTES")
+    assert result[1].text == SUMMARY_PREAMBLE.format(notes=_NOTES)
     assert [message.model_dump() for message in transcript] == before
 
 
@@ -255,7 +256,7 @@ def test_rejected_summaries_are_corrected_using_the_original_context(
     rejected: AIMessage | Exception, retry_sleeps: list[float]
 ) -> None:
     model = Mock(spec=BaseChatModel)
-    model.invoke.side_effect = [rejected, AIMessage(content="COMPLETE NOTES")]
+    model.invoke.side_effect = [rejected, AIMessage(content=_NOTES)]
     transcript = _worked_transcript()
 
     result = compact_transcript(transcript, model=model, max_retries=1)
@@ -266,7 +267,7 @@ def test_rejected_summaries_are_corrected_using_the_original_context(
     assert COMPACTION_INSTRUCTION in correction
     assert "shorter, complete notes" in correction
     assert "JSON" not in correction
-    assert result[0].text == SUMMARY_PREAMBLE.format(notes="COMPLETE NOTES")
+    assert result[0].text == SUMMARY_PREAMBLE.format(notes=_NOTES)
     assert retry_sleeps == []
 
 
@@ -302,7 +303,7 @@ def test_compaction_retries_reach_the_existing_event_log(
     model = Mock(spec=BaseChatModel)
     model.invoke.side_effect = [
         _status_error(429),
-        AIMessage(content="NOTES") if succeeds else _status_error(429),
+        AIMessage(content=_NOTES) if succeeds else _status_error(429),
     ]
 
     graph = StateGraph(dict)  # pyrefly: ignore[bad-specialization]
@@ -368,9 +369,6 @@ def test_compaction_keeps_rejections_open_rather_than_settled() -> None:
     assert "Do not list rejected alternatives here" in findings
     assert "List each rejected alternative here" in open_questions
     assert "artifact paths" in open_questions
-
-
-_NOTES = "## OBJECTIVE\nrebuild\n## FINDINGS\n100mm\n## WORK DONE\nfit\n## OPEN QUESTIONS\nNone"
 
 
 def _reasoned(reasoning: str) -> ScriptedChatModel:
@@ -444,3 +442,32 @@ def test_a_cap_must_be_positive_and_applicable() -> None:
         compaction_model(model, max_tokens=0)
     with pytest.raises(ValueError, match="no max_tokens"):
         compaction_model(ScriptedChatModel(responses=()), max_tokens=100)
+
+
+# A reply that carries on the work instead of writing the notes.
+_CARRIED_ON = (
+    "I'm running low on turns; let me take one decisive look at the iso hook "
+    "region, then write the interpretation and model files.<tool_call>run_shell"
+    "<arg_key>command</arg_key><arg_value>cd /work && python3 -c ...</arg_value>"
+    "</tool_call>"
+)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        pytest.param(_CARRIED_ON, id="work-carried-on"),
+        pytest.param(_NOTES.split("## OPEN QUESTIONS")[0], id="missing-section"),
+    ],
+)
+def test_notes_without_every_section_are_no_summary(reply: str) -> None:
+    with pytest.raises(InvalidCompactionSummary, match="every section"):
+        compact_transcript(_worked_transcript(), model=_notes(reply), max_retries=0)
+
+
+def test_sections_are_found_however_they_are_marked_up() -> None:
+    notes = "# Objective\nrebuild\n**FINDINGS**\n100mm\nWORK DONE\nfit\n### Open questions\nNone"
+
+    (summary,) = compact_transcript(_worked_transcript(), model=_notes(notes))
+
+    assert summary.text == SUMMARY_PREAMBLE.format(notes=notes)

@@ -1047,11 +1047,17 @@ def test_rejection_at_the_round_limit_finishes_without_opening_another_round(
     assert result["stage_validation_error"] is None
 
 
+_COMPACTION_NOTES = (
+    "## OBJECTIVE\nrebuild the part\n## FINDINGS\nmeasured the views\n"
+    "## WORK DONE\nNone\n## OPEN QUESTIONS\nNone"
+)
+
+
 @pytest.mark.parametrize("rounds", [1, 2])
 def test_the_coder_starts_its_next_round_from_notes(monkeypatch, rounds):
     """Compaction runs before the audit only when the audit may open a round."""
     _stub_verification(monkeypatch, _verified("000"), _verified("001"))
-    notetaker = ScriptedChatModel(responses=(AIMessage(content="measured the views"),))
+    notetaker = ScriptedChatModel(responses=(AIMessage(content=_COMPACTION_NOTES),))
     coder = ScriptedChatModel(
         responses=(
             *_coding_script(),
@@ -1075,5 +1081,5 @@ def test_the_coder_starts_its_next_round_from_notes(monkeypatch, rounds):
     assert system.rstrip().endswith(ROLE_PATHS["coder"].read_text().strip())
     if rounds == 2:
         round_one = [message.text for message in coder.received_messages[2]]
-        assert SUMMARY_PREAMBLE.format(notes="measured the views") in round_one
+        assert SUMMARY_PREAMBLE.format(notes=_COMPACTION_NOTES) in round_one
         assert sum("[Input artifacts]" in text for text in round_one) == 1
