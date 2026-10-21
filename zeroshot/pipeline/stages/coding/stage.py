@@ -1,11 +1,13 @@
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 from langchain_core.messages.content import create_text_block
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
@@ -46,7 +48,12 @@ from zeroshot.pipeline.verification import (
     StepRenderer,
 )
 from zeroshot.pipeline.workflow._config import _child_graph_config
+from zeroshot.pipeline.workflow.components.compact import (
+    RetryCompaction,
+    compact_transcript,
+)
 from zeroshot.pipeline.workflow.lifecycle import interpretation_baseline
+from zeroshot.pipeline.workflow.middleware import StopReason
 from zeroshot.pipeline.workflow.middleware.output_limit_budget import OutputLimitBudget
 from zeroshot.pipeline.workflow.state import ReconstructionState, current_snapshot
 
@@ -66,6 +73,8 @@ class CodingStage:
     input_after_compaction: bool
     hypothesis_trial_prompt: str
     dxf_context: str | None = None
+    compaction_model: BaseChatModel | None = None
+    retry_compaction: RetryCompaction = RetryCompaction.NEVER
 
     def run(self, state: ReconstructionState, config: RunnableConfig) -> dict[str, Any]:
         snapshot = current_snapshot(state)
@@ -82,22 +91,19 @@ class CodingStage:
             self.middleware.reset()  # NOTE: must be after the workspace is seeded
         self.ticket_verifier.reset(state["reconstruction"])
 
+        # Determine whether to compact the coder's transcript for a retry.
         previous = state.get("coding_state") or {}
-        instruction = self.instructions.build(
-            state,
-            PipelineStage.CODING,
-            append_inputs=(not previous or self.input_after_compaction),
-            interpretation_output_path=str(
-                self.instructions.workdir.sandbox_bind_dir
-                / self.workspace.interpretation.source_filename
-            ),
-            interpretation_schema=schema_for_prompt(DrawingInterpretation),
-            hypothesis_trials=self.hypothesis_trial_prompt,
-            feedback=(
-                [create_text_block(self.dxf_context)]
-                if self.dxf_context is not None and not retry
-                else []
-            ),
+        compacted_before = retry and state.get("coder_compacted_for_retry", False)
+        compacted_now = retry and self.retry_compaction.applies(
+            exhausted=previous.get("stop_reason") is StopReason.BUDGET_EXHAUSTED,
+            compacted_this_round=compacted_before,
+        )
+        if compacted_now:
+            previous = self._compact_for_retry(previous, state, config)
+
+        # Construct the messages
+        instruction = self._ask_message(
+            state, append_inputs=(not previous or self.input_after_compaction)
         )
         messages = [
             *list(previous.get("messages") or []),
@@ -116,7 +122,51 @@ class CodingStage:
         return {
             "coding_state": result,
             "stage_submission": result.get("structured_response"),
+            "coder_compacted_for_retry": compacted_before or compacted_now,
         }
+
+    def _compact_for_retry(
+        self,
+        previous: Mapping[str, Any],
+        state: ReconstructionState,
+        config: RunnableConfig,
+    ) -> dict[str, Any]:
+        """The coder's state with its transcript traded for notes and the round
+        restated; the notes would only paraphrase the instructions."""
+        assert self.compaction_model is not None
+        notes = compact_transcript(
+            list(previous.get("messages") or []),
+            model=self.compaction_model,
+            config=config,
+        )
+        restated = self._ask_message(
+            {**state, "stage_validation_error": None}, append_inputs=True
+        )
+        thread = [*notes, restated]
+        # Report the notes and the instructions with the retry's prompt.
+        return {**previous, "messages": thread, "reported_message_count": 0}
+
+    def _ask_message(
+        self, state: ReconstructionState, *, append_inputs: bool
+    ) -> HumanMessage:
+        """The round's instructions, or the feedback that re-asks for them."""
+        retry = state.get("stage_validation_error") is not None
+        return self.instructions.build(
+            state,
+            PipelineStage.CODING,
+            append_inputs=append_inputs,
+            interpretation_output_path=str(
+                self.instructions.workdir.sandbox_bind_dir
+                / self.workspace.interpretation.source_filename
+            ),
+            interpretation_schema=schema_for_prompt(DrawingInterpretation),
+            hypothesis_trials=self.hypothesis_trial_prompt,
+            feedback=(
+                [create_text_block(self.dxf_context)]
+                if self.dxf_context is not None and not retry
+                else []
+            ),
+        )
 
 
 def _dxf_context(instructions: StageInstructions) -> str | None:
@@ -164,7 +214,12 @@ def create_coding_stage(
     coding_draft_check_after_n_turns: int | None = 20,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
     output_limit_budget: OutputLimitBudget | None = None,
+    compaction_model: BaseChatModel | None = None,
+    retry_compaction: RetryCompaction | str = RetryCompaction.NEVER,
 ) -> CodingStage:
+    retry_compaction = RetryCompaction(retry_compaction)
+    if retry_compaction is not RetryCompaction.NEVER and compaction_model is None:
+        raise ValueError(f"{retry_compaction=} needs a compaction model")
     renderer = StepRenderer()
     workspace = CodingWorkspaceVerifier(
         InterpretationVerifier(
@@ -251,4 +306,6 @@ def create_coding_stage(
         input_after_compaction=input_after_compaction,
         hypothesis_trial_prompt=hypothesis_trial_prompt,
         dxf_context=_dxf_context(instructions),
+        compaction_model=compaction_model,
+        retry_compaction=retry_compaction,
     )

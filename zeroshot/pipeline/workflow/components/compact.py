@@ -2,7 +2,9 @@
 
 import re
 from collections.abc import Sequence
+from enum import StrEnum
 from functools import partial
+from typing import assert_never
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
@@ -230,3 +232,31 @@ def compact_transcript(
         ),
         *transcript[tail_start:],
     ]
+
+
+# ------------------------------------------------------------------
+# When an agent whose turns ran out is re-asked from notes
+# ------------------------------------------------------------------
+
+
+class RetryCompaction(StrEnum):
+    """When to compact an agent's transcript before re-asking it once its turns ran out."""
+
+    NEVER = "never"
+    # The first time in a round: later retries are short and keep their context.
+    ONCE = "once"
+    EVERY = "every"
+
+    def applies(self, *, exhausted: bool, compacted_this_round: bool) -> bool:
+        """Whether a retry starts from notes rather than the whole transcript."""
+        if not exhausted:
+            return False
+        match self:
+            case RetryCompaction.NEVER:
+                return False
+            case RetryCompaction.ONCE:
+                return not compacted_this_round
+            case RetryCompaction.EVERY:
+                return True
+            case _:
+                assert_never(self)

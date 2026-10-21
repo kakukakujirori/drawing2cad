@@ -30,6 +30,7 @@ from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.workflow.components import compact_transcript
+from zeroshot.pipeline.workflow.components.compact import RetryCompaction
 from zeroshot.pipeline.workflow.evidence import EvidenceMode
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
@@ -61,6 +62,7 @@ def create_reconstruction_graph(
     max_stage_validation_retries: int = 3,
     max_output_limit_failures: int = 3,
     compaction_model: BaseChatModel | None = None,
+    compact_exhausted_coder: RetryCompaction | str = RetryCompaction.NEVER,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     audit_evidence_mode: EvidenceMode = "mark",
     diff_drawer_config: Mapping[str, Any] | None = None,
@@ -152,6 +154,8 @@ def create_reconstruction_graph(
         coding_trial_tool=coding_trial_tool,
         coding_draft_check_after_n_turns=coding_draft_check_after_n_turns,
         match_margin_px=match_margin_px,
+        compaction_model=compaction_model,
+        retry_compaction=compact_exhausted_coder,
     )
     audit_stage = stage_factory(PipelineStage.AUDIT)(
         audit_agent_builder,

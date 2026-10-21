@@ -17,6 +17,7 @@ from zeroshot.pipeline.workflow.components.compact import (
     COMPACTION_INSTRUCTION,
     SUMMARY_PREAMBLE,
     InvalidCompactionSummary,
+    RetryCompaction,
     compact_transcript,
 )
 from zeroshot.pipeline.workflow.middleware import connection_retry
@@ -471,3 +472,36 @@ def test_sections_are_found_however_they_are_marked_up() -> None:
     (summary,) = compact_transcript(_worked_transcript(), model=_notes(notes))
 
     assert summary.text == SUMMARY_PREAMBLE.format(notes=notes)
+
+
+@pytest.mark.parametrize(
+    ("policy", "compacted_this_round", "expected"),
+    [
+        (RetryCompaction.NEVER, False, False),
+        (RetryCompaction.NEVER, True, False),
+        (RetryCompaction.ONCE, False, True),
+        (RetryCompaction.ONCE, True, False),
+        (RetryCompaction.EVERY, False, True),
+        (RetryCompaction.EVERY, True, True),
+    ],
+)
+def test_an_agent_out_of_turns_is_compacted_as_the_policy_says(
+    policy: RetryCompaction, compacted_this_round: bool, expected: bool
+) -> None:
+    assert (
+        policy.applies(exhausted=True, compacted_this_round=compacted_this_round)
+        is expected
+    )
+
+
+@pytest.mark.parametrize("policy", list(RetryCompaction))
+def test_a_retry_whose_turns_did_not_run_out_is_never_compacted(
+    policy: RetryCompaction,
+) -> None:
+    assert not policy.applies(exhausted=False, compacted_this_round=False)
+
+
+def test_the_policy_is_read_from_its_config_value() -> None:
+    assert RetryCompaction("once") is RetryCompaction.ONCE
+    with pytest.raises(ValueError):
+        RetryCompaction("sometimes")

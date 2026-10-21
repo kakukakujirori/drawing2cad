@@ -25,6 +25,8 @@ class ReconstructionState(TypedDict):
     stage_submission: NotRequired[TicketAnswers | None]
     stage_validation_error: NotRequired[str | None]
     stage_validation_failure_count: NotRequired[int]
+    # Whether the coder's transcript was compacted for a retry in this round.
+    coder_compacted_for_retry: NotRequired[bool]
     audit_report: NotRequired[AuditReport | None]
     audit_evidence: NotRequired[dict[str, list[str]]]
 

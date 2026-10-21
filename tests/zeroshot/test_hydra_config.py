@@ -293,6 +293,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "coding_agent_builder",
         "audit_agent_builder",
         "compaction_model",
+        "compact_exhausted_coder",
         "max_audit_reject_count",
         "max_stage_validation_retries",
         "max_output_limit_failures",

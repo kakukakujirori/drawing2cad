@@ -1083,3 +1083,132 @@ def test_the_coder_starts_its_next_round_from_notes(monkeypatch, rounds):
         round_one = [message.text for message in coder.received_messages[2]]
         assert SUMMARY_PREAMBLE.format(notes=_COMPACTION_NOTES) in round_one
         assert sum("[Input artifacts]" in text for text in round_one) == 1
+
+
+@pytest.mark.parametrize("mode", ["never", "once", "every"])
+def test_a_coder_out_of_turns_is_retried_from_notes_and_restated_instructions(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """Only a coder whose turns ran out is compacted, and only when asked for."""
+    _stub_verification(monkeypatch, _verified())
+    notetaker = ScriptedChatModel(responses=(AIMessage(content=_COMPACTION_NOTES),))
+    looks = tuple(
+        tool_call("run_shell", {"command": "true"}, f"look-{n}") for n in range(2)
+    )
+    coder = ScriptedChatModel(responses=(*looks, *_coding_script()))
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            coder=coder,
+            auditor=ScriptedChatModel(responses=()),
+            coder_options={"max_turns": 2, "retry_turns": 2},
+            compaction_model=notetaker,
+            compact_exhausted_coder=mode,
+            max_audit_reject_count=0,
+        ).invoke({})
+
+    compact = mode != "never"
+    assert result["reconstruction"].snapshots[0].last_completed_stage is (
+        PipelineStage.CODING
+    )
+    retry = coder.received_messages[2]
+    texts = [message.text for message in retry]
+    assert "before the turn budget ran out" in texts[-2]
+    assert texts[-1] == "[turn set back to 0/2 to correct the refused answer]"
+    assert len(notetaker.received_messages) == int(compact)
+    if compact:
+        # The notes replace every turn; the instructions come back in full.
+        assert texts[1] == SUMMARY_PREAMBLE.format(notes=_COMPACTION_NOTES)
+        assert not any(isinstance(message, AIMessage) for message in retry)
+        assert sum("[Input artifacts]" in text for text in texts) == 1
+    else:
+        assert sum(isinstance(message, AIMessage) for message in retry) == 2
+
+
+def test_compacting_an_exhausted_coder_needs_a_compaction_model() -> None:
+    with SandboxWorkdir() as workdir, pytest.raises(ValueError, match="compact"):
+        _graph(
+            workdir,
+            coder=ScriptedChatModel(responses=()),
+            auditor=ScriptedChatModel(responses=()),
+            compact_exhausted_coder="once",
+        )
+
+
+@pytest.mark.parametrize(("mode", "compactions"), [("once", 1), ("every", 2)])
+def test_once_compacts_only_the_first_time_a_rounds_turns_run_out(
+    monkeypatch: pytest.MonkeyPatch, mode: str, compactions: int
+) -> None:
+    _stub_verification(monkeypatch, _verified())
+    notes = AIMessage(content=_COMPACTION_NOTES)
+    notetaker = ScriptedChatModel(responses=(notes, notes))
+    looks = tuple(
+        tool_call("run_shell", {"command": "true"}, f"look-{n}") for n in range(4)
+    )
+    coder = ScriptedChatModel(responses=(*looks, *_coding_script()))
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            coder=coder,
+            auditor=ScriptedChatModel(responses=()),
+            coder_options={"max_turns": 2, "retry_turns": 2},
+            compaction_model=notetaker,
+            compact_exhausted_coder=mode,
+            max_audit_reject_count=0,
+        ).invoke({})
+
+    assert result["reconstruction"].snapshots[0].last_completed_stage is (
+        PipelineStage.CODING
+    )
+    assert len(notetaker.received_messages) == compactions
+    # The second retry keeps the first retry's turns unless compacted again.
+    second_retry = coder.received_messages[4]
+    kept = sum(isinstance(message, AIMessage) for message in second_retry)
+    assert kept == (2 if mode == "once" else 0)
+
+
+def test_once_compacts_again_in_the_next_round(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_verification(monkeypatch, _verified("000"), _verified("001"))
+    notes = AIMessage(content=_COMPACTION_NOTES)
+    notetaker = ScriptedChatModel(responses=(notes, notes, notes))
+
+    def looks(tag: str) -> tuple[AIMessage, ...]:
+        return tuple(
+            tool_call("run_shell", {"command": "true"}, f"{tag}-{n}") for n in range(2)
+        )
+
+    coder = ScriptedChatModel(
+        responses=(
+            *looks("round-0"),
+            *_coding_script(),
+            *looks("round-1"),
+            *_coding_script(_ROUND_ONE_TICKET, call_id="revision"),
+        )
+    )
+    with SandboxWorkdir() as workdir:
+        _graph(
+            workdir,
+            coder=coder,
+            auditor=ScriptedChatModel(responses=_audit_script(_rejected_audit())),
+            coder_options={"max_turns": 2, "retry_turns": 2},
+            compaction_model=notetaker,
+            compact_exhausted_coder="once",
+            max_audit_reject_count=1,
+        ).invoke({})
+
+    # Round 0's retry, the handover before the audit, and round 1's retry.
+    assert len(notetaker.received_messages) == 3
+
+
+def test_an_unknown_exhausted_coder_compaction_is_refused() -> None:
+    with (
+        SandboxWorkdir() as workdir,
+        pytest.raises(ValueError, match="RetryCompaction"),
+    ):
+        _graph(
+            workdir,
+            coder=ScriptedChatModel(responses=()),
+            auditor=ScriptedChatModel(responses=()),
+            compaction_model=ScriptedChatModel(responses=()),
+            compact_exhausted_coder="sometimes",
+        )

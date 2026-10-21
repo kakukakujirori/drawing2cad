@@ -83,6 +83,10 @@ workflow:
     # At most this many output tokens for the notes, leaving the rest of the
     # context window to the transcript. A lower or unset model max_tokens stays.
     max_tokens: 32000
+  # Before re-asking a coder whose turns ran out, compact its transcript the same
+  # way and restate the round's instructions: never, once a round (the first
+  # time its turns run out), or every time.
+  compact_exhausted_coder: never
 
   # How many rejected audits may open a fresh round.
   max_audit_reject_count: 1
