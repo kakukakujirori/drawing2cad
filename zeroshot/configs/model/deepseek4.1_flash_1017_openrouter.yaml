@@ -1,0 +1,30 @@
+# @package _global_
+
+# A json_schema response format suppresses this model's tool calling.
+response_format_strategy: tool
+
+model:
+  _target_: zeroshot.pipeline.models.openrouter.ChatOpenRouter
+
+  model: deepseek/deepseek-v4.1-flash-1017
+  # Effort is a share of max_tokens; OpenRouter takes no `summary`. With max,
+  # interpreter turns ran to 50-60k tokens; medium kept them under 15k.
+  reasoning:
+    effort: medium
+  output_version: v1
+  api_key: ${oc.env:OPENROUTER_API_KEY}
+
+  # NOTE: Select upstreams that support tool_choice, structured outputs and the full context.
+  openrouter_provider:
+    order: [Relace, InferenceNet, Morph, Together, Fireworks, DeepInfra]
+    allow_fallbacks: false
+  # Always 8, whatever the workflow allows: the upstreams reject more.
+  image_history_limit: 8
+
+  # Hard turns reason for ~30k tokens; the rest leaves room for a whole program.
+  max_tokens: 60000
+
+  timeout: 60000  # milliseconds
+  max_retries: 0
+
+  temperature: 1.0  # 1.0 is the default
