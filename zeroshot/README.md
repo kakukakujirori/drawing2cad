@@ -24,6 +24,20 @@ python -m zeroshot.run_pipeline --multirun \
     sample.sample_id=$(ls data/test_eccv/target_step_ori | sed "s/\.step$//; s/.*/'&'/" | paste -sd,)
 ```
 
+Generate several samples at a time (`--pipeline`: `default`, `native` or `native2`;
+trailing Hydra overrides apply to every sample):
+
+```bash
+zeroshot/run_parallel.sh --pipeline default --model minimax3.1_flash_openrouter \
+    --datasets test_eccv,test_itercad,test_ortho2cad_f360_mdim \
+    --out outputs/minimax3.1_flash --jobs 12 \
+    workflow.coding_agent_builder.max_turns=40
+
+zeroshot/run_parallel.sh --help       # all options; --dry-run lists the commands
+# Ctrl-C stops every sample; the same command resumes. Logs: <out>/_logs/
+pkill -USR1 -g $(cat outputs/minimax3.1_flash/_logs/pgid) -x xargs  # one more at a time (-USR2: one fewer)
+```
+
 Rescore finished samples without rerunning the agents. A rerun with
 `on_existing=retry` skips completed samples, so it does not rescore them. Each
 sample is scored against `<target-dir>/<sample_id>.step`. Directories without

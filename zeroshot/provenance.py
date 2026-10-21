@@ -7,6 +7,7 @@ pipeline.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import subprocess
 from datetime import UTC, datetime
@@ -49,23 +50,32 @@ def record_run(artifact_root: Path, sample_id: str) -> dict[str, Any]:
     second one rather than overwriting the first.
     """
     path = artifact_root / MANIFEST_FILENAME
-    document: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "code_versions": []}
-    if path.is_file():
-        document = json.loads(path.read_text("utf-8"))
-
     version = code_version()
-    now = datetime.now(tz=UTC).isoformat()
-    entries = document["code_versions"]
-    entry = next((item for item in entries if _same_version(item, version)), None)
-    if entry is None:
-        entry = {**version, "first_seen": now, "last_seen": now, "sample_ids": []}
-        entries.append(entry)
-    entry["last_seen"] = now
-    if sample_id not in entry["sample_ids"]:
-        entry["sample_ids"] = sorted([*entry["sample_ids"], sample_id])
-
     artifact_root.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, indent=2) + "\n", "utf-8")
+    path.touch()
+    with path.open("r+", encoding="utf-8") as handle:
+        # Samples finishing at once in parallel processes take turns.
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        text = handle.read()
+        document: dict[str, Any] = (
+            json.loads(text)
+            if text
+            else {"schema_version": SCHEMA_VERSION, "code_versions": []}
+        )
+
+        now = datetime.now(tz=UTC).isoformat()
+        entries = document["code_versions"]
+        entry = next((item for item in entries if _same_version(item, version)), None)
+        if entry is None:
+            entry = {**version, "first_seen": now, "last_seen": now, "sample_ids": []}
+            entries.append(entry)
+        entry["last_seen"] = now
+        if sample_id not in entry["sample_ids"]:
+            entry["sample_ids"] = sorted([*entry["sample_ids"], sample_id])
+
+        handle.seek(0)
+        handle.truncate()
+        handle.write(json.dumps(document, indent=2) + "\n")
     return document
 
 

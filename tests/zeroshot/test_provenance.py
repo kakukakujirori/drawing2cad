@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,35 @@ def test_rerecording_a_sample_does_not_duplicate_it(
     _write(tmp_path, "000364", monkeypatch)
 
     assert _read(tmp_path)["code_versions"][0]["sample_ids"] == ["000364"]
+
+
+def _record_all(artifact_root: Path, sample_ids: list[str], start: Any) -> None:
+    """Record samples the way one of several parallel runs would."""
+    provenance.code_version = lambda: {"git_commit": "aaa", "git_dirty": False}
+    start.wait()
+    for sample_id in sample_ids:
+        provenance.record_run(artifact_root, sample_id)
+
+
+def test_parallel_runs_all_reach_the_manifest(tmp_path: Path) -> None:
+    """None crashes on another's half-written file or drops another's sample."""
+    context = multiprocessing.get_context("spawn")
+    batches = [[f"{run}_{index:02d}" for index in range(20)] for run in "abcdefgh"]
+    start = context.Barrier(len(batches))
+    runs = [
+        context.Process(target=_record_all, args=(tmp_path, batch, start))
+        for batch in batches
+    ]
+    for run in runs:
+        run.start()
+    for run in runs:
+        run.join(timeout=60)
+
+    assert [run.exitcode for run in runs] == [0] * len(runs)
+    versions = _read(tmp_path)["code_versions"]
+    assert versions[0]["sample_ids"] == sorted(
+        sample for batch in batches for sample in batch
+    )
 
 
 def test_code_version_reads_the_repository(tmp_path: Path) -> None:
