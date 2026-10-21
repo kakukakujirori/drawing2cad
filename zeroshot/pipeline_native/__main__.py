@@ -1,6 +1,8 @@
 """Run the native baseline with the shared Hydra config directory."""
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import hydra
 from hydra.utils import instantiate, to_absolute_path
@@ -23,9 +25,8 @@ def _first_event(events_path: Path) -> str | None:
         return None
 
 
-@hydra.main(version_base="1.3", config_path="../configs", config_name="native")
-def main(config: DictConfig) -> None:
-    """Run one sample and, when it has a target, score it.
+def run_and_score(config: DictConfig, run: Callable[[DictConfig], Any]) -> None:
+    """Run one sample with `run` and, when it has a target, score it.
 
     The target and scorer are checked before generation, so a bad one costs no
     model calls. The runner never touches either. As in `zeroshot.run_pipeline`,
@@ -66,6 +67,11 @@ def main(config: DictConfig) -> None:
         # A scoring error must not hide why the run itself failed.
         if failure is not None:
             raise failure
+
+
+@hydra.main(version_base="1.3", config_path="../configs", config_name="native")
+def main(config: DictConfig) -> None:
+    run_and_score(config, run)
 
 
 if __name__ == "__main__":

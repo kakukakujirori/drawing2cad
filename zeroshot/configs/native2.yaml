@@ -1,0 +1,14 @@
+# @package _global_
+
+# The native baseline plus an auditor, with the staged pipeline's rounds and
+# turn budgets (`workflow/coder_auditor.yaml`). `zeroshot.pipeline_native2` loads it.
+defaults:
+  - native
+  - _self_
+
+artifact_root: outputs/zeroshot_native2
+# Per coder round, and per audit.
+max_turns: 60
+auditor_max_turns: 20
+# Audits that may reject and open another coder round.
+max_audits: 1

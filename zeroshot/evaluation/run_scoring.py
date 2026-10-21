@@ -305,7 +305,7 @@ def _native_config(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def is_native_run(run_dir: Path) -> bool:
-    """Whether `zeroshot.pipeline_native` made this sample, as its run.json says.
+    """Whether `zeroshot.pipeline_native` or its auditor variant made this sample.
 
     Asked of run.json rather than read off a missing `attempts/`: a staged run
     whose interpretation never validated has a `model.py` and no attempt either,
@@ -314,7 +314,7 @@ def is_native_run(run_dir: Path) -> bool:
     in their config instead.
     """
     record = _native_record(run_dir)
-    if record.get("pipeline") == "native":
+    if record.get("pipeline") in {"native", "native2"}:
         return True
     workflow = _native_config(record).get("workflow")
     return isinstance(workflow, dict) and workflow.get("name") == "native"
