@@ -32,10 +32,10 @@ _PNG_SHORT_SIDE = 480
 _PNG_LONG_SIDE = 1600
 DEFAULT_PNG_MARGIN_RATIO = 0.04
 
-# A view narrower than this on either axis carries no recoverable shape. It
-# only fires on pathological inputs: an empty projection, or a knife-edge view
-# of a near-zero-thickness plate that collapses to a single line.
-MIN_VIEW_EXTENT_MM = 0.05
+# A view whose short side is less than this fraction of its long side carries
+# no recoverable shape: a knife-edge view of a zero-thickness face that
+# collapses to a single line. Relative, since parts may be of any size in mm.
+MIN_VIEW_ASPECT = 1e-4
 
 
 class DegenerateDrawingError(RuntimeError):
@@ -66,9 +66,9 @@ def write_view_dxf(
     if not extents.has_data:
         raise DegenerateDrawingError(f"view {layer!r} has no edges")
     width, height = extents.size.x, extents.size.y
-    if width < MIN_VIEW_EXTENT_MM or height < MIN_VIEW_EXTENT_MM:
+    if min(width, height) < MIN_VIEW_ASPECT * max(width, height):
         raise DegenerateDrawingError(
-            f"view {layer!r} has near-zero extent (w={width:.4f}, h={height:.4f} mm)"
+            f"view {layer!r} has near-zero extent (w={width:.4g}, h={height:.4g} mm)"
         )
     doc.header["$EXTMIN"] = (extents.extmin.x, extents.extmin.y, 0.0)
     doc.header["$EXTMAX"] = (extents.extmax.x, extents.extmax.y, 0.0)

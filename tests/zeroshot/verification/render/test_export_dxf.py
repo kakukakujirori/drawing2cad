@@ -189,3 +189,14 @@ def test_a_view_with_no_area_is_refused_by_name(tmp_path, visible):
     with pytest.raises(DegenerateDrawingError, match="right"):
         write_view_dxf(path, visible, [], "right")
     assert not path.exists()
+
+
+def test_a_thin_view_of_a_small_part_is_drawn(tmp_path):
+    """A 0.75 x 0.0137 mm plate seen edge-on still has a shape to compare."""
+    path = tmp_path / "right.dxf"
+    corners = [(0, 0, 0), (0.75, 0, 0), (0.75, 0.0137, 0), (0, 0.0137, 0)]
+    edges = [_line(a, b) for a, b in zip(corners, corners[1:] + corners[:1])]
+
+    write_view_dxf(path, edges, [], "right")
+
+    assert path.is_file()

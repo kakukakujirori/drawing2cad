@@ -249,6 +249,27 @@ def test_real_box_renders_to_caller_assigned_paths(tmp_path):
             assert image.mode == "RGB"
 
 
+def test_a_degenerate_view_leaves_the_other_views_drawn(tmp_path, monkeypatch):
+    step_path = tmp_path / "box.step"
+    cq.exporters.export(cq.Workplane("XY").box(10.0, 20.0, 30.0), str(step_path))
+    write_view_dxf = run_render.write_view_dxf
+
+    def refuse_right(path, visible, hidden, layer):
+        if layer == "right":
+            raise DegenerateDrawingError("view 'right' has near-zero extent")
+        write_view_dxf(path, visible, hidden, layer)
+
+    monkeypatch.setattr(run_render, "write_view_dxf", refuse_right)
+    requested = _projection_paths(tmp_path)
+
+    paths, errors = run_render._render_projections(step_path, requested, UNTURNED)
+
+    assert paths == ProjectionPaths(front=requested.front, top=requested.top)
+    assert errors == {
+        "right": "DegenerateDrawingError: view 'right' has near-zero extent"
+    }
+
+
 def test_every_error_key_names_a_field_of_its_paths_dto(tmp_path, monkeypatch):
     """The two error maps live in different namespaces; a key that matches no
     field would describe an artifact no consumer can pair with a path."""

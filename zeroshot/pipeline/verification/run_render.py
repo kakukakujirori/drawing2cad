@@ -27,6 +27,7 @@ from zeroshot.pipeline.verification.render.constants import (
     Render3dPaths,
 )
 from zeroshot.pipeline.verification.render.export_dxf import (
+    DegenerateDrawingError,
     export_to_png,
     write_view_dxf,
 )
@@ -77,13 +78,18 @@ def _render_projections(
         shape = load_shape(step_path)
         for view, path in requested.items():
             visible, hidden = project(shape, *frames[View(view)])
-            write_view_dxf(path, visible, hidden, view)
+            # A view seen edge-on can collapse; the other views still hold shape.
+            try:
+                write_view_dxf(path, visible, hidden, view)
+            except DegenerateDrawingError as error:
+                errors[view] = _error_text(error)
+                continue
             export_to_png(path)
 
     for view, path in requested.items():
         if not path.is_file():
             projection_paths = replace(projection_paths, **{view: None})
-            errors[view] = f"projection renderer did not create {view}.dxf"
+            errors.setdefault(view, f"projection renderer did not create {view}.dxf")
     return projection_paths, errors
 
 
