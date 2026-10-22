@@ -116,13 +116,13 @@ def test_only_a_change_of_views_rebuilds_an_unchanged_program(tmp_path):
     assert "[Interpretation verification]" in reworded
     assert len(output.builds) == 1
 
-    accepted["views"][1]["role"] = "top"
-    accepted["views"][1]["u_axis"], accepted["views"][1]["v_axis"] = "+x", "+y"
+    accepted["views"][1]["role"] = "right"
+    accepted["views"][1]["u_axis"], accepted["views"][1]["v_axis"] = "+y", "+z"
     workspace.interpretation.source_path.write_text(json.dumps(accepted))
     workspace.feedback()
     rebuilt_on = output.builds[-1]
     assert len(output.builds) == 2 and rebuilt_on is not None
-    assert rebuilt_on.views[1].role is View.TOP
+    assert rebuilt_on.views[1].role is View.RIGHT
 
 
 def test_the_round_owes_a_valid_interpretation_then_a_changed_program(tmp_path):

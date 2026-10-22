@@ -11,6 +11,7 @@ from tests.zeroshot.verification.test_interpretation_validation import (
 )
 from zeroshot.pipeline.messages.manifest import register_view
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.stages.interpretation import verify as verify_module
 from zeroshot.pipeline.stages.interpretation.contracts import (
     UNDECIDED,
     DrawingInterpretation,
@@ -49,6 +50,19 @@ def _case(
         },
     )
     data["views"][1]["region"] = {"view": "view_page", "box_px": [0, 0, 1200, 1400]}
+    # A full page carries at least two orthographic views.
+    Image.new("RGB", (1200, 400), "white").save(tmp_path / "top.png")
+    data["views"].append(
+        {
+            "name": "view_top",
+            "role": View.TOP,
+            "file": "/work/top.png",
+            "region": {"view": "view_page", "box_px": [0, 0, 1200, 400]},
+            "dimensions": [],
+            "u_axis": UNTURNED[View.TOP][0],
+            "v_axis": UNTURNED[View.TOP][1],
+        }
+    )
     given = [
         register_view(
             "view_page",
@@ -147,7 +161,7 @@ def test_page_radius_annotation_is_kept_without_warning(
     tmp_path,
 ):
     verifier, candidate, _ = _case(tmp_path)
-    page, front = candidate.views
+    page, front, _ = candidate.views
     crop_box = (100, 200, 1000, 1300)
     front.region = front.region.model_copy(update={"box_px": crop_box})
     with Image.open(tmp_path / "source.png") as source:
@@ -260,7 +274,8 @@ def test_invalid_json_and_missing_original_page_are_rejected_and_recorded(tmp_pa
     ]
     data = candidate.model_dump()
     data["views"].pop(0)
-    data["views"][0]["region"]["view"] = "view_front"
+    for view in data["views"]:
+        view["region"]["view"] = "view_front"
     verifier.source_path.write_text(json.dumps(data))
     assert "Retain each original input file" in verifier.feedback()[0]["text"]
     assert not verifier.confirmed
@@ -330,7 +345,8 @@ def test_original_identity_and_full_file_region_cannot_be_rewritten(tmp_path, ch
     original = data["views"][0]
     if changed == "name":
         original["name"] = original["region"]["view"] = "view_renamed"
-        data["views"][1]["region"]["view"] = "view_renamed"
+        for view in data["views"][1:]:
+            view["region"]["view"] = "view_renamed"
     elif changed == "file":
         original["file"] = "/work/front.png"
     elif changed == "role":
@@ -352,11 +368,13 @@ def test_original_identity_and_full_file_region_cannot_be_rewritten(tmp_path, ch
     [
         (View.FRONT, True),
         (View.RIGHT, True),
+        (View.TOP, False),
         (View.SECTION, False),
         (View.UNKNOWN, False),
     ],
 )
-def test_a_full_page_input_requires_an_orthographic_view(tmp_path, role, accepted):
+def test_a_full_page_input_requires_two_orthographic_views(tmp_path, role, accepted):
+    """The fixture's other orthographic view is a top view."""
     verifier, candidate, _ = _case(tmp_path)
     candidate.views[1] = _as_role(candidate.views[1], role)
     verifier.source_path.write_text(candidate.model_dump_json())
@@ -364,43 +382,22 @@ def test_a_full_page_input_requires_an_orthographic_view(tmp_path, role, accepte
     text = verifier.feedback()[0]["text"]
 
     assert verifier.confirmed is accepted
-    assert ("full_page input is an unsplit page" in text) is not accepted
+    assert ("Register at least two of them" in text) is not accepted
 
 
-@pytest.mark.parametrize(
-    ("box_px", "accepted"),
-    [([0, 0, 1200, 1400], True), ([100, 100, 900, 1100], False)],
-)
 @pytest.mark.parametrize("page_first", [True, False])
-def test_full_page_file_reuse_requires_full_page_bounds(
-    tmp_path, box_px, accepted, page_first
-):
+def test_an_orthographic_view_cannot_reuse_the_full_page_file(tmp_path, page_first):
     verifier, candidate, _ = _case(tmp_path)
-    candidate.views[1] = _as_role(candidate.views[1], View.SECTION)
     data = candidate.model_dump()
-    data["views"].append(
-        {
-            "name": "view_single",
-            "role": "front",
-            "file": "/work/source.png",
-            "region": {"view": "view_page", "box_px": box_px},
-            "dimensions": [],
-            "u_axis": "+x",
-            "v_axis": "+z",
-        }
-    )
+    data["views"][1]["file"] = "/work/source.png"
     if not page_first:
         data["views"] = data["views"][1:] + data["views"][:1]
     verifier.source_path.write_text(json.dumps(data))
 
     text = verifier.feedback()[0]["text"]
 
-    assert verifier.confirmed is accepted
-    if not accepted:
-        child_index = 2 if page_first else 1
-        assert f"$.views[{child_index}].file: view_single (front)" in text
-        assert "full-page orthographic view" in text
-        assert "Save a crop" in text
+    assert not verifier.confirmed
+    assert "different roles must use different files" in text
 
 
 def test_the_full_page_cannot_be_relabelled_as_the_view(tmp_path):
@@ -421,6 +418,35 @@ def test_retained_pictorial_keeps_its_registration(tmp_path):
     candidate.views[-1].role = View.FULL_PAGE
     verifier.reset(candidate)
     assert not verifier.verify().confirmed
+
+
+def test_a_question_rides_on_a_valid_interpretation(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        verify_module,
+        "pictorials_in_projected_places",
+        lambda *_, **__: ["Highly suspicious: view_iso is the right view."],
+    )
+    verifier, candidate, _ = _case(tmp_path)
+    verifier.reset(candidate)
+
+    blocks = verifier.feedback()
+
+    assert verifier.confirmed
+    assert blocks[-1]["text"] == "\n\nHighly suspicious: view_iso is the right view."
+
+
+def test_a_question_that_fails_leaves_the_interpretation_valid(tmp_path, monkeypatch):
+    def unreadable(*_, **__):
+        raise OSError("cannot read the page")
+
+    monkeypatch.setattr(verify_module, "pictorials_in_projected_places", unreadable)
+    verifier, candidate, _ = _case(tmp_path)
+    verifier.reset(candidate)
+
+    verifier.feedback()
+
+    assert verifier.confirmed
+    assert verifier.verify().questions == ()
 
 
 def test_absent_calibration_stays_valid_and_reports_zero_measurements(tmp_path):

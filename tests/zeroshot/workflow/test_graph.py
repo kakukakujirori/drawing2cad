@@ -98,7 +98,18 @@ def _interpretation_candidate(
         )
         for item in artifact.views
     ]
-    return artifact.model_copy(update={"views": [handed, *views]})
+    # A page holds two orthographic views at least; a back view may sit
+    # anywhere under either projection method.
+    back = DrawingView(
+        name="view_back",
+        role="back",
+        file="/work/back.png",
+        region=Region(view="view_input", box_px=(0, 0, 20, 20)),
+        dimensions=[],
+        u_axis="-x",
+        v_axis="+z",
+    )
+    return artifact.model_copy(update={"views": [handed, *views, back]})
 
 
 def _write_interpretation(
@@ -264,6 +275,7 @@ def _graph(
     path = workdir.host_bind_dir / "drawing.png"
     Image.new("RGB", (20, 20), "white").save(path)
     Image.new("RGB", (20, 20), "white").save(workdir.host_bind_dir / "front.png")
+    Image.new("RGB", (20, 20), "white").save(workdir.host_bind_dir / "back.png")
     _write_projection_dxf(workdir.host_bind_dir / "projection" / "front.dxf")
     common = {
         "announce_turns": False,
@@ -438,7 +450,7 @@ def test_an_accepted_round_is_integrated_and_persisted(
 
     assert calls == ["verify"]
     # The full_page input is not projected; the view identified on it is.
-    assert views_seen == [[View.FRONT]]
+    assert views_seen == [[View.FRONT, View.BACK]]
     assert persisted == result["reconstruction"]
     snapshot = persisted.snapshots[0]
     assert snapshot.last_completed_stage is PipelineStage.CODING

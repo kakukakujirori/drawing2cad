@@ -253,6 +253,7 @@ def test_calibration_ignores_angles_and_unreadable_or_zero_figures(
             | {
                 "name": f"dim_{name}",
                 "kind": kind,
+                "text": "?" if nominal is None else f"{nominal:g}",
                 "nominal_value": nominal,
                 "measured_length": measured,
             }
@@ -273,6 +274,7 @@ def _with_dimensions(tmp_path: Path, extra) -> DrawingInterpretation:
             | {
                 "name": f"dim_{name}",
                 "kind": kind,
+                "text": "?" if nominal is None else f"{nominal:g}",
                 "nominal_value": nominal,
                 "measured_length": measured,
             }
@@ -300,6 +302,70 @@ def test_arcs_and_unreadable_lengths_may_stay_unmeasured(tmp_path: Path) -> None
     )
     assert accepted.views[0].scale == pytest.approx(0.1)
     assert len(diagnostics["view_front"]["measurements"]) == 3
+
+
+@pytest.mark.parametrize(
+    ("text", "nominal", "converted"),
+    [
+        ("0.2200", 220.0, True),
+        ("0.7500", 75.0, True),
+        ("0.7500", 19.05, True),
+        ("19.05", 0.75, True),
+        ("3 X R0.1300", 130.0, True),
+        ("0.1226", 0.123, False),
+        ("R?", 5.0, False),
+    ],
+)
+def test_a_nominal_value_its_text_does_not_print_is_refused(
+    tmp_path: Path, text: str, nominal: float, converted: bool
+) -> None:
+    data = raster_case(tmp_path).model_dump()
+    data["views"][0]["dimensions"][1].update(text=text, nominal_value=nominal)
+
+    with pytest.raises(LocatedError, match="nominal_value is the number") as error:
+        validate_interpretation(
+            DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
+        )
+    assert error.value.found[0][0] == ("views", 0, "dimensions", 1, "nominal_value")
+    assert ("never convert or rescale" in str(error.value)) is converted
+
+
+@pytest.mark.parametrize(
+    ("text", "nominal"),
+    [
+        ("0.2200", 0.22),
+        ("94,26", 94.26),
+        ("1,250", 1250.0),
+        ("5 X ⌀0.0700", 0.07),
+        ("10 ±0.1", 10.0),
+        ("4X M6x1", 6.0),
+    ],
+)
+def test_a_length_read_as_printed_is_accepted(
+    tmp_path: Path, text: str, nominal: float
+) -> None:
+    data = raster_case(tmp_path).model_dump()
+    data["views"][0]["dimensions"][1].update(text=text, nominal_value=nominal)
+
+    validate_interpretation(
+        DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
+    )
+
+
+@pytest.mark.parametrize("role", [View.ISOMETRIC, View.PERSPECTIVE])
+def test_a_view_with_dimensions_is_told_it_is_orthographic(
+    tmp_path: Path, role: View
+) -> None:
+    data = raster_case(tmp_path).model_dump()
+    data["views"][0].update(role=role, u_axis=None, v_axis=None)
+
+    with pytest.raises(
+        LocatedError, match="A view with printed dimensions is an orthographic view"
+    ) as error:
+        validate_interpretation(
+            DrawingInterpretation.model_validate(data), workdir=SandboxWorkdir(tmp_path)
+        )
+    assert error.value.found[0][0] == ("views", 0, "role")
 
 
 @pytest.mark.parametrize("defect", ["image_size", "pixel_bounds", "uv_only"])

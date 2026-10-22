@@ -116,9 +116,12 @@ def _writing_interpretation() -> AIMessage:
                 region = {{'view': name, 'box_px': [0, 0, width, height]}}
             views.append(dict(name=name, file=file, role=given['role'], region=region, dimensions=[]))
         front = dict(views[0], name='view_front', role='front', u_axis='+x', v_axis='+z')
-        front['file'] = '/work/view_front' + Path(front['file']).suffix
-        shutil.copyfile(views[0]['file'], front['file'])
-        views.append(front)
+        # A page holds two orthographic views at least.
+        back = dict(views[0], name='view_back', role='back', u_axis='-x', v_axis='+z')
+        for view in (front, back):
+            view['file'] = '/work/' + view['name'] + Path(view['file']).suffix
+            shutil.copyfile(views[0]['file'], view['file'])
+            views.append(view)
         artifact['views'] = views
         artifact['features'][0]['evidence'] = [dict(front['region'], view='view_front')]
         Path('/work/interpretation.json').write_text(json.dumps(artifact))

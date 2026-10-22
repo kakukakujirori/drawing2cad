@@ -2,15 +2,16 @@
 # Run a pipeline over whole datasets, several samples at a time.
 #
 #   zeroshot/run_parallel.sh --pipeline default --model MODEL \
-#       --datasets test_eccv,test_itercad --out OUT [--jobs 8] [--dry-run] \
-#       [OVERRIDES...]
+#       --datasets test_eccv,test_itercad --out OUT [--jobs 8] [--samples IDS] \
+#       [--dry-run] [OVERRIDES...]
 #
 # --pipeline is default (the staged pipeline), native or native2; --datasets takes
-# input configs separated by commas; OVERRIDES are Hydra overrides for every
-# sample. Each sample is one single-run process landing in
-# OUT/<dataset>/<sample_id>, with its console output in
-# OUT/_logs/<dataset>/<sample_id>.log. Completed samples are skipped
-# (on_existing=retry), so the same command resumes an interrupted sweep.
+# input configs separated by commas; --samples keeps only the sample ids it lists,
+# separated by commas; OVERRIDES are Hydra overrides for every sample. Each
+# sample is one single-run process landing in OUT/<dataset>/<sample_id>, with
+# its console output in OUT/_logs/<dataset>/<sample_id>.log. Completed samples
+# are skipped (on_existing=retry), so the same command resumes an interrupted
+# sweep.
 #
 # Start it in a terminal (a zellij pane, say) or with setsid, so the sweep has a
 # process group of its own: Ctrl-C, or killing that group (OUT/_logs/pgid), stops
@@ -27,6 +28,7 @@ while (($#)); do
     --datasets | --dataset) needs_value "$@"; datasets=$2; shift 2 ;;
     --out) needs_value "$@"; out=$2; shift 2 ;;
     --jobs) needs_value "$@"; jobs=$2; shift 2 ;;
+    --samples) needs_value "$@"; only=$2; shift 2 ;;
     --dry-run) export DRY_RUN=1; shift ;;
     -h | --help) sed -n '2,/^set /{/^set /d; s/^# \{0,1\}//p}' "$0"; exit 0 ;;
     --) shift; break ;;
@@ -97,6 +99,10 @@ export -f run_one
 # Datasets take turns, so early results cover all of them.
 samples=$(for dataset in ${datasets//,/ }; do list_samples "$dataset"; done |
   awk '{ print n[$1]++ "\t" NR "\t" $0 }' | sort -n -k1,1 -k2,2 | cut -f3-)
+if [[ -n ${only:-} ]]; then
+  samples=$(grep -wFf <(tr , '\n' <<<"$only") <<<"$samples") ||
+    fail "--samples matches no sample of $datasets"
+fi
 
 if [[ -z ${DRY_RUN:-} ]]; then
   # A pipeline run carries on through SIGINT, so Ctrl-C ends the whole group.

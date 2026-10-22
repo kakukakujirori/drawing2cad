@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
@@ -24,6 +25,9 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     ProjectionMethod,
     View,
 )
+from zeroshot.pipeline.stages.interpretation.pictorial_placement import (
+    pictorials_in_projected_places,
+)
 from zeroshot.pipeline.stages.interpretation.validate import validate_interpretation
 from zeroshot.pipeline.verification.attempts import AttemptStore
 
@@ -35,6 +39,8 @@ class InterpretationVerificationResult:
     interpretation: DrawingInterpretation | None
     reports: dict[str, dict[str, Any]]
     errors: tuple[str, ...] = ()
+    # Doubts about a valid interpretation, asked without refusing it.
+    questions: tuple[str, ...] = ()
 
     @property
     def confirmed(self) -> bool:
@@ -128,6 +134,7 @@ class InterpretationVerifier:
         validated_interpretation = None
         reports: dict[str, dict[str, Any]] = {}
         errors: list[str] = []
+        questions: list[str] = []
         payload = b""
         try:
             if self.source_path.is_symlink():
@@ -175,18 +182,23 @@ class InterpretationVerifier:
                         )
                     visited.add(parent.name)
                     parent = by_name[parent.region.view][1]
-            if any(
-                original.role is View.FULL_PAGE for original in self._original_views
-            ) and not any(
-                view.role in ORTHOGRAPHIC_VIEWS
+            orthographic_roles = {
+                view.role
                 for view in submitted_interpretation.views
+                if view.role in ORTHOGRAPHIC_VIEWS
+            }
+            if (
+                any(
+                    original.role is View.FULL_PAGE for original in self._original_views
+                )
+                and len(orthographic_roles) < 2
             ):
                 raise LocatedError.at(
                     ("views",),
-                    "A full_page input is an unsplit page. Add at least one DrawingView "
-                    "with an orthographic role (front, back, top, bottom, left or right). "
-                    "For a single-view drawing, add a new DrawingView that uses "
-                    "the same file with a full-file region.",
+                    "A full_page input is an unsplit page of several orthographic "
+                    "views. Register at least two of them, each cropped as its own "
+                    "DrawingView with its role (front, back, top, bottom, left or "
+                    "right); separate drawings on the page are separate views.",
                 )
             validated_interpretation, reports = validate_interpretation(
                 submitted_interpretation,
@@ -204,6 +216,13 @@ class InterpretationVerifier:
             errors.extend(file_errors(error, self.source_filename, payload))
         except Exception as error:  # noqa: BLE001 - return submission errors to the agent
             errors.extend(semantic_errors(error, self.source_filename, payload))
+        if validated_interpretation is not None and not errors:
+            with suppress(Exception):  # a doubt never refuses a valid reading
+                questions = pictorials_in_projected_places(
+                    validated_interpretation,
+                    workdir=self.workdir,
+                    projection_method=self.projection_method,
+                )
         (attempt_dir / "_interpretation_validation_log.json").write_text(
             json.dumps({"errors": errors, "reports": reports}, indent=2) + "\n",
             encoding="utf-8",
@@ -214,6 +233,7 @@ class InterpretationVerifier:
             interpretation=validated_interpretation,
             reports=reports,
             errors=tuple(errors),
+            questions=tuple(questions),
         )
         self._built_from_digest = self.source_digest()
         return self._built
@@ -267,4 +287,5 @@ class InterpretationVerifier:
                 "\n\nWarning: Don't you leave any undimensioned features unmeasured? "
                 "Deduce them by = pix_len * RANSAC scale (mm/px)."
             ),
+            *(create_text_block("\n\n" + question) for question in result.questions),
         ]

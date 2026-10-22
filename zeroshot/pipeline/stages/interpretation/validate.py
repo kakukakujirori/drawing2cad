@@ -1,8 +1,9 @@
 """Read sheet files and calibrate the Regions in a submitted interpretation."""
 
 import math
+import re
 from dataclasses import dataclass, replace
-from itertools import combinations
+from itertools import combinations, product
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -14,6 +15,7 @@ from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.validate import KeyLocation, LocatedError
 from zeroshot.pipeline.stages.interpretation.contracts import (
     ORTHOGRAPHIC_VIEWS,
+    PICTORIAL_VIEWS,
     UNDECIDED,
     VIEW_PLACEMENT,
     DrawingInterpretation,
@@ -30,6 +32,12 @@ type _Box = tuple[float, ...]
 MAX_DIMENSION_REGION_FRACTION = 0.25
 # Relative spread within which views' scales count as one, as in RANSAC.
 SCALE_AGREEMENT = 0.02
+# A number in a callout, with either a decimal point or a decimal comma.
+_PRINTED_NUMBER = re.compile(r"\d+(?:[.,]\d+)?|[.,]\d+")
+# A length off a printed number by a power of ten, or by 25.4 either way,
+# reads that number in other units.
+_UNIT_FACTORS = (1.0, 25.4, 1 / 25.4)
+_UNIT_FACTOR_TOLERANCE = 0.01
 
 
 @dataclass(frozen=True)
@@ -114,6 +122,17 @@ _SIDE_OF = {
 }
 
 
+def _page_centre(region: Region) -> tuple[float, float]:
+    """The region's middle on its parent sheet, x rightwards and y upwards."""
+    if region.box_px is not None:  # pixel y runs down the page, UV runs up
+        x0, y0, x1, y1 = region.box_px
+        return ((x0 + x1) / 2, -(y0 + y1) / 2)
+    if region.box_uv is not None:
+        x0, y0, x1, y1 = region.box_uv
+        return ((x0 + x1) / 2, (y0 + y1) / 2)
+    raise ValueError(f"{region.view}: region has neither box_px nor box_uv")
+
+
 def _require_conventional_placement(
     views: list[DrawingView], method: ProjectionMethod
 ) -> None:
@@ -122,17 +141,6 @@ def _require_conventional_placement(
     A third-angle top view below front, or a first-angle one above it, is a
     misread role: the mirrored reading projects just as well.
     """
-
-    def _page_centre(region: Region) -> tuple[float, float]:
-        """The region's middle on its parent sheet, x rightwards and y upwards."""
-        if region.box_px is not None:  # pixel y runs down the page, UV runs up
-            x0, y0, x1, y1 = region.box_px
-            return ((x0 + x1) / 2, -(y0 + y1) / 2)
-        if region.box_uv is not None:
-            x0, y0, x1, y1 = region.box_uv
-            return ((x0 + x1) / 2, (y0 + y1) / 2)
-        raise ValueError(f"{region.view}: region has neither box_px nor box_uv")
-
     front = next((view for view in views if view.role is View.FRONT), None)
     if front is None:
         return
@@ -155,6 +163,79 @@ def _require_conventional_placement(
             )
 
 
+def _printed_numbers(text: str) -> set[float]:
+    """Every number a callout prints; a comma is a decimal comma or groups thousands."""
+    numbers = set()
+    for token in _PRINTED_NUMBER.findall(text):
+        numbers |= {float(token.replace(",", ".")), float(token.replace(",", ""))}
+    return numbers
+
+
+def _in_other_units(value: float, printed: set[float]) -> bool:
+    """Whether a length is a printed number times a unit factor."""
+    tolerance = math.log10(1 + _UNIT_FACTOR_TOLERANCE)
+    for number, factor in product(printed - {0.0}, _UNIT_FACTORS):
+        exponent = math.log10(value / number / factor)
+        if abs(exponent - round(exponent)) <= tolerance and (
+            factor != 1.0 or round(exponent) != 0
+        ):
+            return True
+    return False
+
+
+def _require_printed_values(interpretation: DrawingInterpretation) -> None:
+    """Refuse a nominal_value that is not a number its text prints."""
+    misread = []
+    for v, view in enumerate(interpretation.views):
+        for d, dim in enumerate(view.dimensions):
+            printed = _printed_numbers(dim.text)
+            if dim.nominal_value is not None and not any(
+                math.isclose(dim.nominal_value, number, rel_tol=1e-6, abs_tol=1e-9)
+                for number in printed
+            ):
+                location = ("views", v, "dimensions", d, "nominal_value")
+                misread.append((location, dim, printed))
+    if not misread:
+        return
+    readings = "; ".join(
+        f"{dim.name} text {dim.text!r}, nominal_value {dim.nominal_value:g}"
+        for _, dim, _ in misread
+    )
+    message = (
+        f"nominal_value is the number its text prints, but these differ: {readings}. "
+        "Read each callout again, and record its text exactly as printed and "
+        "that number as nominal_value."
+    )
+    if any(
+        dim.kind != "angular"
+        and dim.nominal_value
+        and _in_other_units(dim.nominal_value, printed)
+        for _, dim, printed in misread
+    ):
+        message += (
+            " Printed lengths are millimetres exactly as printed, whatever their "
+            "decimals or the part's apparent size: never convert or rescale them, "
+            "and size the part from them."
+        )
+    raise LocatedError.at(misread[0][0], message)
+
+
+def _require_dimensions_on_orthographic_views(views: list[DrawingView]) -> None:
+    """A pictorial fixes no axes, so a view that carries dimensions is not one."""
+    for index, view in enumerate(views):
+        if view.role in PICTORIAL_VIEWS and view.dimensions:
+            names = ", ".join(dim.name for dim in view.dimensions)
+            raise LocatedError.at(
+                ("views", index, "role"),
+                f"{view.name} carries printed dimensions ({names}). A view with "
+                f"printed dimensions is an orthographic view: if {view.name} is "
+                "one, give it the role it shows (front, back, top, bottom, left or "
+                "right) with its u_axis and v_axis; if a dimension measures "
+                "geometry drawn in another orthographic view, register it under "
+                "that view.",
+            )
+
+
 def _require_a_readable_submission(
     interpretation: DrawingInterpretation, method: ProjectionMethod
 ) -> None:
@@ -165,6 +246,8 @@ def _require_a_readable_submission(
             f"datum still holds {UNDECIDED}: state the model frame, and "
             "report any doubt as a concern in your stage report",
         )
+    _require_printed_values(interpretation)
+    _require_dimensions_on_orthographic_views(interpretation.views)
     # A readable printed length is what calibrates a file, so its measurement
     # is required; an unreadable one cannot calibrate and stays optional.
     if unmeasured := [
@@ -189,34 +272,14 @@ def _require_a_readable_submission(
 def _require_distinct_view_files(
     views: list[DrawingView], paths: dict[str, Path]
 ) -> None:
-    """Different roles need separate files, except a full-page drawing."""
-    for (i, first), (j, second) in combinations(enumerate(views), 2):
-        if paths[first.name] != paths[second.name] or first.role is second.role:
-            # different roles have different paths. Okay.
-            continue
-
-        # FULL_PAGE can share the same path with other roles.
-        if first.role is View.FULL_PAGE:
-            page, child, child_index = first, second, j
-        elif second.role is View.FULL_PAGE:
-            page, child, child_index = second, first, i
-        else:
+    """Different roles need separate files."""
+    for (_, first), (j, second) in combinations(enumerate(views), 2):
+        if paths[first.name] == paths[second.name] and first.role is not second.role:
             raise LocatedError.at(
                 ("views", j, "file"),
                 f"{second.name} ({second.role.value}) shares a file with "
                 f"{first.name} ({first.role.value}); different roles must use different files. "
                 "Save separate crops and update their evidence coordinates.",
-            )
-
-        # If so, the child must be a whole-page orthographic view.
-        if child.role not in ORTHOGRAPHIC_VIEWS or not child.region.matches_bounds(
-            page.region
-        ):
-            raise LocatedError.at(
-                ("views", child_index, "file"),
-                f"{child.name} ({child.role.value}) reuses {page.name}.file "
-                "without being a full-page orthographic view. "
-                "Save a crop and update file and evidence coordinates.",
             )
 
 
