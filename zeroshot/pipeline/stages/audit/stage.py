@@ -135,7 +135,7 @@ def create_audit_stage(
     trial_tool = create_cad_hypothesis_tool(
         workdir=instructions.workdir,
         sandbox_runner=sandbox_runner,
-        renderer=StepRenderer(),
+        renderer=StepRenderer(ignore_hidden_lines=instructions.ignore_hidden_lines),
         diff_drawer_config=diff_drawer_config,
         trial_store=trial_store,
         stage="audit",

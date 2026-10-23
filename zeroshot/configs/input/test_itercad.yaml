@@ -6,6 +6,8 @@ sample:
   drawing:
     # Where the sheets put each view around front. Checked against the dataset.
     projection_method: third_angle
+    # Its orthographic views draw no hidden edges; only the isometric dashes them.
+    hidden_lines_omitted: true
     sheets:
       - name: view_drawing
         role: full_page

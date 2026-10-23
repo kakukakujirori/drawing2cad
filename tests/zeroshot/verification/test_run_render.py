@@ -4,6 +4,7 @@ from dataclasses import fields
 from pathlib import Path
 
 import cadquery as cq
+import ezdxf
 import pytest
 from PIL import Image
 
@@ -37,6 +38,7 @@ def _write_projections(
     _step_path: Path,
     paths: ProjectionPaths,
     _frames=None,
+    _ignore_hidden_lines=False,
 ) -> tuple[ProjectionPaths, dict[str, str]]:
     for path in paths.as_mapping().values():
         path.write_text("DXF", encoding="utf-8")
@@ -97,7 +99,7 @@ def test_partial_render_reports_only_successful_paths(tmp_path, monkeypatch):
 
 
 def test_degenerate_projection_keeps_the_reason(tmp_path, monkeypatch):
-    def reject_projection(_step_path, _paths, _frames=None):
+    def reject_projection(_step_path, _paths, _frames=None, _ignore_hidden_lines=False):
         raise DegenerateDrawingError("right view has near-zero extent")
 
     def reject_render3d(_step_path, _paths):
@@ -268,6 +270,23 @@ def test_a_degenerate_view_leaves_the_other_views_drawn(tmp_path, monkeypatch):
     assert errors == {
         "right": "DegenerateDrawingError: view 'right' has near-zero extent"
     }
+
+
+@pytest.mark.parametrize("ignore_hidden_lines", [False, True])
+def test_hidden_edges_are_dashed_unless_ignored(tmp_path, ignore_hidden_lines):
+    step_path = tmp_path / "bored.step"
+    bored = cq.Workplane("XY").box(30.0, 20.0, 10.0).faces(">Z").workplane().hole(6.0)
+    cq.exporters.export(bored, str(step_path))
+    requested = _projection_paths(tmp_path)
+
+    run_render._render_projections(step_path, requested, UNTURNED, ignore_hidden_lines)
+
+    linetypes = {
+        entity.dxf.linetype
+        for path in requested.as_mapping().values()
+        for entity in ezdxf.readfile(path).modelspace()
+    }
+    assert ("HIDDEN" in linetypes) is not ignore_hidden_lines
 
 
 def test_every_error_key_names_a_field_of_its_paths_dto(tmp_path, monkeypatch):

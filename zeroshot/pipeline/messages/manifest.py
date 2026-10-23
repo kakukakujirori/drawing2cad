@@ -123,6 +123,8 @@ class InputManifest:
     drawing: Sequence[DrawingView]
     # Where the sheets put each view around front; a dataset draws one way.
     projection_method: ProjectionMethod
+    # The sheets never draw hidden edges, so the builds' views leave them out too.
+    hidden_lines_omitted: bool = False
     max_input_image_side: int = 2000
 
     def __post_init__(self) -> None:

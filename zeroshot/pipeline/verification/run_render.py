@@ -70,6 +70,7 @@ def _render_projections(
     step_path: Path,
     projection_paths: ProjectionPaths,
     frames: ViewFrames,
+    ignore_hidden_lines: bool = False,
 ) -> tuple[ProjectionPaths, dict[str, str]]:
     """Draw each requested orthographic view into a DXF of its own."""
     errors: dict[str, str] = {}
@@ -78,6 +79,8 @@ def _render_projections(
         shape = load_shape(step_path)
         for view, path in requested.items():
             visible, hidden = project(shape, *frames[View(view)])
+            if ignore_hidden_lines:
+                hidden = []
             # A view seen edge-on can collapse; the other views still hold shape.
             try:
                 write_view_dxf(path, visible, hidden, view)
@@ -139,6 +142,7 @@ def _render_once(
     output_projection_paths: ProjectionPaths,
     output_render3d_paths: Render3dPaths,
     frames: ViewFrames,
+    ignore_hidden_lines: bool = False,
 ) -> RenderReport:
     """Run each component once and retain paths for successful outputs only."""
     requested_render_num = _get_render_num(output_projection_paths) + _get_render_num(
@@ -148,7 +152,7 @@ def _render_once(
     # projections
     try:
         output_projection_paths, projection_errors = _render_projections(
-            input_step_path, output_projection_paths, frames
+            input_step_path, output_projection_paths, frames, ignore_hidden_lines
         )
     except Exception as error:  # noqa: BLE001
         for path_field in fields(output_projection_paths):
@@ -205,6 +209,7 @@ def _worker(
     output_projection_paths: ProjectionPaths,
     output_render3d_paths: Render3dPaths,
     frames: ViewFrames,
+    ignore_hidden_lines: bool,
     connection: Connection,
 ) -> None:
     try:
@@ -214,6 +219,7 @@ def _worker(
                 output_projection_paths,
                 output_render3d_paths,
                 frames,
+                ignore_hidden_lines,
             )
         )
     finally:
@@ -238,13 +244,20 @@ _POLL_INTERVAL_S = 0.05
 
 
 class StepRenderer:
-    def __init__(self, timeout_s: float = 120.0, max_workers: int = 8) -> None:
+    def __init__(
+        self,
+        timeout_s: float = 120.0,
+        max_workers: int = 8,
+        ignore_hidden_lines: bool = False,
+    ) -> None:
         if timeout_s <= 0:
             raise ValueError("timeout_s must be positive")
         if max_workers < 1:
             raise ValueError("max_workers must be at least 1")
         self.timeout_s = timeout_s
         self.max_workers = max_workers
+        # Orthographic views leave hidden edges out, as drawings that omit them do.
+        self.ignore_hidden_lines = ignore_hidden_lines
 
     def render(
         self,
@@ -331,6 +344,7 @@ class StepRenderer:
                 request.projection_paths,
                 request.render3d_paths,
                 dict(request.frames),
+                self.ignore_hidden_lines,
                 sender,
             ),
             daemon=True,

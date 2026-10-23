@@ -55,6 +55,7 @@ class StageInstructions:
     prompt_context: Mapping[str, str]
     workdir: SandboxWorkdir
     projection_method: ProjectionMethod
+    ignore_hidden_lines: bool = False
 
     def __post_init__(self) -> None:
         if self.input_presentation_mode not in ("path", "image"):

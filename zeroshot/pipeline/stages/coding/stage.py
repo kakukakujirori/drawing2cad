@@ -220,7 +220,7 @@ def create_coding_stage(
     retry_compaction = RetryCompaction(retry_compaction)
     if retry_compaction is not RetryCompaction.NEVER and compaction_model is None:
         raise ValueError(f"{retry_compaction=} needs a compaction model")
-    renderer = StepRenderer()
+    renderer = StepRenderer(ignore_hidden_lines=instructions.ignore_hidden_lines)
     workspace = CodingWorkspaceVerifier(
         InterpretationVerifier(
             workdir=instructions.workdir,

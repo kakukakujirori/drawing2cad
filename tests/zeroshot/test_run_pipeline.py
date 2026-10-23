@@ -51,6 +51,7 @@ def _config(tmp_path: Path, dxf_path: Path, **overrides: Any) -> Any:
             "max_input_image_side": 2000,
             "drawing": {
                 "projection_method": "third_angle",
+                "hidden_lines_omitted": False,
                 "sheets": [
                     {
                         "name": "view_drawing",
@@ -128,6 +129,7 @@ def test_run_composes_dependencies_and_manifest(
                 "max_input_image_side": 2000,
                 "drawing": {
                     "projection_method": "third_angle",
+                    "hidden_lines_omitted": True,
                     "sheets": [
                         {
                             "name": "view_drawing",
@@ -169,6 +171,7 @@ def test_run_composes_dependencies_and_manifest(
         sample_id="sample-1",
         drawing=[register_view("view_drawing", View.FULL_PAGE, dxf_path)],
         projection_method=ProjectionMethod.THIRD_ANGLE,
+        hidden_lines_omitted=True,
     )
     assert result is not None
     assert result == {}

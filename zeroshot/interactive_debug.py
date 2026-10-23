@@ -283,7 +283,12 @@ def build_agent(
     if stage == "coding":
         snapshot = source.values["reconstruction"].snapshots[-1]
         diff_config = config.workflow.get("diff_drawer_config")
-        renderer = StepRenderer()
+        # Runs from before the flag existed drew hidden edges.
+        renderer = StepRenderer(
+            ignore_hidden_lines=OmegaConf.select(
+                config, "sample.drawing.hidden_lines_omitted", default=False
+            )
+        )
         verifier = OutputVerifier(
             executor=CadQueryExecutor(sandbox_runner=runner),
             workdir=workdir,

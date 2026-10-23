@@ -426,6 +426,7 @@ class PipelineRunner:
             sample_id=manifest.sample_id,
             drawing=[staged(view) for view in manifest.drawing],
             projection_method=manifest.projection_method,
+            hidden_lines_omitted=manifest.hidden_lines_omitted,
             max_input_image_side=manifest.max_input_image_side,
         )
 

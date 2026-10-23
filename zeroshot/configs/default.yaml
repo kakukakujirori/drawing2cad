@@ -54,3 +54,6 @@ sample:
   sample_id: "000364"
   # Reject larger input rasters before running agents; inputs are never resized.
   max_input_image_side: 3000
+  drawing:
+    # The sheets never draw hidden edges, so the builds' views leave them out too.
+    hidden_lines_omitted: false
