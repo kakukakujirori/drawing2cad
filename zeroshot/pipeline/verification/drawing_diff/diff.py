@@ -12,7 +12,7 @@ from ezdxf.layouts import Modelspace
 from scipy.spatial import cKDTree
 
 from .align import AlignmentResult, _validate_rgb, opencv_transform
-from .image_ops import annotation_mask, distance_map, foreground_mask
+from .image_ops import annotation_mask, distance_map, foreground_mask, thin_mask
 from .unmatched import (
     describe_unmatched,
     detail_geometry,
@@ -264,12 +264,16 @@ def compute_diff(
         stats.update(_chamfers(drawing_ink, output_ink, matrix, annotation))
         # Cluster distances to highlight unmatched output lines and regions.
         output_seen = warp_output_to_drawing(output_ink, matrix, drawing_ink.shape)
-        material = measure_material_error(drawing_ink & ~annotation, output_seen)
+        # Lines drawn thinner than the outlines, like dimension lines, enclose no part.
+        part_ink = drawing_ink & ~annotation
+        outline = part_ink & ~thin_mask(drawing_gray, part_ink, output_seen)
+        material = measure_material_error(outline, output_seen)
         stats["material_error"] = material
         # Both terms are lengths in drawing pixels: the mean distance between
         # the line sets, and the mismatched silhouette area per unit of outline.
-        # A view whose input silhouette cannot be filled is scored by lines alone;
-        # that depends only on the input, so builds of one drawing stay comparable.
+        # A view whose input silhouette cannot be filled is scored by lines alone.
+        # That rests on the input, and on whether the registered output finds its
+        # outlines drawn thicker; builds of one drawing mostly agree on both.
         line = stats["unbounded_chamfer_drawing_px"]
         if line is not None:
             stats["match_score"] = line + (
@@ -290,7 +294,7 @@ def compute_diff(
                 drawing_ink.shape,
             )
 
-        groups = find_unmatched(drawing_ink, output_seen, geometry, annotation)
+        groups = find_unmatched(drawing_ink, output_seen, geometry, annotation, outline)
         stats["unmatched"] = describe_unmatched(groups)
         unmatched = draw_unmatched(drawing_gray, output_seen, groups, annotation)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from scipy.ndimage import binary_fill_holes
+from skimage.filters import threshold_otsu
 from skimage.morphology import skeletonize
 
 
@@ -59,10 +60,77 @@ def annotation_mask(gray: np.ndarray, ink: np.ndarray) -> np.ndarray:
         return none
     # Blur can pale a part line where it curves; that must not open its outline.
     part = (ink & (core <= threshold)).astype(np.uint8)
-    near_part = cv2.dilate(
-        part, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * PART_REACH_PX + 1,) * 2)
-    )
+    near_part = cv2.dilate(part, disk(PART_REACH_PX))
     return ink & (core > threshold) & ~near_part.astype(bool)
+
+
+def disk(radius: int) -> np.ndarray:
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1,) * 2)
+
+
+# Gaps a rendered outline may leave, closed before its area is filled.
+# Tuned on outputs/silhouette_20260927.
+CLOSE_PX = 3
+
+
+def filled_area(ink: np.ndarray) -> np.ndarray:
+    """The area inside the outermost lines."""
+    closed = cv2.morphologyEx(ink.astype(np.uint8), cv2.MORPH_CLOSE, disk(CLOSE_PX))
+    return binary_fill_holes(closed)
+
+
+def external_boundary(ink: np.ndarray) -> np.ndarray:
+    """The outer edge of the area a line drawing encloses."""
+    area = filled_area(ink).astype(np.uint8)
+    return area.astype(bool) & ~cv2.erode(area, np.ones((3, 3), np.uint8)).astype(bool)
+
+
+# Drafting draws a part's outlines thick and its other lines thin: dimension,
+# extension and leader lines, and also hidden and centre lines. ISO 128 sets
+# thick at twice thin, but blur and low resolution widen thin lines, so a
+# drawing counts as using both widths from this ratio on.
+WIDTH_RATIO = 1.3
+# Strokes this far from every line of the registered part are not its outline.
+AWAY_PX = 12
+# Stroke centres needed on each side to tell their widths.
+MIN_WIDTH_SAMPLES = 50
+
+
+def thin_mask(gray: np.ndarray, ink: np.ndarray, part: np.ndarray) -> np.ndarray:
+    """The ink drawn in thin lines, when the drawing draws its outlines thicker.
+
+    Thin lines are every line but the part's outlines: dimension, extension and
+    leader lines, and hidden and centre lines too. part is the registered CAD's
+    ink on this drawing. It tells which width the outlines take here: strokes on
+    its outer edge are outlines, and strokes far from all its lines are not.
+    Otsu's threshold on stroke width splits thin from thick. The result is empty
+    unless the outlines are clearly the wider: most of their strokes lie above
+    that threshold, most strokes away from the part lie below it, and the two
+    widths are WIDTH_RATIO apart.
+
+    A stroke's width is its ink summed across the stroke. Unlike a count of
+    binary pixels, it stays the same wherever a thin line falls on the pixels.
+    """
+    centres = skeletonize(ink)
+    darkness = (255 - gray.astype(np.float32)) / 255
+    width = cv2.boxFilter(darkness, -1, (7, 7), normalize=False) / 7
+    outline = centres & (distance_map(external_boundary(part)) <= 2)
+    away = centres & (distance_map(skeletonize(part)) > AWAY_PX)
+    if min(outline.sum(), away.sum()) < MIN_WIDTH_SAMPLES:
+        return np.zeros_like(ink, dtype=bool)
+    level = threshold_otsu(width[centres])
+    on, off = width[outline], width[away]
+    # Most outline strokes lie above the split and most others below it.
+    if (on >= level).mean() <= 0.5 or (off >= level).mean() >= 0.5:
+        return np.zeros_like(ink, dtype=bool)
+    if np.median(on) < WIDTH_RATIO * np.median(off):
+        return np.zeros_like(ink, dtype=bool)
+    # Each stroke pixel takes the width of the centre lines within the outlines'
+    # half-width; ink farther from any, like a filled arrowhead, is no outline.
+    reach = max(2, int(np.ceil(np.median(distance_map(~ink)[outline]))))
+    square = np.ones((2 * reach + 1,) * 2, np.uint8)
+    beside = cv2.dilate(np.where(centres, width, 0), square)
+    return ink & (beside < level)
 
 
 def distance_map(foreground: np.ndarray) -> np.ndarray:
@@ -87,9 +155,7 @@ def drawing_area(ink: np.ndarray) -> np.ndarray:
     """
     # Do not close input gaps: that can join dimension lines to the part.
     filled = binary_fill_holes(ink).astype(np.uint8)
-    area = cv2.morphologyEx(
-        filled, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    )
+    area = cv2.morphologyEx(filled, cv2.MORPH_OPEN, disk(3))
     count, labels, stats, _ = cv2.connectedComponentsWithStats(area)
     before = cv2.connectedComponentsWithStats(filled)[2][1:, cv2.CC_STAT_AREA]
     if count == 1 or stats[1:, cv2.CC_STAT_AREA].max() < MIN_KEPT_AREA * before.max():

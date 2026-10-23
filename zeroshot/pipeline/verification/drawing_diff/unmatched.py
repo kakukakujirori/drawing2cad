@@ -15,11 +15,10 @@ from typing import Any, Literal
 import cv2
 import numpy as np
 from ezdxf.layouts import Modelspace
-from scipy.ndimage import binary_fill_holes
 from scipy.spatial import cKDTree
 from skimage.morphology import skeletonize
 
-from .image_ops import distance_map, drawing_area
+from .image_ops import disk, distance_map, drawing_area, filled_area
 
 # Tuned on two drawings and their ground truth: outputs/a2_gate_20260927.
 UNMATCHED_PX = 12.0
@@ -27,8 +26,7 @@ JOIN_PX = 4
 PART_MARGIN_PX = 20
 MIN_LENGTH_PX = 50
 
-# Tuned the same way: outputs/silhouette_20260927.
-CLOSE_PX = 3
+# Tuned the same way: outputs/silhouette_20260927, with image_ops.CLOSE_PX.
 # Narrower slivers come from misregistered edges and from annotation.
 MATERIAL_THIN_PX = 30
 MIN_AREA_PX = 1000
@@ -111,10 +109,6 @@ def warp_output_to_drawing(
     return warped > 0
 
 
-def _disk(radius: int) -> np.ndarray:
-    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1,) * 2)
-
-
 def _groups(
     mask: np.ndarray,
     joined: np.ndarray,
@@ -138,7 +132,7 @@ def _line_groups(
     direction: Literal["missing", "extra"],
     min_length: int = MIN_LENGTH_PX,
 ) -> list[Unmatched]:
-    groups = _groups(mask, cv2.dilate(mask.astype(np.uint8), _disk(JOIN_PX)), direction)
+    groups = _groups(mask, cv2.dilate(mask.astype(np.uint8), disk(JOIN_PX)), direction)
     return [group for group in groups if group.size_px >= min_length]
 
 
@@ -148,17 +142,11 @@ def _line_groups(
 # Filled silhouettes, area statistics and outline bands.
 
 
-def _filled(ink: np.ndarray) -> np.ndarray:
-    """The area inside the outermost lines."""
-    closed = cv2.morphologyEx(ink.astype(np.uint8), cv2.MORPH_CLOSE, _disk(CLOSE_PX))
-    return binary_fill_holes(closed)
-
-
 def _material_groups(
     mask: np.ndarray, direction: Literal["missing", "extra"]
 ) -> list[Unmatched]:
     opened = cv2.morphologyEx(
-        mask.astype(np.uint8), cv2.MORPH_OPEN, _disk(MATERIAL_THIN_PX // 2)
+        mask.astype(np.uint8), cv2.MORPH_OPEN, disk(MATERIAL_THIN_PX // 2)
     ).astype(bool)
     groups = _groups(opened, opened, direction, material=True)
     return [group for group in groups if group.size_px >= MIN_AREA_PX]
@@ -179,7 +167,7 @@ def measure_material_error(
             "reason": "the input outline cannot be filled (thin walls or open lines)",
             "ratio": None,
         }
-    output_area = _filled(output)
+    output_area = filled_area(output)
     missing = int((input_area & ~output_area).sum())
     extra = int((output_area & ~input_area).sum())
     union = int((input_area | output_area).sum())
@@ -201,7 +189,7 @@ def _outline(groups: list[Unmatched], shape: tuple[int, ...]) -> np.ndarray:
     area = np.zeros(shape, np.uint8)
     for group in groups:
         area[group.xy[:, 1], group.xy[:, 0]] = 1
-    band = cv2.dilate(area, _disk(OUTLINE_PX)) - cv2.erode(area, _disk(OUTLINE_PX))
+    band = cv2.dilate(area, disk(OUTLINE_PX)) - cv2.erode(area, disk(OUTLINE_PX))
     return band.astype(bool)
 
 
@@ -356,7 +344,7 @@ def _merge_extra_groups(
 
     # Clipping can split a component; classify each resulting cluster by provenance.
     merged = _groups(
-        combined, cv2.dilate(combined.astype(np.uint8), _disk(JOIN_PX)), "extra"
+        combined, cv2.dilate(combined.astype(np.uint8), disk(JOIN_PX)), "extra"
     )
     return [g for g in coarse if g.direction == "missing"] + [
         replace(g, local=not extra[g.xy[:, 1], g.xy[:, 0]].any())
@@ -400,13 +388,15 @@ def find_unmatched(
     output: np.ndarray,
     geometry: DetailGeometry | None = None,
     annotation: np.ndarray | None = None,
+    outline: np.ndarray | None = None,
 ) -> list[Unmatched]:
     """Collect material/coarse defects, merge fine errors, then select display groups.
 
     Material outlines suppress duplicate line groups. Fine tails extend coarse
     groups before independent locals pass the size and curvature/corner checks.
     Annotation ink is never missing and never encloses material, but output
-    lines along it are not extra either.
+    lines along it are not extra either. Only outline ink, by default all part
+    ink, encloses material.
     """
     annotated = annotation is not None and annotation.any()
     part_ink = drawing_ink & ~annotation if annotated else drawing_ink
@@ -424,7 +414,8 @@ def find_unmatched(
     ] = True
 
     # Filled silhouettes expose broad material differences beyond individual lines.
-    input_area, output_area = drawing_area(part_ink), _filled(output)
+    input_area = drawing_area(part_ink if outline is None else outline)
+    output_area = filled_area(output)
     material = (
         _material_groups(input_area & ~output_area & part, "missing")
         + _material_groups(output_area & ~input_area, "extra")
@@ -517,7 +508,7 @@ def draw_unmatched(
             stripe = (group.xy[:, 0] + group.xy[:, 1]) % HATCH_PX < 3
             image[group.xy[stripe, 1], group.xy[stripe, 0]] = color
         else:
-            image[cv2.dilate(mask, _disk(BAND_PX)) > 0] = color
+            image[cv2.dilate(mask, disk(BAND_PX)) > 0] = color
 
     # Restore source context: input gray, output sky blue, overlap pure blue.
     ink = drawing_gray < 128

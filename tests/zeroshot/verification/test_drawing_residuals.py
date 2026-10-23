@@ -9,6 +9,7 @@ from zeroshot.pipeline.verification.drawing_diff.image_ops import (
     annotation_mask,
     drawing_area,
     foreground_mask,
+    thin_mask,
 )
 
 
@@ -332,18 +333,18 @@ def test_a_thin_walled_outline_has_no_silhouette():
     assert drawing_area(solid).sum() > 0.9 * 121 * 81
 
 
-def _dimensioned_part(annotation_color):
+def _dimensioned_part(annotation_color, annotation_width=2, outline_width=5):
     """A part with a hole; its dimension lines close a box beside it."""
     image = _white(300)
     for y in (60, 240):  # extension lines continuing the top and bottom edges
-        cv2.line(image, (150, y), (270, y), annotation_color, 2)
-    cv2.line(image, (250, 50), (250, 250), annotation_color, 2)
-    cv2.line(image, (200, 20), (95, 150), annotation_color, 2)  # leader to the hole
+        cv2.line(image, (150, y), (270, y), annotation_color, annotation_width)
+    cv2.line(image, (250, 50), (250, 250), annotation_color, annotation_width)
+    cv2.line(image, (200, 20), (95, 150), annotation_color, annotation_width)  # leader
     cv2.putText(
         image, "R0.13", (175, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, annotation_color, 1
     )
-    cv2.rectangle(image, (40, 60), (150, 240), (0, 0, 0), 5)
-    cv2.circle(image, (95, 150), 20, (0, 0, 0), 5)
+    cv2.rectangle(image, (40, 60), (150, 240), (0, 0, 0), outline_width)
+    cv2.circle(image, (95, 150), 20, (0, 0, 0), outline_width)
     return image
 
 
@@ -352,11 +353,15 @@ def test_light_annotation_neither_encloses_material_nor_joins_a_missing_hole():
     cv2.rectangle(output, (40, 60), (150, 240), (0, 0, 0), 1)
 
     two_tone = compute_diff(_dimensioned_part((120, 120, 120)), output, _alignment())
-    one_tone = compute_diff(_dimensioned_part((0, 0, 0)), output, _alignment())
+    one_tone = compute_diff(_dimensioned_part((0, 0, 0), 5), output, _alignment())
+    thin = compute_diff(_dimensioned_part((0, 0, 0)), output, _alignment())
 
-    # In one tone the box the dimension lines close reads as missing material.
+    # In the part's tone and width, the box the dimension lines close reads as
+    # missing material; drawn thinner than the part, it does not.
     assert one_tone.stats["material_error"]["missing_px2"] > 15000
     assert two_tone.stats["material_error"]["missing_px2"] < 2500
+    assert thin.stats["material_error"]["missing_px2"] < 2500
+    assert not any(group["kind"] == "material" for group in thin.stats["unmatched"])
     assert two_tone.stats["match_score"] < one_tone.stats["match_score"] / 3
     # The hole is the only difference, and the leader ending on it is not part of it.
     [hole] = two_tone.stats["unmatched"]
@@ -391,3 +396,28 @@ def test_light_annotation_is_masked_but_a_pale_stretch_of_a_part_line_is_not():
     assert annotation[5:17, 175:230].any()  # text
     assert not annotation[145:155, 40:44].any()
     assert not (annotation & (gray < 60)).any()
+
+
+def _part_lines(width):
+    """The part's outline and hole as drawn at width; width 1 is the registered CAD."""
+    lines = np.zeros((300, 300), np.uint8)
+    cv2.rectangle(lines, (40, 60), (150, 240), 1, width)
+    cv2.circle(lines, (95, 150), 20, 1, width)
+    return lines.astype(bool)
+
+
+@pytest.mark.parametrize("outline_width", [5, 9])
+def test_thin_lines_are_found_and_wide_outlines_keep_their_edges(outline_width):
+    gray = _gray(_dimensioned_part((0, 0, 0), outline_width=outline_width))
+    ink = foreground_mask(gray)
+
+    thin = thin_mask(gray, ink, _part_lines(1))
+
+    assert thin[150, 250] and thin[60, 200]  # dimension, extension
+    assert not (thin & _part_lines(outline_width)).any()
+
+
+def test_a_drawing_in_one_width_has_no_thin_lines():
+    gray = _gray(_dimensioned_part((0, 0, 0), annotation_width=5))
+
+    assert not thin_mask(gray, foreground_mask(gray), _part_lines(1)).any()

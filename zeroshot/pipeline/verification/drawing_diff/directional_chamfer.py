@@ -25,19 +25,14 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import cv2
 import numpy as np
-from scipy.ndimage import (
-    binary_fill_holes,
-    gaussian_filter,
-    map_coordinates,
-    minimum_filter,
-)
+from scipy.ndimage import gaussian_filter, map_coordinates, minimum_filter
 from scipy.optimize import minimize
 from scipy.spatial import cKDTree
 
 if TYPE_CHECKING or __package__:
-    from .image_ops import distance_map, foreground_mask
+    from .image_ops import distance_map, external_boundary, foreground_mask
 else:  # Preserve direct-file CLI execution alongside package imports.
-    from image_ops import distance_map, foreground_mask
+    from image_ops import distance_map, external_boundary, foreground_mask
 
 
 @dataclass
@@ -178,18 +173,6 @@ def features(ink: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     angle = (0.5 * np.arctan2(2 * xy, xx - yy) + np.pi / 2) % np.pi
     y, x = np.nonzero(ink)
     return np.column_stack((x, y)).astype(np.float64), angle[y, x]
-
-
-def external_boundary(ink: np.ndarray) -> np.ndarray:
-    """The outer edge of a CAD projection's filled silhouette."""
-    closed = cv2.morphologyEx(
-        ink.astype(np.uint8),
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
-    )
-    area = binary_fill_holes(closed).astype(np.uint8)
-    eroded = np.asarray(cv2.erode(area, np.ones((3, 3), np.uint8))).astype(bool)
-    return area.astype(bool) & ~eroded
 
 
 def robust_loss(distance: np.ndarray, tau: float, loss: str) -> np.ndarray:
