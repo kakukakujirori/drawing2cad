@@ -197,32 +197,36 @@ def test_chamfer_optimizer_recovers_a_transformed_line_drawing():
     assert np.max(np.linalg.norm(restored - (points + 0.5), axis=1)) < 1
 
 
-def test_input_outline_preserves_notch_but_excludes_dimension_lines():
-    ink = np.zeros((150, 180), np.uint8)
-    outline = np.array(
-        [
-            [20, 20],
-            [110, 20],
-            [110, 45],
-            [60, 45],
-            [60, 85],
-            [110, 85],
-            [110, 110],
-            [20, 110],
-        ]
+def test_cad_outline_aligns_past_connected_dimensions_and_cad_only_lines():
+    projection = np.full((96, 128, 3), 255, np.uint8)
+    outline = np.array([[15, 12], [95, 12], [95, 55], [75, 55], [75, 75], [15, 75]])
+    cv2.polylines(projection, [outline], True, (0, 0, 0), 1)
+    # Lines the drawing omits, such as tangent edges.
+    for y in (24, 36, 48):
+        cv2.line(projection, (15, y), (95, y), (0, 0, 0), 1)
+    drawing = np.full((150, 190, 3), 255, np.uint8)
+    offset = np.array([31, 29])
+    cv2.polylines(drawing, [outline + offset], True, (0, 0, 0), 1)
+    # Dimension and extension lines touching the part close regions around it.
+    for start, end in (
+        ((46, 41), (46, 130)),
+        ((126, 41), (126, 130)),
+        ((46, 122), (126, 122)),
+        ((46, 104), (156, 104)),
+        ((46, 41), (156, 41)),
+        ((148, 41), (148, 104)),
+    ):
+        cv2.line(drawing, start, end, (0, 0, 0), 1)
+    scale = max(projection.shape[:2]) / max(drawing.shape[:2])
+    result = alignment.align(
+        drawing,
+        projection,
+        options={"relative_scale": (scale * 0.99, scale * 1.01), "rotation_degrees": 1},
     )
-    cv2.polylines(ink, [outline], True, 1, 3)
-    cv2.line(ink, (20, 120), (110, 120), 1, 2)
-    cv2.line(ink, (20, 20), (20, 125), 1, 2)
-    boundary = chamfer.external_boundary(ink.astype(bool), drawing=True)
-    assert boundary[55:75, 59:62].any()  # concave notch, not a bounding rectangle
-    assert not boundary[119:].any()  # dimension and extension lines
-    assert not boundary[55:75, 90:115].any()  # no invented line closing the notch
-
-    cv2.line(ink := np.zeros_like(ink), (20, 20), (110, 110), 1, 1)
-    objective = chamfer.Objective(ink.astype(bool), ink.astype(bool), chamfer.Config())
-    assert objective.target_outline is None
-    assert not objective.outline_banks
+    assert result.status != "failed", result.diagnostics
+    H = np.asarray(result.diagnostics["chamfer"]["H_source_to_drawing"])
+    moved = chamfer.apply_homography(H, outline) - outline - offset
+    assert np.max(np.linalg.norm(moved, axis=1)) < 1.5
 
 
 def test_outer_line_loss_mixes_with_all_ink_loss_and_keeps_regularization():
@@ -248,6 +252,20 @@ def test_outer_line_loss_mixes_with_all_ink_loss_and_keeps_regularization():
         assert objectives[1](p) == pytest.approx(
             0.2 * objectives[0](p) + 0.8 * objectives[2](p)
         )
+    # The outline share goes to the rectangle, never to the circle inside it.
+    x, y = objectives[1].points[objectives[1].outer].T
+    assert x.size and np.all(
+        (np.minimum(abs(x - 10), abs(x - 100)) <= 3)
+        | (np.minimum(abs(y - 10), abs(y - 75)) <= 3)
+    )
+
+    # With the outline out of sight, the weight stays on the lines left.
+    circle_only = np.zeros_like(mask)
+    circle_only[20:51, 30:61] = True
+    hidden = chamfer.Objective(
+        mask, mask, chamfer.Config(outline_weight=1), circle_only
+    )
+    assert not hidden.outer.any() and np.isfinite(hidden(p[:4]))
 
 
 def test_rgb_loader_composites_alpha_without_exif_rotation(tmp_path):
@@ -273,7 +291,6 @@ def test_grid_search_skips_templates_far_larger_than_the_drawing():
     objective = SimpleNamespace(
         cfg=chamfer.Config(),
         weights=np.ones(len(points)),
-        target_outline=None,
         visible_points=points,
         center=points.mean(axis=0),
         Ls=1.0,
@@ -282,3 +299,21 @@ def test_grid_search_skips_templates_far_larger_than_the_drawing():
 
     with pytest.raises(ValueError, match="no allowed scale"):
         chamfer.grid_search(objective, target)
+
+
+def test_grid_search_keeps_every_equally_good_translation():
+    source = np.zeros((40, 40), np.uint8)
+    cv2.rectangle(source, (8, 8), (31, 31), 1, 1)
+    target = np.zeros((100, 200), np.uint8)
+    for x in (38, 138):  # two places the square fits exactly
+        cv2.rectangle(target, (x, 38), (x + 23, 61), 1, 1)
+    scale = 40 / 200
+    cfg = chamfer.Config(
+        relative_scale=(scale * 0.99, scale * 1.01), rotation_degrees=1
+    )
+    objective = chamfer.Objective(source.astype(bool), target.astype(bool), cfg)
+
+    centres = [200 * p[:2] for p in chamfer.grid_search(objective, target.astype(bool))]
+
+    for x in (50, 150):
+        assert any(np.hypot(cx - x, cy - 50) < 4 for cx, cy in centres)
