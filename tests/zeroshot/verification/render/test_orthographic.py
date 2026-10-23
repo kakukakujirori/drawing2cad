@@ -8,6 +8,7 @@ import math
 
 import cadquery as cq
 import pytest
+from OCP.BRepAlgo import BRepAlgo
 
 from zeroshot.pipeline.stages.interpretation.contracts import (
     TOWARD_VIEWER,
@@ -165,6 +166,37 @@ def test_a_seam_along_the_outline_is_still_drawn(plate):
     _, hidden = project(plate, *STANDARD_VIEW_FRAMES[View.TOP])
 
     assert hidden == []
+
+
+def _knob_plate(one_edge: bool) -> cq.Solid:
+    """A plate ending in a round knob; one_edge joins its outline into one curve,
+    so its side is one face with creases and no edges along them."""
+    neck = math.sqrt(7**2 - 6**2)
+    outline = (
+        cq.Workplane()
+        .moveTo(0, -9)
+        .lineTo(0, 9)
+        .lineTo(60, 9)
+        .lineTo(60, neck)
+        .threePointArc((73, 0), (60, -neck))
+        .lineTo(60, -9)
+        .close()
+        .wires()
+        .val()
+    )
+    if one_edge:
+        joined = BRepAlgo.ConcatenateWireC0_s(outline.wrapped)
+        outline = cq.Wire.assembleEdges([cq.Edge(joined)])
+    return cq.Solid.extrudeLinear(cq.Face.makeFromWires(outline), cq.Vector(0, 0, 18))
+
+
+@pytest.mark.parametrize("view", [View.FRONT, View.TOP, View.RIGHT])
+def test_creases_inside_a_face_are_drawn_as_edges_between_faces_would_be(view):
+    def lengths(solid):
+        drawn = project(solid, *STANDARD_VIEW_FRAMES[view])
+        return [sum(edge.Length() for edge in edges) for edges in drawn]
+
+    assert lengths(_knob_plate(True)) == pytest.approx(lengths(_knob_plate(False)))
 
 
 def test_a_straight_spline_is_drawn_as_a_line():

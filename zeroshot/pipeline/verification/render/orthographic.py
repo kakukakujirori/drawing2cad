@@ -23,6 +23,8 @@ from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Lin, gp_Pnt
 from OCP.HLRAlgo import HLRAlgo_Projector
 from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
 from OCP.ShapeAnalysis import ShapeAnalysis_CanonicalRecognition
+from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideContinuity
+from OCP.Standard import Standard_Failure
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED
 from OCP.TopExp import TopExp
 from OCP.TopoDS import TopoDS, TopoDS_Edge, TopoDS_Face, TopoDS_Shape
@@ -77,7 +79,7 @@ def project(
     eye = gp_Dir(*AXIS_VECTOR[out])
     frame = gp_Ax2(gp_Pnt(), eye, gp_Dir(*AXIS_VECTOR[u_axis]))
     algo = HLRBRep_Algo()
-    algo.Add(_smoothed(shape, eye).wrapped)
+    algo.Add(_smoothed(_split_at_creases(shape), eye).wrapped)
     algo.Projector(HLRAlgo_Projector(frame))
     algo.Update()
     algo.Hide()
@@ -95,6 +97,26 @@ def project(
     visible = [_simplest(e, tol) for e in visible if _drawable(e, footprint, tol)]
     hidden = [_simplest(e, tol) for e in hidden if _drawable(e, footprint, tol)]
     return visible, _uncovered(hidden, visible, tol)
+
+
+def _split_at_creases(shape: cq.Shape) -> cq.Shape:
+    """`shape` with each face split along the creases inside it.
+
+    A crease is usually an edge between two faces, but one face can also bend
+    sharply within its own surface, with no edge there. HLR draws edges and
+    smooth outlines only, so such a crease goes undrawn and the visibility
+    around it comes out wrong. Where the split falls on a smooth join, the new
+    seam is left out like any tangent seam.
+    """
+    surfaces = (BRep_Tool.Surface_s(face.wrapped) for face in shape.Faces())
+    if all(surface.Continuity() != GeomAbs_C0 for surface in surfaces):
+        return shape
+    divide = ShapeUpgrade_ShapeDivideContinuity(shape.wrapped)
+    try:
+        divided = divide.Perform()
+    except Standard_Failure:
+        return shape
+    return cq.Shape.cast(divide.Result()) if divided else shape
 
 
 def _smoothed(shape: cq.Shape, eye: gp_Dir) -> cq.Shape:
