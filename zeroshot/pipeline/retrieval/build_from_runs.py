@@ -4,7 +4,7 @@
 
 A RUN_DIR is one sample's artifact folder (workspace/, score.json, .hydra/).
 Only the best-scoring run of each sample is registered; ditech runs never are.
-A run with no target (workflow=interpretation) has no score and is kept.
+A run with no target (workflow=rag) has no score and is kept.
 """
 
 from __future__ import annotations

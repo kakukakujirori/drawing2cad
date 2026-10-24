@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from PIL import Image, ImageDraw
 from pydantic import ValidationError
@@ -52,13 +54,16 @@ def _items(boxes):
     ]
 
 
-def test_a_close_match_comes_with_its_description_and_a_sheet(sheet):
-    found = create_search_semantic_features_tool(
+def test_a_close_match_comes_with_its_description_and_a_saved_sheet(sheet):
+    (text,) = create_search_semantic_features_tool(
         SandboxWorkdir(host_bind_dir=sheet), sheet / "regions.sqlite"
     ).invoke({"items": _items([("front", FRONT), ("top", TOP)])})
-    text, image = found
-    assert text["text"] == "#1 similarity 1.00:\nA boss rising from the floor."
-    assert image["image_url"]["url"].startswith("data:image/png;base64,")
+    assert text["text"] == (
+        "A. A boss rising from the floor.\nCrops: /work/semantic_search/001/A.png"
+    )
+    assert Image.open(sheet / "semantic_search/001/A.png").size == (1024, 1024)
+    record = json.loads((sheet / "semantic_search/001.json").read_text())
+    assert record["matches"][0]["shown_as"] == "A" and len(record["items"]) == 2
 
 
 def test_a_region_drawn_unlike_any_feature_gets_no_match(sheet):
@@ -66,6 +71,9 @@ def test_a_region_drawn_unlike_any_feature_gets_no_match(sheet):
         SandboxWorkdir(host_bind_dir=sheet), sheet / "regions.sqlite"
     ).invoke({"items": _items([("front", SLASH)])})
     assert text["text"].startswith("No semantic feature in the database matches")
+    # Unshown matches are still recorded, for analysis.
+    record = json.loads((sheet / "semantic_search/001.json").read_text())
+    assert record["matches"][0]["shown_as"] is None
 
 
 def test_a_box_outside_the_image_is_refused(sheet):

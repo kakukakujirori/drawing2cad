@@ -110,5 +110,5 @@ def test_lookup_reports_each_feature_evidence_once(tmp_path, monkeypatch):
 
     first = lookup.report(interpretation)
     assert first is not None
-    assert "sem_hole (yours: a hole)\n#1 similarity 1.00:\na boss" in first
+    assert "sem_hole (yours: a hole)\nA. a boss" in first
     assert lookup.report(interpretation) is None

@@ -1,0 +1,29 @@
+# @package _global_
+
+# Annotates a drawing into interpretation.json for the region index
+# (pipeline/retrieval/build_from_runs.py); nothing is built or scored:
+#   python -m zeroshot.run_pipeline -m workflow=rag \
+#     input=rag_eccv_perspective artifact_root=outputs/annotate sample.sample_id=...
+defaults:
+  - /model: gpt6.1_sol_codex
+  - _self_
+
+workflow:
+  _target_: zeroshot.pipeline_rag.graph.create_annotation_graph
+  _partial_: true
+
+  agent_builder:
+    _target_: zeroshot.pipeline.workflow.create_agent
+    _partial_: true
+    role: annotator
+    model: ${model}
+
+    response_format_strategy: ${response_format_strategy}
+    max_turns: 40
+    announce_turns: true
+    reset_turns_when_reentrant: true
+    model_call_retries: 5
+    checkpointer: false
+
+sample:
+  target_step_path: null

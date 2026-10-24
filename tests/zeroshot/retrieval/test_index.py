@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 import numpy as np
 import pytest
 from PIL import Image, ImageDraw
@@ -92,7 +94,7 @@ def test_an_empty_index_finds_nothing(tmp_path, monkeypatch):
 
 def test_an_index_built_with_another_encoder_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(index, "embed", _fake_embed)
-    monkeypatch.setattr(index, "ENCODER", "old-encoder")
+    monkeypatch.setattr(index, "EMBEDDING", "old-encoder")
     RegionIndex(tmp_path / "old.sqlite").add(
         "p0", "glm", "boss", "a boss", [("front", _drawn("circle"))]
     )
@@ -130,3 +132,24 @@ def test_a_view_turned_on_the_page_is_turned_back_to_its_standard_frame():
     assert standard_turns("top", "+x", "+y") == 0
     # Rightwards is -y, which points down in the standard top view.
     assert standard_turns("top", "-y", "+x") == 3
+
+
+def test_parallel_searches_load_the_encoder_once(monkeypatch):
+    import threading
+    import time
+
+    loads = []
+
+    def slow_load():
+        loads.append(1)
+        time.sleep(0.05)
+        return object()
+
+    index._load_encoder.cache_clear()
+    monkeypatch.setattr(index, "_load_encoder", lru_cache(maxsize=1)(slow_load))
+    threads = [threading.Thread(target=index._encoder) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(loads) == 1

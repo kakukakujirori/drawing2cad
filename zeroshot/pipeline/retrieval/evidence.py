@@ -11,17 +11,19 @@ from PIL import Image
 
 from zeroshot.pipeline.retrieval.index import (
     MIN_SCORE,
-    K,
     RegionIndex,
     RoleCrop,
     crop_region,
     describe,
     standard_turns,
     turn,
+    unranked,
 )
 
 ORTHOGRAPHIC = {"front", "back", "top", "bottom", "left", "right"}
 SANDBOX = PurePosixPath("/work")
+# Per feature: the push lists every feature at once.
+PUSHED = 3
 
 Box = list[float]
 
@@ -113,9 +115,11 @@ class EvidenceLookup:
             self._searched.add(key)
             matches = [
                 match
-                for match in self.index.search(crops, K)
+                for match in self.index.search(crops, PUSHED)
                 if match.score >= MIN_SCORE
             ]
             if matches:
-                found.append(f"{name} (yours: {description})\n{describe(matches)}")
+                found.append(
+                    f"{name} (yours: {description})\n{describe(unranked(matches))}"
+                )
         return "\n\n---\n".join([_HEADER, *found]) if found else None

@@ -1,0 +1,22 @@
+# @package _global_
+
+# `input/rag_eccv.yaml` plus the part's three perspective renders.
+defaults:
+  - rag_eccv
+  - _self_
+
+sample:
+  drawing:
+    sheets:
+      - name: view_drawing
+        role: full_page
+        file: data/eccv2026-cad-challenge-data/train/techdraw_dimensioned/${sample.sample_id}_dim.png
+      - name: view_hlg_perspective
+        role: perspective
+        file: data/eccv2026-cad-challenge-data/train/render_3d/hlg_perspective/${sample.sample_id}.png
+      - name: view_hlg_translucent_faces_perspective
+        role: perspective
+        file: data/eccv2026-cad-challenge-data/train/render_3d/hlg_translucent_faces_perspective/${sample.sample_id}.png
+      - name: view_transparent_shaded_edges_perspective
+        role: perspective
+        file: data/eccv2026-cad-challenge-data/train/render_3d/transparent_shaded_edges_perspective/${sample.sample_id}.png

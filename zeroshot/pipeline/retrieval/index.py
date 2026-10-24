@@ -8,27 +8,31 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from io import BytesIO
 from itertools import permutations, product
 from pathlib import Path
+from string import ascii_uppercase
 from typing import Any
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from zeroshot.pipeline.stages.interpretation.contracts import AXIS_VECTOR, Axis
 from zeroshot.pipeline.verification.render.orthographic import STANDARD_VIEW_FRAMES
 
 ENCODER = "facebook/dinov3-vits16-pretrain-lvd1689m"
+# What a DB records: vectors of another model or recipe do not compare.
+EMBEDDING = f"{ENCODER} cls+patch-mean thickened"
 SIZE = 224
 MARGIN = 0.25  # context kept around a box, as a fraction of its longer side
-# 000405 against GLM runs: crops of the same drawing score 0.75-0.96, another
-# part's circles 0.64-0.71. Below this a match is not shown rather than offered.
-MIN_SCORE = 0.73
-K = 3
+# Below this a match's kind (material or void) agrees with its query's no more
+# than chance, on a 61-part Sol DB queried with each part left out.
+MIN_SCORE = 0.70
+K = 10
 _MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 _STD = np.array([0.229, 0.224, 0.225], np.float32)
 
@@ -122,25 +126,44 @@ def _rotations() -> list[dict[str, tuple[str, int]]]:
 ROTATIONS = _rotations()
 
 
-@lru_cache(maxsize=1)
+_ENCODER_LOCK = threading.Lock()
+
+
 def _encoder() -> Any:
+    # Parallel tool calls embed at once; transformers' lazy import is not thread-safe.
+    with _ENCODER_LOCK:
+        return _load_encoder()
+
+
+@lru_cache(maxsize=1)
+def _load_encoder() -> Any:
     from transformers import AutoModel
 
     return AutoModel.from_pretrained(ENCODER).eval()
 
 
 def _pixels(image: Image.Image) -> np.ndarray:
-    square = ImageOps.pad(image.convert("RGB"), (SIZE, SIZE), color="white")
+    image = image.convert("RGB")
+    shrink = max(image.size) / SIZE
+    if shrink >= 2:
+        # Thicken the ink first, or downscaling leaves thin lines as grey haze.
+        image = image.filter(ImageFilter.MinFilter(min(int(shrink) | 1, 9)))
+    square = ImageOps.pad(image, (SIZE, SIZE), color="white")
     return ((np.asarray(square, np.float32) / 255 - _MEAN) / _STD).transpose(2, 0, 1)
 
 
 def embed(images: Sequence[Image.Image]) -> np.ndarray:
-    """One unit vector per image."""
+    """One unit vector per image: CLS joined to the mean patch token."""
     import torch
 
     with torch.inference_mode():
         batch = torch.from_numpy(np.stack([_pixels(image) for image in images]))
-        vectors = _encoder()(pixel_values=batch).pooler_output.numpy()
+        model = _encoder()
+        out = model(pixel_values=batch)
+        # Register tokens sit between CLS and the patches.
+        first_patch = 1 + model.config.num_register_tokens
+        patches = out.last_hidden_state[:, first_patch:].mean(dim=1)
+        vectors = torch.cat([out.pooler_output, patches], dim=1).numpy()
     return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
 
 
@@ -162,10 +185,15 @@ class Reference:
     crops: list[RoleCrop] = field(repr=False)
 
 
+def unranked(matches: Sequence[Reference]) -> list[Reference]:
+    """Matches in no order of score: among close ones, it says little about kind."""
+    return sorted(matches, key=lambda match: (match.part, match.name))
+
+
 def describe(matches: Sequence[Reference]) -> str:
     return "\n\n".join(
-        f"#{rank} similarity {match.score:.2f}:\n{match.description}"
-        for rank, match in enumerate(matches, 1)
+        f"{letter}. {match.description}"
+        for letter, match in zip(ascii_uppercase, matches, strict=False)
     )
 
 
@@ -201,12 +229,12 @@ class RegionIndex:
         """Vectors of different encoders do not compare; refuse a mixed index."""
         recorded = self.db.execute("SELECT name FROM encoder").fetchone()
         if recorded is None and self.db.execute("SELECT 1 FROM crop").fetchone():
-            raise ValueError(f"{path} records no encoder; rebuild it with {ENCODER}")
+            raise ValueError(f"{path} records no encoder; rebuild it with {EMBEDDING}")
         if recorded is None:
             with self.db:
-                self.db.execute("INSERT INTO encoder VALUES (?)", (ENCODER,))
-        elif recorded[0] != ENCODER:
-            raise ValueError(f"{path} was built with {recorded[0]}, not {ENCODER}")
+                self.db.execute("INSERT INTO encoder VALUES (?)", (EMBEDDING,))
+        elif recorded[0] != EMBEDDING:
+            raise ValueError(f"{path} was built with {recorded[0]}, not {EMBEDDING}")
 
     def add(
         self,

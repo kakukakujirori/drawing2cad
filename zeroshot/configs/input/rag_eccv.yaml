@@ -1,0 +1,15 @@
+# @package _global_
+
+# An ECCV part to annotate for the region index. The 50 test_eccv parts
+# (test_vlm among them) share these ids; never annotate them, since the index
+# must not hold a part that is evaluated.
+sample:
+  drawing:
+    projection_method: third_angle
+    sheets:
+      - name: view_drawing
+        role: full_page
+        file: data/eccv2026-cad-challenge-data/train/techdraw_dimensioned/${sample.sample_id}_dim.png
+
+artifact_presenter:
+  input: "image"

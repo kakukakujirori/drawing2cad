@@ -1,0 +1,1 @@
+The perspective renders show the part itself: use them to settle what the views leave open. Still describe only what the orthographic views show, and cite only orthographic views as evidence, because a reader of another drawing has only its views.

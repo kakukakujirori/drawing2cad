@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
+from zeroshot.pipeline.tools import fit_edge
 from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.tools.fit_edge import (
     DASHED_BELOW,
@@ -348,3 +349,12 @@ def test_skeleton_leaves_out_light_dimension_lines(tmp_path):
         along = np.abs(y - edge) < 1
         assert x[along].min() < 105 and x[along].max() > 395
     assert not ((y < 290) | (y > 410)).any()
+
+
+def test_a_circle_through_straight_points_has_no_fixed_radius():
+    # From a run: a straight row of stroke centres fitted by a huge circle
+    # once crashed the variance's square root.
+    xy = np.c_[np.arange(550.5, 590.5), np.full(40, 578.31)]
+    model = Circle(569.29, -10376011.2, 10376589.5)
+    stroke = fit_edge._measure(model, xy, fit_edge._Scale(line_width=5.0))
+    assert stroke is not None and stroke.radius_sd == math.inf

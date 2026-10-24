@@ -436,7 +436,12 @@ def _measure(model: Circle | Line, xy: np.ndarray, scale: _Scale) -> Stroke | No
     rho = np.hypot(dx, dy)
     jacobian = np.c_[-dx / rho, -dy / rho, -np.ones(len(xy))]
     sigma2 = max(stroke.rms, 0.1) ** 2 * len(xy) / max(support / scale.line_width, 3)
-    covariance = np.linalg.pinv(jacobian.T @ jacobian) * sigma2
+    normal = jacobian.T @ jacobian
+    eigenvalues = np.linalg.eigvalsh(normal)
+    if eigenvalues[0] <= 1e-10 * eigenvalues[-1]:
+        # Nearly straight points: no centre and radius are fixed by them.
+        return replace(stroke, radius_sd=math.inf, centre_sd=math.inf)
+    covariance = np.linalg.inv(normal) * sigma2
     return replace(
         stroke,
         radius_sd=math.sqrt(covariance[2, 2]),

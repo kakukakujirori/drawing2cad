@@ -1,8 +1,9 @@
 """Find semantic features whose drawings look like a region of the drawing."""
 
-import base64
-from io import BytesIO
+import json
+import threading
 from pathlib import Path
+from string import ascii_uppercase
 from typing import Any, Literal
 
 from langchain_core.tools import BaseTool, tool
@@ -15,9 +16,9 @@ from zeroshot.pipeline.retrieval.index import (
     Reference,
     RegionIndex,
     crop_region,
-    describe,
     standard_turns,
     turn,
+    unranked,
 )
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.interpretation.contracts import (
@@ -29,7 +30,9 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.tools.load_image import resolve_image_path
 
-CELL = 192
+CELL = 512  # most crops fit at full size
+SAVED_DIRNAME = "semantic_search"
+_SAVE_LOCK = threading.Lock()
 
 
 class RegionItem(BaseModel):
@@ -64,7 +67,7 @@ class SearchSemanticFeaturesInput(BaseModel):
     items: list[RegionItem] = Field(
         min_length=1,
         max_length=6,
-        description="For each view that shows the region, one box around it.",
+        description="For each view that shows the feature, one box tight around its lines.",
     )
 
     @field_validator("items")
@@ -77,21 +80,24 @@ class SearchSemanticFeaturesInput(BaseModel):
 
 
 _DESCRIPTION = """\
-Search a database for the semantic features that match a region of your \
+Search a database for the semantic features that match one feature of your \
 drawing. Use it when you are unsure which 3D shape a region shows, e.g. a hole \
 or a boss, before you describe it.
 
-For each view that shows the region, give that view's role and axes as in your \
-interpretation, and one box around the region, in the pixels of its image. Include every such view: a 3D shape \
-can only be determined by comparing multiple views.
+For each view that shows the feature, give that view's role and axes as in your \
+interpretation, and one box in the pixels of its image. Draw the box tight around \
+the feature's own lines and leave out its neighbours: the database holds \
+features boxed this way, and extra lines match other features. Include every \
+view that shows the feature: a 3D shape can only be determined by comparing \
+multiple views.
 
-The result lists up to three matches, each with a similarity (at most 1, for \
-identical crops) and a semantic description, and one image: your crops in the \
-top row and the crops of each match below, one column per view. Weak matches \
-are left out. A match is a hypothesis. Compare your crops with its crops view \
-by view, and adopt its shape if the other views show the same kinds of lines, \
-solid or hidden, around the region. Take sizes and positions from your own \
-drawing."""
+The result lists, in no order, the semantic descriptions of up to ten features \
+of other drawings that look like yours. Looking alike does not make them the \
+same shape: a hole and a boss can look the same in one view. Take each as a \
+hypothesis. Where one differs from your reading, find the view whose lines \
+decide between them, solid or hidden, and read it. Take sizes and positions \
+from your own drawing. Each comes with an image you can load: your crops in the \
+top row, its crops below, one column per view."""
 
 
 def create_search_semantic_features_tool(
@@ -116,7 +122,8 @@ def create_search_semantic_features_tool(
         found = index.search(
             [(role, turn(image, turns[role])) for role, image in crops], k=K
         )
-        close = [match for match in found if match.score >= MIN_SCORE]
+        close = unranked([match for match in found if match.score >= MIN_SCORE])
+        images = _save(workdir, items, found, crops, close, turns)
         if not close:
             best = f"{found[0].score:.2f}" if found else "none"
             return [
@@ -126,9 +133,59 @@ def create_search_semantic_features_tool(
                     f"{MIN_SCORE}). Read it from your drawing alone."
                 )
             ]
-        return [_text(describe(close)), _image(_sheet(crops, close, turns))]
+        return [
+            _text(
+                "\n\n".join(
+                    f"{letter}. {match.description}\n"
+                    f"Crops: {workdir.host_to_sandbox_path(image)}"
+                    for letter, match, image in zip(
+                        ascii_uppercase, close, images, strict=False
+                    )
+                )
+            )
+        ]
 
     return search_semantic_features
+
+
+def _save(
+    workdir: SandboxWorkdir,
+    items: list[RegionItem],
+    found: list[Reference],
+    crops: list[tuple[str, Image.Image]],
+    close: list[Reference],
+    turns: dict[str, int],
+) -> list[Path]:
+    """Number each search; keep its record, and one image per shown match."""
+    folder = workdir.host_bind_dir / SAVED_DIRNAME
+    folder.mkdir(exist_ok=True)
+    letters = {
+        (match.part, match.name): letter
+        for letter, match in zip(ascii_uppercase, close, strict=False)
+    }
+    record = {
+        "items": [item.model_dump() for item in items],
+        "matches": [
+            {
+                "part": match.part,
+                "source": match.source,
+                "name": match.name,
+                "score": match.score,
+                "shown_as": letters.get((match.part, match.name)),
+                "description": match.description,
+            }
+            for match in found
+        ],
+    }
+    with _SAVE_LOCK:
+        stem = folder / f"{len(list(folder.glob('*.json'))) + 1:03d}"
+        stem.with_suffix(".json").write_text(json.dumps(record, indent=2) + "\n")
+    images = []
+    for letter, match in zip(ascii_uppercase, close, strict=False):
+        stem.mkdir(exist_ok=True)
+        images.append(stem / f"{letter}.png")
+        _sheet(crops, letter, match, turns).save(images[-1])
+    return images
 
 
 def _crop(workdir: SandboxWorkdir, item: RegionItem) -> Image.Image:
@@ -144,13 +201,14 @@ def _crop(workdir: SandboxWorkdir, item: RegionItem) -> Image.Image:
 
 def _sheet(
     crops: list[tuple[str, Image.Image]],
-    matches: list[Reference],
+    letter: str,
+    match: Reference,
     turns: dict[str, int],
 ) -> Image.Image:
-    """Matches are turned back to the way the drawing shows each view."""
-    rows = [("yours", dict(crops))] + [
-        (f"#{rank}", {role: turn(image, -turns[role]) for role, image in match.crops})
-        for rank, match in enumerate(matches, 1)
+    """Your crops over the match's, turned back to the way the drawing shows each view."""
+    rows = [
+        ("yours", dict(crops)),
+        (letter, {role: turn(image, -turns[role]) for role, image in match.crops}),
     ]
     sheet = Image.new("L", (CELL * len(crops), CELL * len(rows)), 255)
     draw = ImageDraw.Draw(sheet)
@@ -167,10 +225,3 @@ def _sheet(
 
 def _text(text: str) -> dict[str, Any]:
     return {"type": "text", "text": text}
-
-
-def _image(image: Image.Image) -> dict[str, Any]:
-    buffer = BytesIO()
-    image.save(buffer, format="PNG")
-    data = base64.b64encode(buffer.getvalue()).decode()
-    return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}}
