@@ -140,8 +140,8 @@ def test_a_trial_is_scored_against_a_reference_and_kept_apart(trial, stage):
 
     kept = f"/work/trials/round_000/{stage}/000/hypothesis.py"
     assert first.startswith(f"[Trial build]\nScript: /work/trial.py, kept as {kept}")
-    assert "Match score: 0.70 px; lower is better." in first
-    assert "Build /work/attempts/round_000/coding/003: match score 7.00 px." in first
+    assert "Match score: 2.10 px; lower is better." in first
+    assert "Build /work/attempts/round_000/coding/003: match score 21.00 px." in first
     # Its clusters are not the drawing_diff items an audit answers.
     assert "trial_diff.view_front.1" in first and "drawing_diff." not in first
     assert f"round_000/{stage}/001/hypothesis.py" in second

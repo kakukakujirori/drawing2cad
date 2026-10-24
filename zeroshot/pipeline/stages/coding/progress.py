@@ -2,7 +2,6 @@
 
 import math
 from pathlib import PurePosixPath
-from statistics import fmean
 from typing import Any
 
 from langchain_core.messages.content import ContentBlock, create_text_block
@@ -43,7 +42,7 @@ _NOT_BETTER = (
     "(match score {score:.2f} px)."
 )
 _SCORE_LEGEND = (
-    "Match score: mean over views of the uncapped line distance plus the "
+    "Match score: sum over views of the uncapped line distance plus the "
     "mismatched silhouette area per input outline length, in input pixels; "
     "lower is better."
 )
@@ -168,7 +167,11 @@ def match_score(
     interpretation: DrawingInterpretation | None,
     workdir: SandboxWorkdir,
 ) -> tuple[float | None, str]:
-    """Mean match score of a verified build over its calibrated registered views."""
+    """Match score of a verified build, summed over its calibrated registered views.
+
+    A sum, so a change seen in one view counts in full. Scores are comparable
+    only under the same registered views.
+    """
     execution = report.exec_report
     if (
         execution is None
@@ -215,4 +218,4 @@ def match_score(
         if type(score) not in (int, float) or not math.isfinite(score) or score < 0:
             return None, f"{name} has no finite drawing comparison score"
         scores.append(score)
-    return fmean(scores), ""
+    return sum(scores), ""

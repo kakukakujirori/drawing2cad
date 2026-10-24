@@ -99,27 +99,29 @@ def test_best_candidate_eligibility_and_cache(tmp_path, monkeypatch):
             verifier.source_path.write_text(source + f"# trial {build_count}\n")
             return verifier.feedback()[0]["text"]
 
-        assert "baseline (match score 7.00 px)" in attempt([7.0, 7.0, 7.0])
+        assert "baseline (match score 21.00 px)" in attempt([7.0, 7.0, 7.0])
         before = build_count
         assert "baseline" in verifier.feedback()[0]["text"]
         assert build_count == before  # Repeated feedback uses the same saved build.
+        # A gain in one view counts in full, however many views are scored.
+        assert "Overall match improved by 0.60 px" in attempt([7.0, 7.0, 6.4])
         improved = attempt([8.0, 4.0, 3.0])  # One view worse; the whole drawing better.
-        assert "Overall match improved by 2.00 px over the saved best" in improved
+        assert "Overall match improved by 5.40 px over the saved best" in improved
         assert (
-            "Best saved eligible candidate: /work/attempts/round_000/coding/001/model.py"
+            "Best saved eligible candidate: /work/attempts/round_000/coding/002/model.py"
             in improved
         )
         worse = attempt([8.0, 8.0, 8.0])
-        assert "Worsened by 3.00 px versus the previous candidate" in worse
+        assert "Worsened by 9.00 px versus the previous candidate" in worse
         assert (
-            "Previous candidate: /work/attempts/round_000/coding/001/model.py" in worse
+            "Previous candidate: /work/attempts/round_000/coding/002/model.py" in worse
         )
         # Changes inside the margin are not measurable and keep the saved best.
         assert "No measurable change: within 0.50 px" in attempt([8.0, 8.0, 8.3])
-        near_best = attempt([5.0, 5.0, 4.4])
-        assert "Improved by 3.30 px over the previous candidate" in near_best
-        assert "but not by 0.50 px over the saved best (5.00 px)" in near_best
-        assert "round_000/coding/001/model.py" in near_best.split("Best saved")[1]
+        near_best = attempt([5.0, 5.0, 4.6])
+        assert "Improved by 9.70 px over the previous candidate" in near_best
+        assert "but not by 0.50 px over the saved best (15.00 px)" in near_best
+        assert "round_000/coding/002/model.py" in near_best.split("Best saved")[1]
         best = verifier._best_candidate
         assert best is not None
         saved_model = best[1].host_verification_dir / "model.py"

@@ -48,13 +48,14 @@ class _Output:
         self.source_path = workdir.host_bind_dir / "model.py"
         self.interpretation: DrawingInterpretation | None = None
         self.builds: list[DrawingInterpretation | None] = []
+        self.resets = 0
 
     def source_digest(self) -> str | None:
         path = self.source_path
         return sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
     def reset(self) -> None:
-        pass
+        self.resets += 1
 
     def feedback(self):
         self.builds.append(self.interpretation)
@@ -108,13 +109,14 @@ def test_only_a_change_of_views_rebuilds_an_unchanged_program(tmp_path):
     workspace, output, candidate = _workspace(tmp_path)
     workspace.interpretation.source_path.write_text(candidate.model_dump_json())
     workspace.feedback()
+    resets = output.resets
 
     accepted = json.loads(workspace.interpretation.source_path.read_text())
     accepted["features"][0]["description"] = "A reworded description."
     workspace.interpretation.source_path.write_text(json.dumps(accepted))
     reworded = _text(workspace.feedback())
     assert "[Interpretation verification]" in reworded
-    assert len(output.builds) == 1
+    assert len(output.builds) == 1 and output.resets == resets
 
     accepted["views"][1]["role"] = "right"
     accepted["views"][1]["u_axis"], accepted["views"][1]["v_axis"] = "+y", "+z"
@@ -123,6 +125,8 @@ def test_only_a_change_of_views_rebuilds_an_unchanged_program(tmp_path):
     rebuilt_on = output.builds[-1]
     assert len(output.builds) == 2 and rebuilt_on is not None
     assert rebuilt_on.views[1].role is View.RIGHT
+    # Scores under other views are not comparable, so the saved best is dropped.
+    assert output.resets == resets + 1
 
 
 def test_the_round_owes_a_valid_interpretation_then_a_changed_program(tmp_path):
