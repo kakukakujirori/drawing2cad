@@ -145,6 +145,12 @@ def distance_map(foreground: np.ndarray) -> np.ndarray:
 
 # Below this share of the filled part surviving the opening, the part is thin-walled.
 MIN_KEPT_AREA = 0.5
+# The opening that drops thin annotations from the filled part.
+OPEN_PX = 3
+# A silhouette filled inside a broken outline leaves more of the outline than
+# this outside it. Measured on saved builds: whole silhouettes leave up to 0.22,
+# partial ones from 0.47.
+MAX_OUTLINE_OUTSIDE = 0.35
 
 
 def drawing_area(ink: np.ndarray) -> np.ndarray:
@@ -155,10 +161,32 @@ def drawing_area(ink: np.ndarray) -> np.ndarray:
     """
     # Do not close input gaps: that can join dimension lines to the part.
     filled = binary_fill_holes(ink).astype(np.uint8)
-    area = cv2.morphologyEx(filled, cv2.MORPH_OPEN, disk(3))
+    area = cv2.morphologyEx(filled, cv2.MORPH_OPEN, disk(OPEN_PX))
     count, labels, stats, _ = cv2.connectedComponentsWithStats(area)
     before = cv2.connectedComponentsWithStats(filled)[2][1:, cv2.CC_STAT_AREA]
     if count == 1 or stats[1:, cv2.CC_STAT_AREA].max() < MIN_KEPT_AREA * before.max():
         return np.zeros_like(ink, dtype=bool)
     # ponytail: one main connected part per view; assemblies need per-part masks.
     return labels == 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+
+
+def beside_part(ink: np.ndarray, outline: np.ndarray) -> np.ndarray:
+    """Ink outside the part's filled silhouette, like dimensions; empty if unfilled.
+
+    Every line of the part lies within its silhouette. The silhouette is filled
+    from outline, the ink not drawn thin. If more than MAX_OUTLINE_OUTSIDE of
+    that ink lies outside it yet joins it, the outline was broken and the fill
+    partial; then only ink that never joins the silhouette, like dimension
+    text, is returned.
+    """
+    area = drawing_area(outline)
+    if not area.any():
+        return np.zeros_like(ink, dtype=bool)
+    # Undo the opening, which can shave the outline itself.
+    near = cv2.dilate(area.astype(np.uint8), disk(OPEN_PX)).astype(bool)
+    outside = ink & ~near
+    _, labels = cv2.connectedComponents(ink.astype(np.uint8), connectivity=8)
+    joined = np.isin(labels, np.unique(labels[ink & near]))
+    if (outline & outside & joined).sum() > MAX_OUTLINE_OUTSIDE * outline.sum():
+        return outside & ~joined
+    return outside

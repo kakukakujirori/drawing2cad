@@ -7,6 +7,7 @@ from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.drawing_diff.diff import compute_diff
 from zeroshot.pipeline.verification.drawing_diff.image_ops import (
     annotation_mask,
+    beside_part,
     drawing_area,
     foreground_mask,
     thin_mask,
@@ -421,3 +422,42 @@ def test_a_drawing_in_one_width_has_no_thin_lines():
     gray = _gray(_dimensioned_part((0, 0, 0), annotation_width=5))
 
     assert not thin_mask(gray, foreground_mask(gray), _part_lines(1)).any()
+
+
+def test_dimensions_beside_the_part_neither_score_nor_cluster():
+    part = _white(300)
+    cv2.rectangle(part, (40, 60), (150, 240), (0, 0, 0), 5)
+    cv2.circle(part, (95, 150), 20, (0, 0, 0), 5)
+    dimensioned = part.copy()
+    for y in (60, 240):  # extension lines continuing the top and bottom edges
+        cv2.line(dimensioned, (150, y), (270, y), (0, 0, 0), 2)
+    cv2.line(dimensioned, (250, 50), (250, 250), (0, 0, 0), 2)
+    cv2.putText(
+        dimensioned, "180", (258, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1
+    )
+    output = _white(300)
+    cv2.rectangle(output, (40, 60), (150, 240), (0, 0, 0), 1)
+    cv2.circle(output, (95, 150), 20, (0, 0, 0), 1)
+
+    plain = compute_diff(part, output, _alignment())
+    diff = compute_diff(dimensioned, output, _alignment())
+
+    assert diff.stats["match_score"] == pytest.approx(
+        plain.stats["match_score"], abs=0.05
+    )
+    assert diff.stats["unmatched"] == []
+
+
+def test_a_partial_silhouette_leaves_out_only_ink_that_never_joins_it():
+    """An outline broken by the crop fills only in part; its other lines stay."""
+    ink = np.zeros((300, 200), np.uint8)
+    cv2.rectangle(ink, (50, 20), (150, 100), 1, 3)
+    for x in (50, 150):  # the outline runs on past the crop's edge
+        cv2.line(ink, (x, 100), (x, 299), 1, 3)
+    cv2.putText(ink, "NOTE", (2, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1, 1)
+    ink = ink.astype(bool)
+
+    beside = beside_part(ink, ink)
+
+    assert beside[260:290, :45].any()  # the note
+    assert not beside[:, 45:].any()

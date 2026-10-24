@@ -12,7 +12,13 @@ from ezdxf.layouts import Modelspace
 from scipy.spatial import cKDTree
 
 from .align import AlignmentResult, _validate_rgb, opencv_transform
-from .image_ops import annotation_mask, distance_map, foreground_mask, thin_mask
+from .image_ops import (
+    annotation_mask,
+    beside_part,
+    distance_map,
+    foreground_mask,
+    thin_mask,
+)
 from .unmatched import (
     describe_unmatched,
     detail_geometry,
@@ -261,12 +267,14 @@ def compute_diff(
         # Measure both directions; output pixels outside input coverage are unknown.
         output_distances, measured = _measure_distances(aligned_ink, output_ink, valid)
         stats.update(measured)
-        stats.update(_chamfers(drawing_ink, output_ink, matrix, annotation))
         # Cluster distances to highlight unmatched output lines and regions.
         output_seen = warp_output_to_drawing(output_ink, matrix, drawing_ink.shape)
         # Lines drawn thinner than the outlines, like dimension lines, enclose no part.
         part_ink = drawing_ink & ~annotation
         outline = part_ink & ~thin_mask(drawing_gray, part_ink, output_seen)
+        # Nor need the output reach ink beside the part, whatever its tone.
+        non_part = annotation | beside_part(part_ink, outline)
+        stats.update(_chamfers(drawing_ink, output_ink, matrix, non_part))
         material = measure_material_error(outline, output_seen)
         stats["material_error"] = material
         # Both terms are lengths in drawing pixels: the mean distance between
@@ -294,9 +302,9 @@ def compute_diff(
                 drawing_ink.shape,
             )
 
-        groups = find_unmatched(drawing_ink, output_seen, geometry, annotation, outline)
+        groups = find_unmatched(drawing_ink, output_seen, geometry, non_part, outline)
         stats["unmatched"] = describe_unmatched(groups)
-        unmatched = draw_unmatched(drawing_gray, output_seen, groups, annotation)
+        unmatched = draw_unmatched(drawing_gray, output_seen, groups, non_part)
 
         # An automatic display scale is unavailable when no output line is measured.
         if distance_clip_px is None:
