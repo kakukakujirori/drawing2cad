@@ -33,7 +33,11 @@ from zeroshot.pipeline.stages.coding.progress import (
 )
 from zeroshot.pipeline.stages.coding.workspace import CodingWorkspaceVerifier
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
-from zeroshot.pipeline.stages.interpretation.verify import InterpretationVerifier
+from zeroshot.pipeline.retrieval.mistakes import MistakeIndex, MistakeLookup
+from zeroshot.pipeline.stages.interpretation.verify import (
+    InterpretationVerifier,
+    MistakeInterpretationVerifier,
+)
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
@@ -216,13 +220,32 @@ def create_coding_stage(
     output_limit_budget: OutputLimitBudget | None = None,
     compaction_model: BaseChatModel | None = None,
     retry_compaction: RetryCompaction | str = RetryCompaction.NEVER,
+    mistake_db: str | None = None,
+    mistake_exclude_part: str | None = None,
+    mistake_style: str = "list",
 ) -> CodingStage:
     retry_compaction = RetryCompaction(retry_compaction)
     if retry_compaction is not RetryCompaction.NEVER and compaction_model is None:
         raise ValueError(f"{retry_compaction=} needs a compaction model")
+    if mistake_db is not None and not coding_trial_tool:
+        raise ValueError("past mistakes are settled with the trial tool; enable coding_trial_tool")
     renderer = StepRenderer(ignore_hidden_lines=instructions.ignore_hidden_lines)
+    interpretation_verifier = (
+        InterpretationVerifier
+        if mistake_db is None
+        else partial(
+            MistakeInterpretationVerifier,
+            lookup=MistakeLookup(
+                MistakeIndex(mistake_db),
+                mistake_exclude_part,
+                (_PROMPTS / ("past_mistakes_focused.md" if mistake_style == "focused"
+                             else "past_mistakes.md")).read_text().strip(),
+                mistake_style,
+            ),
+        )
+    )
     workspace = CodingWorkspaceVerifier(
-        InterpretationVerifier(
+        interpretation_verifier(
             workdir=instructions.workdir,
             attempt_store=attempt_store,
             input_artifact=instructions.input_artifact,

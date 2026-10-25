@@ -14,6 +14,7 @@ from typing import Any
 from langchain_core.messages.content import ContentBlock, create_text_block
 from pydantic import ValidationError
 
+from zeroshot.pipeline.retrieval.mistakes import MistakeLookup
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages._base.error_locations import file_errors, semantic_errors
 from zeroshot.pipeline.stages._base.validate import LocatedError
@@ -289,3 +290,25 @@ class InterpretationVerifier:
             ),
             *(create_text_block("\n\n" + question) for question in result.questions),
         ]
+
+
+class MistakeInterpretationVerifier(InterpretationVerifier):
+    """Also lists past mistakes on other parts near each newly described feature."""
+
+    def __init__(self, *args: Any, lookup: MistakeLookup, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.lookup = lookup
+
+    def feedback(self) -> list[ContentBlock]:
+        blocks = super().feedback()
+        accepted = self.accepted_interpretation
+        if accepted is not None and (
+            found := self.lookup.report(
+                [(feature.name, feature.description) for feature in accepted.features]
+            )
+        ):
+            if self.lookup.first:
+                blocks.insert(0, create_text_block(found + "\n\n"))
+            else:
+                blocks.append(create_text_block("\n\n" + found))
+        return blocks

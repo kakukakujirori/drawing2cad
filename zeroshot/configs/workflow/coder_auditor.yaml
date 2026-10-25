@@ -26,6 +26,13 @@ workflow:
   coding_draft_check_after_n_turns: 20
   # The auditor must answer every drawing_diff cluster in concern_reviews.
   review_drawing_diff_clusters: true
+  # Past reading mistakes (JSONL of zeroshot/pipeline/retrieval/mistakes.py):
+  # each valid interpretation then lists those near its new feature
+  # descriptions, leaving out the sample's own part. null: none.
+  mistake_db: null
+  # list: up to three per feature after the report; focused: the closest one
+  # per feature, quoting the coder's description, ahead of the report.
+  mistake_style: list
 
   # Set diff_drawer_config: null to disable drawing comparison.
   diff_drawer_config:

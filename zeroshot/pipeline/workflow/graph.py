@@ -71,6 +71,8 @@ def create_reconstruction_graph(
     coding_draft_check_after_n_turns: int | None = 20,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
     review_drawing_diff_clusters: bool = True,
+    mistake_db: str | None = None,
+    mistake_style: str = "list",
 ):
     """Interpret the drawing and implement the part, then verify and audit it."""
     if max_audit_reject_count < 0:
@@ -157,6 +159,9 @@ def create_reconstruction_graph(
         match_margin_px=match_margin_px,
         compaction_model=compaction_model,
         retry_compaction=compact_exhausted_coder,
+        mistake_db=mistake_db,
+        mistake_exclude_part=input_manifest.sample_id,
+        mistake_style=mistake_style,
     )
     audit_stage = stage_factory(PipelineStage.AUDIT)(
         audit_agent_builder,
