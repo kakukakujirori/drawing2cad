@@ -1,0 +1,16 @@
+# @package _global_
+
+# An IterCAD part outside input/test_itercad.yaml, drawn the same way. The pool
+# holds the 50 test parts too; a sweep must not list them.
+sample:
+  drawing:
+    projection_method: third_angle
+    hidden_lines_omitted: true
+    sheets:
+      - name: view_drawing
+        role: full_page
+        file: data/test_itercad_ori/techdraw/${sample.sample_id}.png
+  target_step_path: data/test_itercad_ori/target_step/${sample.sample_id}.step
+
+artifact_presenter:
+  input: "image"

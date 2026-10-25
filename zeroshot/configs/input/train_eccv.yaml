@@ -1,0 +1,15 @@
+# @package _global_
+
+# An ECCV training part, drawn like input/test_eccv.yaml. The 53 test_eccv and
+# test_vlm parts also sit in train/; a sweep must not list them.
+sample:
+  drawing:
+    projection_method: third_angle
+    sheets:
+      - name: view_drawing
+        role: full_page
+        file: data/eccv2026-cad-challenge-data/train/techdraw_dimensioned/${sample.sample_id}_dim.png
+  target_step_path: data/eccv2026-cad-challenge-data/train/target_step_ori/${sample.sample_id}.step
+
+artifact_presenter:
+  input: "image"
