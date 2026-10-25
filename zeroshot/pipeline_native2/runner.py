@@ -7,14 +7,15 @@ import re
 import sys
 from importlib.metadata import version
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from hydra.utils import instantiate, to_absolute_path
 from langchain.agents import create_agent
-from langchain.agents.middleware import ToolErrorMiddleware
+from langchain.agents.middleware import AgentMiddleware, ToolErrorMiddleware
+from langchain.agents.middleware.types import InputAgentState
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.messages.content import create_image_block
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
@@ -28,7 +29,6 @@ from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.workflow.middleware.stateless_reasoning import (
     StatelessReasoningMiddleware,
 )
-from zeroshot.pipeline.workflow.middleware.turn_budget import TurnBudgetMiddleware
 from zeroshot.pipeline_native.connection_retry import ConnectionRetryMiddleware
 from zeroshot.pipeline_native.event_logging import (
     EventLog,
@@ -45,9 +45,10 @@ from zeroshot.pipeline_native.runner import (
     _write_retrospective,
 )
 from zeroshot.pipeline_native.runner import _PROMPT as _CODER_PROMPT
-from zeroshot.pipeline_native.turn_limit import (
-    TurnLimitExceededError,
-    TurnLimitMiddleware,
+from zeroshot.pipeline_native2.turn_budget import (
+    StopReason,
+    TurnBudgetMiddleware,
+    TurnBudgetState,
 )
 
 _PROMPTS = Path(__file__).parent / "prompts"
@@ -60,7 +61,7 @@ _AUDIT_LENGTH_RETRY_PROMPT = (
 
 
 def accepted(report: str) -> bool:
-    """The report's last verdict; a missing one rejects."""
+    """Whether the report's last verdict is ACCEPT."""
     verdicts = _VERDICT.findall(report)
     return bool(verdicts) and verdicts[-1].upper() == "ACCEPT"
 
@@ -116,8 +117,12 @@ def run(
     max_audits = int(config.max_audits)
     if max_audits < 0:
         raise ValueError("max_audits must be non-negative")
-    if int(config.auditor_max_turns) < 1:
-        raise ValueError("auditor_max_turns must be at least 1")
+    retry_turns = int(config.retry_turns)
+    max_stage_validation_retries = int(config.max_stage_validation_retries)
+    if max_stage_validation_retries < 0:
+        raise ValueError("max_stage_validation_retries must be non-negative")
+    coder_budget = TurnBudgetMiddleware(int(config.max_turns), retry_turns)
+    auditor_budget = TurnBudgetMiddleware(int(config.auditor_max_turns), retry_turns)
 
     workspace = _prepare_workspace(run_dir, names, sources, on_existing)
 
@@ -147,8 +152,9 @@ def run(
                 "inputs": [],
             }
             write_json(run_dir / "run.json", metadata)
-            sandbox_settings = OmegaConf.to_container(
-                config.sandbox_runner, resolve=True
+            sandbox_settings = cast(
+                dict[str, Any],
+                OmegaConf.to_container(config.sandbox_runner, resolve=True),
             )
             sandbox_settings["python_executable"] = Path(
                 to_absolute_path(
@@ -161,7 +167,7 @@ def run(
             ) as workdir:
                 inputs = workspace / "inputs"
                 load_image = create_load_image_tool(workdir)
-                blocks: list[dict[str, Any]] = []
+                blocks: list[str | dict[str, Any]] = []
                 for name, source in zip(names, sources, strict=True):
                     staged = inputs / f"{name}.png"
                     sandbox_path = str(workdir.host_to_sandbox_path(staged))
@@ -202,76 +208,108 @@ def run(
                 def converse(
                     role: str,
                     system: str,
-                    history: list[BaseMessage],
+                    history: list[AnyMessage],
                     request: HumanMessage,
-                    budget: TurnLimitMiddleware | TurnBudgetMiddleware,
+                    budget: TurnBudgetMiddleware,
                     length_retry_prompt: str,
-                ) -> tuple[list[BaseMessage], bool]:
-                    """Continue `history` with `request`; True when turns ran out."""
+                ) -> tuple[list[AnyMessage], str | None]:
+                    """Continue `history` with `request`; return a failure status or None."""
                     log.write(
                         "prompt",
                         {"agent": role, "system": system, "messages": [request]},
                     )
-                    messages = [*history, request]
+                    state: TurnBudgetState = {"messages": [*history, request]}
+                    middleware: list[AgentMiddleware[Any, None]] = [
+                        ToolErrorMiddleware(on_error=_tool_error),
+                        budget,
+                        ConnectionRetryMiddleware(
+                            max_retries=model_retries,
+                            role=role,
+                            length_retry_prompt=length_retry_prompt,
+                        ),
+                        StatelessReasoningMiddleware(),
+                    ]
                     agent = create_agent(
                         model=model,
                         tools=tools,
                         system_prompt=system,
-                        middleware=[
-                            ToolErrorMiddleware(on_error=_tool_error),
-                            ConnectionRetryMiddleware(
-                                max_retries=model_retries,
-                                role=role,
-                                length_retry_prompt=length_retry_prompt,
-                            ),
-                            StatelessReasoningMiddleware(),
-                            budget,
-                        ],
+                        middleware=middleware,
                         name=role,
                         checkpointer=False,
                     ).with_config(recursion_limit=sys.maxsize)
-                    try:
+                    for attempt in range(max_stage_validation_retries + 1):
+                        # LangChain's input/output types omit middleware state fields.
                         with agent.stream_events(
-                            {"messages": messages}, version="v3"
+                            cast(InputAgentState, state), version="v3"
                         ) as stream:
                             for event in stream:
                                 log.record_protocol(event)
                             result = stream.output
-                    except TurnLimitExceededError as error:
-                        assert isinstance(budget, TurnLimitMiddleware)
+                        if result is None:
+                            raise RuntimeError(f"{role} ended without a final state")
+                        state = cast(TurnBudgetState, result)
+                        if state.get("stop_reason") is StopReason.BUDGET_EXHAUSTED:
+                            error = "The turn budget ran out before your final answer."
+                        elif role == "coder" and not _has_model(output):
+                            error = "Write a nonempty /work/model.py, then give your final answer."
+                        elif role == "auditor" and not _VERDICT.search(
+                            state["messages"][-1].text
+                        ):
+                            error = "Finish your report with VERDICT: ACCEPT or VERDICT: REJECT."
+                        else:
+                            return state["messages"], None
+
+                        if attempt == max_stage_validation_retries:
+                            break
                         log.write(
-                            "turn_limit_exceeded",
+                            "stage_validation_retry",
                             {
                                 "agent": role,
-                                "max_turns": budget.max_turns,
-                                "turn_count": budget.turn_count,
-                                "error": str(error),
+                                "round": round_,
+                                "retry": attempt + 1,
+                                "total_turns": state["total_turns"],
+                                "error": error,
                             },
                         )
-                        return budget.last_messages or messages, True
-                    if result is None:
-                        raise RuntimeError(f"{role} ended without a final state")
-                    return result["messages"], False
+                        state = {
+                            **state,
+                            "retry": True,
+                            "messages": [
+                                *state["messages"],
+                                HumanMessage(content=error),
+                            ],
+                        }
+                    exhausted = state.get("stop_reason") is StopReason.BUDGET_EXHAUSTED
+                    failure_status = (
+                        "turn_limit_exceeded"
+                        if exhausted
+                        else "stage_validation_failed"
+                    )
+                    log.write(
+                        failure_status,
+                        {
+                            "agent": role,
+                            "max_turns": budget.max_turns,
+                            "turn_count": state["total_turns"],
+                            "error": error,
+                        },
+                    )
+                    return state["messages"], failure_status
 
-                coder_messages: list[BaseMessage] = []
-                audit_messages: list[BaseMessage] = []
+                coder_messages: list[AnyMessage] = []
+                audit_messages: list[AnyMessage] = []
                 coder_request = HumanMessage(content=blocks)
                 for round_ in range(max_audits + 1):
-                    coder_messages, turn_limit_exceeded = converse(
+                    coder_messages, failure_status = converse(
                         "coder",
                         prompt,
                         coder_messages,
                         coder_request,
-                        # A hard, unannounced stop, as the native generator has.
-                        TurnLimitMiddleware(workspace, max_turns=int(config.max_turns)),
+                        coder_budget,
                         _LENGTH_RETRY_PROMPT,
                     )
-                    if turn_limit_exceeded:
+                    if failure_status:
                         break
-                    if not _has_model(output):
-                        raise FileNotFoundError(
-                            "Agent did not write a nonempty /work/model.py"
-                        )
                     if round_ == max_audits:
                         break
 
@@ -280,7 +318,7 @@ def run(
                         author_message=coder_messages[-1].text
                     )
                     try:
-                        audit_messages, _ = converse(
+                        audit_messages, failure_status = converse(
                             "auditor",
                             auditor_prompt,
                             audit_messages,
@@ -290,9 +328,7 @@ def run(
                                     {"type": "text", "text": request},
                                 ]
                             ),
-                            # Announced turns and an answer-only last turn,
-                            # as the staged auditor has.
-                            TurnBudgetMiddleware(int(config.auditor_max_turns)),
+                            auditor_budget,
                             _AUDIT_LENGTH_RETRY_PROMPT,
                         )
                     finally:
@@ -301,6 +337,8 @@ def run(
                             output.unlink(missing_ok=True)
                             output.write_bytes(program)
                             log.write("model_restored", {"round": round_})
+                    if failure_status:
+                        break
                     report = next(
                         m.text
                         for m in reversed(audit_messages)
@@ -319,9 +357,10 @@ def run(
                 write_json(run_dir / "messages.json", coder_messages)
                 if audit_messages:
                     write_json(run_dir / "audit_messages.json", audit_messages)
-                if turn_limit_exceeded and not _has_model(output):
+                if failure_status and not _has_model(output):
+                    output.unlink(missing_ok=True)
                     output.write_text(
-                        "# Failed: Turn limit exceeded before /work/model.py was written.\n"
+                        f"# Failed: {failure_status} before /work/model.py was written.\n"
                         "import cadquery as cq\n"
                         "result = None\n",
                         encoding="utf-8",
@@ -332,11 +371,7 @@ def run(
                         "model_path": "workspace/model.py",
                         "model_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
                         "coder_rounds": round_ + 1,
-                        **(
-                            {"status": "turn_limit_exceeded"}
-                            if turn_limit_exceeded
-                            else {}
-                        ),
+                        **({"status": failure_status} if failure_status else {}),
                     },
                 )
         except BaseException as error:
@@ -349,7 +384,7 @@ def run(
             )
             raise
 
-    if not turn_limit_exceeded:
+    if not failure_status:
         _write_retrospective(
             model,
             coder_messages,
@@ -360,5 +395,5 @@ def run(
         )
     return {
         "messages": coder_messages,
-        **({"status": "turn_limit_exceeded"} if turn_limit_exceeded else {}),
+        **({"status": failure_status} if failure_status else {}),
     }

@@ -10,5 +10,8 @@ artifact_root: outputs/zeroshot_native2
 # Per coder round, and per audit.
 max_turns: 60
 auditor_max_turns: 20
+# Per-stage retry policy, matching workflow/coder_auditor.yaml.
+retry_turns: 10
+max_stage_validation_retries: 3
 # Audits that may reject and open another coder round.
 max_audits: 1

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Sequence
 from contextlib import ExitStack
 from importlib.metadata import version
 from pathlib import Path, PurePosixPath
@@ -352,7 +353,7 @@ def run(
 
 def _write_retrospective(
     model: BaseChatModel,
-    messages: list[BaseMessage],
+    messages: Sequence[BaseMessage],
     system_prompt: str,
     run_dir: Path,
     console: bool,

@@ -841,6 +841,35 @@ def test_the_graph_still_validates_an_audit_that_skipped_the_agent_check(
     assert result["stage_validation_error"] is None
 
 
+@pytest.mark.parametrize("retries", [0, 3])
+def test_an_unsubmitted_audit_stops_after_validation_retries(monkeypatch, retries):
+    _stub_verification(monkeypatch, _verified())
+    coder = ScriptedChatModel(responses=())
+    auditor = ScriptedChatModel(
+        responses=tuple(
+            AIMessage(content="Still checking.") for _ in range(retries + 1)
+        )
+    )
+    with SandboxWorkdir() as workdir:
+        result = _graph(
+            workdir,
+            coder=coder,
+            auditor=auditor,
+            max_stage_validation_retries=retries,
+        ).invoke({"reconstruction": _coded_seed()})
+
+    assert len(auditor.received_messages) == retries + 1
+    assert coder.received_messages == []
+    assert result["audit_report"] is None
+    assert result["stage_validation_failure_count"] == retries + 1
+    assert "did not finish a validated audit report" in result["stage_validation_error"]
+    assert len(result["reconstruction"].snapshots) == 1
+    assert (
+        result["reconstruction"].snapshots[0].last_completed_stage
+        is PipelineStage.CODING
+    )
+
+
 def test_a_rejected_audit_opens_a_fresh_round_for_the_coder(monkeypatch):
     calls = _stub_verification(monkeypatch, _verified("000"), _verified("001"))
     coder = ScriptedChatModel(
