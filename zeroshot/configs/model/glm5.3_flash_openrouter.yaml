@@ -10,7 +10,7 @@ model:
   # Effort is a share of max_tokens; OpenRouter takes no `summary`. With max,
   # interpreter turns ran to 50-60k tokens; medium kept them under 15k.
   reasoning:
-    effort: medium
+    effort: medium  # low, high, or max
   output_version: v1
   api_key: ${oc.env:OPENROUTER_API_KEY}
 
