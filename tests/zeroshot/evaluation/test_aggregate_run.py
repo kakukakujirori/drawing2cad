@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from zeroshot.evaluation import aggregate_run
 from zeroshot.evaluation.aggregate_run import (
     SampleRow,
@@ -338,3 +340,38 @@ def test_no_metric_name_is_written_into_this_module() -> None:
     source = Path(aggregate_run.__file__).read_text(encoding="utf-8")
 
     assert not [name for name in HEADLINES if name in source]
+
+
+def test_cli_preserves_mixed_library_protocols_and_warning(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    protocols = [
+        {"reference_extent": 1.8, "trimesh_version": version}
+        for version in ["5.0.0", "5.1.0"]
+    ]
+    for i, protocol in enumerate(protocols):
+        _write_sample(
+            tmp_path,
+            str(i),
+            _completed_events(_USAGE),
+            {
+                "status": "OK",
+                "build_valid": True,
+                "metrics": {"chamfer_diag": 0, "mesh_iou": 0.5 + i * 0.5},
+                "protocol": protocol,
+            },
+        )
+    monkeypatch.setattr(sys, "argv", ["aggregate_run", "--run-dir", str(tmp_path)])
+
+    with pytest.warns(UserWarning, match="different library versions"):
+        aggregate_run.main()
+
+    document = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    summary = document["summary"]
+    assert summary["samples"] == 2
+    assert summary["metrics"]["mesh_iou"]["scored"] == 0.75
+    assert summary["itercad"]["protocol"] is None
+    assert summary["itercad"]["protocols"] == protocols
+    assert "Rescore" in summary["itercad"]["protocol_warning"]
+    assert [sample["protocol"] for sample in document["samples"]] == protocols
+    assert "wrote" in capsys.readouterr().out

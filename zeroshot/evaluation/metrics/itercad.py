@@ -6,6 +6,7 @@ CD uses IterCAD's GT bbox-diagonal unit, but the shared scale and IoU pose.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -59,9 +60,25 @@ def aggregate_itercad(
 ) -> dict[str, Any]:
     """Reduce score_pair reports; a CD lost to an evaluator error nulls the CD aggregates."""
     reports = list(reports)
-    protocols = [report.get("protocol") for report in reports if report.get("protocol")]
-    if protocols and any(protocol != protocols[0] for protocol in protocols):
-        raise ValueError("cannot aggregate different evaluation protocols")
+    protocols = []
+    for report in reports:
+        if (protocol := report.get("protocol")) and protocol not in protocols:
+            protocols.append(protocol)
+    protocol_warning = None
+    if len(protocols) > 1:
+        versions = {"cadquery_version", "manifold3d_version", "trimesh_version"}
+        settings = [
+            {key: value for key, value in protocol.items() if key not in versions}
+            for protocol in protocols
+        ]
+        if any(setting != settings[0] for setting in settings):
+            raise ValueError("cannot aggregate different evaluation protocols")
+        protocol_warning = (
+            "Aggregating scores from different library versions; scoring settings "
+            "match, but library changes may affect metrics. Rescore in one "
+            "environment for controlled comparisons."
+        )
+        warnings.warn(protocol_warning, UserWarning, stacklevel=2)
     cds = []
     cd_errors = 0
     for report in reports:
@@ -81,7 +98,9 @@ def aggregate_itercad(
         and _valid_cd(report.get("metrics", {}).get("chamfer_diag"))
     )
     summary["cd_evaluation_errors"] = cd_errors
-    summary["protocol"] = protocols[0] if protocols else None
+    summary["protocol"] = protocols[0] if len(protocols) == 1 else None
+    if protocol_warning:
+        summary.update(protocols=protocols, protocol_warning=protocol_warning)
     if cd_errors:
         summary.update(auc_tr=None, mean_cd=None, median_cd=None)
     return summary

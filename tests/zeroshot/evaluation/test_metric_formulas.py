@@ -126,6 +126,46 @@ def test_aggregation_rejects_mixed_preprocessing():
         aggregate_itercad(records)
 
 
+@pytest.mark.parametrize(
+    "field", ["cadquery_version", "manifold3d_version", "trimesh_version"]
+)
+def test_aggregation_warns_and_preserves_different_library_versions(field):
+    old = {"reference_extent": 1.8, field: "1.0"}
+    new = {**old, field: "2.0"}
+    good = {"build_valid": True, "metrics": {"chamfer_diag": 0}}
+    reports = [
+        {**good, "protocol": old},
+        {**good, "protocol": old},
+        {**good, "protocol": new},
+        {"build_valid": False, "metrics": {}},
+    ]
+    with pytest.warns(UserWarning, match="different library versions"):
+        summary = aggregate_itercad(reports)
+    assert summary["total_samples"] == 4
+    assert summary["invalid_predictions"] == 1
+    assert summary["auc_tr"] == pytest.approx(0.75)
+    assert summary["mean_cd"] == 0
+    assert summary["protocol"] is None
+    assert summary["protocols"] == [old, new]
+    assert "library changes may affect metrics" in summary["protocol_warning"]
+
+
+@pytest.mark.parametrize("field", ["reference_extent", "future_version"])
+def test_library_version_difference_does_not_bypass_other_protocol_guards(field):
+    old = {"reference_extent": 1.8, "trimesh_version": "5.0.0"}
+    new = {**old, "trimesh_version": "5.1.0", field: 1.0}
+    with pytest.raises(ValueError, match="different evaluation protocols"):
+        aggregate_itercad([{"protocol": old}, {"protocol": new}])
+
+
+def test_matching_protocol_is_preserved_without_a_warning():
+    protocol = {"reference_extent": 1.8, "trimesh_version": "5.0.0"}
+    summary = aggregate_itercad([{"build_valid": False, "protocol": protocol}] * 2)
+    assert summary["protocol"] == protocol
+    assert "protocol_warning" not in summary
+    assert "protocols" not in summary
+
+
 @pytest.mark.parametrize("value", [0, -1, np.nan, np.inf])
 def test_preprocess_config_rejects_bad_extent(value):
     with pytest.raises(ValueError):
