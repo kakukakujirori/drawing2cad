@@ -106,12 +106,13 @@ def pictorials_in_projected_places(
                 f"and no {role.value} view is registered. A drawing places a "
                 "pictorial view apart from its orthographic views, never in the place "
                 "of one, and a view that carries dimensions is orthographic. "
-                f"{view.name} should be the {role.value} view. Look at it again as "
-                f"the {role.value} view, and revise its role, axes and every feature "
-                f"read from it. Note: once {view.name} is registered as the "
-                f"{role.value} view, it counts toward the match score, so the score "
-                "may rise. That is never a reason to keep it as "
-                f"{view.role.value}."
+                f"{view.name} should be the {role.value} view. "
+                f"Look at it again as the {role.value} view, compare feature positions "
+                "and dimension spans along the axes shared with the other source views, "
+                "and revise its role, axes and every feature read from it. "
+                f"Note: once {view.name} is registered as the {role.value} view, "
+                "it counts toward the match score, so the score may rise. "
+                f"That is never a reason to keep it as {view.role.value}."
             )
             break
     return questions

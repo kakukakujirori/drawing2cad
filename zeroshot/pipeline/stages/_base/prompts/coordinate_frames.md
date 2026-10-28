@@ -30,3 +30,5 @@ Every orthographic DrawingView states the model axes its sheet +U (rightwards) a
 
 ### Which view is which?
 $projection_placement In an L of three unturned views, the corner view is front. Explicit view labels take precedence. Do not move front to another view because its silhouette is more informative or more familiar, and do not call a conventional arrangement free-style for that reason. Treat the arrangement as free-style only when labels and the agreement between views do not fix the roles; then choose roles whose projections agree with each other.
+
+For ambiguous view roles, compare corresponding object edges or the parts printed dimensions measure across the source views. For orthographic views, corresponding feature positions should align horizontally or vertically between views on the same row or column. Do not classify a view as pictorial based on appearance alone; curves and angled edges can also occur in orthographic views. A mismatch with the current CAD or a worse projection score alone can never be a reason to reject an alternative view assignment.

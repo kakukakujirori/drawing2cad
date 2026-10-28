@@ -104,12 +104,12 @@ def test_native_rejects_oversized_input_before_creating_workspace(tmp_path):
 
 @pytest.mark.parametrize("method", list(ProjectionMethod))
 def test_native_states_view_roles_as_the_staged_pipeline_does(tmp_path, method):
-    """Both arms read a drawing under one convention. A change to the staged
-    pipeline's wording fails here until the native prompt carries it too."""
+    """Both arms share the projection convention paragraph; staged-only guidance
+    for ambiguous readings may follow it."""
     staged = PromptTemplate(
         _ROOT / "zeroshot/pipeline/stages/_base/prompts/coordinate_frames.md"
     ).render(projection_placement=describe_placement(method))
-    section = staged[staged.index("### Which view is which?") :]
+    section = staged[staged.index("### Which view is which?") :].split("\n\n", 1)[0]
     system = _system_prompt(
         _config(tmp_path, f"sample.drawing.projection_method={method}")
     )

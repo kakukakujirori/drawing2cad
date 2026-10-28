@@ -66,8 +66,14 @@ def test_a_pictorial_drawn_as_a_missing_view_is_questioned(tmp_path: Path) -> No
     (question,) = _questions(interpretation, tmp_path)
     assert question.startswith("Highly suspicious: view_iso is registered as isometric")
     assert "to the right of view_front" in question
+    assert "third-angle projection draws the right view" in question
+    assert "and no right view is registered" in question
     assert "view_iso should be the right view" in question
-    assert "it counts toward the match score" in question
+    assert (
+        "compare feature positions and dimension spans along the axes shared "
+        "with the other source views" in question
+    )
+    assert "it counts toward the match score, so the score may rise" in question
 
 
 @pytest.mark.parametrize(
