@@ -15,3 +15,7 @@ retry_turns: 10
 max_stage_validation_retries: 3
 # Audits that may reject and open another coder round.
 max_audits: 1
+# Build and render /work/model.py after each coder turn that changes it, as
+# the staged pipeline does, in the six standard views and without drawing
+# comparison; the auditor gets the last report. `native2_prime.yaml` sets it.
+auto_build: false

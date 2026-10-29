@@ -5,7 +5,8 @@ It isolates what the staged pipeline's reconstruction tools and validation add
 over its coder-auditor topology.
 
 - **Coder**: the native agent, with the same prompt, tools (`run_shell`, `load_image`) and inputs.
-  It owes no interpretation file. The pipeline neither builds nor renders `model.py`.
+  It owes no interpretation file. The pipeline neither builds nor renders `model.py`,
+  unless `auto_build` is on (Native 2', below).
 - **Auditor**: the same two tools, the input drawing, and the coder's final
   message (`prompts/auditor.md`, `prompts/audit_request.md`). It may build and render
   the program itself. It answers in free text and ends with `VERDICT: ACCEPT` or `VERDICT: REJECT`;
@@ -33,6 +34,35 @@ over its coder-auditor topology.
 When a response hits the output limit, both agents are retried with a reminder, as the native
 generator is: the coder gets native's, and the auditor is asked for its report and verdict.
 These model-call retries do not consume extra agent turns.
+
+## Native 2'
+
+`zeroshot/configs/native2_prime.yaml` turns on `auto_build`, the staged
+pipeline's automatic builds without its interpretation. It is the first row of
+the ablation that `workflow/ablation_*.yaml` continue.
+
+- **Builds**: after each coder tool turn that changes `model.py`, the staged
+  pipeline's verifier executes it and draws all six standard orthographic views
+  and a perspective render under `workspace/attempts/round_NNN/coding/NNN/`.
+  There is no drawing comparison, so no match score. The report follows the
+  next turn's announcement and costs no turn.
+- **Prompts**: the coder's system prompt adds `prompts/automatic_build.md` and
+  `prompts/model_frame.md`, the view axes of the staged pipeline's
+  `coordinate_frames.md`. The auditor's adds `prompts/model_frame.md`, and its
+  request carries the report of the coder's last build, built again only if that
+  build timed out or met an infrastructure error.
+- **Records**: `run.json` still says `"pipeline": "native2"`, so scoring treats
+  the run as native; its config records `auto_build: true`.
+
+```bash
+python -m zeroshot.pipeline_native2 --config-name native2_prime --multirun \
+  model=deepseek4.1_flash_1017_openrouter \
+  artifact_root=outputs_baselines2/deepseek4.1/test_eccv_native2_prime \
+  on_existing=retry \
+  sample.sample_id=$(ls data/test_eccv/target_step_ori | sed "s/\.step$//; s/.*/'&'/" | paste -sd,)
+```
+
+## Settings and records
 
 Settings live in `zeroshot/configs/native2.yaml`, which extends `native.yaml`.
 Logging, `on_existing`, the retrospective (coder only), and scoring follow the

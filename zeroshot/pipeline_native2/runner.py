@@ -1,4 +1,5 @@
-"""The native baseline plus an auditor: same two tools, no staged machinery."""
+"""The native baseline plus an auditor: same two tools, no staged machinery
+beyond the automatic builds Native 2' adds."""
 
 from __future__ import annotations
 
@@ -16,16 +17,24 @@ from langchain.agents.middleware import AgentMiddleware, ToolErrorMiddleware
 from langchain.agents.middleware.types import InputAgentState
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
-from langchain_core.messages.content import create_image_block
+from langchain_core.messages.content import create_image_block, create_text_block
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 
+from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages._base.prompt import PromptTemplate, describe_placement
+from zeroshot.pipeline.stages.coding.verify import OutputVerifier
 from zeroshot.pipeline.stages.interpretation.contracts import ProjectionMethod
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
+from zeroshot.pipeline.verification import (
+    AttemptStore,
+    CadQueryExecutor,
+    StepRenderer,
+)
+from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 from zeroshot.pipeline.workflow.middleware.stateless_reasoning import (
     StatelessReasoningMiddleware,
 )
@@ -58,6 +67,7 @@ _AUDIT_LENGTH_RETRY_PROMPT = (
     "Your response reached the output limit; give your report now, ending with "
     "the verdict line."
 )
+_BUILD_REPORT = "The pipeline's verification report describes this build."
 
 
 def accepted(report: str) -> bool:
@@ -192,6 +202,31 @@ def run(
                     )
                 write_json(run_dir / "run.json", metadata)
 
+                # Native 2': build and render the program as the staged pipeline
+                # does, in the standard views, with no interpretation to compare.
+                builds = (
+                    OutputVerifier(
+                        executor=CadQueryExecutor(sandbox_runner=sandbox),
+                        workdir=workdir,
+                        renderer=StepRenderer(
+                            ignore_hidden_lines=bool(
+                                OmegaConf.select(
+                                    config,
+                                    "sample.drawing.hidden_lines_omitted",
+                                    default=False,
+                                )
+                            )
+                        ),
+                        diff_drawer=None,
+                        artifact_presenter=ArtifactPresenter(
+                            input="path", output_renders="path"
+                        ),
+                        attempt_store=AttemptStore(workdir, lambda: round_),
+                        projection_view_mode="standard",
+                    )
+                    if config.auto_build
+                    else None
+                )
                 placement = describe_placement(projection_method)
                 prompt = PromptTemplate(_CODER_PROMPT).render(
                     projection_placement=placement
@@ -199,6 +234,11 @@ def run(
                 auditor_prompt = PromptTemplate(_PROMPTS / "auditor.md").render(
                     projection_placement=placement
                 )
+                if builds is not None:
+                    frame = PromptTemplate(_PROMPTS / "model_frame.md").render()
+                    automatic = PromptTemplate(_PROMPTS / "automatic_build.md").render()
+                    prompt = f"{prompt}\n\n{automatic}\n\n{frame}"
+                    auditor_prompt = f"{auditor_prompt}\n\n{frame}"
                 if model is None:
                     model = instantiate(config.model)
                 model_retries = int(config.model_retries)
@@ -228,6 +268,12 @@ def run(
                             length_retry_prompt=length_retry_prompt,
                         ),
                         StatelessReasoningMiddleware(),
+                        # After the turn budget, as in the staged pipeline.
+                        *(
+                            [VerifyOnWriteMiddleware(builds)]
+                            if role == "coder" and builds is not None
+                            else []
+                        ),
                     ]
                     agent = create_agent(
                         model=model,
@@ -317,6 +363,13 @@ def run(
                     request = PromptTemplate(_PROMPTS / "audit_request.md").render(
                         author_message=coder_messages[-1].text
                     )
+                    # The coder's last build of this program, built again only if it
+                    # failed transiently (a timeout or an infrastructure error).
+                    build_report = (
+                        [create_text_block(_BUILD_REPORT), *builds.feedback()]
+                        if builds is not None
+                        else []
+                    )
                     try:
                         audit_messages, failure_status = converse(
                             "auditor",
@@ -326,6 +379,7 @@ def run(
                                 content=[
                                     *([] if audit_messages else blocks),
                                     {"type": "text", "text": request},
+                                    *build_report,
                                 ]
                             ),
                             auditor_budget,

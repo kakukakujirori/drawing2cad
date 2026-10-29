@@ -318,6 +318,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "run_shell",
         "load_image",
         "fit_edge",
+        "calculate_drawing_scale",
         "evaluate_cad_hypothesis",
     ]
     assert graph_factory.keywords["coding_draft_check_after_n_turns"] == 20
@@ -476,8 +477,18 @@ def test_each_agent_tool_list_can_be_selected_in_config() -> None:
 # Table 2: each row adds a component to the one before; the last is the default.
 _ABLATIONS = {
     "ablation_interpretation": {
-        "coding_tools": ["run_shell", "load_image", "calculate_drawing_scale"],
-        "audit_tools": ["run_shell", "load_image"],
+        "coding_tools": [
+            "run_shell",
+            "load_image",
+            "calculate_drawing_scale",
+            "evaluate_cad_hypothesis",
+        ],
+        "audit_tools": [
+            "run_shell",
+            "load_image",
+            "calculate_drawing_scale",
+            "evaluate_cad_hypothesis",
+        ],
         "drawing_skeleton": False,
         "diff_drawer_config": None,
         "review_drawing_diff_clusters": False,
@@ -488,8 +499,15 @@ _ABLATIONS = {
             "load_image",
             "fit_edge",
             "calculate_drawing_scale",
+            "evaluate_cad_hypothesis",
         ],
-        "audit_tools": ["run_shell", "load_image", "fit_edge"],
+        "audit_tools": [
+            "run_shell",
+            "load_image",
+            "fit_edge",
+            "calculate_drawing_scale",
+            "evaluate_cad_hypothesis",
+        ],
         "drawing_skeleton": True,
         "diff_drawer_config": None,
         "review_drawing_diff_clusters": False,

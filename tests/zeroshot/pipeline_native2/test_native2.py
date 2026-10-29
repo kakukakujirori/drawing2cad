@@ -1,6 +1,7 @@
 """Run the real coder-auditor loop without calling a provider."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -20,14 +21,14 @@ from zeroshot.pipeline_native2 import runner
 _ROOT = Path(__file__).resolve().parents[3]
 
 
-def _config(tmp_path):
+def _config(tmp_path, config_name="native2"):
     drawing = tmp_path / "drawing.png"
     Image.new("RGB", (16, 16), "white").save(drawing)
     with initialize_config_dir(
         config_dir=str(_ROOT / "zeroshot/configs"), version_base="1.3"
     ):
         return compose(
-            config_name="native2",
+            config_name=config_name,
             overrides=[
                 f"artifact_root={tmp_path / 'runs'}",
                 "console=false",
@@ -413,3 +414,99 @@ def test_a_failed_audit_still_leaves_the_coders_program(tmp_path):
 
     run_dir = Path(config.artifact_root) / config.sample.sample_id
     assert (run_dir / "workspace/model.py").read_text() == "result = 1\n"
+
+
+def _accepted_run(config):
+    model = ScriptedChatModel(
+        responses=(
+            _write("result = 1", "c0"),
+            AIMessage(content="Built it."),
+            AIMessage(content="Matches.\nVERDICT: ACCEPT"),
+            AIMessage(content="A report."),
+        )
+    )
+    runner.run(config, model=model)
+    return model, Path(config.artifact_root) / config.sample.sample_id
+
+
+def _texts(message):
+    return [block.get("text", "") for block in message.content_blocks]
+
+
+def test_native2_neither_builds_nor_describes_builds(tmp_path):
+    model, run_dir = _accepted_run(_config(tmp_path))
+
+    coder_system = model.received_messages[1][0].text
+    assert coder_system == runner.PromptTemplate(runner._CODER_PROMPT).render(
+        projection_placement=runner.describe_placement(
+            runner.ProjectionMethod.THIRD_ANGLE
+        )
+    )
+    assert not any(
+        "[Execution result]" in text
+        for messages in model.received_messages
+        for message in messages
+        for text in _texts(message)
+    )
+    assert not (run_dir / "workspace/attempts").exists()
+
+
+def test_native2_prime_builds_each_written_program_and_reports_it_to_the_auditor(
+    tmp_path,
+):
+    model, run_dir = _accepted_run(_config(tmp_path, "native2_prime"))
+
+    coder, auditor = model.received_messages[1], model.received_messages[2]
+    assert "### Automatic verification" in coder[0].text
+    assert "### Model frame" in coder[0].text
+    assert "### Model frame" in auditor[0].text
+    assert "### Automatic verification" not in auditor[0].text
+    # The build follows the coder's write and, as in the staged pipeline, the
+    # announcement of its next turn.
+    assert coder[-2].text == "[turn 2/60]"
+    assert _texts(coder[-1])[0] == "[Execution result]"
+    request = next(m for m in auditor if "now builds" in m.text)
+    texts = _texts(request)
+    report = texts.index("The pipeline's verification report describes this build.")
+    assert texts[report + 1] == "[Execution result]"
+    assert '"verification_id":"000"' in texts[report + 2]
+    # The audit reuses that build of the unchanged program.
+    attempts = run_dir / "workspace/attempts/round_000/coding"
+    assert [path.name for path in attempts.iterdir()] == ["000"]
+
+
+def test_native2_prime_takes_its_model_frame_from_the_staged_pipeline():
+    frames = (
+        _ROOT / "zeroshot/pipeline/stages/_base/prompts/coordinate_frames.md"
+    ).read_text()
+    native = (_ROOT / "zeroshot/pipeline_native2/prompts/model_frame.md").read_text()
+    table = [line for line in native.splitlines() if line.startswith("|")]
+    assert len(table) == 8
+    assert "\n".join(table) in frames
+    # Every sentence but the heading and the table's own introduction is copied.
+    prose = [
+        sentence
+        for paragraph in native.split("\n\n")
+        if not paragraph.startswith(("#", "|"))
+        for sentence in re.split(r"(?<=\.) ", paragraph.strip())
+        if not sentence.endswith(":")
+    ]
+    assert len(prose) == 4
+    assert [sentence for sentence in prose if sentence not in frames] == []
+
+
+def test_native2_prime_describes_builds_as_the_staged_coder_round_does():
+    staged = (_ROOT / "zeroshot/pipeline/stages/coding/prompts/round.md").read_text()
+    native = (
+        _ROOT / "zeroshot/pipeline_native2/prompts/automatic_build.md"
+    ).read_text()
+    for shared in (
+        "automatic verification",
+        (
+            "returns diagnostics and paths to STEP, orthographic PNG/DXF and "
+            "perspective renders under"
+        ),
+        "This feedback finds misreadings faster than further measuring by hand.",
+        "Verification uses no additional model turn.",
+    ):
+        assert shared in native and shared in staged

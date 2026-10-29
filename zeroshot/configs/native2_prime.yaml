@@ -1,0 +1,11 @@
+# @package _global_
+
+# Native 2' (Table 2's first row): native2 with the staged pipeline's automatic
+# build and render of /work/model.py. `zeroshot.pipeline_native2` loads it with
+# `--config-name native2_prime`.
+defaults:
+  - native2
+  - _self_
+
+artifact_root: outputs/zeroshot_native2_prime
+auto_build: true
