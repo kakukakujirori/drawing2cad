@@ -32,14 +32,18 @@ _TRIAL_SOURCE = "hypothesis.py"
 # Trial output never carries images: the model opens the ones it needs.
 _PATHS_ONLY = ArtifactPresenter(input="path")
 
-_DESCRIPTION = cleandoc(
-    """Build a trial CadQuery script and compare it with the input drawing.
-
-    This tool packages the pipeline's automatic program execution and rendering;
+_PURPOSE = cleandoc(
+    """This tool packages the pipeline's automatic program execution and rendering;
     you can test other programs without changing the main program to be submitted.
     This also means that a trial never reaches the submission: if you are responsible
     for the `coding` stage, remember to update the main program once a trial confirms
-    a promising alternative.
+    a promising alternative."""
+)
+
+_DESCRIPTION = cleandoc(
+    """Build a trial CadQuery script and compare it with the input drawing.
+
+    {purpose}
 
     The script needs to store its trial shape in `result` and must not read
     workspace files. Like a build of the main program, the trial is drawn in
@@ -64,12 +68,30 @@ _DESCRIPTION = cleandoc(
     drawing_diff items of a build.
     """
 )
+# Without a drawing comparison a trial is only drawn, and says no more.
+_DRAWN_DESCRIPTION = cleandoc(
+    """Build a trial CadQuery script and draw it as the main program is drawn.
+
+    {purpose}
+
+    The script needs to store its trial shape in `result` and must not read
+    workspace files. Like a build of the main program, the trial is drawn in
+    the views the interpretation registers.
+
+    A trial may hold the whole model, such as a copy of the program with one
+    change, or only the part in question with enough surrounding geometry to
+    check its extent and connections.
+
+    Each call writes a new directory under {root} with the script (saved as
+    {source}), its STEP and projections. The result lists their paths; open
+    PNGs with load_image or read DXFs with ezdxf. Audit evidence may cite a
+    trial's projections; the coder can read the script that trial built there.
+    """
+)
 
 _RESULT = cleandoc(
     """[Trial build]
-    Script: {script}, kept as {kept}
-    {score}
-    {reference}"""
+    Script: {script}, kept as {kept}"""
 )
 _SCORE = "Match score: {score:.2f} px; lower is better."
 _UNSCORED = "Match score unavailable: {reason}."
@@ -102,9 +124,11 @@ def create_cad_hypothesis_tool(
         source_filename=_TRIAL_SOURCE,
         attempt_stage=stage,
     )
-    description = _DESCRIPTION.format(
-        source=_TRIAL_SOURCE, root=trial_store.sandbox_root
-    )
+    # Only a comparison with the drawing gives a trial its score.
+    compares_with_drawing = diff_drawer_config is not None
+    description = (
+        _DESCRIPTION if compares_with_drawing else _DRAWN_DESCRIPTION
+    ).format(purpose=_PURPOSE, source=_TRIAL_SOURCE, root=trial_store.sandbox_root)
 
     @tool("evaluate_cad_hypothesis", description=description)
     def evaluate_cad_hypothesis(
@@ -113,7 +137,7 @@ def create_cad_hypothesis_tool(
         views = interpretation()
         if views is None:
             raise ToolFeedbackError(
-                "Trials are compared with the views the interpretation registers; "
+                "Trials are drawn in the views the interpretation registers; "
                 "it has not validated yet."
             )
         script = _workspace_file(workdir, source_path)
@@ -133,12 +157,16 @@ def create_cad_hypothesis_tool(
                 _RESULT.format(
                     script=source_path,
                     kept=PurePosixPath(report.sandbox_verification_dir) / _TRIAL_SOURCE,
-                    score=(
+                ),
+                *(
+                    [
                         _SCORE.format(score=score)
                         if score is not None
-                        else _UNSCORED.format(reason=reason)
-                    ),
-                    reference=_reference(reference(), views, workdir),
+                        else _UNSCORED.format(reason=reason),
+                        _reference(reference(), views, workdir),
+                    ]
+                    if compares_with_drawing
+                    else []
                 ),
                 *(block["text"] for block in lines if block["type"] == "text"),
             ]

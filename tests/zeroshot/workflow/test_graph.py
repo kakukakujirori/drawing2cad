@@ -698,7 +698,7 @@ def test_an_unknown_tool_name_is_refused(stage):
 _TRIAL = "/work/trials/round_000/coding/000"
 
 
-def test_coder_can_build_score_and_inspect_a_trial(monkeypatch):
+def test_coder_can_build_and_inspect_a_trial(monkeypatch):
     calls = _stub_verification(monkeypatch, _verified())
     drawing = interpretation("a plate")
     drawing.views[0].role = View.RIGHT
@@ -756,7 +756,8 @@ PY"""
     trial_text = results["trial"].text
     assert trial_text.startswith("[Trial build]")
     assert f"kept as {_TRIAL}/hypothesis.py" in trial_text
-    assert "No build to compare with yet." in trial_text
+    # Without drawing comparison the trial is drawn but claims no score.
+    assert "score" not in trial_text.lower()
     assert '"status":"VERIFIED"' in trial_text
     assert f"{_TRIAL}/projection/right.dxf" in trial_text
     assert any(

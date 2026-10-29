@@ -98,8 +98,16 @@ def trial(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(CadQueryExecutor, "execute", execute)
+    real_draw_diffs = TrialVerifier._draw_diffs
+    # With a comparator, every trial compares as if scored 0.7 px per view.
     monkeypatch.setattr(
-        TrialVerifier, "_draw_diffs", lambda self, render: _diffs(tmp_path, 0.7)
+        TrialVerifier,
+        "_draw_diffs",
+        lambda self, render: (
+            _diffs(tmp_path, 0.7)
+            if self.diff_drawer is not None
+            else real_draw_diffs(self, render)
+        ),
     )
     workdir = SandboxWorkdir(tmp_path)
     for role in ROLES:
@@ -113,12 +121,13 @@ def trial(tmp_path, monkeypatch):
         drawing_diff_report=_diffs(tmp_path, 7.0),
     )
 
-    def make(stage: AttemptStage = "coding", views=_views):
+    def make(stage: AttemptStage = "coding", views=_views, compares=True):
         return workdir, create_cad_hypothesis_tool(
             workdir=workdir,
             sandbox_runner=SandboxRunner(Path(sys.executable), 10),
             renderer=_Renderer(),  # type: ignore[arg-type]
-            diff_drawer_config=None,
+            # Never run: `_draw_diffs` above stands in for it.
+            diff_drawer_config={} if compares else None,
             trial_store=AttemptStore(workdir, lambda: 0, root_dirname=TRIALS_DIRNAME),
             stage=stage,
             interpretation=views,
@@ -151,6 +160,24 @@ def test_a_trial_is_scored_against_a_reference_and_kept_apart(trial, stage):
     assert (root / "model.py").read_text() == "result = 'program'\n"
     assert not (root / "attempts").exists()
     assert PurePosixPath("trials") in workdir.read_only_subdirs
+
+
+def test_without_drawing_comparison_a_trial_is_drawn_and_claims_no_score(trial):
+    workdir, tool = trial(compares=False)
+    (workdir.host_bind_dir / "trial.py").write_text("result = 'box'\n")
+
+    result = tool.invoke({"source_path": "/work/trial.py"})
+
+    kept = "/work/trials/round_000/coding/000/hypothesis.py"
+    assert result.startswith(
+        f"[Trial build]\nScript: /work/trial.py, kept as {kept}\n[Execution result]"
+    )
+    for claim in ("score", "compar", "trial_diff", "cluster"):
+        assert claim not in result.lower()
+        assert claim not in tool.description.lower()
+    _, compared = trial()
+    assert tool.description != compared.description
+    assert "is drawn in\nthe views the interpretation registers." in tool.description
 
 
 def test_a_trial_needs_registered_views_and_a_workspace_script(trial):
