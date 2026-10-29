@@ -828,8 +828,9 @@ EXAMPLE_REPORT = cleandoc(
 _DESCRIPTION = cleandoc(
     """Fit straight lines or circles/arcs to the strokes inside boxes of a drawing image.
 
-    Use it instead of scanning pixels with run_shell, on an input drawing or a
-    1:1 crop of it. Send all boxes for one image in one call, up to {max_items}.
+    Use it to measure and parametrize lines, holes and arcs instead of scanning
+    pixels with run_shell, on an input drawing or a 1:1 crop of it.
+    Send all boxes for one image in one call, up to {max_items}.
 
     It fits stroke centre lines by random sampling, so crossing leaders and text
     do not pull the fit, and it cuts an arc back where tangent lines continue it.

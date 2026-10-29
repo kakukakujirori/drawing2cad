@@ -22,7 +22,7 @@ Give one `ticket_reviews` entry per open ticket and one `concern_reviews` entry 
 $drawing_diff_reviews
 
 Each finding is one defect:
-- `observation`: the shape the drawing shows, the shape the build's projections show, and where. Quantify the difference when the source supports a measurement, using `fit_edge` on raster drawings; do not invent a number.
+- `observation`: the shape the drawing shows, the shape the build's projections show, and where. Quantify the difference when the source supports a measurement; do not invent a number.
 - `evidence`: boxes measured in each file's own frame: millimetres for DXF, integer pixels for raster images. At least one region must cite a `.dxf` under this build's `projection/` directory.
 - `cause`: `interpretation` when the interpretation misreads or omits what the drawing shows and the program builds that error faithfully. `coding` when the interpretation is right but the program builds something else.
 - `targets`: the interpretation members the defect concerns. For an interpretation cause, name the wrong members: `sem_...` for a feature or its placement, `dim_...` for a misread printed figure, `view_...` for a wrong crop, role or calibration, `datum` for the shared frame. For something the interpretation omits, name the `view_...` where the drawing shows it. For a coding cause, name the members the program builds wrongly, or give `[]`.

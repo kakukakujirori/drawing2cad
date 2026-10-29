@@ -57,4 +57,4 @@ Each raster input `xxx.png` (e.g., `view_drawing.png`) has a corresponding `xxx_
 - `x`, `y`: position in the input's pixels, sub-pixel.
 - `angle`: line direction, 0 to 180 degrees counterclockwise from the right as seen on the page; a horizontal line reads near 0 or 180.
 
-Use it to locate lines and curves. To further describe them as parametric curves, pass a bounding box around each to `fit_edge`.
+Use it to locate lines and curves. To further describe them as parametric curves, pass a bounding box around each to `fit_edge` if the tool is available.

@@ -222,7 +222,8 @@ def create_calculate_drawing_scale_tool() -> BaseTool:
         Give the printed lengths and the pixel lengths you measured for them,
         all off the same file at the same resolution. The result is the sheet's
         `scale`: length_mm = length_px * scale. It converts lengths only, never
-        origins or axes.
+        origins or axes. The pipeline's validation also automatically fits each registered
+        view's scale the same way, from the lengths measured in the interpretation.
 
         A null scale means the pairs did not agree well enough to choose one;
         `status` and `alternatives` say how. Fix the readings rather than pick

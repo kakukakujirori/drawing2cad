@@ -69,7 +69,8 @@ _RUN_PATHS = {
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
 }
-# Tools a run may leave out; each describes its own use.
+# Tools a run may leave out whose use lives only in their descriptions. Prompts
+# name the measurement tools only for when they are available.
 _OPTIONAL_TOOLS = ("evaluate_cad_hypothesis",)
 
 
@@ -258,7 +259,7 @@ def test_reconstruction_guide_keeps_only_the_working_contract() -> None:
     ):
         assert field in guide
     assert "exactly one response per assigned ticket" not in guide
-    assert len(guide.split()) < 650
+    assert len(guide.split()) < 700
 
 
 def test_the_system_prompt_explains_selective_history_navigation() -> None:
