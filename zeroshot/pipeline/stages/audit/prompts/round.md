@@ -11,7 +11,7 @@ The program is at `$coding_output_path`. Built artifacts are in $attempt_dir:
 - `projection/<view>.dxf` and `projection/<view>.png`: projections for the orthographic views identified in the interpretation.
 - `render_3d/*.png`: perspective renders. List the directory for their names.
 
-The pipeline's verification report describes this build and how its projections differ from the input drawing.
+The pipeline's verification report describes this build.
 
 ### Artifact contract
 
@@ -51,7 +51,7 @@ Check in two steps.
    - A defect that comes from a wrong reading found in step 1 has cause `interpretation`. Otherwise it has cause `coding`.
    - If no valid solid was produced, decide whether the failure comes from the program or from the interpretation.
 
-Ticket responses and `concerns` are claims, not proof. Check them against the artifacts. Clusters list only the largest differences, so the absence of a cluster settles nothing; compare the input and the projection where the concern lies. Check whether each earlier defect is resolved, not merely whether an edit was attempted.
+Ticket responses and `concerns` are claims, not proof. Check each against the artifacts: compare the input view with the build's projection of that view where the claim applies. Check whether each earlier defect is resolved, not merely whether an edit was attempted.
 
 After a turn that changes the file, the pipeline validates it and returns paths to evidence images. Each image shows the file named in an evidence entry with that entry's `box` outlined in red. Open each one with `load_image`. Check that the box covers the feature and the dimensions or edges the claim needs, and that the stated mismatch is real. Correct misplaced boxes and unsupported findings, then check the new images. With no findings, review the report itself.
 

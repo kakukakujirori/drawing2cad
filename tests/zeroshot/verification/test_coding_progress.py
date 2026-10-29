@@ -14,7 +14,10 @@ from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
     ExecutionStatus,
 )
-from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
+from zeroshot.pipeline.verification.run_drawing_diff import (
+    DrawingDiffExecutor,
+    DrawingDiffReport,
+)
 
 SOURCE = "result = object()\n"
 
@@ -25,7 +28,8 @@ def test_best_candidate_eligibility_and_cache(tmp_path, monkeypatch):
             executor=None,
             workdir=workdir,
             renderer=None,
-            diff_drawer=None,
+            # Never run: the builds below bring their own comparisons.
+            diff_drawer=DrawingDiffExecutor(),
             artifact_presenter=ArtifactPresenter(input="path"),
             attempt_store=AttemptStore(workdir, round_source=lambda: 0),
         )
@@ -183,6 +187,14 @@ def test_best_candidate_eligibility_and_cache(tmp_path, monkeypatch):
         assert verifier._candidate_score(failed)[0] is None
 
         assert "S=" not in improved and "C/20" not in improved
+
+        # Without drawing comparison there is nothing to rank builds by.
+        verifier.diff_drawer = None
+        verifier.source_path.write_text(SOURCE + "# uncompared\n")
+        assert all(
+            "[Candidate progress]" not in block.get("text", "")
+            for block in verifier.feedback()
+        )
 
 
 @pytest.mark.parametrize("margin", [-0.1, float("nan"), float("inf")])

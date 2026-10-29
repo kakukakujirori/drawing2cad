@@ -134,6 +134,8 @@ class ProgressOutputVerifier(OutputVerifier):
 
     def feedback(self) -> list[ContentBlock]:
         blocks = super().feedback()
+        if self.diff_drawer is None:
+            return blocks  # Without drawing comparisons there is nothing to rank.
         report = self._last_feedback_report
         assert report is not None
         execution = report.exec_report

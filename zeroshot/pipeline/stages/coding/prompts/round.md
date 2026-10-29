@@ -49,7 +49,7 @@ When a feature's shape is uncertain, build each hypothesis you have, as the work
 
 Use `load_image` to inspect drawings, `run_shell` to create crops and edit files, and other useful tools when provided. Printed dimensions must be prioritized over measured sizes. When a size you measure disagrees with a printed dimension, check that you read the number right, then build the printed value and note the disagreement in `concerns`.
 
-After a tool turn changes either file, automatic verification checks the interpretation. Once it is valid, verification also executes the program and returns diagnostics and paths to STEP, orthographic PNG/DXF and perspective renders under `$verification_dir/round_NNN/coding/NNN/`. It also compares the solid's projections with the registered input views and reports how well they match and where they differ. This comparison finds misreadings faster than further measuring by hand. Each report lists the requirements your answer still has to meet. Verification uses no additional model turn.
+After a tool turn changes either `$interpretation_output_path` or `$coding_output_path`, automatic verification checks the file formats and contents. It also executes the program if it exists and the interpretation is valid, and returns diagnostics and paths to STEP, orthographic PNG/DXF and perspective renders under `$verification_dir/round_NNN/coding/NNN/`. This feedback finds misreadings faster than further measuring by hand. Each report lists the requirements your answer still has to meet. Verification uses no additional model turn.
 
 #### Read the drawing
 
@@ -62,7 +62,7 @@ After a tool turn changes either file, automatic verification checks the interpr
 
 Do not believe in your 3D reasoning blindly. Whenever deciding geometric design details, build candidates and compare their projections with the input drawing. This is especially important when you seek an alternative design hypothesis: do not reject it based only on your reasoning. Build and observe it first.
 
-- After any modifications, inspect the latest deciding views and overall scores before keeping or undoing the change. If the expected change is absent, revise the geometry or coordinate hypothesis before another trial.
+- After any modifications, inspect the latest deciding views and verification feedback before keeping or undoing the change. If the expected change is absent, revise the geometry or coordinate hypothesis before another trial.
 - Integrate each promising alternative into `$coding_output_path` immediately to see whether the projections of the resulting shape give a better match with the input. Quick iteration is the key to fast improvements.
 - Treat stroke thickness as a drawing convention, not a physical feature width.
 - Read the geometry census:
