@@ -3,6 +3,7 @@
 import base64
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import replace
 from functools import partial
 from hashlib import sha256
@@ -13,6 +14,7 @@ import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
+from langchain_core.tools import BaseTool
 from omegaconf import OmegaConf
 
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
@@ -238,6 +240,15 @@ def _agent(role: str, model: BaseChatModel, **overrides: Any) -> AgentBuilder:
     return partial(create_agent, role=role, model=model, **overrides)
 
 
+def _with_tools(builder: AgentBuilder, *extra: BaseTool) -> AgentBuilder:
+    """`builder`, whose agent also gets `extra` after the tools its stage built."""
+
+    def build(*, tools: Sequence[BaseTool], **options: Any) -> Any:
+        return builder.func(*builder.args, tools=[*tools, *extra], **options)
+
+    return partial(build, **builder.keywords)
+
+
 def _artifact_presenter() -> ArtifactPresenter:
     return ArtifactPresenter(
         input="path",
@@ -259,11 +270,23 @@ def _write_projection_dxf(path: Path) -> None:
     document.saveas(path)
 
 
+CODING_TOOLS = (
+    "run_shell",
+    "load_image",
+    "fit_edge",
+    "calculate_drawing_scale",
+    "evaluate_cad_hypothesis",
+)
+AUDIT_TOOLS = ("run_shell", "load_image", "fit_edge", "evaluate_cad_hypothesis")
+
+
 def _graph(
     workdir: SandboxWorkdir,
     *,
     coder: ScriptedChatModel,
     auditor: ScriptedChatModel,
+    coding_tools: tuple[str, ...] = CODING_TOOLS,
+    audit_tools: tuple[str, ...] = AUDIT_TOOLS,
     history_filename: str = "reconstruction.json",
     coder_options: dict[str, Any] | None = None,
     auditor_options: dict[str, Any] | None = None,
@@ -298,6 +321,8 @@ def _graph(
             drawing=[register_view("view_input", View.FULL_PAGE, path)],
             projection_method=projection_method,
         ),
+        coding_tools=coding_tools,
+        audit_tools=audit_tools,
         reconstruction_history_filename=history_filename,
         **overrides,
     )
@@ -615,6 +640,33 @@ def test_stage_specific_tools_stay_with_their_assigned_stage(monkeypatch):
         "calculate_drawing_scale",
         "evaluate_cad_hypothesis",
     )
+
+
+def test_each_agent_gets_only_the_tools_its_list_names(monkeypatch):
+    _stub_verification(monkeypatch, _verified())
+    coder = ScriptedChatModel(responses=_coding_script())
+    auditor = ScriptedChatModel(responses=_audit_script(_accepted_audit()))
+    with SandboxWorkdir() as workdir:
+        _graph(
+            workdir,
+            coder=coder,
+            auditor=auditor,
+            coding_tools=("calculate_drawing_scale", "run_shell"),
+            audit_tools=("run_shell",),
+        ).invoke({})
+    assert coder.bound_tool_names == ("run_shell", "calculate_drawing_scale")
+    assert auditor.bound_tool_names == ("run_shell",)
+
+
+@pytest.mark.parametrize("stage", ["coding_tools", "audit_tools"])
+def test_an_unknown_tool_name_is_refused(stage):
+    with SandboxWorkdir() as workdir, pytest.raises(ValueError, match="run_shel"):
+        _graph(
+            workdir,
+            coder=ScriptedChatModel(responses=[]),
+            auditor=ScriptedChatModel(responses=[]),
+            **{stage: ("run_shel",)},
+        )
 
 
 _TRIAL = "/work/trials/round_000/coding/000"

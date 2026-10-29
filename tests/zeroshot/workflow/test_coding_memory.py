@@ -15,6 +15,11 @@ from tests.zeroshot.chat_models import (
     unanswered_tool_calls,
 )
 from tests.zeroshot.contracts import interpretation, view
+from tests.zeroshot.workflow.test_graph import (
+    AUDIT_TOOLS,
+    CODING_TOOLS,
+    _with_tools,
+)
 from zeroshot.pipeline.event_logging import RunEventTransformer
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.messages.manifest import InputManifest, register_view
@@ -339,15 +344,18 @@ def test_stage_flag_and_new_round_baseline_and_validation_instruction(setup, fre
         )
     )
     stage = create_coding_stage(
-        partial(
-            create_agent,
-            role="coder",
-            model=model,
-            max_turns=4,
-            reset_turns_when_reentrant=False,
-            model_call_retries=0,
+        _with_tools(
+            partial(
+                create_agent,
+                role="coder",
+                model=model,
+                max_turns=4,
+                reset_turns_when_reentrant=False,
+                model_call_retries=0,
+            ),
+            *tools,
         ),
-        tools,
+        [],
         None,
         instructions,
         instructions.prompt_context,
@@ -534,6 +542,8 @@ def test_graph_applies_fresh_memory_only_to_coder_and_shares_the_budget(setup, f
             drawing=instructions.input_artifact,
             projection_method=ProjectionMethod.THIRD_ANGLE,
         ),
+        coding_tools=CODING_TOOLS,
+        audit_tools=AUDIT_TOOLS,
         fresh_coder=fresh,
     )
     for role, kwargs in captured.items():

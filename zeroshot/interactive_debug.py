@@ -43,6 +43,7 @@ from zeroshot.pipeline.event_logging import (
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import OutputVerifier
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
+from zeroshot.pipeline.tools import pick_named_tools
 from zeroshot.pipeline.tools.cad_hypothesis import (
     TRIALS_DIRNAME,
     create_cad_hypothesis_tool,
@@ -267,6 +268,7 @@ def build_agent(
     )
     runner_config["python_executable"] = Path(runner_config["python_executable"])
     runner = SandboxRunner(**runner_config)
+    tool_names = list(config.workflow[f"{stage}_tools"])
     tools = [
         create_run_shell_tool(runner, workdir),
         create_load_image_tool(workdir),
@@ -309,32 +311,34 @@ def build_agent(
         restored = ReconstructionHistory.model_validate(record).snapshots[-1]
         verifier.interpretation = restored.interpretation
         tools.append(create_calculate_drawing_scale_tool())
-        if config.workflow.coding_trial_tool:
-            tools.append(
-                create_cad_hypothesis_tool(
-                    workdir=workdir,
-                    sandbox_runner=runner,
-                    renderer=renderer,
-                    diff_drawer_config=cast(
-                        dict[str, Any],
-                        OmegaConf.to_container(diff_config, resolve=True),
-                    )
-                    if diff_config
-                    else None,
-                    trial_store=AttemptStore(
-                        workdir, lambda: snapshot.round, root_dirname=TRIALS_DIRNAME
-                    ),
-                    stage="coding",
-                    interpretation=lambda: verifier.interpretation,
-                    reference=lambda: verifier.last_report,
+        tools.append(
+            create_cad_hypothesis_tool(
+                workdir=workdir,
+                sandbox_runner=runner,
+                renderer=renderer,
+                diff_drawer_config=cast(
+                    dict[str, Any],
+                    OmegaConf.to_container(diff_config, resolve=True),
                 )
+                if diff_config
+                else None,
+                trial_store=AttemptStore(
+                    workdir, lambda: snapshot.round, root_dirname=TRIALS_DIRNAME
+                ),
+                stage="coding",
+                interpretation=lambda: verifier.interpretation,
+                reference=lambda: verifier.last_report,
             )
+        )
         middleware.append(
             VerifyOnWriteMiddleware(verifier, fingerprint=verifier.source_digest)
         )
+    else:
+        # The audit debug agent has no trial tool.
+        tool_names = [name for name in tool_names if name != "evaluate_cad_hypothesis"]
     return create_agent(
         model=instantiate(settings.model),
-        tools=tools,
+        tools=pick_named_tools(tools, tool_names),
         system_prompt=system,
         middleware=middleware,
         state_schema=AgentState,

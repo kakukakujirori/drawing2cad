@@ -1,5 +1,5 @@
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -10,7 +10,6 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.content import create_text_block
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
@@ -37,10 +36,14 @@ from zeroshot.pipeline.stages.interpretation.verify import InterpretationVerifie
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.tickets.verify import TicketVerifier
 from zeroshot.pipeline.stages.types import PipelineStage
+from zeroshot.pipeline.tools import pick_named_tools
 from zeroshot.pipeline.tools.cad_hypothesis import create_cad_hypothesis_tool
 from zeroshot.pipeline.tools.calculate_drawing_scale import (
     create_calculate_drawing_scale_tool,
 )
+from zeroshot.pipeline.tools.fit_edge import create_fit_edge_tool
+from zeroshot.pipeline.tools.load_image import create_load_image_tool
+from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import (
     AttemptStore,
     CadQueryExecutor,
@@ -197,7 +200,7 @@ def _dxf_context(instructions: StageInstructions) -> str | None:
 
 def create_coding_stage(
     coding_agent_builder: AgentBuilder,
-    tools: Sequence[BaseTool],
+    tool_names: Collection[str],
     role_path: Path | None,
     instructions: StageInstructions,
     prompt_context: dict[str, str],
@@ -210,7 +213,6 @@ def create_coding_stage(
     interpretation_filename: str = "interpretation.json",
     input_after_compaction: bool = False,
     fresh_memory: bool = False,
-    coding_trial_tool: bool = True,
     coding_draft_check_after_n_turns: int | None = 20,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
     output_limit_budget: OutputLimitBudget | None = None,
@@ -251,30 +253,30 @@ def create_coding_stage(
         ticket_verifier=ticket_verifier,
         fingerprint=workspace.source_digest,
     )
-    # Hypotheses are tried with the trial tool or in the program alone; the
-    # tool and the prompt bullets that describe it are chosen together.
     # Resolve views on each call: they follow the latest valid interpretation.
-    trial_tools = (
-        [
-            create_cad_hypothesis_tool(
-                workdir=instructions.workdir,
-                sandbox_runner=sandbox_runner,
-                renderer=renderer,
-                diff_drawer_config=diff_drawer_config,
-                trial_store=trial_store,
-                stage="coding",
-                interpretation=lambda: workspace.output.interpretation,
-                reference=lambda: workspace.output.last_report,
-            )
-        ]
-        if coding_trial_tool
-        else []
+    trial_tool = create_cad_hypothesis_tool(
+        workdir=instructions.workdir,
+        sandbox_runner=sandbox_runner,
+        renderer=renderer,
+        diff_drawer_config=diff_drawer_config,
+        trial_store=trial_store,
+        stage="coding",
+        interpretation=lambda: workspace.output.interpretation,
+        reference=lambda: workspace.output.last_report,
     )
+    available_tools = [
+        create_run_shell_tool(sandbox_runner, instructions.workdir),
+        create_load_image_tool(instructions.workdir),
+        create_fit_edge_tool(instructions.workdir),
+        create_calculate_drawing_scale_tool(),
+        trial_tool,
+    ]
+    # Hypotheses are tried with the trial tool or in the program alone; the
+    # prompt bullets that describe them follow whether the tool is offered.
+    trial_by_tool = trial_tool.name in tool_names
     hypothesis_trial_prompt = PromptTemplate(
-        _PROMPTS
-        / ("trials_by_tool.md" if coding_trial_tool else "trials_in_program.md")
+        _PROMPTS / ("trials_by_tool.md" if trial_by_tool else "trials_in_program.md")
     ).render(**instructions.prompt_context)
-    coding_tools = [*tools, create_calculate_drawing_scale_tool(), *trial_tools]
     max_turns = coding_agent_builder.keywords["max_turns"]
     extra_middleware: list[AgentMiddleware[Any, None, Any]] = [coding_middleware]
     if coding_draft_check_after_n_turns is not None:
@@ -283,11 +285,11 @@ def create_coding_stage(
                 workspace,
                 max_turns=max_turns,
                 remind_after_turns=coding_draft_check_after_n_turns,
-                trial_tool_name=trial_tools[0].name if trial_tools else None,
+                trial_tool_name=trial_tool.name if trial_by_tool else None,
             )
         )
     coding_agent = coding_agent_builder(
-        tools=coding_tools,
+        tools=pick_named_tools(available_tools, tool_names),
         system_prompt=build_system_prompt(
             role_path,
             prompt_context | {"max_turns": max_turns},

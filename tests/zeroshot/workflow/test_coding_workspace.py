@@ -15,7 +15,11 @@ from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.prompt_paths import ROLE_PATHS
 from tests.zeroshot.verification.test_interpretation_validation import dxf_case
 from tests.zeroshot.verification.test_verify_interpretation import _case
-from tests.zeroshot.workflow.test_graph import _artifact_presenter, _stub_verification
+from tests.zeroshot.workflow.test_graph import (
+    _artifact_presenter,
+    _stub_verification,
+    _with_tools,
+)
 from zeroshot.pipeline.messages.artifact import drawing_for_model
 from zeroshot.pipeline.messages.manifest import register_view
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
@@ -167,10 +171,16 @@ def test_an_answer_needs_features(tmp_path):
     assert "- interpretation.json lists no features." in pending
 
 
-def _stage(builder, workdir, drawing, **flags):
+def _stage(
+    builder,
+    workdir,
+    drawing,
+    tool_names=("calculate_drawing_scale", "evaluate_cad_hypothesis"),
+    **flags,
+):
     return create_coding_stage(
         builder,
-        tools=[],
+        tool_names=tool_names,
         role_path=ROLE_PATHS["coder"],
         instructions=StageInstructions(
             drawing,
@@ -218,7 +228,7 @@ def test_the_flags_choose_the_coder_middleware_in_one_place(
 
 
 @pytest.mark.parametrize("trial_tool", [False, True])
-def test_the_trial_flag_chooses_the_tool_with_its_prompt(tmp_path, trial_tool):
+def test_the_trial_tool_comes_with_its_prompt(tmp_path, trial_tool):
     built = {}
 
     def builder(**kwargs):
@@ -229,7 +239,7 @@ def test_the_trial_flag_chooses_the_tool_with_its_prompt(tmp_path, trial_tool):
         partial(builder, max_turns=5),
         SandboxWorkdir(tmp_path),
         [],
-        coding_trial_tool=trial_tool,
+        tool_names=["evaluate_cad_hypothesis"] if trial_tool else [],
     )
     names = [tool.name for tool in built["tools"]]
     assert ("evaluate_cad_hypothesis" in names) is trial_tool
@@ -277,8 +287,8 @@ def test_an_answer_waits_for_a_written_verified_interpretation(tmp_path, monkeyp
         )
     )
     stage = create_coding_stage(
-        _coder(model, 5),
-        tools=[write_interpretation],
+        _with_tools(_coder(model, 5), write_interpretation),
+        tool_names=["calculate_drawing_scale", "evaluate_cad_hypothesis"],
         role_path=ROLE_PATHS["coder"],
         instructions=StageInstructions(
             drawing,
@@ -364,8 +374,8 @@ def test_dxf_metadata_reaches_the_coder_and_its_interpretation_validates(
         )
     )
     stage = create_coding_stage(
-        _coder(model, 4),
-        tools=[write_dxf_interpretation],
+        _with_tools(_coder(model, 4), write_dxf_interpretation),
+        tool_names=["calculate_drawing_scale", "evaluate_cad_hypothesis"],
         role_path=ROLE_PATHS["coder"],
         instructions=StageInstructions(
             drawing,

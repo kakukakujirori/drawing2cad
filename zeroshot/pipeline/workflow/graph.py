@@ -1,5 +1,5 @@
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -25,9 +25,6 @@ from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.types import PipelineStage, next_stage
 from zeroshot.pipeline.stages.validate import validate_submission
 from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
-from zeroshot.pipeline.tools.fit_edge import create_fit_edge_tool
-from zeroshot.pipeline.tools.load_image import create_load_image_tool
-from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.components.compact import RetryCompaction
@@ -54,6 +51,8 @@ def create_reconstruction_graph(
     sandbox_workdir: SandboxWorkdir,
     artifact_presenter: ArtifactPresenter,
     input_manifest: InputManifest,
+    coding_tools: Sequence[str],
+    audit_tools: Sequence[str],
     output_filename: str = "model.py",
     interpretation_filename: str = "interpretation.json",
     verification_dirname: PurePosixPath = PurePosixPath("attempts"),
@@ -67,7 +66,6 @@ def create_reconstruction_graph(
     audit_evidence_mode: EvidenceMode = "mark",
     diff_drawer_config: Mapping[str, Any] | None = None,
     fresh_coder: bool = False,
-    coding_trial_tool: bool = True,
     coding_draft_check_after_n_turns: int | None = 20,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
     review_drawing_diff_clusters: bool = True,
@@ -88,12 +86,6 @@ def create_reconstruction_graph(
     # threading the count through every stage's input/output. Keep it across rounds.
     output_limit_budget = OutputLimitBudget(max_output_limit_failures)
 
-    # Create tools
-    basic_tools = [
-        create_run_shell_tool(sandbox_runner, sandbox_workdir),
-        create_load_image_tool(sandbox_workdir),
-        create_fit_edge_tool(sandbox_workdir),
-    ]
     history_path = sandbox_workdir.host_bind_dir / reconstruction_history_filename
 
     def current_round() -> int:
@@ -135,11 +127,11 @@ def create_reconstruction_graph(
 
     stages_dir = Path(__file__).resolve().parents[1] / "stages"
 
-    # Pass the shared budget to both stages; each adds its tools and schema.
+    # Pass the shared budget to both stages; each builds its tools and adds its schema.
     coding_stage = stage_factory(PipelineStage.CODING)(
         coding_agent_builder,
         output_limit_budget=output_limit_budget,
-        tools=basic_tools,
+        tool_names=coding_tools,
         role_path=stages_dir / "coding/prompts/role.md",
         instructions=stage_instructions,
         prompt_context=prompt_context,
@@ -152,7 +144,6 @@ def create_reconstruction_graph(
         interpretation_filename=interpretation_filename,
         input_after_compaction=compaction_model is not None,
         fresh_memory=fresh_coder,
-        coding_trial_tool=coding_trial_tool,
         coding_draft_check_after_n_turns=coding_draft_check_after_n_turns,
         match_margin_px=match_margin_px,
         compaction_model=compaction_model,
@@ -161,7 +152,7 @@ def create_reconstruction_graph(
     audit_stage = stage_factory(PipelineStage.AUDIT)(
         audit_agent_builder,
         output_limit_budget=output_limit_budget,
-        tools=basic_tools,
+        tool_names=audit_tools,
         role_path=stages_dir / "audit/prompts/role.md",
         instructions=stage_instructions,
         prompt_context=prompt_context,

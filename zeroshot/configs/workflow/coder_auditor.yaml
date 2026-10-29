@@ -17,8 +17,19 @@ workflow:
 
   # Drop coder history older than the latest verified build from each request.
   fresh_coder: false
-  # Give the coder evaluate_cad_hypothesis; off, it tries hypotheses only in model.py.
-  coding_trial_tool: true
+  # Tools each agent is given, by name. Without evaluate_cad_hypothesis the
+  # coder tries hypotheses only in model.py.
+  coding_tools:
+    - run_shell
+    - load_image
+    - fit_edge
+    - calculate_drawing_scale
+    - evaluate_cad_hypothesis
+  audit_tools:
+    - run_shell
+    - load_image
+    - fit_edge
+    - evaluate_cad_hypothesis
   # After this many turns, suggest each turn what the coder still owes:
   # interpretation.json until it is valid, then model.py until it differs from
   # the round's starting program, then testing unresolved geometry in code.

@@ -21,7 +21,11 @@ from rich.console import Console
 from tests.zeroshot.chat_models import ScriptedChatModel
 from tests.zeroshot.contracts import drawing, interpretation
 from tests.zeroshot.prompt_paths import ROLE_PATHS
-from tests.zeroshot.workflow.test_graph import _audit_script
+from tests.zeroshot.workflow.test_graph import (
+    AUDIT_TOOLS,
+    CODING_TOOLS,
+    _audit_script,
+)
 from zeroshot.evaluation.aggregate_run import read_events
 from zeroshot.pipeline.event_logging import ConsoleReporter, has_run_completed
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
@@ -183,6 +187,8 @@ def _graph_factory(
             ScriptedChatModel(responses=_audit_script(_ACCEPTED_AUDIT)),
             announce_turns=False,
         ),
+        coding_tools=CODING_TOOLS,
+        audit_tools=AUDIT_TOOLS,
         max_stage_validation_retries=max_stage_validation_retries,
     )
 
@@ -1388,6 +1394,8 @@ def test_the_runner_hands_a_graph_only_the_run_environment(tmp_path: Path) -> No
                 "output_auditor",
                 ScriptedChatModel(responses=_audit_script(_ACCEPTED_AUDIT)),
             ),
+            coding_tools=CODING_TOOLS,
+            audit_tools=AUDIT_TOOLS,
             max_stage_validation_retries=0,
             **kwargs,
         )

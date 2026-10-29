@@ -1,11 +1,10 @@
-from collections.abc import Sequence
+from collections.abc import Collection
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
 from langgraph.pregel import Pregel
 
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
@@ -21,7 +20,11 @@ from zeroshot.pipeline.stages.audit.middleware import DismissalCheckMiddleware
 from zeroshot.pipeline.stages.audit.verify import AuditVerifier
 from zeroshot.pipeline.stages.coding.verify import build_verification_feedback
 from zeroshot.pipeline.stages.types import PipelineStage
+from zeroshot.pipeline.tools import pick_named_tools
 from zeroshot.pipeline.tools.cad_hypothesis import create_cad_hypothesis_tool
+from zeroshot.pipeline.tools.fit_edge import create_fit_edge_tool
+from zeroshot.pipeline.tools.load_image import create_load_image_tool
+from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore, StepRenderer
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.evidence import EvidenceMode
@@ -109,7 +112,7 @@ class AuditStage:
 
 def create_audit_stage(
     audit_agent_builder: AgentBuilder,
-    tools: Sequence[BaseTool],
+    tool_names: Collection[str],
     role_path: Path | None,
     instructions: StageInstructions,
     prompt_context: dict[str, str],
@@ -132,22 +135,31 @@ def create_audit_stage(
     middleware = VerifyOnWriteMiddleware(audit_verifier)
     dismissal_check = DismissalCheckMiddleware(audit_verifier)
 
-    trial_tool = create_cad_hypothesis_tool(
-        workdir=instructions.workdir,
-        sandbox_runner=sandbox_runner,
-        renderer=StepRenderer(ignore_hidden_lines=instructions.ignore_hidden_lines),
-        diff_drawer_config=diff_drawer_config,
-        trial_store=trial_store,
-        stage="audit",
-        interpretation=lambda: (
-            audit_verifier.snapshot.interpretation if audit_verifier.snapshot else None
+    available_tools = [
+        create_run_shell_tool(sandbox_runner, instructions.workdir),
+        create_load_image_tool(instructions.workdir),
+        create_fit_edge_tool(instructions.workdir),
+        create_cad_hypothesis_tool(
+            workdir=instructions.workdir,
+            sandbox_runner=sandbox_runner,
+            renderer=StepRenderer(ignore_hidden_lines=instructions.ignore_hidden_lines),
+            diff_drawer_config=diff_drawer_config,
+            trial_store=trial_store,
+            stage="audit",
+            interpretation=lambda: (
+                audit_verifier.snapshot.interpretation
+                if audit_verifier.snapshot
+                else None
+            ),
+            reference=lambda: (
+                audit_verifier.snapshot.verification
+                if audit_verifier.snapshot
+                else None
+            ),
         ),
-        reference=lambda: (
-            audit_verifier.snapshot.verification if audit_verifier.snapshot else None
-        ),
-    )
+    ]
     audit_agent = audit_agent_builder(
-        tools=[*tools, trial_tool],
+        tools=pick_named_tools(available_tools, tool_names),
         system_prompt=build_system_prompt(
             role_path,
             prompt_context | {"max_turns": audit_agent_builder.keywords["max_turns"]},

@@ -11,6 +11,7 @@ from langchain_core.tools import tool
 from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from tests.zeroshot.contracts import bootstrap_review
 from tests.zeroshot.prompt_paths import ROLE_PATHS
+from tests.zeroshot.workflow.test_graph import _with_tools
 from tests.zeroshot.workflow.test_reconstruction_workflow import _completed_run
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
@@ -112,16 +113,19 @@ def _run(history, report: AuditReport, script: tuple[str, ...]) -> tuple:
             "reconstruction_path": "/work/reconstruction.json",
         }
         stage = create_audit_stage(
-            partial(
-                create_agent,
-                role="output_auditor",
-                model=model,
-                max_turns=len(script) + 1,
-                announce_turns=False,
-                checkpointer=False,
-                response_format_strategy="tool",
+            _with_tools(
+                partial(
+                    create_agent,
+                    role="output_auditor",
+                    model=model,
+                    max_turns=len(script) + 1,
+                    announce_turns=False,
+                    checkpointer=False,
+                    response_format_strategy="tool",
+                ),
+                write_report,
             ),
-            tools=[write_report],
+            tool_names=[],
             role_path=ROLE_PATHS["output_auditor"],
             instructions=StageInstructions(
                 [],

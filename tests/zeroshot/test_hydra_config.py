@@ -287,7 +287,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     graph_factory = instantiate(config.workflow)
     assert graph_factory.func is create_reconstruction_graph
     # A stage is one block, an agent is one block inside it: a config names who
-    # answers, on which model, for how long, and leaves the tools and the
+    # answers, on which model, with which tools, for how long, and leaves the
     # contracts to the code.
     assert set(graph_factory.keywords) == {
         "coding_agent_builder",
@@ -299,13 +299,26 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
         "max_output_limit_failures",
         "diff_drawer_config",
         "fresh_coder",
-        "coding_trial_tool",
+        "coding_tools",
+        "audit_tools",
         "coding_draft_check_after_n_turns",
         "match_margin_px",
         "review_drawing_diff_clusters",
     }
     assert graph_factory.keywords["fresh_coder"] is False
-    assert graph_factory.keywords["coding_trial_tool"] is True
+    assert list(graph_factory.keywords["coding_tools"]) == [
+        "run_shell",
+        "load_image",
+        "fit_edge",
+        "calculate_drawing_scale",
+        "evaluate_cad_hypothesis",
+    ]
+    assert list(graph_factory.keywords["audit_tools"]) == [
+        "run_shell",
+        "load_image",
+        "fit_edge",
+        "evaluate_cad_hypothesis",
+    ]
     assert graph_factory.keywords["coding_draft_check_after_n_turns"] == 20
     assert graph_factory.keywords["review_drawing_diff_clusters"] is True
     assert graph_factory.keywords["match_margin_px"] == 0.5
@@ -426,7 +439,6 @@ def test_compaction_follows_the_run_model_under_its_own_cap(
     "flag",
     [
         "fresh_coder",
-        "coding_trial_tool",
         "review_drawing_diff_clusters",
     ],
 )
@@ -440,6 +452,22 @@ def test_each_workflow_flag_can_be_selected_in_config(flag, value) -> None:
             overrides=[f"workflow.{flag}={str(value).lower()}"],
         )
     assert instantiate(config.workflow).keywords[flag] is value
+
+
+def test_each_agent_tool_list_can_be_selected_in_config() -> None:
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()), version_base="1.3"
+    ):
+        config = compose(
+            config_name="default",
+            overrides=[
+                "workflow.coding_tools=[run_shell,fit_edge]",
+                "workflow.audit_tools=[]",
+            ],
+        )
+    keywords = instantiate(config.workflow).keywords
+    assert list(keywords["coding_tools"]) == ["run_shell", "fit_edge"]
+    assert list(keywords["audit_tools"]) == []
 
 
 @pytest.mark.parametrize(("value", "expected"), [("null", None), ("5", 5)])
