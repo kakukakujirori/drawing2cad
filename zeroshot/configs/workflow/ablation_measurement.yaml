@@ -1,12 +1,22 @@
 # @package _global_
 
 # Table 2 "+ Geometric Measurement": `ablation_interpretation` plus fit_edge and
-# the stroke skeletons. Still no drawing comparison or trial tool.
+# the stroke skeletons. Still no drawing comparison.
 defaults:
   - ablation_interpretation
   - _self_
 
 workflow:
-  coding_tools: [run_shell, load_image, fit_edge, calculate_drawing_scale]
-  audit_tools: [run_shell, load_image, fit_edge]
+  coding_tools:
+    - run_shell
+    - load_image
+    - fit_edge
+    - calculate_drawing_scale
+    - evaluate_cad_hypothesis
+  audit_tools:
+    - run_shell
+    - load_image
+    - fit_edge
+    - calculate_drawing_scale
+    - evaluate_cad_hypothesis
   drawing_skeleton: true

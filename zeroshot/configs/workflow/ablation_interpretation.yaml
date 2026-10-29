@@ -2,14 +2,17 @@
 
 # Table 2 "+ Drawing Interpretation": `coder_auditor` without geometric
 # measurement or error localization. The interpretation, calculate_drawing_scale,
-# the automatic builds and renders and the structured audit stay as they are.
+# the trial tool, the automatic builds and renders and the structured audit stay
+# as they are; without drawing comparison, trials are drawn but not scored.
 defaults:
   - coder_auditor
   - _self_
 
 workflow:
-  coding_tools: [run_shell, load_image, calculate_drawing_scale]
-  audit_tools: [run_shell, load_image]
+  coding_tools:
+    [run_shell, load_image, calculate_drawing_scale, evaluate_cad_hypothesis]
+  audit_tools:
+    [run_shell, load_image, calculate_drawing_scale, evaluate_cad_hypothesis]
   drawing_skeleton: false
   diff_drawer_config: null
   review_drawing_diff_clusters: false

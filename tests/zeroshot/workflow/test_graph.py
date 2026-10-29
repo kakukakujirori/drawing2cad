@@ -277,7 +277,13 @@ CODING_TOOLS = (
     "calculate_drawing_scale",
     "evaluate_cad_hypothesis",
 )
-AUDIT_TOOLS = ("run_shell", "load_image", "fit_edge", "evaluate_cad_hypothesis")
+AUDIT_TOOLS = (
+    "run_shell",
+    "load_image",
+    "fit_edge",
+    "calculate_drawing_scale",
+    "evaluate_cad_hypothesis",
+)
 
 
 def _graph(
@@ -631,6 +637,7 @@ def test_stage_specific_tools_stay_with_their_assigned_stage(monkeypatch):
         "run_shell",
         "load_image",
         "fit_edge",
+        "calculate_drawing_scale",
         "evaluate_cad_hypothesis",
     )
     assert coder.bound_tool_names == (

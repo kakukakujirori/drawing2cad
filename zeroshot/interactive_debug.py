@@ -284,6 +284,7 @@ def build_agent(
         create_run_shell_tool(runner, workdir),
         create_load_image_tool(workdir),
         create_fit_edge_tool(workdir),
+        create_calculate_drawing_scale_tool(),
     ]
     middleware: list[AgentMiddleware[Any, None, Any]] = [
         ToolErrorMiddleware(on_error=_handle_tool_error),
@@ -321,7 +322,6 @@ def build_agent(
         record = json.loads((workdir.host_bind_dir / "reconstruction.json").read_text())
         restored = ReconstructionHistory.model_validate(record).snapshots[-1]
         verifier.interpretation = restored.interpretation
-        tools.append(create_calculate_drawing_scale_tool())
         tools.append(
             create_cad_hypothesis_tool(
                 workdir=workdir,

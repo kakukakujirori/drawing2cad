@@ -29,6 +29,7 @@ workflow:
     - run_shell
     - load_image
     - fit_edge
+    - calculate_drawing_scale
     - evaluate_cad_hypothesis
   # Store the strokes of every raster input beside it, as <name>_skeleton.npz,
   # and describe that file in the system prompt.

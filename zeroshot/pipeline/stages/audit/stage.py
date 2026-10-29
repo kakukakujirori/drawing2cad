@@ -22,6 +22,9 @@ from zeroshot.pipeline.stages.coding.verify import build_verification_feedback
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.tools import pick_named_tools
 from zeroshot.pipeline.tools.cad_hypothesis import create_cad_hypothesis_tool
+from zeroshot.pipeline.tools.calculate_drawing_scale import (
+    create_calculate_drawing_scale_tool,
+)
 from zeroshot.pipeline.tools.fit_edge import create_fit_edge_tool
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
@@ -139,6 +142,7 @@ def create_audit_stage(
         create_run_shell_tool(sandbox_runner, instructions.workdir),
         create_load_image_tool(instructions.workdir),
         create_fit_edge_tool(instructions.workdir),
+        create_calculate_drawing_scale_tool(),
         create_cad_hypothesis_tool(
             workdir=instructions.workdir,
             sandbox_runner=sandbox_runner,
