@@ -658,6 +658,21 @@ def test_each_agent_gets_only_the_tools_its_list_names(monkeypatch):
     assert auditor.bound_tool_names == ("run_shell",)
 
 
+@pytest.mark.parametrize("drawing_skeleton", [False, True])
+def test_the_skeleton_is_stored_beside_raster_inputs_only_when_set(
+    monkeypatch, drawing_skeleton
+):
+    _stub_verification(monkeypatch, _verified())
+    coder = ScriptedChatModel(responses=_coding_script())
+    auditor = ScriptedChatModel(responses=_audit_script(_accepted_audit()))
+    with SandboxWorkdir() as workdir:
+        _graph(
+            workdir, coder=coder, auditor=auditor, drawing_skeleton=drawing_skeleton
+        ).invoke({})
+        skeleton = workdir.host_bind_dir / "drawing_skeleton.npz"
+        assert skeleton.is_file() is drawing_skeleton
+
+
 @pytest.mark.parametrize("stage", ["coding_tools", "audit_tools"])
 def test_an_unknown_tool_name_is_refused(stage):
     with SandboxWorkdir() as workdir, pytest.raises(ValueError, match="run_shel"):

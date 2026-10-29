@@ -868,6 +868,11 @@ def create_fit_edge_tool(workdir: SandboxWorkdir) -> BaseTool:
     return fit_edge
 
 
+def skeleton_path(image: Path) -> Path:
+    """Where the skeleton of a raster input is stored, beside it."""
+    return image.with_name(f"{image.stem}_skeleton.npz")
+
+
 def save_skeleton(image: Path, target: Path) -> None:
     """Store the sub-pixel skeleton of every stroke in a drawing, sorted by y."""
     sheet = load_sheet(image)

@@ -827,6 +827,8 @@ def test_run_sample_stages_only_allowed_inputs_and_preserves_workdir(
         dxf = Path('/work/inputs/view_drawing.dxf')
         assert 'ENTITIES' in dxf.read_text()
         assert Path('/work/inputs/view_style_a.png').read_bytes().startswith(bytes.fromhex('89504e47'))
+        assert Path('/work/inputs/view_style_a_skeleton.npz').is_file()
+        assert not Path('/work/inputs/view_drawing_skeleton.npz').exists()
         assert not Path('/work/inputs/view_hidden.png').exists()
         try:
             dxf.write_text('SANDBOX_MUTATION')

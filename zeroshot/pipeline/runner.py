@@ -25,7 +25,6 @@ from zeroshot.pipeline.messages.manifest import InputManifest
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingView
-from zeroshot.pipeline.tools.fit_edge import save_skeleton
 from zeroshot.pipeline.verification import attempt_relative_path
 from zeroshot.pipeline.workflow import CUSTOM_STATE_TYPES, ReconstructionState
 from zeroshot.pipeline.workflow.lifecycle import load_reconstruction
@@ -418,8 +417,6 @@ class PipelineRunner:
             source_path = Path(view.file)
             copy = staged_input_dir / f"{view.name}{source_path.suffix.lower()}"
             shutil.copyfile(source_path, copy)
-            if copy.suffix != ".dxf":
-                save_skeleton(copy, copy.with_name(f"{copy.stem}_skeleton.npz"))
             return view.model_copy(update={"file": str(copy)})
 
         return InputManifest(

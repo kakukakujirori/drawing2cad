@@ -25,6 +25,7 @@ from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.stages.types import PipelineStage, next_stage
 from zeroshot.pipeline.stages.validate import validate_submission
 from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
+from zeroshot.pipeline.tools.fit_edge import save_skeleton, skeleton_path
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.components.compact import RetryCompaction
@@ -69,6 +70,7 @@ def create_reconstruction_graph(
     coding_draft_check_after_n_turns: int | None = 20,
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
     review_drawing_diff_clusters: bool = True,
+    drawing_skeleton: bool = True,
 ):
     """Interpret the drawing and implement the part, then verify and audit it."""
     if max_audit_reject_count < 0:
@@ -173,7 +175,8 @@ def create_reconstruction_graph(
     # ------------------------------------------------------------------
 
     def initialize(state: ReconstructionState) -> dict[str, Any]:
-        """Create or adopt and persist the history before any model reads it."""
+        """Create or adopt and persist the history, and store the input
+        skeletons, before any model reads them."""
         history = state.get("reconstruction")
         if history is None:
             run_suffix = re.sub(
@@ -187,6 +190,11 @@ def create_reconstruction_graph(
                 drawings=drawing_for_model(input_manifest.drawing, sandbox_workdir),
             )
         save_history(history)
+        if drawing_skeleton:
+            for view in input_manifest.drawing:
+                image = Path(view.file)
+                if image.suffix.lower() != ".dxf":
+                    save_skeleton(image, skeleton_path(image))
         return {
             "reconstruction": history,
             "stage_submission": None,

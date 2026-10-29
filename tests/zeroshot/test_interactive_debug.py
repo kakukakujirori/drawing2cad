@@ -222,10 +222,12 @@ def test_selects_before_compaction_and_preserves_audit_report(tmp_path):
 
 def test_workspace_contains_selected_assets_not_submitted_or_future_files(tmp_path):
     database, _ = make_run(tmp_path)
+    (database.parent / "workspace/inputs/page_skeleton.npz").write_bytes(b"strokes")
     source = debug.select_checkpoint(database, "coding", 0)
     work = tmp_path / "new_workspace"
     assert debug.prepare_workspace(source, database.parent / "workspace", work) == []
     assert (work / "inputs/page.png").is_file()
+    assert (work / "inputs/page_skeleton.npz").read_bytes() == b"strokes"
     assert (work / "attempts/round_000/coding/000/projection/front.png").is_file()
     assert (work / "attempts/round_000/coding/000/output.step").is_file()
     assert not any(

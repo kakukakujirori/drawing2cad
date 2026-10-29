@@ -51,7 +51,7 @@ from zeroshot.pipeline.tools.cad_hypothesis import (
 from zeroshot.pipeline.tools.calculate_drawing_scale import (
     create_calculate_drawing_scale_tool,
 )
-from zeroshot.pipeline.tools.fit_edge import create_fit_edge_tool
+from zeroshot.pipeline.tools.fit_edge import create_fit_edge_tool, skeleton_path
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
 from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import (
@@ -222,6 +222,9 @@ def prepare_workspace(
         relative_paths.add(relative)
         if path.suffix.lower() == ".dxf":
             relative_paths.add(relative.with_suffix(".png"))
+        # No record names an input's skeleton, but the run offered it.
+        if (source_dir / skeleton_path(relative)).is_file():
+            relative_paths.add(skeleton_path(relative))
     for relative in sorted(relative_paths):
         original = source_dir / relative
         if not original.resolve().is_relative_to(source_dir.resolve()):
