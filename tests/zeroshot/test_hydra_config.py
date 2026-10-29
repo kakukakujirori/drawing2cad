@@ -473,6 +473,60 @@ def test_each_agent_tool_list_can_be_selected_in_config() -> None:
     assert list(keywords["audit_tools"]) == []
 
 
+# Table 2: each row adds a component to the one before; the last is the default.
+_ABLATIONS = {
+    "ablation_interpretation": {
+        "coding_tools": ["run_shell", "load_image", "calculate_drawing_scale"],
+        "audit_tools": ["run_shell", "load_image"],
+        "drawing_skeleton": False,
+        "diff_drawer_config": None,
+        "review_drawing_diff_clusters": False,
+    },
+    "ablation_measurement": {
+        "coding_tools": [
+            "run_shell",
+            "load_image",
+            "fit_edge",
+            "calculate_drawing_scale",
+        ],
+        "audit_tools": ["run_shell", "load_image", "fit_edge"],
+        "drawing_skeleton": True,
+        "diff_drawer_config": None,
+        "review_drawing_diff_clusters": False,
+    },
+}
+
+
+def _workflow_keywords(workflow: str) -> dict:
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()), version_base="1.3"
+    ):
+        config = compose(config_name="default", overrides=[f"workflow={workflow}"])
+    keywords = instantiate(config.workflow).keywords
+    return {
+        key: list(value) if key.endswith("_tools") else value
+        for key, value in keywords.items()
+    }
+
+
+@pytest.mark.parametrize("workflow", sorted(_ABLATIONS))
+def test_each_ablation_differs_from_the_default_only_in_its_components(workflow):
+    default, ablation = (
+        _workflow_keywords("coder_auditor"),
+        _workflow_keywords(workflow),
+    )
+    expected = _ABLATIONS[workflow]
+    assert {key: ablation[key] for key in expected} == expected
+    unchanged = (
+        set(default)
+        - set(expected)
+        - {"coding_agent_builder", "audit_agent_builder", "compaction_model"}
+    )
+    assert {key: ablation[key] for key in unchanged} == {
+        key: default[key] for key in unchanged
+    }
+
+
 @pytest.mark.parametrize(("value", "expected"), [("null", None), ("5", 5)])
 def test_the_draft_check_can_move_or_be_turned_off_in_config(value, expected):
     with initialize_config_dir(
