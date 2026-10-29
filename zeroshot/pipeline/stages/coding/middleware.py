@@ -267,7 +267,7 @@ _WRITE_PROGRAM = (
 )
 _TRY = (
     "If you have unresolved or ambiguous geometry, quickly write and run test "
-    "code by updating {program}{or_trial_tool}."
+    "code by updating {program}."
 )
 
 
@@ -284,7 +284,6 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         *,
         max_turns: int,
         remind_after_turns: int,
-        trial_tool_name: str | None,
     ) -> None:
         super().__init__()
         if remind_after_turns < 1:
@@ -300,12 +299,7 @@ class CodingReminderMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
             program: _WRITE_PROGRAM.format(
                 interpretation=interpretation, program=program
             ),
-            None: _TRY.format(
-                program=program,
-                or_trial_tool=f" or calling {trial_tool_name}"
-                if trial_tool_name
-                else "",
-            ),
+            None: _TRY.format(program=program),
         }
 
     @override

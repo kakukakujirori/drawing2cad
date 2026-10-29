@@ -35,14 +35,30 @@ _PATHS_ONLY = ArtifactPresenter(input="path")
 _DESCRIPTION = cleandoc(
     """Build a trial CadQuery script and compare it with the input drawing.
 
-    The script needs to store its trial shape in `result` and must not read
-    workspace files. The trial is built, checked, drawn in the views the
-    interpretation registers and compared with them exactly as a build of
-    the program is, and scored by the same match score. Nothing is submitted.
+    This tool packages the pipeline's automatic program execution and rendering;
+    you can test other programs without changing the main program to be submitted.
+    This also means that a trial never reaches the submission: if you are responsible
+    for the `coding` stage, remember to update the main program once a trial confirms
+    a promising alternative.
 
-    Each call writes a new directory under {root} with the script, saved as
-    {source}, its STEP, projections and comparison images. The result lists
-    their paths; open PNGs with load_image or read DXFs with ezdxf.
+    The script needs to store its trial shape in `result` and must not read
+    workspace files. Like a build of the main program, the trial is drawn in
+    the views the interpretation registers, compared with them and given a
+    match score. The result shows that score together with the match score of
+    the latest build of the main program.
+
+    A trial may hold the whole model, such as a copy of the program with one
+    change, or only the part in question with enough surrounding geometry to
+    check its extent and connections. A whole-model trial's score is directly
+    comparable with that of the main program. A partial trial also gets a
+    score, but everything it omits counts as mismatch; ignore that score and
+    inspect its projections around the part.
+
+    Each call writes a new directory under {root} with the script (saved as
+    {source}), its STEP, projections and comparison images. The result lists
+    their paths; open PNGs with load_image or read DXFs with ezdxf. Audit
+    evidence may cite a trial's projections; the coder can read the script
+    that trial built there.
 
     Trial-specific mismatch clusters are named trial_diff.*; they are not the
     drawing_diff items of a build.

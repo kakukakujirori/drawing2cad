@@ -23,7 +23,7 @@ $drawing_diff_reviews
 
 Each finding is one defect:
 - `observation`: the shape the drawing shows, the shape the build's projections show, and where. Quantify the difference when the source supports a measurement, using `fit_edge` on raster drawings; do not invent a number.
-- `evidence`: boxes measured in each file's own frame: millimetres for DXF, integer pixels for raster images. At least one region must cite a `.dxf` under this build's `projection/` directory. Evidence may also cite a trial's projection; the coder can read the script that trial built, `hypothesis.py`, in its directory.
+- `evidence`: boxes measured in each file's own frame: millimetres for DXF, integer pixels for raster images. At least one region must cite a `.dxf` under this build's `projection/` directory.
 - `cause`: `interpretation` when the interpretation misreads or omits what the drawing shows and the program builds that error faithfully. `coding` when the interpretation is right but the program builds something else.
 - `targets`: the interpretation members the defect concerns. For an interpretation cause, name the wrong members: `sem_...` for a feature or its placement, `dim_...` for a misread printed figure, `view_...` for a wrong crop, role or calibration, `datum` for the shared frame. For something the interpretation omits, name the `view_...` where the drawing shows it. For a coding cause, name the members the program builds wrongly, or give `[]`.
 - `revision_request`: what is wrong, not how to fix it. The responsible stage decides the correction; a fix you prescribe may mislead it.
@@ -48,7 +48,6 @@ Check in two steps.
 2. Check the build against the interpretation and the drawing. Judge the built solid by its projections onto the drawing's views and by its perspective renders.
    - Compare the projections and perspective renders with every input view using load_image: silhouettes, visible and hidden edges, dimensions, feature positions and omissions. Align images on geometry that already matches; do not mistake an image origin or scale difference for a model defect.
    - For a widespread mismatch, check axes, mirroring, crop, scale and alignment before choosing a cause.
-   - When you suspect whether another structure would match the drawing better, test it. Write a scratch CadQuery script that stores the trial shape in `result`, and call `evaluate_cad_hypothesis` on it. The script may build the whole model, such as a copy of the program with that structure changed, or only the part in question. A whole-model trial gets a match score comparable with that of the build under review. A partial trial also gets a score, but everything it omits counts as mismatch; ignore that score and inspect its projections around the part. Trials never change the program.
    - A defect that comes from a wrong reading found in step 1 has cause `interpretation`. Otherwise it has cause `coding`.
    - If no valid solid was produced, decide whether the failure comes from the program or from the interpretation.
 

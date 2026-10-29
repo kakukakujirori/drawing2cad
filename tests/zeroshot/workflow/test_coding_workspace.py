@@ -227,24 +227,24 @@ def test_the_flags_choose_the_coder_middleware_in_one_place(
     assert stage.middleware is built["extra_middleware"][0]
 
 
-@pytest.mark.parametrize("trial_tool", [False, True])
-def test_the_trial_tool_comes_with_its_prompt(tmp_path, trial_tool):
-    built = {}
+def test_the_trial_tool_changes_the_tools_but_not_the_prompt(tmp_path):
+    built = []
 
     def builder(**kwargs):
-        built.update(kwargs)
+        built.append(kwargs)
         return object()
 
-    stage = _stage(
-        partial(builder, max_turns=5),
-        SandboxWorkdir(tmp_path),
-        [],
-        tool_names=["evaluate_cad_hypothesis"] if trial_tool else [],
-    )
-    names = [tool.name for tool in built["tools"]]
-    assert ("evaluate_cad_hypothesis" in names) is trial_tool
-    assert ("evaluate_cad_hypothesis" in stage.hypothesis_trial_prompt) is trial_tool
-    assert "/work/model.py" in stage.hypothesis_trial_prompt
+    for tool_names in ([], ["evaluate_cad_hypothesis"]):
+        _stage(
+            partial(builder, max_turns=5),
+            SandboxWorkdir(tmp_path),
+            [],
+            tool_names=tool_names,
+        )
+    without, with_trials = built
+    assert [tool.name for tool in with_trials["tools"]] == ["evaluate_cad_hypothesis"]
+    assert without["tools"] == []
+    assert without["system_prompt"].text == with_trials["system_prompt"].text
 
 
 _PATHS = {"coding_output_path": "/work/model.py", "verification_dir": "/work/attempts"}

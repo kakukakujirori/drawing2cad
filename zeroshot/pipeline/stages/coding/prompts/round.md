@@ -63,7 +63,7 @@ After a tool turn changes either file, automatic verification checks the interpr
 Do not believe in your 3D reasoning blindly. Whenever deciding geometric design details, build candidates and compare their projections with the input drawing. This is especially important when you seek an alternative design hypothesis: do not reject it based only on your reasoning. Build and observe it first.
 
 - After any modifications, inspect the latest deciding views and overall scores before keeping or undoing the change. If the expected change is absent, revise the geometry or coordinate hypothesis before another trial.
-$hypothesis_trials
+- Integrate each promising alternative into `$coding_output_path` immediately to see whether the projections of the resulting shape give a better match with the input. Quick iteration is the key to fast improvements.
 - Treat stroke thickness as a drawing convention, not a physical feature width.
 - Read the geometry census:
   - All faces of one kind or hundreds of edges may indicate an unintended approximation.

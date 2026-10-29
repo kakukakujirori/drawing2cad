@@ -68,10 +68,21 @@ _RUN_PATHS = {
     "interpretation_schema": json.dumps(DrawingInterpretation.model_json_schema()),
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
-    "hypothesis_trials": PromptTemplate(
-        STAGES_DIR / "coding/prompts/trials_by_tool.md"
-    ).render(coding_output_path="/work/model.py"),
 }
+# Tools a run may leave out; each describes its own use.
+_OPTIONAL_TOOLS = ("evaluate_cad_hypothesis",)
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted(STAGES_DIR.glob("*/prompts/*.md")),
+    ids=lambda path: str(path.relative_to(STAGES_DIR)),
+)
+def test_no_prompt_names_an_optional_tool(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    assert [tool for tool in _OPTIONAL_TOOLS if tool in text] == []
+
+
 _DRAWING_DIFF_REVIEWS = PromptTemplate(
     STAGES_DIR / "audit/prompts/drawing_diff_reviews.md"
 ).render()
@@ -661,8 +672,7 @@ def test_coder_tests_predictions_and_inspects_the_latest_candidate(
         "revise the geometry or coordinate hypothesis before another trial"
         in instruction
     )
-    assert "evaluate_cad_hypothesis` builds it" in instruction
-    assert "Trials are not submitted" in instruction
+    assert "Integrate each promising alternative into `/work/model.py`" in instruction
     assert "Compare feature extent, placement and connections" in instruction
     assert "Treat stroke thickness as a drawing convention" in instruction
     assert (

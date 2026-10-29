@@ -25,7 +25,7 @@ _WRITE_PROGRAM = (
 )
 _TRY = (
     "Suggestion: If you have unresolved or ambiguous geometry, quickly write and "
-    "run test code by updating model.py{tool}." + _FEEDBACK
+    "run test code by updating model.py." + _FEEDBACK
 )
 
 
@@ -56,9 +56,7 @@ def test_after_the_threshold_each_turn_gets_one_reminder(tmp_path):
         output_schema=ExampleProposal,
         response_format_strategy="tool",
         extra_middleware=[
-            CodingReminderMiddleware(
-                workspace, max_turns=6, remind_after_turns=2, trial_tool_name=None
-            )
+            CodingReminderMiddleware(workspace, max_turns=6, remind_after_turns=2)
         ],
     )
     agent.invoke({"messages": [HumanMessage(content="reconstruct")]})
@@ -75,13 +73,10 @@ def test_after_the_threshold_each_turn_gets_one_reminder(tmp_path):
     assert all(not unanswered_tool_calls(messages) for messages in seen)
 
 
-@pytest.mark.parametrize("trial_tool_name", [None, "evaluate_cad_hypothesis"])
-def test_the_reminder_follows_what_the_round_still_owes(tmp_path, trial_tool_name):
+def test_the_reminder_follows_what_the_round_still_owes(tmp_path):
     workspace, output, candidate = _workspace(tmp_path)
     output.source_path.unlink()  # Round 0 has no program yet.
-    middleware = CodingReminderMiddleware(
-        workspace, max_turns=30, remind_after_turns=5, trial_tool_name=trial_tool_name
-    )
+    middleware = CodingReminderMiddleware(workspace, max_turns=30, remind_after_turns=5)
     state = {
         "current_turn": 9,
         "messages": [
@@ -102,17 +97,14 @@ def test_the_reminder_follows_what_the_round_still_owes(tmp_path, trial_tool_nam
     workspace.feedback()
     assert reminder() == [_WRITE_PROGRAM]
     output.source_path.write_text("result = object()\n")
-    tool = f" or calling {trial_tool_name}" if trial_tool_name else ""
-    assert reminder() == [_TRY.format(tool=tool)]
+    assert reminder() == [_TRY]
     # Turn 5 is not yet after 5 turns.
     assert middleware.before_model({**state, "current_turn": 4}, None) is None
 
 
 def test_a_replayed_hook_adds_no_second_reminder(tmp_path):
     workspace, _, _ = _workspace(tmp_path)
-    middleware = CodingReminderMiddleware(
-        workspace, max_turns=30, remind_after_turns=5, trial_tool_name=None
-    )
+    middleware = CodingReminderMiddleware(workspace, max_turns=30, remind_after_turns=5)
     state = {
         "current_turn": 9,
         "messages": [
@@ -129,6 +121,4 @@ def test_a_replayed_hook_adds_no_second_reminder(tmp_path):
 def test_the_reminder_cannot_start_on_the_first_turn(tmp_path):
     workspace, _, _ = _workspace(tmp_path)
     with pytest.raises(ValueError, match="remind_after_turns"):
-        CodingReminderMiddleware(
-            workspace, max_turns=30, remind_after_turns=0, trial_tool_name=None
-        )
+        CodingReminderMiddleware(workspace, max_turns=30, remind_after_turns=0)

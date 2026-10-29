@@ -248,7 +248,6 @@ def test_valid_writes_replace_only_inference_and_keep_between_write_work(setup):
             PipelineStage.CODING,
             append_inputs=True,
             interpretation_schema="{}",
-            hypothesis_trials="",
         ).model_copy(update={"name": INSTRUCTIONS_NAME}),
     ]
     result = agent.stream_events(
