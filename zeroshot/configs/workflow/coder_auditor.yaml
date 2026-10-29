@@ -30,7 +30,8 @@ workflow:
     - load_image
     - fit_edge
     - evaluate_cad_hypothesis
-  # Store the strokes of every raster input beside it, as <name>_skeleton.npz.
+  # Store the strokes of every raster input beside it, as <name>_skeleton.npz,
+  # and describe that file in the system prompt.
   drawing_skeleton: true
   # After this many turns, suggest each turn what the coder still owes:
   # interpretation.json until it is valid, then model.py until it differs from

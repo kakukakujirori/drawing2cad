@@ -135,6 +135,7 @@ def setup(tmp_path, monkeypatch):
             "interpretation_output_path": "/work/interpretation.json",
             "verification_dir": "/work/attempts",
             "reconstruction_path": "/work/reconstruction.json",
+            "drawing_skeleton": "",
         },
         workdir=workdir,
         projection_method=ProjectionMethod.THIRD_ANGLE,

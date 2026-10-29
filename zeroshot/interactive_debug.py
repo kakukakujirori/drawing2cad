@@ -148,7 +148,9 @@ def select_checkpoint(
     return selected[0]
 
 
-def load_system_prompt(run_dir: Path, stage: str) -> tuple[str, list[Path]]:
+def load_system_prompt(
+    run_dir: Path, stage: str, drawing_skeleton: bool
+) -> tuple[str, list[Path]]:
     """Return the system prompt and every file read to obtain its text."""
     events = run_dir / "events.jsonl"
     if events.is_file():
@@ -172,14 +174,20 @@ def load_system_prompt(run_dir: Path, stage: str) -> tuple[str, list[Path]]:
     stages_dir = (
         frozen if frozen.is_dir() else Path(__file__).parent / "pipeline" / "stages"
     )
-    paths = [
+    sections = [
         stages_dir / "_base/prompts/reconstruction_context.md",
         stages_dir / f"{stage}/prompts/role.md",
     ]
-    text = "\n\n".join(path.read_text().strip() for path in paths)
-    return Template(text).substitute(
-        reconstruction_path="/work/reconstruction.json"
-    ), paths
+    skeleton = stages_dir / "_base/prompts/drawing_skeleton.md"
+    context = {
+        "reconstruction_path": "/work/reconstruction.json",
+        "drawing_skeleton": skeleton.read_text().strip() if drawing_skeleton else "",
+    }
+    # Each section is filled and trimmed on its own, as the pipeline does.
+    text = "\n\n".join(
+        Template(path.read_text()).substitute(context).strip() for path in sections
+    )
+    return text, [sections[0], *([skeleton] if drawing_skeleton else []), sections[1]]
 
 
 def strings(value: Any) -> Iterator[str]:
@@ -456,7 +464,9 @@ def main(argv: list[str] | None = None) -> None:
     config = OmegaConf.load(run_dir / ".hydra/config.yaml")
     if not isinstance(config, DictConfig):
         raise TypeError("Run config must be a YAML mapping")
-    system, prompt_files = load_system_prompt(run_dir, stage)
+    system, prompt_files = load_system_prompt(
+        run_dir, stage, config.workflow.drawing_skeleton
+    )
     started_at = datetime.now(UTC).astimezone().strftime("%Y%m%d_%H%M%S")
     session = (
         args.output_dir

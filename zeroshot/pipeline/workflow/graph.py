@@ -14,7 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter, drawing_for_model
 from zeroshot.pipeline.messages.manifest import InputManifest
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.stages._base.prompt import StageInstructions
+from zeroshot.pipeline.stages._base.prompt import PromptTemplate, StageInstructions
 from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
 from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
 from zeroshot.pipeline.stages.coding.progress import DEFAULT_MATCH_MARGIN_PX
@@ -104,6 +104,8 @@ def create_reconstruction_graph(
         sandbox_workdir, round_source=current_round, root_dirname=TRIALS_DIRNAME
     )
 
+    stages_dir = Path(__file__).resolve().parents[1] / "stages"
+
     # instantiate agents
     prompt_context = {
         "coding_output_path": str(sandbox_workdir.sandbox_bind_dir / output_filename),
@@ -117,6 +119,11 @@ def create_reconstruction_graph(
         "reconstruction_path": str(
             sandbox_workdir.sandbox_bind_dir / reconstruction_history_filename
         ),
+        "drawing_skeleton": (
+            PromptTemplate(stages_dir / "_base/prompts/drawing_skeleton.md").render()
+            if drawing_skeleton
+            else ""
+        ),
     }
     stage_instructions = StageInstructions(
         prompt_context=prompt_context,
@@ -126,8 +133,6 @@ def create_reconstruction_graph(
         projection_method=input_manifest.projection_method,
         ignore_hidden_lines=input_manifest.hidden_lines_omitted,
     )
-
-    stages_dir = Path(__file__).resolve().parents[1] / "stages"
 
     # Pass the shared budget to both stages; each builds its tools and adds its schema.
     coding_stage = stage_factory(PipelineStage.CODING)(

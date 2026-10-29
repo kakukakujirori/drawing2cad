@@ -164,6 +164,7 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
         "workflow": {
             "share_thread": False,
             "diff_drawer_config": None,
+            "drawing_skeleton": True,
             "coding_tools": [
                 "run_shell",
                 "load_image",
@@ -433,23 +434,39 @@ def test_system_fallback_reads_merged_context_before_the_frozen_role(tmp_path, s
     role.parent.mkdir(parents=True)
     role.write_text("FROZEN ROLE")
 
-    prompt, prompt_files = debug.load_system_prompt(run, stage)
+    prompt, prompt_files = debug.load_system_prompt(run, stage, drawing_skeleton=False)
     assert prompt == "FROZEN CONTEXT /work/reconstruction.json\n\nFROZEN ROLE"
     assert prompt_files == [base / "reconstruction_context.md", role]
 
 
+@pytest.mark.parametrize("drawing_skeleton", [False, True])
 @pytest.mark.parametrize("stage", ["coding", "audit"])
-def test_local_system_fallback_matches_pipeline_composition(tmp_path, stage):
+def test_local_system_fallback_matches_pipeline_composition(
+    tmp_path, stage, drawing_skeleton
+):
     from tests.zeroshot.prompt_paths import STAGES_DIR
-    from zeroshot.pipeline.stages._base.prompt import build_system_prompt
+    from zeroshot.pipeline.stages._base.prompt import (
+        PromptTemplate,
+        build_system_prompt,
+    )
 
     role = STAGES_DIR / stage / "prompts/role.md"
+    skeleton = STAGES_DIR / "_base/prompts/drawing_skeleton.md"
     expected = build_system_prompt(
-        role, {"reconstruction_path": "/work/reconstruction.json"}
+        role,
+        {
+            "reconstruction_path": "/work/reconstruction.json",
+            "drawing_skeleton": (
+                PromptTemplate(skeleton).render() if drawing_skeleton else ""
+            ),
+        },
     )
-    actual, prompt_files = debug.load_system_prompt(tmp_path / "000364", stage)
+    actual, prompt_files = debug.load_system_prompt(
+        tmp_path / "000364", stage, drawing_skeleton
+    )
     assert actual == expected.text
     assert prompt_files == [
         STAGES_DIR / "_base/prompts/reconstruction_context.md",
+        *([skeleton] if drawing_skeleton else []),
         role,
     ]

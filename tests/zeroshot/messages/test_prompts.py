@@ -68,6 +68,9 @@ _RUN_PATHS = {
     "interpretation_schema": json.dumps(DrawingInterpretation.model_json_schema()),
     "verification_dir": "/work/attempts",
     "reconstruction_path": "/work/reconstruction.json",
+    "drawing_skeleton": PromptTemplate(
+        STAGES_DIR / "_base/prompts/drawing_skeleton.md"
+    ).render(),
 }
 # Tools a run may leave out whose use lives only in their descriptions. Prompts
 # name the measurement tools only for when they are available.
@@ -260,6 +263,16 @@ def test_reconstruction_guide_keeps_only_the_working_contract() -> None:
         assert field in guide
     assert "exactly one response per assigned ticket" not in guide
     assert len(guide.split()) < 700
+
+
+def test_the_skeleton_section_is_left_out_with_the_skeleton() -> None:
+    guide = PromptTemplate(RECONSTRUCTION_CONTEXT_PATH).render(
+        **_RUN_PATHS | {"drawing_skeleton": ""}
+    )
+    assert "skeleton" not in guide
+    assert guide.endswith("The auditor reviews each.")
+    full = PromptTemplate(RECONSTRUCTION_CONTEXT_PATH).render(**_RUN_PATHS)
+    assert full == guide + "\n\n" + _RUN_PATHS["drawing_skeleton"]
 
 
 def test_the_system_prompt_explains_selective_history_navigation() -> None:

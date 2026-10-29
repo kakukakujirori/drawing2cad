@@ -659,7 +659,7 @@ def test_each_agent_gets_only_the_tools_its_list_names(monkeypatch):
 
 
 @pytest.mark.parametrize("drawing_skeleton", [False, True])
-def test_the_skeleton_is_stored_beside_raster_inputs_only_when_set(
+def test_the_skeleton_and_its_description_follow_the_setting(
     monkeypatch, drawing_skeleton
 ):
     _stub_verification(monkeypatch, _verified())
@@ -671,6 +671,10 @@ def test_the_skeleton_is_stored_beside_raster_inputs_only_when_set(
         ).invoke({})
         skeleton = workdir.host_bind_dir / "drawing_skeleton.npz"
         assert skeleton.is_file() is drawing_skeleton
+    # The system prompt describes the skeleton exactly when the run stores one.
+    for model in (coder, auditor):
+        system = model.received_messages[0][0].text
+        assert ("## Drawing skeleton" in system) is drawing_skeleton
 
 
 @pytest.mark.parametrize("stage", ["coding_tools", "audit_tools"])

@@ -84,6 +84,7 @@ def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving(
         context = {
             "coding_output_path": "/work/model.py",
             "reconstruction_path": "/work/reconstruction.json",
+            "drawing_skeleton": "",
         }
         stage = create_audit_stage(
             _with_tools(

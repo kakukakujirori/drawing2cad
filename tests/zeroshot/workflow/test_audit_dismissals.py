@@ -111,6 +111,7 @@ def _run(history, report: AuditReport, script: tuple[str, ...]) -> tuple:
         context = {
             "coding_output_path": "/work/model.py",
             "reconstruction_path": "/work/reconstruction.json",
+            "drawing_skeleton": "",
         }
         stage = create_audit_stage(
             _with_tools(
