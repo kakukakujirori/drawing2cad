@@ -172,17 +172,29 @@ def _run_lengths(ink: np.ndarray) -> np.ndarray:
 
 
 def centre_points(sheet: Sheet, box: tuple[int, int, int, int]) -> Points:
-    """Steger's ridge points: where the across-stroke darkness peaks, sub-pixel."""
-    sigma = max(1.0, sheet.line_width / (2 * math.sqrt(3)))
+    """Select Gaussian derivatives by local stroke width to resolve nearby lines.
+    Use slope and curvature across each stroke to locate sub-pixel centres,
+    then merge duplicate estimates from adjacent pixels (Steger's method).
+    """
+    sigma = max(0.5, sheet.line_width / (2 * math.sqrt(3)))
     pad = math.ceil(4 * sigma)
     x0, y0, x1, y1 = box
     height, width = sheet.gray.shape
     left, top = max(x0 - pad, 0), max(y0 - pad, 0)
     right, bottom = min(x1 + pad, width), min(y1 + pad, height)
     dark = (255 - sheet.gray[top:bottom, left:right]) / 255
+    ink = sheet.ink[top:bottom, left:right]
+    widths = np.minimum(sheet.run_width[top:bottom, left:right], sheet.line_width)
+    scales = np.unique(widths[ink])
 
     def derivative(dy: int, dx: int) -> np.ndarray:
-        return gaussian_filter(dark, sigma, order=(dy, dx))
+        result = np.zeros_like(dark)
+        for stroke_width in scales:
+            local_sigma = max(0.5, stroke_width / (2 * math.sqrt(3)))
+            value = gaussian_filter(dark, local_sigma, order=(dy, dx))
+            selected = ink & (widths == stroke_width)
+            result[selected] = value[selected]
+        return result
 
     fx, fy = derivative(0, 1), derivative(1, 0)
     fxx, fxy, fyy = derivative(0, 2), derivative(1, 1), derivative(2, 0)
@@ -191,19 +203,17 @@ def centre_points(sheet: Sheet, box: tuple[int, int, int, int]) -> Points:
     nx, ny = np.cos(normal), np.sin(normal)
     root = np.hypot((fxx - fyy) / 2, fxy)
     across, along = (fxx + fyy) / 2 - root, (fxx + fyy) / 2 + root
-    with np.errstate(divide="ignore", invalid="ignore"):
-        offset = -(fx * nx + fy * ny) / across
+    ridge = ink & (across < 0) & (np.abs(across) > np.abs(along))
+    offset = np.zeros_like(across)
+    np.divide(-(fx * nx + fy * ny), across, out=offset, where=ridge)
     dx, dy = offset * nx, offset * ny
     rows, cols = np.mgrid[top:bottom, left:right]
-    ridge = (
-        sheet.ink[top:bottom, left:right]
-        & (across < 0)
-        & (np.abs(across) > np.abs(along))
-    )
-    shared_x, dx = _shared_peaks(ridge, dx, dy, axis=1)
-    shared_y, dy = _shared_peaks(ridge, dy, dx, axis=0)
+    shared_x, dx, dropped_x = _shared_peaks(ridge, dx, dy, axis=1)
+    shared_y, dy, dropped_y = _shared_peaks(ridge, dy, dx, axis=0)
     keep = (
         ridge
+        & ~dropped_x
+        & ~dropped_y
         & ((np.abs(dx) <= 0.5) & (np.abs(dy) <= 0.5) | shared_x | shared_y)
         & (cols >= x0)
         & (cols < x1)
@@ -216,24 +226,34 @@ def centre_points(sheet: Sheet, box: tuple[int, int, int, int]) -> Points:
 
 def _shared_peaks(
     ridge: np.ndarray, toward: np.ndarray, aside: np.ndarray, axis: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Find peaks midway between two pixels, where Newton's step overshoots from both.
-
-    Marks the first pixel of each such pair and moves its offset to the mean of
-    the pair's estimates, so a two-pixel stroke on the pixel grid keeps its centre.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Combine adjacent ridge pixels that estimate a centre between them.
+    Merge if both steps cross the midpoint or the estimates agree within 0.5 px.
+    Keep their mean position along this axis at the first pixel; drop the second.
     """
     level = ridge & (np.abs(aside) <= 0.5) & (np.abs(toward) <= 1)
     first = tuple(slice(None, -1) if a == axis else slice(None) for a in (0, 1))
     second = tuple(slice(1, None) if a == axis else slice(None) for a in (0, 1))
+    overshot = (toward[first] > 0.5) & (toward[second] < -0.5)
+    same_peak = (
+        np.hypot(toward[first] - toward[second] - 1, aside[first] - aside[second])
+        <= 0.5
+    )
     shared = np.zeros_like(ridge)
     shared[first] = (
-        level[first] & (toward[first] > 0.5) & level[second] & (toward[second] < -0.5)
+        level[first]
+        & (toward[first] > 0)
+        & level[second]
+        & (toward[second] < 0)
+        & (overshot | same_peak)
     )
     moved = toward.copy()
     moved[first] = np.where(
         shared[first], (toward[first] + 1 + toward[second]) / 2, toward[first]
     )
-    return shared, moved
+    dropped = np.zeros_like(ridge)
+    dropped[second] = shared[first]
+    return shared, moved, dropped
 
 
 def _aligned(model_normal: np.ndarray, point_normal: np.ndarray) -> np.ndarray:
