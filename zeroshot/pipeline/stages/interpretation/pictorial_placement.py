@@ -1,4 +1,4 @@
-"""Question a pictorial view drawn where a missing orthographic view belongs."""
+"""Question a non-orthographic registration in a missing orthographic view's place."""
 
 from pathlib import Path
 
@@ -8,7 +8,7 @@ from PIL import Image
 
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.stages.interpretation.contracts import (
-    PICTORIAL_VIEWS,
+    ORTHOGRAPHIC_VIEWS,
     VIEW_PLACEMENT,
     DrawingInterpretation,
     ProjectionMethod,
@@ -54,7 +54,7 @@ def pictorials_in_projected_places(
     workdir: SandboxWorkdir,
     projection_method: ProjectionMethod,
 ) -> list[str]:
-    """Question each pictorial drawn where a missing orthographic view would be.
+    """Question each non-orthographic view where a missing orthographic view would be.
 
     It lies off front on a side whose role no view holds, and its outline ends
     where front's does across that side, as a projected view's does.
@@ -69,14 +69,15 @@ def pictorials_in_projected_places(
         for role, step in VIEW_PLACEMENT[projection_method].items()
         if role not in roles
     }
-    pictorials = [
+    not_orthographic = [
         (view, box)
         for view in views
-        if view.role in PICTORIAL_VIEWS
+        if view.role not in ORTHOGRAPHIC_VIEWS
+        and view.role is not View.FULL_PAGE
         and (box := view.region.box_px) is not None
         and view.region.view == front.region.view
     ]
-    if not empty or not pictorials:
+    if not empty or not not_orthographic:
         return []
 
     page = next(view for view in views if view.name == front.region.view)
@@ -88,7 +89,7 @@ def pictorials_in_projected_places(
     fx, fy = _page_centre(front.region)
     method = projection_method.value.replace("_", "-")
     questions = []
-    for view, box in pictorials:
+    for view, box in not_orthographic:
         outline = _outline(lines, box)
         if outline is None:
             continue
@@ -103,10 +104,8 @@ def pictorials_in_projected_places(
                 f"Highly suspicious: {view.name} is registered as {view.role.value}, "
                 f"yet it sits {_SIDE_OF[step]} {front.name} and lines up with it, "
                 f"exactly where {method} projection draws the {role.value} view, "
-                f"and no {role.value} view is registered. A drawing places a "
-                "pictorial view apart from its orthographic views, never in the place "
-                "of one, and a view that carries dimensions is orthographic. "
-                f"{view.name} should be the {role.value} view. "
+                f"and no {role.value} view is registered. "
+                f"{view.name} should be the {role.value} view! "
                 f"Look at it again as the {role.value} view, compare feature positions "
                 "and dimension spans along the axes shared with the other source views, "
                 "and revise its role, axes and every feature read from it. "
