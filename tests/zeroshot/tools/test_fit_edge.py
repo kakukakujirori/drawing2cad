@@ -223,9 +223,41 @@ def test_light_dimension_lines_are_not_fitted_and_the_report_says_so(tmp_path):
     assert beside.reason is None
     assert alone.strokes == []
     assert alone.reason == (
-        "strokes here lighter than the part's lines are not fitted. "
+        "strokes here appear to be annotation and are not fitted. "
         "Could they be dimension lines?"
     )
+
+
+def test_gray_dimensions_preserve_a_thinner_outer_edge_in_fit_and_skeleton(tmp_path):
+    def draw(img):
+        _dimension(img, (100, 200), (450, 200), 50)
+        for left, top, right, bottom, width in [
+            (100, 200, 450, 500, 2),
+            (130, 230, 420, 470, 7),
+        ]:
+            for a, b in [
+                ((left, top), (right, top)),
+                ((right, top), (right, bottom)),
+                ((right, bottom), (left, bottom)),
+                ((left, bottom), (left, top)),
+            ]:
+                _line(img, a, b, thickness=width)
+        _line(img, (100, 245), (130, 245))  # Connect the two real outlines.
+
+    path = _sheet(tmp_path, draw)
+    finding = find_strokes(load_sheet(path), (90, 260, 105, 450), "line")
+
+    [edge] = finding.strokes
+    assert isinstance(edge.model, Line)
+    assert edge.model.x == pytest.approx(100, abs=TOLERANCE_PX)
+    save_skeleton(path, tmp_path / "skeleton.npz")
+    with np.load(tmp_path / "skeleton.npz") as points:
+        outer = (
+            (np.abs(points["x"] - 100) < 0.5)
+            & (points["y"] > 260)
+            & (points["y"] < 450)
+        )
+        assert outer.sum() > 180
 
 
 @pytest.fixture
@@ -324,6 +356,10 @@ def test_skeleton_gives_position_and_direction(tmp_path):
 
     assert set(points.files) == {"x", "y", "angle"}
     assert np.all(np.diff(y) >= 0)
+    preview = np.asarray(Image.open(tmp_path / "skeleton.png"))
+    expected = np.full((600, 600), 255, np.uint8)
+    expected[y.astype(int), x.astype(int)] = 0
+    np.testing.assert_array_equal(preview, expected)
     for at, expected_angle in (((150, 200), 90), ((350, 300), 0), ((400, 510), 26.57)):
         near = np.hypot(x - at[0], y - at[1]) < 1
         assert near.any()
@@ -348,3 +384,40 @@ def test_skeleton_leaves_out_light_dimension_lines(tmp_path):
         along = np.abs(y - edge) < 1
         assert x[along].min() < 105 and x[along].max() > 395
     assert not ((y < 290) | (y > 410)).any()
+
+
+@pytest.mark.parametrize("tone", [0, LIGHT])
+def test_skeleton_and_fit_edge_exclude_annotation(tmp_path, tone):
+    image = np.full((300, 300), 255, np.uint8)
+    cv2.rectangle(image, (40, 60), (150, 240), 0, 5)
+    for y in (60, 240):
+        cv2.line(image, (150, y), (270, y), tone, 1)
+    cv2.line(image, (250, 50), (250, 250), tone, 1)
+    path = tmp_path / "drawing.png"
+    Image.fromarray(image).save(path)
+    save_skeleton(path, tmp_path / "skeleton.npz")
+    points = np.load(tmp_path / "skeleton.npz")
+    assert len(points["x"]) > 400  # pure black/white input must not threshold to empty
+    assert not ((points["x"] > 200) & (points["y"] > 80) & (points["y"] < 220)).any()
+    sheet = load_sheet(path)
+    assert not sheet.ink[150, 250]
+    finding = find_strokes(sheet, (245, 80, 255, 220), "line")
+    assert finding.strokes == []
+    assert finding.reason == (
+        "strokes here appear to be annotation and are not fitted. "
+        "Could they be dimension lines?"
+    )
+    edge = find_strokes(sheet, (35, 80, 45, 220), "line").strokes[0].model
+    assert isinstance(edge, Line) and edge.x == pytest.approx(40.5, abs=0.3)
+
+
+def test_loading_an_overwritten_image_refreshes_the_cached_sheet(tmp_path):
+    path = _sheet(tmp_path, lambda img: _line(img, (100, 200), (500, 200)))
+    before = load_sheet(path)
+    assert load_sheet(path) is before
+
+    _sheet(tmp_path, lambda img: _line(img, (100, 400), (500, 400)))
+    after = load_sheet(path)
+
+    assert before.ink[200, 300] and not before.ink[400, 300]
+    assert after.ink[400, 300] and not after.ink[200, 300]

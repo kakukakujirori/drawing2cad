@@ -6,9 +6,9 @@ import pytest
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.drawing_diff.diff import compute_diff
 from zeroshot.pipeline.verification.drawing_diff.image_ops import (
-    annotation_mask,
     beside_part,
     drawing_area,
+    drawing_masks,
     foreground_mask,
     thin_mask,
 )
@@ -376,13 +376,13 @@ def _gray(image):
 
 
 @pytest.mark.parametrize("antialiased", [False, True])
-def test_one_tone_drawings_have_no_annotation(antialiased):
-    image = _dimensioned_part((0, 0, 0))
+def test_one_tone_one_width_drawings_have_no_annotation(antialiased):
+    image = _dimensioned_part((0, 0, 0), annotation_width=5)
     if antialiased:  # a downscaled print: thin lines turn gray, but not as one tone
         image = cv2.resize(image, (100, 100), interpolation=cv2.INTER_AREA)
     gray = _gray(image)
 
-    assert not annotation_mask(gray, foreground_mask(gray)).any()
+    assert not drawing_masks(gray, foreground_mask(gray)).annotation.any()
 
 
 def test_light_annotation_is_masked_but_a_pale_stretch_of_a_part_line_is_not():
@@ -391,7 +391,7 @@ def test_light_annotation_is_masked_but_a_pale_stretch_of_a_part_line_is_not():
     gray = _gray(image)
     ink = foreground_mask(gray)
 
-    annotation = annotation_mask(gray, ink)
+    annotation = drawing_masks(gray, ink).annotation
 
     assert annotation[150, 250] and annotation[60, 200]  # dimension, extension
     assert annotation[5:17, 175:230].any()  # text
@@ -422,6 +422,135 @@ def test_a_drawing_in_one_width_has_no_thin_lines():
     gray = _gray(_dimensioned_part((0, 0, 0), annotation_width=5))
 
     assert not thin_mask(gray, foreground_mask(gray), _part_lines(1)).any()
+
+
+def test_dense_text_and_crossings_do_not_set_the_outline_width():
+    image = _dimensioned_part((0, 0, 0))
+    # Most ink far from CAD is thick text; close parallel edges also inflate a box sum.
+    for y in range(30, 280, 25):
+        cv2.putText(image, "888", (175, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
+    for x in range(50, 140, 8):
+        cv2.line(image, (x, 65), (x, 235), (0, 0, 0), 5)
+    gray = _gray(image)
+    ink = foreground_mask(gray)
+    thin = thin_mask(gray, ink, _part_lines(1))
+    assert thin[150, 250] and thin[60, 260]
+    assert not (thin & _part_lines(5)).any()
+    assert drawing_area(ink & ~thin).sum() > 19000
+
+
+def test_two_widths_in_real_outline_do_not_open_it():
+    gray = np.full((300, 300), 255, np.uint8)
+    cv2.rectangle(gray, (40, 60), (250, 240), 0, 3)
+    cv2.line(gray, (40, 60), (250, 60), 0, 7)
+    cv2.line(gray, (250, 60), (250, 240), 0, 7)
+    ink = foreground_mask(gray)
+    assert not thin_mask(gray, ink).any()
+    assert not drawing_masks(gray, ink).annotation.any()
+
+
+def test_nearby_thin_widths_do_not_hide_a_separate_outline_width():
+    gray = np.full((280, 350), 255, np.uint8)
+    gray[39:41, 50:301] = 110
+    for x in (50, 300):
+        gray[40:100, x - 1 : x + 1] = 70
+    cv2.rectangle(gray, (50, 100), (300, 220), 60, 2)
+    ink = foreground_mask(gray)
+    part = np.zeros_like(ink, dtype=np.uint8)
+    cv2.rectangle(part, (50, 100), (300, 220), 1, 1)
+
+    masks = drawing_masks(gray, ink, part.astype(bool))
+    area = drawing_area(masks.outline)
+
+    assert masks.annotation[40, 180]
+    assert not masks.annotation[100, 180]
+    assert not area[70, 180]  # The dimension box is not material.
+    assert area[160, 180]
+
+
+def test_a_tiny_closed_gap_does_not_justify_removing_real_outline():
+    gray = np.full((300, 300), 255, np.uint8)
+    cv2.rectangle(gray, (40, 60), (250, 240), 0, 3)
+    cv2.line(gray, (40, 60), (250, 60), 0, 7)
+    cv2.line(gray, (250, 60), (250, 240), 0, 7)
+    gray[59, 248] = 255  # A pinhole in the thick corner, not a part interior.
+    ink = foreground_mask(gray)
+
+    masks = drawing_masks(gray, ink)
+
+    assert not masks.annotation.any()
+    np.testing.assert_array_equal(masks.outline, ink)
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_tone_separation_preserves_a_thinner_real_outer_edge(registered):
+    gray = np.full((300, 360), 255, np.uint8)
+    cv2.rectangle(gray, (50, 90), (280, 240), 0, 2)
+    cv2.rectangle(gray, (60, 100), (270, 230), 0, 7)
+    cv2.line(gray, (50, 160), (60, 160), 0, 3)  # Connected real edges of two widths.
+    for y in (90, 240):
+        cv2.line(gray, (280, y), (330, y), 120, 1)
+    cv2.line(gray, (330, 90), (330, 240), 120, 1)
+    part = np.zeros_like(gray)
+    cv2.rectangle(part, (50, 90), (280, 240), 1, 1)
+
+    masks = drawing_masks(
+        gray, foreground_mask(gray), part.astype(bool) if registered else None
+    )
+
+    assert masks.annotation[160, 330]
+    assert not masks.annotation[130, 50]
+    assert masks.outline[130, 50]
+    assert drawing_area(masks.outline)[130, 55]
+
+
+def test_dimension_box_matching_wrong_cad_is_extra_material():
+    image = _dimensioned_part((0, 0, 0))
+    output = _white(300)
+    cv2.rectangle(output, (40, 60), (250, 240), (0, 0, 0), 1)
+    diff = compute_diff(image, output, _alignment())
+    assert diff.stats["material_error"]["extra_px2"] > 15000
+    assert any(
+        g["kind"] == "material" and g["direction"] == "extra"
+        for g in diff.stats["unmatched"]
+    )
+
+
+def test_geometry_skeleton_keeps_hidden_edges_and_separate_thin_views():
+    gray = np.full((500, 700), 255, np.uint8)
+    for x in (40, 370):
+        cv2.rectangle(gray, (x, 60), (x + 160, 260), 0, 5)
+        for y in (60, 260):
+            cv2.line(gray, (x + 160, y), (x + 240, y), 0, 1)
+        cv2.line(gray, (x + 240, 60), (x + 240, 260), 0, 1)
+        cv2.circle(gray, (x + 70, 160), 12, 0, 1)
+        for y in range(80, 240, 16):
+            cv2.line(gray, (x + 110, y), (x + 110, y + 8), 0, 1)
+    cv2.rectangle(gray, (40, 360), (200, 364), 0, 1)  # sheet seen edge-on
+    cv2.line(gray, (370, 360), (530, 430), 0, 1)  # an open view
+    ink = foreground_mask(gray)
+    cleaned = ink & ~drawing_masks(gray, ink).annotation
+    assert not cleaned[160, 280] and not cleaned[160, 610]
+    assert not (ink & ~cleaned)[300:].any()
+    for x in (40, 370):
+        np.testing.assert_array_equal(
+            cleaned[55:266, x - 4 : x + 164], ink[55:266, x - 4 : x + 164]
+        )
+
+
+def test_hidden_lines_around_a_disconnected_hole_stay_inside_the_part():
+    gray = np.full((450, 750), 255, np.uint8)
+    cv2.rectangle(gray, (40, 40), (400, 400), 0, 5)
+    cv2.circle(gray, (200, 200), 50, 0, 5)
+    cv2.line(gray, (250, 200), (330, 200), 0, 1)
+    for y in (40, 400):
+        cv2.line(gray, (400, y), (700, y), 0, 1)
+    cv2.line(gray, (700, 40), (700, 400), 0, 1)
+
+    annotation = drawing_masks(gray, foreground_mask(gray)).annotation
+
+    assert not annotation[45:396, 45:396].any()
+    assert annotation[200, 700]
 
 
 def test_dimensions_beside_the_part_neither_score_nor_cluster():

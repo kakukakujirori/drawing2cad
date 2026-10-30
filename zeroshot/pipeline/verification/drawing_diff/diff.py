@@ -13,11 +13,10 @@ from scipy.spatial import cKDTree
 
 from .align import AlignmentResult, _validate_rgb, opencv_transform
 from .image_ops import (
-    annotation_mask,
     beside_part,
     distance_map,
+    drawing_masks,
     foreground_mask,
-    thin_mask,
 )
 from .unmatched import (
     describe_unmatched,
@@ -258,8 +257,6 @@ def compute_diff(
         projection_gray = cv2.cvtColor(projection_rgb, cv2.COLOR_RGB2GRAY)
         drawing_ink = foreground_mask(drawing_gray)
         output_ink = foreground_mask(projection_gray)
-        # A light second tone is annotation: the output need not draw it.
-        annotation = annotation_mask(drawing_gray, drawing_ink)
         matrix = opencv_transform(alignment.H_drawing_to_projection)
         aligned_ink, valid, aligned_gray = _warp_drawing(
             drawing_gray, drawing_ink, matrix, projection_gray.shape
@@ -269,11 +266,11 @@ def compute_diff(
         stats.update(measured)
         # Cluster distances to highlight unmatched output lines and regions.
         output_seen = warp_output_to_drawing(output_ink, matrix, drawing_ink.shape)
-        # Lines drawn thinner than the outlines, like dimension lines, enclose no part.
-        part_ink = drawing_ink & ~annotation
-        outline = part_ink & ~thin_mask(drawing_gray, part_ink, output_seen)
-        # Nor need the output reach ink beside the part, whatever its tone.
-        non_part = annotation | beside_part(part_ink, outline)
+        masks = drawing_masks(drawing_gray, drawing_ink, output_seen)
+        part_ink = drawing_ink & ~masks.annotation
+        outline = masks.outline
+        # Exclude ink beside the part from missing-line distances, whatever its tone.
+        non_part = masks.annotation | beside_part(part_ink, outline)
         stats.update(_chamfers(drawing_ink, output_ink, matrix, non_part))
         material = measure_material_error(outline, output_seen)
         stats["material_error"] = material

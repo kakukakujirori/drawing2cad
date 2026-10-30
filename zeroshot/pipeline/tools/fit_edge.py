@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from inspect import cleandoc
+from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
@@ -18,7 +19,7 @@ from scipy.optimize import least_squares
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.tools.load_image import resolve_image_path
-from zeroshot.pipeline.verification.drawing_diff.image_ops import annotation_mask
+from zeroshot.pipeline.verification.drawing_diff.image_ops import drawing_masks
 
 type Kind = Literal["line", "circle"]
 
@@ -52,12 +53,12 @@ SCORED = 50
 class Sheet:
     gray: np.ndarray
     ink: np.ndarray
-    # Shorter of the horizontal and vertical ink runs through each pixel.
+    # Source stroke widths, before annotation is excluded.
     run_width: np.ndarray
     threshold: float
     line_width: float
-    # Ink in a lighter tone than the part's lines, left out of `ink`.
-    light_ink: np.ndarray
+    # Excluded strokes, retained to explain boxes containing only annotation.
+    annotation: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -133,32 +134,31 @@ class Finding:
 
 
 def load_sheet(path: Path) -> Sheet:
-    stat = path.stat()
-    return _load_sheet(str(path), stat.st_mtime_ns, stat.st_size)
+    """Prepare drawing geometry, reusing a cached sheet only for identical contents."""
+    return _load_sheet(path.read_bytes())
 
 
 @lru_cache(maxsize=2)
-def _load_sheet(path: str, mtime_ns: int, size: int) -> Sheet:
-    with Image.open(path) as image:
+def _load_sheet(contents: bytes) -> Sheet:
+    with Image.open(BytesIO(contents)) as image:
         rgba = image.convert("RGBA")
     paper = Image.new("RGBA", rgba.size, "white")
     gray = np.asarray(Image.alpha_composite(paper, rgba).convert("L"))
     if np.median(gray) < 128:
         gray = 255 - gray
     threshold, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    ink = gray < threshold
-    # Two-tone drawings print dimensions and leaders lighter than the part.
-    light_ink = annotation_mask(gray, ink)
-    ink &= ~light_ink
+    ink = gray <= threshold  # Binary drawings put Otsu's threshold at black (zero).
+    # Selecting fewer strokes must not widen ridge smoothing and merge nearby lines.
     run_width = np.minimum(_run_lengths(ink), _run_lengths(ink.T).T)
     widths = run_width[ink & (run_width <= 12)]
+    annotation = drawing_masks(gray, ink).annotation
     return Sheet(
         gray=gray.astype(np.float32),
-        ink=ink,
+        ink=ink & ~annotation,
         run_width=run_width,
         threshold=float(threshold),
         line_width=float(np.percentile(widths, 90)) if widths.size else 1.0,
-        light_ink=light_ink,
+        annotation=annotation,
     )
 
 
@@ -445,8 +445,8 @@ def _measure(model: Circle | Line, xy: np.ndarray, scale: _Scale) -> Stroke | No
 
 
 _NO_INK = "no ink in the box."
-_LIGHT = (
-    "strokes here lighter than the part's lines are not fitted. "
+_ANNOTATION = (
+    "strokes here appear to be annotation and are not fitted. "
     "Could they be dimension lines?"
 )
 _NO_STROKE = "no {kind} with {min_support:.0f} px of ink along it."
@@ -500,11 +500,10 @@ def _more(
 
 def find_strokes(sheet: Sheet, box: tuple[int, int, int, int], kind: Kind) -> Finding:
     x0, y0, x1, y1 = box
-    # Lighter strokes are left out of the fit; with nothing fitted, name them.
-    light = sheet.light_ink[y0:y1, x0:x1].any()
+    annotation = sheet.annotation[y0:y1, x0:x1].any()
     points = centre_points(sheet, box)
     if not len(points.xy):
-        return Finding([], _LIGHT if light else _NO_INK)
+        return Finding([], _ANNOTATION if annotation else _NO_INK)
     scale = _Scale(sheet.line_width)
     rng = np.random.default_rng(0)
     diagonal = math.hypot(box[2] - box[0], box[3] - box[1])
@@ -545,8 +544,8 @@ def find_strokes(sheet: Sheet, box: tuple[int, int, int, int], kind: Kind) -> Fi
         lines = find_strokes(sheet, box, "line")
         if lines.strokes:
             return Finding(lines.strokes, _STRAIGHT, lines.more)
-    if light and not reasons:
-        return Finding([], _LIGHT)
+    if annotation and not reasons:
+        return Finding([], _ANNOTATION)
     return Finding(
         [],
         reasons[0]
@@ -556,7 +555,7 @@ def find_strokes(sheet: Sheet, box: tuple[int, int, int, int], kind: Kind) -> Fi
 
 
 _HEADER = (
-    "{image}: {width}x{height} px; ink is gray below {threshold:.0f}; "
+    "{image}: {width}x{height} px; ink threshold {threshold:.0f}; "
     "lines about {line_width:.0f} px wide.{scale}"
 )
 _SCALE = " Millimetres at {mm_per_px:g} mm/px (100 mm = {px_per_100:.1f} px)."
@@ -812,7 +811,7 @@ class FitEdgeInput(BaseModel):
 # The report for a synthetic drawing; a test keeps its format in step with the code.
 EXAMPLE_REPORT = cleandoc(
     """
-    /work/inputs/view_drawing.png: 900x700 px; ink is gray below 141; lines about 4 px wide. Millimetres at 0.25 mm/px (100 mm = 400.0 px).
+    /work/inputs/view_drawing.png: 900x700 px; ink threshold 141; lines about 4 px wide. Millimetres at 0.25 mm/px (100 mm = 400.0 px).
     [1] circle in box (300, 200, 420, 320):
       #1 centre (360.00, 260.00) ±0.02, R 39.95 ±0.01 px = R 9.988 ±0.003 mm (Ø 19.976); full circle; solid, rms 0.02 px
       #2 centre (360.00, 259.99) ±0.03, R 23.96 ±0.02 px = R 5.990 ±0.005 mm (Ø 11.979); full circle; dashed or broken: ink on 68% of it, rms 0.09 px
@@ -850,7 +849,7 @@ _DESCRIPTION = cleandoc(
     - "dashed or broken" means hidden or centre lines, or crossings; gaps under
       3 px read as solid.
     - "spacing" is the distance between parallel lines, such as a wall's faces.
-    - Strokes in a clearly lighter tone than the part's lines are not fitted.
+    - Strokes identified as annotations are not fitted.
       A box holding only those reports "Could they be dimension lines?"
     - Arc ends at a tangent joint are approximate.
     - If the stroke you mean is missing or more strokes remain, narrow the box.
@@ -875,17 +874,22 @@ def skeleton_path(image: Path) -> Path:
 
 
 def save_skeleton(image: Path, target: Path) -> None:
-    """Store the sub-pixel skeleton of every stroke in a drawing, sorted by y."""
+    """Store cleaned stroke centres and a same-coordinate PNG beside the npz."""
     sheet = load_sheet(image)
     height, width = sheet.gray.shape
     points = centre_points(sheet, (0, 0, width, height))
     order = np.lexsort((points.xy[:, 0], points.xy[:, 1]))
-    x, y = points.xy[order].T
+    x, y = points.xy[order].astype(np.float32).T
     # The normal is in image axes (y down); the stroke runs across it.
     angle = np.degrees(-points.normal[order] - np.pi / 2) % 180
     np.savez_compressed(
         target,
-        x=x.astype(np.float32),
-        y=y.astype(np.float32),
+        x=x,
+        y=y,
         angle=angle.astype(np.float32),
     )
+    preview = np.full((height, width), 255, np.uint8)
+    preview[
+        np.clip(y.astype(int), 0, height - 1), np.clip(x.astype(int), 0, width - 1)
+    ] = 0
+    Image.fromarray(preview).save(target.with_suffix(".png"))

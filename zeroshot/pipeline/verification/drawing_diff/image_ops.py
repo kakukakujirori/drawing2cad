@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from itertools import pairwise
+
 import cv2
 import numpy as np
-from scipy.ndimage import binary_fill_holes
-from skimage.filters import threshold_otsu
+from scipy.ndimage import binary_fill_holes, gaussian_filter1d
+from scipy.signal import find_peaks
 from skimage.morphology import skeletonize
 
 
@@ -37,7 +40,35 @@ MIN_TONE_SHARE = 0.05
 PART_REACH_PX = 3
 
 
-def annotation_mask(gray: np.ndarray, ink: np.ndarray) -> np.ndarray:
+@dataclass(frozen=True)
+class DrawingMasks:
+    """Annotation to exclude from fitting, and outlines for silhouette comparison."""
+
+    annotation: np.ndarray
+    outline: np.ndarray
+
+
+def drawing_masks(
+    gray: np.ndarray, ink: np.ndarray, part: np.ndarray | None = None
+) -> DrawingMasks:
+    """Separate annotation and silhouettes using one tone/width decision.
+
+    Fitting keeps hidden lines and separate thin or open views. The silhouette
+    also excludes thin hidden/centre lines; registered CAD can confirm its width.
+    """
+    light = _light_annotations(gray, ink)
+    if light.any():
+        # Once tone separates annotation, width can distinguish two real part edges.
+        return DrawingMasks(light, ink & ~light)
+    thin = thin_mask(gray, ink)
+    annotation = _external_annotations(ink, thin)
+    cleaned = ink & ~annotation
+    if part is not None:
+        thin = thin_mask(gray, cleaned, part)
+    return DrawingMasks(annotation, cleaned & ~thin)
+
+
+def _light_annotations(gray: np.ndarray, ink: np.ndarray) -> np.ndarray:
     """Ink in a separate lighter tone than the part's lines; empty if single-tone.
 
     Each pixel takes the darkest value around it, so a dark line's antialiased
@@ -90,47 +121,121 @@ def external_boundary(ink: np.ndarray) -> np.ndarray:
 # thick at twice thin, but blur and low resolution widen thin lines, so a
 # drawing counts as using both widths from this ratio on.
 WIDTH_RATIO = 1.3
-# Strokes this far from every line of the registered part are not its outline.
-AWAY_PX = 12
-# Stroke centres needed on each side to tell their widths.
+# Stroke centres needed at each width to tell them apart.
 MIN_WIDTH_SAMPLES = 50
 
 
-def thin_mask(gray: np.ndarray, ink: np.ndarray, part: np.ndarray) -> np.ndarray:
-    """The ink drawn in thin lines, when the drawing draws its outlines thicker.
+def stroke_widths(gray: np.ndarray, ink: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Stroke centres and their ink-integral widths, without nearby parallel lines.
 
-    Thin lines are every line but the part's outlines: dimension, extension and
-    leader lines, and hidden and centre lines too. part is the registered CAD's
-    ink on this drawing. It tells which width the outlines take here: strokes on
-    its outer edge are outlines, and strokes far from all its lines are not.
-    Otsu's threshold on stroke width splits thin from thick. The result is empty
-    unless the outlines are clearly the wider: most of their strokes lie above
-    that threshold, most strokes away from the part lie below it, and the two
-    widths are WIDTH_RATIO apart.
-
-    A stroke's width is its ink summed across the stroke. Unlike a count of
-    binary pixels, it stays the same wherever a thin line falls on the pixels.
+    Take the shortest crossing in eight directions. A gap ends a crossing;
+    a square window would count neighbouring strokes and dense text as width.
     """
     centres = skeletonize(ink)
     darkness = (255 - gray.astype(np.float32)) / 255
-    width = cv2.boxFilter(darkness, -1, (7, 7), normalize=False) / 7
-    outline = centres & (distance_map(external_boundary(part)) <= 2)
-    away = centres & (distance_map(skeletonize(part)) > AWAY_PX)
-    if min(outline.sum(), away.sum()) < MIN_WIDTH_SAMPLES:
-        return np.zeros_like(ink, dtype=bool)
-    level = threshold_otsu(width[centres])
-    on, off = width[outline], width[away]
-    # Most outline strokes lie above the split and most others below it.
-    if (on >= level).mean() <= 0.5 or (off >= level).mean() >= 0.5:
-        return np.zeros_like(ink, dtype=bool)
-    if np.median(on) < WIDTH_RATIO * np.median(off):
-        return np.zeros_like(ink, dtype=bool)
-    # Each stroke pixel takes the width of the centre lines within the outlines'
-    # half-width; ink farther from any, like a filled arrowhead, is no outline.
-    reach = max(2, int(np.ceil(np.median(distance_map(~ink)[outline]))))
-    square = np.ones((2 * reach + 1,) * 2, np.uint8)
-    beside = cv2.dilate(np.where(centres, width, 0), square)
-    return ink & (beside < level)
+    ys, xs = np.nonzero(centres)
+    width = np.zeros(gray.shape, np.float32)
+    # shortcut: widths above 24px saturate; widen profiles for high-resolution scans.
+    steps = np.arange(-12, 12.5, 0.5, dtype=np.float32)
+    mid = len(steps) // 2
+    # Batches stay below OpenCV remap's 32767-row limit, even on large sheets.
+    for start in range(0, len(xs), 16000):
+        x, y = xs[start : start + 16000], ys[start : start + 16000]
+        measured = np.full(len(x), np.inf, np.float32)
+        for angle in np.arange(8) * np.pi / 8:
+            values = cv2.remap(
+                darkness,
+                (x[:, None] + np.cos(angle) * steps).astype(np.float32),
+                (y[:, None] + np.sin(angle) * steps).astype(np.float32),
+                cv2.INTER_LINEAR,
+            )
+            left = np.cumprod(values[:, :mid][:, ::-1] > 0.05, axis=1)[:, ::-1]
+            right = np.cumprod(values[:, mid + 1 :] > 0.05, axis=1)
+            crossing = (
+                values[:, mid]
+                + (values[:, :mid] * left).sum(axis=1)
+                + (values[:, mid + 1 :] * right).sum(axis=1)
+            ) * 0.5
+            measured = np.minimum(measured, crossing)
+        width[y, x] = measured
+    return centres, width
+
+
+def thin_mask(
+    gray: np.ndarray, ink: np.ndarray, part: np.ndarray | None = None
+) -> np.ndarray:
+    """Thin ink when two distinct stroke widths exist; includes hidden lines.
+
+    Width modes, rather than a split of all samples, keep text and crossings
+    from raising the threshold above real outlines. Optional registered CAD
+    confirms that its outer boundary predominantly uses the thicker width.
+    Ink far from CAD can be missing geometry or text, not necessarily thin ink.
+    """
+    none = np.zeros_like(ink, dtype=bool)
+    centres, width = stroke_widths(gray, ink)
+    values = width[centres]
+    if values.size < 2 * MIN_WIDTH_SAMPLES:
+        return none
+    # Log bins give the same relative tolerance to narrow and wide strokes.
+    bins = np.arange(-0.7, 3.3, 0.05)
+    hist, _ = np.histogram(np.log(np.maximum(values, 0.1)), bins=bins)
+    smooth = gaussian_filter1d(hist.astype(float), 1.3)
+    peaks, _ = find_peaks(smooth, prominence=max(2, smooth.max() * 0.08), distance=5)
+    modes = [
+        np.exp((bins[i] + bins[i + 1]) / 2)
+        for i in peaks
+        if hist[max(0, i - 2) : i + 3].sum()
+        >= max(MIN_WIDTH_SAMPLES, 0.05 * values.size)
+    ]
+    pairs = [(a, b) for a, b in pairwise(modes) if b >= WIDTH_RATIO * a]
+    if not pairs:
+        return none
+    narrow, wide = pairs[0]
+    level = np.sqrt(narrow * wide)
+    if part is not None:
+        outline = centres & (distance_map(external_boundary(part)) <= 2)
+        if outline.sum() < MIN_WIDTH_SAMPLES or (width[outline] >= level).mean() <= 0.5:
+            return none
+    reach = max(2, int(np.ceil(wide / 2)))
+    beside = cv2.dilate(width, np.ones((2 * reach + 1,) * 2, np.uint8))
+    # Filled crossings can extend beyond the sampled centres; unmeasured ink stays.
+    thin = ink & (beside > 0) & (beside < level)
+    kept = ink & ~thin
+    # A closed pinhole or a filled stroke alone is no part interior.
+    holes = binary_fill_holes(kept) & ~kept
+    areas = cv2.connectedComponentsWithStats(holes.astype(np.uint8), connectivity=4)[2][
+        1:, cv2.CC_STAT_AREA
+    ]
+    if not areas.size or areas.max() < np.pi * (wide / 2) ** 2:
+        return none
+    # Measure the filled silhouette so dense internal edges do not shrink it.
+    if distance_map(~drawing_area(kept)).max() < wide:
+        return none
+    return thin
+
+
+def _external_annotations(ink: np.ndarray, thin: np.ndarray) -> np.ndarray:
+    """Thin exterior annotation attached to closed outlines.
+
+    Thin lines inside a part can be hidden geometry. Only mark thin ink
+    outside a fillable outline it joins; keep open and separate thin views.
+    """
+    annotation = np.zeros_like(ink, dtype=bool)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8))
+    for label in range(1, count):
+        x, y, w, h, size = stats[label]
+        if size < MIN_WIDTH_SAMPLES:
+            continue
+        box = np.s_[y : y + h, x : x + w]
+        component = labels[box] == label
+        outline = component & ~thin[box]
+        if not (binary_fill_holes(outline) & ~outline).any():
+            continue
+        outside = beside_part(component, outline)
+        # Keep thick fragments of other views even when one component joins them.
+        annotation[box] |= outside & thin[box]
+    # A disconnected hole can still lie inside another component's outline.
+    return annotation & ~binary_fill_holes(ink & ~thin)
 
 
 def distance_map(foreground: np.ndarray) -> np.ndarray:

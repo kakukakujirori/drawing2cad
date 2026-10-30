@@ -334,3 +334,24 @@ def test_attached_input_drawings_are_marked_for_the_image_history(
 
     images = [block for block in blocks if block["type"] == "image"]
     assert images and all(block["id"] == INPUT_IMAGE_ID for block in images)
+
+
+@pytest.mark.parametrize("mode", ["path", "image"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_skeleton_is_not_announced_or_attached_to_stage_inputs(
+    tmp_path, workdir, mode, enabled
+):
+    manifest = _input_manifest(tmp_path, _pictorial(tmp_path, "front"))
+    Image.new("L", (10, 10), 255).save(tmp_path / "front_skeleton.png")
+    instructions = StageInstructions(
+        input_artifact=manifest.drawing,
+        input_presentation_mode=mode,
+        prompt_context={"drawing_skeleton": "enabled" if enabled else ""},
+        workdir=workdir,
+        projection_method=ProjectionMethod.THIRD_ANGLE,
+    )
+    message = instructions.create_artifact_message()
+    assert "skeleton" not in message.text.lower()
+    assert "/work/front.png" in message.text
+    images = [b for b in message.content_blocks if b["type"] == "image"]
+    assert len(images) == (1 if mode == "image" else 0)

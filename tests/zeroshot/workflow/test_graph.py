@@ -678,10 +678,18 @@ def test_the_skeleton_and_its_description_follow_the_setting(
         ).invoke({})
         skeleton = workdir.host_bind_dir / "drawing_skeleton.npz"
         assert skeleton.is_file() is drawing_skeleton
+        assert skeleton.with_suffix(".png").is_file() is drawing_skeleton
     # The system prompt describes the skeleton exactly when the run stores one.
     for model in (coder, auditor):
         system = model.received_messages[0][0].text
         assert ("## Drawing skeleton" in system) is drawing_skeleton
+        first_turn = "\n".join(
+            message.text for message in model.received_messages[0][1:]
+        )
+        assert (
+            "drawing_skeleton.png" not in first_turn
+        )  # path mode has no duplicate listing
+        assert ("xxx_skeleton.png" in system) is drawing_skeleton
 
 
 @pytest.mark.parametrize("stage", ["coding_tools", "audit_tools"])

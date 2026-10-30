@@ -233,6 +233,8 @@ def prepare_workspace(
         # No record names an input's skeleton, but the run offered it.
         if (source_dir / skeleton_path(relative)).is_file():
             relative_paths.add(skeleton_path(relative))
+        if (source_dir / skeleton_path(relative).with_suffix(".png")).is_file():
+            relative_paths.add(skeleton_path(relative).with_suffix(".png"))
     for relative in sorted(relative_paths):
         original = source_dir / relative
         if not original.resolve().is_relative_to(source_dir.resolve()):
