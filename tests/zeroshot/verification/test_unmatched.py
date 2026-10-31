@@ -10,6 +10,7 @@ from zeroshot.pipeline.verification.drawing_diff.unmatched import (
     BOTH_BLUE,
     COLORS,
     INPUT_GRAY,
+    TANGENT_TEAL,
     Unmatched,
     _local_detail,
     describe_unmatched,
@@ -78,6 +79,28 @@ def test_thick_input_line_keeps_its_color_band_and_gray_center_visible():
     assert np.all(image[99:102, 90:120] == INPUT_GRAY)
     assert np.all(image[97, 90:120] == COLORS["red"])
     assert np.all(image[103, 90:120] == COLORS["red"])
+
+
+def test_optional_tangent_cannot_overpaint_a_cluster_number():
+    drawing = _lines(*OUTLINE, INNER)
+    output = _lines(*OUTLINE)
+    groups = find_unmatched(drawing, output)
+    gray = np.uint8(~drawing) * 255
+    baseline = draw_unmatched(gray, output, groups)
+
+    # Red above the defect belongs to its number, not its highlight band.
+    label = np.all(baseline == COLORS["red"], axis=-1)
+    label[groups[0].box_px[1] - 10 :] = False
+    positions = np.argwhere(label)
+    assert len(positions)
+    y, x = positions[len(positions) // 2]
+    tangent = _lines(((int(x), 10), (int(x), int(y))))
+
+    image = draw_unmatched(gray, output, groups, tangent=tangent)
+
+    assert (label & tangent).any()
+    np.testing.assert_array_equal(image[label], baseline[label])
+    assert tuple(image[10, x]) == TANGENT_TEAL
 
 
 def test_length_does_not_depend_on_stroke_width():

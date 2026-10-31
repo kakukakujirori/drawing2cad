@@ -55,6 +55,7 @@ def _chamfers(
     output_ink: np.ndarray,
     matrix: np.ndarray,
     annotation: np.ndarray | None = None,
+    tangent: np.ndarray | None = None,
 ) -> dict[str, float | None]:
     """Mean line distance both ways in drawing pixels, to compare builds of one part.
 
@@ -73,12 +74,17 @@ def _chamfers(
         return unavailable
     drawing_xy = np.argwhere(drawing_ink)[:, ::-1].astype(np.float64)
     part_xy = np.argwhere(part_ink)[:, ::-1].astype(np.float64)
+    supporting = output_ink if tangent is None else output_ink | tangent
+    pixels = np.argwhere(supporting)
+    required = output_ink[pixels[:, 0], pixels[:, 1]]
     output_xy = cv2.perspectiveTransform(
-        np.argwhere(output_ink)[None, :, ::-1].astype(np.float64),
+        pixels[None, :, ::-1].astype(np.float64),
         np.linalg.inv(matrix),
     )[0]
     height, width = drawing_ink.shape
-    inside = np.all((output_xy >= 0) & (output_xy <= (width - 1, height - 1)), axis=1)
+    inside = required & np.all(
+        (output_xy >= 0) & (output_xy <= (width - 1, height - 1)), axis=1
+    )
     if not inside.any():
         return unavailable
     missing = cKDTree(output_xy).query(part_xy)[0]
@@ -94,7 +100,10 @@ def _chamfers(
 
 
 def _measure_distances(
-    aligned_ink: np.ndarray, output_ink: np.ndarray, valid: np.ndarray
+    aligned_ink: np.ndarray,
+    output_ink: np.ndarray,
+    valid: np.ndarray,
+    tangent: np.ndarray,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Measure reciprocal line distances and distinguish unknown input coverage."""
     observed = output_ink & valid
@@ -102,7 +111,7 @@ def _measure_distances(
     output_count = int(output_ink.sum())
     # Only output lines within the warped input canvas are measured.
     output_distances = distance_map(aligned_ink)[observed]
-    input_distances = distance_map(output_ink)[aligned_ink]
+    input_distances = distance_map(output_ink | tangent)[aligned_ink]
     stats = {
         "comparison_status": "ok" if output_distances.size else "uncertain",
         "valid_canvas_fraction": float(valid.mean()),
@@ -182,10 +191,13 @@ def _render_overlay(
     outside: np.ndarray,
     distances: np.ndarray,
     clip: float | None,
+    tangent: np.ndarray,
 ) -> np.ndarray:
     """Draw measured output lines in color over the pale aligned input drawing."""
     gray = np.rint(225 + aligned_gray.astype(float) * (30 / 255)).astype(np.uint8)
     overlay = np.repeat(gray[..., None], 3, axis=2)
+    # Optional boundaries use the zero-distance color without entering the metrics.
+    overlay[tangent] = _colors(np.zeros(1), clip)[0]
     # Unknown coverage stays neutral; measured strokes are thickened only for display.
     overlay[cv2.dilate(outside.astype(np.uint8), _DISPLAY_KERNEL).astype(bool)] = 128
     shown, display_distances = _thicken_lines(observed, distances)
@@ -199,6 +211,7 @@ def compute_diff(
     projection_rgb: np.ndarray,
     alignment: AlignmentResult,
     *,
+    tangent_ink: np.ndarray | None = None,
     distance_clip_px: float | None = 12.0,
     projection_modelspace: Modelspace | None = None,
     projection_to_uv: np.ndarray | None = None,
@@ -211,6 +224,10 @@ def compute_diff(
     Unsupported output pixels are medium gray, excluded from distance statistics.
     Projection strokes expand by 2px; measurements use the original lines.
     Distances are raw output pixels, independent of optimizer sampling/loss.
+
+    projection_rgb holds required lines only; tangent_ink is the optional
+    boundary mask on that same pixel grid. It supports missing input lines
+    without contributing extra geometry, silhouette area, or local defects.
 
     projection_modelspace and projection_to_uv (projection pixel boundaries to CAD UV)
     enable local edge-finish comparison. This affects unmatched highlights,
@@ -227,6 +244,14 @@ def compute_diff(
     # Invalid input arrays and display scales are caller errors.
     _validate_rgb(drawing_rgb, "drawing_rgb")
     _validate_rgb(projection_rgb, "projection_rgb")
+    if tangent_ink is None:
+        tangent_ink = np.zeros(projection_rgb.shape[:2], dtype=bool)
+    if (
+        not isinstance(tangent_ink, np.ndarray)
+        or tangent_ink.shape != projection_rgb.shape[:2]
+        or tangent_ink.dtype != bool
+    ):
+        raise ValueError("tangent_ink must be a boolean mask on the projection grid")
     if distance_clip_px is not None and (
         not math.isfinite(distance_clip_px) or distance_clip_px <= 0
     ):
@@ -262,16 +287,20 @@ def compute_diff(
             drawing_gray, drawing_ink, matrix, projection_gray.shape
         )
         # Measure both directions; output pixels outside input coverage are unknown.
-        output_distances, measured = _measure_distances(aligned_ink, output_ink, valid)
+        output_distances, measured = _measure_distances(
+            aligned_ink, output_ink, valid, tangent_ink
+        )
         stats.update(measured)
+        stats["optional_tangent_ink_count"] = int(tangent_ink.sum())
         # Cluster distances to highlight unmatched output lines and regions.
         output_seen = warp_output_to_drawing(output_ink, matrix, drawing_ink.shape)
+        tangent_seen = warp_output_to_drawing(tangent_ink, matrix, drawing_ink.shape)
         masks = drawing_masks(drawing_gray, drawing_ink, output_seen)
         part_ink = drawing_ink & ~masks.annotation
         outline = masks.outline
         # Exclude ink beside the part from missing-line distances, whatever its tone.
         non_part = masks.annotation | beside_part(part_ink, outline)
-        stats.update(_chamfers(drawing_ink, output_ink, matrix, non_part))
+        stats.update(_chamfers(drawing_ink, output_ink, matrix, non_part, tangent_ink))
         material = measure_material_error(outline, output_seen)
         stats["material_error"] = material
         # Both terms are lengths in drawing pixels: the mean distance between
@@ -299,9 +328,13 @@ def compute_diff(
                 drawing_ink.shape,
             )
 
-        groups = find_unmatched(drawing_ink, output_seen, geometry, non_part, outline)
+        groups = find_unmatched(
+            drawing_ink, output_seen, geometry, non_part, outline, tangent_seen
+        )
         stats["unmatched"] = describe_unmatched(groups)
-        unmatched = draw_unmatched(drawing_gray, output_seen, groups, non_part)
+        unmatched = draw_unmatched(
+            drawing_gray, output_seen, groups, non_part, tangent=tangent_seen
+        )
 
         # An automatic display scale is unavailable when no output line is measured.
         if distance_clip_px is None:
@@ -312,6 +345,7 @@ def compute_diff(
             output_ink & ~valid,
             output_distances,
             stats["red_distance_px"],
+            tangent_ink & valid,
         )
 
         # Warn about missing observation coverage, not a global distance threshold.

@@ -1,4 +1,4 @@
-"""STEP -> the visible and hidden edges of each orthographic view.
+"""STEP -> visible, hidden and optional tangent edges of each orthographic view.
 
 OCC hidden-line removal projects the solid, and the edges come back as exact
 curves in the view's own U and V, in model units: a coordinate read off a view
@@ -70,8 +70,8 @@ def load_shape(step_path: Path) -> cq.Shape:
 
 def project(
     shape: cq.Shape, u_axis: Axis, v_axis: Axis
-) -> tuple[list[cq.Edge], list[cq.Edge]]:
-    """The visible and hidden edges of `shape`, drawn with +U right and +V up."""
+) -> tuple[list[cq.Edge], list[cq.Edge], list[cq.Edge]]:
+    """Visible, hidden, and visible tangent boundaries, with +U right and +V up."""
     out = cross_axis(u_axis, v_axis)
     if out is None:
         raise ValueError(f"u_axis {u_axis} and v_axis {v_axis} span no plane")
@@ -84,11 +84,12 @@ def project(
     algo.Update()
     algo.Hide()
     drawn = HLRBRep_HLRToShape(algo)
-    # Smooth (tangent) edges are left out, as the input drawings leave them out.
     visible = _edges(drawn.VCompound(), drawn.OutLineVCompound())
     hidden = _edges(drawn.HCompound(), drawn.OutLineHCompound())
-    if not visible and not hidden:
-        return [], []
+    # Drawing conventions vary for tangent boundaries; keep their ink separate.
+    tangent = _edges(drawn.Rg1LineVCompound())
+    if not visible and not hidden and not tangent:
+        return [], [], []
 
     # Tight: a loose box can be several times the part and let strays through.
     part = shape.BoundingBox()
@@ -96,7 +97,8 @@ def project(
     footprint = (_span(part, u_axis), _span(part, v_axis))
     visible = [_simplest(e, tol) for e in visible if _drawable(e, footprint, tol)]
     hidden = [_simplest(e, tol) for e in hidden if _drawable(e, footprint, tol)]
-    return visible, _uncovered(hidden, visible, tol)
+    tangent = [_simplest(e, tol) for e in tangent if _drawable(e, footprint, tol)]
+    return visible, _uncovered(hidden, visible, tol), _uncovered(tangent, visible, tol)
 
 
 def _split_at_creases(shape: cq.Shape) -> cq.Shape:
@@ -120,8 +122,9 @@ def _split_at_creases(shape: cq.Shape) -> cq.Shape:
 
 
 def _smoothed(shape: cq.Shape, eye: gp_Dir) -> cq.Shape:
-    """A copy whose seams between tangent faces are smooth, save on the outline."""
-    copy = shape.copy()
+    """Remove same-surface splits, then mark tangent boundaries for HLR."""
+    # Unify coincident surfaces on a deep copy; curvature similarity is not equality.
+    copy = shape.copy().clean()
     builder = BRep_Builder()
     faces_of = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndUniqueAncestors_s(

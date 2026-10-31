@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
@@ -183,9 +184,36 @@ def _align_and_compare(
                 "expected_pixel_scale": pixel_scale,
             }
 
+    non_tangent_rgb, tangent_mask = projection, None
+    if modelspace is not None and any(
+        entity.dxf.layer == "TANGENT" for entity in modelspace
+    ):
+        from ezdxf.addons.drawing.config import ColorPolicy
+
+        from ..render.export_dxf import create_drawing_figure
+
+        non_tangent_figure = create_drawing_figure(
+            modelspace,
+            filter_func=lambda entity: entity.dxf.layer != "TANGENT",
+            color_policy=ColorPolicy.BLACK,
+        )
+        non_tangent_figure.canvas.draw()
+        non_tangent_rgb = np.asarray(non_tangent_figure.canvas.buffer_rgba())[
+            ..., :3
+        ].copy()
+        if non_tangent_rgb.shape != projection.shape:
+            raise ValueError("projection PNG does not match the DXF raster grid")
+        tangent_figure = create_drawing_figure(
+            modelspace,
+            filter_func=lambda entity: entity.dxf.layer == "TANGENT",
+            color_policy=ColorPolicy.BLACK,
+        )
+        tangent_figure.canvas.draw()
+        # Keep the antialiased stroke too; its display gray never sets the mask.
+        tangent_mask = np.asarray(tangent_figure.canvas.buffer_rgba())[..., 0] < 255
     alignment = align(
         drawing,
-        projection,
+        non_tangent_rgb,
         backend=backend,
         model=model,
         options=options,
@@ -194,12 +222,21 @@ def _align_and_compare(
     alignment.diagnostics["scale_calibration"] = calibration
     diff = compute_diff(
         drawing,
-        projection,
+        non_tangent_rgb,
         alignment,
+        tangent_ink=tangent_mask,
         distance_clip_px=distance_clip_px,
         projection_modelspace=modelspace,
         projection_to_uv=projection_to_uv,
     )
+    if modelspace is None:
+        diff = replace(
+            diff,
+            warnings=diff.warnings
+            + (
+                "Projection DXF unavailable; tangent boundaries cannot be distinguished from required lines.",
+            ),
+        )
 
     if projection_to_uv is not None:
         diff.stats["projection_to_model_uv"] = projection_to_uv.tolist()

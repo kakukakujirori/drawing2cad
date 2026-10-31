@@ -1079,6 +1079,10 @@ def test_without_image_attachments_the_model_still_sees_orthographic_pngs(
     assert _report_json(result)["status"] == "VERIFIED"
     assert "projection/front.dxf" in _text(result)
     assert "/work/attempts/round_000/coding/000/projection/front.png" in _text(result)
+    assert (
+        "Gray lines in ordinary projections are optional tangent boundaries"
+        in _text(result)
+    )
     assert (_coding_attempt(tmp_path) / "projection" / "front.dxf").is_file()
 
 
@@ -1394,6 +1398,10 @@ def test_feedback_kinds_are_presented_independently(tmp_path, kind, mode):
         "unmatched": "hatching marks material (silhouette) differences",
     }.items():
         assert (legend in text) == (modes[name] != "none")
+    assert ("tangent boundaries use the zero-distance blue" in text) == (
+        modes["overlay"] != "none"
+    )
+    assert ("tangent boundaries teal" in text) == (modes["unmatched"] != "none")
     assert "[Drawing comparison]" in text
     assert "line distance" in text
     expected_images = (2 if kind == "output_renders" else 1) if mode == "image" else 0

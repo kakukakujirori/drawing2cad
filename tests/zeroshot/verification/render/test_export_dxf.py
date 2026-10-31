@@ -101,6 +101,29 @@ def test_a_written_view_is_one_layer_with_its_hidden_edges_dashed(tmp_path):
     ]
 
 
+def test_tangent_layer_is_gray_and_black_geometry_wins_overlap(tmp_path):
+    path = tmp_path / "tangent.dxf"
+    visible = [
+        _line((0, 0, 0), (10, 0, 0)),
+        _line((10, 0, 0), (10, 10, 0)),
+        _line((10, 10, 0), (0, 10, 0)),
+        _line((0, 10, 0), (0, 0, 0)),
+        _line((0, 5, 0), (10, 5, 0)),
+    ]
+    write_view_dxf(path, visible, [], "front", tangent=[_line((5, 0, 0), (5, 10, 0))])
+
+    doc = ezdxf.readfile(path)
+    assert doc.layers.get("TANGENT").dxf.color == 8
+    assert [e.dxf.layer for e in doc.modelspace()] == ["TANGENT"] + ["front"] * 5
+    with Image.open(export_to_png(path)) as image:
+        rgb = np.asarray(image.convert("RGB"), dtype=int)
+    assert np.all(np.ptp(rgb, axis=2) == 0)
+    tangent_midpoint = rgb[rgb.shape[0] // 4, rgb.shape[1] // 2]
+    assert 80 < min(tangent_midpoint) < 200
+    middle = rgb[rgb.shape[0] // 2, rgb.shape[1] // 2]
+    assert max(middle) < 80
+
+
 def test_every_edge_kind_is_drawn_where_the_edge_runs(tmp_path):
     """A DXF arc always turns counter-clockwise; one that turns the other way keeps its span."""
     edges = [
@@ -150,15 +173,15 @@ ROUNDED_PLATE = (
 def test_a_filleted_rim_is_drawn_along_its_projected_edges(tmp_path, view):
     plate = ROUNDED_PLATE.findSolid()
     tol = orthographic.TOL_FRAC * plate.BoundingBox().DiagonalLength
-    visible, hidden = orthographic.project(
+    visible, hidden, tangent = orthographic.project(
         plate, *orthographic.STANDARD_VIEW_FRAMES[view]
     )
     path = tmp_path / f"{view.value}.dxf"
 
-    write_view_dxf(path, visible, hidden, view.value)
+    write_view_dxf(path, visible, hidden, view.value, tangent=tangent)
 
     ink = _dxf_ink(path, tol / 4)
-    assert _farthest(ink, _edge_ink(visible + hidden, tol / 4)) < tol
+    assert _farthest(ink, _edge_ink(visible + hidden + tangent, tol / 4)) < tol
     assert _farthest(_edge_ink(visible, tol / 4), ink) < tol
 
 

@@ -256,10 +256,10 @@ def test_a_degenerate_view_leaves_the_other_views_drawn(tmp_path, monkeypatch):
     cq.exporters.export(cq.Workplane("XY").box(10.0, 20.0, 30.0), str(step_path))
     write_view_dxf = run_render.write_view_dxf
 
-    def refuse_right(path, visible, hidden, layer):
+    def refuse_right(path, visible, hidden, layer, *, tangent=()):
         if layer == "right":
             raise DegenerateDrawingError("view 'right' has near-zero extent")
-        write_view_dxf(path, visible, hidden, layer)
+        write_view_dxf(path, visible, hidden, layer, tangent=tangent)
 
     monkeypatch.setattr(run_render, "write_view_dxf", refuse_right)
     requested = _projection_paths(tmp_path)

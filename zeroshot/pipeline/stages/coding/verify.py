@@ -500,6 +500,11 @@ def build_verification_feedback(
                 ),
                 workdir,
                 mode=presenter.output_renders,
+                heading=(
+                    "[Projected drawing]\n"
+                    "Gray lines in ordinary projections are optional tangent boundaries "
+                    "between smooth faces. The input may omit them."
+                ),
             )
         )
 
@@ -659,15 +664,17 @@ _COMPARISON = cleandoc("""
     {views}
     Mean line distance over {count} views: {mean}
     Line distance: mean distance between input and projection lines, in input pixels. Silhouette mismatch: difference of the filled outlines; holes and inner lines are excluded. Alignment may be wrong or hide size errors.
+    Tangent boundaries between smooth faces are optional. They can explain input lines, but their absence from the input is not an extra-geometry defect.
 """)
 _VIEW = "- {name} (input {input_path}{axes}): line distance {line}; silhouette mismatch {silhouette}{caveats}"
 _CHANGES = " Changes in parentheses are against verification {previous_id}."
 _OVERLAY = (
     "Overlay images: input lines in pale gray; projection lines blue near and red "
-    "far from them. Blue does not prove a correct match."
+    "far from them; optional tangent boundaries use the zero-distance blue. "
+    "Blue does not prove a correct match."
 )
 _UNMATCHED = cleandoc("""
-    Unmatched images: input gray, projection light blue, overlap blue.
+    Unmatched images: input gray, projection light blue, overlap blue; optional tangent boundaries teal (not error bands).
     Colored bands mark the clusters below by color and ID suffix; hatching marks material (silhouette) differences.
     Missing = input only; extra = projection only. Missing dimension, leader and text lines are not defects.
     Clusters list only the largest differences in each view; a difference without a cluster can still be a defect.

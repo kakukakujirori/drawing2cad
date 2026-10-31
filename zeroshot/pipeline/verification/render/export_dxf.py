@@ -9,7 +9,7 @@ without rasterising it first.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import cadquery as cq
@@ -17,8 +17,10 @@ import ezdxf
 from cadquery.occ_impl.exporters.dxf import DxfDocument
 from ezdxf import bbox
 from ezdxf.addons.drawing import Frontend, RenderContext
+from ezdxf.addons.drawing.config import ColorPolicy, Configuration
 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
 from ezdxf.addons.drawing.properties import LayoutProperties
+from ezdxf.entities import DXFGraphic
 from ezdxf.layouts import Modelspace
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
@@ -43,9 +45,14 @@ class DegenerateDrawingError(RuntimeError):
 
 
 def write_view_dxf(
-    dxf_path: Path, visible: Sequence[cq.Edge], hidden: Sequence[cq.Edge], layer: str
+    dxf_path: Path,
+    visible: Sequence[cq.Edge],
+    hidden: Sequence[cq.Edge],
+    layer: str,
+    *,
+    tangent: Sequence[cq.Edge] = (),
 ) -> None:
-    """Write one view's edges, hidden ones dashed, to an existing output directory.
+    """Write sharp/hidden edges in black and optional tangent boundaries in gray.
 
     `layer` names the view, and says which one was refused when it has no area.
     """
@@ -53,13 +60,20 @@ def write_view_dxf(
     modelspace = doc.modelspace()
     if layer not in doc.layers:
         doc.layers.add(layer)
-    for edges, linetype in ((visible, "Continuous"), (hidden, "HIDDEN")):
+    if tangent:
+        doc.layers.add("TANGENT", color=8)
+    # Black geometry is drawn last so overlaps keep their mandatory-edge meaning.
+    for edges, linetype, edge_layer in (
+        (tangent, "Continuous", "TANGENT"),
+        (visible, "Continuous", layer),
+        (hidden, "HIDDEN", layer),
+    ):
         if not edges:
             continue
         # Refit splines: ezdxf refuses the high-degree ones HLR can return.
         converted = DxfDocument(approx="spline").add_shape(cq.Workplane().add(edges))
         for entity in converted.msp:
-            entity.dxf.layer, entity.dxf.linetype = layer, linetype
+            entity.dxf.layer, entity.dxf.linetype = edge_layer, linetype
             modelspace.add_foreign_entity(entity)
 
     extents = bbox.extents(modelspace)
@@ -99,9 +113,22 @@ def export_to_png(
     *,
     margin_ratio: float = DEFAULT_PNG_MARGIN_RATIO,
 ) -> Path:
-    """Rasterise black on white, with space around all four silhouette edges."""
+    """Rasterise layer colors on white, with margins around the silhouette."""
     image_path = image_path or Path(dxf_path).with_suffix(".png")
     modelspace = ezdxf.readfile(dxf_path).modelspace()
+    figure = create_drawing_figure(modelspace, margin_ratio=margin_ratio)
+    figure.savefig(image_path, dpi=_PNG_DPI, facecolor=figure.get_facecolor())
+    return image_path
+
+
+def create_drawing_figure(
+    modelspace: Modelspace,
+    *,
+    margin_ratio: float = DEFAULT_PNG_MARGIN_RATIO,
+    filter_func: Callable[[DXFGraphic], bool] | None = None,
+    color_policy: ColorPolicy = ColorPolicy.COLOR,
+) -> Figure:
+    """Create an unsaved Figure; filtering keeps the full modelspace's PNG grid."""
     x_min, y_min, x_max, y_max = png_bounds(modelspace, margin_ratio=margin_ratio)
     width, height = x_max - x_min, y_max - y_min
     pixels = min(
@@ -117,9 +144,11 @@ def export_to_png(
     properties = LayoutProperties.from_layout(modelspace)
     properties.set_colors("#FFFFFF", "#000000")
     Frontend(
-        RenderContext(modelspace.doc), MatplotlibBackend(axes, adjust_figure=False)
-    ).draw_layout(modelspace, layout_properties=properties)
+        RenderContext(modelspace.doc),
+        MatplotlibBackend(axes, adjust_figure=False),
+        config=Configuration(color_policy=color_policy),
+    ).draw_layout(modelspace, filter_func=filter_func, layout_properties=properties)
     axes.set_xlim(x_min, x_max)
     axes.set_ylim(y_min, y_max)
-    figure.savefig(image_path, dpi=_PNG_DPI, facecolor=axes.get_facecolor())
-    return image_path
+    figure.set_facecolor(axes.get_facecolor())
+    return figure

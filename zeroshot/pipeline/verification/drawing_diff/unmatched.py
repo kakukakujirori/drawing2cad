@@ -49,6 +49,7 @@ BAND_PX = 5
 INPUT_GRAY = (110, 110, 110)
 ANNOTATION_GRAY = (185, 185, 185)
 OUTPUT_SKY = (90, 190, 255)
+TANGENT_TEAL = (0, 150, 110)
 # Where both draw a line, the gray over the light blue deepens it to pure blue.
 BOTH_BLUE = (0, 0, 255)
 # Material is hatched, as a drawing marks cut material, so it reads as an area.
@@ -247,6 +248,8 @@ def detail_geometry(
 
     # Map eligible DXF curves first, so curvature is judged in drawing pixels.
     for entity in modelspace:
+        if entity.dxf.layer == "TANGENT":
+            continue
         linetype = entity.dxf.get("linetype", "BYLAYER").upper()
         if linetype == "BYLAYER":
             linetype = modelspace.doc.layers.get(entity.dxf.layer).dxf.linetype.upper()
@@ -389,6 +392,7 @@ def find_unmatched(
     geometry: DetailGeometry | None = None,
     annotation: np.ndarray | None = None,
     outline: np.ndarray | None = None,
+    tangent: np.ndarray | None = None,
 ) -> list[Unmatched]:
     """Collect material/coarse defects, merge fine errors, then select display groups.
 
@@ -424,7 +428,10 @@ def find_unmatched(
     )
 
     # Coarse comparison works in both directions; material outlines are shown once.
-    far_from_output = distance_map(output_lines) > UNMATCHED_PX
+    # NOTE: far_from_output finds input lines missing in CAD (tangents can explain them);
+    #       far_from_drawing finds extra CAD lines (optional tangents excluded).
+    supporting_lines = output_lines if tangent is None else output_lines | tangent
+    far_from_output = distance_map(supporting_lines) > UNMATCHED_PX
     output_distances = distance_map(all_lines)
     far_from_drawing = output_distances > UNMATCHED_PX
     lines = _line_groups(drawing_lines & part & far_from_output, "missing")
@@ -487,6 +494,8 @@ def draw_unmatched(
     output: np.ndarray,
     groups: list[Unmatched],
     annotation: np.ndarray | None = None,
+    *,
+    tangent: np.ndarray | None = None,
 ) -> np.ndarray:
     """Each group as a colored band under the gray drawing and the light blue output.
 
@@ -523,6 +532,8 @@ def draw_unmatched(
         drawn &= ~annotation
         centre &= ~annotation
     image[drawn] = INPUT_GRAY
+    if tangent is not None:
+        image[tangent] = TANGENT_TEAL
     image[shown] = OUTPUT_SKY
     # Overlap is judged on the centre band, so a thin input line still marks
     # the output stroke it shares as drawn by both.

@@ -12,6 +12,7 @@ from zeroshot.pipeline.verification.drawing_diff.image_ops import (
     foreground_mask,
     thin_mask,
 )
+from zeroshot.pipeline.verification.drawing_diff.unmatched import TANGENT_TEAL
 
 
 def _white(size=64):
@@ -92,6 +93,60 @@ def test_unmatched_groups_are_listed_in_drawing_pixels():
         }
     ]
     assert diff.unmatched.shape == drawing.shape
+
+
+def test_tangents_explain_input_lines_but_are_optional_and_not_material():
+    outline = _white(240)
+    cv2.rectangle(outline, (30, 30), (210, 210), (0, 0, 0), 1)
+    drawing = outline.copy()
+    drawing[50:190, 90] = 0
+    tangent = np.zeros(outline.shape[:2], dtype=bool)
+    tangent[50:190, 90] = True
+    missing = compute_diff(drawing, outline, _alignment())
+    matched = compute_diff(drawing, outline, _alignment(), tangent_ink=tangent)
+    omitted = compute_diff(outline, outline, _alignment(), tangent_ink=tangent)
+    baseline = compute_diff(outline, outline, _alignment())
+
+    assert len(missing.stats["unmatched"]) == 1
+    assert missing.stats["unmatched"][0]["direction"] == "missing"
+    for diff in (matched, omitted):
+        assert diff.stats["unmatched"] == []
+        assert diff.stats["match_score"] == baseline.stats["match_score"]
+        assert diff.stats["bounded_chamfer_drawing_px"] == 0
+        assert diff.stats["material_error"] == baseline.stats["material_error"]
+        assert diff.stats["output_to_input"] == baseline.stats["output_to_input"]
+        assert diff.stats["optional_tangent_ink_count"] == 140
+        assert tuple(diff.unmatched[100, 90]) == TANGENT_TEAL
+        assert tuple(diff.overlay[100, 90]) == (0, 0, 128)  # JET at zero distance
+
+    # An unrelated tangent cannot explain a missing line, nor excuse a sharp edge.
+    wrong = outline.copy()
+    tangent[:] = False
+    tangent[50:190, 150] = True
+    wrong[50:190, 180] = 0
+    diff = compute_diff(drawing, wrong, _alignment(), tangent_ink=tangent)
+    assert {g["direction"] for g in diff.stats["unmatched"]} == {"missing", "extra"}
+    assert diff.stats["match_score"] > 0
+
+
+def test_tangents_do_not_seed_local_finish_defects():
+    from zeroshot.pipeline.verification.drawing_diff.unmatched import detail_geometry
+
+    doc = ezdxf.new()
+    doc.layers.add("TANGENT")
+    doc.modelspace().add_circle((60, 60), 10, dxfattribs={"layer": "TANGENT"})
+    geometry = detail_geometry(doc.modelspace(), np.eye(3), (120, 120))
+    assert not geometry.mask.any()
+    assert not geometry.visible.any()
+    assert not geometry.samples.n
+
+
+@pytest.mark.parametrize(
+    "mask", [np.zeros((64, 64), np.uint8), np.zeros((32, 64), bool)]
+)
+def test_tangent_mask_must_share_the_projection_pixel_grid(mask):
+    with pytest.raises(ValueError, match="tangent_ink"):
+        compute_diff(_white(), _white(), _alignment(), tangent_ink=mask)
 
 
 def test_diff_builds_the_local_comparison_mask_from_dxf_geometry():

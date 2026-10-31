@@ -190,6 +190,9 @@ def test_worker_saves_diff_pngs_beside_projection(tmp_path, monkeypatch):
         "status": "unavailable",
         "reason": "projection DXF unavailable",
     }
+    assert any(
+        "tangent boundaries cannot be distinguished" in w for w in report.warnings
+    )
     assert report.paths == {
         "overlay_path": tmp_path / "front_overlay.png",
         "unmatched_path": tmp_path / "front_unmatched.png",
@@ -228,8 +231,112 @@ def test_invalid_dxf_bounds_still_allow_png_comparison(tmp_path, monkeypatch):
         "reason": "projection DXF unreadable or invalid (ValueError)",
     }
     assert "projection_to_model_uv" not in report.stats
+    assert any(
+        "tangent boundaries cannot be distinguished" in w for w in report.warnings
+    )
     assert report.paths["overlay_path"].is_file()
     assert report.paths["unmatched_path"].is_file()
+
+
+@pytest.mark.parametrize("tangent_color", [8, 7, 3], ids=["gray", "black", "green"])
+@pytest.mark.parametrize("input_has_tangent", [True, False])
+def test_alignment_ignores_optional_tangents_but_diff_uses_them(
+    tmp_path, monkeypatch, tangent_color, input_has_tangent
+):
+    import ezdxf
+
+    from zeroshot.pipeline.verification.drawing_diff.align import read_rgb
+    from zeroshot.pipeline.verification.drawing_diff.unmatched import TANGENT_TEAL
+    from zeroshot.pipeline.verification.render.export_dxf import (
+        export_to_png,
+        png_bounds,
+    )
+
+    doc = ezdxf.new()
+    doc.modelspace().add_lwpolyline([(0, 0), (17, 0), (17, 10), (0, 10)], close=True)
+    doc.modelspace().add_line((0, 5), (17, 5))
+    outline_path = tmp_path / "outline.dxf"
+    doc.saveas(outline_path)
+    outline = read_rgb(export_to_png(outline_path))
+    drawing = outline.copy()
+    if input_has_tangent:
+        line = doc.modelspace().add_line((3.5, 1), (3.5, 9))
+        drawing_path = tmp_path / "drawing.dxf"
+        doc.saveas(drawing_path)
+        drawing = read_rgb(export_to_png(drawing_path))
+        doc.modelspace().delete_entity(line)
+    doc.layers.add("TANGENT", color=tangent_color)
+    doc.modelspace().add_line((3.5, 1), (3.5, 9), dxfattribs={"layer": "TANGENT"})
+    projection_path = tmp_path / "front.dxf"
+    doc.saveas(projection_path)
+    projection_path = export_to_png(projection_path)
+    projection = read_rgb(projection_path)
+
+    def align(source, non_tangent_rgb, **_kwargs):
+        np.testing.assert_array_equal(source, drawing)
+        np.testing.assert_array_equal(non_tangent_rgb, outline)
+        return AlignmentResult(
+            "directional_chamfer", "similarity", "ok", np.eye(3).tolist(), {}
+        )
+
+    compare = worker.compute_diff
+
+    def compute_diff(source, non_tangent_rgb, alignment, *, tangent_ink, **kwargs):
+        np.testing.assert_array_equal(non_tangent_rgb, outline)
+        assert non_tangent_rgb.dtype == np.uint8
+        assert tangent_ink.shape == projection.shape[:2]
+        assert tangent_ink.dtype == bool
+        xmin, ymin, xmax, ymax = png_bounds(doc.modelspace(), margin_ratio=0.04)
+        height, width = tangent_ink.shape
+        crossing_x = round((3.5 - xmin) / (xmax - xmin) * width)
+        crossing_y = round((ymax - 5) / (ymax - ymin) * height)
+        assert tangent_ink[crossing_y, crossing_x]
+        assert non_tangent_rgb[crossing_y, crossing_x].max() < 80
+        # A narrow, off-centre tangent must not be refitted to its own bounding box.
+        ys, xs = np.nonzero(tangent_ink)
+        assert abs(xs.mean() - crossing_x) < 2
+        assert abs(ys.min() - (ymax - 9) / (ymax - ymin) * height) < 2
+        assert abs(ys.max() - (ymax - 1) / (ymax - ymin) * height) < 2
+        optional_only = (non_tangent_rgb[..., 0] == 255) & (projection[..., 0] < 255)
+        assert optional_only.any()
+        assert tangent_ink[optional_only].all()
+        return compare(
+            source, non_tangent_rgb, alignment, tangent_ink=tangent_ink, **kwargs
+        )
+
+    monkeypatch.setattr(worker, "align", align)
+    monkeypatch.setattr(worker, "compute_diff", compute_diff)
+    alignment, diff = worker._align_and_compare(
+        drawing,
+        projection,
+        projection_path,
+        backend="directional_chamfer",
+        model="similarity",
+        alignment_options={},
+        distance_clip_px=12,
+        drawing_mm_per_pixel=None,
+        runtime=None,
+    )
+    assert diff.stats["unmatched"] == []
+    baseline = compare(outline, outline, alignment)
+    assert diff.stats["match_score"] == baseline.stats["match_score"]
+    assert diff.stats["material_error"] == baseline.stats["material_error"]
+    assert diff.stats["optional_tangent_ink_count"] > 0
+    assert np.any(np.all(diff.unmatched == TANGENT_TEAL, axis=2))
+
+    # A resized PNG must not silently receive masks on the original pixel grid.
+    with pytest.raises(ValueError, match="DXF raster grid"):
+        worker._align_and_compare(
+            drawing,
+            projection[:-1],
+            projection_path,
+            backend="directional_chamfer",
+            model="similarity",
+            alignment_options={},
+            distance_clip_px=12,
+            drawing_mm_per_pixel=None,
+            runtime=None,
+        )
 
 
 @pytest.mark.parametrize(
