@@ -533,6 +533,8 @@ def draw_unmatched(
     group came from; lines both images draw are pure blue. Material is banded along
     its outline and hatched inside. Annotation ink, which the comparison does
     not count as the part, is drawn in a lighter gray.
+
+    output contains display strokes, not the dilated comparison mask.
     """
     image = np.full((*drawing_gray.shape, 3), 255, np.uint8)
     # Paint bands underneath the source lines so their mismatch remains readable.
@@ -556,7 +558,6 @@ def draw_unmatched(
     # Thick lines narrow to show the band beside them; thin ones keep their width,
     # since widening would fill small text and details.
     drawn = centre & ink
-    shown = cv2.dilate(output.astype(np.uint8), np.ones((2, 2), np.uint8)) > 0
     if annotation is not None:
         image[annotation] = ANNOTATION_GRAY
         drawn &= ~annotation
@@ -564,10 +565,10 @@ def draw_unmatched(
     image[drawn] = INPUT_GRAY
     if tangent is not None:
         image[tangent] = TANGENT_TEAL
-    image[shown] = OUTPUT_SKY
+    image[output] = OUTPUT_SKY
     # Overlap is judged on the centre band, so a thin input line still marks
     # the output stroke it shares as drawn by both.
-    overlap = centre & shown
+    overlap = centre & output
     if line_style_mismatch_mask is not None:
         overlap &= ~line_style_mismatch_mask
     image[overlap] = BOTH_BLUE

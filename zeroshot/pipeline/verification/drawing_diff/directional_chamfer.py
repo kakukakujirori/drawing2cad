@@ -30,9 +30,21 @@ from scipy.optimize import minimize
 from scipy.spatial import cKDTree
 
 if TYPE_CHECKING or __package__:
-    from .image_ops import distance_map, external_boundary, foreground_mask
+    from .image_ops import (
+        apply_homography,
+        distance_map,
+        external_boundary,
+        foreground_mask,
+        render_transformed_strokes,
+    )
 else:  # Preserve direct-file CLI execution alongside package imports.
-    from image_ops import distance_map, external_boundary, foreground_mask
+    from image_ops import (
+        apply_homography,
+        distance_map,
+        external_boundary,
+        foreground_mask,
+        render_transformed_strokes,
+    )
 
 
 @dataclass
@@ -240,13 +252,6 @@ class DistanceBank:
             xy[:, 1] - np.clip(xy[:, 1], 0, oh - 1),
         )
         return d + outside
-
-
-def apply_homography(H: np.ndarray, xy: np.ndarray) -> np.ndarray:
-    z = np.column_stack((xy, np.ones(len(xy)))) @ H.T
-    if np.any(np.abs(z[:, 2]) < 1e-10):
-        raise ValueError("Homography has a pole on evaluated points")
-    return z[:, :2] / z[:, 2:3]
 
 
 class Objective:
@@ -589,30 +594,6 @@ def geometric_samples(dt: np.ndarray, xy: np.ndarray) -> np.ndarray:
     )
 
 
-def rasterize(
-    source_ink: np.ndarray, H: np.ndarray, shape: tuple[int, int], supersample: int = 4
-) -> np.ndarray:
-    """Display-only: normalize stroke width to 1 drawing pixel, preserve thin lines."""
-    h, w = shape
-    canvas = np.full((h * supersample, w * supersample), 255, np.uint8)
-    contours, _ = cv2.findContours(
-        source_ink.astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE
-    )
-    for contour in contours:
-        points = apply_homography(H, contour[:, 0, :])
-        points = np.clip(points * supersample * 16, -(2**29), 2**29).astype(np.int32)
-        cv2.polylines(
-            canvas,
-            [points],
-            True,
-            0,
-            thickness=supersample,
-            lineType=cv2.LINE_AA,
-            shift=4,
-        )
-    return cv2.resize(canvas, (w, h), interpolation=cv2.INTER_AREA)
-
-
 def save_outputs(
     result: dict, source_gray: np.ndarray, target_gray: np.ndarray, output: str | Path
 ) -> None:
@@ -640,7 +621,7 @@ def save_outputs(
         drawing_residual_map=residual_map,
         H=H,
     )
-    aligned = rasterize(source, H, target.shape)
+    aligned = render_transformed_strokes(source, H, target.shape)
     # Light-gray input, black registered CAD; no artificial CAD deformation.
     background = np.rint(160 + target_gray.astype(float) * (95 / 255)).astype(np.uint8)
     overlay = np.minimum(background, aligned)

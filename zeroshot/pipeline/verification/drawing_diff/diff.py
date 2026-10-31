@@ -17,6 +17,7 @@ from .image_ops import (
     distance_map,
     drawing_masks,
     foreground_mask,
+    render_transformed_strokes,
 )
 from .line_style import find_line_style_mismatches
 from .unmatched import (
@@ -366,7 +367,10 @@ def compute_diff(
         )
         unmatched = draw_unmatched(
             drawing_gray,
-            output_seen,
+            render_transformed_strokes(
+                output_ink, np.linalg.inv(matrix), drawing_ink.shape
+            )
+            < 255,
             groups,
             non_part,
             tangent=tangent_seen,

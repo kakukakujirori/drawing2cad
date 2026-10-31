@@ -30,6 +30,40 @@ def foreground_mask(gray: np.ndarray) -> np.ndarray:
     return mask
 
 
+def apply_homography(H: np.ndarray, xy: np.ndarray) -> np.ndarray:
+    z = np.column_stack((xy, np.ones(len(xy)))) @ H.T
+    if np.any(np.abs(z[:, 2]) < 1e-10):
+        raise ValueError("Homography has a pole on evaluated points")
+    return z[:, :2] / z[:, 2:3]
+
+
+def render_transformed_strokes(
+    source_ink: np.ndarray, H: np.ndarray, shape: tuple[int, int], supersample: int = 4
+) -> np.ndarray:
+    """Transform ink contours by H (source -> target) and redraw for display.
+
+    Return black strokes on white, with stroke width normalized to 1 target pixel.
+    """
+    h, w = shape
+    canvas = np.full((h * supersample, w * supersample), 255, np.uint8)
+    contours, _ = cv2.findContours(
+        source_ink.astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE
+    )
+    for contour in contours:
+        points = apply_homography(H, contour[:, 0, :])
+        points = np.clip(points * supersample * 16, -(2**29), 2**29).astype(np.int32)
+        cv2.polylines(
+            canvas,
+            [points],
+            True,
+            0,
+            thickness=supersample,
+            lineType=cv2.LINE_AA,
+            shift=4,
+        )
+    return cv2.resize(canvas, (w, h), interpolation=cv2.INTER_AREA)
+
+
 # Two-tone drawings print the part dark and its annotation (dimension, extension
 # and leader lines, arrows, text) in light gray. Antialiasing alone spreads one
 # tone's line centres over less than this, measured on low-resolution scans.

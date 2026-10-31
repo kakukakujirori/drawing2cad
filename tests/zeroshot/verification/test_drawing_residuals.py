@@ -12,7 +12,11 @@ from zeroshot.pipeline.verification.drawing_diff.image_ops import (
     foreground_mask,
     thin_mask,
 )
-from zeroshot.pipeline.verification.drawing_diff.unmatched import TANGENT_TEAL
+from zeroshot.pipeline.verification.drawing_diff.unmatched import (
+    BOTH_BLUE,
+    OUTPUT_SKY,
+    TANGENT_TEAL,
+)
 
 
 def _white(size=64):
@@ -93,6 +97,37 @@ def test_unmatched_groups_are_listed_in_drawing_pixels():
         }
     ]
     assert diff.unmatched.shape == drawing.shape
+
+
+@pytest.mark.parametrize("scale", [0.75, 1.0, 1.028, 2.5, 4.0])
+@pytest.mark.parametrize("vertical", [False, True])
+@pytest.mark.parametrize("offset", [0.0, 0.5])
+def test_unmatched_preserves_dash_gaps_and_thin_solid_lines(scale, vertical, offset):
+    drawing, output = _white(256), _white(round(256 * scale))
+
+    def projected(x, y):
+        return tuple(round((v + 0.5) * scale + offset - 0.5) for v in (x, y))
+
+    cv2.rectangle(drawing, (20, 20), (230, 230), (0, 0, 0), 3)
+    cv2.rectangle(output, projected(20, 20), projected(230, 230), (0, 0, 0), 1)
+    for x in range(40, 210, 16):
+        cv2.line(drawing, (x, 100), (x + 11, 100), (0, 0, 0), 1)
+        cv2.line(output, projected(x, 100), projected(x + 11, 100), (0, 0, 0), 1)
+    if vertical:
+        drawing, output = (
+            drawing.transpose(1, 0, 2).copy(),
+            output.transpose(1, 0, 2).copy(),
+        )
+    matrix = np.diag([scale, scale, 1])
+    matrix[:2, 2] = offset
+    diff = compute_diff(drawing, output, _alignment(matrix))
+    image = diff.unmatched.transpose(1, 0, 2) if vertical else diff.unmatched
+    cad = np.all(image == OUTPUT_SKY, axis=-1) | np.all(image == BOTH_BLUE, axis=-1)
+
+    for x in range(40, 210, 16):
+        assert cad[98:103, x + 5].any(), "A dash disappeared during resampling"
+        assert not cad[98:103, x + 13].any(), "A dash gap was painted as CAD ink"
+    assert cad[30:220, 18:23].any(axis=1).all(), "The thin solid outline broke"
 
 
 def test_tangents_explain_input_lines_but_are_optional_and_not_material():
