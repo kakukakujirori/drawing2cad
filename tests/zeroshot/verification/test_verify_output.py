@@ -573,13 +573,13 @@ def test_feedback_compares_scores_with_the_last_scored_build(tmp_path):
         return _text(verifier.feedback())
 
     first = build(0)
-    assert "line distance 8.00 px; silhouette mismatch unavailable" in first
+    assert "line distance: 8.00 px\n- silhouette mismatch: unavailable" in first
     assert "Changes in parentheses" not in first
     unscored = build(1)
-    assert "line distance unavailable" in unscored
+    assert "line distance: unavailable" in unscored
     assert "Mean line distance over 0 views: unavailable" in unscored
     third = build(2)
-    assert "line distance 6.00 px (-2.00)" in third
+    assert "line distance: 6.00 px (-2.00)" in third
     assert "against verification 000" in third
     assert _text(verifier.feedback()) == third  # not against itself
 
@@ -717,8 +717,8 @@ def test_pair_failure_is_feedback_and_does_not_reject_step(tmp_path, enabled):
     assert verifier.confirmed
     assert ("alignment failed" in text) is enabled
     assert ("[Drawing comparison]" in text) is enabled
-    assert "Overlay images:" not in text
-    assert "Unmatched images:" not in text
+    assert "[Overlay images]" not in text
+    assert "[Unmatched images]" not in text
     assert "projection/front.png" in text
     assert (report.drawing_diff_report is not None) is enabled
 
@@ -1394,14 +1394,14 @@ def test_feedback_kinds_are_presented_independently(tmp_path, kind, mode):
     for name, path in paths.items():
         assert (path in text) == (modes[name] != "none")
     for name, legend in {
-        "overlay": "Overlay images: input lines in pale gray",
-        "unmatched": "hatching marks material (silhouette) differences",
+        "overlay": "[Overlay images]",
+        "unmatched": "hatching: silhouette differences",
     }.items():
         assert (legend in text) == (modes[name] != "none")
-    assert ("tangent boundaries use the zero-distance blue" in text) == (
+    assert ("tangent boundaries: zero-distance blue" in text) == (
         modes["overlay"] != "none"
     )
-    assert ("tangent boundaries teal" in text) == (modes["unmatched"] != "none")
+    assert ("tangent boundaries: teal" in text) == (modes["unmatched"] != "none")
     assert "[Drawing comparison]" in text
     assert "line distance" in text
     expected_images = (2 if kind == "output_renders" else 1) if mode == "image" else 0

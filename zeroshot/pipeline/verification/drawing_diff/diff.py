@@ -18,6 +18,7 @@ from .image_ops import (
     drawing_masks,
     foreground_mask,
 )
+from .line_style import find_line_style_mismatches
 from .unmatched import (
     describe_unmatched,
     detail_geometry,
@@ -192,6 +193,7 @@ def _render_overlay(
     distances: np.ndarray,
     clip: float | None,
     tangent: np.ndarray,
+    line_style_mismatch_mask: np.ndarray,
 ) -> np.ndarray:
     """Draw measured output lines in color over the pale aligned input drawing."""
     gray = np.rint(225 + aligned_gray.astype(float) * (30 / 255)).astype(np.uint8)
@@ -202,6 +204,10 @@ def _render_overlay(
     overlay[cv2.dilate(outside.astype(np.uint8), _DISPLAY_KERNEL).astype(bool)] = 128
     shown, display_distances = _thicken_lines(observed, distances)
     overlay[shown] = _colors(display_distances, clip)
+    # Style errors use the same display width as the existing distance-colored strokes.
+    mismatch = observed & line_style_mismatch_mask
+    highlighted = cv2.dilate(mismatch.astype(np.uint8), _DISPLAY_KERNEL) > 0
+    overlay[highlighted & (~observed | mismatch)] = _colors(np.ones(1), 1.0)[0]
     overlay[outside] = 128  # Unknown input coverage is neutral, not a large error.
     return overlay
 
@@ -230,8 +236,8 @@ def compute_diff(
     without contributing extra geometry, silhouette area, or local defects.
 
     projection_modelspace and projection_to_uv (projection pixel boundaries to CAD UV)
-    enable local edge-finish comparison. This affects unmatched highlights,
-    not alignment or whole-view scores.
+    enable local edge-finish and line-style comparison. Style mismatches are red
+    in the overlay and separately counted; they do not alter geometric scores.
 
     Invalid arguments raise ValueError. Unusable image content or a failed
     alignment returns the reason in warnings.
@@ -272,6 +278,7 @@ def compute_diff(
             "ratio": None,
         },
         "match_score": None,
+        "line_style": {"status": "unavailable"},
     }
     warnings = list(alignment.warnings)
     try:
@@ -319,21 +326,51 @@ def compute_diff(
 
         # Edge-finish comparison needs DXF geometry mapped to drawing pixels.
         geometry = None
+        line_style_mismatches = []
         if projection_modelspace is not None and projection_to_uv is not None:
+            output_model_to_input = np.linalg.inv(
+                projection_to_uv @ np.array(alignment.H_drawing_to_projection)
+            )
             geometry = detail_geometry(
                 projection_modelspace,
-                np.linalg.inv(
-                    projection_to_uv @ np.array(alignment.H_drawing_to_projection)
-                ),
+                output_model_to_input,
                 drawing_ink.shape,
             )
+            line_style_mismatches, stats["line_style"] = find_line_style_mismatches(
+                output_modelspace=projection_modelspace,
+                output_model_to_input=output_model_to_input,
+                input_rgb=drawing_rgb,
+                input_comparison_ink=drawing_ink & ~non_part,
+                input_annotation=masks.annotation,
+            )
+
+        line_style_mismatch_mask = np.zeros(drawing_ink.shape, np.uint8)
+        for group in line_style_mismatches:
+            line_style_mismatch_mask[group.xy[:, 1], group.xy[:, 0]] = 1
+        line_style_mismatch_mask = cv2.dilate(
+            line_style_mismatch_mask, _DISPLAY_KERNEL
+        ).astype(bool)
 
         groups = find_unmatched(
-            drawing_ink, output_seen, geometry, non_part, outline, tangent_seen
+            drawing_ink,
+            output_seen,
+            geometry,
+            non_part,
+            outline,
+            tangent_seen,
+            line_style_mismatches=line_style_mismatches,
         )
         stats["unmatched"] = describe_unmatched(groups)
+        stats["line_style"]["displayed_count"] = sum(
+            g.direction == "line_style" for g in groups
+        )
         unmatched = draw_unmatched(
-            drawing_gray, output_seen, groups, non_part, tangent=tangent_seen
+            drawing_gray,
+            output_seen,
+            groups,
+            non_part,
+            tangent=tangent_seen,
+            line_style_mismatch_mask=line_style_mismatch_mask,
         )
 
         # An automatic display scale is unavailable when no output line is measured.
@@ -346,6 +383,12 @@ def compute_diff(
             output_distances,
             stats["red_distance_px"],
             tangent_ink & valid,
+            cv2.warpPerspective(
+                line_style_mismatch_mask.astype(np.uint8),
+                matrix,
+                (output_ink.shape[1], output_ink.shape[0]),
+                flags=cv2.INTER_NEAREST,
+            ).astype(bool),
         )
 
         # Warn about missing observation coverage, not a global distance threshold.

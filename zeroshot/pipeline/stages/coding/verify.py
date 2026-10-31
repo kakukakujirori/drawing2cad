@@ -660,28 +660,84 @@ def _provisional_reasons(alignment: AlignmentResult | None) -> list[str]:
 
 _COMPARISON = cleandoc("""
     [Drawing comparison]
-    Each input view was aligned to its projection. Scores are lower the better.{changes}
+    Input views were aligned to CAD projections. Lower line distance and silhouette mismatch are better.{changes}
+
     {views}
+
     Mean line distance over {count} views: {mean}
-    Line distance: mean distance between input and projection lines, in input pixels. Silhouette mismatch: difference of the filled outlines; holes and inner lines are excluded. Alignment may be wrong or hide size errors.
-    Tangent boundaries between smooth faces are optional. They can explain input lines, but their absence from the input is not an extra-geometry defect.
+
+    [Metric guide]
+    - Line distance: mean input/projection line distance, in input pixels.
+    - Silhouette mismatch: filled-outline difference; holes and inner lines are excluded.
+    - Solid/dashed mismatch length: total length of detected mismatches, in input pixels; excluded from the geometric score.
+    - Alignment may be wrong or hide size errors.
+    - Tangent boundaries between smooth faces are optional. They may be missing from the input.
 """)
-_VIEW = "- {name} (input {input_path}{axes}): line distance {line}; silhouette mismatch {silhouette}{caveats}"
-_CHANGES = " Changes in parentheses are against verification {previous_id}."
-_OVERLAY = (
-    "Overlay images: input lines in pale gray; projection lines blue near and red "
-    "far from them; optional tangent boundaries use the zero-distance blue. "
-    "Blue does not prove a correct match."
-)
+_VIEW = cleandoc("""
+    {name} ({input_path}){axes}
+    - line distance: {line}
+    - silhouette mismatch: {silhouette}
+    - {line_style}{caveats}
+""")
+_CHANGES = "\nChanges in parentheses are against verification {previous_id}."
+_OVERLAY = cleandoc("""
+    [Overlay images]
+    - Input lines: pale gray.
+    - Projection lines: blue near input; red far away or solid/dashed mismatch.
+    - Optional tangent boundaries: zero-distance blue.
+    - Blue does not prove a correct match.
+""")
 _UNMATCHED = cleandoc("""
-    Unmatched images: input gray, projection light blue, overlap blue; optional tangent boundaries teal (not error bands).
-    Colored bands mark the clusters below by color and ID suffix; hatching marks material (silhouette) differences.
-    Missing = input only; extra = projection only. Missing dimension, leader and text lines are not defects.
-    Clusters list only the largest differences in each view; a difference without a cluster can still be a defect.
-    Mismatch clusters (box in input-view pixels):
+    [Unmatched images]
+    - Input: gray; projection: light blue; overlap: blue.
+    - Optional tangent boundaries: teal (not error bands).
+    - Colored bands and IDs: mismatch clusters; hatching: silhouette differences.
+    - Missing: input only. Extra: projection only.
+    - Solid/dashed mismatch: overlapping lines with different styles.
+    - Missing dimension, leader and text lines are not defects.
+    - Only the largest differences are labeled.
+
+    [Mismatch clusters — bboxes in input-view pixels]
     {clusters}
 """)
-_CLUSTER = "{key} ({color}): {direction} {kind}, {size} {unit}, box {box}{cad}"
+_CLUSTER = "- {key} ({color}): {description}\n  bbox {box}{cad}"
+
+
+def _line_style_summary(
+    report: DrawingDiffReport, previous: DrawingDiffReport | None
+) -> str:
+    stats = report.stats.get("line_style", {})
+    if (
+        stats.get("status") != "ok"
+        or "mismatch_length_px" not in stats
+        or stats["checked_length_px"] == 0
+    ):
+        return "solid/dashed comparison unavailable"
+    before = (
+        previous.stats.get("line_style", {})
+        if previous is not None
+        and previous.drawing_path == report.drawing_path
+        and not report.stats.get("provisional", False)
+        and not previous.stats.get("provisional", False)
+        else {}
+    )
+    comparable = before.get("status") == "ok" and "mismatch_length_px" in before
+    delta = (
+        f" ({stats['mismatch_length_px'] - before['mismatch_length_px']:+.0f} vs previous)"
+        if comparable
+        else ""
+    )
+    text = f"solid/dashed mismatch length: ≈{stats['mismatch_length_px']:.0f} px{delta}"
+    if (
+        comparable
+        and stats["mismatch_length_px"] < before["mismatch_length_px"] - 0.5
+        and (
+            stats["checked_length_px"] < before["checked_length_px"] - 0.5
+            or stats["unknown_length_px"] > before["unknown_length_px"] + 0.5
+        )
+    ):
+        text += "\n  Check images: this decrease may reflect unassessable lines"
+    return text
 
 
 def _silhouette(material: Mapping[str, Any]) -> str:
@@ -715,9 +771,9 @@ def _cad_extent(item: Mapping[str, Any], bounds: Any) -> str:
     if (box := item.get("box_model_uv")) is None:
         return ""
     if bounds is None:
-        return f"; CAD UV box {box} mm (registered axes unavailable)"
+        return f"\n  CAD UV box {box} mm (registered axes unavailable)"
     spans = (f"{axis}≈{low:.2f}..{high:.2f}" for axis, low, high in bounds)
-    return "; CAD bounds: " + ", ".join(spans) + " mm"
+    return "\n  CAD bounds: " + ", ".join(spans) + " mm"
 
 
 def describe_drawing_diffs(
@@ -747,7 +803,7 @@ def describe_drawing_diffs(
                 name=name,
                 input_path=workdir.host_to_sandbox_path(report.drawing_path),
                 axes=(
-                    f"; U={frame['u']}, V={frame['v']}, {frame['depth']} depth hidden"
+                    f"\n- U={frame['u']}, V={frame['v']}, {frame['depth']} depth hidden"
                     if frame is not None
                     else ""
                 ),
@@ -757,7 +813,13 @@ def describe_drawing_diffs(
                     else "unavailable"
                 ),
                 silhouette=_silhouette(report.stats.get("material_error", {})),
-                caveats="".join(f"; {caveat}" for caveat in caveats),
+                line_style=_line_style_summary(
+                    report,
+                    (previous.drawing_diff_report or {}).get(name)
+                    if previous
+                    else None,
+                ),
+                caveats="".join(f"\n- {caveat}" for caveat in caveats),
             )
         )
     mean = data["mean_chamfer"]
@@ -768,21 +830,23 @@ def describe_drawing_diffs(
             if data["previous_chamfers"]
             else ""
         ),
-        views="\n".join(views),
+        views="\n\n".join(views),
         mean=(
             _describe_chamfer(mean, data["previous_mean_chamfer"])
             if mean is not None
             else "unavailable"
         ),
     )
+    style_names = {"visible": "solid", "hidden": "dashed"}
     clusters = [
         _CLUSTER.format(
             key=key,
             color=item["color"],
-            direction=item["direction"],
-            kind=item["kind"],
-            size=item["size_px"],
-            unit=item["unit"],
+            description=(
+                f"input {style_names[item['input_style']]} / CAD {style_names[item['output_style']]}"
+                if item["direction"] == "line_style"
+                else f"{item['direction']} {item['kind']}, {item['size_px']} {item['unit']}"
+            ),
             box=item["box_px"],
             cad=_cad_extent(item, bounds),
         )

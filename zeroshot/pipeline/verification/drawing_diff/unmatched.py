@@ -8,6 +8,7 @@ that same selection.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from operator import attrgetter
 from typing import Any, Literal
@@ -15,6 +16,7 @@ from typing import Any, Literal
 import cv2
 import numpy as np
 from ezdxf.layouts import Modelspace
+from ezdxf.path import make_path
 from scipy.spatial import cKDTree
 from skimage.morphology import skeletonize
 
@@ -76,10 +78,13 @@ COLORS = {
 class Unmatched:
     """One difference group, measured on the input drawing's pixel grid."""
 
-    direction: Literal["missing", "extra"]
+    direction: Literal["missing", "extra", "line_style"]
     xy: np.ndarray  # (x, y): skeleton pixels of lines, or every pixel of material
     material: bool = False
     local: bool = False  # independent fine error; coarse groups may include fine tails
+    input_style: str | None = None
+    output_style: str | None = None
+    coverage: float | None = None
 
     @property
     def size_px(self) -> int:
@@ -200,6 +205,38 @@ def _outline(groups: list[Unmatched], shape: tuple[int, ...]) -> np.ndarray:
 # Output DXF geometry, coarse/fine merging and acceptance.
 
 
+def drawing_curves(
+    modelspace: Modelspace, model_to_drawing: np.ndarray, tolerance_px: float
+):
+    """Yield flattened curves and styles; pixel boundaries map to OpenCV centres."""
+    tolerance = tolerance_px / np.linalg.norm(model_to_drawing[:2, :2], axis=0).max()
+    for entity in modelspace:
+        if entity.dxftype() not in {"LINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE"}:
+            continue
+        kind = entity.dxf.get("linetype", "BYLAYER").upper()
+        if kind == "BYLAYER":
+            kind = modelspace.doc.layers.get(entity.dxf.layer).dxf.linetype.upper()
+        if kind not in {"CONTINUOUS", "HIDDEN"}:
+            continue
+        points = np.array(
+            [tuple(p)[:2] for p in make_path(entity).flattening(tolerance)]
+        )
+        if len(points) < 2:
+            continue
+        xy = (
+            cv2.perspectiveTransform(points[None].astype(float), model_to_drawing)[0]
+            - 0.5
+        )
+        xy = xy[np.r_[True, np.linalg.norm(np.diff(xy, axis=0), axis=1) > 1e-6]]
+        if len(xy) >= 2:
+            style = (
+                "tangent"
+                if entity.dxf.layer == "TANGENT"
+                else ("hidden" if kind == "HIDDEN" else "visible")
+            )
+            yield xy, style
+
+
 @dataclass(frozen=True)
 class DetailGeometry:
     """Local ROI and continuous output curves on the drawing's pixel grid.
@@ -238,40 +275,13 @@ def detail_geometry(
     to hidden-line dash phase. Angular joins seed ROIs for omitted edge finishes.
     The transform uses pixel boundaries; OpenCV strokes use integer centres.
     """
-    from ezdxf.path import make_path
-
     seeds = np.zeros(shape, np.uint8)
     visible = np.zeros(shape, np.uint8)
     endpoints, directions = [], []
     samples, curvatures, owners = [], [], []
-    tolerance = 0.5 / np.linalg.norm(model_to_drawing[:2, :2], axis=0).max()
-
     # Map eligible DXF curves first, so curvature is judged in drawing pixels.
-    for entity in modelspace:
-        if entity.dxf.layer == "TANGENT":
-            continue
-        linetype = entity.dxf.get("linetype", "BYLAYER").upper()
-        if linetype == "BYLAYER":
-            linetype = modelspace.doc.layers.get(entity.dxf.layer).dxf.linetype.upper()
-        if linetype != "CONTINUOUS" or entity.dxftype() not in {
-            "LINE",
-            "ARC",
-            "CIRCLE",
-            "ELLIPSE",
-            "SPLINE",
-        }:
-            continue
-        points = np.array(
-            [tuple(p)[:2] for p in make_path(entity).flattening(tolerance)]
-        )
-        if len(points) < 2:
-            continue
-        xy = (
-            cv2.perspectiveTransform(points[None].astype(float), model_to_drawing)[0]
-            - 0.5
-        )
-        xy = xy[np.r_[True, np.linalg.norm(np.diff(xy, axis=0), axis=1) > 1e-6]]
-        if len(xy) < 2:
+    for xy, style in drawing_curves(modelspace, model_to_drawing, tolerance_px=0.5):
+        if style != "visible":
             continue
         cv2.polylines(visible, [np.rint(xy).astype(np.int32)], False, 1, 3)
         segments = np.diff(xy, axis=0)
@@ -393,6 +403,8 @@ def find_unmatched(
     annotation: np.ndarray | None = None,
     outline: np.ndarray | None = None,
     tangent: np.ndarray | None = None,
+    *,
+    line_style_mismatches: Sequence[Unmatched] = (),
 ) -> list[Unmatched]:
     """Collect material/coarse defects, merge fine errors, then select display groups.
 
@@ -457,9 +469,17 @@ def find_unmatched(
             or (g.size_px >= MIN_LOCAL_LENGTH_PX and _local_detail(g, geometry))
         ]
 
-    # Select after all filtering: material first, coarse lines next, two local slots.
+    # Qualified style errors need no geometric distance or coarse length threshold.
+    style_band = np.zeros(drawing_ink.shape, np.uint8)
+    for group in line_style_mismatches:
+        style_band[group.xy[:, 1], group.xy[:, 0]] = 1
+    style_band = cv2.dilate(style_band, disk(3))
+    lines = [g for g in lines if style_band[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
+
+    # Material first, then style and coarse lines, with two local slots reserved.
     size = attrgetter("size_px")
     ranked = sorted(material, key=size, reverse=True)
+    ranked += sorted(line_style_mismatches, key=size, reverse=True)
     ranked += sorted((g for g in lines if not g.local), key=size, reverse=True)
     return (
         ranked[:MAX_COARSE_GROUPS]
@@ -484,6 +504,15 @@ def describe_unmatched(groups: list[Unmatched]) -> list[dict[str, Any]]:
             "size_px": group.size_px,
             "box_px": list(group.box_px),
             "color": color,
+            **(
+                {
+                    "input_style": group.input_style,
+                    "output_style": group.output_style,
+                    "coverage": group.coverage,
+                }
+                if group.direction == "line_style"
+                else {}
+            ),
         }
         for group, color in zip(groups, COLORS, strict=False)
     ]
@@ -496,6 +525,7 @@ def draw_unmatched(
     annotation: np.ndarray | None = None,
     *,
     tangent: np.ndarray | None = None,
+    line_style_mismatch_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Each group as a colored band under the gray drawing and the light blue output.
 
@@ -537,7 +567,10 @@ def draw_unmatched(
     image[shown] = OUTPUT_SKY
     # Overlap is judged on the centre band, so a thin input line still marks
     # the output stroke it shares as drawn by both.
-    image[centre & shown] = BOTH_BLUE
+    overlap = centre & shown
+    if line_style_mismatch_mask is not None:
+        overlap &= ~line_style_mismatch_mask
+    image[overlap] = BOTH_BLUE
 
     occupied = []
     # ponytail: greedy placement for at most six labels; no full layout solver.

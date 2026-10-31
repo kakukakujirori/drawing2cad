@@ -14,13 +14,13 @@ from zeroshot.pipeline.verification.run_cadquery import ExecutionStatus
 # Match score changes below this are not measurable (input pixels).
 DEFAULT_MATCH_MARGIN_PX = 0.5
 
-_UNAVAILABLE = "Overall comparison unavailable: {reason}."
+_UNAVAILABLE = "Geometric comparison unavailable: {reason}."
 _FIRST = (
     "First fully comparable candidate recorded as the baseline "
     "(match score {score:.2f} px)."
 )
 _IMPROVED_ON_BEST = (
-    "Overall match improved by {gain:.2f} px over the saved best ({best:.2f} → "
+    "Geometric match improved by {gain:.2f} px over the saved best ({best:.2f} → "
     "{score:.2f} px). Use this candidate as the next baseline; verify the selected "
     "defect in the latest target view and check other views. A numeric improvement "
     "does not confirm that defect is fixed."

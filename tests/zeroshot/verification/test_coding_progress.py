@@ -108,9 +108,9 @@ def test_best_candidate_eligibility_and_cache(tmp_path, monkeypatch):
         assert "baseline" in verifier.feedback()[0]["text"]
         assert build_count == before  # Repeated feedback uses the same saved build.
         # A gain in one view counts in full, however many views are scored.
-        assert "Overall match improved by 0.60 px" in attempt([7.0, 7.0, 6.4])
+        assert "Geometric match improved by 0.60 px" in attempt([7.0, 7.0, 6.4])
         improved = attempt([8.0, 4.0, 3.0])  # One view worse; the whole drawing better.
-        assert "Overall match improved by 5.40 px over the saved best" in improved
+        assert "Geometric match improved by 5.40 px over the saved best" in improved
         assert (
             "Best saved eligible candidate: /work/attempts/round_000/coding/002/model.py"
             in improved
@@ -147,7 +147,7 @@ def test_best_candidate_eligibility_and_cache(tmp_path, monkeypatch):
             patches = {
                 "stats": {**best[1].drawing_diff_report["view_front"].stats, **stats}
             }
-            assert "Overall comparison unavailable" in attempt([0.1, 0.1, 0.1])
+            assert "Geometric comparison unavailable" in attempt([0.1, 0.1, 0.1])
             assert verifier._best_candidate is best
         patches = {
             "alignment": replace(
@@ -159,7 +159,7 @@ def test_best_candidate_eligibility_and_cache(tmp_path, monkeypatch):
         patches = {"alignment": replace(first_alignment, status="uncertain")}
         assert "provisional" in attempt([0.1, 0.1, 0.1])
         patches = {"drawing_path": tmp_path / "a_different_input.png"}
-        assert "Overall comparison unavailable" in attempt([0.1, 0.1, 0.1])
+        assert "Geometric comparison unavailable" in attempt([0.1, 0.1, 0.1])
         patches = {}
         incomplete = replace(
             best[1],
