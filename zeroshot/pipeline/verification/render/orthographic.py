@@ -226,18 +226,62 @@ def _as_line_or_circle(edge: cq.Edge, tol: float) -> cq.Edge | None:
 
 
 def _uncovered(
-    hidden: list[cq.Edge], visible: list[cq.Edge], tol: float
+    edges: list[cq.Edge], cover: list[cq.Edge], tol: float
 ) -> list[cq.Edge]:
-    """Hidden edges that do not lie under a visible one along their whole run."""
-    if not hidden or not visible:
-        return hidden
-    ink = cKDTree(np.vstack([_samples(edge, tol / 2) for edge in visible]))
-    return [e for e in hidden if ink.query(_samples(e, tol / 2))[0].max() > tol]
+    """The runs of `edges` that lie under neither `cover` nor another of `edges`.
+
+    Longer edges keep their runs first. Edges can coincide, as the two edges
+    of a face seen edge-on do; dashed copies of one line put their dashes out
+    of phase and together look solid.
+    """
+    step = tol / 2
+    drawn = [_ink(_samples(edge, step)) for edge in cover]
+    kept = []
+    for edge in sorted(edges, key=lambda e: e.Length(), reverse=True):
+        ts = _parameters(edge, step)
+        xy = _points(edge, ts)
+        low, high = xy.min(axis=0) - tol, xy.max(axis=0) + tol
+        under = np.zeros(len(ts), bool)
+        for tree, ink_low, ink_high in drawn:
+            if np.all(ink_low <= high) and np.all(low <= ink_high):
+                under |= tree.query(xy, distance_upper_bound=tol)[0] <= tol
+        # Edges that meet or cross share a few samples, not a run of line.
+        for start, stop in _runs(under):
+            if (stop - start) * step <= 3 * tol and stop - start < len(ts):
+                under[start:stop] = False
+        for start, stop in _runs(~under):
+            if stop - start == len(ts):
+                piece = edge
+            elif (stop - start - 1) * step >= tol:
+                piece = edge.trim(ts[start], ts[stop - 1])
+            else:
+                continue
+            kept.append(piece)
+            drawn.append(_ink(xy[start:stop]))
+    return kept
+
+
+def _ink(xy: np.ndarray) -> tuple[cKDTree, np.ndarray, np.ndarray]:
+    return cKDTree(xy), xy.min(axis=0), xy.max(axis=0)
+
+
+def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
+    """The start and stop index of each run of True."""
+    bounds = np.flatnonzero(np.diff(np.r_[0, mask.astype(np.int8), 0]))
+    return list(zip(bounds[::2].tolist(), bounds[1::2].tolist(), strict=True))
 
 
 def _samples(edge: cq.Edge, step: float) -> np.ndarray:
+    return _points(edge, _parameters(edge, step))
+
+
+def _parameters(edge: cq.Edge, step: float) -> np.ndarray:
     # Spaced by parameter: spacing by length costs a solve per point.
     curve = BRepAdaptor_Curve(edge.wrapped)
     count = max(2, int(edge.Length() / step) + 1)
-    ts = np.linspace(curve.FirstParameter(), curve.LastParameter(), count)
+    return np.linspace(curve.FirstParameter(), curve.LastParameter(), count)
+
+
+def _points(edge: cq.Edge, ts: np.ndarray) -> np.ndarray:
+    curve = BRepAdaptor_Curve(edge.wrapped)
     return np.array([(p.X(), p.Y()) for p in map(curve.Value, ts)])

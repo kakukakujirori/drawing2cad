@@ -126,6 +126,27 @@ def test_a_bore_inside_the_part_is_drawn_hidden():
     assert {edge.geomType() for edge in hidden} == {"LINE"}
 
 
+def test_coinciding_hidden_edges_are_drawn_once():
+    """Seen from above, a pocket's walls are edge-on: their two rims coincide."""
+    part = _box().faces("<Z").workplane().rect(10.0, 8.0).cutBlind(-5.0).findSolid()
+
+    _, hidden, _ = project(part, *STANDARD_VIEW_FRAMES[View.TOP])
+
+    assert sum(edge.Length() for edge in hidden) == pytest.approx(2 * (10.0 + 8.0))
+
+
+def test_an_overlapping_run_is_kept_once_and_a_meeting_edge_whole():
+    first = cq.Edge.makeLine(cq.Vector(0, 0, 0), cq.Vector(10, 0, 0))
+    overlapping = cq.Edge.makeLine(cq.Vector(15, 0, 0), cq.Vector(5, 0, 0))
+    meeting = cq.Edge.makeLine(cq.Vector(10, 0, 0), cq.Vector(10, 6, 0))
+
+    kept = orthographic._uncovered([first, overlapping, meeting], [], 1e-2)
+
+    assert sum(edge.Length() for edge in kept) == pytest.approx(15 + 6, abs=0.05)
+    assert first in kept
+    assert meeting in kept
+
+
 @pytest.mark.parametrize("frame", [("+x", "+y"), ("+y", "+z")])
 def test_rounded_body_keeps_tangent_boundaries_separate_after_step_export(
     tmp_path, frame
