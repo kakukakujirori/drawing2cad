@@ -12,6 +12,7 @@ from ezdxf.layouts import Modelspace
 from scipy.spatial import cKDTree
 
 from .align import AlignmentResult, _validate_rgb, opencv_transform
+from .drafting_marks import drafting_marks
 from .image_ops import (
     beside_part,
     distance_map,
@@ -343,6 +344,14 @@ def compute_diff(
                 input_rgb=drawing_rgb,
                 input_comparison_ink=drawing_ink & ~non_part,
                 input_annotation=masks.annotation,
+            )
+            # Centre lines and leaders are not part edges; clusters omit them.
+            non_part = non_part | drafting_marks(
+                projection_modelspace,
+                output_model_to_input,
+                drawing_ink,
+                non_part,
+                output_seen,
             )
 
         line_style_mismatch_mask = np.zeros(drawing_ink.shape, np.uint8)

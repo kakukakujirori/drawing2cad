@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from zeroshot.pipeline.stages.interpretation.contracts import View
+from zeroshot.pipeline.verification.drawing_diff.drafting_marks import (
+    record_centre_lines,
+)
 from zeroshot.pipeline.verification.render._render3d import generate_render3d
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
@@ -88,6 +91,7 @@ def _render_projections(
                 errors[view] = _error_text(error)
                 continue
             export_to_png(path)
+            record_centre_lines(path, shape, *frames[View(view)])
 
     for view, path in requested.items():
         if not path.is_file():
