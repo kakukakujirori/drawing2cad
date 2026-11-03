@@ -118,6 +118,40 @@ def test_lines_beyond_the_part_and_short_marks_are_not_listed():
     assert find_unmatched(drawing, _lines(*OUTLINE)) == []
 
 
+FRAME = (
+    ((20, 20), (280, 20)),
+    ((280, 20), (280, 280)),
+    ((280, 280), (20, 280)),
+    ((20, 280), (20, 20)),
+)
+
+
+def test_a_line_that_drifts_off_is_one_group_measured_whole():
+    """Only its last 30 px lie beyond UNMATCHED_PX, too short to list alone."""
+    drawing = _lines(*FRAME, ((40, 150), (260, 150)), size=300)
+    output = _lines(*FRAME, ((40, 150), (260, 164)), size=300)
+
+    groups = find_unmatched(drawing, output)
+
+    extra = [g for g in groups if g.direction == "extra"]
+    missing = [g for g in groups if g.direction == "missing"]
+    assert len(extra) == 1 and len(missing) == 1
+    # Beyond WEAK_PX from about x = 120 on.
+    assert extra[0].box_px[0] < 130 and extra[0].box_px[2] >= 260
+
+
+def test_diagonal_and_dashed_lines_count_their_full_length():
+    diagonal = ((60, 60), (102, 102))  # 59 px long, 43 skeleton pixels
+    dashes = [((x, 200), (x + 5, 200)) for x in range(60, 120, 9)]
+    straight = ((60, 240), (112, 240))  # 52 px, the most skeleton pixels
+    drawing = _lines(*FRAME, diagonal, *dashes, straight, size=300)
+
+    groups = find_unmatched(drawing, _lines(*FRAME, size=300))
+
+    assert [g.direction for g in groups] == ["missing"] * 3
+    assert groups[-1].box_px[1] == 240
+
+
 def test_material_the_drawing_leaves_empty_stands_for_its_own_edges():
     notched = (  # the outline with a 60 x 40 notch cut into its left side
         ((40, 40), (160, 40)),
@@ -315,10 +349,11 @@ def test_a_local_tail_and_coarse_run_are_displayed_as_one_defect(start, end):
         ((280, 280), (20, 280)),
         ((20, 280), (20, 20)),
     )
+    # The tail lies 5 px off: a fine error, but within a coarse group's reach.
     drawing = _lines(
         *outline,
-        ((30, 108), (60, 108)),
-        ((60, 108), (80, 120)),
+        ((30, 105), (60, 105)),
+        ((60, 105), (80, 120)),
         ((80, 120), (260, 120)),
         size=300,
     )
@@ -523,7 +558,11 @@ def test_a_remote_coarse_error_does_not_admit_disconnected_local_fragments(shape
 
     assert len(coarse) == 2
     assert not any(g.local for g in groups)
-    assert describe_unmatched(groups) == describe_unmatched(coarse)
+    # A fine tail between DETAIL_UNMATCHED_PX and WEAK_PX may extend a coarse
+    # group by a pixel; no disconnected fragment joins it.
+    assert [g.direction for g in groups] == [g.direction for g in coarse]
+    for group, alone in zip(groups, coarse, strict=True):
+        assert np.abs(np.subtract(group.box_px, alone.box_px)).max() <= 1
 
 
 @pytest.mark.parametrize(

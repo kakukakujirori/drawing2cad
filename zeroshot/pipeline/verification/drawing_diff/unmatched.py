@@ -27,6 +27,11 @@ UNMATCHED_PX = 12.0
 JOIN_PX = 4
 PART_MARGIN_PX = 20
 MIN_LENGTH_PX = 50
+# A line that leaves its place gradually lies beyond UNMATCHED_PX only in short
+# stretches; its group grows from them along the line while it stays this far.
+# Chosen where ground-truth builds gain no missing groups, on the ECCV views of
+# outputs/20261101_minimax3.1_flash; 4 px admits them.
+WEAK_PX = 5.0
 
 # Tuned the same way: outputs/silhouette_20260927, with image_ops.CLOSE_PX.
 # Narrower slivers come from misregistered edges and from annotation.
@@ -140,6 +145,37 @@ def _line_groups(
 ) -> list[Unmatched]:
     groups = _groups(mask, cv2.dilate(mask.astype(np.uint8), disk(JOIN_PX)), direction)
     return [group for group in groups if group.size_px >= min_length]
+
+
+def _drifting_groups(
+    lines: np.ndarray, distances: np.ndarray, direction: Literal["missing", "extra"]
+) -> list[Unmatched]:
+    """Line groups beyond WEAK_PX that reach beyond UNMATCHED_PX somewhere.
+
+    The whole group counts towards its length, not only its farthest stretches.
+    """
+    groups = _line_groups(lines & (distances > WEAK_PX), direction, min_length=0)
+    return [
+        group
+        for group in groups
+        if distances[group.xy[:, 1], group.xy[:, 0]].max() > UNMATCHED_PX
+        and _length_px(group) >= MIN_LENGTH_PX
+    ]
+
+
+def _length_px(group: Unmatched) -> float:
+    """The length of a group's lines, with gaps up to 2 * JOIN_PX bridged.
+
+    A band of radius JOIN_PX around a line of length L covers about
+    L * (2 * JOIN_PX + 1) + pi * JOIN_PX**2 pixels in any direction, while
+    a count of skeleton pixels undercounts diagonals and dashed lines.
+    """
+    x0, y0, x1, y1 = group.box_px
+    pad = JOIN_PX
+    mask = np.zeros((y1 - y0 + 2 * pad, x1 - x0 + 2 * pad), np.uint8)
+    mask[group.xy[:, 1] - y0 + pad, group.xy[:, 0] - x0 + pad] = 1
+    band = int(cv2.dilate(mask, disk(JOIN_PX)).sum())
+    return (band - np.pi * JOIN_PX**2) / (2 * JOIN_PX + 1)
 
 
 ################################################################
@@ -440,14 +476,14 @@ def find_unmatched(
     )
 
     # Coarse comparison works in both directions; material outlines are shown once.
-    # NOTE: far_from_output finds input lines missing in CAD (tangents can explain them);
-    #       far_from_drawing finds extra CAD lines (optional tangents excluded).
+    # NOTE: missing input lines are measured from CAD lines, which tangents extend;
+    #       extra CAD lines are measured from input lines (optional tangents excluded).
     supporting_lines = output_lines if tangent is None else output_lines | tangent
-    far_from_output = distance_map(supporting_lines) > UNMATCHED_PX
     output_distances = distance_map(all_lines)
-    far_from_drawing = output_distances > UNMATCHED_PX
-    lines = _line_groups(drawing_lines & part & far_from_output, "missing")
-    lines += _line_groups(output_lines & far_from_drawing, "extra")
+    lines = _drifting_groups(
+        drawing_lines & part, distance_map(supporting_lines), "missing"
+    )
+    lines += _drifting_groups(output_lines, output_distances, "extra")
     # A material group already stands for the lines along its edge.
     edge = _outline(material, drawing_lines.shape)
     lines = [line for line in lines if edge[line.xy[:, 1], line.xy[:, 0]].mean() < 0.8]
@@ -479,11 +515,11 @@ def find_unmatched(
     # Material first, then style and coarse lines, with two local slots reserved.
     size = attrgetter("size_px")
     ranked = sorted(material, key=size, reverse=True)
-    ranked += sorted(line_style_mismatches, key=size, reverse=True)
-    ranked += sorted((g for g in lines if not g.local), key=size, reverse=True)
+    ranked += sorted(line_style_mismatches, key=_length_px, reverse=True)
+    ranked += sorted((g for g in lines if not g.local), key=_length_px, reverse=True)
     return (
         ranked[:MAX_COARSE_GROUPS]
-        + sorted((g for g in lines if g.local), key=size, reverse=True)[
+        + sorted((g for g in lines if g.local), key=_length_px, reverse=True)[
             :MAX_LOCAL_GROUPS
         ]
     )
@@ -495,13 +531,13 @@ def find_unmatched(
 
 
 def describe_unmatched(groups: list[Unmatched]) -> list[dict[str, Any]]:
-    """Line sizes count skeleton pixels; material sizes count filled pixels."""
+    """Line sizes are lengths; material sizes count filled pixels."""
     return [
         {
             "direction": group.direction,
             "kind": "material" if group.material else "lines",
             "unit": "px²" if group.material else "px",
-            "size_px": group.size_px,
+            "size_px": group.size_px if group.material else round(_length_px(group)),
             "box_px": list(group.box_px),
             "color": color,
             **(
