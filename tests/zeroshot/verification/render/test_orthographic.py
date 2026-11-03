@@ -9,6 +9,7 @@ import math
 import cadquery as cq
 import pytest
 from OCP.BRepAlgo import BRepAlgo
+from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideClosed
 
 from zeroshot.pipeline.stages.interpretation.contracts import (
     TOWARD_VIEWER,
@@ -188,6 +189,23 @@ def test_same_surface_split_is_not_a_tangent_boundary(cylindrical):
         _, _, tangent = project(split, *frame)
         assert not tangent
     assert (len(split.Faces()), len(split.Edges())) == (original_faces, original_edges)
+
+
+def test_a_cylinder_split_into_halves_is_drawn_like_a_whole_one():
+    """Some STEP files store each cylinder as two half faces."""
+    whole = cq.Workplane().circle(5).extrude(10).val()
+    divide = ShapeUpgrade_ShapeDivideClosed(whole.wrapped)
+    divide.SetNbSplitPoints(1)
+    divide.Perform()
+    halves = cq.Shape.cast(divide.Result())
+    assert len(halves.Faces()) == len(whole.Faces()) + 1
+
+    for frame in STANDARD_VIEW_FRAMES.values():
+        lengths = [
+            [sum(edge.Length() for edge in edges) for edges in project(solid, *frame)]
+            for solid in (whole, halves)
+        ]
+        assert lengths[1] == pytest.approx(lengths[0])
 
 
 def test_small_curvature_jump_still_has_a_tangent_boundary():

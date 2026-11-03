@@ -18,7 +18,7 @@ from OCP.BRep import BRep_Builder, BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Curve2d, BRepAdaptor_Surface
 from OCP.BRepLib import BRepLib
 from OCP.BRepLProp import BRepLProp_SLProps
-from OCP.GeomAbs import GeomAbs_C0, GeomAbs_G1
+from OCP.GeomAbs import GeomAbs_C0, GeomAbs_CN, GeomAbs_G1
 from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Lin, gp_Pnt
 from OCP.HLRAlgo import HLRAlgo_Projector
 from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
@@ -122,7 +122,11 @@ def _split_at_creases(shape: cq.Shape) -> cq.Shape:
 
 
 def _smoothed(shape: cq.Shape, eye: gp_Dir) -> cq.Shape:
-    """Remove same-surface splits, then mark tangent boundaries for HLR."""
+    """Remove same-surface splits, then mark smooth seams and tangent boundaries.
+
+    HLR leaves seams marked CN undrawn, as on faces built whole, and draws
+    G1 boundaries as tangent lines.
+    """
     # Unify coincident surfaces on a deep copy; curvature similarity is not equality.
     copy = shape.copy().clean()
     builder = BRep_Builder()
@@ -133,18 +137,27 @@ def _smoothed(shape: cq.Shape, eye: gp_Dir) -> cq.Shape:
     for i in range(1, faces_of.Extent() + 1):
         edge = TopoDS.Edge(faces_of.FindKey(i))
         faces = [TopoDS.Face(face) for face in faces_of.FindFromIndex(i)]
-        if len(faces) != 2 or BRep_Tool.Continuity_s(edge, *faces) != GeomAbs_C0:
+        if len(faces) == 2:
+            sides, continuity = [(edge, faces[0]), (edge, faces[1])], GeomAbs_G1
+        elif len(faces) == 1 and BRep_Tool.IsClosed_s(edge, faces[0]):
+            # Unifying split halves closes a face on a new seam, left C0; its
+            # two sides lie on the edge's two curves in that face.
+            reverse = TopoDS.Edge(edge.Reversed())
+            sides, continuity = [(edge, faces[0]), (reverse, faces[0])], GeomAbs_CN
+        else:
+            continue
+        if BRep_Tool.Continuity_s(edge, faces[0], faces[-1]) != GeomAbs_C0:
             continue
         normals = [
             (a, b)
-            for a, b in zip(_normals(edge, faces[0]), _normals(edge, faces[1]))
+            for a, b in zip(_normals(*sides[0]), _normals(*sides[1]))
             if a is not None and b is not None
         ]
-        tangent = all(a.Angle(b) < SMOOTH_ANGLE for a, b in normals)
+        smooth = all(a.Angle(b) < SMOOTH_ANGLE for a, b in normals)
         # Along an outline both faces turn edge-on, and HLR may draw no silhouette.
         edge_on = all(abs(a.Dot(eye)) < math.sin(SMOOTH_ANGLE) for a, _ in normals)
-        if normals and tangent and not edge_on:
-            builder.Continuity(edge, *faces, GeomAbs_G1)
+        if normals and smooth and not edge_on:
+            builder.Continuity(edge, faces[0], faces[-1], continuity)
     return copy
 
 
