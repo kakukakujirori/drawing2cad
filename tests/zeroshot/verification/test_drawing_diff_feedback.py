@@ -182,7 +182,8 @@ def test_unmatched_groups_are_listed_under_their_view_by_audit_key(tmp_path, mod
     assert "[Mismatch clusters — bboxes in input-view pixels]" in text
     assert "Missing: input only. Extra: projection only" in text
     assert "Missing dimension, leader and text lines are not defects" in text
-    assert "Input: gray; projection: light blue; overlap: blue" in text
+    assert "Blue: lines both images draw" in text
+    assert "Magenta: projection lines only; green: input lines only" in text
     assert "Colored bands and IDs: mismatch clusters" in text
     assert "hatching: silhouette differences" in text
     assert (
@@ -433,7 +434,7 @@ def test_line_style_lengths_and_cluster_styles_are_reported(
     )
     assert "solid/dashed mismatch length: ≈126 px (-74 vs previous)" in text
     assert f"drawing_diff.front.1 (red): {shown}\n  bbox [10, 10, 20, 20]" in text
-    assert "Solid/dashed mismatch: overlapping lines with different styles." in text
+    assert "Solid/dashed mismatch: overlapping lines with different styles" in text
     assert "1 labeled" not in text and "2 labeled" not in text
     assert "Check images:" not in text
 

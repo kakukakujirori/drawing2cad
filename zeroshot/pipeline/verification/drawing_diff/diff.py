@@ -379,7 +379,6 @@ def compute_diff(
             groups,
             non_part,
             tangent=tangent_seen,
-            line_style_mismatch_mask=line_style_mismatch_mask,
         )
 
         # An automatic display scale is unavailable when no output line is measured.

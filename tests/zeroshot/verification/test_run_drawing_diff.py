@@ -246,7 +246,11 @@ def test_alignment_ignores_optional_tangents_but_diff_uses_them(
     import ezdxf
 
     from zeroshot.pipeline.verification.drawing_diff.align import read_rgb
-    from zeroshot.pipeline.verification.drawing_diff.unmatched import TANGENT_TEAL
+    from zeroshot.pipeline.verification.drawing_diff.unmatched import (
+        INPUT_GREEN,
+        NEUTRAL_GRAY,
+        OUTPUT_MAGENTA,
+    )
     from zeroshot.pipeline.verification.render.export_dxf import (
         export_to_png,
         png_bounds,
@@ -322,7 +326,11 @@ def test_alignment_ignores_optional_tangents_but_diff_uses_them(
     assert diff.stats["match_score"] == baseline.stats["match_score"]
     assert diff.stats["material_error"] == baseline.stats["material_error"]
     assert diff.stats["optional_tangent_ink_count"] > 0
-    assert np.any(np.all(diff.unmatched == TANGENT_TEAL, axis=2))
+    # The tangent is never drawn as a difference, and is gray where the input lacks it.
+    for color in (OUTPUT_MAGENTA, INPUT_GREEN):
+        assert not np.any(np.all(diff.unmatched == color, axis=2))
+    if not input_has_tangent:
+        assert np.any(np.all(diff.unmatched == NEUTRAL_GRAY, axis=2))
 
     # A resized PNG must not silently receive masks on the original pixel grid.
     with pytest.raises(ValueError, match="DXF raster grid"):

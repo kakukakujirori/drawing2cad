@@ -689,8 +689,9 @@ _OVERLAY = cleandoc("""
 """)
 _UNMATCHED = cleandoc("""
     [Unmatched images]
-    - Input: gray; projection: light blue; overlap: blue.
-    - Optional tangent boundaries: teal (not error bands).
+    - Blue: lines both images draw.
+    - Magenta: projection lines only; green: input lines only.
+    - Gray: annotation, optional tangent boundaries and other ink not compared.
     - Colored bands and IDs: mismatch clusters; hatching: silhouette differences.
     - Missing: input only. Extra: projection only.
     - Solid/dashed mismatch: overlapping lines with different styles.

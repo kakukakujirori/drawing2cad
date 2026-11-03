@@ -13,9 +13,9 @@ from zeroshot.pipeline.verification.drawing_diff.image_ops import (
     thin_mask,
 )
 from zeroshot.pipeline.verification.drawing_diff.unmatched import (
-    BOTH_BLUE,
-    OUTPUT_SKY,
-    TANGENT_TEAL,
+    MATCHED_BLUE,
+    NEUTRAL_GRAY,
+    OUTPUT_MAGENTA,
 )
 
 
@@ -93,7 +93,7 @@ def test_unmatched_groups_are_listed_in_drawing_pixels():
             "unit": "px",
             "size_px": 120,
             "box_px": [80, 20, 81, 140],
-            "color": "red",
+            "color": "dark orange",
         }
     ]
     assert diff.unmatched.shape == drawing.shape
@@ -108,11 +108,13 @@ def test_unmatched_preserves_dash_gaps_and_thin_solid_lines(scale, vertical, off
     def projected(x, y):
         return tuple(round((v + 0.5) * scale + offset - 0.5) for v in (x, y))
 
+    # The output lies 7 px off the input, beyond WEAK_PX but short of
+    # UNMATCHED_PX, so its lines are magenta and no cluster covers them.
     cv2.rectangle(drawing, (20, 20), (230, 230), (0, 0, 0), 3)
-    cv2.rectangle(output, projected(20, 20), projected(230, 230), (0, 0, 0), 1)
+    cv2.rectangle(output, projected(27, 27), projected(223, 223), (0, 0, 0), 1)
     for x in range(40, 210, 16):
         cv2.line(drawing, (x, 100), (x + 11, 100), (0, 0, 0), 1)
-        cv2.line(output, projected(x, 100), projected(x + 11, 100), (0, 0, 0), 1)
+        cv2.line(output, projected(x, 107), projected(x + 11, 107), (0, 0, 0), 1)
     if vertical:
         drawing, output = (
             drawing.transpose(1, 0, 2).copy(),
@@ -122,12 +124,13 @@ def test_unmatched_preserves_dash_gaps_and_thin_solid_lines(scale, vertical, off
     matrix[:2, 2] = offset
     diff = compute_diff(drawing, output, _alignment(matrix))
     image = diff.unmatched.transpose(1, 0, 2) if vertical else diff.unmatched
-    cad = np.all(image == OUTPUT_SKY, axis=-1) | np.all(image == BOTH_BLUE, axis=-1)
+    cad = np.all(image == OUTPUT_MAGENTA, axis=-1)
 
+    assert diff.stats["unmatched"] == []
     for x in range(40, 210, 16):
-        assert cad[98:103, x + 5].any(), "A dash disappeared during resampling"
-        assert not cad[98:103, x + 13].any(), "A dash gap was painted as CAD ink"
-    assert cad[30:220, 18:23].any(axis=1).all(), "The thin solid outline broke"
+        assert cad[105:110, x + 5].any(), "A dash disappeared during resampling"
+        assert not cad[105:110, x + 13].any(), "A dash gap was painted as CAD ink"
+    assert cad[37:213, 25:30].any(axis=1).all(), "The thin solid outline broke"
 
 
 def test_tangents_explain_input_lines_but_are_optional_and_not_material():
@@ -151,8 +154,10 @@ def test_tangents_explain_input_lines_but_are_optional_and_not_material():
         assert diff.stats["material_error"] == baseline.stats["material_error"]
         assert diff.stats["output_to_input"] == baseline.stats["output_to_input"]
         assert diff.stats["optional_tangent_ink_count"] == 140
-        assert tuple(diff.unmatched[100, 90]) == TANGENT_TEAL
         assert tuple(diff.overlay[100, 90]) == (0, 0, 128)  # JET at zero distance
+    # An input line along a tangent is matched; a tangent alone is neutral.
+    assert tuple(matched.unmatched[100, 90]) == MATCHED_BLUE
+    assert tuple(omitted.unmatched[100, 90]) == NEUTRAL_GRAY
 
     # An unrelated tangent cannot explain a missing line, nor excuse a sharp edge.
     wrong = outline.copy()

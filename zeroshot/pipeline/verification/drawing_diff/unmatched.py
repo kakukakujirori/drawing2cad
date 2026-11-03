@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 from ezdxf.layouts import Modelspace
 from ezdxf.path import make_path
+from scipy.ndimage import distance_transform_edt
 from skimage.morphology import thin
 
 from .image_ops import disk, distance_map, drawing_area, filled_area
@@ -55,23 +56,29 @@ MAX_COARSE_GROUPS = 4
 MAX_LOCAL_GROUPS = 2
 # Wider than the displayed strokes, so the band shows on both sides of them.
 BAND_PX = 5
-INPUT_GRAY = (110, 110, 110)
-ANNOTATION_GRAY = (185, 185, 185)
-OUTPUT_SKY = (90, 190, 255)
-TANGENT_TEAL = (0, 150, 110)
-# Where both draw a line, the gray over the light blue deepens it to pure blue.
-BOTH_BLUE = (0, 0, 255)
+# Centre lines this near are one line: registering a line both images draw
+# leaves it up to this far off, beyond the pixel that rasterizing moves it.
+SHARED_PX = 3.0
+# Gray is ink that is never a difference: annotation, optional tangents and ink
+# the comparison does not reach. Lines both images draw are blue; a line only
+# one image draws takes its color, input green and output magenta, toned so
+# that neither outweighs the other.
+NEUTRAL_GRAY = (185, 185, 185)
+MATCHED_BLUE = (0, 0, 255)
+INPUT_GREEN = (0, 160, 0)
+OUTPUT_MAGENTA = (200, 60, 200)
 # Material is hatched, as a drawing marks cut material, so it reads as an area.
 HATCH_PX = 12
-# One bright color per listed group, in rank order. Neighbouring hues are kept
-# apart, and none is near the gray, light blue or pure blue lines drawn on top.
+# One color per listed group, in rank order. Neighbouring hues are kept apart,
+# each differs in hue or lightness from the blue, magenta and green lines
+# drawn on top, and each is dark enough for its number on white.
 COLORS = {
-    "red": (230, 0, 0),
-    "magenta": (220, 0, 220),
-    "pink": (255, 80, 190),
-    "orange": (255, 140, 0),
-    "yellow": (215, 165, 0),
-    "green": (0, 155, 50),
+    "dark orange": (205, 100, 0),
+    "slate": (110, 125, 165),
+    "maroon": (140, 40, 50),
+    "sky": (90, 170, 240),
+    "ochre": (190, 145, 30),
+    "teal": (0, 160, 160),
 }
 
 
@@ -237,6 +244,18 @@ def _outline(groups: list[Unmatched], shape: tuple[int, ...]) -> np.ndarray:
     return band.astype(bool)
 
 
+def _vicinity(output: np.ndarray) -> np.ndarray:
+    """The output's bounding box widened by PART_MARGIN_PX; empty without output."""
+    vicinity = np.zeros(output.shape, bool)
+    if output.any():
+        ys, xs = np.nonzero(output)
+        vicinity[
+            max(ys.min() - PART_MARGIN_PX, 0) : ys.max() + PART_MARGIN_PX + 1,
+            max(xs.min() - PART_MARGIN_PX, 0) : xs.max() + PART_MARGIN_PX + 1,
+        ] = True
+    return vicinity
+
+
 ################################################################
 
 # Fine line differences:
@@ -376,12 +395,7 @@ def find_unmatched(
         return []
     all_lines = thin(drawing_ink) if annotated else drawing_lines
     # Limit input-only candidates to the output's vicinity to avoid far annotations.
-    ys, xs = np.nonzero(output_lines)
-    part = np.zeros_like(drawing_lines)
-    part[
-        max(ys.min() - PART_MARGIN_PX, 0) : ys.max() + PART_MARGIN_PX + 1,
-        max(xs.min() - PART_MARGIN_PX, 0) : xs.max() + PART_MARGIN_PX + 1,
-    ] = True
+    part = _vicinity(output_lines)
 
     # Filled silhouettes expose broad material differences beyond individual lines.
     input_area = drawing_area(part_ink if outline is None else outline)
@@ -460,6 +474,18 @@ def describe_unmatched(groups: list[Unmatched]) -> list[dict[str, Any]]:
     ]
 
 
+def _unshared(
+    stroke: np.ndarray, centre: np.ndarray, other_centre: np.ndarray
+) -> np.ndarray:
+    """Stroke pixels whose nearest centre pixel lies beyond SHARED_PX of the
+    other image's centre lines, so stroke widths do not decide what is shared."""
+    if not centre.any():
+        return np.zeros_like(stroke)
+    apart = centre & (distance_map(other_centre) > SHARED_PX)
+    _, (rows, cols) = distance_transform_edt(~centre, return_indices=True)
+    return stroke & apart[rows, cols]
+
+
 def draw_unmatched(
     drawing_gray: np.ndarray,
     output: np.ndarray,
@@ -467,14 +493,17 @@ def draw_unmatched(
     annotation: np.ndarray | None = None,
     *,
     tangent: np.ndarray | None = None,
-    line_style_mismatch_mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Each group as a colored band under the gray drawing and the light blue output.
+    """Each group as a colored band under lines colored by the image that draws them.
 
-    A band is wider than the lines drawn over it, so they show which image a
-    group came from; lines both images draw are pure blue. Material is banded along
-    its outline and hatched inside. Annotation ink, which the comparison does
-    not count as the part, is drawn in a lighter gray.
+    Lines both images draw are blue; a line only one image draws takes its
+    color, input green and output magenta, however near the other image's line.
+    Whether that is a difference is left to the groups. A tangent can share an
+    input line, and annotation an output line. A band is wider than the lines
+    drawn over it. Material is banded along its outline and hatched inside.
+    Annotation ink, which the comparison does not count as the part, ink
+    beyond the output's vicinity, which it never compares, and optional
+    tangents are gray.
 
     output contains display strokes, not the dilated comparison mask.
     """
@@ -493,27 +522,24 @@ def draw_unmatched(
         else:
             image[cv2.dilate(mask, disk(BAND_PX)) > 0] = color
 
-    # Restore source context: input gray, output sky blue, overlap pure blue.
     ink = drawing_gray < 128
-    centre = thin(ink).astype(np.uint8)
-    centre = cv2.dilate(centre, np.ones((3, 3), np.uint8)) > 0
+    centre = thin(ink)
     # Thick lines narrow to show the band beside them; thin ones keep their width,
     # since widening would fill small text and details.
-    drawn = centre & ink
-    if annotation is not None:
-        image[annotation] = ANNOTATION_GRAY
-        drawn &= ~annotation
-        centre &= ~annotation
-    image[drawn] = INPUT_GRAY
+    drawn = (cv2.dilate(centre.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) & ink
+    uncompared = ink & ~_vicinity(output)
+    annotation = uncompared if annotation is None else annotation | uncompared
+    image[annotation] = NEUTRAL_GRAY
+    drawn &= ~annotation
+    # A tangent lies under the input line it matches.
     if tangent is not None:
-        image[tangent] = TANGENT_TEAL
-    image[output] = OUTPUT_SKY
-    # Overlap is judged on the centre band, so a thin input line still marks
-    # the output stroke it shares as drawn by both.
-    overlap = centre & output
-    if line_style_mismatch_mask is not None:
-        overlap &= ~line_style_mismatch_mask
-    image[overlap] = BOTH_BLUE
+        image[tangent] = NEUTRAL_GRAY
+    output_centre = thin(output)
+    supporting = output_centre if tangent is None else output_centre | thin(tangent)
+    image[drawn] = MATCHED_BLUE
+    image[_unshared(drawn, centre, supporting)] = INPUT_GREEN
+    image[output] = MATCHED_BLUE
+    image[_unshared(output, output_centre, centre)] = OUTPUT_MAGENTA
 
     occupied = []
     # ponytail: greedy placement for at most six labels; no full layout solver.

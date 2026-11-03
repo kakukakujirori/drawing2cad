@@ -1401,7 +1401,9 @@ def test_feedback_kinds_are_presented_independently(tmp_path, kind, mode):
     assert ("tangent boundaries: zero-distance blue" in text) == (
         modes["overlay"] != "none"
     )
-    assert ("tangent boundaries: teal" in text) == (modes["unmatched"] != "none")
+    assert ("optional tangent boundaries and other ink not compared" in text) == (
+        modes["unmatched"] != "none"
+    )
     assert "[Drawing comparison]" in text
     assert "line distance" in text
     expected_images = (2 if kind == "output_renders" else 1) if mode == "image" else 0

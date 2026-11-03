@@ -4,11 +4,11 @@ import numpy as np
 import pytest
 
 from zeroshot.pipeline.verification.drawing_diff.unmatched import (
-    ANNOTATION_GRAY,
-    BOTH_BLUE,
     COLORS,
-    INPUT_GRAY,
-    TANGENT_TEAL,
+    INPUT_GREEN,
+    MATCHED_BLUE,
+    NEUTRAL_GRAY,
+    OUTPUT_MAGENTA,
     Unmatched,
     describe_unmatched,
     draw_unmatched,
@@ -67,15 +67,58 @@ def test_an_output_line_the_drawing_lacks_is_extra():
     assert [g.direction for g in groups] == ["extra"]
 
 
-def test_thick_input_line_keeps_its_color_band_and_gray_center_visible():
+def test_thick_input_line_keeps_its_band_and_green_center_visible():
     drawing = _lines(*OUTLINE, INNER, width=11)
     output = _lines(*OUTLINE)
     groups = find_unmatched(drawing, output)
     image = draw_unmatched(np.uint8(~drawing) * 255, output, groups)
 
-    assert np.all(image[99:102, 90:120] == INPUT_GRAY)
-    assert np.all(image[97, 90:120] == COLORS["red"])
-    assert np.all(image[103, 90:120] == COLORS["red"])
+    assert np.all(image[99:102, 90:120] == INPUT_GREEN)
+    assert np.all(image[97, 90:120] == COLORS["dark orange"])
+    assert np.all(image[103, 90:120] == COLORS["dark orange"])
+
+
+# A line registered 1 px off is one line; 4 px apart are two lines.
+@pytest.mark.parametrize(
+    "offset, input_color, output_color",
+    [(1, MATCHED_BLUE, MATCHED_BLUE), (4, INPUT_GREEN, OUTPUT_MAGENTA)],
+)
+def test_lines_are_blue_only_where_both_images_draw_them(
+    offset, input_color, output_color
+):
+    drawing = _lines(*OUTLINE, INNER)
+    output = _lines(*OUTLINE, ((60, 100 + offset), (140, 100 + offset)))
+    image = draw_unmatched(np.uint8(~drawing) * 255, output, [])
+
+    assert np.all(image[100, 70:130] == input_color)
+    assert np.all(image[100 + offset, 70:130] == output_color)
+    assert np.all(image[40, 70:130] == MATCHED_BLUE)
+
+
+def test_stroke_widths_leave_no_colored_edges_on_a_shared_line():
+    # A 9 px stroke's edges lie 4 px from its centre, beyond SHARED_PX.
+    thick, thin = _lines(*OUTLINE, INNER, width=9), _lines(*OUTLINE, INNER)
+
+    for drawing, output in ((thick, thin), (thin, thick)):
+        image = draw_unmatched(np.uint8(~drawing) * 255, output, [])
+        painted = image[94:107, 70:130]
+        assert np.all((painted == MATCHED_BLUE).all(-1) | (painted == 255).all(-1))
+
+
+def test_a_tangent_shares_an_input_line_and_dash_gaps_show_the_solid_line():
+    drawing = _lines(*OUTLINE, INNER, width=3)
+    gray = np.uint8(~drawing) * 255
+    tangent = _lines(((50, 100), (150, 100)))
+    image = draw_unmatched(gray, _lines(*OUTLINE), [], tangent=tangent)
+
+    assert np.all(image[99:102, 70:130] == MATCHED_BLUE)
+    assert np.all(image[100, 50:56] == NEUTRAL_GRAY)
+
+    dashed = _lines(*OUTLINE, *(((x, 100), (x + 7, 100)) for x in range(60, 140, 16)))
+    image = draw_unmatched(np.uint8(~dashed) * 255, _lines(*OUTLINE, INNER), [])
+
+    assert all(tuple(image[100, x + 3]) == MATCHED_BLUE for x in range(60, 140, 16))
+    assert all(tuple(image[100, x + 11]) == OUTPUT_MAGENTA for x in range(60, 140, 16))
 
 
 def test_optional_tangent_cannot_overpaint_a_cluster_number():
@@ -85,8 +128,8 @@ def test_optional_tangent_cannot_overpaint_a_cluster_number():
     gray = np.uint8(~drawing) * 255
     baseline = draw_unmatched(gray, output, groups)
 
-    # Red above the defect belongs to its number, not its highlight band.
-    label = np.all(baseline == COLORS["red"], axis=-1)
+    # Orange above the defect belongs to its number, not its highlight band.
+    label = np.all(baseline == COLORS["dark orange"], axis=-1)
     label[groups[0].box_px[1] - 10 :] = False
     positions = np.argwhere(label)
     assert len(positions)
@@ -97,7 +140,7 @@ def test_optional_tangent_cannot_overpaint_a_cluster_number():
 
     assert (label & tangent).any()
     np.testing.assert_array_equal(image[label], baseline[label])
-    assert tuple(image[10, x]) == TANGENT_TEAL
+    assert tuple(image[10, x]) == NEUTRAL_GRAY
 
 
 def test_length_does_not_depend_on_stroke_width():
@@ -533,16 +576,16 @@ def test_region_score_keeps_a_thin_misalignment_instead_of_reporting_zero():
     assert error["ratio"] > 0.05
 
 
-def test_thin_input_lines_keep_their_width_and_still_mark_shared_strokes():
+def test_thin_input_lines_keep_their_width_and_shared_strokes_are_blue():
     drawing = _lines(*OUTLINE, INNER)  # one pixel wide, like small print
     output = _lines(*OUTLINE)
     image = draw_unmatched(np.uint8(~drawing) * 255, output, [])
 
     # Widening would fill small text; the input-only line stays one pixel wide.
-    gray = np.all(image == INPUT_GRAY, axis=-1)
-    assert gray[100, 70:130].all() and not gray[[99, 101], 70:130].any()
-    # The output stroke along an input line is still drawn by both.
-    assert np.all(image[40, 70:130] == BOTH_BLUE)
+    green = np.all(image == INPUT_GREEN, axis=-1)
+    assert green[100, 70:130].all() and not green[[99, 101], 70:130].any()
+    # The output stroke along an input line is drawn by both.
+    assert np.all(image[40, 70:130] == MATCHED_BLUE)
 
 
 def test_annotation_is_never_missing_and_an_output_along_it_is_not_extra():
@@ -556,4 +599,16 @@ def test_annotation_is_never_missing_and_an_output_along_it_is_not_extra():
     assert find_unmatched(drawing, output, annotation=annotation) == []
 
     image = draw_unmatched(np.uint8(~drawing) * 255, output, [], annotation)
-    assert np.all(image[100, 170:190] == ANNOTATION_GRAY)
+    assert np.all(image[100, 170:190] == NEUTRAL_GRAY)
+    assert np.all(image[80, 90:140] == MATCHED_BLUE)
+
+
+def test_input_lines_beyond_the_output_vicinity_are_drawn_as_not_compared():
+    far = ((60, 190), (140, 190))  # beyond PART_MARGIN_PX of the outline
+    drawing = _lines(*OUTLINE, INNER, far)
+    output = _lines(*OUTLINE)
+
+    assert [g.direction for g in find_unmatched(drawing, output)] == ["missing"]
+    image = draw_unmatched(np.uint8(~drawing) * 255, output, [])
+    assert np.all(image[190, 70:130] == NEUTRAL_GRAY)
+    assert np.all(image[100, 70:130] == INPUT_GREEN)

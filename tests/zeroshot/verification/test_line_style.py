@@ -10,7 +10,11 @@ from zeroshot.pipeline.verification.drawing_diff.diff import compute_diff
 from zeroshot.pipeline.verification.drawing_diff.line_style import (
     find_line_style_mismatches,
 )
-from zeroshot.pipeline.verification.drawing_diff.unmatched import BOTH_BLUE
+from zeroshot.pipeline.verification.drawing_diff.unmatched import (
+    COLORS,
+    INPUT_GREEN,
+    OUTPUT_MAGENTA,
+)
 
 
 def _rgb(ink):
@@ -180,8 +184,10 @@ def test_shared_style_error_reaches_both_images_and_keeps_geometry_score(
     )
     circle_ink = _circle(output_style)
     assert (diff.overlay[circle_ink] == [255, 0, 0]).all()
-    assert not np.any(np.all(diff.unmatched[circle_ink] == BOTH_BLUE, axis=1))
-    assert np.any(np.all(diff.unmatched == [230, 0, 0], axis=2))
+    # The solid circle shows through the other's dash gaps in its own color.
+    solid = OUTPUT_MAGENTA if output_style == "visible" else INPUT_GREEN
+    assert np.any(np.all(diff.unmatched[_circle("visible")] == solid, axis=1))
+    assert np.any(np.all(diff.unmatched == COLORS["dark orange"], axis=2))
 
 
 def test_nearby_distinct_hidden_edges_can_bridge_gaps_and_are_unknown():
