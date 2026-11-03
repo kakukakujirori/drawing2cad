@@ -1,13 +1,15 @@
 """Centre lines and leaders: drafting marks a drawing adds that are not part edges.
 
 A drawing marks the axis of a hole or a boss with a centre line, and points at
-a hole or an arc with a leader. Neither is an edge of the part, so the
-comparison does not list the input lines they explain as missing.
+a hole or an arc with a leader. Extension lines and leaders can also cross the
+outline to reach a feature inside the part. None of these is an edge of the
+part, so the comparison does not list the input lines they explain as missing.
 
-Both are recognised by heuristics, kept here behind two calls:
+All are recognised by heuristics, kept here behind two calls:
 record_centre_lines stores the axes of a build's revolved faces in each
-projection DXF, and drafting_marks reads them back and finds leaders when the
-views are compared. Without these calls every input line counts as the part's.
+projection DXF, and drafting_marks reads them back and finds leaders and lines
+crossing into the part when the views are compared. Without these calls every
+input line counts as the part's.
 """
 
 from __future__ import annotations
@@ -190,6 +192,13 @@ ARC_END_PX = 6.0
 JOIN_PX = 6
 # Following a line, this many blank pixels in a row end it.
 TRACE_GAP_PX = 3
+# An annotation line crossing into the part reaches the annotation beside it
+# within CROSS_PX along its ink, across the outline and the margins kept free
+# around output lines and the silhouette; a build's outline can lie some pixels
+# off the drawing's. That annotation carries the same line on over CARRY_SHARE
+# of MIN_RUN_PX, dashes and all.
+CROSS_PX = 25
+CARRY_SHARE = 0.8
 
 
 @dataclass(frozen=True)
@@ -218,12 +227,13 @@ def drafting_marks(
     annotation: np.ndarray,
     output: np.ndarray,
 ) -> np.ndarray:
-    """Input ink drawn as a centre line or a leader, where no output line runs.
+    """Input ink drawn as a centre line, a leader, or an annotation line crossing
+    into the part, where no output line runs.
 
     model_to_drawing maps the projection's model U and V to input pixel
     boundaries. annotation is ink already known not to be the part's, such as
-    ink beside it; a leader ends at it. output holds the build's lines on the
-    input grid.
+    ink beside it; a leader ends at it, and a crossing line runs on into it.
+    output holds the build's lines on the input grid.
     """
     free = skeletonize(ink & ~annotation)
     free &= distance_map(skeletonize(output)) > OUTPUT_PX
@@ -234,22 +244,42 @@ def drafting_marks(
     for start, end, radius in _recorded(modelspace, model_to_drawing):
         _mark_along(marks, pieces, start, end, min(AXIS_PX, radius / 2))
 
+    inked = distance_map(ink) <= LINE_PX
     circles = list(_circles(modelspace, model_to_drawing))
-    if circles:
-        inked = distance_map(ink) <= LINE_PX
-        drawing_to_model = np.linalg.inv(model_to_drawing)
+    drawing_to_model = np.linalg.inv(model_to_drawing)
+    # Leaders and crossing lines end at annotation or at marks found before
+    # them: a leader's shoulder may be a crossing line, and a crossing line may
+    # run on from a leader. Look again while either finds more.
+    while True:
+        # Return whole strokes, not their centres.
+        marked = _strokes(marks, ink, annotation)
+        known = annotation | marked
+        joined = cv2.dilate(known.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        found = np.zeros_like(free)
         for run in _straight_runs(free & ~marks):
             # Hough segments overlap; a run already taken needs no second look.
-            if marks[run.pixels[:, 1], run.pixels[:, 0]].all():
+            if found[run.pixels[:, 1], run.pixels[:, 0]].all():
                 continue
-            if any(
-                _is_leader(run, circle, inked, annotation, drawing_to_model)
-                for circle in circles
-            ):
-                marks[run.pixels[:, 1], run.pixels[:, 0]] = True
+            if _runs_on_into(run, inked, joined):
+                found[run.pixels[:, 1], run.pixels[:, 0]] = True
+                continue
+            for circle in circles:
+                leader = _leader(run, circle, inked, known, drawing_to_model)
+                if leader is not None:
+                    # Output lines it crosses split it; it runs on to its tip.
+                    found |= _along(free, *leader)
+                    break
+        if not (found & ~marks).any():
+            return marked
+        marks |= found
 
-    # Return whole strokes, not their centres.
-    return cv2.dilate(marks.astype(np.uint8), disk(3)).astype(bool) & ink & ~annotation
+
+def _strokes(
+    centres: np.ndarray, ink: np.ndarray, annotation: np.ndarray
+) -> np.ndarray:
+    return (
+        cv2.dilate(centres.astype(np.uint8), disk(3)).astype(bool) & ink & ~annotation
+    )
 
 
 def _to_pixels(model_to_drawing: np.ndarray, point) -> np.ndarray:
@@ -348,24 +378,20 @@ def _circles(modelspace: Modelspace, model_to_drawing: np.ndarray) -> Iterator[_
 def _straight_runs(mask: np.ndarray) -> list[_Run]:
     """Straight runs of mask pixels.
 
-    The probabilistic Hough transform finds the segments. Each run takes the
-    pixels along its segment's line, out to the first gap longer than GAP_PX,
-    since the transform can return a segment shorter than its line.
+    The probabilistic Hough transform finds segments across the gaps of a
+    dashed line. A trace at a slightly wrong angle can take a short line's
+    pixels before the line itself is traced, so the straight sides of each
+    piece's outline, which do not depend on the order pixels are visited in,
+    are added. Each run takes the pixels along its segment's line, out to the
+    first gap longer than GAP_PX, since a segment can be shorter than its line.
     """
-    segments = cv2.HoughLinesP(
-        mask.astype(np.uint8),
-        rho=1,
-        theta=np.pi / 360,
-        threshold=MIN_RUN_PX // 2,
-        minLineLength=MIN_RUN_PX,
-        maxLineGap=GAP_PX,
-    )
-    if segments is None:
+    segments = _hough(mask) + _outline_sides(mask)
+    if not segments:
         return []
     ys, xs = np.nonzero(mask)
     pixels = np.column_stack([xs, ys])
     runs = []
-    for x0, y0, x1, y1 in segments.reshape(-1, 4):
+    for x0, y0, x1, y1 in segments:
         start, end = np.array([x0, y0], float), np.array([x1, y1], float)
         direction = (end - start) / np.linalg.norm(end - start)
         offset = pixels - start
@@ -376,8 +402,38 @@ def _straight_runs(mask: np.ndarray) -> list[_Run]:
         stretches = np.split(order, np.flatnonzero(np.diff(along[order]) > GAP_PX) + 1)
         # The stretch that holds the segment's own start.
         stretch = min(stretches, key=lambda part: np.abs(along[part]).min())
-        runs.append(_fit(pixels[members[stretch]]))
+        run = _fit(pixels[members[stretch]])
+        # An outline side can cut across a bend, past the pixels of its line.
+        if np.linalg.norm(run.ends[1] - run.ends[0]) >= MIN_RUN_PX:
+            runs.append(run)
     return runs
+
+
+def _hough(mask: np.ndarray) -> list[np.ndarray]:
+    segments = cv2.HoughLinesP(
+        mask.astype(np.uint8),
+        rho=1,
+        theta=np.pi / 360,
+        threshold=MIN_RUN_PX // 2,
+        minLineLength=MIN_RUN_PX,
+        maxLineGap=GAP_PX,
+    )
+    return [] if segments is None else list(segments.reshape(-1, 4))
+
+
+def _outline_sides(mask: np.ndarray) -> list[np.ndarray]:
+    """Sides at least MIN_RUN_PX long of each piece's outline, simplified to
+    within LINE_PX; a thin piece's outline runs along it and back."""
+    outlines, _ = cv2.findContours(
+        mask.astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE
+    )
+    sides = set()
+    for outline in outlines:
+        corners = cv2.approxPolyDP(outline, LINE_PX, True).reshape(-1, 2)
+        for start, end in zip(corners, np.roll(corners, -1, axis=0)):
+            if np.linalg.norm(end - start) >= MIN_RUN_PX:
+                sides.add(tuple(sorted((tuple(start), tuple(end)))))
+    return [np.array([*start, *end]) for start, end in sorted(sides)]
 
 
 def _fit(pixels: np.ndarray) -> _Run:
@@ -389,18 +445,20 @@ def _fit(pixels: np.ndarray) -> _Run:
     return _Run(pixels, middle, direction, ends)
 
 
-def _is_leader(
+def _leader(
     run: _Run,
     circle: _Circle,
     inked: np.ndarray,
     annotation: np.ndarray,
     drawing_to_model: np.ndarray,
-) -> bool:
-    """A radial run that reaches the circle and whose ink ends at annotation."""
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """A radial run that reaches the circle and whose ink ends at annotation:
+    its far end and the tip its ink runs on to; None for any other run.
+    """
     c, r = circle.centre, circle.radius
     normal = np.array([-run.direction[1], run.direction[0]])
     if abs((c - run.middle) @ normal) > RADIAL_PX + RADIAL_SHARE * r:
-        return False
+        return None
     near, far = sorted(run.ends, key=lambda end: np.linalg.norm(end - c))
     # Along the run toward the centre; the far end never sits on it.
     inward = run.direction if (c - far) @ run.direction > 0 else -run.direction
@@ -410,15 +468,29 @@ def _is_leader(
         return abs(gap - r) <= TOUCH_PX or gap <= TOUCH_PX
 
     if not touches(near) and not _follow(near, inward, inked, touches)[1]:
-        return False
+        return None
     if circle.arc is not None and not _meets_arc(
         circle, c - inward * r, drawing_to_model
     ):
-        return False
-    return any(
-        _joins(_follow(end, step, inked)[0], annotation)
-        for end, step in ((far, -inward), (near, inward))
-    )
+        return None
+    tip = _follow(near, inward, inked)[0]
+    if not (
+        _joins(_follow(far, -inward, inked)[0], annotation) or _joins(tip, annotation)
+    ):
+        return None
+    return far, tip
+
+
+def _along(mask: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    """Mask pixels within LINE_PX of the segment from start to end."""
+    ys, xs = np.nonzero(mask)
+    points = np.column_stack([xs, ys]) - start
+    span = end - start
+    t = np.clip(points @ span / max(span @ span, 1e-9), 0, 1)
+    near = np.linalg.norm(points - t[:, None] * span, axis=1) <= LINE_PX
+    along = np.zeros_like(mask)
+    along[ys[near], xs[near]] = True
+    return along
 
 
 def _meets_arc(
@@ -433,6 +505,30 @@ def _meets_arc(
     angle = math.degrees(math.atan2(y - arc.dxf.center.y, x - arc.dxf.center.x))
     start, end = arc.dxf.start_angle, arc.dxf.end_angle
     return (angle - start) % 360 <= (end - start) % 360
+
+
+def _runs_on_into(run: _Run, inked: np.ndarray, annotation: np.ndarray) -> bool:
+    """Whether the ink carries the run's line from one end into annotation that
+    continues the same line.
+    """
+    height, width = annotation.shape
+
+    def reached(point: np.ndarray) -> bool:
+        x, y = round(point[0]), round(point[1])
+        return 0 <= x < width and 0 <= y < height and bool(annotation[y, x])
+
+    for end in run.ends:
+        outward = run.direction * np.sign((end - run.middle) @ run.direction)
+        last, met = _follow(end, outward, inked, reached)
+        if not met or np.linalg.norm(last - end) > CROSS_PX:
+            continue
+        ahead = last + np.arange(1, MIN_RUN_PX + 1)[:, None] * outward
+        ahead = np.rint(ahead).astype(int)
+        if not ((ahead >= 0) & (ahead < (width, height))).all():
+            continue
+        if annotation[ahead[:, 1], ahead[:, 0]].mean() > CARRY_SHARE:
+            return True
+    return False
 
 
 def _follow(

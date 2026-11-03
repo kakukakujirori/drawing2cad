@@ -10,6 +10,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.verification.drawing_diff.drafting_marks import (
     CENTRE_LINES,
     CentreLine,
+    _straight_runs,
     centre_lines,
     drafting_marks,
     record_centre_lines,
@@ -222,10 +223,11 @@ def test_centre_marks_and_a_leader_to_their_hole_are_marks_but_part_lines_are_no
 
 @pytest.mark.parametrize("mapping", MAPPINGS.values(), ids=MAPPINGS)
 def test_a_sectors_radial_edge_is_not_a_leader_to_its_arc(mapping):
-    edge = _ray(0, RADIUS, 75)  # from the arc's end, out of the part
+    edge = _ray(0, RADIUS, 58)  # from the arc's end to the outline
+    note = ((164, 96), (185, 80))  # annotation that starts just past its end
     leader = _ray(60, RADIUS, 92)
     shoulder = (leader[1], (leader[1][0] + 18, leader[1][1]))
-    ink = _ink(*SQUARE, edge, leader, shoulder, arc=(0, 90))
+    ink = _ink(*SQUARE, edge, note, leader, shoulder, arc=(0, 90))
 
     marks = _marks(
         _drawing(mapping, arc=(0, 90)), mapping, ink, _ink(*SQUARE, arc=(0, 90))
@@ -283,10 +285,68 @@ def test_lines_that_cross_outrun_or_flank_a_centre_line_are_not_marks():
     assert not _at(marks, (100, 58))
 
 
-def test_without_circles_or_recorded_axes_nothing_is_a_mark():
+def test_without_circles_axes_or_crossings_nothing_is_a_mark():
     mapping = MAPPINGS["identity"]
-    ink = _ink(*SQUARE, ((50, 140), (150, 140)), _ray(-30, 0, 92))
+    ink = _ink(*SQUARE, ((50, 140), (150, 140)), _ray(-30, 0, 50))
 
     marks = _marks(_drawing(mapping), mapping, ink, _ink(*SQUARE))
 
     assert not marks.any()
+
+
+def test_lines_that_cross_into_the_part_from_annotation_are_marks():
+    extension = ((100, 10), (100, 120))  # from a dimension down to a feature
+    leader = ((190, 30), (120, 100))  # across the right side
+    loose = ((60, 70), (60, 150))  # a part line no annotation continues
+    broken = ((130, 60), (130, 140))  # annotation below it, past a gap
+    below = ((130, 170), (130, 200))
+    bent = ((75, 60), (75, 158))  # annotation carries on at an angle
+    elbow = ((75, 162), (45, 200))
+    ink = _ink(*SQUARE, extension, leader, loose, broken, below, bent, elbow)
+
+    marks = _marks(
+        _drawing(MAPPINGS["identity"]), MAPPINGS["identity"], ink, _ink(*SQUARE)
+    )
+
+    assert _at(marks, (100, 90)) and _at(marks, (135, 85))
+    assert not _at(marks, (60, 110))
+    assert not _at(marks, (130, 100))
+    assert not _at(marks, (75, 110))
+
+
+def test_a_leader_whose_shoulder_runs_on_into_a_dimension_is_a_mark_to_its_tip():
+    mapping = MAPPINGS["identity"]
+    part_line = ((40, 135), (160, 135))
+    leader = _ray(60, 3, 100)  # from near the centre to below the part
+    shoulder = (leader[1], (215, leader[1][1]))
+    ink = _ink(*SQUARE, part_line, leader, shoulder, circle=True)
+    # Only the text above the shoulder and the dimension line it runs on into
+    # are known; the text lies too far from the bend for the leader to join it.
+    annotation = np.zeros_like(ink)
+    annotation[170:179, 155:176] = True
+    annotation[leader[1][1] - 1 : leader[1][1] + 2, 180:216] = True
+    ink |= annotation
+
+    marks = drafting_marks(
+        _drawing(mapping, circle=True),
+        mapping,
+        ink,
+        annotation,
+        _ink(*SQUARE, part_line, circle=True),
+    )
+
+    # Output lines split it into pieces, some too short to be runs.
+    for radius in (10, 30, 55, 85):
+        assert _at(marks, _ray(60, 0, radius)[1])
+    assert _at(marks, (165, leader[1][1]))
+    assert not _at(marks, (60, 135))
+
+
+def test_a_short_slanted_line_the_hough_transform_misses_is_still_a_run():
+    # The probabilistic Hough transform returns no segment for this 29 px line.
+    mask = np.zeros((60, 60), np.uint8)
+    cv2.line(mask, (10, 10), (38, 36), 1, 1)
+
+    (run,) = _straight_runs(mask.astype(bool))
+
+    assert len(run.pixels) == 29
