@@ -696,7 +696,7 @@ _UNMATCHED = cleandoc("""
     - Missing: input only. Extra: projection only.
     - Solid/dashed mismatch: overlapping lines with different styles.
     - Missing dimension, leader and text lines are not defects.
-    - Only the largest differences are labeled.
+    - Clusters label only the largest differences; green or magenta lines outside them can be differences too.
 
     [Mismatch clusters — bboxes in input-view pixels]
     {clusters}

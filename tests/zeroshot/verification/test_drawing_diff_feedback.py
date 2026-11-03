@@ -184,6 +184,7 @@ def test_unmatched_groups_are_listed_under_their_view_by_audit_key(tmp_path, mod
     assert "Missing dimension, leader and text lines are not defects" in text
     assert "Blue: lines both images draw" in text
     assert "Magenta: projection lines only; green: input lines only" in text
+    assert "green or magenta lines outside them can be differences too" in text
     assert "Colored bands and IDs: mismatch clusters" in text
     assert "hatching: silhouette differences" in text
     assert (
