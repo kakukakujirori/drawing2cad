@@ -1,7 +1,7 @@
 """Find and display differences in the input drawing's pixel coordinates.
 
-Shared pixel operations support silhouette and line comparison. Local DXF
-geometry adds fine edge differences to the coarse candidates. find_unmatched
+Shared pixel operations support silhouette and line comparison. The output's
+DXF curves add fine extra lines to the coarse candidates. find_unmatched
 merges them before selecting display groups; descriptions and drawing use
 that same selection.
 """
@@ -17,8 +17,7 @@ import cv2
 import numpy as np
 from ezdxf.layouts import Modelspace
 from ezdxf.path import make_path
-from scipy.spatial import cKDTree
-from skimage.morphology import skeletonize
+from skimage.morphology import thin
 
 from .image_ops import disk, distance_map, drawing_area, filled_area
 
@@ -41,14 +40,17 @@ MIN_AREA_PX = 1000
 # the width covers the corners that the material's opening rounds off.
 OUTLINE_PX = 8
 
-# Local edge finishes: the same radius limits curvature and expands the seed ROI.
-DETAIL_RADIUS_PX = 40
-DETAIL_UNMATCHED_PX = 4.0
-DETAIL_MIN_LENGTH_PX = 12
-# Fine tails may extend coarse defects; independent local labels need longer runs.
-MIN_LOCAL_LENGTH_PX = 24
+# Fine extra lines: a stretch of an output curve beyond SUPPORT_PX of every input
+# line, the far end of matched-line noise, that somewhere reaches FINE_PX. Between
+# the input's dashes a hidden curve stays nearer than half the gap, which
+# FINE_HIDDEN_PX exceeds. Chosen where ground-truth builds gain few groups, on
+# outputs/20261101_minimax3.1_flash (ECCV) and
+# outputs/20261101_minimax3.1_flash_mixed_with_20261027_itercad_ortho2cad (Ortho2CAD).
+SUPPORT_PX = 3.0
+FINE_PX = 6.0
+FINE_HIDDEN_PX = 7.0
 
-# Display limits reserve coarse slots before independent local edge finishes.
+# Display limits reserve coarse slots before independent fine differences.
 MAX_COARSE_GROUPS = 4
 MAX_LOCAL_GROUPS = 2
 # Wider than the displayed strokes, so the band shows on both sides of them.
@@ -86,7 +88,7 @@ class Unmatched:
     direction: Literal["missing", "extra", "line_style"]
     xy: np.ndarray  # (x, y): skeleton pixels of lines, or every pixel of material
     material: bool = False
-    local: bool = False  # independent fine error; coarse groups may include fine tails
+    local: bool = False  # only fine extra lines; coarse groups may include fine tails
     input_style: str | None = None
     output_style: str | None = None
     coverage: float | None = None
@@ -237,8 +239,8 @@ def _outline(groups: list[Unmatched], shape: tuple[int, ...]) -> np.ndarray:
 
 ################################################################
 
-# Local line differences:
-# Output DXF geometry, coarse/fine merging and acceptance.
+# Fine line differences:
+# Output DXF curves, their unsupported stretches and coarse/fine merging.
 
 
 def drawing_curves(
@@ -273,157 +275,72 @@ def drawing_curves(
             yield xy, style
 
 
-@dataclass(frozen=True)
-class DetailGeometry:
-    """Local ROI and continuous output curves on the drawing's pixel grid.
+def output_curves(
+    modelspace: Modelspace, model_to_drawing: np.ndarray
+) -> list[tuple[np.ndarray, str]]:
+    """The output's visible and hidden curves in drawing pixels, with their styles.
 
-    samples.data, curvature and owners share indices; owners contain curve IDs.
-    corners contain (first_curve_id, second_curve_id, corner_xy).
+    Whole curves, unlike rendered strokes, carry no hidden-line dash phase.
+    Optional tangent boundaries are left out.
     """
-
-    mask: np.ndarray  # neighborhood of high-curvature points and angular joins
-    visible: np.ndarray  # continuous output strokes eligible for fine comparison
-    samples: cKDTree
-    curvature: np.ndarray
-    owners: np.ndarray
-    corners: list[tuple[int, int, np.ndarray]]
+    return [
+        (xy, style)
+        for xy, style in drawing_curves(modelspace, model_to_drawing, tolerance_px=0.5)
+        if style != "tangent"
+    ]
 
 
-def _curvature(xy: np.ndarray) -> np.ndarray:
-    """Inverse circumradius of each consecutive triple, in drawing pixels."""
-    segments = np.diff(xy, axis=0)
-    a, b = segments[:-1], segments[1:]
-    lengths = np.linalg.norm(segments, axis=1)
-    denominator = lengths[:-1] * lengths[1:] * np.linalg.norm(a + b, axis=1)
-    cross = np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
-    return np.divide(
-        2 * cross, denominator, out=np.zeros_like(cross), where=denominator > 0
-    )
+def _fine_extra(
+    curves: Sequence[tuple[np.ndarray, str]], distances: np.ndarray
+) -> list[Unmatched]:
+    """Each stretch of a curve that leaves every input line; see FINE_PX.
 
-
-def detail_geometry(
-    modelspace: Modelspace, model_to_drawing: np.ndarray, shape: tuple[int, int]
-) -> DetailGeometry:
-    """Local ROIs and sampled continuous output curves, in drawing pixels.
-
-    Curvature is measured after mapping to drawing pixels; its radius must be
-    no larger than DETAIL_RADIUS_PX. Continuous entities avoid fine errors due
-    to hidden-line dash phase. Angular joins seed ROIs for omitted edge finishes.
-    The transform uses pixel boundaries; OpenCV strokes use integer centres.
+    Distance changes by at most 1 px per pixel along a curve, so a stretch
+    between supported points spans at least twice the climb past SUPPORT_PX;
+    a stretch at the curve's end must be as long.
     """
-    seeds = np.zeros(shape, np.uint8)
-    visible = np.zeros(shape, np.uint8)
-    endpoints, directions = [], []
-    samples, curvatures, owners = [], [], []
-    # Map eligible DXF curves first, so curvature is judged in drawing pixels.
-    for xy, style in drawing_curves(modelspace, model_to_drawing, tolerance_px=0.5):
-        if style != "visible":
-            continue
-        cv2.polylines(visible, [np.rint(xy).astype(np.int32)], False, 1, 3)
-        segments = np.diff(xy, axis=0)
-        lengths = np.linalg.norm(segments, axis=1)
-        curvature = _curvature(xy)
-        # Two endpoints per curve keep endpoint_index // 2 aligned with curve IDs.
-        endpoints.extend([xy[0], xy[-1]])
-        directions.extend([segments[0] / lengths[0], -segments[-1] / lengths[-1]])
-        # Seed only high-curvature portions, rather than an entire curved entity.
-        for point in xy[1:-1][curvature >= 1 / DETAIL_RADIUS_PX]:
-            cv2.circle(seeds, tuple(np.rint(point).astype(int)), 1, 1, -1)
-
-        # Dense samples tie error pixels to their own curve, not a nearby ROI seed.
-        distance = np.r_[0, np.cumsum(lengths)]
-        along = np.linspace(0, distance[-1], max(2, int(np.ceil(distance[-1] * 2)) + 1))
-        samples.append(np.column_stack([np.interp(along, distance, c) for c in xy.T]))
-        k = np.pad(curvature, 1, mode="edge") if curvature.size else np.zeros(len(xy))
-        curvatures.append(np.interp(along, distance, k))
-        owners.append(np.full(len(along), len(owners), int))
-
-    # Straight edges can expose a missing finish at their angular connection.
-    corners = []
-    if endpoints:
-        for a, b in cKDTree(endpoints).query_pairs(1.5):
-            if a // 2 == b // 2:
-                continue
-            angle = np.arccos(np.clip(abs(np.dot(directions[a], directions[b])), 0, 1))
-            if angle > np.pi / 6:
-                cv2.circle(seeds, tuple(np.rint(endpoints[a]).astype(int)), 1, 1, -1)
-                corners.append((a // 2, b // 2, (endpoints[a] + endpoints[b]) / 2))
-
-    # Proximity defines a search ROI; acceptance still checks the error's own curves.
-    local_mask = seeds.astype(bool)
-    if seeds.any():
-        local_mask = distance_map(local_mask) <= DETAIL_RADIUS_PX
-    return DetailGeometry(
-        local_mask,
-        visible.astype(bool),
-        cKDTree(np.concatenate(samples) if samples else np.empty((0, 2))),
-        np.concatenate(curvatures) if curvatures else np.empty(0),
-        np.concatenate(owners) if owners else np.empty(0, int),
-        corners,
-    )
+    height, width = distances.shape
+    groups = []
+    for xy, style in curves:
+        reach = FINE_HIDDEN_PX if style == "hidden" else FINE_PX
+        lengths = np.r_[0, np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
+        steps = np.arange(0, lengths[-1] + 1e-9, 1.0)
+        points = np.rint(
+            np.column_stack([np.interp(steps, lengths, c) for c in xy.T])
+        ).astype(int)
+        inside = (points >= 0).all(axis=1) & (points < (width, height)).all(axis=1)
+        # Beyond the drawing nothing is known, so nothing is unsupported there.
+        far = np.zeros(len(points))
+        far[inside] = distances[points[inside, 1], points[inside, 0]]
+        edges = np.flatnonzero(np.diff(np.r_[0, far > SUPPORT_PX, 0]))
+        for start, stop in zip(edges[::2], edges[1::2], strict=True):
+            long_enough = stop - start >= 2 * (reach - SUPPORT_PX)
+            if long_enough and far[start:stop].max() >= reach:
+                groups.append(Unmatched("extra", np.unique(points[start:stop], axis=0)))
+    return groups
 
 
 def _merge_extra_groups(
-    coarse: list[Unmatched], fine: list[Unmatched], local_mask: np.ndarray
+    coarse: list[Unmatched], fine: list[Unmatched], shape: tuple[int, ...]
 ) -> list[Unmatched]:
-    """Merge fine output errors with coarse ones without duplicate local labels.
+    """Join fine stretches to the coarse extra groups they touch.
 
-    Only fine components wholly inside the ROI can stand alone. Others may
-    extend a coarse defect, but detached ROI fragments must not inherit that
-    coarse defect's eligibility.
+    A group made of fine stretches alone is local; one holding a coarse defect
+    stays coarse, however far its fine tails reach.
     """
-    # Preserve coarse provenance even when fine pixels extend the same cluster.
-    extra = np.zeros(local_mask.shape, bool)
+    extra = np.zeros(shape, bool)
     for group in coarse:
         if group.direction == "extra":
             extra[group.xy[:, 1], group.xy[:, 0]] = True
     combined = extra.copy()
-    bounded = np.zeros(local_mask.shape, bool)  # fine pixels allowed to stand alone
-
-    # Inspect whole fine components before clipping, so long offsets stay broad.
     for group in fine:
-        inside = local_mask[group.xy[:, 1], group.xy[:, 0]]
-        if not inside.all() and not extra[group.xy[:, 1], group.xy[:, 0]].any():
-            continue
-        xy = group.xy[inside]
-        if len(xy) >= DETAIL_MIN_LENGTH_PX:
-            combined[xy[:, 1], xy[:, 0]] = True
-            if inside.all():
-                bounded[xy[:, 1], xy[:, 0]] = True
-
-    # Clipping can split a component; classify each resulting cluster by provenance.
+        combined[group.xy[:, 1], group.xy[:, 0]] = True
     merged = _groups(
         combined, cv2.dilate(combined.astype(np.uint8), disk(JOIN_PX)), "extra"
     )
     return [g for g in coarse if g.direction == "missing"] + [
-        replace(g, local=not extra[g.xy[:, 1], g.xy[:, 0]].any())
-        for g in merged
-        if extra[g.xy[:, 1], g.xy[:, 0]].any() or bounded[g.xy[:, 1], g.xy[:, 0]].any()
+        replace(g, local=not extra[g.xy[:, 1], g.xy[:, 0]].any()) for g in merged
     ]
-
-
-def _local_detail(group: Unmatched, geometry: DetailGeometry) -> bool:
-    """Accept a whole local group via its own curvature or both sides of one corner.
-
-    One high-curvature match qualifies the group; the corner branch requires
-    errors on each incident curve away from the shared endpoint.
-    """
-    if not geometry.samples.n:
-        return False
-    # A nearby corner must not qualify an error on an unrelated straight curve.
-    _, indices = geometry.samples.query(group.xy)
-    if np.any(geometry.curvature[indices] >= 1 / DETAIL_RADIUS_PX):
-        return True
-    owners = geometry.owners[indices]
-    for a, b, point in geometry.corners:
-        if a not in owners or b not in owners:
-            continue
-        distance = np.linalg.norm(group.xy - point, axis=1)
-        # The shared endpoint cannot establish an error on both sides of a corner.
-        sides = owners[(distance > 1.5) & (distance <= DETAIL_RADIUS_PX)]
-        if a in sides and b in sides:
-            return True
-    return False
 
 
 ################################################################
@@ -435,7 +352,7 @@ def _local_detail(group: Unmatched, geometry: DetailGeometry) -> bool:
 def find_unmatched(
     drawing_ink: np.ndarray,
     output: np.ndarray,
-    geometry: DetailGeometry | None = None,
+    curves: Sequence[tuple[np.ndarray, str]] | None = None,
     annotation: np.ndarray | None = None,
     outline: np.ndarray | None = None,
     tangent: np.ndarray | None = None,
@@ -444,19 +361,20 @@ def find_unmatched(
 ) -> list[Unmatched]:
     """Collect material/coarse defects, merge fine errors, then select display groups.
 
-    Material outlines suppress duplicate line groups. Fine tails extend coarse
-    groups before independent locals pass the size and curvature/corner checks.
+    Material outlines suppress duplicate line groups. curves, from output_curves,
+    add fine extra lines: tails extend coarse groups, and the rest are local.
     Annotation ink is never missing and never encloses material, but output
     lines along it are not extra either. Only outline ink, by default all part
     ink, encloses material.
     """
     annotated = annotation is not None and annotation.any()
     part_ink = drawing_ink & ~annotation if annotated else drawing_ink
-    # Thin both line sets so cluster size does not depend on stroke width.
-    drawing_lines, output_lines = skeletonize(part_ink), skeletonize(output)
+    # Thin both line sets so cluster size does not depend on stroke width; unlike
+    # skeletonize, thin keeps two-pixel diagonal strokes whole.
+    drawing_lines, output_lines = thin(part_ink), thin(output)
     if not (drawing_lines.any() and output_lines.any()):
         return []
-    all_lines = skeletonize(drawing_ink) if annotated else drawing_lines
+    all_lines = thin(drawing_ink) if annotated else drawing_lines
     # Limit input-only candidates to the output's vicinity to avoid far annotations.
     ys, xs = np.nonzero(output_lines)
     part = np.zeros_like(drawing_lines)
@@ -488,22 +406,10 @@ def find_unmatched(
     edge = _outline(material, drawing_lines.shape)
     lines = [line for line in lines if edge[line.xy[:, 1], line.xy[:, 0]].mean() < 0.8]
 
-    if geometry is not None:
-        # Cluster before clipping to the ROI, so a broad offset stays broad.
-        details = _line_groups(
-            output_lines & geometry.visible & (output_distances > DETAIL_UNMATCHED_PX),
-            "extra",
-            DETAIL_MIN_LENGTH_PX,
-        )
-        details = [g for g in details if edge[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
-        lines = _merge_extra_groups(lines, details, geometry.mask)
-        # The stricter local size/shape gate must not remove tails merged into coarse.
-        lines = [
-            g
-            for g in lines
-            if not g.local
-            or (g.size_px >= MIN_LOCAL_LENGTH_PX and _local_detail(g, geometry))
-        ]
+    if curves is not None:
+        fine = _fine_extra(curves, output_distances)
+        fine = [g for g in fine if edge[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
+        lines = _merge_extra_groups(lines, fine, drawing_lines.shape)
 
     # Qualified style errors need no geometric distance or coarse length threshold.
     style_band = np.zeros(drawing_ink.shape, np.uint8)
@@ -589,7 +495,7 @@ def draw_unmatched(
 
     # Restore source context: input gray, output sky blue, overlap pure blue.
     ink = drawing_gray < 128
-    centre = skeletonize(ink).astype(np.uint8)
+    centre = thin(ink).astype(np.uint8)
     centre = cv2.dilate(centre, np.ones((3, 3), np.uint8)) > 0
     # Thick lines narrow to show the band beside them; thin ones keep their width,
     # since widening would fill small text and details.

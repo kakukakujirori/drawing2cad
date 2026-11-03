@@ -1,5 +1,3 @@
-from dataclasses import replace
-
 import cv2
 import ezdxf
 import numpy as np
@@ -12,12 +10,11 @@ from zeroshot.pipeline.verification.drawing_diff.unmatched import (
     INPUT_GRAY,
     TANGENT_TEAL,
     Unmatched,
-    _local_detail,
     describe_unmatched,
-    detail_geometry,
     draw_unmatched,
     find_unmatched,
     measure_material_error,
+    output_curves,
     warp_output_to_drawing,
 )
 
@@ -242,24 +239,99 @@ def test_open_or_thin_input_has_unavailable_region_error():
     assert "cannot be filled" in error["reason"]
 
 
-@pytest.mark.parametrize("length, expected", [(23, False), (24, True)])
-def test_local_labels_have_a_minimum_length(length, expected):
-    corner = (((70, 100), (82, 100)), ((70, 100), (70, 100 + length - 12)))
-    drawing, output = _lines(*OUTLINE), _lines(*OUTLINE, *corner)
-    msp = ezdxf.new().modelspace()
-    for start, end in (*OUTLINE, *corner):
-        msp.add_line(start, end)
-    geometry = detail_geometry(
-        msp, np.array([[1.0, 0, 0.5], [0, 1.0, 0.5], [0, 0, 1.0]]), drawing.shape
-    )
-    groups = find_unmatched(drawing, output, geometry)
+# DXF model units to drawing pixel boundaries: one unit per pixel.
+PIXELS = np.array([[1.0, 0, 0.5], [0, 1.0, 0.5], [0, 0, 1.0]])
 
-    assert bool(groups) is expected
-    assert all(g.local and g.size_px == length for g in groups)
+
+def _curves(*segments, hidden=()):
+    """Output curves of visible and hidden line segments, in drawing pixels."""
+    doc = ezdxf.new(setup=True)
+    for start, end in segments:
+        doc.modelspace().add_line(start, end)
+    for start, end in hidden:
+        doc.modelspace().add_line(start, end, dxfattribs={"linetype": "HIDDEN"})
+    return output_curves(doc.modelspace(), PIXELS)
+
+
+def test_output_curves_are_the_visible_and_hidden_lines_only():
+    doc = ezdxf.new(setup=True)
+    doc.layers.add("dashed", linetype="HIDDEN")
+    doc.layers.add("TANGENT")
+    msp = doc.modelspace()
+    msp.add_line((0, 0), (10, 0))
+    msp.add_line((0, 5), (10, 5), dxfattribs={"linetype": "HIDDEN"})
+    msp.add_line((0, 10), (10, 10), dxfattribs={"layer": "dashed"})
+    msp.add_line((0, 15), (10, 15), dxfattribs={"layer": "TANGENT"})
+    msp.add_line((0, 20), (10, 20), dxfattribs={"linetype": "CENTER"})
+
+    curves = output_curves(msp, PIXELS)
+
+    assert sorted((xy[0][1], style) for xy, style in curves) == [
+        (0, "visible"),
+        (5, "hidden"),
+        (10, "hidden"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "depth, length, hidden, listed",
+    [
+        (5, 20, False, False),
+        (6, 20, False, True),
+        (6, 4, False, False),
+        (6, 20, True, False),
+        (7, 20, True, True),
+    ],
+)
+def test_an_output_stretch_is_listed_once_it_reaches_fine_px(
+    depth, length, hidden, listed
+):
+    """Far too short for a coarse group, yet an output line no input line explains.
+
+    A hidden one must reach further, past half the input's dash gaps.
+    """
+    copy = ((100, 100 + depth), (100 + length, 100 + depth))
+    drawing, output = _lines(*OUTLINE, INNER), _lines(*OUTLINE, INNER, copy)
+    curves = (
+        _curves(*OUTLINE, INNER, hidden=[copy])
+        if hidden
+        else _curves(*OUTLINE, INNER, copy)
+    )
+
+    groups = find_unmatched(drawing, output, curves)
+
+    assert find_unmatched(drawing, output) == []
+    if listed:
+        assert len(groups) == 1 and groups[0].local and groups[0].direction == "extra"
+        assert groups[0].box_px == (100, 100 + depth, 101 + length, 101 + depth)
+    else:
+        assert groups == []
+
+
+@pytest.mark.parametrize("top, listed", [(60, 0), (40, 2)])
+def test_a_hole_drawn_through_instead_of_blind_is_extra_but_dash_gaps_are_not(
+    top, listed
+):
+    """The input draws a blind hole's sides dashed, from y = 60 down."""
+    drawing = _lines(*OUTLINE, width=3).astype(np.uint8)
+    for x in (90, 110):
+        for y in range(60, 100, 13):
+            cv2.line(drawing, (x, y), (x, min(y + 8, 100)), 1, 1)
+    sides = [((x, top), (x, 100)) for x in (90, 110)]
+    output = _lines(*OUTLINE, *sides)
+
+    groups = find_unmatched(
+        drawing.astype(bool), output, _curves(*OUTLINE, hidden=sides)
+    )
+
+    assert len(groups) == listed
+    for group in groups:
+        assert group.local and group.direction == "extra"
+        assert 40 < group.box_px[1] and group.box_px[3] < 60
 
 
 @pytest.mark.parametrize("finish", ["round", "chamfer", "concave"])
-def test_local_edge_finishes_survive_coarse_filtering_and_clutter(finish):
+def test_edge_finishes_are_fine_extras_beside_coarse_clutter(finish):
     drawing = np.zeros((200, 200), np.uint8)
     output = _lines(*OUTLINE).astype(np.uint8)
     doc = ezdxf.new()
@@ -312,9 +384,7 @@ def test_local_edge_finishes_survive_coarse_filtering_and_clutter(finish):
     drawing, output = drawing.astype(bool), output.astype(bool)
     # Small finishes are below the existing whole-view length/area thresholds.
     assert find_unmatched(drawing, output) == []
-    transform = np.array([[1.0, 0, 0.5], [0, 1, 0.5], [0, 0, 1]])
-    masks = detail_geometry(msp, transform, drawing.shape)
-    groups = find_unmatched(drawing, output, masks)
+    groups = find_unmatched(drawing, output, output_curves(msp, PIXELS))
     assert len(groups) == (1 if finish == "concave" else 2)
     assert all(g.local and g.direction == "extra" for g in groups)
 
@@ -322,8 +392,7 @@ def test_local_edge_finishes_survive_coarse_filtering_and_clutter(finish):
     # duplicated as several short local groups at its ends.
     cv2.line(output.view(np.uint8), (100, 50), (100, 150), 1, 1)
     msp.add_line((100, 50), (100, 150))
-    masks = detail_geometry(msp, transform, drawing.shape)
-    groups = find_unmatched(drawing, output, masks)
+    groups = find_unmatched(drawing, output, output_curves(msp, PIXELS))
     assert sum(g.local for g in groups) == (1 if finish == "concave" else 2)
     assert sum(not g.local for g in groups) == 1
 
@@ -331,56 +400,35 @@ def test_local_edge_finishes_survive_coarse_filtering_and_clutter(finish):
     for x in (65, 80, 120, 135):
         cv2.line(output.view(np.uint8), (x, 80), (x, 135), 1, 1)
         msp.add_line((x, 80), (x, 135))
-    groups = find_unmatched(
-        drawing,
-        output,
-        detail_geometry(msp, transform, drawing.shape),
-    )
+    groups = find_unmatched(drawing, output, output_curves(msp, PIXELS))
     assert sum(not g.local for g in groups) == 4
     assert sum(g.local for g in groups) == (1 if finish == "concave" else 2)
     assert not any(g.local for g in groups[:4])
 
 
-@pytest.mark.parametrize("start, end", [(30, 71), (60, 81)])
-def test_a_local_tail_and_coarse_run_are_displayed_as_one_defect(start, end):
-    outline = (
-        ((20, 20), (280, 20)),
-        ((280, 20), (280, 280)),
-        ((280, 280), (20, 280)),
-        ((20, 280), (20, 20)),
-    )
-    # The tail lies 5 px off: a fine error, but within a coarse group's reach.
+def test_a_fine_tail_and_coarse_run_are_displayed_as_one_defect():
+    # The tail lies 5 px off, within WEAK_PX: only its fine stretch reaches it.
     drawing = _lines(
-        *outline,
+        *FRAME,
         ((30, 105), (60, 105)),
         ((60, 105), (80, 120)),
         ((80, 120), (260, 120)),
         size=300,
     )
-    output = _lines(*outline, ((30, 100), (260, 100)), size=300)
-    local = np.zeros_like(output)
-    local[100, start:end] = True
+    line = ((30, 100), (260, 100))
+    output = _lines(*FRAME, line, size=300)
 
-    msp = ezdxf.new().modelspace()
-    for a, b in (*outline, ((30, 100), (260, 100))):
-        msp.add_line(a, b)
-    geometry = detail_geometry(
-        msp, np.array([[1.0, 0, 0.5], [0, 1, 0.5], [0, 0, 1]]), drawing.shape
-    )
-    groups = find_unmatched(drawing, output, replace(geometry, mask=local))
+    groups = find_unmatched(drawing, output, _curves(*FRAME, line))
 
     extra = [g for g in groups if g.direction == "extra"]
     assert len(extra) == 1 and not extra[0].local
-    assert extra[0].box_px == (start, 100, 261, 101)
+    assert extra[0].box_px == (30, 100, 261, 101)
 
 
-@pytest.mark.parametrize("offset", [(0, 0), (2, 2), (6, 6), (6, 0), (0, 6)])
-def test_local_comparison_tolerates_registration_stroke_width_and_annotation(offset):
-    doc = ezdxf.new()
-    for start, end in OUTLINE:
-        doc.modelspace().add_line(start, end)
-    # Hidden geometry stays outside the local comparison.
-    doc.modelspace().add_arc((60, 60), 8, 0, 90, dxfattribs={"linetype": "HIDDEN"})
+@pytest.mark.parametrize("offset", [(0, 0), (2, 2), (3, 0), (0, 3)])
+def test_fine_comparison_tolerates_registration_stroke_width_and_annotation(offset):
+    """Offsets within matched-line noise stay below FINE_PX even at the corners,
+    which the centre line of a thick stroke cuts."""
     drawing = _lines(*OUTLINE, width=7).astype(np.uint8)
     drawing = cv2.warpAffine(
         drawing, np.float32([[1, 0, offset[0]], [0, 1, offset[1]]]), (200, 200)
@@ -388,129 +436,12 @@ def test_local_comparison_tolerates_registration_stroke_width_and_annotation(off
     cv2.line(drawing, (15, 20), (175, 20), 1, 3)
     cv2.putText(drawing, "100", (80, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1, 1)
     output = _lines(*OUTLINE)
-    masks = detail_geometry(
-        doc.modelspace(),
-        np.array([[1.0, 0, 0.5], [0, 1, 0.5], [0, 0, 1]]),
-        drawing.shape,
-    )
+
     coarse = find_unmatched(drawing.astype(bool), output)
-    groups = find_unmatched(drawing.astype(bool), output, masks)
+    groups = find_unmatched(drawing.astype(bool), output, _curves(*OUTLINE))
+
     assert not any(group.local for group in groups)
     assert describe_unmatched(groups) == describe_unmatched(coarse)
-
-
-def test_a_high_curvature_radius_error_is_a_local_defect():
-    drawing, output = np.zeros((300, 300), np.uint8), np.zeros((300, 300), np.uint8)
-    cv2.circle(drawing, (150, 150), 26, 1, 3)
-    cv2.circle(output, (150, 150), 20, 1, 1)
-    doc = ezdxf.new()
-    doc.modelspace().add_circle((150, 150), 20)
-    masks = detail_geometry(
-        doc.modelspace(),
-        np.array([[1.0, 0, 0.5], [0, 1, 0.5], [0, 0, 1]]),
-        drawing.shape,
-    )
-
-    groups = find_unmatched(drawing.astype(bool), output.astype(bool), masks)
-
-    assert len(groups) == 1 and groups[0].local
-    assert groups[0].direction == "extra"
-
-
-def test_a_small_radius_error_is_filtered_even_when_its_curvature_qualifies():
-    images = []
-    msp = ezdxf.new().modelspace()
-    for radius in (46, 35):
-        image = np.zeros((300, 300), np.uint8)
-        for start, end in (
-            ((40 + radius, 40), (260, 40)),
-            ((260, 40), (260, 260)),
-            ((260, 260), (40, 260)),
-            ((40, 260), (40, 40 + radius)),
-        ):
-            cv2.line(image, start, end, 1, 1)
-            if radius == 35:
-                msp.add_line(start, end)
-        cv2.ellipse(
-            image, (40 + radius, 40 + radius), (radius, radius), 0, 180, 270, 1, 1
-        )
-        images.append(image.astype(bool))
-    msp.add_arc((75, 75), 35, 180, 270)
-    drawing, output = images
-    geometry = detail_geometry(
-        msp, np.array([[1.0, 0, 0.5], [0, 1.0, 0.5], [0, 0, 1.0]]), drawing.shape
-    )
-
-    angles = np.radians(np.linspace(208, 248, 15))
-    candidate = Unmatched(
-        "extra", 75 + 35 * np.column_stack((np.cos(angles), np.sin(angles)))
-    )
-
-    assert _local_detail(candidate, geometry)
-    assert find_unmatched(drawing, output, geometry) == []
-
-
-def test_an_error_on_only_one_side_of_a_corner_is_not_a_local_finish():
-    frame = (
-        ((10, 10), (240, 10)),
-        ((240, 10), (240, 240)),
-        ((240, 240), (10, 240)),
-        ((10, 240), (10, 10)),
-    )
-    output_segments = (*frame, ((70, 70), (130, 70)), ((70, 70), (70, 120)))
-    drawing = _lines(
-        *frame,
-        ((70, 70), (70, 120)),
-        ((70, 70), (75, 76)),
-        ((75, 76), (105, 76)),
-        ((105, 76), (110, 70)),
-        ((110, 70), (130, 70)),
-        size=260,
-    )
-    output = _lines(*output_segments, size=260)
-    msp = ezdxf.new().modelspace()
-    for start, end in output_segments:
-        msp.add_line(start, end)
-    geometry = detail_geometry(
-        msp, np.array([[1.0, 0, 0.5], [0, 1.0, 0.5], [0, 0, 1.0]]), drawing.shape
-    )
-
-    candidate = Unmatched(
-        "extra", np.column_stack((np.arange(78, 106), np.full(28, 100)))
-    )
-    assert not _local_detail(candidate, geometry)
-    assert find_unmatched(drawing, output, geometry) == []
-
-
-@pytest.mark.parametrize("angle, expected", [(20, False), (40, True), (60, True)])
-@pytest.mark.parametrize("reverse", [False, True])
-def test_corner_detection_ignores_dxf_entity_direction(angle, expected, reverse):
-    msp = ezdxf.new().modelspace()
-    ends = [
-        np.array([30.0, 0]),
-        30 * np.array([np.cos(np.radians(angle)), np.sin(np.radians(angle))]),
-    ]
-    points = []
-    for end in ends:
-        msp.add_line(end if reverse else (0, 0), (0, 0) if reverse else end)
-        points.extend(np.linspace(end / 4, end, 30) + [100, 100])
-    geometry = detail_geometry(
-        msp, np.array([[1.0, 0, 100.5], [0, 1.0, 100.5], [0, 0, 1.0]]), (200, 200)
-    )
-
-    assert _local_detail(Unmatched("extra", np.array(points)), geometry) is expected
-
-
-def test_a_crossing_line_does_not_make_a_straight_error_a_corner_error():
-    msp = ezdxf.new().modelspace()
-    msp.add_line((100.2, 80), (100.2, 120))
-    msp.add_line((80, 100), (120, 100))
-    geometry = detail_geometry(
-        msp, np.array([[1.0, 0, 0.5], [0, 1.0, 0.5], [0, 0, 1.0]]), (200, 200)
-    )
-    group = Unmatched("extra", np.column_stack((np.full(31, 100), np.arange(85, 116))))
-
-    assert not _local_detail(group, geometry)
 
 
 @pytest.mark.parametrize("shape", ["horizontal", "diagonal"])
@@ -546,108 +477,17 @@ def test_a_remote_coarse_error_does_not_admit_disconnected_local_fragments(shape
     ]
     drawing = _lines(*frame, *common, *expected, size=size)
     output = _lines(*frame, *common, *actual, size=size)
-    msp = ezdxf.new().modelspace()
-    for start, end in frame + common + actual:
-        msp.add_line(start, end)
-    geometry = detail_geometry(
-        msp, np.array([[1.0, 0, 0.5], [0, 1.0, 0.5], [0, 0, 1.0]]), drawing.shape
-    )
 
     coarse = find_unmatched(drawing, output)
-    groups = find_unmatched(drawing, output, geometry)
+    groups = find_unmatched(drawing, output, _curves(*frame, *common, *actual))
 
     assert len(coarse) == 2
     assert not any(g.local for g in groups)
-    # A fine tail between DETAIL_UNMATCHED_PX and WEAK_PX may extend a coarse
-    # group by a pixel; no disconnected fragment joins it.
+    # Its fine stretch lengthens the coarse group where the line lies between
+    # SUPPORT_PX and WEAK_PX of the input; no disconnected fragment joins it.
     assert [g.direction for g in groups] == [g.direction for g in coarse]
     for group, alone in zip(groups, coarse, strict=True):
-        assert np.abs(np.subtract(group.box_px, alone.box_px)).max() <= 1
-
-
-@pytest.mark.parametrize(
-    "linetype,layer_linetype,selected",
-    [
-        ("CONTINUOUS", "CONTINUOUS", True),
-        ("HIDDEN", "CONTINUOUS", False),
-        ("BYLAYER", "CONTINUOUS", True),
-        ("BYLAYER", "HIDDEN", False),
-    ],
-)
-def test_detail_regions_select_continuous_curved_ellipse_tips(
-    linetype, layer_linetype, selected
-):
-    doc = ezdxf.new(setup=True)
-    doc.layers.add("test", linetype=layer_linetype)
-    doc.modelspace().add_ellipse(
-        (250, 125),
-        major_axis=(200, 0),
-        ratio=0.1,
-        dxfattribs={"linetype": linetype, "layer": "test"},
-    )
-    geometry = detail_geometry(
-        doc.modelspace(),
-        np.array([[1.0, 0, 0.5], [0, 1, 0.5], [0, 0, 1]]),
-        (250, 500),
-    )
-
-    assert bool(geometry.visible.any()) is selected
-    assert bool(geometry.mask[125, 450]) is selected
-    assert bool(geometry.mask[125, 50]) is selected
-    # The ellipse's broad, nearly straight sides are outside the tip ROIs.
-    assert not geometry.mask[145, 250]
-
-
-@pytest.mark.parametrize("scale, selected", [(0.5, True), (1.0, True), (5.0, False)])
-def test_curvature_is_measured_in_drawing_pixels(scale, selected):
-    doc = ezdxf.new()
-    doc.modelspace().add_circle((0, 0), 20)
-    geometry = detail_geometry(
-        doc.modelspace(),
-        np.array([[scale, 0, 150.5], [0, scale, 150.5], [0, 0, 1]]),
-        (300, 300),
-    )
-
-    assert bool(geometry.mask.any()) is selected
-
-
-def test_a_straight_spline_only_selects_its_angular_join():
-    doc = ezdxf.new()
-    doc.modelspace().add_open_spline([(40, 100), (80, 100), (120, 100), (160, 100)])
-    doc.modelspace().add_line((160, 100), (160, 40))
-    geometry = detail_geometry(
-        doc.modelspace(),
-        np.array([[1.0, 0, 0.5], [0, 1, 0.5], [0, 0, 1]]),
-        (200, 200),
-    )
-
-    assert geometry.mask[100, 160]
-    assert not geometry.mask[100, 100]
-
-
-def test_a_shifted_nearly_straight_curve_is_not_a_local_finish():
-    drawing, output = np.zeros((300, 400), np.uint8), np.zeros((300, 400), np.uint8)
-    for image in (drawing, output):
-        cv2.rectangle(image, (30, 25), (370, 270), 1, 1)
-    cv2.ellipse(output, (200, -900), (1000, 1000), 0, 85, 95, 1, 1)
-    cv2.ellipse(drawing, (200, -894), (1000, 1000), 0, 85, 95, 1, 1)
-    doc = ezdxf.new()
-    for start, end in (
-        ((30, 25), (370, 25)),
-        ((370, 25), (370, 270)),
-        ((370, 270), (30, 270)),
-        ((30, 270), (30, 25)),
-    ):
-        doc.modelspace().add_line(start, end)
-    doc.modelspace().add_arc((200, -900), 1000, 85, 95)
-    masks = detail_geometry(
-        doc.modelspace(),
-        np.array([[1.0, 0, 0.5], [0, 1, 0.5], [0, 0, 1]]),
-        drawing.shape,
-    )
-
-    assert not masks.mask[100, 200]
-    assert find_unmatched(drawing.astype(bool), output.astype(bool), masks) == []
+        assert np.abs(np.subtract(group.box_px, alone.box_px)).max() <= 2
 
 
 def test_nearby_cluster_labels_remain_readable_and_inside_the_image(monkeypatch):

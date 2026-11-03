@@ -164,18 +164,6 @@ def test_tangents_explain_input_lines_but_are_optional_and_not_material():
     assert diff.stats["match_score"] > 0
 
 
-def test_tangents_do_not_seed_local_finish_defects():
-    from zeroshot.pipeline.verification.drawing_diff.unmatched import detail_geometry
-
-    doc = ezdxf.new()
-    doc.layers.add("TANGENT")
-    doc.modelspace().add_circle((60, 60), 10, dxfattribs={"layer": "TANGENT"})
-    geometry = detail_geometry(doc.modelspace(), np.eye(3), (120, 120))
-    assert not geometry.mask.any()
-    assert not geometry.visible.any()
-    assert not geometry.samples.n
-
-
 @pytest.mark.parametrize(
     "mask", [np.zeros((64, 64), np.uint8), np.zeros((32, 64), bool)]
 )
@@ -184,7 +172,7 @@ def test_tangent_mask_must_share_the_projection_pixel_grid(mask):
         compute_diff(_white(), _white(), _alignment(), tangent_ink=mask)
 
 
-def test_diff_builds_the_local_comparison_mask_from_dxf_geometry():
+def test_diff_compares_fine_lines_from_dxf_geometry():
     drawing, output = _white(200), _white(200)
     chamfered = np.array(
         [
@@ -223,14 +211,14 @@ def test_diff_builds_the_local_comparison_mask_from_dxf_geometry():
         assert detailed.stats[key] == coarse.stats[key]
 
 
-def test_local_comparison_ignores_hidden_dash_phase_near_a_visible_corner():
+def test_fine_comparison_ignores_hidden_dash_phase():
     drawing, output = _white(200), _white(200)
     for image in (drawing, output):
         cv2.rectangle(image, (40, 40), (160, 160), (0, 0, 0), 1)
-    for start, end in [(0, 180), (270, 360)]:
-        cv2.ellipse(drawing, (70, 70), (18, 18), 0, start, end, (0, 0, 0), 1)
-    for start, end in [(0, 70), (90, 250), (270, 360)]:
-        cv2.ellipse(output, (70, 70), (18, 18), 0, start, end, (0, 0, 0), 1)
+    # Dashes about 8 px long with 5 px gaps, out of phase in the two images.
+    for image, phase in ((drawing, 0), (output, 20)):
+        for start in range(phase, phase + 360, 40):
+            cv2.ellipse(image, (70, 70), (18, 18), 0, start, start + 25, (0, 0, 0), 1)
 
     doc = ezdxf.new()
     corners = [(40, 40), (160, 40), (160, 160), (40, 160)]

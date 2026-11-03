@@ -23,10 +23,10 @@ from .image_ops import (
 from .line_style import find_line_style_mismatches
 from .unmatched import (
     describe_unmatched,
-    detail_geometry,
     draw_unmatched,
     find_unmatched,
     measure_material_error,
+    output_curves,
     warp_output_to_drawing,
 )
 
@@ -235,10 +235,10 @@ def compute_diff(
 
     projection_rgb holds required lines only; tangent_ink is the optional
     boundary mask on that same pixel grid. It supports missing input lines
-    without contributing extra geometry, silhouette area, or local defects.
+    without contributing extra geometry, silhouette area, or fine extra lines.
 
     projection_modelspace and projection_to_uv (projection pixel boundaries to CAD UV)
-    enable local edge-finish and line-style comparison. Style mismatches are red
+    enable fine line and line-style comparison. Style mismatches are red
     in the overlay and separately counted; they do not alter geometric scores.
 
     Invalid arguments raise ValueError. Unusable image content or a failed
@@ -326,18 +326,14 @@ def compute_diff(
                 else 0.0
             )
 
-        # Edge-finish comparison needs DXF geometry mapped to drawing pixels.
-        geometry = None
+        # Fine comparison needs the DXF curves mapped to drawing pixels.
+        curves = None
         line_style_mismatches = []
         if projection_modelspace is not None and projection_to_uv is not None:
             output_model_to_input = np.linalg.inv(
                 projection_to_uv @ np.array(alignment.H_drawing_to_projection)
             )
-            geometry = detail_geometry(
-                projection_modelspace,
-                output_model_to_input,
-                drawing_ink.shape,
-            )
+            curves = output_curves(projection_modelspace, output_model_to_input)
             line_style_mismatches, stats["line_style"] = find_line_style_mismatches(
                 output_modelspace=projection_modelspace,
                 output_model_to_input=output_model_to_input,
@@ -364,7 +360,7 @@ def compute_diff(
         groups = find_unmatched(
             drawing_ink,
             output_seen,
-            geometry,
+            curves,
             non_part,
             outline,
             tangent_seen,
