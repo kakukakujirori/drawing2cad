@@ -139,6 +139,8 @@ class SandboxRunner:
         command: str,
         workdir: SandboxWorkdir,
         timeout_s: float | None = None,
+        *,
+        read_only_files: Sequence[str | PurePosixPath] = (),
     ) -> SandboxResult:
 
         # sanity check
@@ -188,6 +190,40 @@ class SandboxRunner:
                     str(host_workdir / subdir),
                     str(sandbox_workdir / subdir),
                 ]
+            )
+
+        protected_file_paths: set[Path] = set()
+        for file in read_only_files:
+            relative = workdir.sandbox_to_host_path(file).relative_to(
+                workdir.host_bind_dir
+            )
+            source = host_workdir / relative
+            if source.resolve() != source or not source.is_file():
+                raise ValueError(
+                    f"read-only file must be a regular workspace file without symlinks: {file}"
+                )
+            if source.stat().st_nlink != 1:
+                raise ValueError(f"read-only file must not have hard links: {file}")
+            if not any(
+                relative.is_relative_to(root) for root in workdir.read_only_subdirs
+            ):
+                protected_file_paths.add(relative)
+        # Bind parents so a rename cannot replace a protected file's path.
+        protected_parent_dirs = {
+            parent
+            for path in protected_file_paths
+            for parent in path.parents
+            if parent.parts
+        }
+        for parent in sorted(
+            protected_parent_dirs, key=lambda path: (len(path.parts), path.parts)
+        ):
+            bwrap_command.extend(
+                ["--bind", str(host_workdir / parent), str(sandbox_workdir / parent)]
+            )
+        for file in sorted(protected_file_paths):
+            bwrap_command.extend(
+                ["--ro-bind", str(host_workdir / file), str(sandbox_workdir / file)]
             )
 
         try:

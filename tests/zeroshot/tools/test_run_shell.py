@@ -1,16 +1,19 @@
+import json
 import shlex
 import sys
 from pathlib import Path
 
 import pytest
 
+from tests.zeroshot.chat_models import ScriptedChatModel, tool_call
 from zeroshot.pipeline.sandbox import (
     SandboxResult,
     SandboxRunner,
     SandboxStatus,
     SandboxWorkdir,
 )
-from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
+from zeroshot.pipeline.tools.run_shell import RunShellContext, create_run_shell_tool
+from zeroshot.pipeline.workflow.components.agent import create_agent
 
 
 class StubSandboxRunner:
@@ -23,8 +26,10 @@ class StubSandboxRunner:
         command: str,
         workdir: SandboxWorkdir,
         timeout_s: float | None = None,
+        *,
+        read_only_files=(),
     ) -> SandboxResult:
-        del timeout_s
+        del timeout_s, read_only_files
         self.calls.append((command, workdir))
         return self.result
 
@@ -71,6 +76,59 @@ print(value + 1)
     assert second["status"] == "COMPLETED"
     assert second["returncode"] == 0
     assert second["stdout"] == "42\n"
+
+
+def test_protection_and_failure_metadata_follow_the_invocation_context(
+    tmp_path, sandbox_runner
+):
+    workdir = SandboxWorkdir(tmp_path)
+    for file in ("front.png", "top.png"):
+        (tmp_path / file).write_text("original")
+    cases = [
+        (("front.png",), "printf changed > front.png", False),
+        (("top.png",), "printf changed > front.png", True),
+        (("top.png",), "printf changed > top.png", False),
+        ((), "printf changed > top.png", True),
+        (("top.png",), "cat missing.png", False),
+        (("top.png",), "rm top.png", False),
+        (("top.png",), "printf 'Read-only file system' >&2", True),
+        (("top.png",), "printf 'unrelated failure' >&2\nexit 2", False),
+    ]
+    model = ScriptedChatModel(
+        responses=tuple(
+            tool_call("run_shell", {"command": command}, str(index))
+            for index, (_, command, _) in enumerate(cases)
+        )
+    )
+    shell = create_run_shell_tool(sandbox_runner, workdir)
+    assert set(shell.get_input_jsonschema()["properties"]) == {"command"}
+    agent = create_agent(
+        "test",
+        model,
+        [shell],
+        max_turns=1,
+        announce_turns=False,
+        checkpointer=False,
+    )
+    for protected, command, succeeds in cases:
+        state = agent.invoke(
+            {"messages": []},
+            context=RunShellContext(protected) if protected else None,
+        )
+        message = next(
+            m for m in state["messages"] if getattr(m, "name", None) == "run_shell"
+        )
+        result = json.loads(message.content)
+        assert (result["returncode"] == 0) is succeeds
+        if protected and not succeeds:
+            assert result["read_only_files"] == list(protected)
+        else:
+            assert "read_only_files" not in result
+        if command.startswith("printf '"):
+            expected_stderr = (
+                "Read-only file system" if succeeds else "unrelated failure"
+            )
+            assert result["stderr"] == expected_stderr
 
 
 @pytest.mark.parametrize(

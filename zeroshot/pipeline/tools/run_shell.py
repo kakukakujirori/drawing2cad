@@ -1,11 +1,18 @@
+from dataclasses import dataclass
 from inspect import cleandoc
 from tempfile import NamedTemporaryFile
 
 from langchain_core.tools import BaseTool, tool
+from langgraph.runtime import get_runtime
 
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 
 _MAX_INLINE_CHARS = 16_000
+
+
+@dataclass(frozen=True)
+class RunShellContext:
+    read_only_files: tuple[str, ...]
 
 
 def _inline_output(text: str, stream: str, workdir: SandboxWorkdir) -> str:
@@ -54,17 +61,24 @@ def create_run_shell_tool(
     )
 
     @tool("run_shell", description=description)
-    def run_shell(command: str) -> dict[str, str | int | None]:
+    def run_shell(command: str) -> dict[str, str | int | list[str] | None]:
+        runtime = get_runtime(RunShellContext)
+        read_only_files = (
+            runtime.context.read_only_files if runtime and runtime.context else ()
+        )
         result = sandbox_runner.run(
             command=command,
             workdir=workdir,
+            read_only_files=read_only_files,
         )
-
-        return {
+        feedback: dict[str, str | int | list[str] | None] = {
             "status": result.status.value,
             "returncode": result.returncode,
             "stdout": _inline_output(result.stdout, "stdout", workdir),
             "stderr": _inline_output(result.stderr, "stderr", workdir),
         }
+        if result.returncode not in (0, None) and read_only_files:
+            feedback["read_only_files"] = list(read_only_files)
+        return feedback
 
     return run_shell

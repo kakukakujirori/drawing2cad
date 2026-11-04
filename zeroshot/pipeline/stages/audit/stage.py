@@ -27,7 +27,7 @@ from zeroshot.pipeline.tools.calculate_drawing_scale import (
 )
 from zeroshot.pipeline.tools.fit_edge import create_fit_edge_tool
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
-from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
+from zeroshot.pipeline.tools.run_shell import RunShellContext, create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore, StepRenderer
 from zeroshot.pipeline.workflow._config import _child_graph_config
 from zeroshot.pipeline.workflow.evidence import EvidenceMode
@@ -101,6 +101,13 @@ class AuditStage:
                 "retry": retry,
             },
             config=_child_graph_config(config),
+            context=RunShellContext(
+                read_only_files=tuple(
+                    view.file for view in snapshot.interpretation.views
+                )
+                if snapshot.interpretation
+                else (),
+            ),
         )
         return {
             "audit_state": result,

@@ -94,6 +94,7 @@ def test_read_only_subdir_is_readable_but_not_writable_in_sandbox(
         create_result = sandbox_runner.run(
             command="touch attempts/new.txt",
             workdir=sandbox_workdir,
+            read_only_files=["/work/attempts/model.py"],
         )
         normal_write_result = sandbox_runner.run(
             command="touch writable.txt",
@@ -108,6 +109,72 @@ def test_read_only_subdir_is_readable_but_not_writable_in_sandbox(
     assert protected_file.read_text(encoding="utf-8") == "original"
     assert not (protected_dir / "new.txt").exists()
     assert (work_dir / "writable.txt").is_file()
+
+
+@pytest.mark.parametrize(
+    "file", ["front.png", "views/nested/front.png", "/tmp/front.png"]
+)
+def test_read_only_files_apply_to_one_call_without_blocking_scratch(
+    tmp_path, sandbox_runner, file
+):
+    workdir = SandboxWorkdir(tmp_path)
+    path = workdir.sandbox_to_host_path(file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("registered pixels")
+    for command in (
+        f"printf changed > {file}",
+        f"cp /dev/null {file}",
+        f"touch replacement; mv replacement {file}",
+        f"rm {file}",
+        *(
+            f"mv {parent.relative_to(tmp_path)} moved"
+            for parent in path.parents
+            if parent != tmp_path and parent.is_relative_to(tmp_path)
+        ),
+    ):
+        result = sandbox_runner.run(command, workdir, read_only_files=[file])
+        assert result.returncode != 0, command
+        assert path.read_text() == "registered pixels"
+    # /tmp and /work/tmp name the same file.
+    if file.startswith("/tmp/"):
+        result = sandbox_runner.run(
+            "printf changed > /work/tmp/front.png", workdir, read_only_files=[file]
+        )
+        assert result.returncode != 0
+    result = sandbox_runner.run(
+        f"cat {file}; printf zoom > {file}.zoom", workdir, read_only_files=[file]
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "registered pixels"
+    assert path.with_suffix(".png.zoom").read_text() == "zoom"
+    # The next coder call can still revise the same path.
+    result = sandbox_runner.run(f"printf revised > {file}", workdir)
+    assert result.returncode == 0, result.stderr
+    assert path.read_text() == "revised"
+
+
+@pytest.mark.parametrize("alias", ["symlink", "parent_symlink", "hardlink", "missing"])
+def test_read_only_files_reject_missing_files_and_writable_aliases(
+    tmp_path, sandbox_runner, alias
+):
+    workdir = SandboxWorkdir(tmp_path)
+    source = tmp_path / "front.png"
+    source.write_text("pixels")
+    target = tmp_path / "alias.png"
+    if alias == "symlink":
+        target.symlink_to(source)
+    elif alias == "parent_symlink":
+        (tmp_path / "views").symlink_to(tmp_path, target_is_directory=True)
+        target = tmp_path / "views/front.png"
+    elif alias == "hardlink":
+        target.hardlink_to(source)
+    with pytest.raises(ValueError, match="read-only file"):
+        sandbox_runner.run(
+            "touch command_ran",
+            workdir,
+            read_only_files=[workdir.host_to_sandbox_path(target)],
+        )
+    assert not (tmp_path / "command_ran").exists()
 
 
 @pytest.mark.parametrize(

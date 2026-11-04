@@ -1,6 +1,7 @@
 """The auditor reviews file-derived evidence before completing the current audit."""
 
 import json
+import shlex
 import sys
 from dataclasses import replace
 from functools import partial
@@ -35,6 +36,7 @@ from zeroshot.pipeline.stages.audit.stage import create_audit_stage
 from zeroshot.pipeline.stages.audit.verify import AuditVerifier
 from zeroshot.pipeline.stages.interpretation.contracts import ProjectionMethod
 from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
+from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 from zeroshot.pipeline.workflow import create_agent
@@ -157,6 +159,82 @@ def test_audit_stage_uses_its_configured_filename_for_writing_and_archiving(
             workdir.host_bind_dir / "attempts/round_000/audit/000/review.json"
         ).is_file()
         assert not (workdir.host_bind_dir / "audit.json").exists()
+
+
+def test_audit_shell_protects_the_snapshot_crop_and_allows_separate_zooms(tmp_path):
+    history = _completed_run()
+    crop = history.snapshots[-1].interpretation.views[0]
+    crop.file = "/work/front.png"
+    Image.new("RGB", (10, 10), "white").save(tmp_path / "front.png")
+    original = (tmp_path / "front.png").read_bytes()
+    # The held snapshot, not a possibly edited workspace JSON, names the input.
+    (tmp_path / "interpretation.json").write_text('{"views": []}')
+    report = AuditReport(
+        ticket_reviews=bootstrap_review(), concern_reviews={}, findings=[]
+    )
+    zoom = "from PIL import Image; Image.open('front.png').resize((20, 20)).save('{}')"
+    overwrite = "python -c " + shlex.quote(zoom.format("front.png"))
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("run_shell", {"command": overwrite}, "overwrite"),
+            tool_call(
+                "run_shell",
+                {
+                    "command": "python -c "
+                    + shlex.quote(zoom.format("front_zoom.png"))
+                    + "\nprintf %s "
+                    + shlex.quote(report.model_dump_json())
+                    + " > audit.json"
+                },
+                "report",
+            ),
+            _answer("tool"),
+        )
+    )
+    workdir = SandboxWorkdir(tmp_path)
+    runner = SandboxRunner(Path(sys.executable), default_timeout_s=10)
+    context = {
+        "coding_output_path": "/work/model.py",
+        "reconstruction_path": "/work/reconstruction.json",
+        "drawing_skeleton": "",
+    }
+    stage = create_audit_stage(
+        partial(
+            create_agent,
+            role="output_auditor",
+            model=model,
+            max_turns=3,
+            announce_turns=False,
+            checkpointer=False,
+            response_format_strategy="tool",
+        ),
+        tool_names=["run_shell"],
+        role_path=ROLE_PATHS["output_auditor"],
+        instructions=StageInstructions(
+            [],
+            "path",
+            context,
+            workdir,
+            projection_method=ProjectionMethod.THIRD_ANGLE,
+        ),
+        prompt_context=context,
+        attempt_store=AttemptStore(workdir, lambda: 0),
+        artifact_presenter=ArtifactPresenter(input="path"),
+        sandbox_runner=runner,
+        diff_drawer_config=None,
+        trial_store=AttemptStore(workdir, lambda: 0, root_dirname=TRIALS_DIRNAME),
+    )
+    result = stage.run({"reconstruction": history}, {})
+    assert result["audit_report"] == report
+    assert (tmp_path / "front.png").read_bytes() == original
+    failed_shell = json.loads(model.received_messages[1][-1].text)
+    assert "Read-only file system" in failed_shell["stderr"]
+    assert failed_shell["read_only_files"] == [crop.file]
+    with Image.open(tmp_path / "front_zoom.png") as image:
+        assert image.size == (20, 20)
+    assert crop.file == "/work/front.png"
+    coder = create_run_shell_tool(runner, workdir)
+    assert coder.invoke({"command": overwrite})["returncode"] == 0
 
 
 @pytest.mark.parametrize("strategy", ["tool", "provider"])
