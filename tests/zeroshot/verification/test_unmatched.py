@@ -282,6 +282,26 @@ def test_open_or_thin_input_has_unavailable_region_error():
     assert "cannot be filled" in error["reason"]
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_small_outline_gap_does_not_turn_an_enclosed_bay_into_material(reverse):
+    # A frame's narrow split is open in one raster and closed in the other.
+    # Flood fill flips the whole central bay although their edges almost match.
+    frame = np.zeros((420, 420), np.uint8)
+    cv2.rectangle(frame, (40, 40), (380, 380), 1, 2)
+    cv2.rectangle(frame, (60, 60), (360, 360), 1, 2)
+    split = frame.copy()
+    split[35:65, 205:215] = 0
+    cv2.line(split, (204, 40), (204, 60), 1, 2)
+    cv2.line(split, (215, 40), (215, 60), 1, 2)
+    drawing, output = (frame, split) if reverse else (split, frame)
+    drawing, output = drawing.astype(bool), output.astype(bool)
+
+    error = measure_material_error(drawing, output)
+
+    assert error["missing_px2"] + error["extra_px2"] < 2000
+    assert not any(group.material for group in find_unmatched(drawing, output))
+
+
 # DXF model units to drawing pixel boundaries: one unit per pixel.
 PIXELS = np.array([[1.0, 0, 0.5], [0, 1.0, 0.5], [0, 0, 1.0]])
 
@@ -612,3 +632,39 @@ def test_input_lines_beyond_the_output_vicinity_are_drawn_as_not_compared():
     image = draw_unmatched(np.uint8(~drawing) * 255, output, [])
     assert np.all(image[190, 70:130] == NEUTRAL_GRAY)
     assert np.all(image[100, 70:130] == INPUT_GREEN)
+
+
+@pytest.mark.parametrize("style_length", [30, 200])
+def test_style_and_geometry_compete_by_length_for_coarse_slots(style_length):
+    frame = (
+        ((20, 20), (480, 20)),
+        ((480, 20), (480, 480)),
+        ((480, 480), (20, 480)),
+        ((20, 480), (20, 20)),
+    )
+    missing = [
+        ((80, y), (80 + length, y))
+        for y, length in zip((100, 180, 260, 340), (160, 140, 120, 100), strict=True)
+    ]
+    style_line = ((80, 420), (80 + style_length, 420))
+    style = Unmatched(
+        "line_style",
+        np.column_stack(
+            (np.arange(80, 81 + style_length), np.full(style_length + 1, 420))
+        ),
+        input_style="visible",
+        output_style="hidden",
+    )
+    groups = find_unmatched(
+        _lines(*frame, *missing, style_line, size=500),
+        _lines(*frame, style_line, size=500),
+        line_style_mismatches=[style],
+    )
+
+    assert len(groups) == 4
+    if style_length == 30:
+        assert [g.direction for g in groups] == ["missing"] * 4
+        assert [g.box_px[1] for g in groups] == [100, 180, 260, 340]
+    else:
+        assert groups[0] is style
+        assert [g.box_px[1] for g in groups[1:]] == [100, 180, 260]

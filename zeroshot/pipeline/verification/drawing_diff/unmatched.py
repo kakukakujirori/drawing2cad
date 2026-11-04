@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from ezdxf.layouts import Modelspace
 from ezdxf.path import make_path
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import binary_fill_holes, distance_transform_edt
 from skimage.morphology import thin
 
 from .image_ops import disk, distance_map, drawing_area, filled_area
@@ -206,19 +206,18 @@ def _material_groups(
 def measure_material_error(
     drawing_ink: np.ndarray, output: np.ndarray
 ) -> dict[str, Any]:
-    """Unfiltered silhouette statistics, independent of display groups and quotas.
+    """Stable filled-outline statistics, independent of display groups and quotas.
 
-    The thin-sliver and cluster-size filters used for display do not affect
-    these counts of the extracted silhouette errors.
+    Ambiguous fills at narrow openings are excluded in both scoring and display.
+    Display's thin-sliver and cluster-size filters do not affect these counts.
     """
-    input_area = drawing_area(drawing_ink)
+    input_area, output_area = _material_areas(drawing_ink, output)
     if not input_area.any():
         return {
             "status": "unavailable",
             "reason": "the input outline cannot be filled (thin walls or open lines)",
             "ratio": None,
         }
-    output_area = filled_area(output)
     missing = int((input_area & ~output_area).sum())
     extra = int((output_area & ~input_area).sum())
     union = int((input_area | output_area).sum())
@@ -233,6 +232,26 @@ def measure_material_error(
         "ratio": (missing + extra) / union,
         "input_perimeter_px": float(sum(cv2.arcLength(c, True) for c in contours)),
     }
+
+
+def _material_areas(
+    drawing_ink: np.ndarray, output: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Filled outlines, excluding bays whose fill depends on a narrow opening.
+
+    A small split can open an entire ring or frame to flood fill. Its closure
+    in the other raster is not evidence of a large material difference. The
+    lines at the split are still compared by the line detectors.
+    """
+    input_area, output_area = drawing_area(drawing_ink), filled_area(output)
+    uncertain = np.zeros(drawing_ink.shape, bool)
+    for ink in (drawing_ink, output):
+        closed = cv2.morphologyEx(
+            ink.astype(np.uint8), cv2.MORPH_CLOSE, disk(MATERIAL_THIN_PX // 2)
+        )
+        uncertain |= binary_fill_holes(closed) & ~binary_fill_holes(ink)
+    uncertain &= input_area ^ output_area
+    return input_area & ~uncertain, output_area & ~uncertain
 
 
 def _outline(groups: list[Unmatched], shape: tuple[int, ...]) -> np.ndarray:
@@ -398,8 +417,9 @@ def find_unmatched(
     part = _vicinity(output_lines)
 
     # Filled silhouettes expose broad material differences beyond individual lines.
-    input_area = drawing_area(part_ink if outline is None else outline)
-    output_area = filled_area(output)
+    input_area, output_area = _material_areas(
+        part_ink if outline is None else outline, output
+    )
     material = (
         _material_groups(input_area & ~output_area & part, "missing")
         + _material_groups(output_area & ~input_area, "extra")
@@ -432,11 +452,14 @@ def find_unmatched(
     style_band = cv2.dilate(style_band, disk(3))
     lines = [g for g in lines if style_band[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
 
-    # Material first, then style and coarse lines, with two local slots reserved.
+    # Material first, then all coarse lines by length, with two local slots reserved.
     size = attrgetter("size_px")
     ranked = sorted(material, key=size, reverse=True)
-    ranked += sorted(line_style_mismatches, key=_length_px, reverse=True)
-    ranked += sorted((g for g in lines if not g.local), key=_length_px, reverse=True)
+    ranked += sorted(
+        [*line_style_mismatches, *(g for g in lines if not g.local)],
+        key=_length_px,
+        reverse=True,
+    )
     return (
         ranked[:MAX_COARSE_GROUPS]
         + sorted((g for g in lines if g.local), key=_length_px, reverse=True)[
