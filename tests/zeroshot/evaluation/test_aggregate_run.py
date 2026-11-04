@@ -9,6 +9,7 @@ from zeroshot.evaluation import aggregate_run
 from zeroshot.evaluation.aggregate_run import (
     SampleRow,
     Terminal,
+    Tokens,
     collect,
     format_report,
     headline_columns,
@@ -232,6 +233,44 @@ def test_the_table_stays_narrow_enough_to_read(tmp_path: Path) -> None:
     assert len(table[0].split()) == 7
     assert all(len(line) < 80 for line in report.splitlines())
     assert "0.040" in table[1]
+
+
+@pytest.mark.parametrize(
+    ("inputs", "expected_mean", "expected_median", "expected_n"),
+    [
+        ([], "-", "-", "0"),
+        ([None, None], "-", "-", "0"),
+        ([0, None], "0", "0", "1"),
+        ([101, 202, None], "152", "152", "2"),
+        ([100, 200, 900, None], "400", "200", "3"),
+        ([1_000, 2_000, 9_000, None], "4,000", "2,000", "3"),
+    ],
+)
+def test_input_token_stats_include_failed_samples_and_exclude_missing_usage(
+    inputs, expected_mean, expected_median, expected_n
+) -> None:
+    rows = [
+        SampleRow(str(i), Terminal.FAILED, tokens=Tokens(input=value))
+        for i, value in enumerate(inputs)
+    ]
+
+    report = format_report(rows, summarize(rows), {})
+    stats = {
+        label: next(
+            line.split()[1:]
+            for line in report.splitlines()
+            if line.split() and line.split()[0] == label
+        )
+        for label in ("mean", "median", "n", "mean_all", "median_all")
+    }
+
+    assert stats == {
+        "mean": [expected_mean],
+        "median": [expected_median],
+        "n": [expected_n],
+        "mean_all": [],
+        "median_all": [],
+    }
 
 
 def test_the_report_shows_the_f1_breakdown_and_distances_to_six_places(

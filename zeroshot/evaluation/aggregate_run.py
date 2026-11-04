@@ -22,7 +22,6 @@ from typing import Any
 from zeroshot.evaluation.metrics.itercad import aggregate_itercad
 from zeroshot.evaluation.metrics.surface_distance import DISTANCE_METRICS
 from zeroshot.evaluation.run_scoring import (
-    DISTANCE_DECIMALS,
     Headline,
     ScoreStatus,
     StepScorer,
@@ -474,6 +473,12 @@ def format_report(
     headlines: Mapping[str, Headline],
 ) -> str:
     stats = [summary.metrics.get(name) for name in headlines]
+    inputs = [row.tokens.input for row in rows if row.tokens.input is not None]
+    input_stats = {
+        "mean": round(sum(inputs) / len(inputs)) if inputs else None,
+        "median": round(median(inputs)) if inputs else None,
+        "n": len(inputs),
+    }
     lines = _aligned(
         [
             (
@@ -509,7 +514,7 @@ def format_report(
                             stats, headlines.values(), strict=True
                         )
                     ),
-                    "",
+                    _cell(input_stats[label]) if label in input_stats else "",
                     "",
                 )
                 for label, field in _STATS_ROWS
@@ -528,6 +533,7 @@ def format_report(
         (
             f"n measured; *_all: all {evaluated} evaluated, invalid as 0, none for distances"
         ),
+        "in_tok: sum over calls per sample; mean/median over reported samples",
         "   ".join(f"{name} {getattr(summary, name)}/{total}" for name in rates),
         (
             f"in_tok {_cell(summary.tokens.input)}"
