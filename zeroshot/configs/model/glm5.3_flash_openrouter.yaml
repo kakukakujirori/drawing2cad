@@ -10,13 +10,13 @@ model:
   # Effort is a share of max_tokens; OpenRouter takes no `summary`. With max,
   # interpreter turns ran to 50-60k tokens; medium kept them under 15k.
   reasoning:
-    effort: medium  # low, high, or max
+    effort: high  # low, high, or max
   output_version: v1
   api_key: ${oc.env:OPENROUTER_API_KEY}
 
   # NOTE: Select upstreams that support tool_choice, structured outputs and the full context.
   openrouter_provider:
-    order: [InferenceNet, Modal, Together, Fireworks, DeepInfra]
+    order: [Morph, InferenceNet, Modal, Together, Fireworks, DeepInfra]
     allow_fallbacks: false
   # Always 8, whatever the workflow allows: the upstreams reject more.
   image_history_limit: 8
