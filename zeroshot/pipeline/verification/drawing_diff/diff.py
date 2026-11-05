@@ -238,7 +238,8 @@ def compute_diff(
     without contributing extra geometry, silhouette area, or fine extra lines.
 
     projection_modelspace and projection_to_uv (projection pixel boundaries to CAD UV)
-    enable fine line and line-style comparison. Style mismatches are red
+    identify drafting marks for scoring and enable fine line/style comparison.
+    Style mismatches are red
     in the overlay and separately counted; they do not alter geometric scores.
 
     Invalid arguments raise ValueError. Unusable image content or a failed
@@ -301,7 +302,7 @@ def compute_diff(
         )
         stats.update(measured)
         stats["optional_tangent_ink_count"] = int(tangent_ink.sum())
-        # Cluster distances to highlight unmatched output lines and regions.
+        # Prepare comparison masks on the drawing grid.
         output_seen = warp_output_to_drawing(output_ink, matrix, drawing_ink.shape)
         tangent_seen = warp_output_to_drawing(tangent_ink, matrix, drawing_ink.shape)
         masks = drawing_masks(drawing_gray, drawing_ink, output_seen)
@@ -309,7 +310,27 @@ def compute_diff(
         outline = masks.outline
         # Exclude ink beside the part from missing-line distances, whatever its tone.
         non_part = masks.annotation | beside_part(part_ink, outline)
-        stats.update(_chamfers(drawing_ink, output_ink, matrix, non_part, tangent_ink))
+        comparison_annotation = non_part
+        output_model_to_input = None
+        if projection_modelspace is not None and projection_to_uv is not None:
+            output_model_to_input = np.linalg.inv(
+                projection_to_uv @ np.array(alignment.H_drawing_to_projection)
+            )
+            comparison_annotation = non_part | drafting_marks(
+                projection_modelspace,
+                output_model_to_input,
+                drawing_ink,
+                non_part,
+                output_seen,
+                part_edges=outline,
+            )
+
+        # Scoring and unmatched display must exclude the same annotation ink.
+        stats.update(
+            _chamfers(
+                drawing_ink, output_ink, matrix, comparison_annotation, tangent_ink
+            )
+        )
         material = measure_material_error(outline, output_seen)
         stats["material_error"] = material
         # Both terms are lengths in drawing pixels: the mean distance between
@@ -329,10 +350,7 @@ def compute_diff(
         # Fine comparison needs the DXF curves mapped to drawing pixels.
         curves = None
         line_style_mismatches = []
-        if projection_modelspace is not None and projection_to_uv is not None:
-            output_model_to_input = np.linalg.inv(
-                projection_to_uv @ np.array(alignment.H_drawing_to_projection)
-            )
+        if projection_modelspace is not None and output_model_to_input is not None:
             curves = output_curves(projection_modelspace, output_model_to_input)
             line_style_mismatches, stats["line_style"] = find_line_style_mismatches(
                 output_modelspace=projection_modelspace,
@@ -340,14 +358,6 @@ def compute_diff(
                 input_rgb=drawing_rgb,
                 input_comparison_ink=drawing_ink & ~non_part,
                 input_annotation=masks.annotation,
-            )
-            # Centre lines and leaders are not part edges; clusters omit them.
-            non_part = non_part | drafting_marks(
-                projection_modelspace,
-                output_model_to_input,
-                drawing_ink,
-                non_part,
-                output_seen,
             )
 
         line_style_mismatch_mask = np.zeros(drawing_ink.shape, np.uint8)
@@ -361,7 +371,7 @@ def compute_diff(
             drawing_ink,
             output_seen,
             curves,
-            non_part,
+            comparison_annotation,
             outline,
             tangent_seen,
             line_style_mismatches=line_style_mismatches,
@@ -377,7 +387,7 @@ def compute_diff(
             )
             < 255,
             groups,
-            non_part,
+            comparison_annotation,
             tangent=tangent_seen,
         )
 

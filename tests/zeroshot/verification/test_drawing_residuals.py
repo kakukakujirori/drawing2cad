@@ -3,6 +3,7 @@ import ezdxf
 import numpy as np
 import pytest
 
+from zeroshot.pipeline.verification.drawing_diff import diff as diff_module
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.drawing_diff.diff import compute_diff
 from zeroshot.pipeline.verification.drawing_diff.image_ops import (
@@ -214,6 +215,31 @@ def test_diff_compares_fine_lines_from_dxf_geometry():
     assert all(item["kind"] == "lines" for item in detailed.stats["unmatched"])
     for key in ("bounded_chamfer_drawing_px", "material_error", "match_score"):
         assert detailed.stats[key] == coarse.stats[key]
+
+
+def test_line_style_failure_keeps_geometry_metrics(monkeypatch):
+    drawing = _white(200)
+    cv2.rectangle(drawing, (40, 40), (160, 160), (0, 0, 0), 1)
+    expected = compute_diff(drawing, drawing, _alignment())
+
+    def fail_style(**kwargs):
+        raise ValueError("line-style comparison failed")
+
+    monkeypatch.setattr(
+        "zeroshot.pipeline.verification.drawing_diff.diff.find_line_style_mismatches",
+        fail_style,
+    )
+    diff = compute_diff(
+        drawing,
+        drawing,
+        _alignment(),
+        projection_modelspace=ezdxf.new().modelspace(),
+        projection_to_uv=np.eye(3),
+    )
+
+    assert any("line-style comparison failed" in warning for warning in diff.warnings)
+    for key in ("unbounded_chamfer_drawing_px", "material_error", "match_score"):
+        assert diff.stats[key] == expected.stats[key]
 
 
 def test_fine_comparison_ignores_hidden_dash_phase():
@@ -507,6 +533,113 @@ def test_a_drawing_in_one_width_has_no_thin_lines():
     assert not thin_mask(gray, foreground_mask(gray), _part_lines(1)).any()
 
 
+def test_two_annotation_widths_do_not_define_the_part_width():
+    drawing, output = _white(300), _white(300)
+    cv2.rectangle(drawing, (40, 60), (250, 240), (0, 0, 0), 5)
+    cv2.rectangle(output, (40, 60), (250, 240), (0, 0, 0), 1)
+    for x, width in ((150, 1), (180, 2)):
+        cv2.line(drawing, (x, 10), (x, 200), (0, 0, 0), width)
+    gray = _gray(drawing)
+
+    thin = thin_mask(gray, foreground_mask(gray), foreground_mask(_gray(output)))
+
+    assert thin[100, 150] and thin[100, 180]
+    assert not thin[100, 40]
+
+
+def test_narrower_real_boundary_survives_when_an_inner_loop_stays_closed():
+    gray = np.full((360, 360), 255, np.uint8)
+    cv2.rectangle(gray, (70, 70), (290, 290), 0, 3)
+    for start, end in (
+        ((70, 70), (290, 70)),
+        ((290, 70), (290, 290)),
+        ((70, 290), (290, 290)),
+    ):
+        cv2.line(gray, start, end, 0, 7)
+    cv2.circle(gray, (180, 180), 45, 0, 7)
+    for y in (30, 50):
+        cv2.line(gray, (20, y), (330, y), 0, 1)
+    part = np.zeros_like(gray)
+    cv2.rectangle(part, (70, 70), (290, 290), 1, 1)
+    ink = foreground_mask(gray)
+
+    thin = thin_mask(gray, ink, part.astype(bool))
+
+    assert thin[30, 180]
+    assert not thin[180, 70]
+    assert drawing_area(ink & ~thin)[180, 80]
+
+
+def test_a_thin_enclosure_does_not_prevent_the_original_width_split():
+    gray = np.full((400, 400), 255, np.uint8)
+    cv2.rectangle(gray, (20, 20), (380, 380), 0, 1)
+    cv2.rectangle(gray, (100, 100), (300, 300), 0, 5)
+    part = np.zeros_like(gray)
+    cv2.rectangle(part, (100, 100), (300, 300), 1, 1)
+    ink = foreground_mask(gray)
+
+    thin = thin_mask(gray, ink, part.astype(bool))
+
+    assert thin[20, 200]
+    assert not thin[100, 200]
+    assert drawing_area(ink & ~thin).sum() < 0.5 * drawing_area(ink).sum()
+
+
+def test_calibration_keeps_baseline_when_source_silhouette_is_unavailable():
+    ink = np.zeros((400, 1000), np.uint8)
+    cv2.rectangle(ink, (50, 250), (90, 290), 1, 6)
+    cv2.rectangle(ink, (50, 50), (950, 52), 1, 2)
+    cv2.line(ink, (200, 180), (800, 180), 1, 1)
+    part = np.zeros_like(ink)
+    cv2.rectangle(part, (50, 250), (90, 290), 1, 1)
+    gray = 255 - ink * 255
+    baseline = thin_mask(gray, ink.astype(bool))
+
+    assert not baseline.any()
+    assert np.array_equal(thin_mask(gray, ink.astype(bool), part.astype(bool)), baseline)
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize("inner", ["circle", "rectangle"])
+def test_minority_width_boundary_keeps_the_input_silhouette(transpose, inner):
+    ink = np.zeros((1000, 1000), np.uint8)
+    cv2.rectangle(ink, (50, 50), (950, 950), 1, 7)
+    ink[395:556, 44:57] = 0
+    cv2.line(ink, (50, 400), (50, 550), 1, 3)
+    cv2.line(ink, (50, 50), (50, 400), 1, 7)
+    cv2.line(ink, (50, 550), (50, 950), 1, 7)
+    cv2.line(ink, (200, 200), (800, 200), 1, 3)
+    cv2.line(ink, (200, 300), (800, 300), 1, 1)
+    part = np.zeros_like(ink)
+    cv2.line(part, (200, 200), (800, 200), 1, 1)
+    if inner == "circle":
+        cv2.circle(ink, (500, 500), 100, 1, 7)
+        cv2.circle(part, (500, 500), 100, 1, 1)
+    else:
+        cv2.rectangle(ink, (120, 120), (880, 880), 1, 7)
+        cv2.rectangle(part, (120, 120), (880, 880), 1, 1)
+        cv2.line(ink, (200, 250), (600, 250), 1, 3)
+        cv2.line(ink, (200, 350), (600, 350), 1, 1)
+        cv2.line(part, (200, 250), (600, 250), 1, 1)
+    outer_omitted = part.copy()
+    cv2.rectangle(part, (50, 50), (950, 950), 1, 1)
+    if transpose:
+        ink, part, outer_omitted = (a.T.copy() for a in (ink, part, outer_omitted))
+    binary = ink.astype(bool)
+    masks = drawing_masks(255 - ink * 255, binary, part.astype(bool))
+
+    assert drawing_area(masks.outline).sum() > 0.9 * drawing_area(binary).sum()
+    drawing = _white(1000)
+    drawing[binary] = 0
+    scores = []
+    for candidate in (part, outer_omitted):
+        output = _white(1000)
+        output[candidate > 0] = 0
+        result = compute_diff(drawing, output, _alignment())
+        scores.append(result.stats["match_score"])
+    assert scores[0] < scores[1]
+
+
 def test_dense_text_and_crossings_do_not_set_the_outline_width():
     image = _dimensioned_part((0, 0, 0))
     # Most ink far from CAD is thick text; close parallel edges also inflate a box sum.
@@ -658,6 +791,384 @@ def test_dimensions_beside_the_part_neither_score_nor_cluster():
         plain.stats["match_score"], abs=0.05
     )
     assert diff.stats["unmatched"] == []
+
+
+@pytest.mark.parametrize("missing_edge", [False, True])
+@pytest.mark.parametrize("outline_width", [1, 5])
+def test_dimension_extension_exclusion_requires_separate_line_weight(
+    missing_edge,
+    monkeypatch,
+    outline_width,
+):
+    output = _white(300)
+    corners = [(40, 60), (250, 60), (250, 240), (40, 240)]
+    cv2.rectangle(output, corners[0], corners[2], (0, 0, 0), 1)
+    drawing = output.copy()
+    cv2.rectangle(drawing, corners[0], corners[2], (0, 0, 0), outline_width)
+    if missing_edge:
+        cv2.line(drawing, (65, 210), (220, 210), (0, 0, 0), 1)
+    dimensioned = drawing.copy()
+    cv2.line(dimensioned, (160, 10), (160, 170), (0, 0, 0), 1)
+    doc = ezdxf.new()
+    for start, end in zip(corners, corners[1:] + corners[:1]):
+        doc.modelspace().add_line(start, end)
+    kwargs = {
+        "projection_modelspace": doc.modelspace(),
+        "projection_to_uv": np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1.0]]),
+    }
+
+    plain = compute_diff(drawing, output, _alignment(), **kwargs)
+    original_style_check = diff_module.find_line_style_mismatches
+
+    def check_style_mask(**style_kwargs):
+        assert style_kwargs["input_comparison_ink"][100, 160]
+        return original_style_check(**style_kwargs)
+
+    monkeypatch.setattr(diff_module, "find_line_style_mismatches", check_style_mask)
+    diff = compute_diff(dimensioned, output, _alignment(), **kwargs)
+
+    if outline_width == 1:
+        assert tuple(diff.unmatched[100, 160]) != NEUTRAL_GRAY
+        assert diff.stats["match_score"] > plain.stats["match_score"] + 0.5
+        return
+    assert tuple(diff.unmatched[100, 160]) == NEUTRAL_GRAY
+    for key in ("bounded_chamfer_drawing_px", "unbounded_chamfer_drawing_px"):
+        assert diff.stats[key] == pytest.approx(plain.stats[key], abs=0.01)
+    assert diff.stats["match_score"] == pytest.approx(
+        plain.stats["match_score"], abs=0.01
+    )
+    assert diff.stats["unmatched"] == plain.stats["unmatched"]
+    if missing_edge:
+        assert diff.stats["unmatched"][0]["direction"] == "missing"
+
+
+@pytest.mark.parametrize("gap", [0, 3])
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize(("width", "annotation_width"), [(1, 1), (3, 3), (5, 1)])
+@pytest.mark.parametrize("junction", ["none", "crossing", "t_end", "l_end"])
+def test_omitting_an_edge_collinear_with_a_dimension_is_worse_than_offsetting_it(
+    gap,
+    transpose,
+    width,
+    annotation_width,
+    junction,
+):
+    drawing = _white(300)
+    corners = [(40, 60), (250, 60), (250, 240), (40, 240)]
+    cv2.rectangle(drawing, corners[0], corners[2], (0, 0, 0), width)
+    cv2.line(drawing, (160, 10), (160, 59 - gap), (0, 0, 0), annotation_width)
+    bottom = 180 if junction.endswith("_end") else 240
+    cv2.line(drawing, (160, 60), (160, bottom), (0, 0, 0), width)
+    branch = ((160 if junction == "l_end" else 40, 180), (250, 180))
+    if junction != "none":
+        cv2.line(drawing, *branch, (0, 0, 0), width)
+    if transpose:
+        drawing = drawing.transpose(1, 0, 2).copy()
+    scores = []
+    for x in (160, 164, None):
+        output = _white(300)
+        doc = ezdxf.new()
+        lines = list(zip(corners, corners[1:] + corners[:1]))
+        if junction != "none":
+            lines.append(branch)
+        if x is not None:
+            lines.append(((x, 60), (x, bottom)))
+        for start, end in lines:
+            if transpose:
+                start, end = start[::-1], end[::-1]
+            cv2.line(output, start, end, (0, 0, 0), width)
+            doc.modelspace().add_line(start, end)
+        result = compute_diff(
+            drawing,
+            output,
+            _alignment(),
+            projection_modelspace=doc.modelspace(),
+            projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1.0]]),
+        )
+        scores.append(result.stats["match_score"])
+        if x is None:
+            assert any(g["direction"] == "missing" for g in result.stats["unmatched"])
+    exact, shifted, omitted = scores
+    assert exact < shifted < omitted
+    assert omitted - exact > 0.5
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize("from_outline", [False, True])
+def test_a_radial_part_edge_is_not_a_leader_to_the_opposite_arc(transpose, from_outline):
+    drawing = _white(400)
+    outline = [
+        ((40, 60), (250, 60)),
+        ((250, 60), (250, 210)),
+        ((220, 240), (40, 240)),
+        ((40, 240), (40, 60)),
+    ]
+    # AA preserves equal source stroke weights at axial and diagonal angles.
+    for start, end in outline:
+        cv2.line(drawing, start, end, (0, 0, 0), 3, lineType=cv2.LINE_AA)
+    cv2.ellipse(drawing, (220, 210), (30, 30), 0, 0, 90, (0, 0, 0), 3, cv2.LINE_AA)
+    edge_start = (70, 60) if from_outline else (150, 140)
+    cv2.line(drawing, edge_start, (241, 231), (0, 0, 0), 3, cv2.LINE_AA)
+    if from_outline:
+        cv2.line(drawing, (69, 59), (40, 30), (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.line(drawing, (243, 233), (285, 275), (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.line(drawing, (285, 275), (345, 275), (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.putText(
+        drawing,
+        "R30",
+        (295, 267),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (0, 0, 0),
+        1,
+        cv2.LINE_AA,
+    )
+    if transpose:
+        drawing = drawing.transpose(1, 0, 2).copy()
+    scores = []
+    for shift in (0, 4, None):
+        output, doc = _white(400), ezdxf.new()
+        lines = list(outline)
+        if shift is not None:
+            lines.append(((edge_start[0] + shift, edge_start[1]), (241 + shift, 231)))
+        for start, end in lines:
+            cv2.line(output, start, end, (0, 0, 0), 1)
+            doc.modelspace().add_line(
+                start[::-1] if transpose else start,
+                end[::-1] if transpose else end,
+            )
+        cv2.ellipse(output, (220, 210), (30, 30), 0, 0, 90, (0, 0, 0), 1)
+        doc.modelspace().add_arc((210, 220) if transpose else (220, 210), 30, 0, 90)
+        if transpose:
+            output = output.transpose(1, 0, 2).copy()
+        result = compute_diff(
+            drawing,
+            output,
+            _alignment(),
+            projection_modelspace=doc.modelspace(),
+            projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1.0]]),
+        )
+        scores.append(result.stats["match_score"])
+        if shift is None:
+            assert any(g["direction"] == "missing" for g in result.stats["unmatched"])
+
+    exact, shifted, omitted = scores
+    assert exact < shifted < omitted
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+def test_an_omitted_thin_edge_between_outlines_is_not_a_dimension_extension(transpose):
+    drawing = _white(300)
+    corners = [(40, 60), (250, 60), (250, 240), (40, 240)]
+    cv2.rectangle(drawing, corners[0], corners[2], (0, 0, 0), 5)
+    # A thin real edge spans the part. Collinear annotations extend outside it.
+    cv2.line(drawing, (160, 10), (160, 280), (0, 0, 0), 1)
+    if transpose:
+        drawing = drawing.transpose(1, 0, 2).copy()
+    scores = []
+    for x in (160, 164, None):
+        output, doc = _white(300), ezdxf.new()
+        lines = list(zip(corners, corners[1:] + corners[:1]))
+        if x is not None:
+            lines.append(((x, 60), (x, 240)))
+        for start, end in lines:
+            if transpose:
+                start, end = start[::-1], end[::-1]
+            cv2.line(output, start, end, (0, 0, 0), 1)
+            doc.modelspace().add_line(start, end)
+        result = compute_diff(
+            drawing,
+            output,
+            _alignment(),
+            projection_modelspace=doc.modelspace(),
+            projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1.0]]),
+        )
+        scores.append(result.stats["match_score"])
+        if x is None:
+            assert any(g["direction"] == "missing" for g in result.stats["unmatched"])
+
+    exact, shifted, omitted = scores
+    assert exact < shifted < omitted
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize("left", [40, 160])
+@pytest.mark.parametrize("dash_gap", [1, 3])
+def test_hidden_edge_ending_on_a_branch_is_not_a_dimension_extension(
+    transpose,
+    left,
+    dash_gap,
+):
+    corners = [(40, 60), (250, 60), (250, 240), (40, 240)]
+
+    def projection(x, outline_width):
+        image, doc = _white(300), ezdxf.new()
+        for start, end in zip(corners, corners[1:] + corners[:1]):
+            cv2.line(image, start, end, (0, 0, 0), outline_width)
+            doc.modelspace().add_line(
+                start[::-1] if transpose else start, end[::-1] if transpose else end
+            )
+        cv2.line(image, (left, 180), (250, 180), (0, 0, 0), 1)
+        doc.modelspace().add_line(
+            (180, left) if transpose else (left, 180),
+            (180, 250) if transpose else (250, 180),
+        )
+        if x is not None:
+            for y in range(60, 181, 8 + dash_gap):
+                cv2.line(image, (x, y), (x, min(y + 7, 180)), (0, 0, 0), 1)
+            doc.modelspace().add_line(
+                (60, x) if transpose else (x, 60),
+                (180, x) if transpose else (x, 180),
+                dxfattribs={"linetype": "HIDDEN"},
+            )
+        return image.transpose(1, 0, 2).copy() if transpose else image, doc.modelspace()
+
+    drawing, _ = projection(160, 5)
+    start, end = ((10, 160), (59, 160)) if transpose else ((160, 10), (160, 59))
+    cv2.line(drawing, start, end, (0, 0, 0), 1)
+    scores = []
+    for x in (160, 164, None):
+        output, modelspace = projection(x, 1)
+        result = compute_diff(
+            drawing,
+            output,
+            _alignment(),
+            projection_modelspace=modelspace,
+            projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1.0]]),
+        )
+        scores.append(result.stats["match_score"])
+        if x is None:
+            assert any(g["direction"] == "missing" for g in result.stats["unmatched"])
+    assert scores[0] < scores[1] < scores[2]
+    # There is no annotation inside this part: every dashed pixel must be scored.
+    raw = compute_diff(drawing, output, _alignment())
+    assert scores[2] == pytest.approx(raw.stats["match_score"])
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize("left", [40, 160])
+@pytest.mark.parametrize(
+    ("top", "bottom", "dash", "gap"), [(64, 95, 12, 3), (60, 180, 28, 6)]
+)
+def test_short_and_widely_spaced_hidden_edges_keep_all_missing_pixels(
+    transpose, left, top, bottom, dash, gap
+):
+    drawing, output, doc = _white(300), _white(300), ezdxf.new()
+    corners = [(40, 60), (250, 60), (250, 240), (40, 240)]
+    cv2.rectangle(drawing, corners[0], corners[2], (0, 0, 0), 5)
+    cv2.line(drawing, (160, 10), (160, 59), (0, 0, 0), 1)
+    hidden = np.zeros((300, 300), np.uint8)
+    for y in range(top, bottom + 1, dash + gap):
+        cv2.line(hidden, (160, y), (160, min(y + dash - 1, bottom)), 1, 1)
+    drawing[hidden.astype(bool)] = 0
+    branch = ((left, bottom), (250, bottom))
+    cv2.line(drawing, *branch, (0, 0, 0), 1)
+    for start, end in [*zip(corners, corners[1:] + corners[:1]), branch]:
+        cv2.line(output, start, end, (0, 0, 0), 1)
+        doc.modelspace().add_line(
+            start[::-1] if transpose else start, end[::-1] if transpose else end
+        )
+    if transpose:
+        drawing, output = (
+            image.transpose(1, 0, 2).copy() for image in (drawing, output)
+        )
+        hidden = hidden.T.copy()
+
+    raw = compute_diff(drawing, output, _alignment())
+    result = compute_diff(
+        drawing,
+        output,
+        _alignment(),
+        projection_modelspace=doc.modelspace(),
+        projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1.0]]),
+    )
+
+    assert result.stats["match_score"] == pytest.approx(raw.stats["match_score"])
+    assert result.stats["unmatched"] == raw.stats["unmatched"]
+    assert np.array_equal(result.unmatched[hidden > 0], raw.unmatched[hidden > 0])
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+def test_continuous_extension_meeting_a_dashed_pocket_is_not_a_hidden_edge(
+    transpose,
+):
+    drawing, output, doc = _white(300), _white(300), ezdxf.new()
+    corners = [(40, 60), (250, 60), (250, 240), (40, 240)]
+    cv2.rectangle(drawing, corners[0], corners[2], (0, 0, 0), 5)
+    for start, end in zip(corners, corners[1:] + corners[:1]):
+        cv2.line(output, start, end, (0, 0, 0), 1)
+        doc.modelspace().add_line(
+            start[::-1] if transpose else start, end[::-1] if transpose else end
+        )
+    for image in (drawing, output):
+        for x in range(153, 221, 19):
+            cv2.line(image, (x, 130), (min(x + 15, 220), 130), (0, 0, 0), 1)
+        for y in range(60, 131, 19):
+            cv2.line(image, (150, y), (150, min(y + 15, 130)), (0, 0, 0), 1)
+    for start, end in (((150, 60), (150, 130)), ((150, 130), (220, 130))):
+        doc.modelspace().add_line(
+            start[::-1] if transpose else start,
+            end[::-1] if transpose else end,
+            dxfattribs={"linetype": "HIDDEN"},
+        )
+    cv2.line(drawing, (10, 130), (150, 130), (0, 0, 0), 1)
+    if transpose:
+        drawing, output = (
+            image.transpose(1, 0, 2).copy() for image in (drawing, output)
+        )
+    result = compute_diff(
+        drawing,
+        output,
+        _alignment(),
+        projection_modelspace=doc.modelspace(),
+        projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1.0]]),
+    )
+    assert (
+        tuple(result.unmatched[(100, 130) if transpose else (130, 100)]) == NEUTRAL_GRAY
+    )
+    assert not any(g["direction"] == "missing" for g in result.stats["unmatched"])
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize(("offset", "width"), [(5, 3), (6, 5), (7, 5)])
+def test_widening_a_crossing_annotation_does_not_erase_nearby_part_strokes(
+    monkeypatch, transpose, offset, width
+):
+    drawing, output, doc = _white(300), _white(300), ezdxf.new()
+    corners = [(40, 60), (250, 60), (250, 240), (40, 240)]
+    cv2.rectangle(drawing, corners[0], corners[2], (0, 0, 0), 5)
+    cv2.line(drawing, (160, 10), (160, 170), (0, 0, 0), 1)
+    real = np.zeros((300, 300), np.uint8)
+    cv2.line(real, (160 + offset, 90), (160 + offset, 160), 1, width)
+    drawing[real > 0] = 0
+    for start, end in zip(corners, corners[1:] + corners[:1]):
+        cv2.line(output, start, end, (0, 0, 0), 1)
+        doc.modelspace().add_line(
+            start[::-1] if transpose else start, end[::-1] if transpose else end
+        )
+    if transpose:
+        drawing, output = (
+            image.transpose(1, 0, 2).copy() for image in (drawing, output)
+        )
+        real = real.T.copy()
+    original = diff_module.find_unmatched
+
+    def check_masks(*args, **kwargs):
+        annotation, part_edges = args[3:5]
+        assert (part_edges & (real > 0)).any()
+        assert not (annotation & (real > 0)).any()
+        assert annotation[(160, 100) if transpose else (100, 160)]
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(diff_module, "find_unmatched", check_masks)
+    result = compute_diff(
+        drawing,
+        output,
+        _alignment(),
+        projection_modelspace=doc.modelspace(),
+        projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1.0]]),
+    )
+    assert any(g["direction"] == "missing" for g in result.stats["unmatched"])
 
 
 def test_a_partial_silhouette_leaves_out_only_ink_that_never_joins_it():
