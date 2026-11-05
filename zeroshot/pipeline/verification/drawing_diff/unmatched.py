@@ -118,10 +118,14 @@ def warp_output_to_drawing(
     # Shrinking by n skips thin lines unless they are about n pixels wide first.
     shrink = np.sqrt(abs(np.linalg.det(matrix[:2, :2])))
     size = max(int(np.ceil(shrink)), 1)
-    thick = cv2.dilate(output_ink.astype(np.uint8), np.ones((size, size), np.uint8))
+    # Let strokes at the canvas edge expand fully before sampling them.
+    padded = np.pad(output_ink.astype(np.uint8), size)
+    thick = cv2.dilate(padded, np.ones((size, size), np.uint8))
+    padding_transform = np.eye(3)
+    padding_transform[:2, 2] = size
     warped = cv2.warpPerspective(
         thick * 255,
-        np.linalg.inv(matrix),
+        np.linalg.inv(padding_transform @ matrix),
         (width, height),
         flags=cv2.INTER_LINEAR,
         borderValue=0,

@@ -10,6 +10,8 @@ from zeroshot.pipeline.stages.interpretation.contracts import View
 from zeroshot.pipeline.verification.drawing_diff.drafting_marks import (
     CENTRE_LINES,
     CentreLine,
+    _fit,
+    _has_gaps,
     _straight_runs,
     centre_lines,
     drafting_marks,
@@ -189,7 +191,14 @@ def _outside_square(ink):
 
 
 def _marks(modelspace, mapping, ink, output):
-    return drafting_marks(modelspace, mapping, ink, _outside_square(ink), output)
+    return drafting_marks(
+        modelspace,
+        mapping,
+        ink,
+        _outside_square(ink),
+        output,
+        part_edges=np.zeros_like(ink),
+    )
 
 
 def _at(marks, point):
@@ -208,11 +217,13 @@ def test_centre_marks_and_a_leader_to_their_hole_are_marks_but_part_lines_are_no
     ink = _ink(*SQUARE, *cross, leader, shoulder, missing_edge, stub, circle=True)
     lines = [(*arm, RADIUS) for arm in cross]
 
-    marks = _marks(
+    marks = drafting_marks(
         _drawing(mapping, circle=True, lines=lines),
         mapping,
         ink,
+        _outside_square(ink),
         _ink(*SQUARE, circle=True),
+        part_edges=ink,
     )
 
     assert _at(marks, (88, 100)) and _at(marks, (112, 100)) and _at(marks, (100, 88))
@@ -237,6 +248,26 @@ def test_a_sectors_radial_edge_is_not_a_leader_to_its_arc(mapping):
     assert not _at(marks, (140, 100))
 
 
+@pytest.mark.parametrize("mapping", MAPPINGS.values(), ids=MAPPINGS)
+@pytest.mark.parametrize("end", [105, 125])
+@pytest.mark.parametrize("protected", [False, True])
+def test_an_open_side_arc_does_not_override_part_edge_protection(mapping, end, protected):
+    # Coming from the left must reach the right semicircle, not stop inside it.
+    # The short external tail cannot independently justify a crossing annotation.
+    ink = _ink(*SQUARE, ((30, 100), (end, 100)), arc=(-90, 90))
+    output = _ink(*SQUARE, arc=(-90, 90))
+    marks = drafting_marks(
+        _drawing(mapping, arc=(-90, 90)),
+        mapping,
+        ink,
+        _outside_square(ink),
+        output,
+        part_edges=ink if protected else output,
+    )
+
+    assert bool(_at(marks, CENTRE)) == (end == 125 and not protected)
+
+
 def test_a_leader_drawn_from_the_centre_is_a_mark():
     """The run holds the centre itself, so its direction must come from the run."""
     mapping = MAPPINGS["identity"]
@@ -253,6 +284,54 @@ def test_a_leader_drawn_from_the_centre_is_a_mark():
     marks = _marks(doc.modelspace(), mapping, ink, output)
 
     assert _at(marks, _ray(-30, 0, 15)[1]) and _at(marks, _ray(-30, 0, 50)[1])
+
+
+@pytest.mark.parametrize("mapping", MAPPINGS.values(), ids=MAPPINGS)
+def test_a_leader_can_cross_a_hidden_circle_and_end_inside_it(mapping):
+    leader = _ray(-30, 10, 92)
+    shoulder = (leader[1], (leader[1][0] + 18, leader[1][1]))
+    ink = _ink(*SQUARE, leader, shoulder, circle=True)
+    output = _ink(*SQUARE, circle=True)
+    crossing = _ray(-30, 0, RADIUS)[1]
+    # A hidden projection's dash gap lets the free run cross the circle.
+    cv2.circle(output.view(np.uint8), crossing, 6, 0, -1)
+
+    marks = drafting_marks(
+        _drawing(mapping, circle=True),
+        mapping,
+        ink,
+        _outside_square(ink),
+        output,
+        part_edges=ink,
+    )
+
+    assert _at(marks, _ray(-30, 0, 40)[1])
+
+
+@pytest.mark.parametrize("mapping", MAPPINGS.values(), ids=MAPPINGS)
+def test_leader_evidence_from_multiple_circles_does_not_depend_on_their_order(mapping):
+    ink = _ink(*SQUARE, ((10, 100), (145, 100)))
+    output = _ink(*SQUARE)
+    for x in (70, 140):
+        cv2.circle(ink.view(np.uint8), (x, 100), 12, 1, 2)
+        cv2.circle(output.view(np.uint8), (x, 100), 12, 1, 2)
+    masks = []
+    for order in ((70, 140), (140, 70)):
+        doc = ezdxf.new()
+        for x in order:
+            doc.modelspace().add_circle(_model(mapping, (x, 100)), 12 / _scale(mapping))
+        marks = drafting_marks(
+            doc.modelspace(),
+            mapping,
+            ink,
+            _outside_square(ink),
+            output,
+            part_edges=ink,
+        )
+        assert _at(marks, (70, 100)) and _at(marks, (140, 100))
+        masks.append(marks)
+
+    assert np.array_equal(*masks)
 
 
 def test_lines_that_cross_outrun_or_flank_a_centre_line_are_not_marks():
@@ -276,6 +355,7 @@ def test_lines_that_cross_outrun_or_flank_a_centre_line_are_not_marks():
         ink,
         np.zeros_like(ink),
         _ink(*SQUARE),
+        part_edges=np.zeros_like(ink),
     )
 
     assert _at(marks, (80, 130))
@@ -333,6 +413,7 @@ def test_a_leader_whose_shoulder_runs_on_into_a_dimension_is_a_mark_to_its_tip()
         ink,
         annotation,
         _ink(*SQUARE, part_line, circle=True),
+        part_edges=np.zeros_like(ink),
     )
 
     # Output lines split it into pieces, some too short to be runs.
@@ -340,6 +421,41 @@ def test_a_leader_whose_shoulder_runs_on_into_a_dimension_is_a_mark_to_its_tip()
         assert _at(marks, _ray(60, 0, radius)[1])
     assert _at(marks, (165, leader[1][1]))
     assert not _at(marks, (60, 135))
+
+
+@pytest.mark.parametrize("angle", [0, 30])
+def test_crossing_annotations_stop_at_pocket_junctions_without_propagating(angle):
+    pocket = [
+        ((85, 90), (135, 90)),
+        ((135, 90), (135, 130)),
+        ((135, 130), (85, 130)),
+        ((85, 130), (85, 90)),
+    ]
+    ink = _ink(*SQUARE, *pocket, ((85, 10), (85, 90)), ((135, 90), (210, 90)))
+    mapping = MAPPINGS["identity"]
+    transform = cv2.getRotationMatrix2D(CENTRE, angle, 1.0)
+
+    def rotate(mask):
+        return cv2.warpAffine(
+            mask.astype(np.uint8), transform, (SIZE, SIZE), flags=cv2.INTER_NEAREST
+        ).astype(bool)
+
+    def at(point):
+        xy = np.rint(transform @ [*point, 1]).astype(int)
+        return _at(marks, xy)
+
+    marks = drafting_marks(
+        _drawing(mapping),
+        mapping,
+        rotate(ink),
+        rotate(_outside_square(ink)),
+        rotate(_ink(*SQUARE)),
+        part_edges=np.zeros_like(ink),
+    )
+
+    assert at((85, 65)) and at((150, 90))
+    for point in ((85, 110), (110, 90), (135, 110), (110, 130)):
+        assert not at(point)
 
 
 def test_a_short_slanted_line_the_hough_transform_misses_is_still_a_run():
@@ -350,3 +466,23 @@ def test_a_short_slanted_line_the_hough_transform_misses_is_still_a_run():
     (run,) = _straight_runs(mask.astype(bool))
 
     assert len(run.pixels) == 29
+
+
+@pytest.mark.parametrize("angle", [0, 30, 45])
+@pytest.mark.parametrize("gap", [0, 1, 3])
+def test_stroke_gaps_are_read_across_the_stroke_not_along_the_image_axes(angle, gap):
+    ink = np.zeros((220, 220), np.uint8)
+    cv2.line(ink, (30, 100), (190, 100), 1, 1)
+    if gap:
+        for x in range(38, 190, 8 + gap):
+            ink[100, x : x + gap] = 0
+    ink = cv2.warpAffine(
+        ink,
+        cv2.getRotationMatrix2D((110, 100), angle, 1),
+        (220, 220),
+        flags=cv2.INTER_NEAREST,
+    )
+    ys, xs = np.nonzero(ink)
+    run = _fit(np.column_stack([xs, ys]))
+
+    assert _has_gaps(run, ink, np.zeros_like(ink, dtype=bool)) == (gap > 0)

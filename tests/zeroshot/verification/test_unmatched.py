@@ -2,6 +2,7 @@ import cv2
 import ezdxf
 import numpy as np
 import pytest
+from scipy.ndimage import binary_fill_holes
 
 from zeroshot.pipeline.verification.drawing_diff.unmatched import (
     COLORS,
@@ -228,6 +229,40 @@ def test_thin_lines_survive_shrinking_onto_the_drawing(offset):
         ),
         seen,
     )
+
+
+@pytest.mark.parametrize("scale", [1.0, 2.5, 5.6])
+@pytest.mark.parametrize("angle", [0.0, 1.0])
+@pytest.mark.parametrize("phase", [0.0, 0.5])
+@pytest.mark.parametrize("closed", [False, True])
+def test_canvas_edges_survive_resampling_without_closing_open_contours(
+    scale,
+    angle,
+    phase,
+    closed,
+):
+    output = np.zeros((160, 34), np.uint8)
+    cv2.rectangle(output, (0, 0), (33, 159), 1, 1)
+    if not closed:
+        output[1:-1, -1] = 0
+    output = output.astype(bool)
+    radians = np.deg2rad(angle)
+    matrix = np.eye(3)
+    matrix[:2, :2] = scale * np.array(
+        [[np.cos(radians), -np.sin(radians)], [np.sin(radians), np.cos(radians)]]
+    )
+    matrix[:2, 2] = -matrix[:2, :2] @ np.array([30.0, 30.0]) + phase
+
+    seen = warp_output_to_drawing(output, matrix, (240, 240))
+    # The same geometry with more canvas must produce the same mask.
+    shift = np.eye(3)
+    shift[:2, 2] = 20
+    with_margin = warp_output_to_drawing(np.pad(output, 20), shift @ matrix, (240, 240))
+
+    np.testing.assert_array_equal(seen, with_margin)
+    center = np.linalg.inv(matrix) @ np.array([16.5, 79.5, 1.0])
+    x, y = np.rint(center[:2] / center[2]).astype(int)
+    assert bool(binary_fill_holes(seen)[y, x]) is closed
 
 
 def test_region_mask_excludes_annotation_enclosures_and_does_not_close_gaps():

@@ -35,7 +35,7 @@ from skimage.morphology import skeletonize
 
 from zeroshot.pipeline.stages.interpretation.contracts import AXIS_VECTOR, Axis
 
-from .image_ops import disk, distance_map
+from .image_ops import disk, distance_map, external_boundary
 
 ################################################################
 
@@ -226,6 +226,8 @@ def drafting_marks(
     ink: np.ndarray,
     annotation: np.ndarray,
     output: np.ndarray,
+    *,
+    part_edges: np.ndarray,
 ) -> np.ndarray:
     """Input ink drawn as a centre line, a leader, or an annotation line crossing
     into the part, where no output line runs.
@@ -234,41 +236,58 @@ def drafting_marks(
     boundaries. annotation is ink already known not to be the part's, such as
     ink beside it; a leader ends at it, and a crossing line runs on into it.
     output holds the build's lines on the input grid.
+    part_edges holds input strokes whose weight rules out mere crossing annotation.
     """
-    free = skeletonize(ink & ~annotation)
-    free &= distance_map(skeletonize(output)) > OUTPUT_PX
+    skeleton = skeletonize(ink & ~annotation)
+    free = skeleton & (distance_map(skeletonize(output)) > OUTPUT_PX)
+    boundary = distance_map(external_boundary(ink & ~annotation)) <= JOIN_PX
+    junctions = _junctions(skeleton) & ~boundary
+    gap_boundaries = junctions | boundary
+    joined = cv2.dilate(annotation.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
     marks = np.zeros_like(free)
     # A line that crosses a centre line parts from it at their junction.
     ys, xs = np.nonzero(free & ~_junctions(free))
     pieces = np.column_stack([xs, ys])
     for start, end, radius in _recorded(modelspace, model_to_drawing):
         _mark_along(marks, pieces, start, end, min(AXIS_PX, radius / 2))
+    supported = marks.copy()
 
     inked = distance_map(ink) <= LINE_PX
     circles = list(_circles(modelspace, model_to_drawing))
     drawing_to_model = np.linalg.inv(model_to_drawing)
-    # Leaders and crossing lines end at annotation or at marks found before
-    # them: a leader's shoulder may be a crossing line, and a crossing line may
-    # run on from a leader. Look again while either finds more.
+    # Leaders can end at a shoulder found earlier. Crossing lines use only the
+    # original annotation so a newly marked span cannot carry them past a junction.
     while True:
         # Return whole strokes, not their centres.
         marked = _strokes(marks, ink, annotation)
+        # Only axis/leader evidence may exclude protected strokes after widening.
+        marked &= ~part_edges | _strokes(supported, ink, annotation)
         known = annotation | marked
-        joined = cv2.dilate(known.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
         found = np.zeros_like(free)
         for run in _straight_runs(free & ~marks):
             # Hough segments overlap; a run already taken needs no second look.
             if found[run.pixels[:, 1], run.pixels[:, 0]].all():
                 continue
-            if _runs_on_into(run, inked, joined):
-                found[run.pixels[:, 1], run.pixels[:, 0]] = True
+            crossing = _crossing(run, inked, joined, junctions, boundary)
+            if crossing is not None and len(crossing):
+                crossing = crossing[~part_edges[crossing[:, 1], crossing[:, 0]]]
+                # shortcut: thin solid edges remain ambiguous; add stronger evidence if these recur.
+                if len(crossing) and not _has_gaps(_fit(crossing), ink, gap_boundaries):
+                    found[crossing[:, 1], crossing[:, 0]] = True
+                    continue
+            if _has_gaps(run, ink, gap_boundaries):
                 continue
+            has_part_edge = part_edges[run.pixels[:, 1], run.pixels[:, 0]].any()
             for circle in circles:
-                leader = _leader(run, circle, inked, known, drawing_to_model)
+                leader = _leader(
+                    run, circle, inked, known, drawing_to_model,
+                    has_part_edge=has_part_edge,
+                )
                 if leader is not None:
                     # Output lines it crosses split it; it runs on to its tip.
-                    found |= _along(free, *leader)
-                    break
+                    leader_pixels = _along(free, *leader)
+                    found |= leader_pixels
+                    supported |= leader_pixels
         if not (found & ~marks).any():
             return marked
         marks |= found
@@ -451,6 +470,8 @@ def _leader(
     inked: np.ndarray,
     annotation: np.ndarray,
     drawing_to_model: np.ndarray,
+    *,
+    has_part_edge: bool,
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """A radial run that reaches the circle and whose ink ends at annotation:
     its far end and the tip its ink runs on to; None for any other run.
@@ -467,16 +488,24 @@ def _leader(
         gap = np.linalg.norm(point - c)
         return abs(gap - r) <= TOUCH_PX or gap <= TOUCH_PX
 
-    if not touches(near) and not _follow(near, inward, inked, touches)[1]:
-        return None
-    if circle.arc is not None and not _meets_arc(
-        circle, c - inward * r, drawing_to_model
+    crosses_circle = np.linalg.norm(near - c) < r < np.linalg.norm(far - c)
+    if not (
+        touches(near) or crosses_circle or _follow(near, inward, inked, touches)[1]
     ):
         return None
     tip = _follow(near, inward, inked)[0]
-    if not (
-        _joins(_follow(far, -inward, inked)[0], annotation) or _joins(tip, annotation)
+    outer_joins_annotation = _joins(_follow(far, -inward, inked)[0], annotation)
+    if circle.arc is not None and not (
+        _meets_arc(circle, c - inward * r, drawing_to_model)
+        or (
+            not has_part_edge
+            and (tip - c) @ inward >= r - TOUCH_PX
+            and outer_joins_annotation
+            and _meets_arc(circle, c + inward * r, drawing_to_model)
+        )
     ):
+        return None
+    if not (outer_joins_annotation or _joins(tip, annotation)):
         return None
     return far, tip
 
@@ -507,28 +536,92 @@ def _meets_arc(
     return (angle - start) % 360 <= (end - start) % 360
 
 
-def _runs_on_into(run: _Run, inked: np.ndarray, annotation: np.ndarray) -> bool:
-    """Whether the ink carries the run's line from one end into annotation that
-    continues the same line.
-    """
+def _has_gaps(run: _Run, ink: np.ndarray, boundaries: np.ndarray) -> bool:
+    """Source gaps inside a run or between its neighboring stroke segments."""
+    start, end = run.ends
+    length = np.linalg.norm(end - start)
+    # A wide dash gap splits Hough runs; look one run length past each end.
+    first, last = start - length * run.direction, end + length * run.direction
+    height, width = ink.shape
+    x0, y0 = np.maximum(np.floor(np.minimum(first, last) - LINE_PX), 0).astype(int)
+    x1, y1 = np.minimum(
+        np.ceil(np.maximum(first, last) + LINE_PX) + 1, [width, height]
+    ).astype(int)
+    ys, xs = np.nonzero(ink[y0:y1, x0:x1])
+    offset = np.column_stack([xs + x0, ys + y0]) - start
+    along = offset @ run.direction
+    normal = np.array([-run.direction[1], run.direction[0]])
+    near = np.abs(offset @ normal) <= LINE_PX
+    meetings = along[near & boundaries[ys + y0, xs + x0]]
+    # Do not continue past a junction or the part's outline into other strokes.
+    low = max(-length, meetings[meetings <= 0].max(initial=-length))
+    high = min(2 * length, meetings[meetings >= length].min(initial=2 * length))
+    positions = np.sort(along[near & (along >= low) & (along <= high)])
+    if not len(positions):
+        return True
+    # A pixel's projected width keeps diagonally touching pixels continuous.
+    pixel_span = np.abs(run.direction).sum()
+    breaks = np.flatnonzero(np.diff(positions) > pixel_span + 1e-6)
+    starts = positions[np.r_[0, breaks + 1]]
+    ends = positions[np.r_[breaks, len(positions) - 1]]
+    gaps = starts[1:] - ends[:-1] - pixel_span
+    spans = ends - starts + pixel_span
+    within = (ends[:-1] >= 0) & (starts[1:] <= length)
+    overlaps = (ends >= 0) & (starts <= length)
+    # A long extension followed by short dashes is not itself a dashed edge.
+    neighboring = (
+        (overlaps[:-1] | overlaps[1:])
+        & (gaps <= np.minimum(spans[:-1], spans[1:]))
+        & (np.minimum(spans[:-1], spans[1:]) >= length / 2)
+    )
+    return bool(np.any(within | neighboring))
+
+
+def _crossing(
+    run: _Run,
+    inked: np.ndarray,
+    annotation: np.ndarray,
+    junctions: np.ndarray,
+    boundary: np.ndarray,
+) -> np.ndarray | None:
+    """Pixels continued by annotation, ending at the first interior junction."""
     height, width = annotation.shape
 
-    def reached(point: np.ndarray) -> bool:
+    def at(mask: np.ndarray, point: np.ndarray) -> bool:
         x, y = round(point[0]), round(point[1])
-        return 0 <= x < width and 0 <= y < height and bool(annotation[y, x])
+        return 0 <= x < width and 0 <= y < height and bool(mask[y, x])
 
     for end in run.ends:
         outward = run.direction * np.sign((end - run.middle) @ run.direction)
-        last, met = _follow(end, outward, inked, reached)
-        if not met or np.linalg.norm(last - end) > CROSS_PX:
+        last, met = _follow(
+            end,
+            outward,
+            inked,
+            lambda point: at(annotation, point) or at(junctions, point),
+        )
+        if not met or not at(annotation, last) or np.linalg.norm(last - end) > CROSS_PX:
             continue
         ahead = last + np.arange(1, MIN_RUN_PX + 1)[:, None] * outward
         ahead = np.rint(ahead).astype(int)
         if not ((ahead >= 0) & (ahead < (width, height))).all():
             continue
-        if annotation[ahead[:, 1], ahead[:, 0]].mean() > CARRY_SHARE:
-            return True
-    return False
+        if annotation[ahead[:, 1], ahead[:, 0]].mean() <= CARRY_SHARE:
+            continue
+        left_boundary = not at(boundary, end)
+
+        def exits_part(point: np.ndarray) -> bool:
+            nonlocal left_boundary
+            on_boundary = at(boundary, point)
+            left_boundary |= not on_boundary
+            return left_boundary and on_boundary
+
+        _, exits = _follow(end, -outward, inked, exits_part)
+        # Reaching the opposite outline does not establish an annotation line.
+        if exits:
+            continue
+        tip, _ = _follow(end, -outward, inked, lambda point: at(junctions, point))
+        return run.pixels[(run.pixels - tip) @ outward > 0]
+    return None
 
 
 def _follow(

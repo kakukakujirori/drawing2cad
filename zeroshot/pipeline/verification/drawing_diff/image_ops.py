@@ -202,7 +202,7 @@ def thin_mask(
 
     Width modes, rather than a split of all samples, keep text and crossings
     from raising the threshold above real outlines. Optional registered CAD
-    confirms that its outer boundary predominantly uses the thicker width.
+    identifies width populations along its outer boundary, all of which stay.
     Ink far from CAD can be missing geometry or text, not necessarily thin ink.
     """
     none = np.zeros_like(ink, dtype=bool)
@@ -225,11 +225,43 @@ def thin_mask(
     if not pairs:
         return none
     narrow, wide = pairs[0]
-    level = np.sqrt(narrow * wide)
     if part is not None:
         outline = centres & (distance_map(external_boundary(part)) <= 2)
-        if outline.sum() < MIN_WIDTH_SAMPLES or (width[outline] >= level).mean() <= 0.5:
+        if outline.sum() < MIN_WIDTH_SAMPLES:
             return none
+        outline_hist, _ = np.histogram(
+            np.log(np.maximum(width[outline], 0.1)), bins=bins
+        )
+        supported = [
+            np.exp((bins[i] + bins[i + 1]) / 2)
+            for i in peaks
+            if outline_hist[max(0, i - 2) : i + 3].sum()
+            >= max(MIN_WIDTH_SAMPLES, 0.05 * outline.sum())
+        ]
+        # A thinner real boundary must survive even when most of it is thicker.
+        candidates = [(a, b) for a, b in pairs if supported and b <= min(supported)]
+        if not candidates:
+            return none
+        narrow, wide = candidates[-1]
+        if (width[outline] >= np.sqrt(narrow * wide)).mean() <= 0.5:
+            return none
+    thin, kept_area = _thin_width_mask(ink, width, narrow, wide)
+    if (narrow, wide) != pairs[0]:
+        # Preserve the input perimeter when increasing the width cutoff.
+        baseline_thin, baseline_area = _thin_width_mask(ink, width, *pairs[0])
+        boundary = external_boundary(baseline_area)
+        near_kept_area = cv2.dilate(kept_area.astype(np.uint8), disk(OPEN_PX)) > 0
+        if not baseline_area.any() or not near_kept_area[boundary].all():
+            return baseline_thin
+    return thin
+
+
+def _thin_width_mask(
+    ink: np.ndarray, width: np.ndarray, narrow: float, wide: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Thin strokes at one width split and their retained silhouette."""
+    none = np.zeros_like(ink, dtype=bool)
+    level = np.sqrt(narrow * wide)
     reach = max(2, int(np.ceil(wide / 2)))
     beside = cv2.dilate(width, np.ones((2 * reach + 1,) * 2, np.uint8))
     # Filled crossings can extend beyond the sampled centres; unmeasured ink stays.
@@ -241,11 +273,12 @@ def thin_mask(
         1:, cv2.CC_STAT_AREA
     ]
     if not areas.size or areas.max() < np.pi * (wide / 2) ** 2:
-        return none
+        return none, none
     # Measure the filled silhouette so dense internal edges do not shrink it.
-    if distance_map(~drawing_area(kept)).max() < wide:
-        return none
-    return thin
+    kept_area = drawing_area(kept)
+    if distance_map(~kept_area).max() < wide:
+        return none, none
+    return thin, kept_area
 
 
 def _external_annotations(ink: np.ndarray, thin: np.ndarray) -> np.ndarray:
