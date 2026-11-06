@@ -196,6 +196,29 @@ def test_tool_rejects_directory(tmp_path: Path) -> None:
         load_image.invoke({"image_path": "/work/image.png"})
 
 
+@pytest.mark.parametrize("size", [(1600, 7), (7, 1600)])
+def test_tool_gives_feedback_instead_of_a_too_thin_image(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    Image.new("L", size, 255).save(tmp_path / "view.png")
+    load_image = create_load_image_tool(SandboxWorkdir(host_bind_dir=tmp_path))
+
+    with pytest.raises(ToolFeedbackError, match=f"{size[0]}x{size[1]} px, too thin"):
+        load_image.invoke({"image_path": "/work/view.png"})
+
+
+@pytest.mark.parametrize("size", [(1600, 8), (8, 1600)])
+def test_tool_loads_an_image_at_the_aspect_limit(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    Image.new("L", size, 255).save(tmp_path / "view.png")
+    load_image = create_load_image_tool(SandboxWorkdir(host_bind_dir=tmp_path))
+
+    blocks = load_image.invoke({"image_path": "/work/view.png"})
+
+    assert blocks[0]["type"] == "image_url"
+
+
 def test_tool_rejects_non_image_file(tmp_path: Path) -> None:
     """A model pointing this at a DXF must get feedback, not end the run.
 

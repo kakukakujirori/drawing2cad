@@ -414,6 +414,14 @@ def test_sheet_file_must_be_an_existing_regular_file_inside_workdir(
         )
 
 
+def test_sheet_file_must_not_have_hard_links(tmp_path: Path) -> None:
+    submitted = raster_case(tmp_path)
+    (tmp_path / "copy.png").hardlink_to(tmp_path / "front.png")
+
+    with pytest.raises(LocatedError, match="must not have hard links"):
+        validate_interpretation(submitted, workdir=SandboxWorkdir(tmp_path))
+
+
 def dxf_case(workdir: Path):
     doc = ezdxf.new()
     # Drawn away from the origin, so a region has to cite the file's own frame.

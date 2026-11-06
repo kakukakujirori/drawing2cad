@@ -304,6 +304,10 @@ def _graph(
     path = workdir.host_bind_dir / "drawing.png"
     Image.new("RGB", (20, 20), "white").save(path)
     Image.new("RGB", (20, 20), "white").save(workdir.host_bind_dir / "front.png")
+    (workdir.host_bind_dir / "inputs").mkdir(exist_ok=True)
+    Image.new("RGB", (20, 20), "white").save(
+        workdir.host_bind_dir / "inputs" / "front.png"
+    )
     Image.new("RGB", (20, 20), "white").save(workdir.host_bind_dir / "back.png")
     _write_projection_dxf(workdir.host_bind_dir / "projection" / "front.dxf")
     common = {

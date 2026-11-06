@@ -456,11 +456,12 @@ def _measure(model: Circle | Line, xy: np.ndarray, scale: _Scale) -> Stroke | No
     rho = np.hypot(dx, dy)
     jacobian = np.c_[-dx / rho, -dy / rho, -np.ones(len(xy))]
     sigma2 = max(stroke.rms, 0.1) ** 2 * len(xy) / max(support / scale.line_width, 3)
-    covariance = np.linalg.pinv(jacobian.T @ jacobian) * sigma2
+    _, singular, vt = np.linalg.svd(jacobian, full_matrices=False)
+    variance = ((vt.T / singular) ** 2).sum(axis=1) * sigma2
     return replace(
         stroke,
-        radius_sd=math.sqrt(covariance[2, 2]),
-        centre_sd=math.sqrt(max(covariance[0, 0], covariance[1, 1])),
+        radius_sd=math.sqrt(variance[2]),
+        centre_sd=math.sqrt(max(variance[0], variance[1])),
     )
 
 

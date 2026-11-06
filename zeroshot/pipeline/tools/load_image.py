@@ -9,6 +9,10 @@ from PIL import Image
 from zeroshot.pipeline.sandbox import SandboxWorkdir
 from zeroshot.pipeline.tools.errors import ToolFeedbackError
 
+# Long side over short side. Upstreams refuse more, and so thin an image shows
+# the model next to nothing anyway.
+_MAX_ASPECT = 200
+
 
 def resolve_image_path(
     workdir: SandboxWorkdir, sandbox_image_path: str | PurePosixPath
@@ -43,6 +47,7 @@ def create_load_image_tool(workdir: SandboxWorkdir) -> BaseTool:
             image_bytes = host_image_path.read_bytes()
             with Image.open(BytesIO(image_bytes)) as image:
                 mime_type = image.get_format_mimetype()
+                width, height = image.size
                 image.verify()
         except (OSError, SyntaxError) as error:
             raise ToolFeedbackError(
@@ -51,6 +56,13 @@ def create_load_image_tool(workdir: SandboxWorkdir) -> BaseTool:
 
         if mime_type is None:
             raise ToolFeedbackError(f"Unknown image format: {host_image_path.name}")
+
+        if max(width, height) > _MAX_ASPECT * min(width, height):
+            raise ToolFeedbackError(
+                f"Not loaded: {image_path} is {width}x{height} px, too thin to view. "
+                "If this is a projection, the build is nearly a line in this view; "
+                "compare its extent there with the drawing."
+            )
 
         # Return OpenAI-native image_url blocks directly.  langchain-openrouter
         # does not run ToolMessage content through _format_message_content, so

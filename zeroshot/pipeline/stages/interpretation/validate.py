@@ -399,7 +399,7 @@ def _share_page_scale(
 def _readable_path(
     view: DrawingView, location: KeyLocation, workdir: SandboxWorkdir
 ) -> Path:
-    """The view's file, refused if it leaves the workspace or is not a file."""
+    """The view's file, refused unless it is one regular file in the workspace."""
     path = workdir.sandbox_to_host_path(view.file)
     if path.is_symlink() or not path.resolve().is_relative_to(
         workdir.host_bind_dir.resolve()
@@ -412,6 +412,11 @@ def _readable_path(
         raise LocatedError.at(
             (*location, "file"),
             f"{view.name}.file is not a regular file: {view.file}",
+        )
+    if path.stat().st_nlink != 1:
+        raise LocatedError.at(
+            (*location, "file"),
+            f"{view.name}.file must not have hard links: {view.file}",
         )
     return path.resolve()
 

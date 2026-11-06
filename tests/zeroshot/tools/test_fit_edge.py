@@ -15,6 +15,8 @@ from zeroshot.pipeline.tools.fit_edge import (
     Circle,
     FitItem,
     Line,
+    _measure,
+    _Scale,
     create_fit_edge_tool,
     find_strokes,
     fit_report,
@@ -155,6 +157,16 @@ def test_straight_ink_asked_as_circle_gives_lines(tmp_path):
     line = finding.strokes[0].model
     assert isinstance(line, Line)
     assert line.y == pytest.approx(300, abs=TOLERANCE_PX)
+
+
+def test_a_circle_fitted_to_straight_ink_has_an_undetermined_radius():
+    model = Circle(803.138320090111, 137130475.4852984, 137130298.9852997)
+    xy = np.c_[np.arange(835.5, 769.5, -1), np.full(66, 176.5)]
+
+    stroke = _measure(model, xy, _Scale(line_width=2.0))
+
+    assert stroke is not None
+    assert stroke.radius_sd > model.r
 
 
 def test_report_says_where_the_box_cuts_a_line(tmp_path):
