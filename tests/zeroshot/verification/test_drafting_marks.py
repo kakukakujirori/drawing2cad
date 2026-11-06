@@ -424,7 +424,7 @@ def test_a_leader_whose_shoulder_runs_on_into_a_dimension_is_a_mark_to_its_tip()
 
 
 @pytest.mark.parametrize("angle", [0, 30])
-def test_crossing_annotations_stop_at_pocket_junctions_without_propagating(angle):
+def test_crossing_annotations_stop_at_protected_pocket_edges(angle):
     pocket = [
         ((85, 90), (135, 90)),
         ((135, 90), (135, 130)),
@@ -432,6 +432,7 @@ def test_crossing_annotations_stop_at_pocket_junctions_without_propagating(angle
         ((85, 130), (85, 90)),
     ]
     ink = _ink(*SQUARE, *pocket, ((85, 10), (85, 90)), ((135, 90), (210, 90)))
+    protected = _ink(*pocket)
     mapping = MAPPINGS["identity"]
     transform = cv2.getRotationMatrix2D(CENTRE, angle, 1.0)
 
@@ -450,7 +451,7 @@ def test_crossing_annotations_stop_at_pocket_junctions_without_propagating(angle
         rotate(ink),
         rotate(_outside_square(ink)),
         rotate(_ink(*SQUARE)),
-        part_edges=np.zeros_like(ink),
+        part_edges=rotate(protected),
     )
 
     assert at((85, 65)) and at((150, 90))

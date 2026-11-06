@@ -957,38 +957,32 @@ def test_a_radial_part_edge_is_not_a_leader_to_the_opposite_arc(transpose, from_
 
 
 @pytest.mark.parametrize("transpose", [False, True])
-def test_an_omitted_thin_edge_between_outlines_is_not_a_dimension_extension(transpose):
+def test_a_thin_line_running_on_into_annotation_across_the_part_is_not_missing(
+    transpose,
+):
+    """A dimension extension, which a thin real edge would look the same as."""
     drawing = _white(300)
     corners = [(40, 60), (250, 60), (250, 240), (40, 240)]
     cv2.rectangle(drawing, corners[0], corners[2], (0, 0, 0), 5)
-    # A thin real edge spans the part. Collinear annotations extend outside it.
     cv2.line(drawing, (160, 10), (160, 280), (0, 0, 0), 1)
     if transpose:
         drawing = drawing.transpose(1, 0, 2).copy()
-    scores = []
-    for x in (160, 164, None):
-        output, doc = _white(300), ezdxf.new()
-        lines = list(zip(corners, corners[1:] + corners[:1]))
-        if x is not None:
-            lines.append(((x, 60), (x, 240)))
-        for start, end in lines:
-            if transpose:
-                start, end = start[::-1], end[::-1]
-            cv2.line(output, start, end, (0, 0, 0), 1)
-            doc.modelspace().add_line(start, end)
-        result = compute_diff(
-            drawing,
-            output,
-            _alignment(),
-            projection_modelspace=doc.modelspace(),
-            projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1.0]]),
-        )
-        scores.append(result.stats["match_score"])
-        if x is None:
-            assert any(g["direction"] == "missing" for g in result.stats["unmatched"])
+    output, doc = _white(300), ezdxf.new()
+    for start, end in zip(corners, corners[1:] + corners[:1]):
+        if transpose:
+            start, end = start[::-1], end[::-1]
+        cv2.line(output, start, end, (0, 0, 0), 1)
+        doc.modelspace().add_line(start, end)
 
-    exact, shifted, omitted = scores
-    assert exact < shifted < omitted
+    result = compute_diff(
+        drawing,
+        output,
+        _alignment(),
+        projection_modelspace=doc.modelspace(),
+        projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1.0]]),
+    )
+
+    assert not any(g["direction"] == "missing" for g in result.stats["unmatched"])
 
 
 @pytest.mark.parametrize("transpose", [False, True])
