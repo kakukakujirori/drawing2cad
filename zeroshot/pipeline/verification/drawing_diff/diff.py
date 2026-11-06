@@ -237,13 +237,13 @@ def compute_diff(
 
     projection_rgb holds required lines only; tangent_ink is the optional
     boundary mask on that same pixel grid. It supports missing input lines
-    without contributing extra geometry, silhouette area, or fine extra lines.
+    without contributing extra geometry, silhouette area, or unsupported stretches.
 
     text_regions marks where the drawing carries text, on the drawing's pixel
     grid. Ink there that no output line explains is annotation.
 
     projection_modelspace and projection_to_uv (projection pixel boundaries to CAD UV)
-    identify drafting marks for scoring and enable fine line/style comparison.
+    identify drafting marks for scoring and enable curve and line style comparison.
     Style mismatches are red
     in the overlay and separately counted; they do not alter geometric scores.
 
@@ -364,7 +364,7 @@ def compute_diff(
                 else 0.0
             )
 
-        # Fine comparison needs the DXF curves mapped to drawing pixels.
+        # Stretches and line styles need the DXF curves mapped to drawing pixels.
         curves = None
         line_style_mismatches = []
         if projection_modelspace is not None and output_model_to_input is not None:

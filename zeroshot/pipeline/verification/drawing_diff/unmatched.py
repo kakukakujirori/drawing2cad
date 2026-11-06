@@ -1,9 +1,11 @@
 """Find and display differences in the input drawing's pixel coordinates.
 
-Shared pixel operations support silhouette and line comparison. The output's
-DXF curves add fine extra lines to the coarse candidates. find_unmatched
-merges them before selecting display groups; descriptions and drawing use
-that same selection.
+Shared pixel operations support silhouette and line comparison. Two rules find
+line differences. A far line leaves the other image's lines by a wide margin
+over some length; it applies both ways, and its size keeps the input's annotation
+out. An unsupported stretch runs along one of the output's DXF curves, which
+carry no annotation, so it can be short and near. find_unmatched joins them
+before selecting display groups; descriptions and drawing use that same selection.
 """
 
 from __future__ import annotations
@@ -23,15 +25,15 @@ from skimage.morphology import thin
 from .image_ops import disk, distance_map, drawing_area, filled_area
 
 # Tuned on two drawings and their ground truth: outputs/a2_gate_20260927.
-UNMATCHED_PX = 12.0
+FAR_PEAK_PX = 12.0
 JOIN_PX = 4
 PART_MARGIN_PX = 20
-MIN_LENGTH_PX = 50
-# A line that leaves its place gradually lies beyond UNMATCHED_PX only in short
+FAR_MIN_LENGTH_PX = 50
+# A line that leaves its place gradually lies beyond FAR_PEAK_PX only in short
 # stretches; its group grows from them along the line while it stays this far.
 # Chosen where ground-truth builds gain no missing groups, on the ECCV views of
 # outputs/20261101_minimax3.1_flash; 4 px admits them.
-WEAK_PX = 5.0
+FAR_GROW_PX = 5.0
 
 # Tuned the same way: outputs/silhouette_20260927, with image_ops.CLOSE_PX.
 # Narrower slivers come from misregistered edges and from annotation.
@@ -41,15 +43,15 @@ MIN_AREA_PX = 1000
 # the width covers the corners that the material's opening rounds off.
 OUTLINE_PX = 8
 
-# Fine extra lines: a stretch of an output curve beyond SUPPORT_PX of every input
-# line, the far end of matched-line noise, that somewhere reaches FINE_PX. Between
-# the input's dashes a hidden curve stays nearer than half the gap, which
-# FINE_HIDDEN_PX exceeds. Chosen where ground-truth builds gain few groups, on
-# outputs/20261101_minimax3.1_flash (ECCV) and
+# Unsupported stretches: a stretch of an output curve beyond STRETCH_GROW_PX of every
+# input line, the far end of matched-line noise, that somewhere reaches
+# STRETCH_PEAK_PX. Between the input's dashes a hidden curve stays nearer than half
+# the gap, which STRETCH_HIDDEN_PEAK_PX exceeds. Chosen where ground-truth builds
+# gain few groups, on outputs/20261101_minimax3.1_flash (ECCV) and
 # outputs/20261101_minimax3.1_flash_mixed_with_20261027_itercad_ortho2cad (Ortho2CAD).
-SUPPORT_PX = 3.0
-FINE_PX = 6.0
-FINE_HIDDEN_PX = 7.0
+STRETCH_GROW_PX = 3.0
+STRETCH_PEAK_PX = 6.0
+STRETCH_HIDDEN_PEAK_PX = 7.0
 
 # The most difference groups displayed for one view.
 MAX_GROUPS = 6
@@ -152,25 +154,25 @@ def _groups(
 def _line_groups(
     mask: np.ndarray,
     direction: Literal["missing", "extra"],
-    min_length: int = MIN_LENGTH_PX,
+    min_length: int = FAR_MIN_LENGTH_PX,
 ) -> list[Unmatched]:
     groups = _groups(mask, cv2.dilate(mask.astype(np.uint8), disk(JOIN_PX)), direction)
     return [group for group in groups if group.size_px >= min_length]
 
 
-def _drifting_groups(
+def _far_line_groups(
     lines: np.ndarray, distances: np.ndarray, direction: Literal["missing", "extra"]
 ) -> list[Unmatched]:
-    """Line groups beyond WEAK_PX that reach beyond UNMATCHED_PX somewhere.
+    """Line groups beyond FAR_GROW_PX that reach beyond FAR_PEAK_PX somewhere.
 
     The whole group counts towards its length, not only its farthest stretches.
     """
-    groups = _line_groups(lines & (distances > WEAK_PX), direction, min_length=0)
+    groups = _line_groups(lines & (distances > FAR_GROW_PX), direction, min_length=0)
     return [
         group
         for group in groups
-        if distances[group.xy[:, 1], group.xy[:, 0]].max() > UNMATCHED_PX
-        and _length_px(group) >= MIN_LENGTH_PX
+        if distances[group.xy[:, 1], group.xy[:, 0]].max() > FAR_PEAK_PX
+        and _length_px(group) >= FAR_MIN_LENGTH_PX
     ]
 
 
@@ -279,8 +281,8 @@ def _vicinity(output: np.ndarray) -> np.ndarray:
 
 ################################################################
 
-# Fine line differences:
-# Output DXF curves, their unsupported stretches and coarse/fine merging.
+# Unsupported stretches:
+# Output DXF curves, the stretches no input line supports, and joining far lines.
 
 
 def drawing_curves(
@@ -330,19 +332,19 @@ def output_curves(
     ]
 
 
-def _fine_extra(
+def _unsupported_stretches(
     curves: Sequence[tuple[np.ndarray, str]], distances: np.ndarray
 ) -> list[Unmatched]:
-    """Each stretch of a curve that leaves every input line; see FINE_PX.
+    """Each stretch of a curve that leaves every input line; see STRETCH_PEAK_PX.
 
     Distance changes by at most 1 px per pixel along a curve, so a stretch
-    between supported points spans at least twice the climb past SUPPORT_PX;
+    between supported points spans at least twice the climb past STRETCH_GROW_PX;
     a stretch at the curve's end must be as long.
     """
     height, width = distances.shape
     groups = []
     for xy, style in curves:
-        reach = FINE_HIDDEN_PX if style == "hidden" else FINE_PX
+        reach = STRETCH_HIDDEN_PEAK_PX if style == "hidden" else STRETCH_PEAK_PX
         lengths = np.r_[0, np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
         steps = np.arange(0, lengths[-1] + 1e-9, 1.0)
         points = np.rint(
@@ -352,25 +354,25 @@ def _fine_extra(
         # Beyond the drawing nothing is known, so nothing is unsupported there.
         far = np.zeros(len(points))
         far[inside] = distances[points[inside, 1], points[inside, 0]]
-        edges = np.flatnonzero(np.diff(np.r_[0, far > SUPPORT_PX, 0]))
+        edges = np.flatnonzero(np.diff(np.r_[0, far > STRETCH_GROW_PX, 0]))
         for start, stop in zip(edges[::2], edges[1::2], strict=True):
-            long_enough = stop - start >= 2 * (reach - SUPPORT_PX)
+            long_enough = stop - start >= 2 * (reach - STRETCH_GROW_PX)
             if long_enough and far[start:stop].max() >= reach:
                 groups.append(Unmatched("extra", np.unique(points[start:stop], axis=0)))
     return groups
 
 
-def _merge_extra_groups(
-    coarse: list[Unmatched], fine: list[Unmatched], shape: tuple[int, ...]
+def _join_stretches(
+    far_lines: list[Unmatched], stretches: list[Unmatched], shape: tuple[int, ...]
 ) -> list[Unmatched]:
-    """Join fine stretches to the coarse extra groups they touch."""
+    """Join stretches to the far extra lines they touch."""
     combined = np.zeros(shape, bool)
-    for group in [*(g for g in coarse if g.direction == "extra"), *fine]:
+    for group in [*(g for g in far_lines if g.direction == "extra"), *stretches]:
         combined[group.xy[:, 1], group.xy[:, 0]] = True
     merged = _groups(
         combined, cv2.dilate(combined.astype(np.uint8), disk(JOIN_PX)), "extra"
     )
-    return [g for g in coarse if g.direction == "missing"] + merged
+    return [g for g in far_lines if g.direction == "missing"] + merged
 
 
 ################################################################
@@ -389,10 +391,10 @@ def find_unmatched(
     *,
     line_style_mismatches: Sequence[Unmatched] = (),
 ) -> list[Unmatched]:
-    """Collect material/coarse defects, merge fine errors, then select display groups.
+    """Collect material and far lines, join stretches, then select display groups.
 
     Material outlines suppress duplicate line groups. curves, from output_curves,
-    add fine extra lines: tails extend coarse groups, and the rest stand alone.
+    add unsupported stretches: tails extend far lines, and the rest stand alone.
     Annotation ink is never missing and never encloses material, but output
     lines along it are not extra either. Only outline ink, by default all part
     ink, encloses material.
@@ -419,25 +421,25 @@ def find_unmatched(
         else []
     )
 
-    # Coarse comparison works in both directions; material outlines are shown once.
+    # Far lines are compared in both directions; material outlines are shown once.
     # NOTE: missing input lines are measured from CAD lines, which tangents extend;
     #       extra CAD lines are measured from input lines (optional tangents excluded).
     supporting_lines = output_lines if tangent is None else output_lines | tangent
     output_distances = distance_map(all_lines)
-    lines = _drifting_groups(
+    lines = _far_line_groups(
         drawing_lines & part, distance_map(supporting_lines), "missing"
     )
-    lines += _drifting_groups(output_lines, output_distances, "extra")
+    lines += _far_line_groups(output_lines, output_distances, "extra")
     # A material group already stands for the lines along its edge.
     edge = _outline(material, drawing_lines.shape)
     lines = [line for line in lines if edge[line.xy[:, 1], line.xy[:, 0]].mean() < 0.8]
 
     if curves is not None:
-        fine = _fine_extra(curves, output_distances)
-        fine = [g for g in fine if edge[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
-        lines = _merge_extra_groups(lines, fine, drawing_lines.shape)
+        stretches = _unsupported_stretches(curves, output_distances)
+        stretches = [g for g in stretches if edge[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
+        lines = _join_stretches(lines, stretches, drawing_lines.shape)
 
-    # Qualified style errors need no geometric distance or coarse length threshold.
+    # Qualified style errors need no geometric distance or far line length threshold.
     style_band = np.zeros(drawing_ink.shape, np.uint8)
     for group in line_style_mismatches:
         style_band[group.xy[:, 1], group.xy[:, 0]] = 1

@@ -168,7 +168,7 @@ FRAME = (
 
 
 def test_a_line_that_drifts_off_is_one_group_measured_whole():
-    """Only its last 30 px lie beyond UNMATCHED_PX, too short to list alone."""
+    """Only its last 30 px lie beyond FAR_PEAK_PX, too short to list alone."""
     drawing = _lines(*FRAME, ((40, 150), (260, 150)), size=300)
     output = _lines(*FRAME, ((40, 150), (260, 164)), size=300)
 
@@ -177,7 +177,7 @@ def test_a_line_that_drifts_off_is_one_group_measured_whole():
     extra = [g for g in groups if g.direction == "extra"]
     missing = [g for g in groups if g.direction == "missing"]
     assert len(extra) == 1 and len(missing) == 1
-    # Beyond WEAK_PX from about x = 120 on.
+    # Beyond FAR_GROW_PX from about x = 120 on.
     assert extra[0].box_px[0] < 130 and extra[0].box_px[2] >= 260
 
 
@@ -381,10 +381,10 @@ def test_output_curves_are_the_visible_and_hidden_lines_only():
         (7, 20, True, True),
     ],
 )
-def test_an_output_stretch_is_listed_once_it_reaches_fine_px(
+def test_an_output_stretch_is_listed_once_it_reaches_the_stretch_peak(
     depth, length, hidden, listed
 ):
-    """Far too short for a coarse group, yet an output line no input line explains.
+    """Much too short for a far line, yet an output line no input line explains.
 
     A hidden one must reach further, past half the input's dash gaps.
     """
@@ -439,7 +439,7 @@ def test_a_hole_drawn_through_instead_of_blind_is_extra_but_dash_gaps_are_not(
 
 
 @pytest.mark.parametrize("finish", ["round", "chamfer", "concave"])
-def test_edge_finishes_are_fine_extras_beside_coarse_clutter(finish):
+def test_edge_finishes_are_stretches_beside_far_line_clutter(finish):
     drawing = np.zeros((200, 200), np.uint8)
     output = _lines(*OUTLINE).astype(np.uint8)
     doc = ezdxf.new()
@@ -515,8 +515,8 @@ def test_edge_finishes_are_fine_extras_beside_coarse_clutter(finish):
     assert min(heights[:5]) >= 50 > heights[5]
 
 
-def test_a_fine_tail_and_coarse_run_are_displayed_as_one_defect():
-    # The tail lies 5 px off, within WEAK_PX: only its fine stretch reaches it.
+def test_a_stretch_and_the_far_line_it_extends_are_displayed_as_one_defect():
+    # The tail lies 5 px off, within FAR_GROW_PX: only its stretch reaches it.
     drawing = _lines(
         *FRAME,
         ((30, 105), (60, 105)),
@@ -535,8 +535,8 @@ def test_a_fine_tail_and_coarse_run_are_displayed_as_one_defect():
 
 
 @pytest.mark.parametrize("offset", [(0, 0), (2, 2), (3, 0), (0, 3)])
-def test_fine_comparison_tolerates_registration_stroke_width_and_annotation(offset):
-    """Offsets within matched-line noise stay below FINE_PX even at the corners,
+def test_stretches_tolerate_registration_stroke_width_and_annotation(offset):
+    """Offsets within matched-line noise stay below STRETCH_PEAK_PX even at the corners,
     which the centre line of a thick stroke cuts."""
     drawing = _lines(*OUTLINE, width=7).astype(np.uint8)
     drawing = cv2.warpAffine(
@@ -546,14 +546,14 @@ def test_fine_comparison_tolerates_registration_stroke_width_and_annotation(offs
     cv2.putText(drawing, "100", (80, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1, 1)
     output = _lines(*OUTLINE)
 
-    coarse = find_unmatched(drawing.astype(bool), output)
+    far_lines = find_unmatched(drawing.astype(bool), output)
     groups = find_unmatched(drawing.astype(bool), output, _curves(*OUTLINE))
 
-    assert describe_unmatched(groups) == describe_unmatched(coarse)
+    assert describe_unmatched(groups) == describe_unmatched(far_lines)
 
 
 @pytest.mark.parametrize("shape", ["horizontal", "diagonal"])
-def test_a_remote_coarse_error_does_not_admit_disconnected_fragments(shape):
+def test_a_remote_far_line_does_not_admit_disconnected_fragments(shape):
     if shape == "horizontal":
         size, lo, hi = 500, 20, 480
         common = [((30, 100), (30, 60))]
@@ -586,14 +586,14 @@ def test_a_remote_coarse_error_does_not_admit_disconnected_fragments(shape):
     drawing = _lines(*frame, *common, *expected, size=size)
     output = _lines(*frame, *common, *actual, size=size)
 
-    coarse = find_unmatched(drawing, output)
+    far_lines = find_unmatched(drawing, output)
     groups = find_unmatched(drawing, output, _curves(*frame, *common, *actual))
 
-    assert len(coarse) == 2
-    # Its fine stretch lengthens the coarse group where the line lies between
-    # SUPPORT_PX and WEAK_PX of the input; no disconnected fragment joins it.
-    assert [g.direction for g in groups] == [g.direction for g in coarse]
-    for group, alone in zip(groups, coarse, strict=True):
+    assert len(far_lines) == 2
+    # Its stretch lengthens the far line where the line lies between
+    # STRETCH_GROW_PX and FAR_GROW_PX of the input; no disconnected fragment joins it.
+    assert [g.direction for g in groups] == [g.direction for g in far_lines]
+    for group, alone in zip(groups, far_lines, strict=True):
         assert np.abs(np.subtract(group.box_px, alone.box_px)).max() <= 2
 
 

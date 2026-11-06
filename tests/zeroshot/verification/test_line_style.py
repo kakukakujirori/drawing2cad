@@ -223,7 +223,7 @@ def test_style_changing_partway_is_unknown_in_the_whole_curve_prototype():
     assert stats["unknown_curves"] == 1
 
 
-def test_open_arc_mismatch_and_small_hole_bypass_coarse_minimum_size():
+def test_open_arc_mismatch_and_small_hole_bypass_the_far_line_minimum_size():
     model = ezdxf.new(setup=True).modelspace()
     model.add_arc((100.5, 100.5), 40, 20, 170, dxfattribs={"linetype": "HIDDEN"})
     groups, stats = find_line_style_mismatches(

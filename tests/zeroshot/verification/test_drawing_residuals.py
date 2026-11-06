@@ -109,8 +109,8 @@ def test_unmatched_preserves_dash_gaps_and_thin_solid_lines(scale, vertical, off
     def projected(x, y):
         return tuple(round((v + 0.5) * scale + offset - 0.5) for v in (x, y))
 
-    # The output lies 7 px off the input, beyond WEAK_PX but short of
-    # UNMATCHED_PX, so its lines are magenta and no cluster covers them.
+    # The output lies 7 px off the input, beyond FAR_GROW_PX but short of
+    # FAR_PEAK_PX, so its lines are magenta and no cluster covers them.
     cv2.rectangle(drawing, (20, 20), (230, 230), (0, 0, 0), 3)
     cv2.rectangle(output, projected(27, 27), projected(223, 223), (0, 0, 0), 1)
     for x in range(40, 210, 16):
@@ -178,7 +178,7 @@ def test_tangent_mask_must_share_the_projection_pixel_grid(mask):
         compute_diff(_white(), _white(), _alignment(), tangent_ink=mask)
 
 
-def test_diff_compares_fine_lines_from_dxf_geometry():
+def test_diff_finds_stretches_from_dxf_geometry():
     drawing, output = _white(200), _white(200)
     chamfered = np.array(
         [
@@ -194,8 +194,8 @@ def test_diff_compares_fine_lines_from_dxf_geometry():
     )
     cv2.polylines(drawing, [chamfered], True, (0, 0, 0), 5)
     cv2.rectangle(output, (40, 40), (160, 160), (0, 0, 0), 1)
-    coarse = compute_diff(drawing, output, _alignment())
-    assert coarse.stats["unmatched"] == []
+    without_curves = compute_diff(drawing, output, _alignment())
+    assert without_curves.stats["unmatched"] == []
 
     doc = ezdxf.new()
     corners = [(0, 60), (60, 60), (60, 0), (0, 0)]
@@ -214,7 +214,7 @@ def test_diff_compares_fine_lines_from_dxf_geometry():
     assert len(detailed.stats["unmatched"]) == 4
     assert all(item["kind"] == "lines" for item in detailed.stats["unmatched"])
     for key in ("bounded_chamfer_drawing_px", "material_error", "match_score"):
-        assert detailed.stats[key] == coarse.stats[key]
+        assert detailed.stats[key] == without_curves.stats[key]
 
 
 def test_line_style_failure_keeps_geometry_metrics(monkeypatch):
@@ -242,7 +242,7 @@ def test_line_style_failure_keeps_geometry_metrics(monkeypatch):
         assert diff.stats[key] == expected.stats[key]
 
 
-def test_fine_comparison_ignores_hidden_dash_phase():
+def test_stretches_ignore_hidden_dash_phase():
     drawing, output = _white(200), _white(200)
     for image in (drawing, output):
         cv2.rectangle(image, (40, 40), (160, 160), (0, 0, 0), 1)
@@ -256,7 +256,7 @@ def test_fine_comparison_ignores_hidden_dash_phase():
     for start, end in zip(corners, corners[1:] + corners[:1]):
         doc.modelspace().add_line(start, end)
     doc.modelspace().add_circle((70, 70), 18, dxfattribs={"linetype": "HIDDEN"})
-    coarse = compute_diff(drawing, output, _alignment())
+    without_curves = compute_diff(drawing, output, _alignment())
     detailed = compute_diff(
         drawing,
         output,
@@ -265,9 +265,9 @@ def test_fine_comparison_ignores_hidden_dash_phase():
         projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1]]),
     )
 
-    assert coarse.stats["unmatched"] == detailed.stats["unmatched"] == []
+    assert without_curves.stats["unmatched"] == detailed.stats["unmatched"] == []
     for key in ("bounded_chamfer_drawing_px", "material_error", "match_score"):
-        assert detailed.stats[key] == coarse.stats[key]
+        assert detailed.stats[key] == without_curves.stats[key]
 
 
 def test_missing_hole_only_appears_in_input_distances():
