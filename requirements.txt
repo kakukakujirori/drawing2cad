@@ -15,12 +15,14 @@ langchain-openrouter
 langgraph
 langgraph-checkpoint-sqlite
 manifold3d
+onnxruntime
 opencv-python-headless
 peft
 Pillow
 pymupdf
 pytest
 pyyaml
+rapidocr
 rich
 rootutils
 rtree

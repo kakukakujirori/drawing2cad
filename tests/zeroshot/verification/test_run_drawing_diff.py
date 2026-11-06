@@ -120,6 +120,38 @@ def test_start_failure_closes_both_pipe_ends(monkeypatch, tmp_path):
     assert context.process.closed
 
 
+def test_text_is_read_before_the_comparison_time_starts(tmp_path, monkeypatch):
+    drawing = tmp_path / "drawing.png"
+    Image.fromarray(np.full((20, 20, 3), 255, np.uint8)).save(drawing)
+    events = []
+    monkeypatch.setattr(
+        run_drawing_diff, "read_text_lines", lambda _rgb: events.append("read")
+    )
+
+    def stop(*_args):
+        events.append("started")
+        raise OSError("stopped")
+
+    monkeypatch.setattr(DrawingDiffExecutor, "_start", stop)
+
+    with pytest.raises(OSError, match="stopped"):
+        DrawingDiffExecutor().execute(
+            [(drawing, tmp_path / "a.png"), (drawing, tmp_path / "b.png")]
+        )
+
+    assert events == ["read", "started"]
+
+
+def test_a_drawing_that_cannot_be_read_is_left_to_the_worker(tmp_path, monkeypatch):
+    def stop(*_args):
+        raise RuntimeError("started")
+
+    monkeypatch.setattr(DrawingDiffExecutor, "_start", stop)
+
+    with pytest.raises(RuntimeError, match="started"):
+        DrawingDiffExecutor().execute([(tmp_path / "none.png", tmp_path / "a.png")])
+
+
 def test_results_keep_input_order_when_worker_sends_out_of_order(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "run_worker", _send_out_of_order)
     reports = DrawingDiffExecutor(

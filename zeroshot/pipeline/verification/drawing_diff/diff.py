@@ -21,6 +21,7 @@ from .image_ops import (
     render_transformed_strokes,
 )
 from .line_style import find_line_style_mismatches
+from .text_marks import text_marks
 from .unmatched import (
     describe_unmatched,
     draw_unmatched,
@@ -220,6 +221,7 @@ def compute_diff(
     alignment: AlignmentResult,
     *,
     tangent_ink: np.ndarray | None = None,
+    text_regions: np.ndarray | None = None,
     distance_clip_px: float | None = 12.0,
     projection_modelspace: Modelspace | None = None,
     projection_to_uv: np.ndarray | None = None,
@@ -236,6 +238,9 @@ def compute_diff(
     projection_rgb holds required lines only; tangent_ink is the optional
     boundary mask on that same pixel grid. It supports missing input lines
     without contributing extra geometry, silhouette area, or fine extra lines.
+
+    text_regions marks where the drawing carries text, on the drawing's pixel
+    grid. Ink there that no output line explains is annotation.
 
     projection_modelspace and projection_to_uv (projection pixel boundaries to CAD UV)
     identify drafting marks for scoring and enable fine line/style comparison.
@@ -261,6 +266,14 @@ def compute_diff(
         or tangent_ink.dtype != bool
     ):
         raise ValueError("tangent_ink must be a boolean mask on the projection grid")
+    if text_regions is None:
+        text_regions = np.zeros(drawing_rgb.shape[:2], dtype=bool)
+    if (
+        not isinstance(text_regions, np.ndarray)
+        or text_regions.shape != drawing_rgb.shape[:2]
+        or text_regions.dtype != bool
+    ):
+        raise ValueError("text_regions must be a boolean mask on the drawing grid")
     if distance_clip_px is not None and (
         not math.isfinite(distance_clip_px) or distance_clip_px <= 0
     ):
@@ -324,6 +337,10 @@ def compute_diff(
                 output_seen,
                 part_edges=outline,
             )
+
+        comparison_annotation = comparison_annotation | text_marks(
+            drawing_ink, text_regions, output_seen | tangent_seen
+        )
 
         # Scoring and unmatched display must exclude the same annotation ink.
         stats.update(

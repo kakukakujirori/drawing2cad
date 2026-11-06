@@ -15,6 +15,8 @@ from PIL import Image
 from ..run_drawing_diff import DrawingDiffReport
 from .align import AlignmentResult, Backend, Model, align, read_rgb
 from .diff import DiffResult, compute_diff
+from .ocr import read_text_lines
+from .text_marks import text_regions
 
 
 def run_worker(
@@ -225,6 +227,7 @@ def _align_and_compare(
         non_tangent_rgb,
         alignment,
         tangent_ink=tangent_mask,
+        text_regions=text_regions(read_text_lines(drawing), drawing.shape[:2]),
         distance_clip_px=distance_clip_px,
         projection_modelspace=modelspace,
         projection_to_uv=projection_to_uv,

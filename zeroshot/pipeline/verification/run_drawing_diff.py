@@ -12,7 +12,9 @@ from zeroshot.pipeline.verification.drawing_diff.align import (
     AlignmentResult,
     Backend,
     Model,
+    read_rgb,
 )
+from zeroshot.pipeline.verification.drawing_diff.ocr import read_text_lines
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,16 @@ class DrawingDiffReport:
     warnings: tuple[str, ...] = ()
     paths: dict[str, Path] = field(default_factory=dict)
     error: str | None = None
+
+
+def _read_text_ahead(pairs: Sequence[tuple[Path, Path]]) -> None:
+    """Spend no comparison time on text: the worker finds each drawing's cached."""
+    for drawing_path in {drawing_path for drawing_path, _ in pairs}:
+        try:
+            read_text_lines(read_rgb(drawing_path))
+        except OSError:
+            # The worker reports a drawing it cannot read.
+            continue
 
 
 class DrawingDiffExecutor:
@@ -80,6 +92,7 @@ class DrawingDiffExecutor:
         if not pairs:
             return []
 
+        _read_text_ahead(pairs)
         deadline = time.monotonic() + self.timeout_seconds
         process, receiver = self._start(pairs, scales)
         try:
