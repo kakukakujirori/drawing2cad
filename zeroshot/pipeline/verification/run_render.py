@@ -81,12 +81,21 @@ def _render_projections(
     if requested:
         shape = load_shape(step_path)
         for view, path in requested.items():
-            visible, hidden, tangent = project(shape, *frames[View(view)])
+            visible, hidden, tangent, hidden_tangent = project(
+                shape, *frames[View(view)]
+            )
             if ignore_hidden_lines:
-                hidden = []
+                hidden, hidden_tangent = [], []
             # A view seen edge-on can collapse; the other views still hold shape.
             try:
-                write_view_dxf(path, visible, hidden, view, tangent=tangent)
+                write_view_dxf(
+                    path,
+                    visible,
+                    hidden,
+                    view,
+                    tangent=tangent,
+                    hidden_tangent=hidden_tangent,
+                )
             except DegenerateDrawingError as error:
                 errors[view] = _error_text(error)
                 continue

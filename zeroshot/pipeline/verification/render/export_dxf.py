@@ -51,8 +51,11 @@ def write_view_dxf(
     layer: str,
     *,
     tangent: Sequence[cq.Edge] = (),
+    hidden_tangent: Sequence[cq.Edge] = (),
 ) -> None:
     """Write sharp/hidden edges in black and optional tangent boundaries in gray.
+
+    Whatever lies behind the part is dashed.
 
     `layer` names the view, and says which one was refused when it has no area.
     """
@@ -60,11 +63,12 @@ def write_view_dxf(
     modelspace = doc.modelspace()
     if layer not in doc.layers:
         doc.layers.add(layer)
-    if tangent:
+    if tangent or hidden_tangent:
         doc.layers.add("TANGENT", color=8)
     # Black geometry is drawn last so overlaps keep their mandatory-edge meaning.
     for edges, linetype, edge_layer in (
         (tangent, "Continuous", "TANGENT"),
+        (hidden_tangent, "HIDDEN", "TANGENT"),
         (visible, "Continuous", layer),
         (hidden, "HIDDEN", layer),
     ):

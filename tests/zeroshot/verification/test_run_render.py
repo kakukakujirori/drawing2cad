@@ -256,10 +256,12 @@ def test_a_degenerate_view_leaves_the_other_views_drawn(tmp_path, monkeypatch):
     cq.exporters.export(cq.Workplane("XY").box(10.0, 20.0, 30.0), str(step_path))
     write_view_dxf = run_render.write_view_dxf
 
-    def refuse_right(path, visible, hidden, layer, *, tangent=()):
+    def refuse_right(path, visible, hidden, layer, *, tangent=(), hidden_tangent=()):
         if layer == "right":
             raise DegenerateDrawingError("view 'right' has near-zero extent")
-        write_view_dxf(path, visible, hidden, layer, tangent=tangent)
+        write_view_dxf(
+            path, visible, hidden, layer, tangent=tangent, hidden_tangent=hidden_tangent
+        )
 
     monkeypatch.setattr(run_render, "write_view_dxf", refuse_right)
     requested = _projection_paths(tmp_path)
@@ -287,6 +289,25 @@ def test_hidden_edges_are_dashed_unless_ignored(tmp_path, ignore_hidden_lines):
         for entity in ezdxf.readfile(path).modelspace()
     }
     assert ("HIDDEN" in linetypes) is not ignore_hidden_lines
+
+
+@pytest.mark.parametrize("ignore_hidden_lines", [False, True])
+def test_hidden_tangents_are_dashed_and_gray_unless_ignored(
+    tmp_path, ignore_hidden_lines
+):
+    step_path = tmp_path / "pocket.step"
+    pocket = cq.Workplane().box(20, 20, 10).edges("|Z").fillet(3).translate((0, 0, 5))
+    cq.exporters.export(cq.Workplane().box(40, 40, 20).cut(pocket), str(step_path))
+    requested = _projection_paths(tmp_path)
+
+    run_render._render_projections(step_path, requested, UNTURNED, ignore_hidden_lines)
+
+    gray = [
+        entity.dxf.linetype
+        for entity in ezdxf.readfile(requested.front).modelspace()
+        if entity.dxf.layer == "TANGENT"
+    ]
+    assert gray == ([] if ignore_hidden_lines else ["HIDDEN", "HIDDEN"])
 
 
 def test_every_error_key_names_a_field_of_its_paths_dto(tmp_path, monkeypatch):

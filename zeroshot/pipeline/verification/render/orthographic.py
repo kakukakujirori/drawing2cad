@@ -70,8 +70,8 @@ def load_shape(step_path: Path) -> cq.Shape:
 
 def project(
     shape: cq.Shape, u_axis: Axis, v_axis: Axis
-) -> tuple[list[cq.Edge], list[cq.Edge], list[cq.Edge]]:
-    """Visible, hidden, and visible tangent boundaries, with +U right and +V up."""
+) -> tuple[list[cq.Edge], list[cq.Edge], list[cq.Edge], list[cq.Edge]]:
+    """Visible, hidden, tangent and hidden tangent edges, with +U right and +V up."""
     out = cross_axis(u_axis, v_axis)
     if out is None:
         raise ValueError(f"u_axis {u_axis} and v_axis {v_axis} span no plane")
@@ -88,8 +88,9 @@ def project(
     hidden = _edges(drawn.HCompound(), drawn.OutLineHCompound())
     # Drawing conventions vary for tangent boundaries; keep their ink separate.
     tangent = _edges(drawn.Rg1LineVCompound())
-    if not visible and not hidden and not tangent:
-        return [], [], []
+    hidden_tangent = _edges(drawn.Rg1LineHCompound())
+    if not (visible or hidden or tangent or hidden_tangent):
+        return [], [], [], []
 
     # Tight: a loose box can be several times the part and let strays through.
     part = shape.BoundingBox()
@@ -98,7 +99,14 @@ def project(
     visible = [_simplest(e, tol) for e in visible if _drawable(e, footprint, tol)]
     hidden = [_simplest(e, tol) for e in hidden if _drawable(e, footprint, tol)]
     tangent = [_simplest(e, tol) for e in tangent if _drawable(e, footprint, tol)]
-    return visible, _uncovered(hidden, visible, tol), _uncovered(tangent, visible, tol)
+    hidden_tangent = [
+        _simplest(e, tol) for e in hidden_tangent if _drawable(e, footprint, tol)
+    ]
+    hidden = _uncovered(hidden, visible, tol)
+    tangent = _uncovered(tangent, visible, tol)
+    # A boundary behind the part adds ink only where nothing else is drawn.
+    hidden_tangent = _uncovered(hidden_tangent, [*visible, *hidden, *tangent], tol)
+    return visible, hidden, tangent, hidden_tangent
 
 
 def _split_at_creases(shape: cq.Shape) -> cq.Shape:

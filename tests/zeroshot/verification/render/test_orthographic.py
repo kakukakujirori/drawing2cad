@@ -86,7 +86,7 @@ Z_LO, Z_HI = _model_range(BOX_Z, BOX_CENTER[2])
 )
 def test_a_view_lands_where_its_frame_says(box, frame, expected):
     """Model coordinates, not a sheet: a view may sit left of the origin."""
-    visible, hidden, _ = project(box, *frame)
+    visible, hidden, *_ = project(box, *frame)
 
     assert _extents(visible + hidden) == pytest.approx(expected, abs=1e-3)
 
@@ -106,14 +106,14 @@ def test_the_eye_is_on_the_side_the_view_faces():
     """FRONT looks from -Y, so a hole opening on the -Y face is visible."""
     part = _box().faces("<Y").workplane().hole(6.0, BOX_Y / 2).findSolid()
 
-    visible, hidden, _ = project(part, *STANDARD_VIEW_FRAMES[View.FRONT])
+    visible, hidden, *_ = project(part, *STANDARD_VIEW_FRAMES[View.FRONT])
 
     assert "CIRCLE" in {edge.geomType() for edge in visible}
     assert "CIRCLE" not in {edge.geomType() for edge in hidden}
 
 
 def test_an_edge_behind_a_visible_one_is_not_drawn_hidden(box):
-    _, hidden, _ = project(box, *STANDARD_VIEW_FRAMES[View.FRONT])
+    _, hidden, *_ = project(box, *STANDARD_VIEW_FRAMES[View.FRONT])
 
     assert hidden == []
 
@@ -121,7 +121,7 @@ def test_an_edge_behind_a_visible_one_is_not_drawn_hidden(box):
 def test_a_bore_inside_the_part_is_drawn_hidden():
     part = _box().faces("<Y").workplane().hole(4.0).findSolid()
 
-    _, hidden, _ = project(part, *STANDARD_VIEW_FRAMES[View.TOP])
+    _, hidden, *_ = project(part, *STANDARD_VIEW_FRAMES[View.TOP])
 
     assert hidden
     assert {edge.geomType() for edge in hidden} == {"LINE"}
@@ -131,7 +131,7 @@ def test_coinciding_hidden_edges_are_drawn_once():
     """Seen from above, a pocket's walls are edge-on: their two rims coincide."""
     part = _box().faces("<Z").workplane().rect(10.0, 8.0).cutBlind(-5.0).findSolid()
 
-    _, hidden, _ = project(part, *STANDARD_VIEW_FRAMES[View.TOP])
+    _, hidden, *_ = project(part, *STANDARD_VIEW_FRAMES[View.TOP])
 
     assert sum(edge.Length() for edge in hidden) == pytest.approx(2 * (10.0 + 8.0))
 
@@ -156,7 +156,7 @@ def test_rounded_body_keeps_tangent_boundaries_separate_after_step_export(
     path = tmp_path / "rounded.step"
     cq.exporters.export(body, str(path))
 
-    visible, hidden, tangent = project(load_shape(path), *frame)
+    visible, hidden, tangent, _ = project(load_shape(path), *frame)
 
     assert len(tangent) == 2
     assert sorted(e.Length() for e in tangent) == pytest.approx([50, 50])
@@ -167,11 +167,35 @@ def test_rounded_body_keeps_tangent_boundaries_separate_after_step_export(
     assert not hidden
 
 
+def _rounded_pocket() -> cq.Shape:
+    pocket = cq.Workplane().box(20, 20, 10).edges("|Z").fillet(3).translate((0, 0, 5))
+    return cq.Workplane().box(40, 40, 20).cut(pocket).val()
+
+
+def test_a_tangent_boundary_behind_the_part_is_kept_apart():
+    *_, tangent, hidden_tangent = project(
+        _rounded_pocket(), *STANDARD_VIEW_FRAMES[View.FRONT]
+    )
+
+    assert not tangent
+    assert sorted(e.Length() for e in hidden_tangent) == pytest.approx([10, 10])
+    assert sorted(e.positionAt(0.5).x for e in hidden_tangent) == pytest.approx([-7, 7])
+
+
+def test_a_hidden_tangent_under_a_visible_one_adds_nothing():
+    body = cq.Workplane().box(60, 50, 60).edges("|Y").fillet(15).val()
+
+    *_, tangent, hidden_tangent = project(body, "+x", "+y")
+
+    assert len(tangent) == 2
+    assert not hidden_tangent
+
+
 def test_periodic_cylinder_seam_is_not_a_tangent_boundary():
     cylinder = cq.Workplane("XZ").circle(5).extrude(10).val()
 
     for frame in STANDARD_VIEW_FRAMES.values():
-        _, _, tangent = project(cylinder, *frame)
+        _, _, tangent, _ = project(cylinder, *frame)
         assert not tangent
 
 
@@ -186,7 +210,7 @@ def test_same_surface_split_is_not_a_tangent_boundary(cylindrical):
     original_faces, original_edges = len(split.Faces()), len(split.Edges())
 
     for frame in STANDARD_VIEW_FRAMES.values():
-        _, _, tangent = project(split, *frame)
+        _, _, tangent, _ = project(split, *frame)
         assert not tangent
     assert (len(split.Faces()), len(split.Edges())) == (original_faces, original_edges)
 
@@ -224,7 +248,7 @@ def test_small_curvature_jump_still_has_a_tangent_boundary():
         .val()
     )
 
-    _, _, tangent = project(part, "+y", "+z")
+    _, _, tangent, _ = project(part, "+y", "+z")
 
     assert len(tangent) == 1
     assert tangent[0].Length() == pytest.approx(20)
@@ -260,7 +284,7 @@ def _on_plate_front_outline(point: cq.Vector) -> bool:
 
 
 def test_a_seam_between_tangent_faces_is_not_drawn(plate):
-    visible, _, _ = project(plate, *STANDARD_VIEW_FRAMES[View.FRONT])
+    visible, *_ = project(plate, *STANDARD_VIEW_FRAMES[View.FRONT])
 
     points = [edge.positionAt(t) for edge in visible for t in (0.1, 0.5, 0.9)]
     assert all(_on_plate_front_outline(p) for p in points)
@@ -268,7 +292,7 @@ def test_a_seam_between_tangent_faces_is_not_drawn(plate):
 
 def test_a_seam_along_the_outline_is_still_drawn(plate):
     """From above, the rim fillet's foot is the outline over the base's edge."""
-    _, hidden, _ = project(plate, *STANDARD_VIEW_FRAMES[View.TOP])
+    _, hidden, *_ = project(plate, *STANDARD_VIEW_FRAMES[View.TOP])
 
     assert hidden == []
 

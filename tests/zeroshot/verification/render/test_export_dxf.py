@@ -173,7 +173,7 @@ ROUNDED_PLATE = (
 def test_a_filleted_rim_is_drawn_along_its_projected_edges(tmp_path, view):
     plate = ROUNDED_PLATE.findSolid()
     tol = orthographic.TOL_FRAC * plate.BoundingBox().DiagonalLength
-    visible, hidden, tangent = orthographic.project(
+    visible, hidden, tangent, _ = orthographic.project(
         plate, *orthographic.STANDARD_VIEW_FRAMES[view]
     )
     path = tmp_path / f"{view.value}.dxf"
