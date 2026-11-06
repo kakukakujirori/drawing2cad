@@ -211,7 +211,7 @@ def test_diff_compares_fine_lines_from_dxf_geometry():
         projection_to_uv=projection_to_uv,
     )
 
-    assert len(detailed.stats["unmatched"]) == 2
+    assert len(detailed.stats["unmatched"]) == 4
     assert all(item["kind"] == "lines" for item in detailed.stats["unmatched"])
     for key in ("bounded_chamfer_drawing_px", "material_error", "match_score"):
         assert detailed.stats[key] == coarse.stats[key]

@@ -8,6 +8,7 @@ from zeroshot.pipeline.verification.drawing_diff.unmatched import (
     COLORS,
     INPUT_GREEN,
     MATCHED_BLUE,
+    MAX_GROUPS,
     NEUTRAL_GRAY,
     OUTPUT_MAGENTA,
     Unmatched,
@@ -41,7 +42,7 @@ def test_descriptions_define_the_kind_and_unit_for_each_group():
     descriptions = describe_unmatched(
         [
             Unmatched("missing", xy),
-            Unmatched("extra", xy, local=True),
+            Unmatched("extra", xy),
             Unmatched("extra", xy, material=True),
         ]
     )
@@ -51,7 +52,6 @@ def test_descriptions_define_the_kind_and_unit_for_each_group():
         ("lines", "px"),
         ("material", "px²"),
     ]
-    assert all("local" not in item for item in descriptions)
 
 
 def test_a_drawing_line_the_output_lacks_is_one_missing_group():
@@ -292,19 +292,19 @@ def test_region_score_counts_missing_material_outside_the_current_output_bbox():
     assert error["ratio"] > 0.5
 
 
-def test_region_score_counts_all_groups_beyond_the_four_displayed_clusters():
+def test_region_score_counts_all_groups_beyond_the_displayed_clusters():
     drawing = np.zeros((500, 500), np.uint8)
     cv2.rectangle(drawing, (20, 20), (100, 100), 1, 1)
     output = drawing.copy()
     for x in (180, 280, 380):
-        for y in (200, 300):
+        for y in (200, 300, 400):
             cv2.rectangle(output, (x, y), (x + 50, y + 50), 1, 1)
     drawing, output = drawing.astype(bool), output.astype(bool)
 
     groups = find_unmatched(drawing, output)
     error = measure_material_error(drawing, output)
 
-    assert len(groups) == 4 and all(group.material for group in groups)
+    assert len(groups) == MAX_GROUPS and all(group.material for group in groups)
     assert error["extra_px2"] > sum(group.size_px for group in groups)
     assert error["missing_px2"] == 0
 
@@ -400,10 +400,20 @@ def test_an_output_stretch_is_listed_once_it_reaches_fine_px(
 
     assert find_unmatched(drawing, output) == []
     if listed:
-        assert len(groups) == 1 and groups[0].local and groups[0].direction == "extra"
+        assert len(groups) == 1 and groups[0].direction == "extra"
         assert groups[0].box_px == (100, 100 + depth, 101 + length, 101 + depth)
     else:
         assert groups == []
+
+
+def test_short_differences_are_all_listed_while_the_limit_allows():
+    copies = [((x0, 106), (x1, 106)) for x0, x1 in ((62, 80), (92, 110), (122, 138))]
+    drawing = _lines(*OUTLINE, INNER)
+    output = _lines(*OUTLINE, INNER, *copies)
+
+    groups = find_unmatched(drawing, output, _curves(*OUTLINE, INNER, *copies))
+
+    assert sorted(g.box_px[0] for g in groups) == [62, 92, 122]
 
 
 @pytest.mark.parametrize("top, listed", [(60, 0), (40, 2)])
@@ -424,7 +434,7 @@ def test_a_hole_drawn_through_instead_of_blind_is_extra_but_dash_gaps_are_not(
 
     assert len(groups) == listed
     for group in groups:
-        assert group.local and group.direction == "extra"
+        assert group.direction == "extra"
         assert 40 < group.box_px[1] and group.box_px[3] < 60
 
 
@@ -482,26 +492,27 @@ def test_edge_finishes_are_fine_extras_beside_coarse_clutter(finish):
     drawing, output = drawing.astype(bool), output.astype(bool)
     # Small finishes are below the existing whole-view length/area thresholds.
     assert find_unmatched(drawing, output) == []
+    corners = 1 if finish == "concave" else 4
     groups = find_unmatched(drawing, output, output_curves(msp, PIXELS))
-    assert len(groups) == (1 if finish == "concave" else 2)
-    assert all(g.local and g.direction == "extra" for g in groups)
+    assert len(groups) == corners
+    assert all(g.direction == "extra" for g in groups)
 
     # A long unrelated line must not displace the small corner errors, or be
-    # duplicated as several short local groups at its ends.
+    # duplicated as several short groups at its ends.
     cv2.line(output.view(np.uint8), (100, 50), (100, 150), 1, 1)
     msp.add_line((100, 50), (100, 150))
     groups = find_unmatched(drawing, output, output_curves(msp, PIXELS))
-    assert sum(g.local for g in groups) == (1 if finish == "concave" else 2)
-    assert sum(not g.local for g in groups) == 1
+    assert len(groups) == 1 + corners
+    assert groups[0].box_px[3] - groups[0].box_px[1] > 90
 
-    # Five independent large defects fill four coarse slots before local finishes.
+    # Long and short differences share the limit, longest first.
     for x in (65, 80, 120, 135):
         cv2.line(output.view(np.uint8), (x, 80), (x, 135), 1, 1)
         msp.add_line((x, 80), (x, 135))
     groups = find_unmatched(drawing, output, output_curves(msp, PIXELS))
-    assert sum(not g.local for g in groups) == 4
-    assert sum(g.local for g in groups) == (1 if finish == "concave" else 2)
-    assert not any(g.local for g in groups[:4])
+    heights = [g.box_px[3] - g.box_px[1] for g in groups]
+    assert len(groups) == MAX_GROUPS
+    assert min(heights[:5]) >= 50 > heights[5]
 
 
 def test_a_fine_tail_and_coarse_run_are_displayed_as_one_defect():
@@ -519,7 +530,7 @@ def test_a_fine_tail_and_coarse_run_are_displayed_as_one_defect():
     groups = find_unmatched(drawing, output, _curves(*FRAME, line))
 
     extra = [g for g in groups if g.direction == "extra"]
-    assert len(extra) == 1 and not extra[0].local
+    assert len(extra) == 1
     assert extra[0].box_px == (30, 100, 261, 101)
 
 
@@ -538,12 +549,11 @@ def test_fine_comparison_tolerates_registration_stroke_width_and_annotation(offs
     coarse = find_unmatched(drawing.astype(bool), output)
     groups = find_unmatched(drawing.astype(bool), output, _curves(*OUTLINE))
 
-    assert not any(group.local for group in groups)
     assert describe_unmatched(groups) == describe_unmatched(coarse)
 
 
 @pytest.mark.parametrize("shape", ["horizontal", "diagonal"])
-def test_a_remote_coarse_error_does_not_admit_disconnected_local_fragments(shape):
+def test_a_remote_coarse_error_does_not_admit_disconnected_fragments(shape):
     if shape == "horizontal":
         size, lo, hi = 500, 20, 480
         common = [((30, 100), (30, 60))]
@@ -580,7 +590,6 @@ def test_a_remote_coarse_error_does_not_admit_disconnected_local_fragments(shape
     groups = find_unmatched(drawing, output, _curves(*frame, *common, *actual))
 
     assert len(coarse) == 2
-    assert not any(g.local for g in groups)
     # Its fine stretch lengthens the coarse group where the line lies between
     # SUPPORT_PX and WEAK_PX of the input; no disconnected fragment joins it.
     assert [g.direction for g in groups] == [g.direction for g in coarse]
@@ -669,8 +678,11 @@ def test_input_lines_beyond_the_output_vicinity_are_drawn_as_not_compared():
     assert np.all(image[100, 70:130] == INPUT_GREEN)
 
 
+HEIGHTS = (100, 150, 200, 250, 300, 350)
+
+
 @pytest.mark.parametrize("style_length", [30, 200])
-def test_style_and_geometry_compete_by_length_for_coarse_slots(style_length):
+def test_style_and_geometry_compete_by_length_for_the_display_limit(style_length):
     frame = (
         ((20, 20), (480, 20)),
         ((480, 20), (480, 480)),
@@ -679,7 +691,7 @@ def test_style_and_geometry_compete_by_length_for_coarse_slots(style_length):
     )
     missing = [
         ((80, y), (80 + length, y))
-        for y, length in zip((100, 180, 260, 340), (160, 140, 120, 100), strict=True)
+        for y, length in zip(HEIGHTS, (160, 150, 140, 130, 120, 110), strict=True)
     ]
     style_line = ((80, 420), (80 + style_length, 420))
     style = Unmatched(
@@ -696,10 +708,10 @@ def test_style_and_geometry_compete_by_length_for_coarse_slots(style_length):
         line_style_mismatches=[style],
     )
 
-    assert len(groups) == 4
+    assert len(groups) == MAX_GROUPS
     if style_length == 30:
-        assert [g.direction for g in groups] == ["missing"] * 4
-        assert [g.box_px[1] for g in groups] == [100, 180, 260, 340]
+        assert [g.direction for g in groups] == ["missing"] * MAX_GROUPS
+        assert [g.box_px[1] for g in groups] == list(HEIGHTS)
     else:
         assert groups[0] is style
-        assert [g.box_px[1] for g in groups[1:]] == [100, 180, 260]
+        assert [g.box_px[1] for g in groups[1:]] == list(HEIGHTS[:5])

@@ -9,7 +9,7 @@ that same selection.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from operator import attrgetter
 from typing import Any, Literal
 
@@ -51,9 +51,8 @@ SUPPORT_PX = 3.0
 FINE_PX = 6.0
 FINE_HIDDEN_PX = 7.0
 
-# Display limits reserve coarse slots before independent fine differences.
-MAX_COARSE_GROUPS = 4
-MAX_LOCAL_GROUPS = 2
+# The most difference groups displayed for one view.
+MAX_GROUPS = 6
 # Wider than the displayed strokes, so the band shows on both sides of them.
 BAND_PX = 5
 # Centre lines this near are one line: registering a line both images draw
@@ -95,7 +94,6 @@ class Unmatched:
     direction: Literal["missing", "extra", "line_style"]
     xy: np.ndarray  # (x, y): skeleton pixels of lines, or every pixel of material
     material: bool = False
-    local: bool = False  # only fine extra lines; coarse groups may include fine tails
     input_style: str | None = None
     output_style: str | None = None
     coverage: float | None = None
@@ -365,24 +363,14 @@ def _fine_extra(
 def _merge_extra_groups(
     coarse: list[Unmatched], fine: list[Unmatched], shape: tuple[int, ...]
 ) -> list[Unmatched]:
-    """Join fine stretches to the coarse extra groups they touch.
-
-    A group made of fine stretches alone is local; one holding a coarse defect
-    stays coarse, however far its fine tails reach.
-    """
-    extra = np.zeros(shape, bool)
-    for group in coarse:
-        if group.direction == "extra":
-            extra[group.xy[:, 1], group.xy[:, 0]] = True
-    combined = extra.copy()
-    for group in fine:
+    """Join fine stretches to the coarse extra groups they touch."""
+    combined = np.zeros(shape, bool)
+    for group in [*(g for g in coarse if g.direction == "extra"), *fine]:
         combined[group.xy[:, 1], group.xy[:, 0]] = True
     merged = _groups(
         combined, cv2.dilate(combined.astype(np.uint8), disk(JOIN_PX)), "extra"
     )
-    return [g for g in coarse if g.direction == "missing"] + [
-        replace(g, local=not extra[g.xy[:, 1], g.xy[:, 0]].any()) for g in merged
-    ]
+    return [g for g in coarse if g.direction == "missing"] + merged
 
 
 ################################################################
@@ -404,7 +392,7 @@ def find_unmatched(
     """Collect material/coarse defects, merge fine errors, then select display groups.
 
     Material outlines suppress duplicate line groups. curves, from output_curves,
-    add fine extra lines: tails extend coarse groups, and the rest are local.
+    add fine extra lines: tails extend coarse groups, and the rest stand alone.
     Annotation ink is never missing and never encloses material, but output
     lines along it are not extra either. Only outline ink, by default all part
     ink, encloses material.
@@ -456,20 +444,10 @@ def find_unmatched(
     style_band = cv2.dilate(style_band, disk(3))
     lines = [g for g in lines if style_band[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
 
-    # Material first, then all coarse lines by length, with two local slots reserved.
-    size = attrgetter("size_px")
-    ranked = sorted(material, key=size, reverse=True)
-    ranked += sorted(
-        [*line_style_mismatches, *(g for g in lines if not g.local)],
-        key=_length_px,
-        reverse=True,
-    )
-    return (
-        ranked[:MAX_COARSE_GROUPS]
-        + sorted((g for g in lines if g.local), key=_length_px, reverse=True)[
-            :MAX_LOCAL_GROUPS
-        ]
-    )
+    # Material first, then all lines by length.
+    ranked = sorted(material, key=attrgetter("size_px"), reverse=True)
+    ranked += sorted([*line_style_mismatches, *lines], key=_length_px, reverse=True)
+    return ranked[:MAX_GROUPS]
 
 
 ################################################################
