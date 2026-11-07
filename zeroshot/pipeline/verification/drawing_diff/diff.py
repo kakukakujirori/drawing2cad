@@ -12,7 +12,7 @@ from ezdxf.layouts import Modelspace
 from scipy.spatial import cKDTree
 
 from .align import AlignmentResult, _validate_rgb, opencv_transform
-from .drafting_marks import drafting_marks
+from .drafting_marks import drafting_marks, thin_solid_marks
 from .image_ops import (
     beside_part,
     distance_map,
@@ -341,6 +341,15 @@ def compute_diff(
         comparison_annotation = comparison_annotation | text_marks(
             drawing_ink, text_regions, output_seen | tangent_seen
         )
+        # Where tone marks the annotation, a thin dark line is the part's.
+        if not masks.two_tone:
+            comparison_annotation = comparison_annotation | thin_solid_marks(
+                drawing_gray,
+                drawing_ink,
+                comparison_annotation,
+                output_seen,
+                tangent_seen,
+            )
 
         # Scoring and unmatched display must exclude the same annotation ink.
         stats.update(

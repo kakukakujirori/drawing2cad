@@ -810,7 +810,7 @@ def test_dimension_extension_exclusion_requires_separate_line_weight(
     drawing = output.copy()
     cv2.rectangle(drawing, corners[0], corners[2], (0, 0, 0), outline_width)
     if missing_edge:
-        cv2.line(drawing, (65, 210), (220, 210), (0, 0, 0), 1)
+        cv2.line(drawing, (65, 210), (220, 210), (0, 0, 0), outline_width)
     dimensioned = drawing.copy()
     cv2.line(dimensioned, (160, 10), (160, 170), (0, 0, 0), 1)
     doc = ezdxf.new()
@@ -1167,6 +1167,58 @@ def test_widening_a_crossing_annotation_does_not_erase_nearby_part_strokes(
         projection_to_uv=np.array([[1.0, 0, -0.5], [0, 1.0, -0.5], [0, 0, 1.0]]),
     )
     assert any(g["direction"] == "missing" for g in result.stats["unmatched"])
+
+
+def _weighted_part(*lines, outline=5, dimension=1, tone=0):
+    """A part with its outline and a dimension beside it in given widths and tone,
+    input lines inside it, and the build's 1 px outline."""
+    drawing, output = _white(300), _white(300)
+    cv2.rectangle(drawing, (40, 60), (250, 240), (0, 0, 0), outline)
+    cv2.rectangle(output, (40, 60), (250, 240), (0, 0, 0), 1)
+    cv2.line(drawing, (40, 20), (250, 20), (tone, tone, tone), dimension)
+    for start, end, width in lines:
+        cv2.line(drawing, start, end, (0, 0, 0), width)
+    return drawing, output
+
+
+THIN_LINE = ((70, 150), (220, 150), 1)
+
+
+def test_a_line_of_the_dimensions_thin_weight_is_annotation():
+    plain = compute_diff(*_weighted_part(), _alignment())
+
+    diff = compute_diff(*_weighted_part(THIN_LINE), _alignment())
+
+    assert diff.stats["unmatched"] == []
+    assert tuple(diff.unmatched[150, 150]) == NEUTRAL_GRAY
+    assert diff.stats["match_score"] == pytest.approx(
+        plain.stats["match_score"], abs=0.01
+    )
+
+
+@pytest.mark.parametrize("width", [3, 5])
+def test_a_line_heavier_than_the_dimensions_stays_a_difference(width):
+    diff = compute_diff(*_weighted_part(((70, 150), (220, 150), width)), _alignment())
+
+    assert [g["direction"] for g in diff.stats["unmatched"]] == ["missing"]
+
+
+def test_a_thin_line_stays_a_difference_in_a_drawing_of_one_line_weight():
+    drawing, output = _weighted_part(THIN_LINE, outline=1)
+
+    diff = compute_diff(drawing, output, _alignment())
+
+    assert [g["direction"] for g in diff.stats["unmatched"]] == ["missing"]
+
+
+def test_a_thin_dark_line_stays_a_difference_where_tone_marks_the_annotation():
+    drawing, output = _weighted_part(THIN_LINE, tone=120)
+    gray = drawing[..., 0]
+    assert drawing_masks(gray, foreground_mask(gray)).two_tone
+
+    diff = compute_diff(drawing, output, _alignment())
+
+    assert [g["direction"] for g in diff.stats["unmatched"]] == ["missing"]
 
 
 def test_a_partial_silhouette_leaves_out_only_ink_that_never_joins_it():

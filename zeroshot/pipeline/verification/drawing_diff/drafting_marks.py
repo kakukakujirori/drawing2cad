@@ -5,11 +5,12 @@ a hole or an arc with a leader. Extension lines and leaders can also cross the
 outline to reach a feature inside the part. None of these is an edge of the
 part, so the comparison does not list the input lines they explain as missing.
 
-All are recognised by heuristics, kept here behind two calls:
+All are recognised by heuristics, kept here behind three calls:
 record_centre_lines stores the axes of a build's revolved faces in each
 projection DXF, and drafting_marks reads them back and finds leaders and lines
-crossing into the part when the views are compared. Without these calls every
-input line counts as the part's.
+crossing into the part when the views are compared. thin_solid_marks finds lines
+of the weight a drawing keeps for its dimensions. Without these calls every input
+line counts as the part's.
 """
 
 from __future__ import annotations
@@ -35,7 +36,14 @@ from skimage.morphology import skeletonize
 
 from zeroshot.pipeline.stages.interpretation.contracts import AXIS_VECTOR, Axis
 
-from .image_ops import disk, distance_map, external_boundary
+from .image_ops import (
+    MIN_WIDTH_SAMPLES,
+    WIDTH_RATIO,
+    disk,
+    distance_map,
+    external_boundary,
+    stroke_widths,
+)
 
 ################################################################
 
@@ -199,6 +207,12 @@ TRACE_GAP_PX = 3
 # of MIN_RUN_PX, dashes and all.
 CROSS_PX = 25
 CARRY_SHARE = 0.8
+# A solid stroke keeps one width. Dashes whose pale gaps binarizing bridges do
+# not: the spread of their widths, p90 less p10, reaches this share of the median.
+MAX_WIDTH_SPREAD = 0.1
+# A neighbouring line can only widen a stroke, so the outline's weight is read
+# low among its widths.
+OUTLINE_PERCENTILE = 25
 
 
 @dataclass(frozen=True)
@@ -291,6 +305,54 @@ def drafting_marks(
         if not (found & ~marks).any():
             return marked
         marks |= found
+
+
+def thin_solid_marks(
+    gray: np.ndarray,
+    ink: np.ndarray,
+    annotation: np.ndarray,
+    output: np.ndarray,
+    tangent: np.ndarray,
+) -> np.ndarray:
+    """Strokes of the weight of known annotation, where no output line runs.
+
+    A drawing can print dimension and extension lines thinner than the part's
+    outline; annotation, ink known not to be the part's, shows whether this one
+    does. Where it does, a stroke of that weight unbroken over MIN_RUN_PX or more
+    is such a line, unless a gap along it or a varying width shows the dashes of
+    a hidden line. A drawing in one line weight has no such strokes.
+    """
+    none = np.zeros_like(ink)
+    centres, widths = stroke_widths(gray, ink)
+    outline = widths[centres & (distance_map(external_boundary(output)) <= 2)]
+    known = widths[centres & annotation]
+    if min(outline.size, known.size) < MIN_WIDTH_SAMPLES:
+        return none
+    weight = np.median(known)
+    if weight >= np.percentile(outline, OUTLINE_PERCENTILE) / WIDTH_RATIO:
+        return none
+    limit = WIDTH_RATIO * weight
+    junctions = _junctions(centres)
+    thin = centres & ~junctions & (widths < limit)
+    count, labels, boxes, _ = cv2.connectedComponentsWithStats(
+        thin.astype(np.uint8), connectivity=8
+    )
+    solid = none.copy()
+    for label in range(1, count):
+        x, y, width, height = boxes[label, :4]
+        if math.hypot(width, height) < MIN_RUN_PX:
+            continue
+        ys, xs = np.nonzero(labels[y : y + height, x : x + width] == label)
+        ys, xs = ys + y, xs + x
+        low, middle, high = np.percentile(widths[ys, xs], [10, 50, 90])
+        if high - low < MAX_WIDTH_SPREAD * middle and not _has_gaps(
+            _fit(np.column_stack([xs, ys])), ink, junctions
+        ):
+            solid[ys, xs] = True
+    # Only as wide as such a stroke, so a line beside it keeps its edge.
+    reach = disk(math.ceil(limit))
+    strokes = cv2.dilate((solid & ~annotation).astype(np.uint8), reach).astype(bool)
+    return strokes & ink & ~annotation & (distance_map(output | tangent) > OUTPUT_PX)
 
 
 def _strokes(

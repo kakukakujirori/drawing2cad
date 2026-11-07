@@ -16,7 +16,9 @@ from zeroshot.pipeline.verification.drawing_diff.drafting_marks import (
     centre_lines,
     drafting_marks,
     record_centre_lines,
+    thin_solid_marks,
 )
+from zeroshot.pipeline.verification.drawing_diff.image_ops import foreground_mask
 from zeroshot.pipeline.verification.render.constants import ProjectionPaths
 from zeroshot.pipeline.verification.render.export_dxf import (
     DEFAULT_PNG_MARGIN_RATIO,
@@ -487,3 +489,119 @@ def test_stroke_gaps_are_read_across_the_stroke_not_along_the_image_axes(angle, 
     run = _fit(np.column_stack([xs, ys]))
 
     assert _has_gaps(run, ink, np.zeros_like(ink, dtype=bool)) == (gap > 0)
+
+
+def _sheet(outline=5, dimension=1):
+    """A part's outline, a dimension beside it, and the build's 1 px outline."""
+    gray = np.full((300, 300), 255, np.uint8)
+    cv2.rectangle(gray, (40, 60), (250, 240), 0, outline)
+    cv2.line(gray, (40, 20), (250, 20), 0, dimension)
+    output = np.zeros_like(gray)
+    cv2.rectangle(output, (40, 60), (250, 240), 1, 1)
+    return gray, output.astype(bool)
+
+
+def _thin_solid(gray, output, tangent=None):
+    """Marks with the ink above the part known to be annotation."""
+    ink = foreground_mask(gray)
+    known = np.zeros_like(ink)
+    known[:40] = True
+    if tangent is None:
+        tangent = np.zeros_like(ink)
+    return thin_solid_marks(gray, ink, known & ink, output, tangent)
+
+
+@pytest.mark.parametrize("end", [(220, 150), (220, 200)])
+def test_a_stroke_of_the_annotations_weight_is_a_mark_but_the_outline_is_not(end):
+    gray, output = _sheet()
+    cv2.line(gray, (70, 150), end, 0, 1)
+
+    marks = _thin_solid(gray, output)
+
+    assert marks[150, 70:75].any() and marks[end[1], end[0] - 5 : end[0]].any()
+    assert not marks[58:63, 100].any()
+
+
+@pytest.mark.parametrize("width", [3, 5])
+def test_a_stroke_heavier_than_the_annotation_is_no_mark(width):
+    gray, output = _sheet()
+    cv2.line(gray, (70, 150), (220, 150), 0, width)
+
+    assert not _thin_solid(gray, output).any()
+
+
+def test_a_short_thin_stroke_is_no_mark():
+    gray, output = _sheet()
+    cv2.line(gray, (70, 150), (85, 150), 0, 1)
+
+    assert not _thin_solid(gray, output).any()
+
+
+@pytest.mark.parametrize("dash", [8, 30])
+def test_blank_gaps_between_dashes_of_any_length_break_a_thin_line(dash):
+    gray, output = _sheet()
+    for start in range(70, 220, dash + 8):
+        cv2.line(gray, (start, 150), (start + dash - 1, 150), 0, 1)
+
+    assert not _thin_solid(gray, output).any()
+
+
+def test_pale_gaps_that_binarizing_bridges_break_a_thin_line():
+    gray, output = _sheet()
+    cv2.line(gray, (70, 150), (220, 150), 0, 1)
+    for start in range(78, 220, 12):
+        gray[150, start : start + 4] = 110
+    assert foreground_mask(gray)[150, 70:220].all()
+
+    assert not _thin_solid(gray, output).any()
+
+
+@pytest.mark.parametrize("weight", [1, 5])
+def test_a_drawing_in_one_line_weight_has_no_marks(weight):
+    gray, output = _sheet(outline=weight, dimension=weight)
+    cv2.line(gray, (70, 150), (220, 150), 0, weight)
+
+    assert not _thin_solid(gray, output).any()
+
+
+def test_lines_beside_the_outline_do_not_make_a_thin_weight_of_its_own():
+    gray, output = _sheet(outline=2, dimension=2)
+    # Half of the outline runs along another line and reads about twice as wide.
+    cv2.line(gray, (40, 63), (250, 63), 0, 2)
+    cv2.line(gray, (247, 60), (247, 240), 0, 2)
+    cv2.line(gray, (70, 150), (220, 150), 0, 2)
+
+    assert not _thin_solid(gray, output).any()
+
+
+def test_without_annotation_or_build_lines_nothing_is_marked():
+    gray, output = _sheet()
+    cv2.line(gray, (70, 150), (220, 150), 0, 1)
+    ink = foreground_mask(gray)
+    none = np.zeros_like(ink)
+
+    assert not thin_solid_marks(gray, ink, none, output, none).any()
+    assert not thin_solid_marks(gray, ink, ink & (np.arange(300)[:, None] < 40), none, none).any()
+
+
+def test_a_line_the_build_draws_is_no_mark():
+    gray, output = _sheet()
+    cv2.line(gray, (70, 150), (220, 150), 0, 1)
+    line = np.zeros_like(output)
+    line[150, 70:221] = True
+
+    assert not _thin_solid(gray, output | line).any()
+    assert not _thin_solid(gray, output, tangent=line).any()
+
+
+def test_ink_already_annotation_is_no_new_mark():
+    gray, output = _sheet()
+    cv2.line(gray, (70, 150), (220, 150), 0, 1)
+    ink = foreground_mask(gray)
+    known = np.zeros_like(ink)
+    known[:40] = True
+    known[145:156, 60:230] = True
+
+    marks = thin_solid_marks(gray, ink, known & ink, output, np.zeros_like(ink))
+
+    assert not marks.any()

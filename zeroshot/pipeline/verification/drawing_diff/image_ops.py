@@ -76,10 +76,14 @@ PART_REACH_PX = 3
 
 @dataclass(frozen=True)
 class DrawingMasks:
-    """Annotation to exclude from fitting, and outlines for silhouette comparison."""
+    """Annotation to exclude from fitting, and outlines for silhouette comparison.
+
+    two_tone says tone told the annotation apart, which leaves width to the part.
+    """
 
     annotation: np.ndarray
     outline: np.ndarray
+    two_tone: bool
 
 
 def drawing_masks(
@@ -93,13 +97,13 @@ def drawing_masks(
     light = _light_annotations(gray, ink)
     if light.any():
         # Once tone separates annotation, width can distinguish two real part edges.
-        return DrawingMasks(light, ink & ~light)
+        return DrawingMasks(light, ink & ~light, two_tone=True)
     thin = thin_mask(gray, ink)
     annotation = _external_annotations(ink, thin)
     cleaned = ink & ~annotation
     if part is not None:
         thin = thin_mask(gray, cleaned, part)
-    return DrawingMasks(annotation, cleaned & ~thin)
+    return DrawingMasks(annotation, cleaned & ~thin, two_tone=False)
 
 
 def _light_annotations(gray: np.ndarray, ink: np.ndarray) -> np.ndarray:
