@@ -47,7 +47,7 @@ When a feature's shape is uncertain, build each hypothesis you have, as the work
 
 ### Work cycle
 
-Use `load_image` to inspect drawings, `run_shell` to create crops and edit files, and other useful tools when provided. Printed dimensions must be prioritized over measured sizes. When a size you measure disagrees with a printed dimension, check that you read the number right, then build the printed value and note the disagreement in `concerns`.
+Use `load_image` to inspect drawings, `run_shell` to create crops and edit files, and other useful tools when provided. If a printed dimension and your measurement differ beyond measuring error, one of them is wrong: the number may be misread or belong to another extent, or the measurement may be off. Recheck both, correct the error, and build the more likely value. Note the disagreement in `concerns` only if it stays unresolved. Consistency with the other dimensions and the overall size is the best evidence.
 
 After a tool turn changes either `$interpretation_output_path` or `$coding_output_path`, automatic verification checks the file formats and contents. It also executes the program if it exists and the interpretation is valid, and returns diagnostics and paths to STEP, orthographic PNG/DXF and perspective renders under `$verification_dir/round_NNN/coding/NNN/`. This feedback finds misreadings faster than further measuring by hand. Each report lists the requirements your answer still has to meet. Verification uses no additional model turn.
 

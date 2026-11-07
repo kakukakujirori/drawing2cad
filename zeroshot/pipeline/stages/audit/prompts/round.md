@@ -42,7 +42,7 @@ Check in two steps.
 
 1. Check the interpretation against the input drawing.
    - Views: each crop holds its whole view, the role and axes match the projection, and the scale agrees with the printed dimensions.
-   - Dimensions: each printed dimension is read correctly and measures the extent it claims. Printed dimensions must be prioritized over measured sizes: a build that follows a measured size instead of the printed dimension is a defect.
+   - Dimensions: each printed dimension is read correctly and measures the extent it claims. If a printed dimension and the build differ beyond measuring error, one of them is wrong: the number may be misread or belong to another extent, or the build may be off. Recheck both, and report a defect only if the build uses the less likely value. Consistency with the other dimensions and the overall size is the best evidence.
    - Features: each feature's shape, `parameters` and termination agree with its `evidence` regions, its `dimension_refs` and the shared `datum`. A region uses the file and pixel frame of its `view_`; it is not a model position.
    - Look for features, views and figures the interpretation omits.
 2. Check the build against the interpretation and the drawing. Judge the built solid by its projections onto the drawing's views and by its perspective renders.
