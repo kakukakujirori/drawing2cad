@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from zeroshot.pipeline.verification.drawing_diff import diff as diff_module
+from zeroshot.pipeline.verification.drawing_diff import unmatched as unmatched_module
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.drawing_diff.diff import compute_diff
 from zeroshot.pipeline.verification.drawing_diff.image_ops import (
@@ -103,14 +104,17 @@ def test_unmatched_groups_are_listed_in_drawing_pixels():
 @pytest.mark.parametrize("scale", [0.75, 1.0, 1.028, 2.5, 4.0])
 @pytest.mark.parametrize("vertical", [False, True])
 @pytest.mark.parametrize("offset", [0.0, 0.5])
-def test_unmatched_preserves_dash_gaps_and_thin_solid_lines(scale, vertical, offset):
+def test_unmatched_preserves_dash_gaps_and_thin_solid_lines(
+    scale, vertical, offset, monkeypatch
+):
+    # No cluster band or number may cover the lines this test reads.
+    monkeypatch.setattr(unmatched_module, "MAX_GROUPS", 0)
     drawing, output = _white(256), _white(round(256 * scale))
 
     def projected(x, y):
         return tuple(round((v + 0.5) * scale + offset - 0.5) for v in (x, y))
 
-    # The output lies 7 px off the input, beyond FAR_GROW_PX but short of
-    # FAR_PEAK_PX, so its lines are magenta and no cluster covers them.
+    # The output lies 7 px off the input, so its lines are magenta.
     cv2.rectangle(drawing, (20, 20), (230, 230), (0, 0, 0), 3)
     cv2.rectangle(output, projected(27, 27), projected(223, 223), (0, 0, 0), 1)
     for x in range(40, 210, 16):

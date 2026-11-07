@@ -1,11 +1,13 @@
 """Find and display differences in the input drawing's pixel coordinates.
 
-Shared pixel operations support silhouette and line comparison. Two rules find
+Shared pixel operations support silhouette and line comparison. Three rules find
 line differences. A far line leaves the other image's lines by a wide margin
 over some length; it applies both ways, and its size keeps the input's annotation
-out. An unsupported stretch runs along one of the output's DXF curves, which
-carry no annotation, so it can be short and near. find_unmatched joins them
-before selecting display groups; descriptions and drawing use that same selection.
+out. A near line is a long input line that leaves the output by a smaller margin;
+it ranks below every other group. An unsupported stretch runs along one of the
+output's DXF curves, which carry no annotation, so it can be short and near.
+find_unmatched joins far lines and stretches before selecting display groups;
+descriptions and drawing use that same selection.
 """
 
 from __future__ import annotations
@@ -34,6 +36,9 @@ FAR_MIN_LENGTH_PX = 50
 # Chosen where ground-truth builds gain no missing groups, on the ECCV views of
 # outputs/20261101_minimax3.1_flash; 4 px admits them.
 FAR_GROW_PX = 5.0
+# A long input line that stays within FAR_PEAK_PX of the output but reaches this
+# far takes only the display slots the other groups leave free.
+NEAR_PEAK_PX = 6.0
 
 # Tuned the same way: outputs/silhouette_20260927, with image_ops.CLOSE_PX.
 # Narrower slivers come from misregistered edges and from annotation.
@@ -160,19 +165,38 @@ def _line_groups(
     return [group for group in groups if group.size_px >= min_length]
 
 
-def _far_line_groups(
+def _long_line_groups(
     lines: np.ndarray, distances: np.ndarray, direction: Literal["missing", "extra"]
 ) -> list[Unmatched]:
-    """Line groups beyond FAR_GROW_PX that reach beyond FAR_PEAK_PX somewhere.
+    """Line groups beyond FAR_GROW_PX at least FAR_MIN_LENGTH_PX long.
 
     The whole group counts towards its length, not only its farthest stretches.
     """
     groups = _line_groups(lines & (distances > FAR_GROW_PX), direction, min_length=0)
+    return [group for group in groups if _length_px(group) >= FAR_MIN_LENGTH_PX]
+
+
+def _peak_px(group: Unmatched, distances: np.ndarray) -> float:
+    return float(distances[group.xy[:, 1], group.xy[:, 0]].max())
+
+
+def _far_line_groups(
+    lines: np.ndarray, distances: np.ndarray, direction: Literal["missing", "extra"]
+) -> list[Unmatched]:
+    """Long line groups that reach beyond FAR_PEAK_PX somewhere."""
     return [
         group
-        for group in groups
-        if distances[group.xy[:, 1], group.xy[:, 0]].max() > FAR_PEAK_PX
-        and _length_px(group) >= FAR_MIN_LENGTH_PX
+        for group in _long_line_groups(lines, distances, direction)
+        if _peak_px(group, distances) > FAR_PEAK_PX
+    ]
+
+
+def _near_line_groups(lines: np.ndarray, distances: np.ndarray) -> list[Unmatched]:
+    """Long missing line groups within FAR_PEAK_PX that reach NEAR_PEAK_PX."""
+    return [
+        group
+        for group in _long_line_groups(lines, distances, "missing")
+        if NEAR_PEAK_PX <= _peak_px(group, distances) <= FAR_PEAK_PX
     ]
 
 
@@ -391,10 +415,11 @@ def find_unmatched(
     *,
     line_style_mismatches: Sequence[Unmatched] = (),
 ) -> list[Unmatched]:
-    """Collect material and far lines, join stretches, then select display groups.
+    """Collect material and line groups, join stretches, then select display groups.
 
     Material outlines suppress duplicate line groups. curves, from output_curves,
     add unsupported stretches: tails extend far lines, and the rest stand alone.
+    Near lines rank last.
     Annotation ink is never missing and never encloses material, but output
     lines along it are not extra either. Only outline ink, by default all part
     ink, encloses material.
@@ -426,13 +451,15 @@ def find_unmatched(
     #       extra CAD lines are measured from input lines (optional tangents excluded).
     supporting_lines = output_lines if tangent is None else output_lines | tangent
     output_distances = distance_map(all_lines)
-    lines = _far_line_groups(
-        drawing_lines & part, distance_map(supporting_lines), "missing"
-    )
+    input_lines = drawing_lines & part
+    input_distances = distance_map(supporting_lines)
+    lines = _far_line_groups(input_lines, input_distances, "missing")
     lines += _far_line_groups(output_lines, output_distances, "extra")
+    near_lines = _near_line_groups(input_lines, input_distances)
     # A material group already stands for the lines along its edge.
     edge = _outline(material, drawing_lines.shape)
     lines = [line for line in lines if edge[line.xy[:, 1], line.xy[:, 0]].mean() < 0.8]
+    near_lines = [g for g in near_lines if edge[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
 
     if curves is not None:
         stretches = _unsupported_stretches(curves, output_distances)
@@ -445,10 +472,14 @@ def find_unmatched(
         style_band[group.xy[:, 1], group.xy[:, 0]] = 1
     style_band = cv2.dilate(style_band, disk(3))
     lines = [g for g in lines if style_band[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
+    near_lines = [
+        g for g in near_lines if style_band[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8
+    ]
 
-    # Material first, then all lines by length.
+    # Material first, then all lines by length, then near lines by length.
     ranked = sorted(material, key=attrgetter("size_px"), reverse=True)
     ranked += sorted([*line_style_mismatches, *lines], key=_length_px, reverse=True)
+    ranked += sorted(near_lines, key=_length_px, reverse=True)
     return ranked[:MAX_GROUPS]
 
 

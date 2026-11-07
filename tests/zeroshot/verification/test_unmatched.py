@@ -159,6 +159,7 @@ def test_lines_beyond_the_part_and_short_marks_are_not_listed():
     assert find_unmatched(drawing, _lines(*OUTLINE)) == []
 
 
+HEIGHTS = (100, 150, 200, 250, 300, 350)
 FRAME = (
     ((20, 20), (280, 20)),
     ((280, 20), (280, 280)),
@@ -179,6 +180,52 @@ def test_a_line_that_drifts_off_is_one_group_measured_whole():
     assert len(extra) == 1 and len(missing) == 1
     # Beyond FAR_GROW_PX from about x = 120 on.
     assert extra[0].box_px[0] < 130 and extra[0].box_px[2] >= 260
+
+
+def test_a_long_line_near_the_output_ranks_below_a_shorter_far_line():
+    near = ((60, 100), (240, 100))
+    copy = ((60, 108), (240, 108))
+    far = ((60, 200), (120, 200))
+    drawing = _lines(*FRAME, near, far, size=300)
+
+    groups = find_unmatched(drawing, _lines(*FRAME, copy, size=300))
+
+    assert [g.direction for g in groups] == ["missing", "missing"]
+    assert [g.box_px[1] for g in groups] == [200, 100]
+
+
+@pytest.mark.parametrize(
+    "x1, offset",
+    [(100, 8), (240, 5)],
+    ids=["too short", "too close"],
+)
+def test_a_near_line_must_be_long_and_reach_the_near_peak(x1, offset):
+    line = ((60, 100), (x1, 100))
+    copy = ((60, 100 + offset), (x1, 100 + offset))
+
+    groups = find_unmatched(
+        _lines(*FRAME, line, size=300), _lines(*FRAME, copy, size=300)
+    )
+
+    assert groups == []
+
+
+def test_near_lines_take_only_the_slots_the_other_groups_leave():
+    frame = (
+        ((20, 20), (480, 20)),
+        ((480, 20), (480, 480)),
+        ((480, 480), (20, 480)),
+        ((20, 480), (20, 20)),
+    )
+    far = [((80, y), (140, y)) for y in HEIGHTS]
+    near = ((80, 420), (400, 420))
+    copy = ((80, 428), (400, 428))
+
+    groups = find_unmatched(
+        _lines(*frame, *far, near, size=500), _lines(*frame, copy, size=500)
+    )
+
+    assert sorted(g.box_px[1] for g in groups) == list(HEIGHTS)
 
 
 def test_diagonal_and_dashed_lines_count_their_full_length():
@@ -676,9 +723,6 @@ def test_input_lines_beyond_the_output_vicinity_are_drawn_as_not_compared():
     image = draw_unmatched(np.uint8(~drawing) * 255, output, [])
     assert np.all(image[190, 70:130] == NEUTRAL_GRAY)
     assert np.all(image[100, 70:130] == INPUT_GREEN)
-
-
-HEIGHTS = (100, 150, 200, 250, 300, 350)
 
 
 @pytest.mark.parametrize("style_length", [30, 200])
