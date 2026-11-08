@@ -36,20 +36,24 @@ $interpretation_schema
 
 The source drawing is the authority. The interpretation is your record of it, not evidence for keeping current geometry or rejecting an alternative. When a trial build shows that a reading is wrong, correct the interpretation as well as the program.
 
-When a feature's shape is uncertain, build each hypothesis you have, as the work cycle describes, and compare its projections with the input. Adopt the hypothesis that matches best. Leaving the feature out is one of these hypotheses, not a safe default. Do not reject a hypothesis on a guess without evidence.
+When a feature's shape is uncertain, build each hypothesis you have, as the work cycle describes, and compare its projections with the input. Adopt the hypothesis best supported by the source geometry and dimensions. Similar projections may conceal different internal structures; prefer a coherent reading with fewer unsupported features when the views do not distinguish them. Leaving the feature out is one of these hypotheses, not a safe default. Do not reject a hypothesis on a guess without evidence.
 
 - Store the final completed CadQuery solid in `result`.
 - The script must be self-contained and must not load the input drawing or other external files at runtime.
 - The generated geometry must be valid and exportable to STEP format.
 - DO NOT use try-except blocks in $coding_output_path. Resolve failures instead of hiding them.
 - Use the interpretation's shared `datum` and model frame, and its feature parameters as the starting geometry. In the reconstruction record, references such as `sem_main_bore.radius` and `dim_bore_diameter.nominal_value` are annotated with their values; null means unknown, never zero. Evidence regions use the referenced view file's image coordinates, not model XYZ.
-- Build curves as curves. An arc is one edge, not a chain of segments; a round hole is one cylindrical face, not a ring of narrow flat ones. Sampling a curve into points and joining them with straight segments is an approximation, and sampling more finely does not make it an exact curve.
+- Use CadQuery's analytic operations for circular geometry: `circle`, `threePointArc` or `radiusArc` for profiles, and `fillet` for constant-radius rounds. Do not approximate these with sampled polylines, `spline`, or a `loft` through many sections. Use splines for non-circular curves and lofts for changing cross-sections when the drawing shows them.
+- For a constant-section body, sketch its complete section, including openings, and extrude once. Assembling the same section from touching boxes or cylinders can leave extra coplanar or cylindrical faces. Use `Workplane.union(..., clean=True)` to join distinct features such as bosses or ribs, and inspect their junctions in the built STEP.
+- CadQuery's `Workplane.extrude(..., both=True)` extrudes on both sides of the sketch plane and can split a continuous wall there. Prefer one extrusion from the feature's start plane.
+- Define each simple hole or pocket with its intended profile and cut it once. Nearly overlapping cuts used to adjust that same outline can leave narrow strips or small steps. Separate cuts are appropriate for distinct steps, such as a counterbore, that the drawing supports.
+- Do not add a thin sheet, narrow land, shallow groove or tiny offset just to align the projected lines with the input drawing. Using such patches abandons the search for a correct interpretation and merely covers up the mismatch. Re-examine the feature's 3D interpretation instead.
 
 ### Work cycle
 
 Use `load_image` to inspect drawings, `run_shell` to create crops and edit files, and other useful tools when provided. If a printed dimension and your measurement differ beyond measuring error, one of them is wrong: the number may be misread or belong to another extent, or the measurement may be off. Recheck both, correct the error, and build the more likely value. Note the disagreement in `concerns` only if it stays unresolved. Consistency with the other dimensions and the overall size is the best evidence.
 
-After a tool turn changes either `$interpretation_output_path` or `$coding_output_path`, automatic verification checks the file formats and contents. It also executes the program if it exists and the interpretation is valid, and returns diagnostics and paths to STEP, orthographic PNG/DXF and perspective renders under `$verification_dir/round_NNN/coding/NNN/`. This feedback finds misreadings faster than further measuring by hand. Each report lists the requirements your answer still has to meet. Verification uses no additional model turn.
+After a tool turn changes either `$interpretation_output_path` or `$coding_output_path`, automatic verification checks the file formats and contents. It also executes the program if it exists and the interpretation is valid, exports `result` as `output.step`, and returns diagnostics and paths to that STEP, orthographic PNG/DXF and perspective renders under `$verification_dir/round_NNN/coding/NNN/`. This feedback finds misreadings faster than further measuring by hand. Each report lists the requirements your answer still has to meet. Verification uses no additional model turn.
 
 #### Read the drawing
 
@@ -66,7 +70,7 @@ Do not believe in your 3D reasoning blindly. Whenever deciding geometric design 
 - Integrate each promising alternative into `$coding_output_path` immediately to see whether the projections of the resulting shape give a better match with the input. Quick iteration is the key to fast improvements.
 - Treat stroke thickness as a drawing convention, not a physical feature width.
 - Read the geometry census:
-  - All faces of one kind or hundreds of edges may indicate an unintended approximation.
+  - Compare face and edge counts and types with the previous build when revising a feature. An increase without a supported shape change calls for inspecting the construction for unintended splits or approximation.
   - Before rejecting a geometric hypothesis because a build failed, use `run_shell` to inspect each separated component's volume and location and identify the step that separated them. Repair or isolate that failure, then compare the hypothesis with the source views. Build failure alone does not establish that the proposed shape is wrong.
 - Inspect final orthographic PNG and relevant perspective renders with `load_image`; use ezdxf for relevant DXF measurements. Compare feature extent, placement and connections. For widespread mismatch, check XYZ/view axes, mirroring and alignment.
 - If a kernel operation keeps failing, inspect its geometric preconditions. Try another construction, or reconsider whether the intended feature is right. Do not silently skip it.

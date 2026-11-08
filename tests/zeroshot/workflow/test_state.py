@@ -122,6 +122,9 @@ _VERIFICATION = VerifyOutputResult(
             Counter(Plane=6),
             Counter(Line=12),
             (Void(0.5, (0.0, 0.0, 0.0, 0.5, 1.0, 1.0)),),
+            (
+                "Possible local thin land: thickness 0.1 mm at x=1..2, y=3..4, z=5..5.1.",
+            ),
         ),
     ),
     render_report={

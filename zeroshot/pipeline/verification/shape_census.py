@@ -53,6 +53,7 @@ class ShapeCensus:
     faces: Counter[str]
     edges: Counter[str]
     voids: tuple[Void, ...] = ()
+    warnings: tuple[str, ...] = ()
 
     def _describe_extent(self) -> str:
         """The bounding box of the built solid, as the overall dimensions read.
@@ -112,6 +113,8 @@ def read_census(step_path: Path) -> ShapeCensus | None:
     import cadquery as cq
     from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 
+    from zeroshot.pipeline.verification.shape_warnings import find_shape_warnings
+
     try:
         # The whole compound, not `.val()`: a part that broke apart must be
         # counted whole, or the census silently reports one of its pieces.
@@ -119,6 +122,10 @@ def read_census(step_path: Path) -> ShapeCensus | None:
             cq.importers.importStep(str(step_path)).vals()  # type: ignore[arg-type]
         )
         box = shape.BoundingBox()
+        try:
+            warnings = find_shape_warnings(shape)
+        except Exception:  # noqa: BLE001 - optional geometry review must not lose the census
+            warnings = ()
         return ShapeCensus(
             solids=len(shape.Solids()),
             volume=shape.Volume(),
@@ -126,6 +133,7 @@ def read_census(step_path: Path) -> ShapeCensus | None:
             faces=_kinds(shape.Faces(), BRepAdaptor_Surface),
             edges=_kinds(shape.Edges(), BRepAdaptor_Curve),
             voids=_voids(shape),
+            warnings=warnings,
         )
     except Exception:  # noqa: BLE001 - e.g. an empty nested compound; a diagnostic must not stop verification
         return None
