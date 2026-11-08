@@ -40,7 +40,7 @@ class Void:
     def describe(self) -> str:
         # + 0.0 turns a rounded -0.0 into 0.0
         corners = ", ".join(f"{round(v, 1) + 0.0:.1f}" for v in self.bbox)
-        return f"{self.volume:.1f} mm³ at [{corners}]"
+        return f"{self.volume:.6g} mm³ at [{corners}]"
 
 
 @dataclass(frozen=True)
@@ -88,7 +88,7 @@ class ShapeCensus:
         return "; ".join(
             [
                 *([f"solids {self.solids}"] if self.solids != 1 else []),
-                f"volume {self.volume:.1f}",
+                f"volume {self.volume:.6g}",
                 self._describe_extent(),
                 *self._describe_voids(),
                 *(

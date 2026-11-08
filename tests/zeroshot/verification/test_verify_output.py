@@ -1098,7 +1098,7 @@ def test_a_sealed_void_is_reported_with_its_place(tmp_path: Path) -> None:
     cq.exporters.export(hollow, str(tmp_path / "part.step"), exportType="STEP")
     census = read_census(tmp_path / "part.step")
     assert census is not None
-    void = "sealed voids 1 (cavities no opening reaches, bbox [xmin, ymin, zmin, xmax, ymax, zmax]: 64.0 mm³ at [-2.0, -2.0, -2.0, 2.0, 2.0, 2.0])"
+    void = "sealed voids 1 (cavities no opening reaches, bbox [xmin, ymin, zmin, xmax, ymax, zmax]: 64 mm³ at [-2.0, -2.0, -2.0, 2.0, 2.0, 2.0])"
 
     assert f"bbox 20.00 x 20.00 x 20.00; {void}; faces" in census.describe()
     assert "sealed voids" not in replace(census, voids=()).describe()
