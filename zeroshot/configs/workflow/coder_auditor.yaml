@@ -48,6 +48,7 @@ workflow:
     model: similarity
     timeout_seconds: 180.0
     distance_clip_px: 12.0  # null: normalize colors by each image's maximum distance
+    auto_hide_tangents: true  # leave tangent boundaries out of the images of a sheet that omits them
     alignment_options:
       scale_tolerance: 0.01  # constrain calibrated mm/pixel scale to +/-1%
       relative_scale: [0.45, 1.1]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
@@ -16,7 +16,22 @@ from ..run_drawing_diff import DrawingDiffReport
 from .align import AlignmentResult, Backend, Model, align, read_rgb
 from .diff import DiffResult, compute_diff
 from .ocr import read_text_lines
+from .tangent_display import projection_without_tangents, sheet_omits_tangents
 from .text_marks import text_regions
+
+
+@dataclass(frozen=True)
+class AlignedView:
+    """A projection registered to its drawing, with all a comparison needs."""
+
+    drawing: np.ndarray
+    non_tangent_rgb: np.ndarray
+    tangent_mask: np.ndarray | None
+    alignment: AlignmentResult
+    modelspace: Any
+    projection_to_uv: np.ndarray | None
+    calibration: dict[str, Any]
+    uv_mapping: dict[str, Any]
 
 
 def run_worker(
@@ -28,6 +43,7 @@ def run_worker(
     alignment_options: Mapping[str, Any] | None = None,
     distance_clip_px: float | None = 12.0,
     drawing_scales: Sequence[float | None] | None = None,
+    auto_hide_tangents: bool = False,
 ) -> None:
     """Initialize a runtime once and process the supplied image pairs in order."""
     try:
@@ -37,60 +53,102 @@ def run_worker(
 
             runtime = load_runtime()
 
-        for idx, (drawing_path, projection_path) in enumerate(pairs):
-            try:
-                report = run_align_diff_save(
-                    drawing_path=drawing_path,
-                    projection_path=projection_path,
-                    backend=backend,
-                    model=model,
-                    alignment_options=alignment_options,
-                    distance_clip_px=distance_clip_px,
-                    drawing_mm_per_pixel=drawing_scales[idx]
-                    if drawing_scales is not None
-                    else None,
-                    runtime=runtime,
-                )
-            except Exception as error:  # noqa: BLE001
-                report = DrawingDiffReport(
-                    drawing_path=drawing_path,
-                    projection_path=projection_path,
-                    error=f"{type(error).__name__}: {error}",
-                )
+        scales = drawing_scales if drawing_scales is not None else [None] * len(pairs)
+        # Lazy, so each pair is finished and sent before the next one starts.
+        views = (
+            _align_pair(
+                pair,
+                backend=backend,
+                model=model,
+                alignment_options=alignment_options,
+                drawing_mm_per_pixel=scale,
+                runtime=runtime,
+            )
+            for pair, scale in zip(pairs, scales, strict=True)
+        )
 
+        hide_tangents = False
+        if auto_hide_tangents:
+            # The sheet's decision needs all of its views before any is compared.
+            views = list(views)
+            hide_tangents = sheet_omits_tangents(
+                view for view in views if isinstance(view, AlignedView)
+            )
+
+        for idx, (pair, view) in enumerate(zip(pairs, views, strict=True)):
+            report = _compare_pair(
+                pair,
+                view,
+                distance_clip_px=distance_clip_px,
+                hide_tangents=hide_tangents,
+            )
             connection.send((idx, report))
 
     finally:
         connection.close()
 
 
-def run_align_diff_save(
-    drawing_path: Path,
-    projection_path: Path,
-    *,
-    backend: Backend = "directional_chamfer",
-    model: Model = "similarity",
-    alignment_options: Mapping[str, Any] | None = None,
-    distance_clip_px: float | None = 12.0,
-    drawing_mm_per_pixel: float | None = None,
-    runtime: Any = None,
-) -> DrawingDiffReport:
-    """Align one pair, save available diff images, and return their paths."""
-
-    drawing = read_rgb(drawing_path)
-    projection = read_rgb(projection_path)
-    alignment, diff = _align_and_compare(
-        drawing,
-        projection,
-        projection_path,
-        backend=backend,
-        model=model,
-        alignment_options=alignment_options,
-        distance_clip_px=distance_clip_px,
-        drawing_mm_per_pixel=drawing_mm_per_pixel,
-        runtime=runtime,
+def _failed(pair: tuple[Path, Path], error: Exception) -> DrawingDiffReport:
+    return DrawingDiffReport(
+        drawing_path=pair[0],
+        projection_path=pair[1],
+        error=f"{type(error).__name__}: {error}",
     )
 
+
+def _align_pair(
+    pair: tuple[Path, Path],
+    *,
+    backend: Backend,
+    model: Model,
+    alignment_options: Mapping[str, Any] | None,
+    drawing_mm_per_pixel: float | None,
+    runtime: Any,
+) -> AlignedView | DrawingDiffReport:
+    """Register one pair, or report why it could not be."""
+    try:
+        return _align_view(
+            read_rgb(pair[0]),
+            read_rgb(pair[1]),
+            pair[1],
+            backend=backend,
+            model=model,
+            alignment_options=alignment_options,
+            drawing_mm_per_pixel=drawing_mm_per_pixel,
+            runtime=runtime,
+        )
+    except Exception as error:  # noqa: BLE001
+        return _failed(pair, error)
+
+
+def _compare_pair(
+    pair: tuple[Path, Path],
+    view: AlignedView | DrawingDiffReport,
+    *,
+    distance_clip_px: float | None,
+    hide_tangents: bool,
+) -> DrawingDiffReport:
+    """Compare a registered pair and save its images, or report why it could not be."""
+    if isinstance(view, DrawingDiffReport):
+        return view
+    try:
+        if hide_tangents and view.tangent_mask is not None:
+            Image.fromarray(projection_without_tangents(view.modelspace)).save(pair[1])
+        diff = _compare_view(
+            view, distance_clip_px=distance_clip_px, hide_tangents=hide_tangents
+        )
+        return _save_diff(*pair, view.alignment, diff)
+    except Exception as error:  # noqa: BLE001
+        return _failed(pair, error)
+
+
+def _save_diff(
+    drawing_path: Path,
+    projection_path: Path,
+    alignment: AlignmentResult,
+    diff: DiffResult,
+) -> DrawingDiffReport:
+    """Save the available diff images next to the projection and report their paths."""
     paths = {}
     if diff.overlay is not None:
         path = projection_path.with_name(f"{projection_path.stem}_overlay.png")
@@ -111,7 +169,7 @@ def run_align_diff_save(
     )
 
 
-def _align_and_compare(
+def _align_view(
     drawing: np.ndarray,
     projection: np.ndarray,
     projection_path: Path,
@@ -119,11 +177,10 @@ def _align_and_compare(
     backend: Backend,
     model: Model,
     alignment_options: Mapping[str, Any] | None,
-    distance_clip_px: float | None,
     drawing_mm_per_pixel: float | None,
     runtime: Any,
-) -> tuple[AlignmentResult, DiffResult]:
-    """Calibrate and compare images, then map their error boxes to CAD UV."""
+) -> AlignedView:
+    """Read the projection's DXF and register the drawing to its required lines."""
 
     options = dict(alignment_options or {})
     scale_tolerance = options.pop("scale_tolerance", 0.01)
@@ -222,15 +279,40 @@ def _align_and_compare(
         runtime=runtime,
     )
     alignment.diagnostics["scale_calibration"] = calibration
-    diff = compute_diff(
+    return AlignedView(
         drawing,
         non_tangent_rgb,
+        tangent_mask,
         alignment,
-        tangent_ink=tangent_mask,
-        text_regions=text_regions(read_text_lines(drawing), drawing.shape[:2]),
+        modelspace,
+        projection_to_uv,
+        calibration,
+        uv_mapping,
+    )
+
+
+def _compare_view(
+    view: AlignedView,
+    *,
+    distance_clip_px: float | None,
+    hide_tangents: bool = False,
+) -> DiffResult:
+    """Compare a registered view, then map its error boxes to CAD UV."""
+    alignment, calibration = view.alignment, view.calibration
+    modelspace, projection_to_uv = view.modelspace, view.projection_to_uv
+    uv_mapping = view.uv_mapping
+    diff = compute_diff(
+        view.drawing,
+        view.non_tangent_rgb,
+        alignment,
+        tangent_ink=view.tangent_mask,
+        text_regions=text_regions(
+            read_text_lines(view.drawing), view.drawing.shape[:2]
+        ),
         distance_clip_px=distance_clip_px,
         projection_modelspace=modelspace,
         projection_to_uv=projection_to_uv,
+        hide_tangents=hide_tangents,
     )
     if modelspace is None:
         diff = replace(
@@ -262,4 +344,4 @@ def _align_and_compare(
                     *uv.max(axis=0).tolist(),
                 ]
     diff.stats["model_uv_mapping"] = uv_mapping
-    return alignment, diff
+    return diff

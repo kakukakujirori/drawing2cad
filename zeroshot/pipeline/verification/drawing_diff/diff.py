@@ -225,6 +225,7 @@ def compute_diff(
     distance_clip_px: float | None = 12.0,
     projection_modelspace: Modelspace | None = None,
     projection_to_uv: np.ndarray | None = None,
+    hide_tangents: bool = False,
 ) -> DiffResult:
     """Color every observed output ink pixel by distance to aligned input ink.
 
@@ -246,6 +247,8 @@ def compute_diff(
     identify drafting marks for scoring and enable curve and line style comparison.
     Style mismatches are red
     in the overlay and separately counted; they do not alter geometric scores.
+
+    hide_tangents leaves tangent_ink out of the images; it still counts everywhere else.
 
     Invalid arguments raise ValueError. Unusable image content or a failed
     alignment returns the reason in warnings.
@@ -415,6 +418,7 @@ def compute_diff(
             groups,
             comparison_annotation,
             tangent=tangent_seen,
+            hide_tangents=hide_tangents,
         )
 
         # An automatic display scale is unavailable when no output line is measured.
@@ -426,7 +430,7 @@ def compute_diff(
             output_ink & ~valid,
             output_distances,
             stats["red_distance_px"],
-            tangent_ink & valid,
+            tangent_ink & valid & (not hide_tangents),
             cv2.warpPerspective(
                 line_style_mismatch_mask.astype(np.uint8),
                 matrix,

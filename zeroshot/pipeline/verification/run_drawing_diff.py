@@ -47,6 +47,7 @@ class DrawingDiffExecutor:
         alignment_options: dict[str, Any] | None = None,
         distance_clip_px: float | None = 12.0,
         timeout_seconds: float = 90.0,
+        auto_hide_tangents: bool = False,
     ) -> None:
         if backend not in ("directional_chamfer", "match_anything"):
             raise ValueError(f"invalid backend: {backend}")
@@ -71,6 +72,7 @@ class DrawingDiffExecutor:
         self.alignment_options = alignment_options or {}
         self.distance_clip_px = distance_clip_px
         self.timeout_seconds = timeout_seconds
+        self.auto_hide_tangents = auto_hide_tangents
 
     def execute(
         self,
@@ -123,6 +125,7 @@ class DrawingDiffExecutor:
                     "alignment_options": self.alignment_options,
                     "distance_clip_px": self.distance_clip_px,
                     "drawing_scales": drawing_scales,
+                    "auto_hide_tangents": self.auto_hide_tangents,
                 },
             )
             process.start()

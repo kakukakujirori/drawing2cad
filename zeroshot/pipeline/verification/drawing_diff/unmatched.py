@@ -531,6 +531,7 @@ def draw_unmatched(
     annotation: np.ndarray | None = None,
     *,
     tangent: np.ndarray | None = None,
+    hide_tangents: bool = False,
 ) -> np.ndarray:
     """Each group as a colored band under lines colored by the image that draws them.
 
@@ -569,8 +570,8 @@ def draw_unmatched(
     annotation = uncompared if annotation is None else annotation | uncompared
     image[annotation] = NEUTRAL_GRAY
     drawn &= ~annotation
-    # A tangent lies under the input line it matches.
-    if tangent is not None:
+    # A tangent lies under the input line it matches. Hidden, it still supports them.
+    if tangent is not None and not hide_tangents:
         image[tangent] = NEUTRAL_GRAY
     output_centre = thin(output)
     supporting = output_centre if tangent is None else output_centre | thin(tangent)

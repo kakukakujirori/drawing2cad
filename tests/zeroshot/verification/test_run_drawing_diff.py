@@ -18,6 +18,30 @@ from zeroshot.pipeline.verification.run_drawing_diff import (
 )
 
 
+class _Connection:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, item):
+        self.sent.append(item)
+
+    def close(self):
+        pass
+
+
+def _compare_one(drawing, projection, *, drawing_mm_per_pixel=None, **options):
+    """Run the worker on a single pair and return the report it sends."""
+    connection = _Connection()
+    worker.run_worker(
+        [(drawing, projection)],
+        connection,
+        drawing_scales=[drawing_mm_per_pixel],
+        **options,
+    )
+    assert [index for index, _ in connection.sent] == [0]
+    return connection.sent[0][1]
+
+
 def _send_out_of_order(pairs, connection, **_options):
     try:
         for index in reversed(range(len(pairs))):
@@ -215,7 +239,7 @@ def test_worker_saves_diff_pngs_beside_projection(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(worker, "align", lambda *_args, **_kwargs: alignment)
 
-    report = worker.run_align_diff_save(drawing_path, projection_path)
+    report = _compare_one(drawing_path, projection_path)
 
     assert report.error is None
     assert report.stats["model_uv_mapping"] == {
@@ -254,7 +278,7 @@ def test_invalid_dxf_bounds_still_allow_png_comparison(tmp_path, monkeypatch):
         ),
     )
 
-    report = worker.run_align_diff_save(drawing, projection)
+    report = _compare_one(drawing, projection)
 
     assert report.error is None
     assert report.stats["comparison_status"] == "ok"
@@ -342,17 +366,17 @@ def test_alignment_ignores_optional_tangents_but_diff_uses_them(
 
     monkeypatch.setattr(worker, "align", align)
     monkeypatch.setattr(worker, "compute_diff", compute_diff)
-    alignment, diff = worker._align_and_compare(
+    view = worker._align_view(
         drawing,
         projection,
         projection_path,
         backend="directional_chamfer",
         model="similarity",
         alignment_options={},
-        distance_clip_px=12,
         drawing_mm_per_pixel=None,
         runtime=None,
     )
+    alignment, diff = view.alignment, worker._compare_view(view, distance_clip_px=12)
     assert diff.stats["unmatched"] == []
     baseline = compare(outline, outline, alignment)
     assert diff.stats["match_score"] == baseline.stats["match_score"]
@@ -366,14 +390,13 @@ def test_alignment_ignores_optional_tangents_but_diff_uses_them(
 
     # A resized PNG must not silently receive masks on the original pixel grid.
     with pytest.raises(ValueError, match="DXF raster grid"):
-        worker._align_and_compare(
+        worker._align_view(
             drawing,
             projection[:-1],
             projection_path,
             backend="directional_chamfer",
             model="similarity",
             alignment_options={},
-            distance_clip_px=12,
             drawing_mm_per_pixel=None,
             runtime=None,
         )
@@ -445,7 +468,7 @@ def test_worker_uses_dxf_raster_bounds_for_calibrated_scale(
     if tolerance is not None:
         options["scale_tolerance"] = tolerance
     original_options = options.copy()
-    report = worker.run_align_diff_save(
+    report = _compare_one(
         drawing, projection, alignment_options=options, drawing_mm_per_pixel=0.125
     )
     # DXF margin = 30*.04=1.2 mm. Average the two raster axes' rounding error.
@@ -467,7 +490,7 @@ def test_worker_uses_dxf_raster_bounds_for_calibrated_scale(
         is float
     )
 
-    report = worker.run_align_diff_save(
+    report = _compare_one(
         drawing,
         projection,
         model="affine",
@@ -478,7 +501,7 @@ def test_worker_uses_dxf_raster_bounds_for_calibrated_scale(
     assert report.alignment.diagnostics["scale_calibration"]["status"] == "unavailable"
 
     projection.with_suffix(".dxf").unlink()
-    report = worker.run_align_diff_save(
+    report = _compare_one(
         drawing, projection, alignment_options=options, drawing_mm_per_pixel=0.125
     )
     assert captured[-1] == backend_options
@@ -486,7 +509,7 @@ def test_worker_uses_dxf_raster_bounds_for_calibrated_scale(
         report.alignment.diagnostics["scale_calibration"]["reason"]
         == "projection DXF unavailable"
     )
-    report = worker.run_align_diff_save(drawing, projection, alignment_options=options)
+    report = _compare_one(drawing, projection, alignment_options=options)
     assert captured[-1] == backend_options
     assert (
         report.alignment.diagnostics["scale_calibration"]["reason"]
@@ -521,7 +544,7 @@ def test_worker_maps_pixel_boundaries_and_all_box_corners_through_dxf_margins(
     doc.modelspace().add_lwpolyline([(0, 0), (30, 0), (30, 40), (0, 40)], close=True)
     doc.saveas(projection.with_suffix(".dxf"))
 
-    report = worker.run_align_diff_save(drawing, projection)
+    report = _compare_one(drawing, projection)
 
     expected_p = np.array([[0.0675, 0, -1.2], [0, -0.06625, 41.2], [0, 0, 1]])
     np.testing.assert_allclose(report.stats["projection_to_model_uv"], expected_p)
@@ -533,9 +556,7 @@ def test_worker_maps_pixel_boundaries_and_all_box_corners_through_dxf_margins(
         [3.525, 31.2625, 8.25, 36.5625]
     )
     assert report.stats["model_uv_mapping"]["status"] == "provisional"
-    calibrated = worker.run_align_diff_save(
-        drawing, projection, drawing_mm_per_pixel=0.125
-    )
+    calibrated = _compare_one(drawing, projection, drawing_mm_per_pixel=0.125)
     assert calibrated.stats["model_uv_mapping"]["status"] == "ok"
 
     # A new model bbox changes both raster bounds and H, but not the physical location.
@@ -546,7 +567,7 @@ def test_worker_maps_pixel_boundaries_and_all_box_corners_through_dxf_margins(
     doc.saveas(projection.with_suffix(".dxf"))
     expected_new_p = np.array([[54 / 480, 0, -7], [0, -64 / 640, 52], [0, 0, 1]])
     matrix = np.linalg.inv(expected_new_p) @ transform
-    updated = worker.run_align_diff_save(drawing, projection)
+    updated = _compare_one(drawing, projection)
     np.testing.assert_allclose(
         updated.stats["drawing_to_model_uv"], transform, atol=1e-12
     )
@@ -556,6 +577,6 @@ def test_worker_maps_pixel_boundaries_and_all_box_corners_through_dxf_margins(
     )
 
     projection.with_suffix(".dxf").write_text("invalid DXF")
-    unavailable = worker.run_align_diff_save(drawing, projection)
+    unavailable = _compare_one(drawing, projection)
     assert "DXF unreadable" in unavailable.stats["model_uv_mapping"]["reason"]
     assert "drawing_to_model_uv" not in unavailable.stats

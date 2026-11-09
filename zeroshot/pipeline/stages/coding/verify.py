@@ -703,6 +703,7 @@ _UNMATCHED = cleandoc("""
     - Blue: lines both images draw.
     - Magenta: projection lines only; green: input lines only.
     - Gray: annotation, optional tangent boundaries and other ink not compared.
+    - Tangent boundaries may be omitted when the input drawing does not draw them.
     - Colored bands and IDs: mismatch clusters; hatching: silhouette differences.
     - Missing: input only. Extra: projection only.
     - Solid/dashed mismatch: overlapping lines with different styles.
