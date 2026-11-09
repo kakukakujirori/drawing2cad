@@ -1,5 +1,6 @@
-"""Locate review-worthy structures in the built solid; never repair it."""
+"""Review the built solid and its construction in source; never repair either."""
 
+import ast
 from collections import defaultdict
 from itertools import combinations
 from math import sqrt
@@ -12,15 +13,47 @@ _SMALL_FRACTION = 0.1
 _TOL = 1e-7  # OCCT's usual linear confusion, in mm.
 _ANGULAR_TOL = 1e-9
 _MAX_REGIONS = 4
+_SPLINE_CONSTRUCTION = (
+    "Spline calls in program source: {locations}. "
+    "Splines fitted to sampled points can replace separate straight/circular "
+    "boundaries with general curves, changing STEP faces and edges despite "
+    "similar projections. Check the source drawing and use line/arc operations "
+    "where it shows straight/circular geometry. Keep splines for supported "
+    "freeform curves; adding more points does not restore the line/arc structure."
+)
 
 
-def find_shape_warnings(shape) -> tuple[str, ...]:
-    """Run the three structural checks on the built solid."""
+def find_shape_warnings(
+    shape, source: str | None = None, *, filename: str = "model.py"
+) -> tuple[str, ...]:
+    """Review the solid's structure and, when supplied, its construction code."""
     return (
         *_check_local_thin_lands(shape),
         *_check_shallow_steps(shape),
         *_check_same_surface_splits(shape),
+        *(_check_spline_construction(source, filename) if source is not None else ()),
     )
+
+
+def _check_spline_construction(source: str, filename: str) -> tuple[str, ...]:
+    """Locate explicit spline calls for review, without judging their geometry.
+
+    shortcut: method aliases need name resolution if generated programs use them.
+    """
+    calls = sorted(
+        {
+            (node.func.end_lineno, node.func.attr)
+            for node in ast.walk(ast.parse(source, filename=filename))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr
+            in {"spline", "splineApprox", "makeSpline", "makeSplineApprox"}
+        }
+    )
+    if not calls:
+        return ()
+    locations = ", ".join(f"{filename}:{line} ({method})" for line, method in calls)
+    return (_SPLINE_CONSTRUCTION.format(locations=locations),)
 
 
 def _check_local_thin_lands(shape) -> tuple[str, ...]:

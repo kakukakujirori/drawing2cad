@@ -1,5 +1,7 @@
 """Cross-validation and persistence at the workflow boundary."""
 
+from collections import Counter
+
 import pytest
 
 from tests.zeroshot.contracts import (
@@ -36,6 +38,7 @@ from zeroshot.pipeline.stages.validate import (
 )
 from zeroshot.pipeline.verification import ExecutionStatus
 from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
+from zeroshot.pipeline.verification.shape_census import ShapeCensus
 from zeroshot.pipeline.workflow import lifecycle as lifecycle_module
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
@@ -283,10 +286,19 @@ def test_coding_stores_the_program_once_and_clips_long_logs() -> None:
             returncode=0,
             stdout="x" * 10_000,
             stderr="short",
+            census=ShapeCensus(
+                solids=1,
+                volume=6000,
+                extent=(10, 20, 30),
+                faces=Counter(),
+                edges=Counter(),
+                warnings=("Spline calls in program source: model.py:7 (spline).",),
+            ),
         )
     )
 
-    snapshot = _completed_run(verification=noisy).snapshots[-1]
+    completed = _completed_run(verification=noisy)
+    snapshot = completed.snapshots[-1]
 
     assert snapshot.program_source == _SOURCE
     assert snapshot.verification is not None
@@ -294,6 +306,14 @@ def test_coding_stores_the_program_once_and_clips_long_logs() -> None:
     assert "characters omitted" in snapshot.verification.exec_report.stdout
     assert len(snapshot.verification.exec_report.stdout) < len(noisy.exec_report.stdout)
     assert snapshot.verification.exec_report.stderr == "short"
+    assert (
+        snapshot.verification.exec_report.census.warnings
+        == noisy.exec_report.census.warnings
+    )
+    assert (
+        ReconstructionHistory.model_validate_json(completed.model_dump_json())
+        == completed
+    )
     assert noisy.exec_report.source == _SOURCE
     assert noisy.exec_report.stdout == "x" * 10_000
 

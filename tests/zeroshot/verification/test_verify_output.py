@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -18,6 +19,7 @@ from zeroshot.pipeline.stages.coding.verify import (
     RESULT_NAME,
     OutputVerifier,
     VerifyOutputResult,
+    build_verification_feedback,
 )
 from zeroshot.pipeline.stages.interpretation.contracts import Axis, Region, View
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
@@ -38,7 +40,7 @@ from zeroshot.pipeline.verification.run_render import (
     RenderRequest,
     RenderStatus,
 )
-from zeroshot.pipeline.verification.shape_census import read_census
+from zeroshot.pipeline.verification.shape_census import ShapeCensus, read_census
 
 RENDER3D_STYLES = (
     "hlg_perspective",
@@ -54,6 +56,47 @@ import cadquery as cq
 
 result = cq.Workplane("XY").box(10, 20, 30)
 """
+
+
+def test_source_warnings_survive_json_and_feedback_without_program_source(
+    tmp_path,
+):
+    warning = "Spline calls in program source: model.py:7 (spline). Check the drawing."
+    report = VerifyOutputResult(
+        exec_report=CadQueryExecutionReport(
+            status=ExecutionStatus.VERIFIED,
+            source=None,
+            census=ShapeCensus(
+                solids=1,
+                volume=6000,
+                extent=(10, 20, 30),
+                faces=Counter(),
+                edges=Counter(),
+                warnings=(warning,),
+            ),
+        )
+    )
+    adapter = TypeAdapter(VerifyOutputResult)
+    stored = adapter.validate_json(adapter.dump_json(report))
+
+    def feedback(candidate):
+        blocks = build_verification_feedback(
+            candidate,
+            SandboxWorkdir(host_bind_dir=tmp_path),
+            ArtifactPresenter(input="path"),
+            {},
+        )
+        return "\n".join(block.get("text", "") for block in blocks)
+
+    assert stored.exec_report.census.warnings == (warning,)
+    text = feedback(stored)
+    assert "[Geometry warnings — built STEP and program source" in text
+    assert warning in text
+    legacy = json.loads(adapter.dump_json(report))
+    del legacy["exec_report"]["census"]["warnings"]
+    restored = adapter.validate_python(legacy)
+    assert restored.exec_report.census.warnings == ()
+    assert "[Geometry warnings" not in feedback(restored)
 
 
 class StubCadQueryExecutor:

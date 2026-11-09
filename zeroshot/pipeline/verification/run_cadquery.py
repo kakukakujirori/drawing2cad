@@ -215,7 +215,11 @@ class CadQueryExecutor:
                 step_error = str(e)
 
             # Read inside the block: the workdir is gone once it exits.
-            census = None if tmp_step_path.is_symlink() else read_census(tmp_step_path)
+            census = (
+                None
+                if tmp_step_path.is_symlink()
+                else read_census(tmp_step_path, source=source, filename=model_path.name)
+            )
 
             kept_step_path = None
             if output_step_path is not None and (

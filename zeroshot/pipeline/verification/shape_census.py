@@ -101,8 +101,10 @@ class ShapeCensus:
         )
 
 
-def read_census(step_path: Path) -> ShapeCensus | None:
-    """Read a STEP and count the volume, faces and edges of its solid.
+def read_census(
+    step_path: Path, *, source: str | None = None, filename: str = "model.py"
+) -> ShapeCensus | None:
+    """Count a STEP's geometry and review it with the optional construction source.
 
     None when the file cannot be read as a shape; the caller is reporting a
     build that already succeeded, and a census that fails is not a reason to
@@ -123,8 +125,8 @@ def read_census(step_path: Path) -> ShapeCensus | None:
         )
         box = shape.BoundingBox()
         try:
-            warnings = find_shape_warnings(shape)
-        except Exception:  # noqa: BLE001 - optional geometry review must not lose the census
+            warnings = find_shape_warnings(shape, source, filename=filename)
+        except Exception:  # noqa: BLE001 - optional review must not lose the census
             warnings = ()
         return ShapeCensus(
             solids=len(shape.Solids()),

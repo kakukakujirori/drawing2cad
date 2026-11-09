@@ -315,6 +315,30 @@ def test_execute_runs_valid_box_in_real_sandbox(tmp_path: Path) -> None:
     CadQueryExecutor.verify_step(output_step_path)
 
 
+def test_a_freeform_spline_is_verified_and_only_requests_construction_review(tmp_path):
+    source = (
+        "import cadquery as cq\n"
+        "result = (cq.Workplane().moveTo(0, 0)\n"
+        "    .spline([(5, 2), (10, 0)], includeCurrent=True)\n"
+        "    .lineTo(10, -5).lineTo(0, -5).close().extrude(5))\n"
+    )
+    model = tmp_path / "freeform.py"
+    model.write_text(source)
+    executor = CadQueryExecutor(
+        SandboxRunner(python_executable=Path(sys.executable), default_timeout_s=30.0)
+    )
+
+    report = executor.execute(model, tmp_path / "output.step")
+
+    assert report.status is ExecutionStatus.VERIFIED
+    assert report.returncode == 0
+    assert len(report.census.warnings) == 1
+    assert "freeform.py:3 (spline)" in report.census.warnings[0]
+    assert str(tmp_path) not in report.census.warnings[0]
+    assert report.census.edges["BSplineCurve"] > 0
+    CadQueryExecutor.verify_step(report.step_path)
+
+
 def test_execute_rejects_non_utf8_source_before_running_sandbox(
     tmp_path: Path,
 ) -> None:

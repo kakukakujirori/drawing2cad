@@ -24,6 +24,71 @@ def _thin_land():
     return body.cut(lower).cut(upper)
 
 
+@pytest.mark.parametrize(
+    "method", ["spline", "splineApprox", "makeSpline", "makeSplineApprox"]
+)
+def test_spline_warning_names_the_method_line_in_a_multiline_chain(method):
+    source = (
+        "import cadquery as cq\n"
+        "result = (\n"
+        "    cq.Workplane()\n"
+        f"    .{method}(\n"
+        "        points\n"
+        "    )\n"
+        ")\n"
+    )
+
+    warnings = find_shape_warnings(
+        cq.Solid.makeBox(10, 20, 30), source, filename="profile.py"
+    )
+
+    assert len(warnings) == 1
+    assert f"profile.py:4 ({method})" in warnings[0]
+    assert "freeform" in warnings[0]
+    assert "more points" in warnings[0]
+
+
+def test_spline_warning_combines_locations_without_matching_comments_or_strings():
+    shape = cq.Solid.makeBox(10, 20, 30)
+    source = (
+        "# cq.Edge.makeSpline(points)\n"
+        'label = "wp.spline(points)"\n'
+        "a = wp.spline(points)\n"
+        "b = cq.Edge.makeSpline(points)\n"
+    )
+
+    warnings = find_shape_warnings(shape, source)
+
+    assert len(warnings) == 1
+    assert "model.py:3 (spline)" in warnings[0]
+    assert "model.py:4 (makeSpline)" in warnings[0]
+    assert "model.py:1" not in warnings[0] and "model.py:2" not in warnings[0]
+    assert (
+        find_shape_warnings(
+            shape,
+            "result = cq.Workplane().box(10, 20, 30)\n"
+            '# wp.spline(points)\nlabel = "makeSpline"\n',
+        )
+        == ()
+    )
+
+
+def test_source_and_solid_checks_share_the_warning_result(tmp_path):
+    path = tmp_path / "output.step"
+    cq.exporters.export(_thin_land(), str(path))
+    geometry_only = read_census(path)
+
+    reviewed = read_census(
+        path, source="result = wp.spline(points)", filename="part.py"
+    )
+
+    assert geometry_only is not None and len(geometry_only.warnings) == 1
+    assert reviewed is not None
+    assert reviewed.warnings[:-1] == geometry_only.warnings
+    assert "part.py:1 (spline)" in reviewed.warnings[-1]
+    assert replace(reviewed, warnings=()) == replace(geometry_only, warnings=())
+
+
 @pytest.mark.parametrize("scale", [0.01, 1, 100])
 def test_a_local_land_is_detected_without_changing_the_shape(scale):
     shape = _thin_land().scale(scale)
@@ -187,7 +252,7 @@ def test_a_review_failure_does_not_discard_the_census(tmp_path, monkeypatch):
     path = tmp_path / "output.step"
     cq.exporters.export(cq.Solid.makeBox(10, 20, 30), str(path))
 
-    def broken_review(shape):
+    def broken_review(shape, source=None, *, filename="model.py"):
         raise RuntimeError("Review failed")
 
     monkeypatch.setattr(shape_warnings, "find_shape_warnings", broken_review)
