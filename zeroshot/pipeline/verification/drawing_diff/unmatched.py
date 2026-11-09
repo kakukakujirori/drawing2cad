@@ -5,7 +5,9 @@ line differences. A far line leaves the other image's lines by a wide margin
 over some length; it applies both ways, and its size keeps the input's annotation
 out. A near line is a long input line that leaves the output by a smaller margin;
 it ranks below every other group. An unsupported stretch runs along one of the
-output's DXF curves, which carry no annotation, so it can be short and near.
+output's DXF curves, or an input boundary recognized from repeated dashes.
+Those parent curves let a difference interval be short and near without
+mistaking each disconnected dash for a short independent line.
 find_unmatched joins far lines and stretches before selecting display groups;
 descriptions and drawing use that same selection.
 """
@@ -306,7 +308,7 @@ def _vicinity(output: np.ndarray) -> np.ndarray:
 ################################################################
 
 # Unsupported stretches:
-# Output DXF curves, the stretches no input line supports, and joining far lines.
+# Parent curves, intervals the other image does not support, and joining far lines.
 
 
 def drawing_curves(
@@ -344,22 +346,19 @@ def drawing_curves(
 def output_curves(
     modelspace: Modelspace, model_to_drawing: np.ndarray
 ) -> list[tuple[np.ndarray, str]]:
-    """The output's visible and hidden curves in drawing pixels, with their styles.
+    """The output's curves in drawing pixels, including tagged optional tangents.
 
     Whole curves, unlike rendered strokes, carry no hidden-line dash phase.
-    Optional tangent boundaries are left out.
     """
-    return [
-        (xy, style)
-        for xy, style in drawing_curves(modelspace, model_to_drawing, tolerance_px=0.5)
-        if style != "tangent"
-    ]
+    return list(drawing_curves(modelspace, model_to_drawing, tolerance_px=0.5))
 
 
 def _unsupported_stretches(
-    curves: Sequence[tuple[np.ndarray, str]], distances: np.ndarray
+    curves: Sequence[tuple[np.ndarray, str]],
+    distances: np.ndarray,
+    direction: Literal["missing", "extra"] = "extra",
 ) -> list[Unmatched]:
-    """Each stretch of a curve that leaves every input line; see STRETCH_PEAK_PX.
+    """Curve intervals without support in the other image; see STRETCH_PEAK_PX.
 
     Distance changes by at most 1 px per pixel along a curve, so a stretch
     between supported points spans at least twice the climb past STRETCH_GROW_PX;
@@ -382,21 +381,34 @@ def _unsupported_stretches(
         for start, stop in zip(edges[::2], edges[1::2], strict=True):
             long_enough = stop - start >= 2 * (reach - STRETCH_GROW_PX)
             if long_enough and far[start:stop].max() >= reach:
-                groups.append(Unmatched("extra", np.unique(points[start:stop], axis=0)))
+                groups.append(
+                    Unmatched(direction, np.unique(points[start:stop], axis=0))
+                )
     return groups
 
 
 def _join_stretches(
     far_lines: list[Unmatched], stretches: list[Unmatched], shape: tuple[int, ...]
 ) -> list[Unmatched]:
-    """Join stretches to the far extra lines they touch."""
-    combined = np.zeros(shape, bool)
-    for group in [*(g for g in far_lines if g.direction == "extra"), *stretches]:
-        combined[group.xy[:, 1], group.xy[:, 0]] = True
-    merged = _groups(
-        combined, cv2.dilate(combined.astype(np.uint8), disk(JOIN_PX)), "extra"
-    )
-    return [g for g in far_lines if g.direction == "missing"] + merged
+    """Join curve stretches to nearby line groups in the same direction."""
+    joined = []
+    for direction in ("missing", "extra"):
+        lines = [g for g in far_lines if g.direction == direction]
+        additions = [g for g in stretches if g.direction == direction]
+        if direction == "missing" and not additions:
+            joined.extend(lines)
+            continue
+        combined = np.zeros(shape, bool)
+        for group in [*lines, *additions]:
+            combined[group.xy[:, 1], group.xy[:, 0]] = True
+        joined.extend(
+            _groups(
+                combined,
+                cv2.dilate(combined.astype(np.uint8), disk(JOIN_PX)),
+                direction,
+            )
+        )
+    return joined
 
 
 ################################################################
@@ -414,12 +426,14 @@ def find_unmatched(
     tangent: np.ndarray | None = None,
     *,
     line_style_mismatches: Sequence[Unmatched] = (),
+    input_curves: Sequence[tuple[np.ndarray, str]] = (),
 ) -> list[Unmatched]:
     """Collect material and line groups, join stretches, then select display groups.
 
     Material outlines suppress duplicate line groups. curves, from output_curves,
     add unsupported stretches: tails extend far lines, and the rest stand alone.
-    Near lines rank last.
+    Recognized input curves add missing stretches across dash gaps. Near lines
+    cover the remaining input strokes and rank last.
     Annotation ink is never missing and never encloses material, but output
     lines along it are not extra either. Only outline ink, by default all part
     ink, encloses material.
@@ -455,15 +469,33 @@ def find_unmatched(
     input_distances = distance_map(supporting_lines)
     lines = _far_line_groups(input_lines, input_distances, "missing")
     lines += _far_line_groups(output_lines, output_distances, "extra")
-    near_lines = _near_line_groups(input_lines, input_distances)
     # A material group already stands for the lines along its edge.
     edge = _outline(material, drawing_lines.shape)
     lines = [line for line in lines if edge[line.xy[:, 1], line.xy[:, 0]].mean() < 0.8]
-    near_lines = [g for g in near_lines if edge[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
 
+    stretches = []
     if curves is not None:
-        stretches = _unsupported_stretches(curves, output_distances)
+        required = [(xy, style) for xy, style in curves if style != "tangent"]
+        stretches = _unsupported_stretches(required, output_distances)
         stretches = [g for g in stretches if edge[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
+    if input_curves:
+        # A CAD boundary supports input through its rendered dash gaps.
+        parent_support = supporting_lines.astype(np.uint8)
+        for xy, _ in curves or ():
+            cv2.polylines(parent_support, [np.rint(xy).astype(np.int32)], False, 1, 1)
+        parent_distances = distance_map(parent_support.astype(bool))
+        allowed = part & ~edge
+        if annotated:
+            allowed &= ~annotation
+        minimum = 2 * (STRETCH_HIDDEN_PEAK_PX - STRETCH_GROW_PX)
+        stretches += [
+            group
+            for group in _unsupported_stretches(
+                input_curves, np.where(allowed, parent_distances, 0), "missing"
+            )
+            if _length_px(group) >= minimum
+        ]
+    if curves is not None or input_curves:
         lines = _join_stretches(lines, stretches, drawing_lines.shape)
 
     # Qualified style errors need no geometric distance or far line length threshold.
@@ -472,8 +504,19 @@ def find_unmatched(
         style_band[group.xy[:, 1], group.xy[:, 0]] = 1
     style_band = cv2.dilate(style_band, disk(3))
     lines = [g for g in lines if style_band[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8]
+
+    # Extract near evidence only where missing groups do not already explain it.
+    missing_band = np.zeros(drawing_ink.shape, np.uint8)
+    for group in lines:
+        if group.direction == "missing":
+            missing_band[group.xy[:, 1], group.xy[:, 0]] = 1
+    missing_band = cv2.dilate(missing_band, disk(3))
+    near_lines = _near_line_groups(input_lines & (missing_band == 0), input_distances)
     near_lines = [
-        g for g in near_lines if style_band[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8
+        g
+        for g in near_lines
+        if edge[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8
+        and style_band[g.xy[:, 1], g.xy[:, 0]].mean() < 0.8
     ]
 
     # Material first, then all lines by length, then near lines by length.

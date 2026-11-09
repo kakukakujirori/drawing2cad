@@ -1,4 +1,4 @@
-"""Compare the line styles of locally corresponding DXF and input strokes."""
+"""Recognize input line styles and compare them with corresponding DXF curves."""
 
 from itertools import product
 
@@ -6,9 +6,210 @@ import cv2
 import numpy as np
 from ezdxf.layouts import Modelspace
 from scipy.spatial import cKDTree
+from skimage.morphology import thin
 
 from .image_ops import WIDTH_RATIO, distance_map
 from .unmatched import Unmatched, drawing_curves
+
+
+def input_hidden_curves(
+    input_rgb: np.ndarray, part_ink: np.ndarray
+) -> list[tuple[np.ndarray, str]]:
+    """Recognize straight hidden boundaries across their drawing's dash gaps.
+
+    Only repeated dashes establish a curve. Local evidence covers its own
+    interval, not a whole Hough segment that may continue through solid ink.
+    shortcut: curved hidden boundaries need a separate curve recognizer.
+    """
+    segments = cv2.HoughLinesP(
+        thin(part_ink).astype(np.uint8),
+        rho=1,
+        theta=np.pi / 720,
+        threshold=20,
+        minLineLength=50,
+        maxLineGap=8,
+    )
+    if segments is None:
+        return []
+    ink = part_ink.astype(np.float32)
+    darkness = 1 - cv2.cvtColor(input_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255
+    curves = []
+    for segment in segments.reshape(-1, 2, 2):
+        start, end = segment.astype(float)
+        length = np.linalg.norm(end - start)
+        xy = np.linspace(start, end, int(np.ceil(length)) + 1)
+        step = length / (len(xy) - 1)
+        normal = ((end - start) / length)[::-1] * (-1, 1)
+        probes = xy[None] + np.arange(-1, 1.01, 0.5)[:, None, None] * normal
+        support = (
+            cv2.remap(
+                ink,
+                probes[..., 0].astype(np.float32),
+                probes[..., 1].astype(np.float32),
+                cv2.INTER_NEAREST,
+            ).max(axis=0)
+            > 0
+        )
+        strength, _ = _ink_profiles(darkness, xy, normal)
+        if _style(support, step, False, strength) == "hidden":
+            curves.append((np.array([start, end]), "hidden"))
+            continue
+        # Crossings can disturb regularity outside an otherwise clear dash run.
+        accepted = np.zeros(len(xy), bool)
+        for i in range(0, len(xy) - 63, 32):
+            section = slice(i, i + 64)
+            if _style(support[section], step, False, strength[section]) == "hidden":
+                accepted[section] = True
+        edges = np.flatnonzero(np.diff(np.r_[False, accepted, False]))
+        for first, stop in zip(edges[::2], edges[1::2], strict=True):
+            curves.append((xy[[first, stop - 1]], "hidden"))
+    return curves
+
+
+def find_line_style_mismatches(
+    output_modelspace: Modelspace,
+    output_model_to_input: np.ndarray,
+    input_rgb: np.ndarray,
+    input_comparison_ink: np.ndarray,
+    input_annotation: np.ndarray | None = None,
+) -> tuple[list[Unmatched], dict]:
+    """Unique mismatching curve portions, plus classified and unknown line lengths.
+
+    Local translation tolerates small registration errors. It minimizes distance
+    to ink, independently of the expected style, without widening dash gaps.
+    output_model_to_input maps output DXF model coordinates to input pixels.
+    input_rgb retains pale dash gaps lost in binarization; input_comparison_ink
+    contains only strokes selected by the caller's annotation/silhouette filtering.
+    """
+    output_curves = list(_curves(output_modelspace, output_model_to_input))
+    states = np.zeros(len(output_curves), np.uint8)
+    coverages = np.zeros(len(output_curves))
+    output_curve_trees = [cKDTree(xy) for xy, _, _, _ in output_curves]
+    input_ink_distance = distance_map(input_comparison_ink).astype(np.float32)
+    input_ink_pixels = input_comparison_ink.astype(np.float32)
+    input_gray = cv2.cvtColor(input_rgb, cv2.COLOR_RGB2GRAY)
+    input_darkness = (255 - input_gray.astype(np.float32)) / 255
+    height, width = input_comparison_ink.shape
+    output_visible_ink = np.zeros(input_comparison_ink.shape, np.uint8)
+    for xy, style, _, _ in output_curves:
+        if style in {"visible", "tangent"}:
+            cv2.polylines(
+                output_visible_ink, [np.rint(xy).astype(np.int32)], False, 1, 1
+            )
+    output_visible_distance = distance_map(output_visible_ink.astype(bool))
+    input_annotation_distance = (
+        distance_map(input_annotation).astype(np.float32)
+        if input_annotation is not None and input_annotation.any()
+        else None
+    )
+    offsets = np.array(list(product(np.arange(-2, 2.01, 0.5), repeat=2)))
+    stats = {
+        "status": "ok",
+        "checked_curves": 0,
+        "unknown_curves": 0,
+        "mismatch_count": 0,
+    }
+    for index, (xy, output_style, step, closed) in enumerate(output_curves):
+        if output_style == "tangent":
+            continue
+        stats["unknown_curves"] += 1
+        # shortcut: a fragment inside one dash can look solid; use wider stroke context if needed.
+        if len(xy) < 24:
+            continue
+        if not (
+            (xy >= 5).all()
+            and (xy[:, 0] < width - 5).all()
+            and (xy[:, 1] < height - 5).all()
+        ):
+            continue
+        pixels = np.rint(xy).astype(int)
+        # Partially removed text beside a part edge can masquerade as regular dashes.
+        if (
+            input_annotation_distance is not None
+            and (input_annotation_distance[pixels[:, 1], pixels[:, 0]] <= 3).mean()
+            > 0.2
+        ):
+            continue
+        # A visible or optional boundary can explain a solid stroke over a hidden edge.
+        if (
+            output_style == "hidden"
+            and (output_visible_distance[pixels[:, 1], pixels[:, 0]] < 3).mean() > 0.2
+        ):
+            continue
+        shifted = xy[None] + offsets[:, None]
+        distances = cv2.remap(
+            input_ink_distance,
+            shifted[..., 0].astype(np.float32),
+            shifted[..., 1].astype(np.float32),
+            cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=1000,
+        )
+        # Fit only the supported part; gaps must not pull a dashed curve off its ink.
+        count = max(1, int(len(xy) * 0.6))
+        fit = np.partition(distances, count - 1, axis=1)[:, :count].mean(axis=1)
+        best = np.argmin(fit + np.linalg.norm(offsets, axis=1) * 0.01)
+        if fit[best] > 0.6:
+            continue
+        direction = (
+            np.roll(xy, -1, axis=0) - np.roll(xy, 1, axis=0)
+            if closed
+            else np.gradient(xy, axis=0)
+        )
+        normal = direction[:, ::-1] * (-1, 1)
+        normal /= np.linalg.norm(normal, axis=1, keepdims=True)
+        # Tolerate normal displacement without filling gaps along the curve.
+        probes = shifted[best][None] + np.arange(-1, 1.01, 0.5)[:, None, None] * normal
+        support = (
+            cv2.remap(
+                input_ink_pixels,
+                probes[..., 0].astype(np.float32),
+                probes[..., 1].astype(np.float32),
+                cv2.INTER_NEAREST,
+            ).max(axis=0)
+            > 0
+        )
+        support &= (
+            distances[best] <= 1.0
+        )  # Sampling must not widen positional tolerance.
+        strength, widths = _ink_profiles(input_darkness, shifted[best], normal)
+        input_style = _style(support, step, closed, strength)
+        if input_style is None:
+            continue
+        if (
+            input_style == "visible"
+            and input_annotation_distance is not None
+            and _continues_annotation(
+                shifted[best], input_annotation_distance, input_darkness, widths
+            )
+        ):
+            continue
+        if input_style != output_style:
+            # Nearby distinct edges can fill each other's gaps; coincident duplicates cannot.
+            ambiguous = False
+            for other_index, (other, _, _, _) in enumerate(output_curves):
+                if other_index == index or (
+                    (other.max(axis=0) < xy.min(axis=0) - 3).any()
+                    or (other.min(axis=0) > xy.max(axis=0) + 3).any()
+                ):
+                    continue
+                separation = output_curve_trees[other_index].query(xy)[0]
+                if ((separation > 1.25) & (separation <= 3)).mean() > 0.2:
+                    ambiguous = True
+                    break
+            if ambiguous:
+                continue
+        stats["unknown_curves"] -= 1
+        stats["checked_curves"] += 1
+        states[index] = 1 if input_style == output_style else 2
+        coverages[index] = support.mean()
+    groups, lengths = _summarize(
+        output_curves, states, coverages, output_curve_trees, input_comparison_ink.shape
+    )
+    stats["mismatch_count"] = len(groups)
+    stats.update(lengths)
+    return groups, stats
+
 
 
 def _runs(support: np.ndarray, step: float, closed: bool):
@@ -207,148 +408,3 @@ def _summarize(curves, states, coverages, trees, shape):
         "checked_length_px": float(lengths[1] + lengths[2]),
         "unknown_length_px": float(lengths[0]),
     }
-
-
-def find_line_style_mismatches(
-    output_modelspace: Modelspace,
-    output_model_to_input: np.ndarray,
-    input_rgb: np.ndarray,
-    input_comparison_ink: np.ndarray,
-    input_annotation: np.ndarray | None = None,
-) -> tuple[list[Unmatched], dict]:
-    """Unique mismatching curve portions, plus classified and unknown line lengths.
-
-    Local translation tolerates small registration errors. It minimizes distance
-    to ink, independently of the expected style, without widening dash gaps.
-    output_model_to_input maps output DXF model coordinates to input pixels.
-    input_rgb retains pale dash gaps lost in binarization; input_comparison_ink
-    contains only strokes selected by the caller's annotation/silhouette filtering.
-    """
-    output_curves = list(_curves(output_modelspace, output_model_to_input))
-    states = np.zeros(len(output_curves), np.uint8)
-    coverages = np.zeros(len(output_curves))
-    output_curve_trees = [cKDTree(xy) for xy, _, _, _ in output_curves]
-    input_ink_distance = distance_map(input_comparison_ink).astype(np.float32)
-    input_ink_pixels = input_comparison_ink.astype(np.float32)
-    input_gray = cv2.cvtColor(input_rgb, cv2.COLOR_RGB2GRAY)
-    input_darkness = (255 - input_gray.astype(np.float32)) / 255
-    height, width = input_comparison_ink.shape
-    output_visible_ink = np.zeros(input_comparison_ink.shape, np.uint8)
-    for xy, style, _, _ in output_curves:
-        if style in {"visible", "tangent"}:
-            cv2.polylines(
-                output_visible_ink, [np.rint(xy).astype(np.int32)], False, 1, 1
-            )
-    output_visible_distance = distance_map(output_visible_ink.astype(bool))
-    input_annotation_distance = (
-        distance_map(input_annotation).astype(np.float32)
-        if input_annotation is not None and input_annotation.any()
-        else None
-    )
-    offsets = np.array(list(product(np.arange(-2, 2.01, 0.5), repeat=2)))
-    stats = {
-        "status": "ok",
-        "checked_curves": 0,
-        "unknown_curves": 0,
-        "mismatch_count": 0,
-    }
-    for index, (xy, output_style, step, closed) in enumerate(output_curves):
-        if output_style == "tangent":
-            continue
-        stats["unknown_curves"] += 1
-        # shortcut: a fragment inside one dash can look solid; use wider stroke context if needed.
-        if len(xy) < 24:
-            continue
-        if not (
-            (xy >= 5).all()
-            and (xy[:, 0] < width - 5).all()
-            and (xy[:, 1] < height - 5).all()
-        ):
-            continue
-        pixels = np.rint(xy).astype(int)
-        # Partially removed text beside a part edge can masquerade as regular dashes.
-        if (
-            input_annotation_distance is not None
-            and (input_annotation_distance[pixels[:, 1], pixels[:, 0]] <= 3).mean()
-            > 0.2
-        ):
-            continue
-        # A visible or optional boundary can explain a solid stroke over a hidden edge.
-        if (
-            output_style == "hidden"
-            and (output_visible_distance[pixels[:, 1], pixels[:, 0]] < 3).mean() > 0.2
-        ):
-            continue
-        shifted = xy[None] + offsets[:, None]
-        distances = cv2.remap(
-            input_ink_distance,
-            shifted[..., 0].astype(np.float32),
-            shifted[..., 1].astype(np.float32),
-            cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=1000,
-        )
-        # Fit only the supported part; gaps must not pull a dashed curve off its ink.
-        count = max(1, int(len(xy) * 0.6))
-        fit = np.partition(distances, count - 1, axis=1)[:, :count].mean(axis=1)
-        best = np.argmin(fit + np.linalg.norm(offsets, axis=1) * 0.01)
-        if fit[best] > 0.6:
-            continue
-        direction = (
-            np.roll(xy, -1, axis=0) - np.roll(xy, 1, axis=0)
-            if closed
-            else np.gradient(xy, axis=0)
-        )
-        normal = direction[:, ::-1] * (-1, 1)
-        normal /= np.linalg.norm(normal, axis=1, keepdims=True)
-        # Tolerate normal displacement without filling gaps along the curve.
-        probes = shifted[best][None] + np.arange(-1, 1.01, 0.5)[:, None, None] * normal
-        support = (
-            cv2.remap(
-                input_ink_pixels,
-                probes[..., 0].astype(np.float32),
-                probes[..., 1].astype(np.float32),
-                cv2.INTER_NEAREST,
-            ).max(axis=0)
-            > 0
-        )
-        support &= (
-            distances[best] <= 1.0
-        )  # Sampling must not widen positional tolerance.
-        strength, widths = _ink_profiles(input_darkness, shifted[best], normal)
-        input_style = _style(support, step, closed, strength)
-        if input_style is None:
-            continue
-        if (
-            input_style == "visible"
-            and input_annotation_distance is not None
-            and _continues_annotation(
-                shifted[best], input_annotation_distance, input_darkness, widths
-            )
-        ):
-            continue
-        if input_style != output_style:
-            # Nearby distinct edges can fill each other's gaps; coincident duplicates cannot.
-            ambiguous = False
-            for other_index, (other, _, _, _) in enumerate(output_curves):
-                if other_index == index or (
-                    (other.max(axis=0) < xy.min(axis=0) - 3).any()
-                    or (other.min(axis=0) > xy.max(axis=0) + 3).any()
-                ):
-                    continue
-                separation = output_curve_trees[other_index].query(xy)[0]
-                if ((separation > 1.25) & (separation <= 3)).mean() > 0.2:
-                    ambiguous = True
-                    break
-            if ambiguous:
-                continue
-        stats["unknown_curves"] -= 1
-        stats["checked_curves"] += 1
-        states[index] = 1 if input_style == output_style else 2
-        coverages[index] = support.mean()
-    groups, lengths = _summarize(
-        output_curves, states, coverages, output_curve_trees, input_comparison_ink.shape
-    )
-    stats["mismatch_count"] = len(groups)
-    stats.update(lengths)
-    return groups, stats

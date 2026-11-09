@@ -9,6 +9,7 @@ from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.drawing_diff.diff import compute_diff
 from zeroshot.pipeline.verification.drawing_diff.line_style import (
     find_line_style_mismatches,
+    input_hidden_curves,
 )
 from zeroshot.pipeline.verification.drawing_diff.unmatched import (
     COLORS,
@@ -41,6 +42,72 @@ def _model(style, *, radius=40):
         },
     )
     return doc.modelspace()
+
+
+def test_input_hidden_curve_spans_separate_dashes():
+    ink = np.zeros((200, 240), bool)
+    for x in range(20, 215, 14):
+        ink[100, x : x + 9] = True
+
+    curves = input_hidden_curves(_rgb(ink), ink)
+
+    assert curves
+    assert all(style == "hidden" for _, style in curves)
+    assert max(np.linalg.norm(xy[-1] - xy[0]) for xy, _ in curves) > 150
+    assert all(np.abs(xy[:, 1] - 100).max() <= 1 for xy, _ in curves)
+
+
+@pytest.mark.parametrize("kind", ["solid", "centre", "short", "empty"])
+def test_input_hidden_curves_require_a_long_repeated_dash_pattern(kind):
+    ink = np.zeros((200, 240), bool)
+    if kind == "solid":
+        ink[100, 20:220] = True
+    elif kind == "centre":
+        for x in range(20, 200, 30):
+            ink[100, x : x + 15] = True
+            ink[100, x + 21 : x + 24] = True
+    elif kind == "short":
+        for x in range(20, 60, 14):
+            ink[100, x : x + 9] = True
+
+    assert input_hidden_curves(_rgb(ink), ink) == []
+
+
+def test_local_hidden_evidence_does_not_label_an_entire_solid_continuation():
+    ink = np.zeros((200, 400), bool)
+    for x in range(20, 160, 14):
+        ink[100, x : x + 9] = True
+    ink[100, 160:380] = True
+
+    curves = input_hidden_curves(_rgb(ink), ink)
+
+    assert curves
+    assert max(xy[:, 0].max() for xy, _ in curves) < 220
+
+
+def test_input_hidden_missing_reaches_feedback_without_changing_scores(monkeypatch):
+    drawing = np.zeros((240, 300), np.uint8)
+    cv2.rectangle(drawing, (10, 10), (290, 230), 1)
+    output = drawing.copy()
+    for x in range(50, 240, 14):
+        drawing[120, x : x + 9] = 1
+    output[120, 50:101] = 1
+    output[120, 150:241] = 1
+    alignment = AlignmentResult(
+        "directional_chamfer", "similarity", "ok", np.eye(3).tolist(), {}
+    )
+    result = compute_diff(_rgb(drawing), _rgb(output), alignment)
+    monkeypatch.setattr(
+        "zeroshot.pipeline.verification.drawing_diff.diff.input_hidden_curves",
+        lambda *_: [],
+    )
+    before = compute_diff(_rgb(drawing), _rgb(output), alignment)
+
+    assert before.stats["unmatched"] == []
+    assert len(result.stats["unmatched"]) == 1
+    assert result.stats["unmatched"][0]["direction"] == "missing"
+    assert result.stats["unmatched"][0]["size_px"] > 30
+    assert result.stats["match_score"] == before.stats["match_score"]
 
 
 @pytest.mark.parametrize(

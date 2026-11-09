@@ -68,6 +68,105 @@ def test_an_output_line_the_drawing_lacks_is_extra():
     assert [g.direction for g in groups] == ["extra"]
 
 
+@pytest.mark.parametrize("support", ["missing", "required", "tangent", "annotation"])
+def test_recognized_hidden_input_uses_whole_curves_and_existing_exclusions(support):
+    drawing = _lines(*FRAME, size=300)
+    for x in range(50, 240, 14):
+        drawing[150, x : x + 9] = True
+    output = _lines(*FRAME, size=300)
+    curve = [(np.array([[50.0, 150.0], [240.0, 150.0]]), "hidden")]
+    tangent = np.zeros_like(drawing)
+    annotation = np.zeros_like(drawing)
+    if support == "required":
+        output[150, 50:241] = True
+    elif support == "tangent":
+        tangent[150, 50:241] = True
+    elif support == "annotation":
+        annotation[145:156, 45:246] = True
+
+    groups = find_unmatched(
+        drawing, output, annotation=annotation, tangent=tangent, input_curves=curve
+    )
+
+    if support == "missing":
+        assert len(groups) == 1 and groups[0].direction == "missing"
+        assert groups[0].box_px == (50, 150, 241, 151)
+    else:
+        assert groups == []
+
+
+@pytest.mark.parametrize("curve_y", [150, 148])
+@pytest.mark.parametrize("curve_end, missing_count", [(240, 1), (120, 2)])
+def test_hidden_input_curve_replaces_only_the_near_boundary_it_covers(
+    curve_y, curve_end, missing_count
+):
+    dashes = [((x, 150), (min(x + 8, 240), 150)) for x in range(50, 241, 14)]
+    shifted = [((x, 158), (min(x + 8, 240), 158)) for x in range(50, 241, 14)]
+    groups = find_unmatched(
+        _lines(*FRAME, *dashes, size=300),
+        _lines(*FRAME, *shifted, size=300),
+        _curves(*FRAME, hidden=[((50, 158), (240, 158))]),
+        input_curves=[(np.array([[50.0, curve_y], [curve_end, curve_y]]), "hidden")],
+    )
+
+    missing = [g for g in groups if g.direction == "missing"]
+    assert len(missing) == missing_count
+    assert missing[0].box_px == (50, curve_y, curve_end + 1, curve_y + 1)
+    assert any(g.direction == "extra" for g in groups)
+
+
+def test_near_boundary_beside_a_recognized_hidden_curve_is_kept():
+    dashes = [((x, 150), (min(x + 8, 240), 150)) for x in range(50, 241, 14)]
+    groups = find_unmatched(
+        _lines(*FRAME, *dashes, ((50, 130), (240, 130)), size=300),
+        _lines(*FRAME, ((50, 158), (240, 158)), ((50, 138), (240, 138)), size=300),
+        input_curves=[(np.array([[50.0, 150.0], [240.0, 150.0]]), "hidden")],
+    )
+
+    missing = [g for g in groups if g.direction == "missing"]
+    assert [g.box_px for g in missing] == [(50, 150, 241, 151), (50, 130, 241, 131)]
+
+
+def test_near_tail_outside_a_mostly_recognized_hidden_curve_is_kept():
+    drawing = np.zeros((320, 1100), np.uint8)
+    cv2.rectangle(drawing, (20, 20), (1080, 300), 1)
+    output = drawing.copy()
+    for x in range(50, 1001, 14):
+        drawing[150, x : min(x + 9, 1001)] = 1
+        output[158, x : min(x + 9, 1001)] = 1
+
+    groups = find_unmatched(
+        drawing.astype(bool),
+        output.astype(bool),
+        _curves(hidden=[((50, 158), (1000, 158))]),
+        input_curves=[(np.array([[50.0, 150.0], [850.0, 150.0]]), "hidden")],
+    )
+
+    missing = [g for g in groups if g.direction == "missing"]
+    assert len(missing) == 2
+    assert missing[0].box_px == (50, 150, 851, 151)
+    assert 850 < missing[1].box_px[0] < 900
+    assert missing[1].box_px[2] >= 995
+
+
+@pytest.mark.parametrize("length, listed", [(7, False), (10, True)])
+def test_clipped_input_hidden_interval_must_meet_the_geometric_minimum(length, listed):
+    drawing = _lines(*FRAME, size=300)
+    for x in range(50, 240, 14):
+        drawing[150, x : x + 9] = True
+    annotation = np.zeros_like(drawing)
+    annotation[145:156, 45:245] = True
+    annotation[145:156, 100 : 101 + length] = False
+    groups = find_unmatched(
+        drawing,
+        _lines(*FRAME, size=300),
+        annotation=annotation,
+        input_curves=[(np.array([[50.0, 150.0], [240.0, 150.0]]), "hidden")],
+    )
+
+    assert bool(groups) == listed
+
+
 def test_thick_input_line_keeps_its_band_and_green_center_visible():
     drawing = _lines(*OUTLINE, INNER, width=11)
     output = _lines(*OUTLINE)
@@ -398,7 +497,7 @@ def _curves(*segments, hidden=()):
     return output_curves(doc.modelspace(), PIXELS)
 
 
-def test_output_curves_are_the_visible_and_hidden_lines_only():
+def test_output_curves_include_optional_tangents_but_no_annotation():
     doc = ezdxf.new(setup=True)
     doc.layers.add("dashed", linetype="HIDDEN")
     doc.layers.add("TANGENT")
@@ -415,6 +514,7 @@ def test_output_curves_are_the_visible_and_hidden_lines_only():
         (0, "visible"),
         (5, "hidden"),
         (10, "hidden"),
+        (15, "tangent"),
     ]
 
 

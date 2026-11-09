@@ -20,7 +20,7 @@ from .image_ops import (
     foreground_mask,
     render_transformed_strokes,
 )
-from .line_style import find_line_style_mismatches
+from .line_style import find_line_style_mismatches, input_hidden_curves
 from .text_marks import text_marks
 from .unmatched import (
     describe_unmatched,
@@ -404,6 +404,9 @@ def compute_diff(
             outline,
             tangent_seen,
             line_style_mismatches=line_style_mismatches,
+            input_curves=input_hidden_curves(
+                drawing_rgb, drawing_ink & ~comparison_annotation
+            ),
         )
         stats["unmatched"] = describe_unmatched(groups)
         stats["line_style"]["displayed_count"] = sum(
