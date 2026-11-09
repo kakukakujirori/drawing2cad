@@ -269,6 +269,9 @@ class RunEventTransformer(StreamTransformer):
                     reconstruction = update["reconstruction"]
                     snapshots = getattr(reconstruction, "snapshots", ())
                     current = snapshots[-1] if snapshots else None
+                    selection = getattr(reconstruction, "final_selection", None)
+                    if selection is not None:
+                        current = snapshots[selection.round]
                     verification = getattr(current, "verification", None)
                     if verification is not None:
                         self._push(

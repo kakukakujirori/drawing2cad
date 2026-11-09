@@ -124,6 +124,33 @@ def test_score_writes_the_report_into_the_run(
     assert document["build_valid"] is True
 
 
+def test_pipeline_scoring_uses_its_configured_selection_history(
+    sample_run: Path, solids: dict[str, Path], tmp_path: Path
+) -> None:
+    from tests.zeroshot.workflow.test_reconstruction_workflow import _completed_run
+
+    newer = sample_run / "workspace/attempts/round_000/coding/001"
+    newer.mkdir()
+    shutil.copyfile(solids["sphere"], newer / "output.step")
+    history = _completed_run().model_dump(mode="json")
+    history["snapshots"][0]["verification"]["verification_id"] = "000"
+    history["final_selection"] = {"round": 0, "reason": "Preserves the opening."}
+    (sample_run / "workspace/history.json").write_text(json.dumps(history))
+    config = _config(
+        tmp_path,
+        **{
+            "sample.target_step_path": solids["box"],
+            "+workflow.reconstruction_history_filename": "history.json",
+        },
+    )
+
+    run_pipeline.score(config)
+
+    document = json.loads((sample_run / "score.json").read_text())
+    assert document["pred_step"] == str(newer.parent / "000/output.step")
+    assert document["metrics"]["mesh_iou"] == pytest.approx(1.0)
+
+
 def test_a_null_target_skips_scoring(tmp_path: Path) -> None:
     config = _config(tmp_path, **{"sample.target_step_path": "null"})
     assert config.sample.target_step_path is None

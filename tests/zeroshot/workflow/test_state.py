@@ -23,6 +23,7 @@ from zeroshot.pipeline.stages.audit.contracts import (
 )
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import (
+    FinalSelection,
     ReconstructionHistory,
     ReconstructionSnapshot,
 )
@@ -241,6 +242,11 @@ _CODING_SUBMISSION = TicketAnswers(
 )
 
 _ARTIFACTS: dict[str, object] = {
+    "selection_state": {
+        "structured_response": FinalSelection(
+            round=0, reason="The first candidate fits."
+        ),
+    },
     "audit_state": {
         "structured_response": AuditSubmission(accepted=True),
     },
@@ -268,6 +274,7 @@ _ARTIFACTS: dict[str, object] = {
 
 def test_custom_state_types_include_nested_runtime_values() -> None:
     assert set(CUSTOM_STATE_TYPES) == {
+        FinalSelection,
         DrawingInterpretation,
         SemanticFeature,
         # The contract's enums ride in state too. An enum missing from the

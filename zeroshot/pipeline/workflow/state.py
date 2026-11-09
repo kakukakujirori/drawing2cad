@@ -20,6 +20,7 @@ from zeroshot.pipeline.workflow.components.agent import AgentState
 class ReconstructionState(TypedDict):
     coding_state: NotRequired[AgentState]
     audit_state: NotRequired[AgentState]
+    selection_state: NotRequired[AgentState]
 
     reconstruction: NotRequired[ReconstructionHistory]
     stage_submission: NotRequired[TicketAnswers | None]

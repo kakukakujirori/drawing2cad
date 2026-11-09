@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,42 @@ def test_a_model_message_keeps_its_generation_id_and_cost() -> None:
 
     assert (serialized["generation_id"], serialized["cost"]) == ("gen-1", 0.002)
     assert "response_metadata" not in serialized and "model_name" not in serialized
+
+
+def test_final_verification_event_uses_the_selected_round():
+    from tests.zeroshot.workflow.test_reconstruction_workflow import (
+        _completed_run,
+        _report,
+    )
+    from zeroshot.pipeline.stages.contracts import FinalSelection
+    from zeroshot.pipeline.workflow.lifecycle import open_next_round
+
+    history = _completed_run()
+    history = _completed_run(open_next_round(history, _report()))
+    for snapshot in history.snapshots:
+        snapshot.verification = replace(
+            snapshot.verification, verification_id=f"{snapshot.round:03d}"
+        )
+    history.final_selection = FinalSelection(
+        round=0, reason="The earlier candidate was selected."
+    )
+    events = []
+    transformer = RunEventTransformer(sink=events.append)
+    transformer.init()
+    transformer.process(
+        {
+            "type": "event",
+            "method": "updates",
+            "params": {
+                "timestamp": 1000,
+                "namespace": [],
+                "data": {"select_final_model": {"reconstruction": history}},
+            },
+        }
+    )
+
+    assert events[0]["event"] == "verification"
+    assert events[0]["data"]["report"]["verification_id"] == "000"
 
 
 @pytest.mark.parametrize("accepted", [True, False])

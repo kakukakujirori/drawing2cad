@@ -110,6 +110,56 @@ def test_input_hidden_missing_reaches_feedback_without_changing_scores(monkeypat
     assert result.stats["match_score"] == before.stats["match_score"]
 
 
+@pytest.mark.parametrize("optional", [False, True])
+@pytest.mark.parametrize("offset", [0, 8])
+def test_hidden_cad_curve_supports_input_across_long_rendered_gaps(optional, offset):
+    drawing = np.zeros((300, 300), np.uint8)
+    cv2.rectangle(drawing, (20, 20), (280, 280), 1)
+    projection = drawing.copy()
+    tangent = np.zeros_like(drawing)
+    for x in range(50, 241, 14):
+        drawing[150, x : min(x + 9, 241)] = 1
+    rendered = tangent if optional else projection
+    for x in range(50, 241, 50):
+        rendered[150 + offset, x : min(x + 20, 241)] = 1
+
+    doc = ezdxf.new(setup=True)
+    doc.layers.new("TANGENT")
+    model = doc.modelspace()
+    for start, end in [
+        ((20, 20), (280, 20)),
+        ((280, 20), (280, 280)),
+        ((280, 280), (20, 280)),
+        ((20, 280), (20, 20)),
+    ]:
+        model.add_line(np.array(start) + 0.5, np.array(end) + 0.5)
+    model.add_line(
+        (50.5, 150.5 + offset),
+        (240.5, 150.5 + offset),
+        dxfattribs={"linetype": "HIDDEN", "layer": "TANGENT" if optional else "0"},
+    )
+    alignment = AlignmentResult(
+        "directional_chamfer", "similarity", "ok", np.eye(3).tolist(), {}
+    )
+    result = compute_diff(
+        _rgb(drawing),
+        _rgb(projection),
+        alignment,
+        projection_modelspace=model,
+        projection_to_uv=np.eye(3),
+        tangent_ink=tangent.astype(bool),
+        hide_tangents=True,
+    )
+
+    assert result.warnings == ()
+    groups = result.stats["unmatched"]
+    assert sum(g["direction"] == "missing" for g in groups) == bool(offset)
+    if not offset:
+        assert groups == []
+    if optional:
+        assert all(g["direction"] == "missing" for g in groups)
+
+
 @pytest.mark.parametrize(
     "input_style,output_style", [("visible", "hidden"), ("hidden", "visible")]
 )

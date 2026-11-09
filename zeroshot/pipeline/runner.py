@@ -40,6 +40,10 @@ _ON_EXISTING = ("fail", "skip", "retry")
 
 def _latest_program_source(reconstruction: ReconstructionHistory) -> str | None:
     """Return the newest committed program available before the resumed stage."""
+    if reconstruction.final_selection is not None:
+        return reconstruction.snapshots[
+            reconstruction.final_selection.round
+        ].program_source
     return next(
         (
             snapshot.program_source

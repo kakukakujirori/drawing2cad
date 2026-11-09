@@ -70,6 +70,9 @@ def score(config: DictConfig) -> None:
         target_step=Path(to_absolute_path(config.sample.target_step_path)),
         scorer=instantiate(config.evaluation.scorer),
         last_only=config.evaluation.last_only,
+        reconstruction_history_filename=config.workflow.get(
+            "reconstruction_history_filename"
+        ),
     )
     write_score(run_dir, document)
 

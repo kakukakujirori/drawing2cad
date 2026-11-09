@@ -1,7 +1,9 @@
+import json
 import pickle
 from pathlib import Path
 
 import pytest
+from omegaconf import OmegaConf
 
 from zeroshot.evaluation.run_scoring import (
     ScoreStatus,
@@ -105,6 +107,70 @@ def test_picks_the_final_attempt(make_run_dir, solids: dict[str, Path]) -> None:
     run_dir = make_run_dir({"000": solids["box"], "001": solids["sphere"]})
     found, _ = latest_verified_step(run_dir)
     assert found is not None and found.parent.name == "001"
+
+
+@pytest.mark.parametrize("last_only", [True, False])
+@pytest.mark.parametrize("selection", ["valid", "missing", "unknown", "disabled"])
+def test_explicit_selection_is_authoritative_including_when_it_is_unusable(
+    make_run_dir, solids: dict[str, Path], last_only, selection
+):
+    from tests.zeroshot.workflow.test_reconstruction_workflow import _completed_run
+
+    run_dir = make_run_dir({"000": solids["box"], "001": solids["sphere"]})
+    document = _completed_run().model_dump(mode="json")
+    document["snapshots"][0]["verification"]["verification_id"] = "000"
+    document["final_selection"] = (
+        None
+        if selection == "disabled"
+        else {
+            "round": 8 if selection == "unknown" else 0,
+            "reason": "Selected from the drawing.",
+        }
+    )
+    (run_dir / "workspace/reconstruction.json").write_text(json.dumps(document))
+    chosen = run_dir / "workspace/attempts/round_000/coding/000/output.step"
+    if selection == "missing":
+        chosen.unlink()
+
+    found, skipped = latest_verified_step(run_dir, last_only=last_only)
+
+    if selection == "valid":
+        assert found == chosen
+    elif selection == "disabled":
+        assert found == chosen.parent.parent / "001/output.step"
+    else:
+        assert found is None
+        assert "final_selection" in skipped
+
+
+@pytest.mark.parametrize(
+    "filename", ["reconstruction.json", "history.json", "records/history.json"]
+)
+def test_rescoring_uses_the_selected_round_from_the_saved_history_path(
+    make_run_dir, solids, filename
+):
+    from tests.zeroshot.workflow.test_reconstruction_workflow import _completed_run
+
+    run_dir = make_run_dir({"000": solids["box"], "001": solids["sphere"]})
+    history = _completed_run().model_dump(mode="json")
+    history["snapshots"][0]["verification"]["verification_id"] = "000"
+    history["final_selection"] = {"round": 0, "reason": "Preserves the opening."}
+    path = run_dir / "workspace" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(history))
+    config = run_dir / ".hydra/config.yaml"
+    config.parent.mkdir()
+    OmegaConf.save(
+        OmegaConf.create({"workflow": {"reconstruction_history_filename": filename}}),
+        config,
+    )
+
+    report = score_run(run_dir, solids["box"], StepScorer(**_FAST))
+
+    assert report["pred_step"] == str(
+        run_dir / "workspace/attempts/round_000/coding/000/output.step"
+    )
+    assert report["metrics"]["mesh_iou"] == pytest.approx(1.0)
 
 
 def test_a_final_attempt_without_a_solid_is_no_prediction(

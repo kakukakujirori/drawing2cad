@@ -149,6 +149,17 @@ class ReconstructionSnapshot(BaseModel):
         return self
 
 
+class FinalSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    round: int = Field(..., ge=0, description="The chosen completed coding round.")
+    reason: str = Field(
+        ...,
+        min_length=1,
+        description="Decisive evidence for this choice, including remaining defects.",
+    )
+
+
 class ReconstructionHistory(BaseModel):
     """The complete durable history stored in reconstruction.json."""
 
@@ -176,6 +187,10 @@ class ReconstructionHistory(BaseModel):
             "All round snapshots in chronological order. Only the final "
             "snapshot may still be in progress."
         ),
+    )
+    final_selection: FinalSelection | None = Field(
+        default=None,
+        description="The submitted round when the optional final selector has finished.",
     )
 
     @model_validator(mode="after")
@@ -224,5 +239,23 @@ class ReconstructionHistory(BaseModel):
                 "bootstrap tickets are allowed only in round 0: "
                 + ", ".join(later_bootstrap_tickets)
             )
+
+        if self.final_selection is not None:
+            if self.final_selection.round >= len(self.snapshots):
+                raise ValueError("final_selection must name an existing round")
+            selected = self.snapshots[self.final_selection.round]
+            verification = selected.verification
+            if (
+                self.snapshots[-1].last_completed_stage is not PipelineStage.CODING
+                or selected.program_source is None
+                or verification is None
+                or verification.verification_id is None
+                or verification.exec_report is None
+                or verification.exec_report.status is not ExecutionStatus.VERIFIED
+                or verification.exec_report.returncode != 0
+            ):
+                raise ValueError(
+                    "final_selection requires completed coding and a verified STEP"
+                )
 
         return self

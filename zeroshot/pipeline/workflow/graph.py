@@ -30,10 +30,12 @@ from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.workflow.components import compact_transcript
 from zeroshot.pipeline.workflow.components.compact import RetryCompaction
 from zeroshot.pipeline.workflow.evidence import EvidenceMode
+from zeroshot.pipeline.workflow.final_selection import select_final_model
 from zeroshot.pipeline.workflow.lifecycle import (
     advance_reconstruction,
     load_reconstruction,
     open_next_round,
+    restore_selected_model,
     save_reconstruction,
     start_reconstruction,
 )
@@ -71,6 +73,7 @@ def create_reconstruction_graph(
     match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
     review_drawing_diff_clusters: bool = True,
     drawing_skeleton: bool = True,
+    final_selection: bool = False,
 ):
     """Interpret the drawing and implement the part, then verify and audit it."""
     if max_audit_reject_count < 0:
@@ -195,6 +198,12 @@ def create_reconstruction_graph(
                 drawings=drawing_for_model(input_manifest.drawing, sandbox_workdir),
             )
         save_history(history)
+        if history.final_selection is not None:
+            restore_selected_model(
+                history,
+                sandbox_workdir.host_bind_dir / output_filename,
+                sandbox_workdir.host_bind_dir / interpretation_filename,
+            )
         if drawing_skeleton:
             for view in input_manifest.drawing:
                 image = Path(view.file)
@@ -212,11 +221,13 @@ def create_reconstruction_graph(
     def after_initialize(state: ReconstructionState) -> str:
         """Enter the first unfinished stage of a new or resumed history."""
         snapshot = current_snapshot(state)
+        if state["reconstruction"].final_selection is not None:
+            return "__end__"
         if (
             snapshot.last_completed_stage is PipelineStage.CODING
             and snapshot.round >= max_audit_reject_count
         ):
-            return "__end__"
+            return "select_final_model" if final_selection else "__end__"
         following = next_stage(snapshot.last_completed_stage)
         if following is None:
             raise RuntimeError("the initial reconstruction has no unfinished stage")
@@ -311,7 +322,7 @@ def create_reconstruction_graph(
         if snapshot.last_completed_stage is not PipelineStage.CODING:
             raise RuntimeError("successful stage integration did not complete coding")
         if snapshot.round >= max_audit_reject_count:
-            return "__end__"
+            return "select_final_model" if final_selection else "__end__"
         if compaction_model is not None:
             return "coding_handover"
         return PipelineStage.AUDIT.value
@@ -380,7 +391,7 @@ def create_reconstruction_graph(
 
         if current_snapshot(state).last_completed_stage is None:
             return PipelineStage.CODING.value
-        return "__end__"
+        return "select_final_model" if final_selection else "__end__"
 
     # ------------------------------------------------------------------
     # Graph construction
@@ -412,6 +423,23 @@ def create_reconstruction_graph(
     workflow.add_node(PipelineStage.AUDIT.value, audit_stage.run)
     workflow.add_node("integrate_stage_submission", integrate_stage_submission)
     workflow.add_node("integrate_audit_report", integrate_audit_report)
+    if final_selection:
+        workflow.add_node(
+            "select_final_model",
+            partial(
+                select_final_model,
+                audit_agent_builder=audit_agent_builder,
+                instructions=stage_instructions,
+                attempts=attempt_store,
+                sandbox_runner=sandbox_runner,
+                tool_names=audit_tools,
+                history_path=history_path,
+                output_filename=output_filename,
+                interpretation_filename=interpretation_filename,
+                output_limit_budget=output_limit_budget,
+            ),
+        )
+        workflow.add_edge("select_final_model", "__end__")
     if compaction_model is not None:
         workflow.add_node("coding_handover", coding_handover)
         workflow.add_edge("coding_handover", PipelineStage.AUDIT.value)

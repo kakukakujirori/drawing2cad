@@ -10,7 +10,8 @@ Rescore finished samples with::
     python -m zeroshot.evaluation.run_scoring \\
         --run-dir outputs/<run>/*/ --target-dir data/test_vlm/target_step_ori
 
-A staged run is scored by its newest verified attempt. A native run
+A staged run is scored by its selected candidate, or newest verified attempt
+when no candidate was selected. A native run
 (`zeroshot.pipeline_native`) leaves only `workspace/model.py`, so that program
 is built first, in the same sandbox and through the same STEP checks.
 """
@@ -232,24 +233,63 @@ def latest_verified_step(
     run_dir: Path,
     last_only: bool = True,
     verification_dirname: str = "attempts",
+    reconstruction_history_filename: str | None = None,
 ) -> tuple[Path | None, dict[str, str]]:
     """Return the STEP to score, or ``None``, and why each newer attempt was skipped.
 
-    Rounds and coding attempts are numbered upwards, so the newest attempt whose
-    STEP passes the pipeline's own STEP checks is the run's submission.
+    An explicit final selection is authoritative. Otherwise numbered rounds and
+    attempts determine the submission, with ``last_only`` controlling fallback.
+    An omitted history filename follows the run's saved workflow configuration.
     """
 
     # Imported here rather than at module scope: `PipelineRunner` pulls in
     # langchain, langgraph and torch, and this module is re-imported by every
     # `spawn` scoring child, which needs none of them.
     from zeroshot.pipeline.runner import PipelineRunner
+    from zeroshot.pipeline.stages.contracts import ReconstructionHistory
+    from zeroshot.pipeline.verification import attempt_relative_path
     from zeroshot.pipeline.verification.run_cadquery import (
         CadQueryExecutor,
         StepVerificationError,
     )
 
     skipped: dict[str, str] = {}
-    attempts_dir = run_dir / PipelineRunner.WORKSPACE_DIRNAME / verification_dirname
+    if reconstruction_history_filename is None:
+        reconstruction_history_filename = "reconstruction.json"
+        config_path = run_dir / ".hydra/config.yaml"
+        if config_path.is_file():
+            from omegaconf import OmegaConf
+
+            reconstruction_history_filename = OmegaConf.select(
+                OmegaConf.load(config_path),
+                "workflow.reconstruction_history_filename",
+                default=reconstruction_history_filename,
+            )
+    workspace = run_dir / PipelineRunner.WORKSPACE_DIRNAME
+    attempts_dir = workspace / verification_dirname
+    history_path = workspace / reconstruction_history_filename
+    if history_path.is_file():
+        try:
+            document = json.loads(history_path.read_text(encoding="utf-8"))
+            if not isinstance(document, dict):
+                raise TypeError(f"{history_path.name} must contain an object")
+            if document.get("final_selection") is not None:
+                history = ReconstructionHistory.model_validate(document)
+                assert history.final_selection is not None
+                snapshot = history.snapshots[history.final_selection.round]
+                assert snapshot.verification is not None
+                attempt_id = snapshot.verification.verification_id
+                if attempt_id is None:
+                    raise ValueError("selected round has no verification attempt")
+                step_path = (
+                    attempts_dir
+                    / attempt_relative_path(snapshot.round, "coding", attempt_id)
+                    / "output.step"
+                )
+                CadQueryExecutor.verify_step(step_path)
+                return step_path, skipped
+        except (OSError, TypeError, ValueError, StepVerificationError) as error:
+            return None, {"final_selection": str(error)}
     if not attempts_dir.is_dir():
         return None, skipped
     round_dirs = sorted(
@@ -384,6 +424,8 @@ def score_run(
     scorer: StepScorer,
     last_only: bool = True,
     sandbox_runner: SandboxRunner | None = None,
+    *,
+    reconstruction_history_filename: str | None = None,
 ) -> dict[str, object]:
     """Score what a finished run submitted, as a JSON-ready document.
 
@@ -406,7 +448,11 @@ def score_run(
         if status == "INFRA_ERROR":
             infra_error = "; ".join(skipped.values())
     else:
-        pred_step, skipped = latest_verified_step(run_dir, last_only)
+        pred_step, skipped = latest_verified_step(
+            run_dir,
+            last_only,
+            reconstruction_history_filename=reconstruction_history_filename,
+        )
     if infra_error is not None:
         report = ScoreReport(
             status=ScoreStatus.FAILED,

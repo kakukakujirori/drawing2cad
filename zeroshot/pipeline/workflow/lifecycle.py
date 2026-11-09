@@ -294,8 +294,26 @@ def load_reconstruction(path: Path) -> ReconstructionHistory:
 
 def save_reconstruction(path: Path, history: ReconstructionHistory) -> None:
     """Atomically replace ``path`` with the complete reconstruction history."""
+    _atomic_write(path, history.model_dump_json(indent=2) + "\n")
+
+
+def restore_selected_model(
+    history: ReconstructionHistory, program_path: Path, interpretation_path: Path
+) -> None:
+    """Restore the selected pair without changing its immutable round snapshot."""
+    if history.final_selection is None:
+        raise ValueError("no final model has been selected")
+    snapshot = history.snapshots[history.final_selection.round]
+    assert snapshot.program_source is not None and snapshot.interpretation is not None
+    _atomic_write(program_path, snapshot.program_source)
+    _atomic_write(
+        interpretation_path, snapshot.interpretation.model_dump_json(indent=2) + "\n"
+    )
+
+
+def _atomic_write(path: Path, payload: str) -> None:
+    """Replace one durable file without following a destination symlink."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = history.model_dump_json(indent=2) + "\n"
 
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
