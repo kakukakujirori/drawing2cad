@@ -32,6 +32,8 @@ def _config(tmp_path, config_name="native2"):
             overrides=[
                 f"artifact_root={tmp_path / 'runs'}",
                 "console=false",
+                "max_audits=1",  # Scripted conversations exercise up to two rounds.
+                "final_selection=false",  # Selection tests enable it explicitly.
                 f"sample.drawing.sheets.0.file={drawing}",
             ],
         )
@@ -463,7 +465,7 @@ def test_native2_prime_builds_each_written_program_and_reports_it_to_the_auditor
     assert "### Automatic verification" not in auditor[0].text
     # The build follows the coder's write and, as in the staged pipeline, the
     # announcement of its next turn.
-    assert coder[-2].text == "[turn 2/60]"
+    assert coder[-2].text == "[turn 2/30]"
     assert _texts(coder[-1])[0] == "[Execution result]"
     request = next(m for m in auditor if "now builds" in m.text)
     texts = _texts(request)

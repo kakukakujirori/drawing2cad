@@ -14,7 +14,8 @@ over its coder-auditor topology.
   `model.py` are undone (`model_restored`).
 - **Rounds**: after a rejection, the coder continues its own conversation with
   the report (`prompts/revision.md`). As in `workflow/coder_auditor.yaml`, at most
-  `max_audits: 1` audits, `max_turns: 60` per coder round and `auditor_max_turns: 20`.
+  `max_audits: 2` audits (up to 3 coder rounds), `max_turns: 30` per coder round
+  and `auditor_max_turns: 20`.
   Both agents use a local copy of `TurnBudgetMiddleware`: each turn is announced,
   the penultimate turn warns to finish tool work, and the last is answer-only.
 - **Grace turns**: an unfinished stage resumes its full state and conversation
@@ -22,7 +23,7 @@ over its coder-auditor topology.
   matching `workflow/coder_auditor.yaml`. Completion requires a final answer and
   a nonempty `model.py` for the coder, or a verdict for the auditor. An explicit
   `REJECT` opens a coder round rather than retrying the audit. A new round starts
-  with fresh counters. The maximum is 90 coder turns per round and 50 per audit;
+  with fresh counters. The maximum is 60 coder turns per round and 50 per audit;
   early incomplete answers keep their remaining turns, rewinding only when fewer
   than 10 remain. If the middleware stops the agent for budget exhaustion after
   the retries, the run ends with `status: turn_limit_exceeded`. If the model
@@ -37,8 +38,8 @@ These model-call retries do not consume extra agent turns.
 
 ## Final model selection
 
-Set `final_selection=true` to match the staged pipeline's optional final selection
-(off by default in both). After the rounds finish successfully, a separate task
+Final model selection is enabled by default, matching the staged pipeline.
+Set `final_selection=false` to disable it. After the rounds finish successfully, a separate task
 uses the auditor's model, two tools, turn budget and retry policy to compare the
 completed coder submissions with the original drawing. It chooses an existing
 round with `SELECTED_ROUND: N`; it cannot open another coding round. With one
@@ -62,7 +63,7 @@ transcript when the selector was called. A failed selection preserves the last
 coder program and records the usual failure status.
 
 ```bash
-python -m zeroshot.pipeline_native2 final_selection=true
+python -m zeroshot.pipeline_native2 final_selection=false
 ```
 
 ## Native 2'

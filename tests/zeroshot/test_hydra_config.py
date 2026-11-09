@@ -325,7 +325,7 @@ def test_the_workflow_is_a_selectable_group_carrying_its_own_settings() -> None:
     assert graph_factory.keywords["coding_draft_check_after_n_turns"] == 20
     assert graph_factory.keywords["review_drawing_diff_clusters"] is True
     assert graph_factory.keywords["drawing_skeleton"] is True
-    assert graph_factory.keywords["final_selection"] is False
+    assert graph_factory.keywords["final_selection"] is True
     assert graph_factory.keywords["match_margin_px"] == 0.5
     assert graph_factory.keywords["compaction_model"] is not None
     assert (
