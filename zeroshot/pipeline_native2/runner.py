@@ -4,6 +4,7 @@ beyond the automatic builds Native 2' adds."""
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sys
 from importlib.metadata import version
@@ -28,7 +29,7 @@ from zeroshot.pipeline.stages._base.prompt import PromptTemplate, describe_place
 from zeroshot.pipeline.stages.coding.verify import OutputVerifier
 from zeroshot.pipeline.stages.interpretation.contracts import ProjectionMethod
 from zeroshot.pipeline.tools.load_image import create_load_image_tool
-from zeroshot.pipeline.tools.run_shell import create_run_shell_tool
+from zeroshot.pipeline.tools.run_shell import RunShellContext, create_run_shell_tool
 from zeroshot.pipeline.verification import (
     AttemptStore,
     CadQueryExecutor,
@@ -63,9 +64,17 @@ from zeroshot.pipeline_native2.turn_budget import (
 _PROMPTS = Path(__file__).parent / "prompts"
 # Tolerates Markdown around the verdict line, such as `**VERDICT:** ACCEPT`.
 _VERDICT = re.compile(r"VERDICT\W*(ACCEPT|REJECT)", re.IGNORECASE)
+_SELECTED_ROUND = re.compile(
+    r"^[^\w\n]*SELECTED_ROUND[^\w+\-\n]*(-?\d+)[^\w.\n]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 _AUDIT_LENGTH_RETRY_PROMPT = (
     "Your response reached the output limit; give your report now, ending with "
     "the verdict line."
+)
+_SELECTION_LENGTH_RETRY_PROMPT = (
+    "Your response reached the output limit; give your comparison now, ending "
+    "with SELECTED_ROUND: N for the candidate you choose."
 )
 _BUILD_REPORT = "The pipeline's verification report describes this build."
 
@@ -74,6 +83,11 @@ def accepted(report: str) -> bool:
     """Whether the report's last verdict is ACCEPT."""
     verdicts = _VERDICT.findall(report)
     return bool(verdicts) and verdicts[-1].upper() == "ACCEPT"
+
+
+def _selected_round(report: str) -> int | None:
+    choices = _SELECTED_ROUND.findall(report)
+    return int(choices[-1]) if choices else None
 
 
 def _has_model(path: Path) -> bool:
@@ -244,6 +258,17 @@ def run(
                 model_retries = int(config.model_retries)
                 tools = [create_run_shell_tool(sandbox, workdir), load_image]
                 output = workspace / "model.py"
+                final_selection = bool(config.get("final_selection", False))
+                candidates: dict[int, bytes] = {}
+                submissions = workspace / "submissions"
+                if final_selection:
+                    submissions.mkdir()
+                    workdir.read_only_subdirs.append(PurePosixPath("submissions"))
+                    history_prompt = PromptTemplate(
+                        _PROMPTS / "submission_history.md"
+                    ).render()
+                    prompt = f"{prompt}\n\n{history_prompt}"
+                    auditor_prompt = f"{auditor_prompt}\n\n{history_prompt}"
 
                 def converse(
                     role: str,
@@ -286,7 +311,11 @@ def run(
                     for attempt in range(max_stage_validation_retries + 1):
                         # LangChain's input/output types omit middleware state fields.
                         with agent.stream_events(
-                            cast(InputAgentState, state), version="v3"
+                            cast(InputAgentState, state),
+                            version="v3",
+                            context=RunShellContext(read_only_files=("/work/model.py",))
+                            if role == "final_selector"
+                            else None,
                         ) as stream:
                             for event in stream:
                                 log.record_protocol(event)
@@ -302,6 +331,15 @@ def run(
                             state["messages"][-1].text
                         ):
                             error = "Finish your report with VERDICT: ACCEPT or VERDICT: REJECT."
+                        elif (
+                            role == "final_selector"
+                            and _selected_round(state["messages"][-1].text)
+                            not in candidates
+                        ):
+                            error = (
+                                "Finish your comparison with SELECTED_ROUND: N; "
+                                f"choose a candidate round from {sorted(candidates)}."
+                            )
                         else:
                             return state["messages"], None
 
@@ -356,6 +394,22 @@ def run(
                     )
                     if failure_status:
                         break
+                    if final_selection:
+                        program = output.read_bytes()
+                        candidates[round_] = program
+                        directory = submissions / f"round_{round_:03d}"
+                        directory.mkdir()
+                        (directory / "model.py").write_bytes(program)
+                        write_json(
+                            directory / "submission.json",
+                            {
+                                "round": round_,
+                                "author_message": coder_messages[-1].text,
+                                "build_report": builds.feedback()
+                                if builds is not None
+                                else [],
+                            },
+                        )
                     if round_ == max_audits:
                         break
 
@@ -407,6 +461,57 @@ def run(
                             report=report
                         )
                     )
+
+                if final_selection and not failure_status and candidates:
+                    choice: dict[str, Any] | None = None
+                    if len(candidates) == 1:
+                        choice = {
+                            "round": next(iter(candidates)),
+                            "reason": "Only one completed round submission.",
+                        }
+                    else:
+                        selection_prompt = PromptTemplate(
+                            _PROMPTS / "select.md"
+                        ).render(projection_placement=placement)
+                        if builds is not None:
+                            selection_prompt = f"{selection_prompt}\n\n{frame}"
+                        listing = [
+                            {
+                                "round": number,
+                                "program": f"/work/submissions/round_{number:03d}/model.py",
+                                "submission": f"/work/submissions/round_{number:03d}/submission.json",
+                            }
+                            for number in candidates
+                        ]
+                        selection_messages, failure_status = converse(
+                            "final_selector",
+                            selection_prompt,
+                            [],
+                            HumanMessage(
+                                content=[
+                                    *blocks,
+                                    create_text_block(
+                                        "[Candidate submissions]\n"
+                                        + json.dumps(listing)
+                                    ),
+                                ]
+                            ),
+                            auditor_budget,
+                            _SELECTION_LENGTH_RETRY_PROMPT,
+                        )
+                        write_json(
+                            run_dir / "selection_messages.json", selection_messages
+                        )
+                        if not failure_status:
+                            report = selection_messages[-1].text
+                            choice = {
+                                "round": _selected_round(report),
+                                "reason": report,
+                            }
+                    if choice is not None:
+                        output.write_bytes(candidates[choice["round"]])
+                        write_json(run_dir / "final_selection.json", choice)
+                        log.write("final_selection", choice)
 
                 write_json(run_dir / "messages.json", coder_messages)
                 if audit_messages:

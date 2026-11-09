@@ -35,6 +35,36 @@ When a response hits the output limit, both agents are retried with a reminder, 
 generator is: the coder gets native's, and the auditor is asked for its report and verdict.
 These model-call retries do not consume extra agent turns.
 
+## Final model selection
+
+Set `final_selection=true` to match the staged pipeline's optional final selection
+(off by default in both). After the rounds finish successfully, a separate task
+uses the auditor's model, two tools, turn budget and retry policy to compare the
+completed coder submissions with the original drawing. It chooses an existing
+round with `SELECTED_ROUND: N`; it cannot open another coding round. With one
+candidate, that round is selected without another model call.
+
+Each completed round is saved under the read-only
+`workspace/submissions/round_NNN/`, with its `model.py` and `submission.json`
+containing the coder's final message and any automatic build report. Intermediate
+edits and unfinished rounds are not candidates. Both the coder and the regular
+auditor are told where these read-only copies are available for reference;
+their current editing or audit target remains `workspace/model.py`.
+Native 2 still does no automatic
+build, rendering, or eligibility check: the selector may build and render with
+its existing tools. Native 2' also provides its saved automatic build reports.
+The selector cannot edit the saved candidates or the workspace program.
+
+The chosen program replaces `workspace/model.py`, so native scoring builds and
+scores that choice. `final_selection.json` and a `final_selection` event record
+the round and explanation; `selection_messages.json` records the comparison
+transcript when the selector was called. A failed selection preserves the last
+coder program and records the usual failure status.
+
+```bash
+python -m zeroshot.pipeline_native2 final_selection=true
+```
+
 ## Native 2'
 
 `zeroshot/configs/native2_prime.yaml` turns on `auto_build`, the staged
