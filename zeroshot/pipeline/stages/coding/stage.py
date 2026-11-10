@@ -263,6 +263,7 @@ def create_coding_stage(
             stage="coding",
             interpretation=lambda: workspace.output.interpretation,
             reference=lambda: workspace.output.last_report,
+            match_margin_px=match_margin_px,
         ),
     ]
     max_turns = coding_agent_builder.keywords["max_turns"]

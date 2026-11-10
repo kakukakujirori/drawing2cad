@@ -278,7 +278,12 @@ def test_execute_writes_verified_step_to_requested_path(tmp_path: Path) -> None:
         # is here so that a coder handed this report can see when its arcs came
         # back as a hundred of them.
         census=ShapeCensus(
-            1, 6000.0, (10.0, 20.0, 30.0), Counter({"Plane": 6}), Counter({"Line": 12})
+            1,
+            6000.0,
+            (10.0, 20.0, 30.0),
+            Counter({"Plane": 6}),
+            Counter({"Line": 12}),
+            warnings=(),
         ),
     )
     assert output_step_path.is_file()

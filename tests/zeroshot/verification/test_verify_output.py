@@ -58,10 +58,18 @@ result = cq.Workplane("XY").box(10, 20, 30)
 """
 
 
-def test_source_warnings_survive_json_and_feedback_without_program_source(
-    tmp_path,
+@pytest.mark.parametrize(
+    "warning_state", ["unavailable", "clear", "warned", "legacy_missing"]
+)
+def test_warning_states_survive_json_and_feedback_without_program_source(
+    tmp_path, warning_state
 ):
     warning = "Spline calls in program source: model.py:7 (spline). Check the drawing."
+    warnings = (
+        (warning,)
+        if warning_state == "warned"
+        else (() if warning_state == "clear" else None)
+    )
     report = VerifyOutputResult(
         exec_report=CadQueryExecutionReport(
             status=ExecutionStatus.VERIFIED,
@@ -72,12 +80,15 @@ def test_source_warnings_survive_json_and_feedback_without_program_source(
                 extent=(10, 20, 30),
                 faces=Counter(),
                 edges=Counter(),
-                warnings=(warning,),
+                warnings=warnings,
             ),
         )
     )
     adapter = TypeAdapter(VerifyOutputResult)
-    stored = adapter.validate_json(adapter.dump_json(report))
+    serialized = json.loads(adapter.dump_json(report))
+    if warning_state == "legacy_missing":
+        del serialized["exec_report"]["census"]["warnings"]
+    stored = adapter.validate_json(json.dumps(serialized))
 
     def feedback(candidate):
         blocks = build_verification_feedback(
@@ -88,15 +99,13 @@ def test_source_warnings_survive_json_and_feedback_without_program_source(
         )
         return "\n".join(block.get("text", "") for block in blocks)
 
-    assert stored.exec_report.census.warnings == (warning,)
+    assert stored.exec_report.census.warnings == warnings
     text = feedback(stored)
-    assert "[Geometry warnings — built STEP and program source" in text
-    assert warning in text
-    legacy = json.loads(adapter.dump_json(report))
-    del legacy["exec_report"]["census"]["warnings"]
-    restored = adapter.validate_python(legacy)
-    assert restored.exec_report.census.warnings == ()
-    assert "[Geometry warnings" not in feedback(restored)
+    assert ("[Geometry warnings — built STEP and program source" in text) == bool(
+        warnings
+    )
+    assert (warning in text) == bool(warnings)
+    assert ("[Geometry warning check unavailable]" in text) == (warnings is None)
 
 
 class StubCadQueryExecutor:

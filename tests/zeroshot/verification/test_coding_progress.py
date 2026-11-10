@@ -1,3 +1,4 @@
+from collections import Counter
 from dataclasses import replace
 
 import pytest
@@ -18,6 +19,7 @@ from zeroshot.pipeline.verification.run_drawing_diff import (
     DrawingDiffExecutor,
     DrawingDiffReport,
 )
+from zeroshot.pipeline.verification.shape_census import ShapeCensus
 
 SOURCE = "result = object()\n"
 
@@ -103,29 +105,39 @@ def test_best_candidate_eligibility_and_cache(tmp_path, monkeypatch):
             verifier.source_path.write_text(source + f"# trial {build_count}\n")
             return verifier.feedback()[0]["text"]
 
-        assert "baseline (match score 21.00 px)" in attempt([7.0, 7.0, 7.0])
+        first = attempt([7.0, 7.0, 7.0])
+        assert "baseline (match score 21.00 px)" in first
+        assert "updated only when the score improves by at least 0.50 px" in first
         before = build_count
         assert "baseline" in verifier.feedback()[0]["text"]
         assert build_count == before  # Repeated feedback uses the same saved build.
         # A gain in one view counts in full, however many views are scored.
-        assert "Geometric match improved by 0.60 px" in attempt([7.0, 7.0, 6.4])
+        assert "Projection match improved by 0.60 px" in attempt([7.0, 7.0, 6.4])
         improved = attempt([8.0, 4.0, 3.0])  # One view worse; the whole drawing better.
-        assert "Geometric match improved by 5.40 px over the saved best" in improved
+        assert "Projection match improved by 5.40 px" in improved
+        assert "Check the constructions" not in improved
         assert (
-            "Best saved eligible candidate: /work/attempts/round_000/coding/002/model.py"
-            in improved
+            "Saved projection baseline candidate: "
+            "/work/attempts/round_000/coding/002/model.py" in improved
         )
         worse = attempt([8.0, 8.0, 8.0])
         assert "Worsened by 9.00 px versus the previous candidate" in worse
         assert (
             "Previous candidate: /work/attempts/round_000/coding/002/model.py" in worse
         )
-        # Changes inside the margin are not measurable and keep the saved best.
+        # Changes inside the margin keep the saved projection baseline.
         assert "No measurable change: within 0.50 px" in attempt([8.0, 8.0, 8.3])
         near_best = attempt([5.0, 5.0, 4.6])
         assert "Improved by 9.70 px over the previous candidate" in near_best
-        assert "but not by 0.50 px over the saved best (15.00 px)" in near_best
-        assert "round_000/coding/002/model.py" in near_best.split("Best saved")[1]
+        assert (
+            "but not by 0.50 px over the saved projection baseline (15.00 px)"
+            in near_best
+        )
+        assert (
+            "round_000/coding/002/model.py"
+            in near_best.split("Saved projection baseline candidate")[1]
+        )
+        assert "lowest" not in near_best and "saved best" not in near_best
         best = verifier._best_candidate
         assert best is not None
         saved_model = best[1].host_verification_dir / "model.py"
@@ -195,6 +207,46 @@ def test_best_candidate_eligibility_and_cache(tmp_path, monkeypatch):
             "[Candidate progress]" not in block.get("text", "")
             for block in verifier.feedback()
         )
+
+
+@pytest.mark.parametrize(
+    "warnings", [None, (), ("Spline calls in program source: model.py:7 (spline).",)]
+)
+def test_a_warning_keeps_the_improvement_signal_and_requests_a_construction_trial(
+    tmp_path, warnings
+):
+    with SandboxWorkdir(host_bind_dir=tmp_path) as workdir:
+        verifier = ProgressOutputVerifier(
+            executor=None,
+            workdir=workdir,
+            renderer=None,
+            diff_drawer=None,
+            artifact_presenter=ArtifactPresenter(input="path"),
+            attempt_store=AttemptStore(workdir, round_source=lambda: 0),
+        )
+        baseline = VerifyOutputResult()
+        verifier._progress(10.0, "", baseline, None)
+        candidate = VerifyOutputResult(
+            exec_report=CadQueryExecutionReport(
+                status=ExecutionStatus.VERIFIED,
+                census=ShapeCensus(
+                    solids=1,
+                    volume=6000,
+                    extent=(10, 20, 30),
+                    faces=Counter(),
+                    edges=Counter(),
+                    warnings=warnings,
+                ),
+            )
+        )
+
+        text = verifier._progress(9.0, "", candidate, 10.0)
+
+        assert "Projection match improved by 1.00 px" in text
+        assert "Use this candidate as the next working baseline" in text
+        assert ("build a corrected alternative" in text) is bool(warnings)
+        assert ("Keep supported features" in text) is bool(warnings)
+        assert verifier.best_report is candidate
 
 
 @pytest.mark.parametrize("margin", [-0.1, float("nan"), float("inf")])

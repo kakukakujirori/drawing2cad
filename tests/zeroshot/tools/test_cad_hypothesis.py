@@ -3,7 +3,9 @@
 import re
 import sys
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -14,6 +16,7 @@ from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
 from zeroshot.pipeline.stages.coding.verify import TrialVerifier, VerifyOutputResult
 from zeroshot.pipeline.tools.cad_hypothesis import (
     TRIALS_DIRNAME,
+    _comparison_feedback,
     create_cad_hypothesis_tool,
 )
 from zeroshot.pipeline.tools.errors import ToolFeedbackError
@@ -31,6 +34,7 @@ from zeroshot.pipeline.verification.run_cadquery import (
 )
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 from zeroshot.pipeline.verification.run_render import RenderReport, RenderStatus
+from zeroshot.pipeline.verification.shape_census import ShapeCensus, read_census
 
 ROLES = ("front", "top", "right")
 EXTRA = {
@@ -76,6 +80,36 @@ def _diffs(root: Path, score: float) -> dict[str, DrawingDiffReport]:
     }
 
 
+def _census(warnings=()):
+    return ShapeCensus(
+        solids=1,
+        volume=1,
+        extent=(1, 1, 1),
+        faces=Counter(),
+        edges=Counter(),
+        warnings=warnings,
+    )
+
+
+def _scored_report(root: Path, name: str, score: float, warning_count: int | None):
+    step = root / f"{name}.step"
+    step.write_text("STEP")
+    return VerifyOutputResult(
+        sandbox_verification_dir=f"/work/{name}",
+        exec_report=CadQueryExecutionReport(
+            status=ExecutionStatus.VERIFIED,
+            returncode=0,
+            step_path=step,
+            census=(
+                _census(tuple(f"warning {i}" for i in range(warning_count)))
+                if warning_count is not None
+                else None
+            ),
+        ),
+        drawing_diff_report=_diffs(root, score / len(ROLES)),
+    )
+
+
 class _Renderer:
     def render_many(self, requests):
         return [
@@ -95,6 +129,7 @@ def trial(tmp_path, monkeypatch):
             source=source.read_text(),
             returncode=0,
             step_path=step,
+            census=_census(),
         )
 
     monkeypatch.setattr(CadQueryExecutor, "execute", execute)
@@ -116,12 +151,15 @@ def trial(tmp_path, monkeypatch):
     reference = VerifyOutputResult(
         sandbox_verification_dir="/work/attempts/round_000/coding/003",
         exec_report=CadQueryExecutionReport(
-            status=ExecutionStatus.VERIFIED, returncode=0, step_path=built
+            status=ExecutionStatus.VERIFIED,
+            returncode=0,
+            step_path=built,
+            census=_census(),
         ),
         drawing_diff_report=_diffs(tmp_path, 7.0),
     )
 
-    def make(stage: AttemptStage = "coding", views=_views, compares=True):
+    def make(stage: AttemptStage = "coding", views=_views, compares=True, margin=0.5):
         return workdir, create_cad_hypothesis_tool(
             workdir=workdir,
             sandbox_runner=SandboxRunner(Path(sys.executable), 10),
@@ -132,6 +170,7 @@ def trial(tmp_path, monkeypatch):
             stage=stage,
             interpretation=views,
             reference=lambda: reference,
+            match_margin_px=margin,
         )
 
     return make
@@ -151,6 +190,10 @@ def test_a_trial_is_scored_against_a_reference_and_kept_apart(trial, stage):
     assert first.startswith(f"[Trial build]\nScript: /work/trial.py, kept as {kept}")
     assert "Match score: 2.10 px; lower is better." in first
     assert "Build /work/attempts/round_000/coding/003: match score 21.00 px." in first
+    assert "Projection match improved by 18.90 px" in first
+    assert "No geometry warnings were reported." in first
+    assert "Open the trial projections" in first
+    assert ("update the main program" in first) == (stage == "coding")
     # Its clusters are not the drawing_diff items an audit answers.
     assert "trial_diff.view_front.1" in first and "drawing_diff." not in first
     assert f"round_000/{stage}/001/hypothesis.py" in second
@@ -160,6 +203,117 @@ def test_a_trial_is_scored_against_a_reference_and_kept_apart(trial, stage):
     assert (root / "model.py").read_text() == "result = 'program'\n"
     assert not (root / "attempts").exists()
     assert PurePosixPath("trials") in workdir.read_only_subdirs
+
+
+@pytest.mark.parametrize(
+    "reference_score,score,reference_warnings,warnings,margin,encouraged",
+    [
+        (5, 4, 0, 0, 0.5, True),
+        (5, 4, 2, 0, 0.5, True),
+        (5, 4, 2, 1, 0.5, True),
+        (5, 4, 1, 1, 0.5, False),
+        (5, 4, 1, 2, 0.5, False),
+        (5, 4, 0, 1, 0.5, False),
+        (5, 6, 2, 0, 0.5, False),  # An omitted feature can worsen a partial trial.
+        (5, 5, 1, 0, 0.5, False),
+        (5, 4.6, 1, 0, 0.5, False),
+        (5, 4.5, 1, 0, 0.5, True),
+        (5, 4.5, 1, 0, 1.0, False),
+        (5, 5, 0, 0, 0.0, False),
+        (5, 4, None, 0, 0.5, True),
+        (5, 4, None, 1, 0.5, False),
+        (5, 4, 0, None, 0.5, False),
+    ],
+)
+def test_only_qualifying_improvements_get_advice(
+    tmp_path, reference_score, score, reference_warnings, warnings, margin, encouraged
+):
+    workdir = SandboxWorkdir(tmp_path)
+    baseline = _scored_report(tmp_path, "baseline", reference_score, reference_warnings)
+    candidate = _scored_report(tmp_path, "candidate", score, warnings)
+    text = "\n".join(
+        _comparison_feedback(
+            candidate,
+            baseline,
+            _views(),
+            workdir,
+            stage="coding",
+            match_margin_px=margin,
+        )
+    )
+
+    assert f"Match score: {score:.2f} px" in text
+    assert f"Build /work/baseline: match score {reference_score:.2f} px." in text
+    assert ("Projection match improved" in text) == encouraged
+    assert ("Open the trial projections" in text) == encouraged
+    assert ("For a whole-model trial" in text) == encouraged
+    assert "worse" not in text.lower() and "previous was better" not in text.lower()
+    if encouraged and warnings:
+        assert f"decreased from {reference_warnings} to {warnings}" in text
+        assert "Review the remaining geometry warnings." in text
+    elif encouraged:
+        assert "No geometry warnings were reported." in text
+
+
+@pytest.mark.parametrize("reference_warnings", [0, 2])
+def test_warning_check_failure_does_not_encourage_a_trial(
+    tmp_path, monkeypatch, reference_warnings
+):
+    import cadquery as cq
+
+    from zeroshot.pipeline.verification import shape_warnings
+
+    workdir = SandboxWorkdir(tmp_path)
+    baseline = _scored_report(tmp_path, "baseline", 5, reference_warnings)
+    candidate = _scored_report(tmp_path, "candidate", 4, 0)
+    cq.exporters.export(
+        cq.Solid.makeBox(10, 20, 30), str(candidate.exec_report.step_path)
+    )
+
+    def broken_review(*args, **kwargs):
+        raise RuntimeError("Review failed")
+
+    monkeypatch.setattr(shape_warnings, "find_shape_warnings", broken_review)
+    census = read_census(candidate.exec_report.step_path)
+    assert census is not None and census.volume == pytest.approx(6000)
+    candidate = replace(
+        candidate, exec_report=replace(candidate.exec_report, census=census)
+    )
+
+    text = "\n".join(
+        _comparison_feedback(
+            candidate, baseline, _views(), workdir, stage="coding", match_margin_px=0.5
+        )
+    )
+
+    assert "Match score: 4.00 px" in text
+    assert "Projection match improved" not in text
+    assert "No geometry warnings were reported." not in text
+    assert "update the main program" not in text
+
+
+@pytest.mark.parametrize("reference_state", ["absent", "unavailable"])
+def test_an_unscored_reference_does_not_encourage_a_trial(tmp_path, reference_state):
+    workdir = SandboxWorkdir(tmp_path)
+    candidate = _scored_report(tmp_path, "candidate", 1, 0)
+    baseline = None
+    if reference_state == "unavailable":
+        baseline = _scored_report(tmp_path, "baseline", 5, 0)
+        baseline.drawing_diff_report["view_front"].stats["provisional"] = True
+    text = "\n".join(
+        _comparison_feedback(
+            candidate, baseline, _views(), workdir, stage="coding", match_margin_px=0.5
+        )
+    )
+
+    assert "Projection match improved" not in text
+    assert "Open the trial projections" not in text
+
+
+@pytest.mark.parametrize("margin", [-1, float("nan"), float("inf")])
+def test_invalid_improvement_margins_are_rejected(trial, margin):
+    with pytest.raises(ValueError, match="match_margin_px"):
+        trial(margin=margin)
 
 
 def test_without_drawing_comparison_a_trial_is_drawn_and_claims_no_score(trial):

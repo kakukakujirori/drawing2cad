@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from functools import partial
 from inspect import cleandoc
+from math import isfinite
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
 
@@ -10,7 +11,10 @@ from langchain_core.tools import BaseTool, tool
 
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
 from zeroshot.pipeline.sandbox import SandboxRunner, SandboxWorkdir
-from zeroshot.pipeline.stages.coding.progress import match_score
+from zeroshot.pipeline.stages.coding.progress import (
+    DEFAULT_MATCH_MARGIN_PX,
+    match_score,
+)
 from zeroshot.pipeline.stages.coding.verify import (
     TrialVerifier,
     VerifyOutputResult,
@@ -95,6 +99,18 @@ _RESULT = cleandoc(
 )
 _SCORE = "Match score: {score:.2f} px; lower is better."
 _UNSCORED = "Match score unavailable: {reason}."
+_IMPROVED = (
+    "Projection match improved by {gain:.2f} px over the latest build of the "
+    "main program ({reference_score:.2f} → {score:.2f} px)."
+)
+_CHECK_TRIAL = (
+    "Open the trial projections to check that the intended change was built "
+    "correctly and is supported by the source views."
+)
+_USE_BASELINE = (
+    "For a whole-model trial with a supported change, update the main program "
+    "and use it as the next working baseline."
+)
 
 
 def create_cad_hypothesis_tool(
@@ -107,8 +123,11 @@ def create_cad_hypothesis_tool(
     stage: AttemptStage,
     interpretation: Callable[[], DrawingInterpretation | None],
     reference: Callable[[], VerifyOutputResult | None],
+    match_margin_px: float = DEFAULT_MATCH_MARGIN_PX,
 ) -> BaseTool:
     """`reference` gives the build a trial is weighed against."""
+    if not (isfinite(match_margin_px) and match_margin_px >= 0):
+        raise ValueError("match_margin_px must be finite and non-negative")
     trial_verifier = partial(
         TrialVerifier,
         executor=CadQueryExecutor(sandbox_runner=sandbox_runner),
@@ -143,7 +162,6 @@ def create_cad_hypothesis_tool(
         script = _workspace_file(workdir, source_path)
         # A verifier per call, so parallel calls never share a script.
         report = trial_verifier(script, views).verify()
-        score, reason = match_score(report, views, workdir)
         assert report.sandbox_verification_dir is not None
         lines = build_verification_feedback(
             report,
@@ -159,12 +177,14 @@ def create_cad_hypothesis_tool(
                     kept=PurePosixPath(report.sandbox_verification_dir) / _TRIAL_SOURCE,
                 ),
                 *(
-                    [
-                        _SCORE.format(score=score)
-                        if score is not None
-                        else _UNSCORED.format(reason=reason),
-                        _reference(reference(), views, workdir),
-                    ]
+                    _comparison_feedback(
+                        report,
+                        reference(),
+                        views,
+                        workdir,
+                        stage=stage,
+                        match_margin_px=match_margin_px,
+                    )
                     if compares_with_drawing
                     else []
                 ),
@@ -175,16 +195,77 @@ def create_cad_hypothesis_tool(
     return evaluate_cad_hypothesis
 
 
-def _reference(
-    report: VerifyOutputResult | None,
+def _comparison_feedback(
+    trial: VerifyOutputResult,
+    reference: VerifyOutputResult | None,
     views: DrawingInterpretation,
     workdir: SandboxWorkdir,
-) -> str:
-    if report is None or report.sandbox_verification_dir is None:
-        return "No build to compare with yet."
-    score, reason = match_score(report, views, workdir)
-    shown = f"{score:.2f} px" if score is not None else f"unavailable ({reason})"
-    return f"Build {report.sandbox_verification_dir}: match score {shown}."
+    *,
+    stage: AttemptStage,
+    match_margin_px: float,
+) -> list[str]:
+    """Show both scores; encourage only improvements with fewer or no warnings."""
+    score, reason = match_score(trial, views, workdir)
+    lines = [
+        _SCORE.format(score=score)
+        if score is not None
+        else _UNSCORED.format(reason=reason)
+    ]
+    if reference is None or reference.sandbox_verification_dir is None:
+        return [*lines, "No build to compare with yet."]
+    reference_score, reference_reason = match_score(reference, views, workdir)
+    shown = (
+        f"{reference_score:.2f} px"
+        if reference_score is not None
+        else f"unavailable ({reference_reason})"
+    )
+    lines.append(f"Build {reference.sandbox_verification_dir}: match score {shown}.")
+    if (
+        score is None
+        or reference_score is None
+        or score >= reference_score
+        or reference_score - score < match_margin_px
+    ):
+        return lines
+    warning_count = _warning_count(trial)
+    reference_warning_count = _warning_count(reference)
+    if warning_count is None or (
+        warning_count > 0
+        and (
+            reference_warning_count is None or warning_count >= reference_warning_count
+        )
+    ):
+        return lines
+    lines.append(
+        _IMPROVED.format(
+            gain=reference_score - score,
+            reference_score=reference_score,
+            score=score,
+        )
+    )
+    lines.append(
+        "No geometry warnings were reported."
+        if warning_count == 0
+        else f"Geometry warning messages decreased from {reference_warning_count} to {warning_count}."
+    )
+    lines.append(_CHECK_TRIAL)
+    if warning_count:
+        lines.append("Review the remaining geometry warnings.")
+    if stage == "coding":
+        lines.append(_USE_BASELINE)
+    return lines
+
+
+def _warning_count(report: VerifyOutputResult) -> int | None:
+    """Count checked warnings; missing results are not a clean result."""
+    execution = report.exec_report
+    if (
+        execution is None
+        or execution.census is None
+        or execution.census.warnings is None
+    ):
+        return None
+    return len(execution.census.warnings)
 
 
 def _workspace_file(workdir: SandboxWorkdir, sandbox_path: str) -> Path:

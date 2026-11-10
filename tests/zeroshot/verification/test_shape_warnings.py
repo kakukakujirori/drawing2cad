@@ -259,4 +259,4 @@ def test_a_review_failure_does_not_discard_the_census(tmp_path, monkeypatch):
     census = read_census(path)
 
     assert census is not None and census.volume == pytest.approx(6000)
-    assert census.warnings == ()
+    assert census.warnings is None

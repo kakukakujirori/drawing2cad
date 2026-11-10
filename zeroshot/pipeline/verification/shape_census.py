@@ -53,7 +53,8 @@ class ShapeCensus:
     faces: Counter[str]
     edges: Counter[str]
     voids: tuple[Void, ...] = ()
-    warnings: tuple[str, ...] = ()
+    # None: unchecked or failed; (): checked, no warnings.
+    warnings: tuple[str, ...] | None = None
 
     def _describe_extent(self) -> str:
         """The bounding box of the built solid, as the overall dimensions read.
@@ -127,7 +128,7 @@ def read_census(
         try:
             warnings = find_shape_warnings(shape, source, filename=filename)
         except Exception:  # noqa: BLE001 - optional review must not lose the census
-            warnings = ()
+            warnings = None
         return ShapeCensus(
             solids=len(shape.Solids()),
             volume=shape.Volume(),

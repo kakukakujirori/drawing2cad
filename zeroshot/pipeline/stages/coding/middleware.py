@@ -140,7 +140,7 @@ class FreshCodingMiddleware(CodingMiddleware):
         }
         if self._baseline_candidate is None:
             self._baseline_candidate = candidate
-        best = output.best_report
+        projection_baseline = output.best_report
         entries = sorted(output.workdir.host_bind_dir.iterdir())
         auxiliary = [
             str(output.workdir.host_to_sandbox_path(path))
@@ -153,12 +153,12 @@ class FreshCodingMiddleware(CodingMiddleware):
             "interpretation": interpretation.model_dump(mode="json"),
             "current_candidate": candidate,
             "baseline_candidate": self._baseline_candidate,
-            "best_eligible_candidate": (
+            "saved_projection_baseline_candidate": (
                 {
-                    "verification_id": best.verification_id,
-                    "program": output.candidate_path(best),
+                    "verification_id": projection_baseline.verification_id,
+                    "program": output.candidate_path(projection_baseline),
                 }
-                if best is not None
+                if projection_baseline is not None
                 else None
             ),
             "auxiliary_workspace_entries": auxiliary[:100],

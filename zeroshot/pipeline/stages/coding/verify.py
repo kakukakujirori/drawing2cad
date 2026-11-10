@@ -477,16 +477,26 @@ def build_verification_feedback(
     else:
         blocks.append(create_text_block("No execution report was recorded."))
 
-    if exec_report is not None and exec_report.census and exec_report.census.warnings:
-        blocks.append(
-            create_text_block(
-                "[Geometry warnings — built STEP and program source; model XYZ in mm]\n"
-                + "\n".join(f"- {warning}" for warning in exec_report.census.warnings)
-                + "\nCheck these structures against the source drawing and program. "
-                "A warning requests review, not automatic removal: supported thin "
-                "features and small steps are legitimate."
+    if exec_report is not None and exec_report.census is not None:
+        warnings = exec_report.census.warnings
+        if warnings is None:
+            blocks.append(
+                create_text_block(
+                    "[Geometry warning check unavailable]\n"
+                    "Geometry warning results are unavailable for this build. "
+                    "Do not treat this as a completed check with no warnings."
+                )
             )
-        )
+        elif warnings:
+            blocks.append(
+                create_text_block(
+                    "[Geometry warnings — built STEP and program source; model XYZ in mm]\n"
+                    + "\n".join(f"- {warning}" for warning in warnings)
+                    + "\nCheck these structures against the source drawing and program. "
+                    "A warning requests review, not automatic removal: supported thin "
+                    "features and small steps are legitimate."
+                )
+            )
 
     # 2a. Final renders, including diagnostic-only results.
     if (

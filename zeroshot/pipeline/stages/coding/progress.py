@@ -16,18 +16,32 @@ DEFAULT_MATCH_MARGIN_PX = 0.5
 
 _UNAVAILABLE = "Geometric comparison unavailable: {reason}."
 _FIRST = (
-    "First fully comparable candidate recorded as the baseline "
-    "(match score {score:.2f} px)."
+    "First fully comparable candidate recorded as the projection baseline "
+    "(match score {score:.2f} px). It is updated only when the score improves "
+    "by at least {margin:.2f} px."
 )
 _IMPROVED_ON_BEST = (
-    "Geometric match improved by {gain:.2f} px over the saved best ({best:.2f} → "
-    "{score:.2f} px). Use this candidate as the next baseline; verify the selected "
-    "defect in the latest target view and check other views. A numeric improvement "
-    "does not confirm that defect is fixed."
+    "Projection match improved by {gain:.2f} px over the saved projection "
+    "baseline ({best:.2f} → {score:.2f} px). Use this candidate as the next "
+    "working baseline; continue resolving the drawing mismatches. Verify the "
+    "changed feature against the source views."
+)
+_REVIEW_GEOMETRY = (
+    "Check the constructions named in the geometry warnings before refining "
+    "remaining projection lines, even if no audit ticket names them. If straight "
+    "or circular drawing segments are represented by splines, build and evaluate "
+    "a line/arc alternative now, including inherited profiles. Do not defer this "
+    "trial because the projection score is good, a ticket was accepted or "
+    "closing the wire may be difficult. Keep supported features, including "
+    "individual source-supported freeform segments, fillets, chamfers and thin "
+    "features; size alone does not make a feature a patch. "
+    "For other unsupported constructions, build a corrected alternative "
+    "before further fitting their projected lines."
 )
 _IMPROVED_ON_PREVIOUS = (
     "Improved by {gain:.2f} px over the previous candidate ({previous:.2f} → "
-    "{score:.2f} px), but not by {margin:.2f} px over the saved best ({best:.2f} px)."
+    "{score:.2f} px), but not by {margin:.2f} px over the saved projection "
+    "baseline ({best:.2f} px)."
 )
 _WORSENED = (
     "Worsened by {loss:.2f} px versus the previous candidate ({previous:.2f} → "
@@ -38,8 +52,8 @@ _UNCHANGED = (
     "({previous:.2f} → {score:.2f} px)."
 )
 _NOT_BETTER = (
-    "Not better than the saved best ({best:.2f} px) by {margin:.2f} px or more "
-    "(match score {score:.2f} px)."
+    "Not better than the saved projection baseline ({best:.2f} px) by "
+    "{margin:.2f} px or more (match score {score:.2f} px)."
 )
 _SCORE_LEGEND = (
     "Match score: sum over views of the uncapped line distance plus the "
@@ -93,7 +107,7 @@ class ProgressOutputVerifier(OutputVerifier):
 
     @property
     def best_report(self) -> VerifyOutputResult | None:
-        """The best eligible build of this invocation."""
+        """The saved projection baseline, updated on significant improvement."""
         return self._best_candidate[1] if self._best_candidate is not None else None
 
     def candidate_path(self, report: VerifyOutputResult) -> str:
@@ -109,17 +123,23 @@ class ProgressOutputVerifier(OutputVerifier):
         report: VerifyOutputResult,
         previous: float | None,
     ) -> str:
-        """Compare a candidate with the saved best and the previous candidate."""
+        """Compare a candidate with the saved baseline and the previous candidate."""
         margin, best = self.match_margin_px, self._best_candidate
         if score is None:
             return _UNAVAILABLE.format(reason=reason)
         if best is None:
             self._best_candidate = (score, report)
-            return _FIRST.format(score=score) + "\n" + _SCORE_LEGEND
+            return _FIRST.format(score=score, margin=margin) + "\n" + _SCORE_LEGEND
         values = {"score": score, "best": best[0], "margin": margin}
         if score <= best[0] - margin:
             self._best_candidate = (score, report)
             text = _IMPROVED_ON_BEST.format(gain=best[0] - score, **values)
+            if (
+                report.exec_report is not None
+                and report.exec_report.census is not None
+                and report.exec_report.census.warnings
+            ):
+                text += "\n" + _REVIEW_GEOMETRY
         elif previous is None:
             text = _NOT_BETTER.format(**values)
         elif score <= previous - margin:
@@ -151,7 +171,7 @@ class ProgressOutputVerifier(OutputVerifier):
             if report.sandbox_verification_dir is not None:
                 text += f"\nCurrent candidate: {self.candidate_path(report)}"
             if self._best_candidate is not None:
-                text += "\nBest saved eligible candidate: " + self.candidate_path(
+                text += "\nSaved projection baseline candidate: " + self.candidate_path(
                     self._best_candidate[1]
                 )
             # ponytail: best is scoped to this invocation; persist it only if
