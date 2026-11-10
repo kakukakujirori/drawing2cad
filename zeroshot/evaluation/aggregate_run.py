@@ -472,58 +472,77 @@ def format_report(
     summary: RunSummary,
     headlines: Mapping[str, Headline],
 ) -> str:
-    stats = [summary.metrics.get(name) for name in headlines]
+    # Each headline that some sample also has after B-rep cleanup, to that metric.
+    clean = {
+        name: headline.clean_metric
+        for name, headline in headlines.items()
+        if any(headline.clean_metric in row.metrics for row in rows)
+    }
+
+    def table_lines(
+        lead: Sequence[str], values: Mapping[str, object], tail: Sequence[str]
+    ) -> list[tuple[str, ...]]:
+        """A table line, then one with each cleaned value in parentheses under its raw one.
+
+        The raw cell gets a trailing space so that its last digit lines up with
+        the cleaned one.
+        """
+        line = (
+            *lead,
+            *(
+                _cell(values.get(name), headline.decimals)
+                + (" " if name in clean else "")
+                for name, headline in headlines.items()
+            ),
+            *tail,
+        )
+        if not clean:
+            return [line]
+        below = (
+            f"({_cell(values.get(clean[name]), headline.decimals)})"
+            if name in clean
+            else ""
+            for name, headline in headlines.items()
+        )
+        return [line, ("",) * len(lead) + (*below,) + ("",) * len(tail)]
+
     inputs = [row.tokens.input for row in rows if row.tokens.input is not None]
     input_stats = {
         "mean": round(sum(inputs) / len(inputs)) if inputs else None,
         "median": round(median(inputs)) if inputs else None,
         "n": len(inputs),
     }
-    lines = _aligned(
-        [
-            (
-                "sample",
-                "turns",
-                "verify",
-                *(headline.label for headline in headlines.values()),
-                "in_tok",
-                "wall_s",
-            ),
-            *(
-                (
-                    row.sample_id,
-                    _cell(row.agent_turns),
-                    row.verify or "-",
-                    *(
-                        _cell(row.metrics.get(name), headline.decimals)
-                        for name, headline in headlines.items()
-                    ),
-                    _cell(row.tokens.input),
-                    _cell(round((row.wall_ms or 0) / 1000)),
-                )
-                for row in rows
-            ),
-            *(
-                (
-                    label,
-                    "",
-                    "",
-                    *(
-                        _cell(getattr(stat, field) if stat else None, headline.decimals)
-                        for stat, headline in zip(
-                            stats, headlines.values(), strict=True
-                        )
-                    ),
-                    _cell(input_stats[label]) if label in input_stats else "",
-                    "",
-                )
-                for label, field in _STATS_ROWS
-            ),
-        ]
-    )
+    labels = {name: headline.label for name, headline in headlines.items()}
+    table = [
+        *table_lines(
+            ("sample", "turns", "verify"),
+            labels | dict.fromkeys(clean.values(), "clean"),
+            ("in_tok", "wall_s"),
+        ),
+        *(
+            line
+            for row in rows
+            for line in table_lines(
+                (row.sample_id, _cell(row.agent_turns), row.verify or "-"),
+                row.metrics,
+                (_cell(row.tokens.input), _cell(round((row.wall_ms or 0) / 1000))),
+            )
+        ),
+        *(
+            line
+            for label, field in _STATS_ROWS
+            for line in table_lines(
+                (label, "", ""),
+                {name: getattr(stat, field) for name, stat in summary.metrics.items()},
+                (_cell(input_stats[label]) if label in input_stats else "", ""),
+            )
+        ),
+    ]
+    lines_per_row = 2 if clean else 1
+    lines = _aligned(table)
     rule = "-" * len(lines[0])
-    lines.insert(1, rule)
-    lines.insert(len(rows) + 2, rule)
+    lines.insert(lines_per_row, rule)
+    lines.insert(lines_per_row * (len(rows) + 1) + 1, rule)
 
     total = summary.samples
     evaluated = sum(row.score_status is not None for row in rows)

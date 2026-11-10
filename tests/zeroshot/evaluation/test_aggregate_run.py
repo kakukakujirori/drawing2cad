@@ -414,3 +414,32 @@ def test_cli_preserves_mixed_library_protocols_and_warning(
     assert "Rescore" in summary["itercad"]["protocol_warning"]
     assert [sample["protocol"] for sample in document["samples"]] == protocols
     assert "wrote" in capsys.readouterr().out
+
+
+def test_each_cleaned_f1_sits_under_its_raw_value_with_digits_aligned() -> None:
+    def row(sample_id: str, raw: float, clean: float | None) -> SampleRow:
+        cleaned = {} if clean is None else {"eccv_clean_mean_f1": clean}
+        return SampleRow(
+            sample_id,
+            Terminal.COMPLETED,
+            score_status="OK",
+            metrics={"mesh_iou": 0.9, "eccv_mean_f1": raw, **cleaned},
+        )
+
+    rows = [row("s0", 0.5, 0.8), row("s1", 0.25, None)]
+    report = format_report(rows, summarize(rows), headline_columns(rows, HEADLINES))
+    lines = report.splitlines()
+    labels = [(line.split() or [""])[0] for line in lines]
+
+    assert lines[0].split()[3:5] == ["mesh_iou", "eccv_mean_f1"]
+    assert lines[2].startswith("---") and lines[7].startswith("---")
+    assert [lines[i].split() for i in (1, 4, 6)] == [["(clean)"], ["(0.800)"], ["(-)"]]
+    assert lines[labels.index("mean") + 1].split() == ["(0.800)"]
+    assert lines[labels.index("n") + 1].split() == ["(1)"]
+    # Every label and value of the column ends at the same character.
+    cells = ["eccv_mean_f1", "(clean)", "0.500", "(0.800)", "0.250", "(-)"]
+    ends = {
+        lines[i].index(cell) + len(cell.removesuffix(")"))
+        for i, cell in zip((0, 1, 3, 4, 5, 6), cells, strict=True)
+    }
+    assert len(ends) == 1

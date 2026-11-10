@@ -247,3 +247,36 @@ def test_bbox_is_not_fooled_by_a_spline_control_hull(solids):
     assert max(shape_bbox(read_solid(solids["loft"]))[1]) == pytest.approx(
         20.0, rel=1e-3
     )
+
+
+def test_cleaned_f1_ignores_how_a_face_is_split(tmp_path):
+    def split_box(at):
+        return cq.Solid.makeBox(at, 10, 10).fuse(
+            cq.Solid.makeBox(20 - at, 10, 10, cq.Vector(at, 0, 0))
+        )
+
+    pred = _step(tmp_path, "pred", split_box(10))
+    gt = _step(tmp_path, "gt", split_box(5))
+    report = score_pair(pred, gt, include_ortho2cad=False)
+    metrics = report["metrics"]
+    assert report["status"] == "OK"
+    assert metrics["eccv_num_gt_faces"] > 6
+    assert metrics["eccv_mean_f1"] < 1
+    assert metrics["eccv_clean_num_pred_faces"] == 6
+    assert metrics["eccv_clean_num_gt_faces"] == 6
+    assert metrics["eccv_clean_mean_f1"] == pytest.approx(1, abs=2e-6)
+
+
+@pytest.mark.parametrize("failure", ["exception", "empty_shape"])
+def test_a_cleanup_failure_keeps_the_raw_f1(solids, monkeypatch, failure):
+    def failed(shape):
+        if failure == "exception":
+            raise RuntimeError("cleanup failed")
+        return cq.Compound.makeCompound([])
+
+    monkeypatch.setattr(cq.Shape, "clean", failed)
+    report = score_pair(solids["box"], solids["box"], include_ortho2cad=False)
+    assert report["status"] == "PARTIAL"
+    assert "eccv_mean_f1" in report["metrics"]
+    assert "eccv_clean_mean_f1" not in report["metrics"]
+    assert set(report["errors"]) == {"eccv_clean"}

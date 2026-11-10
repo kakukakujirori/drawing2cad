@@ -120,10 +120,11 @@ DISTANCE_DECIMALS = 6
 
 
 class Headline(NamedTuple):
-    """How a terminal report shows one metric column."""
+    """How a terminal report shows one metric, and its cleaned variant if any."""
 
     label: str
     decimals: int = 3
+    clean_metric: str | None = None
 
 
 @dataclass(frozen=True)
@@ -171,18 +172,23 @@ class StepScorer:
     def headlines() -> dict[str, Headline]:
         """The metrics terminal reports show, in order; score.json keeps them all.
 
-        ECCV's mean F1 is followed by the four F1s it averages. Ortho2CAD IoU
+        ECCV's mean F1 is followed by the four F1s it averages, each with its
+        value after B-rep cleanup. Ortho2CAD IoU
         is still scored, but proved too unreliable to show.
         """
         return {
             "mesh_iou": Headline("mesh_iou"),
             "chamfer": Headline("chamfer", DISTANCE_DECIMALS),
             "hausdorff": Headline("hausdorff", DISTANCE_DECIMALS),
-            "eccv_mean_f1": Headline("eccv_mean_f1"),
-            "eccv_surface_f1": Headline("surface"),
-            "eccv_edge_f1": Headline("edge"),
-            "eccv_vertex_f1": Headline("vertex"),
-            "eccv_topology_f1": Headline("topology"),
+            "eccv_mean_f1": Headline("eccv_mean_f1", clean_metric="eccv_clean_mean_f1"),
+            "eccv_surface_f1": Headline(
+                "surface", clean_metric="eccv_clean_surface_f1"
+            ),
+            "eccv_edge_f1": Headline("edge", clean_metric="eccv_clean_edge_f1"),
+            "eccv_vertex_f1": Headline("vertex", clean_metric="eccv_clean_vertex_f1"),
+            "eccv_topology_f1": Headline(
+                "topology", clean_metric="eccv_clean_topology_f1"
+            ),
         }
 
     def _run_families(self, pred_step: Path, gt_step: Path) -> ScoreReport:
@@ -506,9 +512,10 @@ def format_score(document: Mapping[str, Any]) -> str:
         f"status     {document['status']}",
         f"prediction {document['pred_step']}",
         *(
-            f"  {name:<18} {format_metric(metrics[name], headline.decimals)}"
+            f"  {metric:<22} {format_metric(metrics[metric], headline.decimals)}"
             for name, headline in StepScorer.headlines().items()
-            if name in metrics
+            for metric in (name, headline.clean_metric)
+            if metric in metrics
         ),
         *(f"  ! {name}: {message}" for name, message in document["errors"].items()),
     ]

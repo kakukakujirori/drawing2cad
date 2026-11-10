@@ -19,35 +19,55 @@ from zeroshot.evaluation.metrics.eccv_components import (
     match_incidence,
     match_or_empty,
 )
-from zeroshot.evaluation.preprocess import PreparedPair
+from zeroshot.evaluation.preprocess import PreparedPair, read_solid
 
 # Keeps the two sides' per-face seeds disjoint; must exceed `MAX_FACES` (5000).
 _PRED_SEED_OFFSET = 10_007
 
 
+def _export(shape: Any, path: Path, clean: bool) -> None:
+    if clean:
+        solids = len(shape.Solids())
+        shape = shape.clean()
+    shape.exportStep(str(path))
+    # Checked after reading back: the STEP round trip repairs transient pcurve errors.
+    if clean and len(read_solid(path).Solids()) != solids:
+        raise ValueError(f"{path.name}: B-rep cleanup changed the number of solids")
+
+
 def score_eccv(
-    pair: PreparedPair, *, f1_threshold: float = 0.1, seed: int = 0
+    pair: PreparedPair,
+    *,
+    f1_threshold: float = 0.1,
+    seed: int = 0,
+    clean: bool = False,
 ) -> dict[str, Any]:
     """Return the best mean F1 over the IoU-tied poses, then the columns behind it.
 
     Tied poses are the same geometry, but a symmetric part's seams make the F1
     depend on the pose. Independent sampling can also give F1 < 1 on small faces.
+    `clean` first merges faces and edges that share a surface or curve on both
+    sides, so that how the GT happens to split a face counts less; its columns
+    are named `eccv_clean_*` to sit beside the raw ones.
     """
     if not np.isfinite(f1_threshold) or f1_threshold <= 0:
         raise ValueError("f1_threshold must be finite and positive")
     with TemporaryDirectory(prefix="eccv-") as scratch:
         gt_path = Path(scratch) / "gt.step"
-        pair.gt_shape.exportStep(str(gt_path))
+        _export(pair.gt_shape, gt_path, clean)
         target = load_step_brep(gt_path, seed=seed)
         candidates = []
         for index, shape in pair.tied_shapes.items():
             pred_path = Path(scratch) / f"pred_{index}.step"
-            shape.exportStep(str(pred_path))
+            _export(shape, pred_path, clean)
             predicted = load_step_brep(pred_path, seed=seed + _PRED_SEED_OFFSET)
             candidates.append(
                 _match(predicted, target, f1_threshold) | {"eccv_rotation_index": index}
             )
-    return max(candidates, key=lambda columns: columns["eccv_mean_f1"])
+    best = max(candidates, key=lambda columns: columns["eccv_mean_f1"])
+    if clean:
+        return {name.replace("eccv_", "eccv_clean_", 1): v for name, v in best.items()}
+    return best
 
 
 def _match(predicted: StepBRep, target: StepBRep, threshold: float) -> dict[str, Any]:

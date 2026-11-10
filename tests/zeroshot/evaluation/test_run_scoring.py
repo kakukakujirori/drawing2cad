@@ -32,6 +32,11 @@ def test_every_headline_is_a_column_the_scorer_returns(
     metrics = StepScorer().score(solids["box"], solids["fillet"]).metrics
 
     assert set(StepScorer.headlines()) <= set(metrics)
+    assert {
+        headline.clean_metric
+        for headline in StepScorer.headlines().values()
+        if headline.clean_metric
+    } <= set(metrics)
 
 
 def test_ortho2cad_iou_is_scored_but_not_a_headline(solids: dict[str, Path]) -> None:
@@ -60,7 +65,7 @@ def test_the_report_shows_hausdorff_to_six_places_and_the_f1_breakdown() -> None
 
     lines = format_score(document).splitlines()
 
-    assert "  hausdorff          0.012346" in lines
+    assert ["hausdorff", "0.012346"] in [line.split() for line in lines]
     assert [line.split()[0] for line in lines[3:]] == [
         "eccv_mean_f1",
         "eccv_surface_f1",
@@ -75,6 +80,26 @@ def test_a_value_that_would_show_as_zero_keeps_three_figures() -> None:
     assert format_metric(0.000012345) == "1.23e-05"
     assert format_metric(0.000012345, decimals=6) == "0.000012"
     assert format_metric(0.0, decimals=6) == "0.000000"
+
+
+def test_a_single_score_lists_each_cleaned_f1_under_its_raw_one() -> None:
+    report = format_score(
+        {
+            "status": "OK",
+            "pred_step": "pred.step",
+            "errors": {},
+            "metrics": {
+                "eccv_clean_mean_f1": 0.8,
+                "eccv_mean_f1": 0.5,
+                "eccv_surface_f1": 0.6,
+            },
+        }
+    )
+    assert [line.split() for line in report.splitlines()[2:]] == [
+        ["eccv_mean_f1", "0.500"],
+        ["eccv_clean_mean_f1", "0.800"],
+        ["eccv_surface_f1", "0.600"],
+    ]
 
 
 def test_a_missing_prediction_is_reported(

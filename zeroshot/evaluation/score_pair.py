@@ -84,12 +84,16 @@ def score_pair(
         if include_eccv:
             from zeroshot.evaluation.metrics.eccv import score_eccv
 
-            try:
-                report["metrics"].update(
-                    score_eccv(pair, f1_threshold=f1_threshold, seed=seed)
-                )
-            except Exception as error:  # noqa: BLE001
-                report["errors"]["eccv"] = _error(error)
+            # The raw and cleaned F1 fail independently.
+            for family, clean in (("eccv", False), ("eccv_clean", True)):
+                try:
+                    report["metrics"].update(
+                        score_eccv(
+                            pair, f1_threshold=f1_threshold, seed=seed, clean=clean
+                        )
+                    )
+                except Exception as error:  # noqa: BLE001
+                    report["errors"][family] = _error(error)
     # Ortho2CAD reads the original STEPs, so a shared-preprocessing error does not block it.
     if include_ortho2cad:
         from zeroshot.evaluation.metrics.ortho2cad import (
