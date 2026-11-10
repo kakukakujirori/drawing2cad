@@ -232,6 +232,73 @@ def test_hidden_circle_is_not_confused_with_close_visible_concentric_circle():
     assert stats["checked_curves"] >= 1
 
 
+@pytest.mark.parametrize("style", ["visible", "hidden"])
+@pytest.mark.parametrize("separation", [3.25, 3.5, 4.0])
+@pytest.mark.parametrize("flip", [False, True])
+@pytest.mark.parametrize("transpose", [False, True])
+def test_local_fit_cannot_take_the_style_of_a_different_parallel_curve(
+    style, separation, flip, transpose
+):
+    gray = np.full((200, 200), 255, np.uint8)
+    other_style = "visible" if style == "hidden" else "hidden"
+    for y, line_style, thickness in (
+        (61, other_style, 2),
+        (round(60 + separation + 1.5), style, 1),
+    ):
+        for x in [20] if line_style == "visible" else range(20, 180, 20):
+            end = 180 if line_style == "visible" else min(x + 14, 180)
+            cv2.line(gray, (x, y), (end, y), 0, thickness, cv2.LINE_AA)
+    curves = [
+        (np.array([[20.5, 60.5], [180.5, 60.5]]), other_style),
+        (np.array([[20.5, 60.5 + separation], [180.5, 60.5 + separation]]), style),
+    ]
+    if flip:
+        gray = np.flipud(gray).copy()
+        curves = [(xy * (1, -1) + (0, 200), kind) for xy, kind in curves]
+    if transpose:
+        gray = gray.T.copy()
+        curves = [(xy[:, ::-1], kind) for xy, kind in curves]
+    model = ezdxf.new(setup=True).modelspace()
+    for xy, kind in curves:
+        model.add_line(
+            *xy,
+            dxfattribs={
+                "linetype": "HIDDEN" if kind == "hidden" else "Continuous",
+            },
+        )
+
+    groups, _ = find_line_style_mismatches(
+        model, np.eye(3), np.repeat(gray[..., None], 3, axis=2), gray < 160
+    )
+
+    assert not groups
+
+
+@pytest.mark.parametrize("style", ["visible", "hidden"])
+def test_coincident_curves_keep_real_style_errors_after_local_translation(style):
+    model = ezdxf.new(setup=True).modelspace()
+    for _ in range(2):
+        model.add_line(
+            (20.5, 100.9),
+            (180.5, 100.9),
+            dxfattribs={
+                "linetype": "HIDDEN" if style == "hidden" else "Continuous",
+            },
+        )
+    ink = np.zeros((200, 200), bool)
+    if style == "hidden":
+        ink[102, 20:181] = True
+    else:
+        for x in range(20, 180, 14):
+            ink[102, x : min(x + 9, 181)] = True
+
+    groups, stats = find_line_style_mismatches(model, np.eye(3), _rgb(ink), ink)
+
+    assert len(groups) == 1
+    assert stats["checked_curves"] == 2
+    assert groups[0].input_style != style
+
+
 def test_duplicate_hidden_curves_report_once_with_nonidentity_transform():
     model = _model("hidden")
     model.add_circle((100.5, 100.5), 40, dxfattribs={"linetype": "HIDDEN"})

@@ -151,6 +151,7 @@ def find_line_style_mismatches(
         best = np.argmin(fit + np.linalg.norm(offsets, axis=1) * 0.01)
         if fit[best] > 0.6:
             continue
+        fitted_xy = shifted[best]
         direction = (
             np.roll(xy, -1, axis=0) - np.roll(xy, 1, axis=0)
             if closed
@@ -159,7 +160,7 @@ def find_line_style_mismatches(
         normal = direction[:, ::-1] * (-1, 1)
         normal /= np.linalg.norm(normal, axis=1, keepdims=True)
         # Tolerate normal displacement without filling gaps along the curve.
-        probes = shifted[best][None] + np.arange(-1, 1.01, 0.5)[:, None, None] * normal
+        probes = fitted_xy[None] + np.arange(-1, 1.01, 0.5)[:, None, None] * normal
         support = (
             cv2.remap(
                 input_ink_pixels,
@@ -172,7 +173,7 @@ def find_line_style_mismatches(
         support &= (
             distances[best] <= 1.0
         )  # Sampling must not widen positional tolerance.
-        strength, widths = _ink_profiles(input_darkness, shifted[best], normal)
+        strength, widths = _ink_profiles(input_darkness, fitted_xy, normal)
         input_style = _style(support, step, closed, strength)
         if input_style is None:
             continue
@@ -180,21 +181,23 @@ def find_line_style_mismatches(
             input_style == "visible"
             and input_annotation_distance is not None
             and _continues_annotation(
-                shifted[best], input_annotation_distance, input_darkness, widths
+                fitted_xy, input_annotation_distance, input_darkness, widths
             )
         ):
             continue
         if input_style != output_style:
-            # Nearby distinct edges can fill each other's gaps; coincident duplicates cannot.
+            # Check where ink was sampled; local fitting must not switch curves.
             ambiguous = False
             for other_index, (other, _, _, _) in enumerate(output_curves):
                 if other_index == index or (
-                    (other.max(axis=0) < xy.min(axis=0) - 3).any()
-                    or (other.min(axis=0) > xy.max(axis=0) + 3).any()
+                    (other.max(axis=0) < fitted_xy.min(axis=0) - 3).any()
+                    or (other.min(axis=0) > fitted_xy.max(axis=0) + 3).any()
                 ):
                     continue
-                separation = output_curve_trees[other_index].query(xy)[0]
-                if ((separation > 1.25) & (separation <= 3)).mean() > 0.2:
+                tree = output_curve_trees[other_index]
+                coincident = tree.query(xy)[0] <= 1.25
+                near_sample = tree.query(fitted_xy)[0] <= 3
+                if (near_sample & ~coincident).mean() > 0.2:
                     ambiguous = True
                     break
             if ambiguous:
@@ -209,7 +212,6 @@ def find_line_style_mismatches(
     stats["mismatch_count"] = len(groups)
     stats.update(lengths)
     return groups, stats
-
 
 
 def _runs(support: np.ndarray, step: float, closed: bool):
