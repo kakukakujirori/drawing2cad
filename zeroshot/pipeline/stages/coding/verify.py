@@ -690,7 +690,7 @@ _COMPARISON = cleandoc("""
     [Metric guide]
     - Line distance: mean input/projection line distance, in input pixels.
     - Silhouette mismatch: filled-outline difference; holes and inner lines are excluded.
-    - Solid/dashed mismatch length: total length of detected mismatches, in input pixels; excluded from the geometric score.
+    - Solid/dashed mismatch length: total length of detected mismatches, in input pixels; measured separately from the geometric score. Even when that score improves, these mismatches can indicate incorrect occlusion or feature depth. Verify the affected lines against the source views.
     - Alignment may be wrong or hide size errors.
     - Tangent boundaries between smooth faces are optional. They may be missing from the input.
 """)

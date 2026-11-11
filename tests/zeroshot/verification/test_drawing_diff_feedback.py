@@ -465,7 +465,8 @@ def test_first_style_summary_shows_only_the_mismatch_length(tmp_path):
     )
     assert "solid/dashed mismatch length: ≈126 px" in text
     assert "total length of detected mismatches, in input pixels" in text
-    assert "excluded from the geometric score" in text
+    assert "measured separately from the geometric score" in text
+    assert "Verify the affected lines against the source views" in text
     assert "840" not in text and "210" not in text
     assert "classified" not in text and "unknown" not in text
     assert "vs previous" not in text
