@@ -2,7 +2,12 @@
 
 import pytest
 
-from tests.zeroshot.contracts import drawing, interpretation, interpreted_feature
+from tests.zeroshot.contracts import (
+    drawing,
+    interpretation,
+    interpreted_feature,
+    ticket_answers,
+)
 from zeroshot.pipeline.stages.coding.validate import CodingOutput
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
@@ -12,10 +17,11 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 )
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
+    Concern,
     StageReport,
+    StageTicketResponse,
     Ticket,
     TicketAnswers,
-    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import PipelineStage, ReasoningStage
 from zeroshot.pipeline.stages.validate import (
@@ -37,7 +43,7 @@ def _interpretation() -> DrawingInterpretation:
 
 
 def _answer_for(ticket_id: str, stage: ReasoningStage) -> dict[str, str]:
-    """The submitted shape: answers keyed by ticket, with no stage to disagree."""
+    """Each ticket's submitted summary, with no stage to disagree."""
     return {ticket_id: f"Reviewed {ticket_id} during {stage}."}
 
 
@@ -46,7 +52,7 @@ def _ticket(ticket_id: str, *, answered: bool = False) -> Ticket:
         ticket_id=ticket_id,
         subject=BootstrapWork(instruction="Reconstruct the part."),
         responses=[
-            TicketResponse(
+            StageTicketResponse(
                 ticket_id=ticket_id,
                 stage=PipelineStage.CODING,
                 summary=f"Reviewed {ticket_id} during coding.",
@@ -93,7 +99,9 @@ def _output(status: ExecutionStatus = ExecutionStatus.REJECTED) -> CodingOutput:
 
 
 def _answers(responses: dict[str, str]) -> TicketAnswers:
-    return TicketAnswers(stage_report=StageReport(concerns={}), responses=responses)
+    return TicketAnswers(
+        stage_report=StageReport(concerns=[]), responses=ticket_answers(responses)
+    )
 
 
 def test_coding_accepts_its_interpretation_and_terminal_build() -> None:
@@ -185,11 +193,16 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
     held = _interpretation()
     held.features[0].parameters["width"] = 12.0
     submission = TicketAnswers(
-        responses={"ticket_initial": "Established sem_feature_1.width."},
+        responses=ticket_answers(
+            {"ticket_initial": "Established sem_feature_1.width."}
+        ),
         stage_report=StageReport(
-            concerns={
-                "concern_height": "The height uses sem_feature_1.width provisionally."
-            },
+            concerns=[
+                Concern(
+                    id="concern_height",
+                    explanation="The height uses sem_feature_1.width provisionally.",
+                )
+            ],
         ),
     )
     output = CodingOutput(
@@ -208,7 +221,7 @@ def test_stage_reports_commit_with_artifacts_and_responses_and_survive_resume(tm
     snapshot = coded.snapshots[-1]
     assert snapshot.interpretation == held
     report = snapshot.stage_reports[PipelineStage.CODING]
-    assert "sem_feature_1.width (= 12.0)" in report.concerns["concern_height"]
+    assert "sem_feature_1.width (= 12.0)" in report.concerns[0].explanation
     assert (
         "sem_feature_1.width (= 12.0)" in snapshot.open_tickets[0].responses[0].summary
     )

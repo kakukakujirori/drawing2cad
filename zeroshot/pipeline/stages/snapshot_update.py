@@ -8,8 +8,8 @@ from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
 from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
+    StageTicketResponse,
     TicketAnswers,
-    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import ArtifactField, ReasoningStage
 from zeroshot.pipeline.stages.validate import validate_submission
@@ -22,7 +22,7 @@ class SnapshotUpdate:
     # Only supplied fields are replaced; None is an explicit replacement.
     # The complete candidate is validated as a ReconstructionSnapshot by the caller.
     artifacts: dict[ArtifactField, object]
-    responses: list[TicketResponse]
+    responses: list[StageTicketResponse]
     report: StageReport
 
 
@@ -54,8 +54,10 @@ def build_snapshot_update(
         # The stage is stamped here rather than asked for: this is the stage
         # that ran, and a submitted one could only ever agree or be rejected.
         responses=[
-            TicketResponse(ticket_id=ticket_id, stage=stage, summary=summary)
-            for ticket_id, summary in submission.responses.items()
+            StageTicketResponse(
+                ticket_id=response.ticket_id, stage=stage, summary=response.summary
+            )
+            for response in submission.responses
         ],
         report=submission.stage_report,
     )

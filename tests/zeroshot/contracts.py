@@ -4,7 +4,7 @@ Tests *about* the contract build it explicitly -- see
 `messages/test_interpretation_contracts.py`.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from zeroshot.pipeline.stages.audit.contracts import AuditRegion, TicketReview
 from zeroshot.pipeline.stages.interpretation.contracts import (
@@ -16,7 +16,10 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 from zeroshot.pipeline.stages.interpretation.contracts import (
     SemanticFeature as InterpretedFeature,
 )
-from zeroshot.pipeline.stages.tickets.contracts import TicketResponse
+from zeroshot.pipeline.stages.tickets.contracts import (
+    StageTicketResponse,
+    TicketResponse,
+)
 
 # How each role is drawn on a page that turns no view. Fixtures that are not
 # about a turned view take these; the contract itself keeps no such default,
@@ -36,9 +39,14 @@ def evidence(*files: str) -> list[AuditRegion]:
     return [AuditRegion(file=file, box=(0, 0, 10, 10)) for file in files]
 
 
-def answered(responses: Iterable[TicketResponse]) -> dict[str, str]:
+def ticket_answers(by_ticket: Mapping[str, str]) -> list[TicketResponse]:
+    """Submitted responses, from each ticket's answer."""
+    return [TicketResponse(ticket_id=t, summary=text) for t, text in by_ticket.items()]
+
+
+def answered(responses: Iterable[StageTicketResponse]) -> list[TicketResponse]:
     """The submitted shape of responses a test built as the stored ones."""
-    return {response.ticket_id: response.summary for response in responses}
+    return ticket_answers({r.ticket_id: r.summary for r in responses})
 
 
 def view(role: str = "front", **overrides: object) -> DrawingView:

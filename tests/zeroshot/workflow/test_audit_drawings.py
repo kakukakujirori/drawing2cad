@@ -23,8 +23,8 @@ from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
+    StageTicketResponse,
     Ticket,
-    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.verification import AttemptStore, ExecutionStatus
@@ -39,7 +39,7 @@ def snapshot() -> ReconstructionSnapshot:
                 ticket_id="ticket_initial",
                 subject=BootstrapWork(instruction="Reconstruct"),
                 responses=[
-                    TicketResponse(
+                    StageTicketResponse(
                         ticket_id="ticket_initial", stage=stage, summary="Completed."
                     )
                     for stage in REASONING_STAGES

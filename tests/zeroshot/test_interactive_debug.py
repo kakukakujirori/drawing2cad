@@ -17,14 +17,14 @@ from tests.zeroshot.chat_models import (
     tool_call,
     unanswered_tool_calls,
 )
-from tests.zeroshot.contracts import interpretation, view
+from tests.zeroshot.contracts import interpretation, ticket_answers, view
 from zeroshot import interactive_debug as debug
 from zeroshot.pipeline.stages.audit.contracts import AuditReport, AuditSubmission
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.tickets.contracts import (
     StageReport,
+    StageTicketResponse,
     TicketAnswers,
-    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus
@@ -62,7 +62,7 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
     final.interpretation.views[0].file = "/work/inputs/page.png"
     final.program_source = "result = 'original submission'\n"
     final.open_tickets[0].responses = [
-        TicketResponse(ticket_id="ticket_initial", stage="coding", summary="Done")
+        StageTicketResponse(ticket_id="ticket_initial", stage="coding", summary="Done")
     ]
     final.verification = VerifyOutputResult(
         verification_id="000",
@@ -80,8 +80,8 @@ def make_run(tmp_path: Path) -> tuple[Path, list]:
         },
     )
     answer = TicketAnswers(
-        responses={"ticket_initial": "Done"},
-        stage_report=StageReport(concerns={}),
+        responses=ticket_answers({"ticket_initial": "Done"}),
+        stage_report=StageReport(concerns=[]),
     )
     image = "data:image/png;base64," + base64.b64encode(picture.read_bytes()).decode()
     messages = [

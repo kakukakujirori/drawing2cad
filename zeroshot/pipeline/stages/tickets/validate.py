@@ -10,11 +10,11 @@ def validate_ticket_answers(
 ) -> None:
     """Require one answer for every open ticket, and no other.
 
-    Keying the answers by ticket makes a duplicate unrepresentable, so only
-    the two membership errors remain.
+    The contract refuses a ticket answered twice, so only the two membership
+    errors remain.
     """
     expected = {ticket.ticket_id for ticket in snapshot.open_tickets}
-    submitted = set(answers.responses)
+    submitted = {answer.ticket_id for answer in answers.responses}
     errors: list[str] = []
     if missing := sorted(expected - submitted):
         errors.append("missing ticket responses: " + ", ".join(missing))

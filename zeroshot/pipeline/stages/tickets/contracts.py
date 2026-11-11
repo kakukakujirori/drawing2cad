@@ -1,5 +1,6 @@
 import re
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from typing import Self
 
 from pydantic import (
@@ -49,11 +50,11 @@ _ANSWER_A_TICKET = (
 )
 
 
-class TicketResponse(BaseModel):
-    """One stage's answer to one ticket, as the snapshot keeps it.
+class StageTicketResponse(BaseModel):
+    """A submitted TicketResponse as the snapshot keeps it, stamped with its stage.
 
-    The stage is stamped by the pipeline, which already knows which one
-    answered; a submission carries the answers keyed by ticket instead.
+    The pipeline stamps the stage rather than asking for it: it knows which
+    stage ran.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -93,7 +94,7 @@ class Ticket(BaseModel):
             "that coding must address."
         ),
     )
-    responses: list[TicketResponse] = Field(
+    responses: list[StageTicketResponse] = Field(
         ...,
         description=(
             "Coding's response once it has completed; a newly opened ticket "
@@ -127,6 +128,43 @@ class Ticket(BaseModel):
         return self
 
 
+def _repeated(names: Iterable[str]) -> list[str]:
+    counts = Counter(names)
+    return sorted(name for name, count in counts.items() if count > 1)
+
+
+class Concern(BaseModel):
+    """One unresolved issue or provisional choice a stage reports."""
+
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
+
+    id: str = Field(
+        ...,
+        description=(
+            "A stable identifier beginning concern_ and carrying on in "
+            "lower_snake_case: concern_web_thickness. The audit answers the "
+            "concern by it. Keep it while the concern stands."
+        ),
+    )
+    explanation: str = Field(
+        ...,
+        description="The affected subject, the doubt and how you handled it.",
+    )
+
+    @model_validator(mode="after")
+    def require_valid_content(self) -> Self:
+        if _CONCERN_ID.fullmatch(self.id) is None:
+            raise ValueError(
+                f"concern id {self.id!r} must be a concern_... identifier in "
+                "lower_snake_case, naming the concern rather than describing it"
+            )
+        if not self.explanation.strip():
+            raise ValueError(f"{self.id}: explanation must not be blank")
+        return self
+
+
 class StageReport(BaseModel):
     """Stage-wide observations stored once, separately from ticket responses."""
 
@@ -134,45 +172,54 @@ class StageReport(BaseModel):
         extra="ignore", json_schema_extra={"additionalProperties": False}
     )
 
-    concerns: dict[str, str] = Field(
+    concerns: list[Concern] = Field(
         ...,
         description=(
             "Additional unresolved issues and important provisional choices "
             "your ticket responses do not already explain, one entry "
-            "each, and {} if none. Keep a ticket's own doubts in its "
-            "`responses` answer; do not repeat them here. The key is a stable "
-            "identifier beginning concern_ and carrying on in lower_snake_case: "
-            "concern_web_thickness. The value states the affected subject, the "
-            "doubt and how you handled it. The audit answers each entry by its "
-            "key, so give one concern its own entry rather than several in one. "
-            "Keep an entry's key while the concern stands. Do not "
-            "repeat artifact details or ticket summaries; a ticket summary "
-            "still states its own outcome."
+            "each, and [] if none. Keep a ticket's own doubts in its "
+            "`responses` answer; do not repeat them here. The audit answers "
+            "each entry by its id, so give one concern its own entry rather "
+            "than several in one. Do not repeat artifact details or ticket "
+            "summaries; a ticket summary still states its own outcome."
         ),
     )
 
     @field_validator("concerns")
     @classmethod
-    def require_explanations(cls, explanations: dict[str, str]) -> dict[str, str]:
-        for name, explanation in explanations.items():
-            if _CONCERN_ID.fullmatch(name) is None:
-                raise ValueError(
-                    f"concerns key {name!r} must be a concern_... identifier in "
-                    "lower_snake_case, naming the concern rather than describing it"
-                )
-            if not explanation.strip():
-                raise ValueError(f"concerns.{name}: explanation must not be blank")
-        return explanations
+    def require_distinct_ids(cls, concerns: list[Concern]) -> list[Concern]:
+        if repeated := _repeated(concern.id for concern in concerns):
+            raise ValueError("concerns repeat an id: " + ", ".join(repeated))
+        return concerns
 
 
 def reported_concerns(reports: Mapping[ReasoningStage, StageReport]) -> list[str]:
     """Every reported concern, as the audit answers it: stage.concern_id."""
     return [
-        f"{stage.value}.{concern}"
+        f"{stage.value}.{concern.id}"
         for stage in REASONING_STAGES
         if stage in reports
         for concern in reports[stage].concerns
     ]
+
+
+class TicketResponse(BaseModel):
+    """One open ticket's answer, as a stage submits it."""
+
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
+
+    ticket_id: str = Field(..., description="The open ticket this answers.")
+    summary: str = Field(..., description=_ANSWER_A_TICKET)
+
+    @model_validator(mode="after")
+    def require_a_summary(self) -> Self:
+        """An ID that is not a ticket is left to the round's own check, which
+        knows the open tickets and can name them."""
+        if not self.summary.strip():
+            raise ValueError(f"{self.ticket_id}: summary must not be blank")
+        return self
 
 
 class TicketAnswers(Submission):
@@ -182,26 +229,25 @@ class TicketAnswers(Submission):
     verifies and reads back, so no artifact belongs in here.
     """
 
-    responses: dict[str, str] = Field(
+    responses: list[TicketResponse] = Field(
         ...,
         description=(
-            "Your answer to each open ticket, keyed by ticket ID: exactly "
-            "those tickets and no others. " + _ANSWER_A_TICKET
+            "Your answer to each open ticket, one entry per ticket: exactly "
+            "those tickets and no others."
         ),
     )
     stage_report: StageReport = Field(
         ...,
         description=(
-            "Stage-wide observations. Include concerns even when empty: concerns={}."
+            "Stage-wide observations. Include concerns even when empty: concerns=[]."
         ),
     )
 
     @field_validator("responses")
     @classmethod
-    def require_an_answer(cls, answers: dict[str, str]) -> dict[str, str]:
-        """A key that is not a ticket is left to the round's own check, which
-        knows the open tickets and can name them."""
-        for ticket_id, summary in answers.items():
-            if not summary.strip():
-                raise ValueError(f"{ticket_id}: the answer must not be blank")
+    def require_one_answer_per_ticket(
+        cls, answers: list[TicketResponse]
+    ) -> list[TicketResponse]:
+        if repeated := _repeated(answer.ticket_id for answer in answers):
+            raise ValueError("responses repeat a ticket: " + ", ".join(repeated))
         return answers

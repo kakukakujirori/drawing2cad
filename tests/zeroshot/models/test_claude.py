@@ -18,7 +18,10 @@ from zeroshot.pipeline.workflow.middleware.connection_retry import (
     is_retryable_model_error,
 )
 
-_ANSWER = {"responses": {"ticket_0": "built a box"}, "stage_report": {"concerns": {}}}
+_ANSWER = {
+    "responses": [{"ticket_id": "ticket_0", "summary": "built a box"}],
+    "stage_report": {"concerns": []},
+}
 _ANSWER_CALL = {
     "type": "tool_use",
     "id": "tu_1",

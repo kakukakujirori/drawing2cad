@@ -417,7 +417,7 @@ def test_audit_can_read_concerns_from_both_ticket_summaries_and_stage_reports(
     ).text
 
     assert "provisional interpretations and what could not be resolved" in prompt
-    assert "one `concern_...` entry each" in prompt
+    assert "one entry each with a `concern_...` `id`" in prompt
     assert "further unresolved issues" in prompt
     assert "The auditor reviews each" in prompt
     instruction = render_stage("audit")

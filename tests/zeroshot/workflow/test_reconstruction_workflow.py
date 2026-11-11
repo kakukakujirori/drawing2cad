@@ -10,6 +10,7 @@ from tests.zeroshot.contracts import (
     evidence,
     interpretation,
     interpreted_feature,
+    ticket_answers,
 )
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
@@ -26,10 +27,11 @@ from zeroshot.pipeline.stages.contracts import (
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
+    Concern,
     StageReport,
+    StageTicketResponse,
     Ticket,
     TicketAnswers,
-    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import REASONING_STAGES, PipelineStage
 from zeroshot.pipeline.stages.validate import (
@@ -72,7 +74,7 @@ def _snapshot(
                 ticket_id=ticket_id,
                 subject=BootstrapWork(instruction="Reconstruct the part."),
                 responses=[
-                    TicketResponse(
+                    StageTicketResponse(
                         ticket_id=ticket_id,
                         stage=PipelineStage.CODING,
                         summary="Reviewed the ticket during coding.",
@@ -120,8 +122,8 @@ def _completed_run(
     return advance_reconstruction(
         history,
         TicketAnswers(
-            responses=_stage_responses(history),
-            stage_report=StageReport(concerns={}),
+            responses=ticket_answers(_stage_responses(history)),
+            stage_report=StageReport(concerns=[]),
         ),
         workspace_output=_verified_output(verification=verification),
     )
@@ -155,7 +157,12 @@ def _concerned_snapshot() -> ReconstructionSnapshot:
     snapshot = _snapshot()
     snapshot.stage_reports = {
         PipelineStage.CODING: StageReport(
-            concerns={"concern_web_thickness": "The web thickness is estimated."},
+            concerns=[
+                Concern(
+                    id="concern_web_thickness",
+                    explanation="The web thickness is estimated.",
+                )
+            ],
         )
     }
     return snapshot
@@ -194,7 +201,11 @@ def test_a_concern_may_be_escalated_against_another_stage() -> None:
     snapshot = _snapshot()
     snapshot.stage_reports = {
         PipelineStage.CODING: StageReport(
-            concerns={"concern_bore_diameter": "sem_bore looks too wide."},
+            concerns=[
+                Concern(
+                    id="concern_bore_diameter", explanation="sem_bore looks too wide."
+                )
+            ],
         )
     }
     report = _report("interpretation", ["sem_feature_1"])
@@ -341,8 +352,8 @@ def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
     run = start_reconstruction("run_example", "Reconstruct the part.", drawing())
     original_json = run.model_dump_json()
     answers = TicketAnswers(
-        stage_report=StageReport(concerns={}),
-        responses=_stage_responses(run),
+        stage_report=StageReport(concerns=[]),
+        responses=ticket_answers(_stage_responses(run)),
     )
 
     with pytest.raises(SubmissionValidationError, match="verified interpretation"):
@@ -373,8 +384,8 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     advanced = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(concerns={}),
-            responses=responses,
+            stage_report=StageReport(concerns=[]),
+            responses=ticket_answers(responses),
         ),
         workspace_output=_verified_output(),
     )
@@ -412,11 +423,13 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     advanced = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(concerns={}),
-            responses={
-                ticket.ticket_id: "Restated sem_feature_1.radius."
-                for ticket in current.open_tickets
-            },
+            stage_report=StageReport(concerns=[]),
+            responses=ticket_answers(
+                {
+                    ticket.ticket_id: "Restated sem_feature_1.radius."
+                    for ticket in current.open_tickets
+                }
+            ),
         ),
         workspace_output=_verified_output(held),
     )
@@ -471,8 +484,8 @@ def test_a_revision_round_replaces_the_complete_interpretation() -> None:
     advanced = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(concerns={}),
-            responses=_stage_responses(run),
+            stage_report=StageReport(concerns=[]),
+            responses=ticket_answers(_stage_responses(run)),
         ),
         workspace_output=_verified_output(revised),
     )

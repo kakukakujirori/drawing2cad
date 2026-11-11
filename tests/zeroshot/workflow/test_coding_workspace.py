@@ -267,10 +267,13 @@ def test_an_answer_waits_for_a_written_verified_interpretation(tmp_path, monkeyp
     verifier, candidate, _ = _case(tmp_path)
     drawing = [register_view("view_page", View.FULL_PAGE, tmp_path / "source.png")]
     response = {
-        "stage_report": {"concerns": {}},
-        "responses": {
-            "ticket_initial": "Read view_front and localized sem_pin_upper_left."
-        },
+        "stage_report": {"concerns": []},
+        "responses": [
+            {
+                "ticket_id": "ticket_initial",
+                "summary": "Read view_front and localized sem_pin_upper_left.",
+            }
+        ],
     }
 
     @tool("write_interpretation")
@@ -354,10 +357,13 @@ def test_dxf_metadata_reaches_the_coder_and_its_interpretation_validates(
     )
     candidate = DrawingInterpretation.model_validate(data)
     response = {
-        "stage_report": {"concerns": {}},
-        "responses": {
-            "ticket_initial": "Interpreted view_front and view_detail in millimetres."
-        },
+        "stage_report": {"concerns": []},
+        "responses": [
+            {
+                "ticket_id": "ticket_initial",
+                "summary": "Interpreted view_front and view_detail in millimetres.",
+            }
+        ],
     }
 
     @tool("write_dxf_interpretation")

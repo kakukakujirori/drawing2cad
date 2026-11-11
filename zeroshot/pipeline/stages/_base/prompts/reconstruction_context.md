@@ -48,6 +48,6 @@ Ticket fields:
 
 ### Stage reports
 
-Coding answers through `TicketAnswers`: `responses` maps ticket IDs to free-text outcomes, including provisional interpretations and what could not be resolved. `stage_report.concerns` holds further unresolved issues and provisional choices, one `concern_...` entry each, `{}` if none. The auditor reviews each.
+Coding answers through `TicketAnswers`: `responses` gives each ticket's ID and free-text outcome, including provisional interpretations and what could not be resolved. `stage_report.concerns` holds further unresolved issues and provisional choices, one entry each with a `concern_...` `id`, `[]` if none. The auditor reviews each.
 
 $drawing_skeleton

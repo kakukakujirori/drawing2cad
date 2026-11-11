@@ -1245,11 +1245,14 @@ def test_failed_coding_submission_is_refused_after_feedback(tmp_path: Path) -> N
     verifier = _create_verifier(executor, workdir)
     answer = {
         "stage_report": {
-            "concerns": {},
+            "concerns": [],
         },
-        "responses": {
-            "ticket_initial": "The program still fails; audit must diagnose the operation."
-        },
+        "responses": [
+            {
+                "ticket_id": "ticket_initial",
+                "summary": "The program still fails; audit must diagnose the operation.",
+            }
+        ],
     }
     model = ScriptedChatModel(
         responses=(

@@ -12,7 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from PIL import Image, ImageDraw
 from pydantic import BaseModel
 
-from tests.zeroshot.contracts import evidence, interpretation, view
+from tests.zeroshot.contracts import evidence, interpretation, ticket_answers, view
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditRegion,
@@ -42,7 +42,9 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 )
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
+    Concern,
     StageReport,
+    StageTicketResponse,
     Ticket,
     TicketAnswers,
     TicketResponse,
@@ -214,7 +216,7 @@ _RECONSTRUCTION = ReconstructionHistory(
                     ticket_id="ticket_initial",
                     subject=BootstrapWork(instruction="reconstruct the drawing"),
                     responses=[
-                        TicketResponse(
+                        StageTicketResponse(
                             ticket_id="ticket_initial",
                             stage=PipelineStage.CODING,
                             summary="implemented the flange and the hole",
@@ -229,7 +231,9 @@ _RECONSTRUCTION = ReconstructionHistory(
             verification=_VERIFICATION,
             stage_reports={
                 PipelineStage.CODING: StageReport(
-                    concerns={"concern_boss": "Check the boss."},
+                    concerns=[
+                        Concern(id="concern_boss", explanation="Check the boss.")
+                    ],
                 )
             },
         )
@@ -237,8 +241,8 @@ _RECONSTRUCTION = ReconstructionHistory(
 )
 
 _CODING_SUBMISSION = TicketAnswers(
-    stage_report=StageReport(concerns={}),
-    responses={"ticket_initial": "implemented the flange and the hole"},
+    stage_report=StageReport(concerns=[]),
+    responses=ticket_answers({"ticket_initial": "implemented the flange and the hole"}),
 )
 
 _ARTIFACTS: dict[str, object] = {
@@ -303,14 +307,16 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         ReconstructionHistory,
         ReconstructionSnapshot,
         Ticket,
-        TicketResponse,
+        StageTicketResponse,
         PipelineStage,
         DrawingView,
         Region,
         InterpretedDimension,
         InterpretedView,
         TicketAnswers,
+        TicketResponse,
         StageReport,
+        Concern,
     }
 
 

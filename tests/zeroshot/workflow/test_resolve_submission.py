@@ -2,15 +2,17 @@
 
 import pytest
 
+from tests.zeroshot.contracts import ticket_answers
 from zeroshot.pipeline.stages.interpretation.contracts import DrawingInterpretation
 from zeroshot.pipeline.stages.resolve_refs import (
     _references_resolved_in_prose,
     resolve_references,
 )
 from zeroshot.pipeline.stages.tickets.contracts import (
+    Concern,
     StageReport,
+    StageTicketResponse,
     TicketAnswers,
-    TicketResponse,
 )
 from zeroshot.pipeline.stages.types import PipelineStage
 
@@ -119,7 +121,7 @@ def test_identity_names_and_sentence_punctuation_are_not_parameter_addresses() -
 
 
 def test_whole_answers_are_copied_and_strenum_identity_survives() -> None:
-    response = TicketResponse(
+    response = StageTicketResponse(
         ticket_id="ticket_initial",
         stage=PipelineStage.CODING,
         summary="Cut sem_bore.radius at sem_bore.center; sem_bore.depth is open.",
@@ -135,22 +137,23 @@ def test_whole_answers_are_copied_and_strenum_identity_survives() -> None:
 
 def test_ticket_summary_and_stage_report_references_resolve_without_mutating_submission():
     submission = TicketAnswers(
-        responses={
-            "ticket_initial": "Kept sem_bore.radius despite the ticket's ambiguity."
-        },
+        responses=ticket_answers(
+            {"ticket_initial": "Kept sem_bore.radius despite the ticket's ambiguity."}
+        ),
         stage_report=StageReport(
-            concerns={
-                "concern_checks": "Check dim_diameter.quantity and sem_bore.center."
-            },
+            concerns=[
+                Concern(
+                    id="concern_checks",
+                    explanation="Check dim_diameter.quantity and sem_bore.center.",
+                )
+            ],
         ),
     )
     before = submission.model_dump_json()
     resolved = resolve_references(submission, interpretation())
 
-    assert (
-        "sem_bore.radius (= 6.000123456789123)" in resolved.responses["ticket_initial"]
-    )
-    concern = resolved.stage_report.concerns["concern_checks"]
+    assert "sem_bore.radius (= 6.000123456789123)" in resolved.responses[0].summary
+    concern = resolved.stage_report.concerns[0].explanation
     assert "dim_diameter.quantity (= 2)" in concern
     assert "sem_bore.center (= [0.0 null 3.0])" in concern
     assert submission.model_dump_json() == before

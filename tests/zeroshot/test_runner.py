@@ -19,7 +19,7 @@ from PIL import Image
 from rich.console import Console
 
 from tests.zeroshot.chat_models import ScriptedChatModel
-from tests.zeroshot.contracts import drawing, interpretation
+from tests.zeroshot.contracts import drawing, interpretation, ticket_answers
 from tests.zeroshot.prompt_paths import ROLE_PATHS
 from tests.zeroshot.workflow.test_graph import (
     AUDIT_TOOLS,
@@ -90,7 +90,7 @@ _ACCEPTED_AUDIT = AIMessage(
 
 
 def _ticket_response(stage: str, summary: str) -> dict[str, str]:
-    del stage  # the pipeline stamps it; a submission is keyed by ticket
+    del stage  # the pipeline stamps it; a submission carries no stage
     return {"ticket_initial": summary}
 
 
@@ -165,8 +165,8 @@ def _writing_model(call_id: str = "call-write-model") -> AIMessage:
 
 _CODING_ANSWER = AIMessage(
     content=TicketAnswers(
-        responses=_ticket_response("coding", "Implemented the box."),
-        stage_report=StageReport(concerns={}),
+        responses=ticket_answers(_ticket_response("coding", "Implemented the box.")),
+        stage_report=StageReport(concerns=[]),
     ).model_dump_json()
 )
 
@@ -205,8 +205,10 @@ def _verified_resume_run():
     run = advance_reconstruction(
         run,
         TicketAnswers(
-            responses=_ticket_response("coding", "Implemented the box."),
-            stage_report=StageReport(concerns={}),
+            responses=ticket_answers(
+                _ticket_response("coding", "Implemented the box.")
+            ),
+            stage_report=StageReport(concerns=[]),
         ),
         workspace_output=CodingOutput(
             interpretation("a box"),
@@ -399,8 +401,8 @@ def test_resume_restores_drawing_stage_crops(
     run = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(concerns={}),
-            responses=_ticket_response("coding", "Read view_front."),
+            stage_report=StageReport(concerns=[]),
+            responses=ticket_answers(_ticket_response("coding", "Read view_front.")),
         ),
         workspace_output=CodingOutput(
             interpretation(views=[page, crop, relative_crop, temporary_crop]),

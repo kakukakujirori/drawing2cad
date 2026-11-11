@@ -24,6 +24,7 @@ from tests.zeroshot.contracts import (
     evidence,
     interpretation,
     interpreted_feature,
+    ticket_answers,
 )
 from tests.zeroshot.prompt_paths import ROLE_PATHS
 from zeroshot.pipeline.messages.artifact import ArtifactPresenter
@@ -142,8 +143,8 @@ def _coding_script(
 def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
     return _message(
         TicketAnswers(
-            responses=_responses(ticket_id, PipelineStage.CODING),
-            stage_report=StageReport(concerns={}),
+            responses=ticket_answers(_responses(ticket_id, PipelineStage.CODING)),
+            stage_report=StageReport(concerns=[]),
         )
     )
 
@@ -422,8 +423,10 @@ def _coded_seed() -> ReconstructionHistory:
     return advance_reconstruction(
         start_reconstruction("run_test", "Reconstruct the drawing.", drawing()),
         TicketAnswers(
-            stage_report=StageReport(concerns={}),
-            responses=_response(_ROUND_ZERO_TICKET, PipelineStage.CODING),
+            stage_report=StageReport(concerns=[]),
+            responses=ticket_answers(
+                _response(_ROUND_ZERO_TICKET, PipelineStage.CODING)
+            ),
         ),
         workspace_output=CodingOutput(interpretation("a plate"), _verified()),
     )
@@ -552,12 +555,12 @@ def test_a_coding_answer_that_contradicts_its_round_is_refused_inside_the_agent(
     calls = _stub_verification(monkeypatch, _verified())
     responses = _responses(_ROUND_ZERO_TICKET, PipelineStage.CODING)
     unchecked = TicketAnswers(
-        stage_report=StageReport(concerns={}),
-        responses={},
+        stage_report=StageReport(concerns=[]),
+        responses=[],
     )
     checked = TicketAnswers(
-        responses=responses,
-        stage_report=StageReport(concerns={}),
+        responses=ticket_answers(responses),
+        stage_report=StageReport(concerns=[]),
     )
     coder = ScriptedChatModel(
         responses=(

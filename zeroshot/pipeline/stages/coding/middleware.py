@@ -100,11 +100,11 @@ class FreshCodingMiddleware(CodingMiddleware):
                 ticket.model_dump(mode="json") for ticket in snapshot.open_tickets
             ],
             "current_concerns": {
-                stage: report.concerns
+                stage: report.model_dump(mode="json")["concerns"]
                 for stage, report in snapshot.stage_reports.items()
             },
             "previous_concerns": {
-                stage: report.concerns
+                stage: report.model_dump(mode="json")["concerns"]
                 for stage, report in (
                     history.snapshots[-2].stage_reports.items()
                     if len(history.snapshots) > 1

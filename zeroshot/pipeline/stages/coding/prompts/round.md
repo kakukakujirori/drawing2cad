@@ -82,6 +82,6 @@ Do not believe in your 3D reasoning blindly. Whenever deciding geometric design 
 - State which geometric conclusions you checked against the latest images or measurements. Keep untested predictions and unavailable views explicitly unverified.
 - If a feature cannot be made to work, leave the program in its best executable state and report exactly what remains incomplete.
 
-Finish tool work and return one `TicketAnswers` with your ticket responses and one `stage_report.concerns` entry per remaining concern those responses do not explain. Give one `responses` entry per ticket, keyed by its ticket ID and none for any other. Report the geometry changed, its supporting evidence and the affected `view_`/`dim_`/`sem_` names in the relevant ticket response. The pipeline captures both files through verification; claim only changes present in them.
+Finish tool work and return one `TicketAnswers` with your ticket responses and one `stage_report.concerns` entry per remaining concern those responses do not explain. Give one `responses` entry per ticket, naming its ticket ID, and none for any other. Report the geometry changed, its supporting evidence and the affected `view_`/`dim_`/`sem_` names in the relevant ticket response. The pipeline captures both files through verification; claim only changes present in them.
 
 Only the audit can open a ticket.

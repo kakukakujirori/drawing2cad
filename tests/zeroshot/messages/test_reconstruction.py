@@ -4,7 +4,13 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
-from tests.zeroshot.contracts import answered, drawing, evidence, interpretation
+from tests.zeroshot.contracts import (
+    answered,
+    drawing,
+    evidence,
+    interpretation,
+    ticket_answers,
+)
 from zeroshot.pipeline.stages.audit.contracts import (
     AuditFinding,
     AuditReport,
@@ -17,7 +23,9 @@ from zeroshot.pipeline.stages.contracts import (
 )
 from zeroshot.pipeline.stages.tickets.contracts import (
     BootstrapWork,
+    Concern,
     StageReport,
+    StageTicketResponse,
     Ticket,
     TicketAnswers,
     TicketResponse,
@@ -42,9 +50,9 @@ def _finding() -> AuditFinding:
     )
 
 
-def _responses(ticket_id: str, *stages: str) -> list[TicketResponse]:
+def _responses(ticket_id: str, *stages: str) -> list[StageTicketResponse]:
     return [
-        TicketResponse(
+        StageTicketResponse(
             ticket_id=ticket_id,
             stage=stage,  # type: ignore[arg-type]
             summary=f"Reviewed sem_feature_1 for {stage}.",
@@ -94,12 +102,12 @@ def test_a_stage_carries_ticket_answers_and_optional_additional_concerns() -> No
 
     submission = TicketAnswers(
         responses=responses,
-        stage_report=StageReport(concerns={}),
+        stage_report=StageReport(concerns=[]),
     )
 
     assert submission.responses == responses
-    assert submission.stage_report.concerns == {}
-    assert submission.stage_report == StageReport(concerns={})
+    assert submission.stage_report.concerns == []
+    assert submission.stage_report == StageReport(concerns=[])
     assert set(TicketAnswers.model_fields) == {
         "responses",
         "stage_report",
@@ -117,7 +125,7 @@ def test_a_member_the_provider_stringified_is_read_rather_than_refused() -> None
     """GLM sent `stage_report` as JSON text; the answer was whole, its encoding was not."""
     responses = answered(_responses("ticket_bootstrap", "coding"))
     report = StageReport(
-        concerns={"concern_waist": "the profile must change"},
+        concerns=[Concern(id="concern_waist", explanation="the profile must change")],
     )
 
     submission = TicketAnswers.model_validate(
@@ -168,17 +176,17 @@ def test_extra_audit_fields_are_ignored_without_changing_declared_content(
         AuditReport.model_validate(submitted)
 
 
-def test_schema_words_used_as_dictionary_keys_are_preserved() -> None:
+def test_schema_words_used_as_values_are_preserved() -> None:
     submission = TicketAnswers.model_validate(
         {
             "type": "object",
-            "responses": {"type": "Keep this response."},
+            "responses": [{"ticket_id": "type", "summary": "Keep this response."}],
             "stage_report": {
-                "concerns": {},
+                "concerns": [],
             },
         }
     )
-    assert submission.responses == {"type": "Keep this response."}
+    assert submission.responses == ticket_answers({"type": "Keep this response."})
 
 
 def test_a_stage_submission_does_not_keep_extra_fields() -> None:
@@ -186,7 +194,7 @@ def test_a_stage_submission_does_not_keep_extra_fields() -> None:
         {
             "responses": answered(_responses("ticket_bootstrap", "coding")),
             "stage_report": {
-                "concerns": {},
+                "concerns": [],
                 "type": "empty",
             },
             "artifact": _interpretation(),
@@ -206,17 +214,19 @@ def test_the_shared_submission_schema_is_provider_safe() -> None:
 def test_concerns_require_nonblank_explanations(explanation):
     with pytest.raises(ValidationError, match="concern_width.*must not be blank"):
         TicketAnswers(
-            responses={},
-            stage_report=StageReport(concerns={"concern_width": explanation}),
+            responses=[],
+            stage_report=StageReport(
+                concerns=[Concern(id="concern_width", explanation=explanation)]
+            ),
         )
 
 
 @pytest.mark.parametrize("missing", ["stage_report", "concerns"])
 def test_missing_or_misspelled_reports_are_not_silently_empty(missing):
     payload = {
-        "responses": {},
+        "responses": [],
         "stage_report": {
-            "concerns": {},
+            "concerns": [],
         },
     }
     holder = payload if missing == "stage_report" else payload["stage_report"]
@@ -307,7 +317,9 @@ def test_snapshot_rejects_an_artifact_before_coding_completes(
 
 def test_snapshot_rejects_a_report_before_coding_completes():
     data = _snapshot().model_dump()
-    data["stage_reports"] = {"coding": {"concerns": {"concern_web": "A concern."}}}
+    data["stage_reports"] = {
+        "coding": {"concerns": [{"id": "concern_web", "explanation": "A concern."}]}
+    }
     with pytest.raises(ValidationError, match="unfinished stages.*stage_reports"):
         ReconstructionSnapshot.model_validate(data)
 
@@ -435,8 +447,75 @@ def test_a_run_round_trips_bootstrap_findings_and_verification_as_json() -> None
 def test_a_stage_with_no_ticket_of_its_own_answers_nothing() -> None:
     assert (
         TicketAnswers(
-            stage_report=StageReport(concerns={}),
-            responses={},
+            stage_report=StageReport(concerns=[]),
+            responses=[],
         ).responses
-        == {}
+        == []
     )
+
+
+def test_answers_and_concerns_are_lists_of_named_fields_with_no_free_keys() -> None:
+    """A key that is data invites the model to nest the entry under it again."""
+    schema = TicketAnswers.model_json_schema()
+    definitions = schema["$defs"]
+
+    assert schema["properties"]["responses"]["type"] == "array"
+    assert definitions["StageReport"]["properties"]["concerns"]["type"] == "array"
+    assert set(definitions["TicketResponse"]["properties"]) == {"ticket_id", "summary"}
+    assert set(definitions["Concern"]["properties"]) == {"id", "explanation"}
+    for entry in ("TicketResponse", "Concern"):
+        assert definitions[entry]["additionalProperties"] is False
+
+
+def test_a_ticket_answered_twice_is_refused() -> None:
+    twice = [
+        TicketResponse(ticket_id="ticket_one", summary="first"),
+        TicketResponse(ticket_id="ticket_one", summary="second"),
+    ]
+    with pytest.raises(ValidationError, match="repeat a ticket: ticket_one"):
+        TicketAnswers(responses=twice, stage_report=StageReport(concerns=[]))
+
+
+def test_a_concern_reported_twice_is_refused() -> None:
+    twice = [
+        Concern(id="concern_web", explanation="first"),
+        Concern(id="concern_web", explanation="second"),
+    ]
+    with pytest.raises(ValidationError, match="repeat an id: concern_web"):
+        StageReport(concerns=twice)
+
+
+@pytest.mark.parametrize(
+    "concerns",
+    [
+        [{"id": "web thickness", "explanation": "Not an identifier."}],
+        [{"id": "concern_web", "explanation": {"concern_web": "Nested under its id."}}],
+        {"concern_web": "Keyed by its id."},
+    ],
+)
+def test_a_malformed_concern_is_refused(concerns) -> None:
+    with pytest.raises(ValidationError):
+        StageReport.model_validate({"concerns": concerns})
+
+
+@pytest.mark.parametrize("summary", ["", " ", "\t\n"])
+def test_ticket_responses_require_nonblank_summaries(summary) -> None:
+    with pytest.raises(ValidationError, match="ticket_one: summary must not be blank"):
+        TicketResponse(ticket_id="ticket_one", summary=summary)
+
+
+def test_extra_fields_in_an_entry_are_ignored() -> None:
+    submission = TicketAnswers.model_validate(
+        {
+            "responses": [{"ticket_id": "ticket_one", "summary": "Done.", "type": "x"}],
+            "stage_report": {
+                "concerns": [{"id": "concern_web", "explanation": "Hm.", "type": "x"}]
+            },
+        }
+    )
+    assert submission.responses == [
+        TicketResponse(ticket_id="ticket_one", summary="Done.")
+    ]
+    assert submission.stage_report.concerns == [
+        Concern(id="concern_web", explanation="Hm.")
+    ]

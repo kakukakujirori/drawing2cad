@@ -14,7 +14,7 @@ from tests.zeroshot.chat_models import (
     tool_call,
     unanswered_tool_calls,
 )
-from tests.zeroshot.contracts import interpretation, view
+from tests.zeroshot.contracts import interpretation, ticket_answers, view
 from tests.zeroshot.workflow.test_graph import (
     AUDIT_TOOLS,
     CODING_TOOLS,
@@ -47,6 +47,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     View,
 )
 from zeroshot.pipeline.stages.tickets.contracts import (
+    Concern,
     StageReport,
     Ticket,
     TicketAnswers,
@@ -98,9 +99,9 @@ class _AcceptedInterpretation:
 
 def answers(ticket="ticket_initial"):
     return TicketAnswers(
-        responses={ticket: "Reviewed the base"},
+        responses=ticket_answers({ticket: "Reviewed the base"}),
         stage_report=StageReport(
-            concerns={"concern_scale": "Scale needs checking"},
+            concerns=[Concern(id="concern_scale", explanation="Scale needs checking")],
         ),
     )
 
