@@ -91,6 +91,7 @@ class ChatOpenRouter(_ChatOpenRouter):
 
     # None sends every image; protected images must fit the configured hard limit.
     image_history_limit: int | None = Field(default=None, gt=0, strict=True)
+    supports_forced_tool_choice: bool = True
 
     @override
     def _build_client(self) -> Any:
@@ -134,11 +135,14 @@ class ChatOpenRouter(_ChatOpenRouter):
         tool_choice: dict | str | bool | None = None,
         **kwargs: Any,
     ) -> Runnable[LanguageModelInput, AIMessage]:
-        """Keep LangChain's `any` only when one tool is bound, as on the final turn.
+        """Respect provider support; force `any` only when one tool is bound.
 
         Forced to pick among several tools, GLM submitted near-empty answers mid-work.
         """
-        if tool_choice == "any" and len(tools) > 1:
+        if (tool_choice == "any" and len(tools) > 1) or (
+            not self.supports_forced_tool_choice
+            and tool_choice not in (None, False, "auto", "none")
+        ):
             tool_choice = "auto"
         return super().bind_tools(tools, tool_choice=tool_choice, **kwargs)
 

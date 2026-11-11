@@ -148,6 +148,14 @@ def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
     )
 
 
+def _unfinished_coding_attempt(call_id: str) -> tuple[AIMessage, AIMessage]:
+    """Reach the budget with a refused submission, not an unavailable tool call."""
+    return (
+        tool_call("run_shell", {"command": "true"}, call_id),
+        _coding_submission("ticket_absent"),
+    )
+
+
 def _audit_script(*reports: AIMessage, call_id: str = "audit") -> tuple[AIMessage, ...]:
     """Write candidate reports, then confirm only the final valid candidate."""
     turns = []
@@ -819,8 +827,13 @@ def test_an_agent_out_of_turns_is_told_so_and_retried_with_its_retry_turns(
     monkeypatch: pytest.MonkeyPatch, role: str
 ) -> None:
     _stub_verification(monkeypatch, _verified())
-    looks = tuple(
-        tool_call("run_shell", {"command": "true"}, f"look-{n}") for n in range(2)
+    looks = (
+        _unfinished_coding_attempt("look")
+        if role == "coder"
+        else (
+            tool_call("run_shell", {"command": "true"}, "look"),
+            _message(AuditSubmission(accepted=True)),
+        )
     )
     script = _coding_script() if role == "coder" else _audit_script(_accepted_audit())
     agent = ScriptedChatModel(responses=(*looks, *script))
@@ -1224,9 +1237,7 @@ def test_a_coder_out_of_turns_is_retried_from_notes_and_restated_instructions(
     """Only a coder whose turns ran out is compacted, and only when asked for."""
     _stub_verification(monkeypatch, _verified())
     notetaker = ScriptedChatModel(responses=(AIMessage(content=_COMPACTION_NOTES),))
-    looks = tuple(
-        tool_call("run_shell", {"command": "true"}, f"look-{n}") for n in range(2)
-    )
+    looks = _unfinished_coding_attempt("look")
     coder = ScriptedChatModel(responses=(*looks, *_coding_script()))
     with SandboxWorkdir() as workdir:
         result = _graph(
@@ -1274,8 +1285,9 @@ def test_once_compacts_only_the_first_time_a_rounds_turns_run_out(
     _stub_verification(monkeypatch, _verified())
     notes = AIMessage(content=_COMPACTION_NOTES)
     notetaker = ScriptedChatModel(responses=(notes, notes))
-    looks = tuple(
-        tool_call("run_shell", {"command": "true"}, f"look-{n}") for n in range(4)
+    looks = (
+        *_unfinished_coding_attempt("look-0"),
+        *_unfinished_coding_attempt("look-1"),
     )
     coder = ScriptedChatModel(responses=(*looks, *_coding_script()))
     with SandboxWorkdir() as workdir:
@@ -1304,16 +1316,11 @@ def test_once_compacts_again_in_the_next_round(monkeypatch: pytest.MonkeyPatch) 
     notes = AIMessage(content=_COMPACTION_NOTES)
     notetaker = ScriptedChatModel(responses=(notes, notes, notes))
 
-    def looks(tag: str) -> tuple[AIMessage, ...]:
-        return tuple(
-            tool_call("run_shell", {"command": "true"}, f"{tag}-{n}") for n in range(2)
-        )
-
     coder = ScriptedChatModel(
         responses=(
-            *looks("round-0"),
+            *_unfinished_coding_attempt("round-0"),
             *_coding_script(),
-            *looks("round-1"),
+            *_unfinished_coding_attempt("round-1"),
             *_coding_script(_ROUND_ONE_TICKET, call_id="revision"),
         )
     )

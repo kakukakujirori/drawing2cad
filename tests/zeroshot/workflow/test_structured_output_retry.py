@@ -6,11 +6,13 @@ A `structured_response` written into agent state short-circuits it, because
 langchain reads that key as an answer already given.
 """
 
+import asyncio
 import json
 
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
 from openai import APIConnectionError, APIStatusError
 from openrouter.errors.badrequestresponse_error import (
     BadRequestResponseError,
@@ -18,7 +20,11 @@ from openrouter.errors.badrequestresponse_error import (
 )
 from pydantic import BaseModel, field_validator
 
-from tests.zeroshot.chat_models import ScriptedChatModel
+from tests.zeroshot.chat_models import (
+    ScriptedChatModel,
+    tool_call,
+    unanswered_tool_calls,
+)
 from tests.zeroshot.workflow.test_agent import _FlakyChatModel, _length_failure
 from zeroshot.pipeline.workflow import create_agent
 from zeroshot.pipeline.workflow.middleware.agent_retry import (
@@ -195,6 +201,131 @@ def test_text_without_a_tool_call_is_asked_again_rather_than_ending_the_stage() 
     replayed, correction = model.received_messages[1][-2:]
     assert replayed.text == "The program is done."
     assert "call Answer to submit your answer" in correction.text
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("strategy", ["tool", "provider"])
+def test_an_unadvertised_final_turn_call_is_corrected_without_spending_a_turn(
+    asynchronous, strategy
+):
+    executed = []
+
+    @tool
+    def record(value: str) -> str:
+        """Record an action."""
+        executed.append(value)
+        return value
+
+    answer = (
+        _answering("ticket_initial", "answer")
+        if strategy == "tool"
+        else AIMessage(content='{"ticket_id": "ticket_initial"}')
+    )
+    model = ScriptedChatModel(
+        responses=(
+            tool_call("record", {"value": "working"}, "working"),
+            tool_call("record", {"value": "must not run"}, "unadvertised"),
+            answer,
+        )
+    )
+    agent = create_agent(
+        role="coder",
+        model=model,
+        tools=[record],
+        output_schema=Answer,
+        response_format_strategy=strategy,
+        max_turns=2,
+    )
+    result = (
+        asyncio.run(agent.ainvoke({"messages": []}))
+        if asynchronous
+        else agent.invoke({"messages": []})
+    )
+
+    assert executed == ["working"]
+    assert result["structured_response"] == Answer(ticket_id="ticket_initial")
+    assert result["current_turn"] == result["total_turns"] == 2
+    assert len(model.received_messages) == 3
+    assert "record" in model.bound_tool_name_history[0]
+    assert all("record" not in names for names in model.bound_tool_name_history[1:])
+    correction = model.received_messages[2][-1].text
+    assert "not available on this turn: record" in correction
+    assert "None of its calls were executed" in correction
+    if strategy == "tool":
+        assert "available tools: Answer" in correction
+    else:
+        assert "Return the required answer without calling tools" in correction
+    assert unanswered_tool_calls(result["messages"]) == []
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("includes_submission", [False, True])
+def test_a_mixed_response_is_rejected_before_any_call_or_submission_is_accepted(
+    asynchronous, includes_submission
+):
+    executed = []
+
+    @tool
+    def record() -> str:
+        """Record an action."""
+        executed.append(True)
+        return "recorded"
+
+    rejected = tool_call("record", {}, "allowed")
+    rejected.tool_calls.extend(tool_call("unregistered", {}, "unknown").tool_calls)
+    if includes_submission:
+        rejected.tool_calls.extend(_answering("ticket_wrong", "rejected").tool_calls)
+    model = ScriptedChatModel(
+        responses=(rejected, _answering("ticket_initial", "answer"))
+    )
+    agent = create_agent(
+        role="coder",
+        model=model,
+        tools=[record],
+        output_schema=Answer,
+        response_format_strategy="tool",
+        max_turns=3,
+    )
+    result = (
+        asyncio.run(agent.ainvoke({"messages": []}))
+        if asynchronous
+        else agent.invoke({"messages": []})
+    )
+
+    assert executed == []
+    assert result["structured_response"] == Answer(ticket_id="ticket_initial")
+    assert result["current_turn"] == result["total_turns"] == 1
+    assert len(model.received_messages) == 2
+    assert "unregistered" in model.received_messages[1][-1].text
+    assert unanswered_tool_calls(model.received_messages[1]) == []
+    assert unanswered_tool_calls(result["messages"]) == []
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_unadvertised_calls_exhaust_the_existing_five_retries(asynchronous):
+    model = ScriptedChatModel(
+        responses=tuple(tool_call("run_shell", {}, f"call_{i}") for i in range(6))
+    )
+    agent = create_agent(
+        role="selector",
+        model=model,
+        tools=[],
+        output_schema=Answer,
+        response_format_strategy="tool",
+        max_turns=1,
+    )
+    result = (
+        asyncio.run(agent.ainvoke({"messages": []}))
+        if asynchronous
+        else agent.invoke({"messages": []})
+    )
+
+    assert len(model.received_messages) == 6
+    assert result["current_turn"] == result["total_turns"] == 1
+    assert result.get("structured_response") is None
+    assert "After 6 attempts" in result["messages"][-1].text
+    assert "not available on this turn: run_shell" in result["messages"][-1].text
+    assert unanswered_tool_calls(result["messages"]) == []
 
 
 def test_a_rejected_tool_answer_is_asked_for_again_as_a_call() -> None:

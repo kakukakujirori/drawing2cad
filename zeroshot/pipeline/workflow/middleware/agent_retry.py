@@ -14,6 +14,7 @@ from langchain.agents.structured_output import (
     ToolStrategy,
 )
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import BaseTool
 from openai import LengthFinishReasonError
 from pydantic import ValidationError
 
@@ -57,6 +58,10 @@ class MalformedToolCall(UnansweredModelCall):
     arguments are unreadable. Without this it reads as an empty turn and the
     author is told to write less, which costs the work it has already done.
     """
+
+
+class UnadvertisedToolCall(UnansweredModelCall):
+    """A call to a tool that was not offered on this turn."""
 
 
 class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
@@ -235,7 +240,9 @@ class ModelCallRetryMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
                     ),
                 ]
             )
-        if isinstance(error, MalformedToolCall):
+        if isinstance(error, UnadvertisedToolCall):
+            content = str(error)
+        elif isinstance(error, MalformedToolCall):
             unparsed = _unparsed_calls(response)
             content = _REWRITE_CALL.format(
                 names=", ".join(sorted({str(call.get("name")) for call in unparsed})),
@@ -475,10 +482,40 @@ def _unparsed_calls(response: ModelResponse[Any]) -> list[dict[str, Any]]:
 def _unanswered(
     request: ModelRequest[None], response: ModelResponse[Any]
 ) -> UnansweredModelCall | None:
-    """Why this response would end the agent loop without an answer, or None.
+    """Why this response needs correction before the agent can act on it.
 
-    Reasoning alone would, and so would text under ToolStrategy.
+    Check the whole response before accepting an answer or executing any calls.
     """
+    called = {
+        call["name"]
+        for message in response.result
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+    }
+    if called:
+        available = {
+            tool.name
+            if isinstance(tool, BaseTool)
+            else tool.get("function", tool).get("name", tool.get("type"))
+            for tool in request.tools
+        }
+        if isinstance(request.response_format, ToolStrategy):
+            available.update(spec.name for spec in request.response_format.schema_specs)
+        if unexpected := called - available:
+            instruction = (
+                "If you call a tool, use only these available tools: "
+                + ", ".join(sorted(available))
+                + "."
+                if available
+                else "No tools are available on this turn. Return the required answer "
+                "without calling tools."
+            )
+            return UnadvertisedToolCall(
+                "Your response called tools not available on this turn: "
+                + ", ".join(sorted(unexpected))
+                + ". None of its calls were executed. "
+                + instruction
+            )
     if response.structured_response is not None or any(
         getattr(message, "tool_calls", None) for message in response.result
     ):

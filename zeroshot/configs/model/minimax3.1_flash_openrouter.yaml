@@ -15,8 +15,10 @@ model:
   api_key: ${oc.env:OPENROUTER_API_KEY}
 
   openrouter_provider:
-    order: [MiniMax, InferenceNet]
+    order: [MiniMax]
     allow_fallbacks: false
+  # MiniMax accepts auto tool selection, but not required or named calls.
+  supports_forced_tool_choice: false
   # Always 8, whatever the workflow allows: the upstreams reject more.
   image_history_limit: 8
 

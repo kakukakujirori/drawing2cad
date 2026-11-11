@@ -149,8 +149,9 @@ def test_agent_stops_at_its_turn_budget_and_keeps_every_notice() -> None:
     model = ScriptedChatModel(
         responses=tuple(
             tool_call("echo", {"value": "looking"}, f"call-{turn}")
-            for turn in range(1, 5)
+            for turn in range(1, 3)
         )
+        + (AIMessage(content="done"),)
     )
 
     result = _subgraph(model, max_turns=3).invoke(
@@ -162,7 +163,7 @@ def test_agent_stops_at_its_turn_budget_and_keeps_every_notice() -> None:
         result["current_turn"],
         result["total_turns"],
         result["stop_reason"],
-    ) == (3, 3, StopReason.BUDGET_EXHAUSTED)
+    ) == (3, 3, StopReason.COMPLETED)
     expected = [f"[turn {turn}/3]" for turn in (1, 2, 3)]
     assert [
         _countdowns([model_input[-1]])[0] for model_input in model.received_messages
@@ -171,26 +172,26 @@ def test_agent_stops_at_its_turn_budget_and_keeps_every_notice() -> None:
     # the rung it is on, or it spends the whole budget investigating.
     assert _countdowns(messages) == expected
     assert _countdowns(model.received_messages[-1]) == expected
-    # Every turn's calls reach the tools, the last one included; what the budget
-    # ends is the reading of that answer, not the call.
-    assert sum(isinstance(message, ToolMessage) for message in messages) == 3
-    assert isinstance(messages[-1], ToolMessage)
+    # Only the first two turns can use tools; the final turn is answer-only.
+    assert sum(isinstance(message, ToolMessage) for message in messages) == 2
+    assert isinstance(messages[-1], AIMessage)
 
 
-def test_a_transcript_the_budget_cut_short_can_be_handed_back_to_a_model() -> None:
+def test_a_transcript_at_the_turn_budget_can_be_handed_back_to_a_model() -> None:
     """A stage sent back re-invokes on what the last ask left behind, and a
     provider rejects an input whose tool call nothing answered."""
     model = ScriptedChatModel(
         responses=(
             tool_call("echo", {"value": "looking"}, "call-1"),
-            tool_call("echo", {"value": "still looking"}, "call-2"),
+            AIMessage(content="unfinished"),
             AIMessage(content="corrected"),
         )
     )
     agent = _subgraph(model, max_turns=2, announce_turns=False)
 
     first = agent.invoke({"messages": [HumanMessage(content="write it")]})
-    assert first["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+    assert first["current_turn"] == 2
+    assert first["stop_reason"] is StopReason.COMPLETED
     assert unanswered_tool_calls(first["messages"]) == []
 
     second = agent.invoke(
@@ -211,17 +212,18 @@ def test_agent_turn_budget_outlives_langgraphs_default_recursion_limit() -> None
             tool_call("echo", {"value": "looking"}, f"call-{turn}")
             for turn in range(1, 8)
         )
+        + (AIMessage(content="done"),)
     )
 
-    result = _subgraph(model, max_turns=7, announce_turns=False).invoke(
+    result = _subgraph(model, max_turns=8, announce_turns=False).invoke(
         {"messages": [HumanMessage(content="go")]}
     )
 
     # Seven tool-bearing turns traverse 28 agent supersteps plus setup, beyond
-    # LangGraph's default limit of 25.  TurnBudget must still own termination.
-    assert result["current_turn"] == 7
-    assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
-    assert len(model.received_messages) == 7
+    # LangGraph's default limit of 25, before the final answer-only turn.
+    assert result["current_turn"] == 8
+    assert result["stop_reason"] is StopReason.COMPLETED
+    assert len(model.received_messages) == 8
 
 
 def test_a_prompt_report_covers_one_ask_rather_than_the_whole_transcript() -> None:
@@ -294,8 +296,9 @@ def test_agent_is_asked_to_land_before_its_budget_runs_out() -> None:
     model = ScriptedChatModel(
         responses=tuple(
             tool_call("echo", {"value": "looking"}, f"call-{turn}")
-            for turn in range(1, 5)
+            for turn in range(1, 4)
         )
+        + (AIMessage(content="done"),)
     )
 
     result = _subgraph(model, max_turns=4).invoke(
@@ -314,7 +317,7 @@ def test_agent_is_asked_to_land_before_its_budget_runs_out() -> None:
     assert final.startswith("[turn 4/4] Final turn")
     assert "cannot substitute for work missing" in final
     assert "answer-only" in penultimate and "tools are unavailable" in final
-    assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+    assert result["stop_reason"] is StopReason.COMPLETED
 
 
 def test_a_single_turn_budget_only_asks_for_the_landing() -> None:
@@ -419,7 +422,8 @@ def test_a_retry_after_the_budget_ran_out_gets_its_turns_only() -> None:
     """The count is set back just far enough to leave the retry its turns."""
     model = ScriptedChatModel(
         responses=(
-            *(tool_call("echo", {"value": "looking"}, f"call-{n}") for n in range(3)),
+            *(tool_call("echo", {"value": "looking"}, f"call-{n}") for n in range(2)),
+            AIMessage(content="unfinished"),
             AIMessage(content="corrected"),
         )
     )
@@ -427,7 +431,7 @@ def test_a_retry_after_the_budget_ran_out_gets_its_turns_only() -> None:
     first = _subgraph(model, **options).invoke(
         {"messages": [HumanMessage(content="propose")]}
     )
-    assert first["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+    assert first["current_turn"] == 3
 
     second = _retried(model, first, **options)
 
@@ -442,7 +446,8 @@ def test_a_retry_after_the_budget_ran_out_gets_its_turns_only() -> None:
 def test_retry_turns_beyond_the_budget_give_the_whole_budget() -> None:
     model = ScriptedChatModel(
         responses=(
-            *(tool_call("echo", {"value": "looking"}, f"call-{n}") for n in range(2)),
+            tool_call("echo", {"value": "looking"}, "call-0"),
+            AIMessage(content="unfinished"),
             AIMessage(content="corrected"),
         )
     )
@@ -1218,30 +1223,29 @@ def test_a_build_is_not_a_turn(tmp_path: Path) -> None:
 
 
 def test_a_budget_already_spent_builds_nothing(tmp_path: Path) -> None:
-    """A build nobody will read is ten seconds spent on nothing.
-
-    The last turn's write goes unverified here, which is the workflow's own
-    final verification to catch; what this fixes is the eight turns before it.
-    """
+    """An exhausted invocation stops before any model call or build."""
     path = tmp_path / "model.py"
+    model = ScriptedChatModel(responses=())
     graph, verifier = _verifying_agent(
-        ScriptedChatModel(
-            responses=tuple(
-                tool_call("write", {"text": f"result = {turn}"}, f"call-{turn}")
-                for turn in range(4)
-            )
-        ),
+        model,
         path,
         max_turns=2,
         announce_turns=False,
+        reset_turns_when_reentrant=False,
     )
 
-    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+    result = graph.invoke(
+        {
+            "messages": [HumanMessage(content="go")],
+            "current_turn": 2,
+            "total_turns": 2,
+        }
+    )
 
     assert result["stop_reason"] == StopReason.BUDGET_EXHAUSTED
-    # Two turns wrote, but TurnBudget ends the agent ahead of this middleware,
-    # so the second write is never built.
-    assert verifier.seen == ["result = 0"]
+    assert model.received_messages == []
+    assert verifier.seen == []
+    assert not path.exists()
 
 
 class _Answer(BaseModel):

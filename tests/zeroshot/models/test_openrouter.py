@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from zeroshot.pipeline.models.image_history import INPUT_IMAGE_ID
 from zeroshot.pipeline.models.openrouter import ChatOpenRouter
+from zeroshot.pipeline.workflow import create_agent
 
 
 def _delta(text: str, fmt: str | None = "unknown") -> ChatGenerationChunk:
@@ -102,15 +103,137 @@ class _Answer(BaseModel):
     done: bool
 
 
-def test_a_call_is_forced_only_when_the_answer_is_the_one_tool_left() -> None:
+@pytest.mark.parametrize("supports_forced_tool_choice", [True, False])
+def test_a_call_is_forced_only_when_the_answer_is_the_one_tool_left(
+    supports_forced_tool_choice: bool,
+) -> None:
     """Forced to pick among several tools, GLM submitted near-empty answers."""
-    model = ChatOpenRouter(model="test", api_key="EMPTY")
+    model = ChatOpenRouter(
+        model="test",
+        api_key="EMPTY",
+        supports_forced_tool_choice=supports_forced_tool_choice,
+    )
 
     working: Any = model.bind_tools([_Echo, _Answer], tool_choice="any")
     final: Any = model.bind_tools([_Answer], tool_choice="any")
 
     assert working.kwargs["tool_choice"] == "auto"
-    assert final.kwargs["tool_choice"] == "required"
+    assert final.kwargs["tool_choice"] == (
+        "required" if supports_forced_tool_choice else "auto"
+    )
+
+
+@pytest.mark.parametrize(
+    "tool_choice",
+    [
+        "any",
+        "required",
+        True,
+        "_Answer",
+        {"type": "function", "function": {"name": "_Answer"}},
+    ],
+)
+def test_forced_choices_use_auto_when_the_provider_does_not_support_them(
+    tool_choice,
+) -> None:
+    model = ChatOpenRouter(
+        model="test", api_key="EMPTY", supports_forced_tool_choice=False
+    )
+
+    bound: Any = model.bind_tools([_Answer], tool_choice=tool_choice)
+
+    assert bound.kwargs["tool_choice"] == "auto"
+
+
+def test_auto_tool_choice_still_validates_and_retries_final_submissions() -> None:
+    """Exercise the actual SDK payload and agent validation without network calls."""
+    sent = []
+    responses = [
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "unadvertised",
+                    "type": "function",
+                    "function": {"name": "run_shell", "arguments": "{}"},
+                }
+            ]
+        },
+        {"content": "Done."},
+    ] + [
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": f"submission-{i}",
+                    "type": "function",
+                    "function": {"name": "_Answer", "arguments": json.dumps(args)},
+                }
+            ]
+        }
+        for i, args in enumerate(({}, {"done": True}))
+    ]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["model"] == "minimax/minimax-m3.1-flash"
+        assert payload["provider"] == {
+            "order": ["MiniMax"],
+            "allow_fallbacks": False,
+        }
+        assert payload["tool_choice"] == "auto"
+        assert [item["function"]["name"] for item in payload["tools"]] == ["_Answer"]
+        assert "supports_forced_tool_choice" not in payload
+        delta = responses[len(sent)]
+        sent.append(payload)
+        chunk = {
+            "id": f"offline-{len(sent)}",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": payload["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", **delta},
+                    "finish_reason": "tool_calls" if "tool_calls" in delta else "stop",
+                }
+            ],
+        }
+        return httpx.Response(
+            200,
+            text="data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    model = ChatOpenRouter(
+        model="minimax/minimax-m3.1-flash",
+        api_key="EMPTY",
+        supports_forced_tool_choice=False,
+        openrouter_provider={"order": ["MiniMax"], "allow_fallbacks": False},
+        streaming=True,
+        max_retries=0,
+    )
+    model.client.sdk_configuration.client = httpx.Client(
+        transport=httpx.MockTransport(respond)
+    )
+    agent = create_agent(
+        "coder",
+        model,
+        [],
+        output_schema=_Answer,
+        response_format_strategy="tool",
+        max_turns=1,
+        model_call_retries=3,
+    )
+
+    result = agent.invoke({"messages": [HumanMessage(content="Submit your answer.")]})
+
+    assert len(sent) == 4
+    assert result["structured_response"] == _Answer(done=True)
+    assert result["current_turn"] == result["total_turns"] == 1
+    assert "not available on this turn: run_shell" in json.dumps(sent[1]["messages"])
+    assert "text without a tool call" in json.dumps(sent[2]["messages"])
+    assert "field 'done' is required" in json.dumps(sent[3]["messages"])
 
 
 def test_payload_sends_reasoning_once() -> None:
