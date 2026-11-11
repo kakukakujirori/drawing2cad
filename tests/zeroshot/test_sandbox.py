@@ -1,6 +1,7 @@
 import shlex
 import socket
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -464,3 +465,27 @@ def test_tmp_path_cannot_escape_the_work_dir(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         workdir.sandbox_to_host_path("/tmp/../../etc/passwd")
+
+
+def test_a_bind_dir_written_with_dotdot_maps_paths_written_either_way(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workspace").mkdir()
+    (tmp_path / "other").mkdir()
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path / "other" / ".." / "workspace")
+    with tempfile.NamedTemporaryFile(dir=workdir.host_bind_dir / "tmp") as saved:
+        assert workdir.host_to_sandbox_path(saved.name).parent == PurePosixPath(
+            "/work/tmp"
+        )
+    unnormalized = tmp_path / "other" / ".." / "workspace" / "model.py"
+    assert workdir.host_to_sandbox_path(unnormalized) == PurePosixPath("/work/model.py")
+    assert workdir.sandbox_to_host_path("/work/model.py") == (
+        tmp_path / "workspace" / "model.py"
+    )
+
+
+def test_a_host_path_cannot_escape_the_work_dir(tmp_path: Path) -> None:
+    workdir = SandboxWorkdir(host_bind_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="must be inside"):
+        workdir.host_to_sandbox_path(tmp_path / ".." / "etc" / "passwd")

@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import tempfile
@@ -45,7 +46,9 @@ class SandboxWorkdir:
             )
             self.host_bind_dir = Path(self._tmpdir_context.name)
         else:
-            self.host_bind_dir = host_bind_dir
+            # Without `..`, as `tempfile` names files in it: a path to the same
+            # file written with or without `..` must map to one sandbox path.
+            self.host_bind_dir = Path(os.path.abspath(host_bind_dir))
 
         if not self.host_bind_dir.is_dir():
             raise FileNotFoundError(f"{self.host_bind_dir=} not found")
@@ -63,18 +66,12 @@ class SandboxWorkdir:
             self._tmpdir_context.cleanup()
 
     def host_to_sandbox_path(self, host_path: str | Path) -> PurePosixPath:
-        host_path = Path(host_path)
-
-        if not host_path.is_absolute():
-            host_path = self.host_bind_dir / host_path
+        host_path = Path(os.path.abspath(self.host_bind_dir / host_path))
 
         try:
             relative_path = host_path.relative_to(self.host_bind_dir)
         except ValueError as error:
             raise ValueError(f"path must be inside {self.host_bind_dir}") from error
-
-        if ".." in relative_path.parts:
-            raise ValueError(f"path must not escape {self.host_bind_dir}")
 
         return self.sandbox_bind_dir.joinpath(*relative_path.parts)
 
