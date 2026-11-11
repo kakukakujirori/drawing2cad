@@ -613,9 +613,14 @@ def _correction_text(error: StructuredOutputError, request: ModelRequest[None]) 
             f"Your previous response was not a valid {error.tool_name} "
             f"structured output. Validation error: {_validation_problem(error)}."
             + _rejected_arguments(error.ai_message, error.tool_name, error.source)
-            + " You may continue using tools if you need more "
-            "information. When you are ready to answer, "
-            f"{_answer_wording(request).correct}."
+            + (
+                " You may continue using the available tools if you need more information. "
+                "When you are ready to answer, "
+                if request.tools
+                else " Ordinary tools are unavailable; you cannot edit files on this turn. "
+                "Correct the submission format now: "
+            )
+            + f"{_answer_wording(request).correct}."
         )
     return f"Your previous response was rejected: {error}. Answer again."
 

@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, override
 
-from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    ModelRequest,
+    ModelResponse,
+    hook_config,
+)
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock, create_text_block
 from langgraph.runtime import Runtime
@@ -51,10 +56,11 @@ class CodingMiddleware(VerifyOnWriteMiddleware):
     def report_message(self, report: list[ContentBlock]) -> HumanMessage:
         return HumanMessage(content_blocks=report)
 
+    @hook_config(can_jump_to=["end"])
     @override
     def before_model(self, state, runtime):
         update = super().before_model(state, runtime)
-        if update is not None:
+        if update is not None and "messages" in update:
             (message,) = update["messages"]
             update["messages"] = [self.report_message(message.content_blocks)]
         return update

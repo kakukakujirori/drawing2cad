@@ -1459,7 +1459,7 @@ def test_refused_text_answers_spend_the_turn_budget(tmp_path: Path) -> None:
     result = graph.invoke({"messages": [HumanMessage(content="go")]})
 
     assert result.get("structured_response") is None
-    assert result["current_turn"] == 3
+    assert result["current_turn"] == 2
     assert result["stop_reason"] == StopReason.BUDGET_EXHAUSTED
 
 
@@ -1483,6 +1483,67 @@ def test_an_answer_stands_when_the_program_builds(tmp_path: Path) -> None:
     assert result["structured_response"] == _Answer(done=True)
     assert not any("Answer refused" in m.text for m in result["messages"])
     assert not any("Answer refused" in m.text for m in result["messages"])
+
+
+@pytest.mark.parametrize("strategy", ["tool", "provider"])
+@pytest.mark.parametrize("artifact", ["missing", "invalid", "valid", "existing_valid"])
+def test_the_final_answer_requires_verified_artifacts(tmp_path, strategy, artifact):
+    path = tmp_path / "model.py"
+    valid = artifact in {"valid", "existing_valid"}
+    if artifact == "existing_valid":
+        path.write_text("result = 1")
+    action = (
+        tool_call("echo", {"value": "inspected"}, "work")
+        if artifact in {"missing", "existing_valid"}
+        else tool_call("write", {"text": "result = 1"}, "work")
+    )
+    answer = _answer_call("answer") if strategy == "tool" else _text_answer()
+    model = ScriptedChatModel(responses=(action, answer) if valid else (action,))
+    agent, verifier = _verifying_agent(
+        model,
+        path,
+        builds=[valid],
+        max_turns=2,
+        announce_turns=False,
+        output_schema=_Answer,
+        response_format_strategy=strategy,
+    )
+
+    result = agent.invoke({"messages": []})
+
+    assert len(model.received_messages) == (2 if valid else 1)
+    assert (
+        result["current_turn"] == result["total_turns"] == len(model.received_messages)
+    )
+    assert unanswered_tool_calls(result["messages"]) == []
+    assert len(verifier.seen) == (0 if artifact == "missing" else 1)
+    if valid:
+        assert result["structured_response"] == _Answer(done=True)
+        assert "[verified] build 1" in model.received_messages[-1][-1].text
+        assert "write" not in model.bound_tool_name_history[-1]
+    else:
+        assert result.get("structured_response") is None
+        assert result["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+
+
+@pytest.mark.parametrize("max_turns", [1, 2])
+def test_an_answer_only_retry_does_not_create_working_turns(tmp_path, max_turns):
+    model = ScriptedChatModel(responses=(tool_call("echo", {"value": "look"}, "work"),))
+    agent, _ = _verifying_agent(
+        model,
+        tmp_path / "model.py",
+        max_turns=max_turns,
+        retry_turns=1,
+    )
+    first = agent.invoke({"messages": []})
+    second = agent.invoke({**first, "retry": True})
+
+    assert len(model.received_messages) == max_turns - 1
+    assert (
+        second.get("current_turn", 0) == second.get("total_turns", 0) == max_turns - 1
+    )
+    assert second["stop_reason"] is StopReason.BUDGET_EXHAUSTED
+    assert second.get("structured_response") is None
 
 
 @pytest.mark.parametrize("already_verified", [False, True])

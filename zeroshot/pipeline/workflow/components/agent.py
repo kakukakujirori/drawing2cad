@@ -1,9 +1,8 @@
 """Extend the ReAct loop with structured outputs, turn budgeting, and other utilities."""
 
 from collections.abc import Sequence
-from typing import Any, Literal, NotRequired, cast
+from typing import Any, Literal, cast
 
-from langchain.agents import AgentState as _AgentState
 from langchain.agents import create_agent as _create_agent
 from langchain.agents.middleware import (
     AgentMiddleware,
@@ -21,34 +20,16 @@ from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.workflow.middleware import (
     ModelCallRetryMiddleware,
     PromptLogMiddleware,
+    PromptLogState,
     StatelessReasoningMiddleware,
-    StopReason,
     TurnBudgetMiddleware,
+    TurnBudgetState,
 )
 from zeroshot.pipeline.workflow.middleware.output_limit_budget import OutputLimitBudget
 
 
-class AgentState(_AgentState[Any]):
-    """Langchain official AgentState is extended:
-
-    Fields:
-        - messages: list[AnyMessage]
-        - jump_to: JumpTo | None
-        - structured_response: BaseModel
-        - current_turn: int
-        - total_turns: int
-        - stop_reason: StopReason
-        - retry: bool
-        - reported_message_count: int
-
-    The first three are included in _AgentState.
-    """
-
-    current_turn: NotRequired[int]
-    total_turns: NotRequired[int]
-    stop_reason: NotRequired[StopReason | None]
-    retry: NotRequired[bool]
-    reported_message_count: NotRequired[int]
+class AgentState(TurnBudgetState, PromptLogState):
+    """Combined agent state for workflow callers; each middleware owns its fields."""
 
 
 def _build_response_format(

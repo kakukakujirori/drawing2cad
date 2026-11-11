@@ -107,6 +107,44 @@ def test_a_rejected_answer_is_returned_to_the_model_to_correct() -> None:
     assert "ticket_id must be a ticket_... identifier" in str(correction.content)
 
 
+@pytest.mark.parametrize("strategy", ["tool", "provider"])
+@pytest.mark.parametrize("max_turns", [1, 2])
+def test_schema_corrections_respect_the_current_tool_set(strategy, max_turns):
+    @tool
+    def inspect() -> str:
+        """Inspect the input."""
+        return "inspected"
+
+    model = ScriptedChatModel(
+        responses=(
+            _answering("bad", "bad")
+            if strategy == "tool"
+            else AIMessage(content='{"ticket_id": "bad"}'),
+            _answering("ticket_initial", "good")
+            if strategy == "tool"
+            else AIMessage(content='{"ticket_id": "ticket_initial"}'),
+        )
+    )
+    agent = create_agent(
+        role="coder",
+        model=model,
+        tools=[inspect],
+        output_schema=Answer,
+        response_format_strategy=strategy,
+        max_turns=max_turns,
+    )
+    result = agent.invoke({"messages": []})
+
+    correction = model.received_messages[-1][-1].text
+    assert result["structured_response"] == Answer(ticket_id="ticket_initial")
+    if max_turns == 1:
+        assert "Ordinary tools are unavailable" in correction
+        assert "cannot edit files" in correction
+        assert "may continue using" not in correction
+    else:
+        assert "may continue using the available tools" in correction
+
+
 def test_an_answer_that_stays_malformed_ends_the_stage_and_says_why() -> None:
     """Exhausting the budget ends the turn with no answer. The graph re-asks a
     stage that produced none, and raising here reached none of that."""

@@ -26,6 +26,8 @@ class TurnBudgetState(_AgentState[Any]):
     current_turn: NotRequired[int]
     total_turns: NotRequired[int]
     stop_reason: NotRequired[StopReason | None]
+    # Whether the upcoming call is answer-only; recomputed by before_model.
+    is_answer_only_turn: NotRequired[bool]
     # Set by the caller when it re-asks for an answer it refused.
     retry: NotRequired[bool]
 
@@ -101,7 +103,7 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
     def before_model(
         self, state: TurnBudgetState, runtime: Runtime[None]
     ) -> dict[str, Any] | None:
-        """Check turns, and add turn count to messages.
+        """Set the upcoming turn's tool policy, check the budget, and announce it.
 
         The budget-exceeded model must stop here.
         If we stop it after the model call,
@@ -117,10 +119,10 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
                 "stop_reason": StopReason.BUDGET_EXHAUSTED,
             }
 
-        if not self.announce_turns:
-            return None
-
-        return {"messages": [HumanMessage(content=self._announcement(turns + 1))]}
+        update: dict[str, Any] = {"is_answer_only_turn": turns == self.max_turns - 1}
+        if self.announce_turns:
+            update["messages"] = [HumanMessage(content=self._announcement(turns + 1))]
+        return update
 
     def _announcement(self, turn: int) -> str:
         """Announce the turn."""
@@ -146,8 +148,7 @@ class TurnBudgetMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
         The announcement states the same boundary. The answer contract is
         bound separately from the ordinary tools, so it survives.
         """
-        turns = cast(TurnBudgetState, request.state).get("current_turn", 0)
-        if turns < self.max_turns - 1:
+        if not cast(TurnBudgetState, request.state).get("is_answer_only_turn", False):
             return request
         return request.override(tools=[])
 

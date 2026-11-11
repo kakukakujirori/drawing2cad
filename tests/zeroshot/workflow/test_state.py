@@ -68,8 +68,8 @@ from zeroshot.pipeline.verification.run_render import (
 from zeroshot.pipeline.verification.shape_census import ShapeCensus, Void
 from zeroshot.pipeline.workflow import (
     CUSTOM_STATE_TYPES,
+    StopReason,
 )
-from zeroshot.pipeline.workflow.components.agent import StopReason
 from zeroshot.pipeline.workflow.state import ReconstructionState
 
 

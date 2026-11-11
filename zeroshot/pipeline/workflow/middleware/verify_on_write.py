@@ -5,11 +5,20 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol, override
 
-from langchain.agents import AgentState as _AgentState
-from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    ModelRequest,
+    ModelResponse,
+    hook_config,
+)
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock, create_text_block
 from langgraph.runtime import Runtime
+
+from zeroshot.pipeline.workflow.middleware.turn_budget import (
+    StopReason,
+    TurnBudgetState,
+)
 
 _ANSWER_WITH_TOOLS_REFUSED = (
     "Answer refused: you called other tools in the same turn as the answer. "
@@ -31,7 +40,7 @@ class ArtifactVerifier(Protocol):
     def blockers(self) -> list[str]:
         """Why the file as it is now cannot be the answer, by its latest verification.
 
-        Read only when the model answers; empty once the file can be the answer.
+        Empty once the file can be the answer.
         """
         ...
 
@@ -44,7 +53,7 @@ class AnswerVerifier(Protocol):
     def feedback(self, answer: Any, /) -> list[ContentBlock]: ...
 
 
-class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
+class VerifyOnWriteMiddleware(AgentMiddleware[TurnBudgetState, None, Any]):
     """Verify a watched artifact whenever a turn changed it.
 
     Placed on the path from the tools node back to the model, so a turn that
@@ -55,6 +64,9 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
     a file whose report the model never saw here is verified first, and
     refused once with that report. What either verifier reports is handed back
     to the model; this middleware judges nothing itself.
+
+    If the budget leaves only an answer and the artifacts still block it,
+    stop without inference. The caller owns any retry and its instructions.
     """
 
     def __init__(
@@ -83,18 +95,28 @@ class VerifyOnWriteMiddleware(AgentMiddleware[_AgentState[Any], None, Any]):
         path = self.verifier.source_path
         return sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
+    @hook_config(can_jump_to=["end"])
     @override
     def before_model(
-        self, state: _AgentState[Any], runtime: Runtime[None]
+        self, state: TurnBudgetState, runtime: Runtime[None]
     ) -> dict[str, Any] | None:
         """Verify the file after the tools that changed it, before the model reads on."""
-        del state, runtime
-        if self._digest() == self._last_seen:
-            return None
-        report = self.verifier.feedback()
-        # Validation may fill derived fields in the watched artifact.
-        self._last_seen = self._reported = self._digest()
-        return {"messages": [HumanMessage(content_blocks=report)]}
+        del runtime
+        is_answer_only_turn = state.get("is_answer_only_turn", False)
+        report: list[ContentBlock] = []
+        digest = self._digest()
+        if digest != self._last_seen or (
+            is_answer_only_turn and digest != self._reported
+        ):
+            report = self.verifier.feedback()
+            # Validation may fill derived fields in the watched artifact.
+            self._last_seen = self._reported = self._digest()
+        update: dict[str, Any] = {}
+        if report:
+            update["messages"] = [HumanMessage(content_blocks=report)]
+        if is_answer_only_turn and self.verifier.blockers:
+            update |= {"jump_to": "end", "stop_reason": StopReason.BUDGET_EXHAUSTED}
+        return update or None
 
     @override
     def wrap_model_call(

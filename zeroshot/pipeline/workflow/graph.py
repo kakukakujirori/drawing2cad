@@ -257,9 +257,23 @@ def create_reconstruction_graph(
             "stage_submission": None,
         }
 
-    def _unanswered(agent_state: Mapping[str, Any] | None, error: str) -> str:
+    def _unanswered(
+        agent_state: Mapping[str, Any] | None, error: str, blockers: list[str]
+    ) -> str:
         """The refusal for an agent that stopped without an answer."""
         if (agent_state or {}).get("stop_reason") is StopReason.BUDGET_EXHAUSTED:
+            if blockers:
+                return (
+                    f"{error} before the ordinary-tool budget ran out. "
+                    "You failed to complete the required artifacts within your allotted "
+                    "working turns. This is a failure to follow the submission requirements. "
+                    "You MUST fix the blockers below and submit the required structured "
+                    "answer within the next retry allowance. Prioritize writing and "
+                    "validating the required files now; reserve the final answer-only "
+                    "turn for submission. Do not defer submission or rely on another "
+                    "extension. Retry allowances are limited.\n"
+                    + "".join(f"- {blocker}\n" for blocker in blockers)
+                )
             return (
                 f"{error} before the turn budget ran out. "
                 "Finish with what you have so far."
@@ -287,6 +301,7 @@ def create_reconstruction_graph(
                 _unanswered(
                     state.get("coding_state"),
                     "the reasoning stage did not return its ticket answers",
+                    coding_stage.workspace.blockers,
                 ),
             )
 
@@ -344,6 +359,7 @@ def create_reconstruction_graph(
                     state.get("audit_state"),
                     "the auditor did not finish a validated audit report file "
                     "with AuditSubmission",
+                    audit_stage.audit_verifier.blockers,
                 ),
             )
         try:

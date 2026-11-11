@@ -53,7 +53,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
     TicketAnswers,
 )
 from zeroshot.pipeline.stages.types import PipelineStage
-from zeroshot.pipeline.verification import ExecutionStatus
+from zeroshot.pipeline.verification import AttemptStore, ExecutionStatus
 from zeroshot.pipeline.verification.run_cadquery import CadQueryExecutionReport
 from zeroshot.pipeline.verification.run_drawing_diff import DrawingDiffReport
 from zeroshot.pipeline.workflow import create_agent
@@ -149,11 +149,12 @@ def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
     )
 
 
-def _unfinished_coding_attempt(call_id: str) -> tuple[AIMessage, AIMessage]:
-    """Reach the budget with a refused submission, not an unavailable tool call."""
+def _unfinished_coding_attempt(call_id: str) -> tuple[AIMessage, ...]:
+    """Use the last working turn without leaving a valid interpretation."""
     return (
-        tool_call("run_shell", {"command": "true"}, call_id),
-        _coding_submission("ticket_absent"),
+        tool_call(
+            "run_shell", {"command": "echo '{}' > /work/interpretation.json"}, call_id
+        ),
     )
 
 
@@ -356,9 +357,15 @@ def _stub_verification(
     calls: list[str] = []
 
     class StubVerifier:
-        def __init__(self, workdir: SandboxWorkdir, source_filename: str) -> None:
+        def __init__(
+            self,
+            workdir: SandboxWorkdir,
+            source_filename: str,
+            attempt_store: AttemptStore,
+        ) -> None:
             self.source_filename = source_filename
             self.source_path = workdir.host_bind_dir / source_filename
+            self.attempt_store = attempt_store
             self.interpretation = None
 
         accepted_source = None
@@ -397,6 +404,7 @@ def _stub_verification(
         lambda **kwargs: StubVerifier(
             workdir=kwargs["workdir"],
             source_filename=kwargs["source_filename"],
+            attempt_store=kwargs["attempt_store"],
         ),
     )
     return calls
@@ -826,21 +834,37 @@ def test_invalid_answers_retry_or_exhaust_before_audit(monkeypatch, recovers):
 
 
 @pytest.mark.parametrize("role", ["coder", "auditor"])
+@pytest.mark.parametrize("fresh", [False, True])
+@pytest.mark.parametrize("recovers", [False, True])
+@pytest.mark.parametrize("strategy", ["tool", "provider"])
 def test_an_agent_out_of_turns_is_told_so_and_retried_with_its_retry_turns(
-    monkeypatch: pytest.MonkeyPatch, role: str
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    fresh: bool,
+    recovers: bool,
+    strategy: str,
 ) -> None:
     _stub_verification(monkeypatch, _verified())
     looks = (
         _unfinished_coding_attempt("look")
         if role == "coder"
-        else (
-            tool_call("run_shell", {"command": "true"}, "look"),
-            _message(AuditSubmission(accepted=True)),
-        )
+        else (tool_call("run_shell", {"command": "true"}, "look"),)
     )
     script = _coding_script() if role == "coder" else _audit_script(_accepted_audit())
-    agent = ScriptedChatModel(responses=(*looks, *script))
-    options = {"max_turns": 2, "retry_turns": 2}
+    responses = (*looks, *(script if recovers else looks))
+    if strategy == "tool":
+        responses = tuple(
+            message
+            if message.tool_calls
+            else tool_call(
+                "TicketAnswers" if role == "coder" else "AuditSubmission",
+                json.loads(message.text),
+                f"answer-{index}",
+            )
+            for index, message in enumerate(responses)
+        )
+    agent = ScriptedChatModel(responses=responses)
+    options = {"max_turns": 2, "retry_turns": 2, "response_format_strategy": strategy}
     with SandboxWorkdir() as workdir:
         graph = _graph(
             workdir,
@@ -848,16 +872,30 @@ def test_an_agent_out_of_turns_is_told_so_and_retried_with_its_retry_turns(
             auditor=agent if role == "auditor" else ScriptedChatModel(responses=()),
             coder_options=options,
             auditor_options=options,
+            fresh_coder=fresh,
+            max_stage_validation_retries=1,
             max_audit_reject_count=0 if role == "coder" else 1,
         )
         result = graph.invoke(
             {} if role == "coder" else {"reconstruction": _coded_seed()}
         )
 
-    retry = [message.text for message in agent.received_messages[2]]
-    assert "before the turn budget ran out" in retry[-2]
+    retry = [message.text for message in agent.received_messages[1]]
+    assert "before the ordinary-tool budget ran out" in retry[-2]
+    assert "You failed to complete the required artifacts" in retry[-2]
+    assert "MUST fix the blockers" in retry[-2]
+    assert "within the next retry allowance" in retry[-2]
+    assert ("interpretation.json" if role == "coder" else "audit.json") in retry[-2]
     assert retry[-1] == "[turn set back to 0/2 to correct the refused answer]"
-    assert result["stage_validation_error"] is None
+    state = result["coding_state" if role == "coder" else "audit_state"]
+    assert len(agent.received_messages) == (3 if recovers else 2)
+    assert state["total_turns"] == len(agent.received_messages)
+    if recovers:
+        assert result["stage_validation_error"] is None
+    else:
+        assert state.get("structured_response") is None
+        assert state["current_turn"] == 1
+        assert result["stage_validation_failure_count"] == 2
 
 
 def test_a_persisted_unfinished_round_can_restart_the_graph(monkeypatch):
@@ -1257,9 +1295,12 @@ def test_a_coder_out_of_turns_is_retried_from_notes_and_restated_instructions(
     assert result["reconstruction"].snapshots[0].last_completed_stage is (
         PipelineStage.CODING
     )
-    retry = coder.received_messages[2]
+    retry = coder.received_messages[1]
     texts = [message.text for message in retry]
-    assert "before the turn budget ran out" in texts[-2]
+    assert "before the ordinary-tool budget ran out" in texts[-2]
+    assert "You failed to complete the required artifacts" in texts[-2]
+    assert "within the next retry allowance" in texts[-2]
+    assert "interpretation.json" in texts[-2]
     assert texts[-1] == "[turn set back to 0/2 to correct the refused answer]"
     assert len(notetaker.received_messages) == int(compact)
     if compact:
@@ -1268,7 +1309,7 @@ def test_a_coder_out_of_turns_is_retried_from_notes_and_restated_instructions(
         assert not any(isinstance(message, AIMessage) for message in retry)
         assert sum("[Input artifacts]" in text for text in texts) == 1
     else:
-        assert sum(isinstance(message, AIMessage) for message in retry) == 2
+        assert sum(isinstance(message, AIMessage) for message in retry) == 1
 
 
 def test_compacting_an_exhausted_coder_needs_a_compaction_model() -> None:
@@ -1309,9 +1350,9 @@ def test_once_compacts_only_the_first_time_a_rounds_turns_run_out(
     )
     assert len(notetaker.received_messages) == compactions
     # The second retry keeps the first retry's turns unless compacted again.
-    second_retry = coder.received_messages[4]
+    second_retry = coder.received_messages[2]
     kept = sum(isinstance(message, AIMessage) for message in second_retry)
-    assert kept == (2 if mode == "once" else 0)
+    assert kept == (1 if mode == "once" else 0)
 
 
 def test_once_compacts_again_in_the_next_round(monkeypatch: pytest.MonkeyPatch) -> None:
