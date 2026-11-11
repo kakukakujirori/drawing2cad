@@ -140,10 +140,43 @@ def test_glm5_3_flash_openrouter_config_instantiates_chat_openrouter(
 
 
 @pytest.mark.parametrize(
+    "name,enabled",
+    [
+        ("minimax3.1_flash_openrouter", True),
+        ("deepseek4.1_flash_1017_openrouter", False),
+        ("glm5.3_flash_openrouter", False),
+    ],
+)
+def test_json_object_structured_output_is_enabled_only_for_minimax(
+    name, enabled, monkeypatch
+):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    with initialize_config_dir(
+        config_dir=str(CONFIG_DIR.resolve()), version_base="1.3"
+    ):
+        config = compose(config_name="default", overrides=[f"model={name}"])
+        model = instantiate(config.model)
+        assert model.use_json_object_for_structured_output is enabled
+        assert "use_json_object_for_structured_output" not in model.model_kwargs
+        if enabled:
+            config = compose(
+                config_name="default",
+                overrides=[
+                    f"model={name}",
+                    "model.use_json_object_for_structured_output=false",
+                ],
+            )
+            assert (
+                instantiate(config.model).use_json_object_for_structured_output is False
+            )
+
+
+@pytest.mark.parametrize(
     ("model_config", "strategy"),
     [
         ("gemma4_ollama", "provider"),
         ("glm5.3_flash_openrouter", "tool"),
+        ("minimax3.1_flash_openrouter", "provider"),
     ],
 )
 def test_the_backend_chosen_decides_how_every_agent_is_asked_for_structured_output(
@@ -151,9 +184,7 @@ def test_the_backend_chosen_decides_how_every_agent_is_asked_for_structured_outp
     strategy: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A backend that takes no json_schema response format has to bind the
-    answer as a tool instead, so the strategy follows the `model` group rather
-    than being restated per agent."""
+    """The model group chooses the submission channel for both agents."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     with initialize_config_dir(

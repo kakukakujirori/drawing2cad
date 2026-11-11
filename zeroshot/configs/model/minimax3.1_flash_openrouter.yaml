@@ -1,7 +1,7 @@
 # @package _global_
 
-# A json_schema response format suppresses this model's tool calling.
-response_format_strategy: tool
+# Submit JSON in response content; the model adapter uses JSON mode below.
+response_format_strategy: provider
 
 model:
   _target_: zeroshot.pipeline.models.openrouter.ChatOpenRouter
@@ -19,6 +19,8 @@ model:
     allow_fallbacks: false
   # MiniMax accepts auto tool selection, but not required or named calls.
   supports_forced_tool_choice: false
+  # MiniMax/GMICloud accept json_object, not json_schema. Validate locally.
+  use_json_object_for_structured_output: true
   # Always 8, whatever the workflow allows: the upstreams reject more.
   image_history_limit: 8
 

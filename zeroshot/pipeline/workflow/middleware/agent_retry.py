@@ -516,12 +516,8 @@ def _unanswered(
                 + ". None of its calls were executed. "
                 + instruction
             )
-    if response.structured_response is not None or any(
-        getattr(message, "tool_calls", None) for message in response.result
-    ):
-        return None
-    # Before the empty check: an unparsed call carries no text and no tool call,
-    # so it reads as silence while the provider reports the turn as finished.
+    # Reject the whole response before executing a valid sibling call or
+    # accepting a submission alongside an unreadable call.
     if unparsed := _unparsed_calls(response):
         return MalformedToolCall(
             _MALFORMED.format(
@@ -529,6 +525,10 @@ def _unanswered(
                 reason="; ".join(sorted({str(call.get("error")) for call in unparsed})),
             )
         )
+    if response.structured_response is not None or any(
+        getattr(message, "tool_calls", None) for message in response.result
+    ):
+        return None
     if not any(message.text.strip() for message in response.result):
         return UnansweredModelCall(_UNANSWERED)
     if isinstance(request.response_format, ToolStrategy):

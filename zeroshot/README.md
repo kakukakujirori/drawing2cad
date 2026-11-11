@@ -38,6 +38,15 @@ zeroshot/run_parallel.sh --help       # all options; --dry-run lists the command
 pkill -USR1 -g $(cat outputs/minimax3.1_flash/_logs/pgid) -x xargs  # one more at a time (-USR2: one fewer)
 ```
 
+The MiniMax OpenRouter config uses `response_format_strategy: provider` with
+`model.use_json_object_for_structured_output: true`. The adapter replaces
+`json_schema` requests with `json_object` and adds the output schema to the
+system prompt. Final answers arrive as JSON response content; ordinary tools
+keep their native schemas and arguments. `ProviderStrategy` validates answers
+locally, and the existing retry middleware handles invalid JSON or schema
+violations. The flag defaults to false for other models. JSON mode does not
+guarantee schema compliance.
+
 Rescore finished samples without rerunning the agents. A rerun with
 `on_existing=retry` skips completed samples, so it does not rescore them. Each
 sample is scored against `<target-dir>/<sample_id>.step`. Directories without

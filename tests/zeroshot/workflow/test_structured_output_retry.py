@@ -434,6 +434,26 @@ def test_a_model_that_never_answers_ends_the_stage_without_failing_the_run() -> 
     assert "call Answer with the corrected answer" in gave_up
 
 
+def test_a_valid_submission_does_not_hide_an_unreadable_sibling_call() -> None:
+    mixed = _answering("ticket_initial", "good")
+    mixed.invalid_tool_calls = [
+        {
+            "name": "Answer",
+            "args": '{"payload":',
+            "id": "bad",
+            "error": "incomplete payload",
+            "type": "invalid_tool_call",
+        }
+    ]
+    model = ScriptedChatModel(responses=(mixed, _answering("ticket_initial", "retry")))
+
+    result = _agent(model).invoke({"messages": []})
+
+    assert result["structured_response"] == Answer(ticket_id="ticket_initial")
+    assert len(model.received_messages) == 2
+    assert "incomplete payload" in model.received_messages[1][-1].text
+
+
 _STREAM_ERROR = "OpenRouter API returned an error during streaming: "
 
 

@@ -29,13 +29,14 @@ from langchain_core.callbacks import (
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.tools import BaseTool
 from langchain_openrouter.chat_models import ChatOpenRouter as _ChatOpenRouter
 from openrouter.errors import OpenRouterError
 from pydantic import BaseModel, Field
 
 from .image_history import trim_image_history
+from .json_mode import add_output_schema
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +88,19 @@ def _thin_reasoning_details(details: Any, kept: set[Any]) -> None:
 
 
 class ChatOpenRouter(_ChatOpenRouter):
-    """OpenRouter fixes for reasoning, tool images, retries and image history."""
+    """OpenRouter transport fixes and structured-output format adaptation."""
 
     # None sends every image; protected images must fit the configured hard limit.
     image_history_limit: int | None = Field(default=None, gt=0, strict=True)
     supports_forced_tool_choice: bool = True
+    use_json_object_for_structured_output: bool = Field(
+        default=False,
+        description=(
+            "Send structured-output requests as json_object instead of json_schema, "
+            "and put the output schema in the system prompt. ProviderStrategy "
+            "still validates responses locally; native tool schemas are unchanged."
+        ),
+    )
 
     @override
     def _build_client(self) -> Any:
@@ -135,7 +144,7 @@ class ChatOpenRouter(_ChatOpenRouter):
         tool_choice: dict | str | bool | None = None,
         **kwargs: Any,
     ) -> Runnable[LanguageModelInput, AIMessage]:
-        """Respect provider support; force `any` only when one tool is bound.
+        """Bind native tools and adapt the submission format when configured.
 
         Forced to pick among several tools, GLM submitted near-empty answers mid-work.
         """
@@ -144,6 +153,23 @@ class ChatOpenRouter(_ChatOpenRouter):
             and tool_choice not in (None, False, "auto", "none")
         ):
             tool_choice = "auto"
+        response_format = kwargs.get("response_format")
+        if (
+            self.use_json_object_for_structured_output
+            and isinstance(response_format, dict)
+            and response_format.get("type") == "json_schema"
+        ):
+            schema = response_format["json_schema"]["schema"]
+            kwargs["response_format"] = {"type": "json_object"}
+
+            def explain_schema(input_: LanguageModelInput) -> list[BaseMessage]:
+                return add_output_schema(
+                    self._convert_input(input_).to_messages(), schema
+                )
+
+            return RunnableLambda(explain_schema) | super().bind_tools(
+                tools, tool_choice=tool_choice, **kwargs
+            )
         return super().bind_tools(tools, tool_choice=tool_choice, **kwargs)
 
     @override
