@@ -280,6 +280,21 @@ def latest_verified_step(
             if not isinstance(document, dict):
                 raise TypeError(f"{history_path.name} must contain an object")
             if document.get("final_selection") is not None:
+                # Histories saved before concerns became a list use {id: explanation}.
+                for snapshot in document.get("snapshots", []):
+                    if not isinstance(snapshot, dict):
+                        continue
+                    reports = snapshot.get("stage_reports")
+                    if not isinstance(reports, dict):
+                        continue
+                    for report in reports.values():
+                        if isinstance(report, dict) and isinstance(
+                            concerns := report.get("concerns"), dict
+                        ):
+                            report["concerns"] = [
+                                {"id": name, "explanation": explanation}
+                                for name, explanation in concerns.items()
+                            ]
                 history = ReconstructionHistory.model_validate(document)
                 assert history.final_selection is not None
                 snapshot = history.snapshots[history.final_selection.round]

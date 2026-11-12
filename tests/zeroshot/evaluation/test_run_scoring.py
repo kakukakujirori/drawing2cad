@@ -136,8 +136,11 @@ def test_picks_the_final_attempt(make_run_dir, solids: dict[str, Path]) -> None:
 
 @pytest.mark.parametrize("last_only", [True, False])
 @pytest.mark.parametrize("selection", ["valid", "missing", "unknown", "disabled"])
+@pytest.mark.parametrize(
+    "legacy_concerns", [None, {}, {"concern_width": "Width is provisional."}]
+)
 def test_explicit_selection_is_authoritative_including_when_it_is_unusable(
-    make_run_dir, solids: dict[str, Path], last_only, selection
+    make_run_dir, solids: dict[str, Path], last_only, selection, legacy_concerns
 ):
     from tests.zeroshot.workflow.test_reconstruction_workflow import _completed_run
 
@@ -152,20 +155,47 @@ def test_explicit_selection_is_authoritative_including_when_it_is_unusable(
             "reason": "Selected from the drawing.",
         }
     )
-    (run_dir / "workspace/reconstruction.json").write_text(json.dumps(document))
+    if legacy_concerns is not None:
+        document["snapshots"][0]["stage_reports"]["coding"]["concerns"] = (
+            legacy_concerns
+        )
+    history_path = run_dir / "workspace/reconstruction.json"
+    original = json.dumps(document)
+    history_path.write_text(original)
     chosen = run_dir / "workspace/attempts/round_000/coding/000/output.step"
     if selection == "missing":
         chosen.unlink()
 
     found, skipped = latest_verified_step(run_dir, last_only=last_only)
 
+    assert history_path.read_text() == original
     if selection == "valid":
         assert found == chosen
+        assert skipped == {}
     elif selection == "disabled":
         assert found == chosen.parent.parent / "001/output.step"
     else:
         assert found is None
         assert "final_selection" in skipped
+
+
+@pytest.mark.parametrize(
+    "concerns", [{"bad_id": "A concern."}, {"concern_width": ""}, {"concern_width": {}}]
+)
+def test_legacy_concerns_are_still_validated(make_run_dir, solids, concerns):
+    from tests.zeroshot.workflow.test_reconstruction_workflow import _completed_run
+
+    run_dir = make_run_dir({"000": solids["box"], "001": solids["sphere"]})
+    document = _completed_run().model_dump(mode="json")
+    document["snapshots"][0]["verification"]["verification_id"] = "000"
+    document["snapshots"][0]["stage_reports"]["coding"]["concerns"] = concerns
+    document["final_selection"] = {"round": 0, "reason": "Chosen from the drawing."}
+    (run_dir / "workspace/reconstruction.json").write_text(json.dumps(document))
+
+    found, skipped = latest_verified_step(run_dir, last_only=False)
+
+    assert found is None
+    assert "stage_reports.coding.concerns.0" in skipped["final_selection"]
 
 
 @pytest.mark.parametrize(
