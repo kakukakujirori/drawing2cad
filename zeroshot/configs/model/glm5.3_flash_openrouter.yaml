@@ -16,8 +16,9 @@ model:
 
   # NOTE: Select upstreams that support tool_choice, structured outputs and the full context.
   openrouter_provider:
-    order: [Morph, InferenceNet, Modal, Together, Fireworks, DeepInfra]
+    order: [primeintellect] #[Morph, InferenceNet, Modal, Together, Fireworks, DeepInfra]
     allow_fallbacks: false
+    require_parameters: true
   # Always 8, whatever the workflow allows: the upstreams reject more.
   image_history_limit: 8
 
