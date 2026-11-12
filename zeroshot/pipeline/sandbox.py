@@ -156,6 +156,8 @@ class SandboxRunner:
             "--ro-bind", "/lib", "/lib",
             "--ro-bind", "/lib64", "/lib64",
             "--ro-bind", "/bin", "/bin",
+            # Links under /usr, such as system fonts, resolve through here.
+            "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
             "--proc", "/proc",
             "--dev", "/dev",
             "--dir", "/cad-env",
