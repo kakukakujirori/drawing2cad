@@ -23,6 +23,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 )
 from zeroshot.pipeline.verification.attempts import AttemptStage, AttemptStore
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
+from zeroshot.pipeline.verification.program_log import describe_ineffective_booleans
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
@@ -417,6 +418,7 @@ class OutputVerifier:
             self.artifact_presenter,
             self._projection_frames() if report.render_report else {},
             previous=self._scored_before if report is self._scored else None,
+            own_program=self.source_path.name,
         )
 
 
@@ -443,11 +445,15 @@ def build_verification_feedback(
     *,
     previous: VerifyOutputResult | None = None,
     cluster_prefix: str = "drawing_diff",
+    own_program: str | None,
 ) -> list[ContentBlock]:
     """Format saved verification reports in execution, render, comparison order.
 
     This owns the report text and its attachments together. Stage instructions
     and the HumanMessage carrying them belong to the caller.
+
+    `own_program` is the program's file name when the reader wrote the program;
+    only then are its booleans that changed nothing reported. None otherwise.
     """
     exec_report = report.exec_report
     render_report = report.render_report or {}
@@ -495,6 +501,23 @@ def build_verification_feedback(
                     + "\nCheck these structures against the source drawing and program. "
                     "A warning requests review, not automatic removal: supported thin "
                     "features and small steps are legitimate."
+                )
+            )
+
+    if (
+        own_program is not None
+        and exec_report is not None
+        and exec_report.program_log is not None
+    ):
+        entries = describe_ineffective_booleans(
+            exec_report.program_log.booleans, own_program
+        )
+        if entries:
+            blocks.append(
+                create_text_block(
+                    "[Booleans that changed no volume or left no material — "
+                    "program lines; model XYZ in mm]\n"
+                    + "\n".join(f"- {entry}" for entry in entries)
                 )
             )
 

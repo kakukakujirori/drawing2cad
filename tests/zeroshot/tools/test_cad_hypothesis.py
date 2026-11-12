@@ -23,6 +23,7 @@ from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.verification.attempts import AttemptStage
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
+from zeroshot.pipeline.verification.program_log import BooleanCall, ProgramLog
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
@@ -203,6 +204,29 @@ def test_a_trial_is_scored_against_a_reference_and_kept_apart(trial, stage):
     assert (root / "model.py").read_text() == "result = 'program'\n"
     assert not (root / "attempts").exists()
     assert PurePosixPath("trials") in workdir.read_only_subdirs
+
+
+@pytest.mark.parametrize("stage", ["coding", "audit"])
+def test_a_trial_names_its_booleans_that_changed_nothing(trial, stage, monkeypatch):
+    def execute(self, source, step):
+        step.write_text("STEP")
+        cut = BooleanCall("cut", 1, 1, 8.0, 8.0, (0, 0, 0, 2, 2, 2), (5, 0, 0, 6, 1, 1))
+        return CadQueryExecutionReport(
+            status=ExecutionStatus.VERIFIED,
+            source=source.read_text(),
+            returncode=0,
+            step_path=step,
+            census=_census(),
+            program_log=ProgramLog((cut,), (8.0,)),
+        )
+
+    monkeypatch.setattr(CadQueryExecutor, "execute", execute)
+    workdir, tool = trial(stage)
+    (workdir.host_bind_dir / "trial.py").write_text("result = 'box'\n")
+
+    result = tool.invoke({"source_path": "/work/trial.py"})
+
+    assert "- trial.py:1 cut removed no material." in result
 
 
 @pytest.mark.parametrize(

@@ -169,6 +169,7 @@ def create_cad_hypothesis_tool(
             _PATHS_ONLY,
             views.view_frames() if report.render_report else {},
             cluster_prefix="trial_diff",
+            own_program=script.name,
         )
         return "\n".join(
             [

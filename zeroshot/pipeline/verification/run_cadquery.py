@@ -11,6 +11,12 @@ from zeroshot.pipeline.sandbox import (
     SandboxStatus,
     SandboxWorkdir,
 )
+from zeroshot.pipeline.verification._run_program import PROGRAM_LOG
+from zeroshot.pipeline.verification.program_log import (
+    ProgramLog,
+    describe_inside_out,
+    read_program_log,
+)
 from zeroshot.pipeline.verification.shape_census import ShapeCensus, read_census
 
 _RUNNER = "_run_program.py"
@@ -54,6 +60,8 @@ class CadQueryExecutionReport:
     stdout: str = ""
     stderr: str = ""
     census: ShapeCensus | None = None
+    # None: not logged, as when the program raised.
+    program_log: ProgramLog | None = None
 
 
 def _mm_span(low: float, high: float) -> str:
@@ -220,10 +228,26 @@ class CadQueryExecutor:
                 if tmp_step_path.is_symlink()
                 else read_census(tmp_step_path, source=source, filename=model_path.name)
             )
+            program_log = read_program_log(workdir.host_bind_dir / PROGRAM_LOG)
+            # The STEP round trip turns an inside-out solid outward, so only the
+            # log shows it. Its message goes first: it can explain a STEP error.
+            inside_out_error = (
+                None
+                if program_log is None
+                else describe_inside_out(program_log, model_path.name)
+            )
+            validation_error = (
+                "\n".join(
+                    message
+                    for message in (inside_out_error, step_error)
+                    if message is not None
+                )
+                or None
+            )
 
             kept_step_path = None
             if output_step_path is not None and (
-                step_error is None or census is not None
+                validation_error is None or census is not None
             ):
                 shutil.copyfile(tmp_step_path, output_step_path)
                 kept_step_path = output_step_path
@@ -232,15 +256,16 @@ class CadQueryExecutor:
             source=source,
             status=(
                 ExecutionStatus.FAILED
-                if step_error is not None
+                if validation_error is not None
                 else ExecutionStatus.VERIFIED
             ),
-            executor_error=step_error,
+            executor_error=validation_error,
             returncode=sandbox_result.returncode,
             step_path=kept_step_path,
             stdout=sandbox_result.stdout,
             stderr=sandbox_result.stderr,
             census=census,
+            program_log=program_log,
         )
 
     @staticmethod

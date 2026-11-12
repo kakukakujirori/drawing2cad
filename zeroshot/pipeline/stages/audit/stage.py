@@ -89,6 +89,7 @@ class AuditStage:
                 snapshot.interpretation.view_frames()
                 if snapshot.interpretation
                 else {},
+                own_program=None,  # the coder's build
             ),
         )
         result = self.agent.invoke(

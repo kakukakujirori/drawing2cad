@@ -25,6 +25,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import Axis, Region, View
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
+from zeroshot.pipeline.verification.program_log import BooleanCall, ProgramLog
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
@@ -96,6 +97,7 @@ def test_warning_states_survive_json_and_feedback_without_program_source(
             SandboxWorkdir(host_bind_dir=tmp_path),
             ArtifactPresenter(input="path"),
             {},
+            own_program="model.py",
         )
         return "\n".join(block.get("text", "") for block in blocks)
 
@@ -106,6 +108,82 @@ def test_warning_states_survive_json_and_feedback_without_program_source(
     )
     assert (warning in text) == bool(warnings)
     assert ("[Geometry warning check unavailable]" in text) == (warnings is None)
+
+
+_NO_EFFECT_CUT = BooleanCall(
+    operation="cut",
+    line=12,
+    caller_line=12,
+    volume_before=1000.0,
+    volume_after=1000.0,
+    body_box=(-5.0, -5.0, -5.0, 5.0, 5.0, 5.0),
+    tool_box=(20.0, -1.0, -1.0, 22.0, 1.0, 1.0),
+)
+
+
+def _feedback_text(tmp_path: Path, report: VerifyOutputResult, own_program) -> str:
+    blocks = build_verification_feedback(
+        report,
+        SandboxWorkdir(host_bind_dir=tmp_path),
+        ArtifactPresenter(input="path"),
+        {},
+        own_program=own_program,
+    )
+    return "\n".join(block.get("text", "") for block in blocks)
+
+
+def _report_with_booleans(*calls: BooleanCall) -> VerifyOutputResult:
+    return VerifyOutputResult(
+        exec_report=CadQueryExecutionReport(
+            status=ExecutionStatus.VERIFIED,
+            returncode=0,
+            source=VALID_SOURCE,
+            census=ShapeCensus(
+                solids=1,
+                volume=1000,
+                extent=(10, 10, 10),
+                faces=Counter(),
+                edges=Counter(),
+                warnings=("Possible shallow steps (1 region): depth 0.1 mm.",),
+            ),
+            program_log=ProgramLog(calls, (1000.0,)),
+        )
+    )
+
+
+def test_booleans_without_effect_follow_the_geometry_warnings(tmp_path) -> None:
+    text = _feedback_text(tmp_path, _report_with_booleans(_NO_EFFECT_CUT), "model.py")
+
+    block = (
+        "[Booleans that changed no volume or left no material — program lines; "
+        "model XYZ in mm]\n"
+        "- model.py:12 cut removed no material.\n"
+        "  body   X -5.000..5.000, Y -5.000..5.000, Z -5.000..5.000 mm\n"
+        "  cutter X 20.000..22.000, Y -1.000..1.000, Z -1.000..1.000 mm"
+    )
+    assert block in text
+    assert text.index("[Geometry warnings") < text.index(block)
+    # The block states facts; the review request belongs to geometry warnings.
+    after = text[text.index(block) + len(block) :]
+    assert "review" not in after.split("[", 1)[0]
+
+
+def test_booleans_are_reported_only_for_the_readers_own_program(tmp_path) -> None:
+    report = _report_with_booleans(_NO_EFFECT_CUT)
+
+    assert "[Booleans that" in _feedback_text(tmp_path, report, "h541.py")
+    assert "h541.py:12 cut removed no material." in _feedback_text(
+        tmp_path, report, "h541.py"
+    )
+    assert "[Booleans that" not in _feedback_text(tmp_path, report, None)
+
+
+def test_no_block_when_every_boolean_changed_the_volume(tmp_path) -> None:
+    effective = replace(_NO_EFFECT_CUT, volume_after=992.0)
+
+    text = _feedback_text(tmp_path, _report_with_booleans(effective), "model.py")
+
+    assert "[Booleans that" not in text
 
 
 class StubCadQueryExecutor:

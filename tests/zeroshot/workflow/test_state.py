@@ -51,6 +51,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
 )
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus
+from zeroshot.pipeline.verification.program_log import BooleanCall, ProgramLog
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
 )
@@ -128,6 +129,10 @@ _VERIFICATION = VerifyOutputResult(
             (
                 "Possible local thin land: thickness 0.1 mm at x=1..2, y=3..4, z=5..5.1.",
             ),
+        ),
+        program_log=ProgramLog(
+            (BooleanCall("cut", 4, 9, 1.0, 1.0, (0.0, 0.0, 0.0, 1.0, 1.0, 1.0), None),),
+            (1.0,),
         ),
     ),
     render_report={
@@ -291,6 +296,8 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         CadQueryExecutionReport,
         ShapeCensus,
         Void,
+        BooleanCall,
+        ProgramLog,
         RenderReport,
         RenderStatus,
         ProjectionPaths,

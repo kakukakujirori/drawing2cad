@@ -230,6 +230,7 @@ def test_warning_survives_step_and_is_only_shown_when_present(tmp_path):
             SandboxWorkdir(host_bind_dir=tmp_path),
             ArtifactPresenter(input="image"),
             {},
+            own_program="model.py",
         )
         return "\n".join(b.get("text", "") for b in blocks)
 

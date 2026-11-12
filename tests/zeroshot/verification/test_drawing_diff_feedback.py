@@ -338,6 +338,7 @@ def test_shared_feedback_uses_registered_signed_axes_for_arbitrary_view_names(tm
             SandboxWorkdir(tmp_path),
             PRESENTER,
             {View.RIGHT: ("-z", "+y")},
+            own_program="model.py",
         )
     )
 
