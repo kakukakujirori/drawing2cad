@@ -22,7 +22,7 @@ model:
   image_history_limit: 8
 
   # Hard turns reason for ~30k tokens; the rest leaves room for a whole program.
-  max_tokens: 60000
+  max_tokens: 128000
 
   timeout: 60000  # milliseconds
   max_retries: 0

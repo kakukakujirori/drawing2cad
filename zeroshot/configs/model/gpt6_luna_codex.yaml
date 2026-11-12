@@ -7,6 +7,7 @@ model:
   # The workflow's choice: 20 for pipeline_native, 8 for the staged pipeline.
   image_history_limit: ${oc.select:image_history_limit,8}
   model: gpt-6-luna
+  max_tokens: 128000
   reasoning:
     effort: max
     summary: detailed
