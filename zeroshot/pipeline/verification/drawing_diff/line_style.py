@@ -71,6 +71,7 @@ def find_line_style_mismatches(
     input_rgb: np.ndarray,
     input_comparison_ink: np.ndarray,
     input_annotation: np.ndarray | None = None,
+    output_outline: np.ndarray | None = None,
 ) -> tuple[list[Unmatched], dict]:
     """Unique mismatching curve portions, plus classified and unknown line lengths.
 
@@ -79,6 +80,8 @@ def find_line_style_mismatches(
     output_model_to_input maps output DXF model coordinates to input pixels.
     input_rgb retains pale dash gaps lost in binarization; input_comparison_ink
     contains only strokes selected by the caller's annotation/silhouette filtering.
+    output_outline marks the outer edge of the whole output on the input grid.
+    An outline is always visible, so a solid stroke along it is no style error.
     An open curve without one style along its whole length is compared over its
     clearly styled stretches, and the rest of it is unknown length.
     checked_curves counts the curves with any compared length; unknown_curves
@@ -98,6 +101,9 @@ def find_line_style_mismatches(
             cv2.polylines(
                 output_visible_ink, [np.rint(xy).astype(np.int32)], False, 1, 1
             )
+    if output_outline is not None:
+        # The outline is visible even where the renderer reports its curve hidden.
+        output_visible_ink |= output_outline.astype(np.uint8)
     output_visible_distance = distance_map(output_visible_ink.astype(bool))
     input_annotation_distance = (
         distance_map(input_annotation).astype(np.float32)

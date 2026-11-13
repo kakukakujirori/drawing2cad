@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,14 +16,17 @@ from .align import AlignmentResult, _validate_rgb, opencv_transform
 from .drafting_marks import drafting_marks, thin_solid_marks
 from .image_ops import (
     beside_part,
+    disk,
     distance_map,
     drawing_masks,
+    external_boundary,
     foreground_mask,
     render_transformed_strokes,
 )
 from .line_style import find_line_style_mismatches, input_hidden_curves
 from .text_marks import text_marks
 from .unmatched import (
+    FAR_PEAK_PX,
     describe_unmatched,
     draw_unmatched,
     find_unmatched,
@@ -34,6 +38,8 @@ from .unmatched import (
 _DISPLAY_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 # Capping keeps a far annotation from outweighing the part's own lines.
 CHAMFER_CAP_PX = 20.0
+# A rendered output stroke lies within this of its curve on the drawing grid.
+STROKE_TO_CURVE_PX = 2
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,7 @@ def _chamfers(
     matrix: np.ndarray,
     annotation: np.ndarray | None = None,
     tangent: np.ndarray | None = None,
+    style_mismatch: np.ndarray | None = None,
 ) -> dict[str, float | None]:
     """Mean line distance both ways in drawing pixels, to compare builds of one part.
 
@@ -68,6 +75,11 @@ def _chamfers(
     but an output line along one is still near the drawing. Output lines outside
     the drawing are not evaluated. The bounded mean caps each distance at
     CHAMFER_CAP_PX; the unbounded mean does not.
+
+    style_mismatch marks, on the drawing grid, output stretches drawn in the
+    other line style than the drawing's. Such a stretch and the drawing ink
+    nearest to it within FAR_PEAK_PX do not match each other: each takes its
+    distance to the other lines.
     """
     unavailable = {
         "bounded_chamfer_drawing_px": None,
@@ -77,7 +89,6 @@ def _chamfers(
     if not (part_ink.any() and output_ink.any()):
         return unavailable
     drawing_xy = np.argwhere(drawing_ink)[:, ::-1].astype(np.float64)
-    part_xy = np.argwhere(part_ink)[:, ::-1].astype(np.float64)
     supporting = output_ink if tangent is None else output_ink | tangent
     pixels = np.argwhere(supporting)
     required = output_ink[pixels[:, 0], pixels[:, 1]]
@@ -91,8 +102,24 @@ def _chamfers(
     )
     if not inside.any():
         return unavailable
-    missing = cKDTree(output_xy).query(part_xy)[0]
+    to_output, nearest = cKDTree(output_xy).query(drawing_xy)
     extra = cKDTree(drawing_xy).query(output_xy[inside])[0]
+    if style_mismatch is not None:
+        stretch = np.zeros(len(output_xy), dtype=bool)
+        near = cv2.dilate(
+            style_mismatch.astype(np.uint8), disk(STROKE_TO_CURVE_PX)
+        ).astype(bool)
+        grid = np.rint(output_xy[inside]).astype(int)
+        stretch[inside] = near[grid[:, 1], grid[:, 0]]
+        # Ink farther than FAR_PEAK_PX from the stretch lies on another line.
+        along = stretch[nearest] & (to_output <= FAR_PEAK_PX)
+        if along.any() and not stretch.all():
+            to_output[along] = cKDTree(output_xy[~stretch]).query(drawing_xy[along])[0]
+        if stretch.any() and not along.all():
+            extra[stretch[inside]] = cKDTree(drawing_xy[~along]).query(
+                output_xy[stretch]
+            )[0]
+    missing = to_output[part_ink[drawing_ink]]
     bounded = (
         np.minimum(missing, CHAMFER_CAP_PX).mean()
         + np.minimum(extra, CHAMFER_CAP_PX).mean()
@@ -101,6 +128,38 @@ def _chamfers(
         "bounded_chamfer_drawing_px": float(bounded / 2),
         "unbounded_chamfer_drawing_px": float((missing.mean() + extra.mean()) / 2),
     }
+
+
+def _match_score(line: float | None, material: dict[str, Any]) -> float | None:
+    """The line distance plus the silhouette mismatch, both lengths in drawing pixels.
+
+    They are the mean distance between the line sets, and the mismatched
+    silhouette area per unit of outline. A view whose input silhouette cannot
+    be filled is scored by lines alone. That rests on the input, and on whether
+    the registered output finds its outlines drawn thicker; builds of one
+    drawing mostly agree on both.
+    """
+    if line is None:
+        return None
+    return line + (
+        (material["missing_px2"] + material["extra_px2"])
+        / max(material["input_perimeter_px"], 1.0)
+        if material["ratio"] is not None
+        else 0.0
+    )
+
+
+def _output_outline(
+    output: np.ndarray, curves: Sequence[tuple[np.ndarray, str]]
+) -> np.ndarray:
+    """The outer edge of the output on the drawing grid.
+
+    The curves close the gaps that dashes leave in the rendered strokes.
+    """
+    ink = output.astype(np.uint8)
+    for xy, _ in curves:
+        cv2.polylines(ink, [np.rint(xy).astype(np.int32)], False, 1, 1)
+    return external_boundary(ink.astype(bool))
 
 
 def _measure_distances(
@@ -246,7 +305,8 @@ def compute_diff(
     projection_modelspace and projection_to_uv (projection pixel boundaries to CAD UV)
     identify drafting marks for scoring and enable curve and line style comparison.
     Style mismatches are red
-    in the overlay and separately counted; they do not alter geometric scores.
+    in the overlay and counted separately. In the line distance a mismatched
+    output stretch and the input ink along it do not match each other.
 
     hide_tangents leaves tangent_ink out of the images; it still counts everywhere else.
 
@@ -362,19 +422,9 @@ def compute_diff(
         )
         material = measure_material_error(outline, output_seen)
         stats["material_error"] = material
-        # Both terms are lengths in drawing pixels: the mean distance between
-        # the line sets, and the mismatched silhouette area per unit of outline.
-        # A view whose input silhouette cannot be filled is scored by lines alone.
-        # That rests on the input, and on whether the registered output finds its
-        # outlines drawn thicker; builds of one drawing mostly agree on both.
-        line = stats["unbounded_chamfer_drawing_px"]
-        if line is not None:
-            stats["match_score"] = line + (
-                (material["missing_px2"] + material["extra_px2"])
-                / max(material["input_perimeter_px"], 1.0)
-                if material["ratio"] is not None
-                else 0.0
-            )
+        stats["match_score"] = _match_score(
+            stats["unbounded_chamfer_drawing_px"], material
+        )
 
         # Stretches and line styles need the DXF curves mapped to drawing pixels.
         curves = None
@@ -387,11 +437,27 @@ def compute_diff(
                 input_rgb=drawing_rgb,
                 input_comparison_ink=drawing_ink & ~non_part,
                 input_annotation=masks.annotation,
+                output_outline=_output_outline(output_seen | tangent_seen, curves),
             )
 
         line_style_mismatch_mask = np.zeros(drawing_ink.shape, np.uint8)
         for group in line_style_mismatches:
             line_style_mismatch_mask[group.xy[:, 1], group.xy[:, 0]] = 1
+        if line_style_mismatches:
+            # A stretch in the wrong line style matches no input line.
+            stats.update(
+                _chamfers(
+                    drawing_ink,
+                    output_ink,
+                    matrix,
+                    comparison_annotation,
+                    tangent_ink,
+                    line_style_mismatch_mask.astype(bool),
+                )
+            )
+            stats["match_score"] = _match_score(
+                stats["unbounded_chamfer_drawing_px"], material
+            )
         line_style_mismatch_mask = cv2.dilate(
             line_style_mismatch_mask, _DISPLAY_KERNEL
         ).astype(bool)

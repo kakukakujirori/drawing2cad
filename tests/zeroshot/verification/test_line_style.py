@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
-from zeroshot.pipeline.verification.drawing_diff.diff import compute_diff
+from zeroshot.pipeline.verification.drawing_diff.diff import _chamfers, compute_diff
 from zeroshot.pipeline.verification.drawing_diff.line_style import (
     find_line_style_mismatches,
     input_hidden_curves,
@@ -333,7 +333,7 @@ def test_by_layer_style_and_open_dashed_line():
 @pytest.mark.parametrize(
     "input_style,output_style", [("visible", "hidden"), ("hidden", "visible")]
 )
-def test_shared_style_error_reaches_both_images_and_keeps_geometry_score(
+def test_shared_style_error_reaches_both_images_and_raises_the_score(
     input_style, output_style
 ):
     drawing, output = _circle(input_style), _circle(output_style)
@@ -356,7 +356,7 @@ def test_shared_style_error_reaches_both_images_and_keeps_geometry_score(
     )
     assert diff.stats["comparison_status"] == "ok", diff.warnings
     assert plain.stats["line_style"]["status"] == "unavailable"
-    assert diff.stats["match_score"] == plain.stats["match_score"]
+    assert diff.stats["match_score"] > plain.stats["match_score"]
     assert diff.stats["line_style"]["mismatch_count"] == 1
     assert diff.stats["line_style"]["displayed_count"] == 1
     assert len(diff.stats["unmatched"]) == 1
@@ -372,6 +372,64 @@ def test_shared_style_error_reaches_both_images_and_keeps_geometry_score(
     solid = OUTPUT_MAGENTA if output_style == "visible" else INPUT_GREEN
     assert np.any(np.all(diff.unmatched[_circle("visible")] == solid, axis=1))
     assert np.any(np.all(diff.unmatched == COLORS["dark orange"], axis=2))
+
+
+def test_a_style_mismatch_measures_its_lines_to_the_other_lines():
+    ink = np.zeros((200, 200), np.uint8)
+    cv2.rectangle(ink, (20, 20), (180, 180), 1, 1)
+    ink[60:141, [100, 115]] = 1
+    alignment = AlignmentResult(
+        "directional_chamfer", "similarity", "ok", np.eye(3).tolist(), {}
+    )
+
+    def compare(style):
+        model = ezdxf.new(setup=True).modelspace()
+        corners = [(20.5, 20.5), (180.5, 20.5), (180.5, 180.5), (20.5, 180.5)]
+        for start, end in zip(corners, corners[1:] + corners[:1]):
+            model.add_line(start, end)
+        model.add_line((100.5, 60.5), (100.5, 140.5), dxfattribs={"linetype": style})
+        model.add_line((115.5, 60.5), (115.5, 140.5))
+        return compute_diff(
+            _rgb(ink),
+            _rgb(ink),
+            alignment,
+            projection_modelspace=model,
+            projection_to_uv=np.eye(3),
+        ).stats
+
+    plain = compute_diff(_rgb(ink), _rgb(ink), alignment).stats
+    matched, mismatched = compare("Continuous"), compare("HIDDEN")
+    keys = ("bounded_chamfer_drawing_px", "unbounded_chamfer_drawing_px")
+    assert matched["line_style"]["mismatch_count"] == 0
+    assert [matched[key] for key in keys] == [plain[key] for key in keys] == [0, 0]
+    assert mismatched["line_style"]["mismatch_count"] == 1
+    # In both directions the dashed line's pixels measure 15 px to the line beside it.
+    share = ink[60:141, 100].sum() / ink.sum()
+    for key in keys:
+        assert mismatched[key] == pytest.approx(15 * share)
+
+
+def test_ink_beyond_far_peak_keeps_its_distance_to_a_style_mismatch():
+    drawing = np.zeros((100, 160), bool)
+    drawing[10:90, [40, 100, 120]] = True
+    output = np.zeros((100, 160), bool)
+    output[10:90, [40, 100]] = True
+    style_mismatch = np.zeros((100, 160), bool)
+    style_mismatch[10:90, 100] = True
+
+    distances = _chamfers(drawing, output, np.eye(3), style_mismatch=style_mismatch)
+
+    # Missing: x=100 measures 60 px to x=40; x=120 keeps 20 px to x=100.
+    # Extra: x=100 measures 20 px to x=120.
+    assert distances["unbounded_chamfer_drawing_px"] == pytest.approx(
+        ((0 + 60 + 20) / 3 + (0 + 20) / 2) / 2
+    )
+    assert distances["bounded_chamfer_drawing_px"] == pytest.approx(
+        ((0 + 20 + 20) / 3 + (0 + 20) / 2) / 2
+    )
+    assert _chamfers(drawing, output, np.eye(3)) == _chamfers(
+        drawing, output, np.eye(3), style_mismatch=np.zeros_like(drawing)
+    )
 
 
 def test_nearby_distinct_hidden_edges_can_bridge_gaps_and_are_unknown():
@@ -866,3 +924,40 @@ def test_one_style_along_the_whole_curve_is_compared_as_one_piece(
     assert stats["mismatch_length_px"] == pytest.approx(160)
     assert stats["checked_length_px"] == stats["mismatch_length_px"]
     assert stats["unknown_length_px"] == 0
+
+
+def test_a_solid_stroke_along_the_output_outline_is_not_a_style_error():
+    model = ezdxf.new(setup=True).modelspace()
+    model.add_line((20.5, 100.5), (180.5, 100.5), dxfattribs={"linetype": "HIDDEN"})
+    ink = np.zeros((200, 200), bool)
+    ink[100, 20:181] = True
+    groups, stats = find_line_style_mismatches(
+        model, np.eye(3), _rgb(ink), ink, output_outline=ink
+    )
+    assert not groups
+    assert (stats["checked_curves"], stats["unknown_curves"]) == (0, 1)
+
+
+def test_a_hidden_side_of_the_output_outline_is_not_compared():
+    model = ezdxf.new(setup=True).modelspace()
+    corners = [(40.5, 40.5), (160.5, 40.5), (160.5, 160.5), (40.5, 160.5)]
+    for side, (start, end) in enumerate(zip(corners, corners[1:] + corners[:1])):
+        style = "HIDDEN" if side == 1 else "Continuous"
+        model.add_line(start, end, dxfattribs={"linetype": style})
+    model.add_line((100.5, 40.5), (100.5, 160.5), dxfattribs={"linetype": "HIDDEN"})
+    ink = np.zeros((200, 200), np.uint8)
+    cv2.rectangle(ink, (40, 40), (160, 160), 1, 2)
+    cv2.line(ink, (100, 40), (100, 160), 1, 2)
+    rgb = np.repeat((255 - ink * 255)[..., None], 3, axis=2)
+    alignment = AlignmentResult(
+        "directional_chamfer", "similarity", "ok", np.eye(3).tolist(), {}
+    )
+    diff = compute_diff(
+        rgb, rgb, alignment, projection_modelspace=model, projection_to_uv=np.eye(3)
+    )
+    assert diff.stats["comparison_status"] == "ok", diff.warnings
+    styles = [g for g in diff.stats["unmatched"] if g["direction"] == "line_style"]
+    # Only the hidden line inside the outline disagrees with its solid stroke.
+    assert len(styles) == diff.stats["line_style"]["mismatch_count"] == 1
+    x0, _, x1, _ = styles[0]["box_px"]
+    assert 98 <= x0 and x1 <= 103
