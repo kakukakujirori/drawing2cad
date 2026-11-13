@@ -1,6 +1,6 @@
 """Recognize input line styles and compare them with corresponding DXF curves."""
 
-from itertools import product
+from itertools import pairwise, product
 
 import cv2
 import numpy as np
@@ -10,6 +10,9 @@ from skimage.morphology import thin
 
 from .image_ops import WIDTH_RATIO, distance_map
 from .unmatched import Unmatched, drawing_curves
+
+# Fewest samples whose style is judged on their own; dash windows overlap by half.
+_STYLE_WINDOW = 64
 
 
 def input_hidden_curves(
@@ -55,11 +58,7 @@ def input_hidden_curves(
             curves.append((np.array([start, end]), "hidden"))
             continue
         # Crossings can disturb regularity outside an otherwise clear dash run.
-        accepted = np.zeros(len(xy), bool)
-        for i in range(0, len(xy) - 63, 32):
-            section = slice(i, i + 64)
-            if _style(support[section], step, False, strength[section]) == "hidden":
-                accepted[section] = True
+        accepted = _hidden_windows(support, step, strength)
         edges = np.flatnonzero(np.diff(np.r_[False, accepted, False]))
         for first, stop in zip(edges[::2], edges[1::2], strict=True):
             curves.append((xy[[first, stop - 1]], "hidden"))
@@ -80,10 +79,13 @@ def find_line_style_mismatches(
     output_model_to_input maps output DXF model coordinates to input pixels.
     input_rgb retains pale dash gaps lost in binarization; input_comparison_ink
     contains only strokes selected by the caller's annotation/silhouette filtering.
+    An open curve without one style along its whole length is compared over its
+    clearly styled stretches, and the rest of it is unknown length.
+    checked_curves counts the curves with any compared length; unknown_curves
+    counts the other curves that are not optional tangents.
     """
     output_curves = list(_curves(output_modelspace, output_model_to_input))
-    states = np.zeros(len(output_curves), np.uint8)
-    coverages = np.zeros(len(output_curves))
+    compared = [[] for _ in output_curves]
     output_curve_trees = [cKDTree(xy) for xy, _, _, _ in output_curves]
     input_ink_distance = distance_map(input_comparison_ink).astype(np.float32)
     input_ink_pixels = input_comparison_ink.astype(np.float32)
@@ -131,10 +133,8 @@ def find_line_style_mismatches(
         ):
             continue
         # A visible or optional boundary can explain a solid stroke over a hidden edge.
-        if (
-            output_style == "hidden"
-            and (output_visible_distance[pixels[:, 1], pixels[:, 0]] < 3).mean() > 0.2
-        ):
+        near_visible_output = output_visible_distance[pixels[:, 1], pixels[:, 0]] < 3
+        if output_style == "hidden" and near_visible_output.mean() > 0.2:
             continue
         shifted = xy[None] + offsets[:, None]
         distances = cv2.remap(
@@ -174,40 +174,52 @@ def find_line_style_mismatches(
             distances[best] <= 1.0
         )  # Sampling must not widen positional tolerance.
         strength, widths = _ink_profiles(input_darkness, fitted_xy, normal)
-        input_style = _style(support, step, closed, strength)
-        if input_style is None:
+        style = _style(support, step, closed, strength)
+        if style is not None:
+            input_stretches = [(0, len(xy), style)]
+        elif closed:
+            # shortcut: stretches of a closed curve would need to wrap across its seam.
             continue
-        if (
-            input_style == "visible"
-            and input_annotation_distance is not None
-            and _continues_annotation(
-                fitted_xy, input_annotation_distance, input_darkness, widths
-            )
-        ):
-            continue
-        if input_style != output_style:
-            # Check where ink was sampled; local fitting must not switch curves.
-            ambiguous = False
-            for other_index, (other, _, _, _) in enumerate(output_curves):
-                if other_index == index or (
-                    (other.max(axis=0) < fitted_xy.min(axis=0) - 3).any()
-                    or (other.min(axis=0) > fitted_xy.max(axis=0) + 3).any()
-                ):
-                    continue
-                tree = output_curve_trees[other_index]
-                coincident = tree.query(xy)[0] <= 1.25
-                near_sample = tree.query(fitted_xy)[0] <= 3
-                if (near_sample & ~coincident).mean() > 0.2:
-                    ambiguous = True
-                    break
-            if ambiguous:
+        else:
+            # Parts of the curve can still have a clear style.
+            input_stretches = _styled_stretches(support, step, strength)
+        for first, stop, input_style in input_stretches:
+            part, fitted_part = xy[first:stop], fitted_xy[first:stop]
+            if (
+                output_style == "hidden"
+                and input_style == "visible"
+                and near_visible_output[first:stop].mean() > 0.2
+            ):
                 continue
-        stats["unknown_curves"] -= 1
-        stats["checked_curves"] += 1
-        states[index] = 1 if input_style == output_style else 2
-        coverages[index] = support.mean()
+            if (
+                input_style == "visible"
+                and input_annotation_distance is not None
+                and _continues_annotation(
+                    fitted_part,
+                    input_annotation_distance,
+                    input_darkness,
+                    widths[first:stop],
+                )
+            ):
+                continue
+            if input_style != output_style and _fit_switched_curves(
+                part, fitted_part, index, output_curves, output_curve_trees
+            ):
+                continue
+            compared[index].append(
+                (
+                    first,
+                    stop,
+                    1 if input_style == output_style else 2,
+                    float(support[first:stop].mean()),
+                )
+            )
+        if compared[index]:
+            stats["unknown_curves"] -= 1
+            stats["checked_curves"] += 1
     groups, lengths = _summarize(
-        output_curves, states, coverages, output_curve_trees, input_comparison_ink.shape
+        *_compared_pieces(output_curves, compared, output_curve_trees),
+        input_comparison_ink.shape,
     )
     stats["mismatch_count"] = len(groups)
     stats.update(lengths)
@@ -278,6 +290,53 @@ def _style(
     return None
 
 
+def _hidden_windows(
+    support: np.ndarray, step: float, strength: np.ndarray
+) -> np.ndarray:
+    """Samples of an open curve inside any window that _style calls hidden."""
+    hidden = np.zeros(len(support), bool)
+    for i in range(0, len(support) - _STYLE_WINDOW + 1, _STYLE_WINDOW // 2):
+        window = slice(i, i + _STYLE_WINDOW)
+        if _style(support[window], step, False, strength[window]) == "hidden":
+            hidden[window] = True
+    return hidden
+
+
+def _styled_stretches(
+    support: np.ndarray, step: float, strength: np.ndarray
+) -> list[tuple[int, int, str]]:
+    """(first, stop, style) of the clearly styled stretches of an open curve.
+
+    A visible stretch is a run of ink across holes of at most 2 px that _style
+    calls visible as a whole; its fine-dash and pale-dash tests need the whole
+    run. Hidden stretches are windows of repeated dashes outside visible ones.
+    """
+    # Bridge interior holes; runs at either end are not holes.
+    ends = np.r_[0, np.flatnonzero(np.diff(support)) + 1, len(support)]
+    inked = support.copy()
+    for first, stop in pairwise(ends):
+        if 0 < first and stop < len(support) and (stop - first) * step <= 2:
+            inked[first:stop] = True
+    stretches = []
+    visible = np.zeros(len(support), bool)
+    edges = np.flatnonzero(np.diff(np.r_[False, inked, False]))
+    for first, stop in zip(edges[::2], edges[1::2], strict=True):
+        section = slice(first, stop)
+        if (
+            stop - first >= _STYLE_WINDOW
+            and _style(support[section], step, False, strength[section]) == "visible"
+        ):
+            stretches.append((first, stop, "visible"))
+            visible[section] = True
+    hidden = _hidden_windows(support, step, strength) & ~visible
+    edges = np.flatnonzero(np.diff(np.r_[False, hidden, False]))
+    stretches += [
+        (first, stop, "hidden")
+        for first, stop in zip(edges[::2], edges[1::2], strict=True)
+    ]
+    return stretches
+
+
 def _ink_profiles(darkness, xy, normal):
     """Darkest central ink and integrated stroke width along a sampled curve."""
     offsets = np.arange(-3, 3.01, 0.5)
@@ -341,6 +400,22 @@ def _continues_annotation(xy, annotation_distance, darkness, stroke_widths):
     return narrow < WIDTH_RATIO * np.median(widths[nearby])
 
 
+def _fit_switched_curves(xy, fitted_xy, index, curves, trees) -> bool:
+    """Check where ink was sampled; local fitting must not switch curves."""
+    for other_index, (other, _, _, _) in enumerate(curves):
+        if other_index == index or (
+            (other.max(axis=0) < fitted_xy.min(axis=0) - 3).any()
+            or (other.min(axis=0) > fitted_xy.max(axis=0) + 3).any()
+        ):
+            continue
+        tree = trees[other_index]
+        coincident = tree.query(xy)[0] <= 1.25
+        near_sample = tree.query(fitted_xy)[0] <= 3
+        if (near_sample & ~coincident).mean() > 0.2:
+            return True
+    return False
+
+
 def _curves(modelspace: Modelspace, transform: np.ndarray):
     for xy, style in drawing_curves(modelspace, transform, tolerance_px=0.25):
         along = np.r_[0, np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
@@ -357,6 +432,41 @@ def _curves(modelspace: Modelspace, transform: np.ndarray):
             float(samples[1] - samples[0]),
             closed,
         )
+
+
+def _compared_pieces(curves, compared, trees):
+    """Curves split into compared stretches and unknown remainders.
+
+    compared[i] lists (first, stop, state, coverage) of curve i's compared
+    stretches, with state 1 for matching and 2 for mismatched styles. Returns
+    the pieces with their states, coverages and trees in _summarize's form.
+    """
+    pieces, states, coverages, piece_trees = [], [], [], []
+    for curve, tree, stretches in zip(curves, trees, compared, strict=True):
+        xy, style, step, _ = curve
+        spans, position = [], 0
+        for first, stop, state, coverage in sorted(stretches):
+            if position < first:
+                spans.append((position, first, 0, 0.0))
+            spans.append((first, stop, state, coverage))
+            position = stop
+        if position < len(xy):
+            spans.append((position, len(xy), 0, 0.0))
+        if len(spans) == 1:
+            # Compared whole or not at all: the curve stays as it is, closed or open.
+            pieces.append(curve)
+            piece_trees.append(tree)
+            states.append(spans[0][2])
+            coverages.append(spans[0][3])
+            continue
+        for first, stop, state, coverage in spans:
+            # Adjacent pieces share a sample so their lengths cover the curve.
+            part = xy[first : stop + 1]
+            pieces.append((part, style, step, False))
+            piece_trees.append(cKDTree(part))
+            states.append(state)
+            coverages.append(coverage)
+    return pieces, np.array(states, np.uint8), np.array(coverages), piece_trees
 
 
 def _summarize(curves, states, coverages, trees, shape):

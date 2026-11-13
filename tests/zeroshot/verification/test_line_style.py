@@ -613,8 +613,9 @@ def test_normal_probes_do_not_expand_correspondence_tolerance():
     ink[100, 20:120] = True
     ink[101, 120:181] = True  # this tail is over 1 px from the fitted line
     groups, stats = find_line_style_mismatches(model, np.eye(3), _rgb(ink), ink)
-    assert not groups
-    assert stats["unknown_curves"] == 1
+    assert len(groups) == 1
+    assert groups[0].xy[:, 0].max() <= 121
+    assert stats["unknown_length_px"] == pytest.approx(60, abs=2)
 
 
 def test_partially_overlapping_mismatch_clusters_do_not_repeat_pixels():
@@ -798,3 +799,70 @@ def test_distant_annotation_requires_a_connected_continuation(gap, output_style)
     )
     assert stats["unknown_curves"] == int(not gap)
     assert len(groups) == int(gap and output_style == "HIDDEN")
+
+
+def test_overhanging_end_leaves_the_supported_stretch_a_mismatch():
+    model = ezdxf.new(setup=True).modelspace()
+    model.add_line((20.5, 100.5), (180.5, 100.5), dxfattribs={"linetype": "HIDDEN"})
+    ink = np.zeros((200, 200), bool)
+    ink[100, 30:181] = True  # the curve overhangs the solid line by 10 px
+    groups, stats = find_line_style_mismatches(model, np.eye(3), _rgb(ink), ink)
+    assert len(groups) == stats["mismatch_count"] == 1
+    assert groups[0].input_style == "visible"
+    assert groups[0].xy[:, 0].min() >= 29
+    assert stats["mismatch_length_px"] == pytest.approx(150, abs=1)
+    assert stats["checked_length_px"] == stats["mismatch_length_px"]
+    assert stats["unknown_length_px"] == pytest.approx(10, abs=1)
+    assert (stats["checked_curves"], stats["unknown_curves"]) == (1, 0)
+
+
+@pytest.mark.parametrize("kind", ["broken", "fine", "pale"])
+def test_dashed_stretches_of_a_hidden_curve_are_not_errors(kind):
+    gray = np.full((200, 200), 255, np.uint8)
+    if kind == "broken":
+        for x in range(20, 181, 14):
+            gray[100, x : min(x + 9, 181)] = 36
+        gray[100, 95:118] = 255  # one long break spoils whole-length regularity
+    elif kind == "fine":
+        for x in range(30, 181, 9):
+            gray[100, x : min(x + 8, 181)] = 36
+    else:
+        gray[100, 30:181] = 36
+        for x in range(40, 175, 20):
+            gray[100, x : x + 6] = 80  # Still ink under the global Otsu threshold.
+    model = ezdxf.new(setup=True).modelspace()
+    model.add_line((20.5, 100.5), (180.5, 100.5), dxfattribs={"linetype": "HIDDEN"})
+    groups, stats = find_line_style_mismatches(
+        model, np.eye(3), np.repeat(gray[..., None], 3, axis=2), gray < 160
+    )
+    assert not groups
+    assert stats["mismatch_length_px"] == 0
+    assert stats["checked_curves"] == int(kind == "broken")
+
+
+@pytest.mark.parametrize("input_style", ["visible", "hidden"])
+def test_one_style_along_the_whole_curve_is_compared_as_one_piece(
+    input_style, monkeypatch
+):
+    monkeypatch.setattr(
+        "zeroshot.pipeline.verification.drawing_diff.line_style._styled_stretches",
+        lambda *_: pytest.fail("a whole-length style needs no stretches"),
+    )
+    model = ezdxf.new(setup=True).modelspace()
+    model.add_line(
+        (20.5, 100.5),
+        (180.5, 100.5),
+        dxfattribs={"linetype": "Continuous" if input_style == "hidden" else "HIDDEN"},
+    )
+    ink = np.zeros((200, 200), bool)
+    ink[100, 20:181] = True
+    if input_style == "hidden":
+        for x in range(20, 181, 14):
+            ink[100, x + 9 : x + 14] = False
+    groups, stats = find_line_style_mismatches(model, np.eye(3), _rgb(ink), ink)
+    assert len(groups) == 1
+    assert groups[0].input_style == input_style
+    assert groups[0].coverage == pytest.approx(ink[100, 20:181].mean(), abs=0.01)
+    assert stats["mismatch_length_px"] == pytest.approx(160)
+    assert stats["checked_length_px"] == stats["mismatch_length_px"]
+    assert stats["unknown_length_px"] == 0
