@@ -174,6 +174,10 @@ def read_events(events_path: Path, sample_id: str) -> SampleRow:
                     agent_turns=row.agent_turns + 1,
                     model_calls=row.model_calls + len(calls),
                 )
+            elif name == "compaction":  # a model call outside any agent turn
+                if usage := _call_usage(data.get("usage"), None):
+                    usages.append(usage)
+                row = replace(row, model_calls=row.model_calls + 1)
             elif name == "tool_started":
                 tool_calls[f"{data.get('tool_name')}:{data.get('caller')}"] += 1
             elif name == "verification":
@@ -220,11 +224,13 @@ def read_native_events(events_path: Path, sample_id: str) -> SampleRow:
     A model call is counted once: a streamed call by its `message-finish`, which
     carries its usage, and a call that did not stream by its complete message.
     The log has both even for a run that failed before writing messages.json.
+    Compaction calls count as model calls but not as agent turns.
     """
     row = SampleRow(sample_id=sample_id, terminal=Terminal.INTERRUPTED)
     started = None
     usages: list[Mapping[str, Any]] = []
     calls = 0
+    compactions = 0
     tool_calls: Counter[str] = Counter()
     with events_path.open(encoding="utf-8") as handle:
         for line in handle:
@@ -247,6 +253,10 @@ def read_native_events(events_path: Path, sample_id: str) -> SampleRow:
                     continue
                 calls += 1
                 if usage:
+                    usages.append(usage)
+            elif name == "compaction":
+                compactions += 1
+                if usage := _call_usage(data.get("usage"), None):
                     usages.append(usage)
             elif name == "tools" and data.get("event") == "tool-started":
                 tool_calls[f"{data.get('tool_name')}:generator"] += 1
@@ -272,7 +282,7 @@ def read_native_events(events_path: Path, sample_id: str) -> SampleRow:
     return replace(
         row,
         agent_turns=calls,
-        model_calls=calls,
+        model_calls=calls + compactions,
         calls_with_usage=len(usages),
         tokens=Tokens.summed(usages),
         tool_calls=dict(tool_calls),

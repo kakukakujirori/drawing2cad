@@ -165,6 +165,13 @@ class RunEventTransformer(StreamTransformer):
                 cast(dict[str, Any], _safe_value(data["model_retry"])),
             )
 
+        elif method == "custom" and isinstance(data, Mapping) and "compaction" in data:
+            self._push(
+                event,
+                "compaction",
+                cast(dict[str, Any], _safe_value(data["compaction"])),
+            )
+
         elif method == "custom" and isinstance(data, Mapping) and "prompt" in data:
             # Custom events reach every level's transformer and the built-in one
             # drops what is not its own scope; this projection keeps the whole

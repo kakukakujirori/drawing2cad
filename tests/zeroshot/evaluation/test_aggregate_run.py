@@ -95,6 +95,20 @@ def test_read_events_reports_what_the_run_did(tmp_path: Path) -> None:
     assert row.node_ms == {"model": 2000, "verify_final": 500}
 
 
+def test_a_compaction_is_a_model_call_with_tokens_but_no_agent_turn(
+    tmp_path: Path,
+) -> None:
+    events = _completed_events(_USAGE)
+    events.insert(-1, _event("compaction", usage=_USAGE, finish_reason="stop"))
+    path = tmp_path / "events.jsonl"
+    path.write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
+
+    row = read_events(path, "000364")
+
+    assert (row.agent_turns, row.model_calls, row.calls_with_usage) == (1, 2, 2)
+    assert (row.tokens.input, row.tokens.output, row.tokens.reasoning) == (200, 40, 16)
+
+
 def test_a_backend_that_reports_no_usage_is_not_recorded_as_free(
     tmp_path: Path,
 ) -> None:

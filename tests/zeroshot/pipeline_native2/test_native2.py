@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from hydra import compose, initialize_config_dir
 from langchain_core.messages import AIMessage
+from omegaconf import OmegaConf
 from PIL import Image
 
 from tests.zeroshot.chat_models import (
@@ -16,6 +17,7 @@ from tests.zeroshot.chat_models import (
 )
 from zeroshot.evaluation.aggregate_run import collect, summarize
 from zeroshot.evaluation.run_scoring import is_native_run
+from zeroshot.pipeline.workflow.components.compact import COMPACTION_INSTRUCTION
 from zeroshot.pipeline_native2 import runner
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -34,6 +36,7 @@ def _config(tmp_path, config_name="native2"):
                 "console=false",
                 "max_audits=1",  # Scripted conversations exercise up to two rounds.
                 "final_selection=false",  # Selection tests enable it explicitly.
+                "compaction_max_tokens=null",  # So do compaction tests.
                 f"sample.drawing.sheets.0.file={drawing}",
             ],
         )
@@ -84,6 +87,74 @@ def test_rejection_sends_the_report_to_the_coder_and_protects_its_program(tmp_pa
     assert (run_dir / "audit_messages.json").is_file()
     assert (run_dir / "reasoning_traj.md").read_text() == "A report.\n"
     assert is_native_run(run_dir)
+
+
+class _CappableScriptedChatModel(ScriptedChatModel):
+    """A script `compaction_model` accepts; unset, its cap keeps this instance."""
+
+    max_tokens: int | None = None
+
+
+_NOTES = (
+    "## OBJECTIVE\nrebuild\n## FINDINGS\nplate\n## WORK DONE\nwrote model.py\n"
+    "## OPEN QUESTIONS\nNone"
+)
+
+
+def test_the_coder_continues_from_notes_after_an_audit_another_round_may_follow(
+    tmp_path,
+):
+    config = _config(tmp_path)
+    config.compaction_max_tokens = 32000
+    usage = {"input_tokens": 50, "output_tokens": 5, "total_tokens": 55}
+    model = _CappableScriptedChatModel(
+        responses=(
+            _write("result = 1", "c0"),
+            AIMessage(content="Built the plate."),
+            AIMessage(content=_NOTES, usage_metadata=usage),
+            AIMessage(content="The hole is missing.\nVERDICT: REJECT"),
+            _write("result = 2", "c1"),
+            AIMessage(content="Added the hole."),
+            AIMessage(content="A report."),
+        )
+    )
+    result = runner.run(config, model=model)
+
+    compaction, audit, revision = model.received_messages[2:5]
+    assert compaction[-1].text == COMPACTION_INSTRUCTION
+    assert any(m.text == "Built the plate." for m in compaction)
+    # The audit reads the coder's own answer, not the notes.
+    assert "Built the plate." in audit[1].content[-1]["text"]
+    # The next round opens on the notes, with the drawing attached again.
+    assert "## OBJECTIVE" in revision[1].text
+    assert not any(m.text == "Built the plate." for m in revision)
+    request = next(m for m in revision if "The hole is missing." in m.text)
+    assert any(block.get("type") == "image" for block in request.content)
+    # The last round has no audit to follow, so nothing is compacted after it.
+    assert len(model.received_messages) == 7
+    # The record keeps the turns the notes replaced.
+    run_dir = Path(config.artifact_root) / config.sample.sample_id
+    texts = [m["content"] for m in json.loads((run_dir / "messages.json").read_text())]
+    assert "Built the plate." in texts and "Added the hole." in texts
+    assert any(m.text == "Built the plate." for m in result["messages"])
+    # The compaction call counts as a model call with its tokens.
+    assert [e["data"] for e in _events(config) if e["event"] == "compaction"] == [
+        {"usage": usage, "finish_reason": None}
+    ]
+    (row,) = collect(Path(config.artifact_root))
+    assert (row.agent_turns, row.model_calls) == (5, 6)
+    assert row.tokens.input == 50
+
+
+@pytest.mark.parametrize("config_name", ["native2", "native2_prime"])
+def test_native2_compacts_with_the_staged_pipelines_cap(config_name):
+    staged = OmegaConf.load(_ROOT / "zeroshot/configs/workflow/coder_auditor.yaml")
+    with initialize_config_dir(
+        config_dir=str(_ROOT / "zeroshot/configs"), version_base="1.3"
+    ):
+        native = compose(config_name=config_name)
+    assert native.compaction_max_tokens == staged.workflow.compaction_model.max_tokens
+    assert staged.workflow.compact_exhausted_coder == "never"  # nor does native2
 
 
 def test_acceptance_ends_the_run(tmp_path):

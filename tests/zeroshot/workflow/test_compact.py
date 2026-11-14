@@ -1,6 +1,7 @@
 """What `compact_transcript` trades away, and what it must not."""
 
 from contextlib import nullcontext
+from typing import Any
 from unittest.mock import Mock
 
 import httpx
@@ -334,9 +335,9 @@ def test_compaction_retries_reach_the_existing_event_log(
                 }
             )
 
-    assert len(events) == (1 if succeeds else 2)
-    for attempt, event in enumerate(events, start=1):
-        assert event["event"] == "model_retry"
+    retries = [event for event in events if event["event"] == "model_retry"]
+    assert len(retries) == (1 if succeeds else 2)
+    for attempt, event in enumerate(retries, start=1):
         report = event["data"]
         assert report["role"] == "compaction"
         assert (report["attempt"], report["max_attempts"]) == (attempt, 2)
@@ -344,6 +345,33 @@ def test_compaction_retries_reach_the_existing_event_log(
         assert report["retrying"] is (attempt == 1)
         assert report["request_adjusted"] is False
     assert retry_sleeps == [2.0]
+    # Only an answer, not a failed request, has tokens to report.
+    assert [event["event"] for event in events].count("compaction") == int(succeeds)
+
+
+def test_every_answer_reports_its_usage_rejected_or_not() -> None:
+    usage = {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
+    model = ScriptedChatModel(
+        responses=(
+            AIMessage(content="", usage_metadata=usage),
+            AIMessage(content=_NOTES, usage_metadata=usage),
+        )
+    )
+    reports: list[dict[str, Any]] = []
+
+    compact_transcript(
+        _worked_transcript(), model=model, max_retries=1, stream_writer=reports.append
+    )
+
+    assert [next(iter(report)) for report in reports] == [
+        "compaction",
+        "model_retry",
+        "compaction",
+    ]
+    assert [r["compaction"]["usage"] for r in reports if "compaction" in r] == [
+        usage,
+        usage,
+    ]
 
 
 def test_compaction_keeps_observations_distinct_from_untested_predictions() -> None:

@@ -1,10 +1,10 @@
 """Message Compaction"""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from enum import StrEnum
 from functools import partial
-from typing import assert_never
+from typing import Any, assert_never
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
@@ -15,6 +15,7 @@ from openai import LengthFinishReasonError
 from zeroshot.pipeline.workflow.middleware.connection_retry import (
     ModelConnectionRetry,
     report_model_retry,
+    runtime_stream_writer,
 )
 
 
@@ -138,6 +139,7 @@ def compact_transcript(
     keep_head: int = 0,
     keep_tail: int = 0,
     max_retries: int = 5,
+    stream_writer: Callable[[Any], None] | None = None,
 ) -> list[AnyMessage]:
     """Compact transcript messages into a summary while preserving initial inputs.
 
@@ -152,6 +154,10 @@ def compact_transcript(
     than ungrounded past model output. Transport failures and rejected summaries
     each get up to `max_retries` retries, counted separately as in agent calls.
     Exhaustion raises without changing the supplied transcript.
+
+    Each answer's token usage, rejected or not, and each retry are reported as
+    `compaction` and `model_retry` to `stream_writer`, by default the running
+    graph's.
     """
     if keep_head < 0:
         raise ValueError(f"{keep_head=} must not be negative")
@@ -170,7 +176,10 @@ def compact_transcript(
         return list(transcript)
 
     instruction = COMPACTION_INSTRUCTION
-    transport = ModelConnectionRetry(max_retries, role="compaction")
+    writer = stream_writer or runtime_stream_writer()
+    transport = ModelConnectionRetry(
+        max_retries, role="compaction", stream_writer=writer
+    )
     rejected = 0
     while True:
         try:
@@ -181,8 +190,17 @@ def compact_transcript(
                     config=config,
                 )
             )
-            summary = notes.text.strip() or _extract_summary_from_reasoning(notes)
             metadata = notes.response_metadata
+            if writer is not None:
+                writer(
+                    {
+                        "compaction": {
+                            "usage": notes.usage_metadata,
+                            "finish_reason": metadata.get("finish_reason"),
+                        }
+                    }
+                )
+            summary = notes.text.strip() or _extract_summary_from_reasoning(notes)
             if metadata.get("finish_reason") in {
                 "length",
                 "content_filter",
@@ -211,6 +229,7 @@ def compact_transcript(
                 max_retries=max_retries,
                 retrying=retrying,
                 adjusted=True,
+                stream_writer=writer,
             )
             if not retrying:
                 raise

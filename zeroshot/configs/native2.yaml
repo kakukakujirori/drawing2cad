@@ -1,7 +1,8 @@
 # @package _global_
 
-# The native baseline plus an auditor, with the staged pipeline's rounds and
-# turn budgets (`workflow/coder_auditor.yaml`). `zeroshot.pipeline_native2` loads it.
+# The native baseline plus an auditor, with the staged pipeline's rounds, turn
+# budgets and transcript compaction (`workflow/coder_auditor.yaml`).
+# `zeroshot.pipeline_native2` loads it.
 defaults:
   - native
   - _self_
@@ -22,3 +23,9 @@ final_selection: true
 # the staged pipeline does, in the six standard views and without drawing
 # comparison; the auditor gets the last report. `native2_prime.yaml` sets it.
 auto_build: false
+# Before an audit that another coder round may follow, replace the coder's
+# transcript with notes the same model writes in at most this many output
+# tokens, as `workflow.compaction_model` does in the staged pipeline; the next
+# round's request then carries the input drawing again. null: the coder keeps
+# its whole transcript.
+compaction_max_tokens: 32000

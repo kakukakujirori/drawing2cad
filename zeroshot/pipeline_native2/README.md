@@ -12,12 +12,20 @@ over its coder-auditor topology.
   the program itself. It answers in free text and ends with `VERDICT: ACCEPT` or `VERDICT: REJECT`;
   a missing verdict is retried. Edits it makes to
   `model.py` are undone (`model_restored`).
-- **Rounds**: after a rejection, the coder continues its own conversation with
-  the report (`prompts/revision.md`). As in `workflow/coder_auditor.yaml`, at most
+- **Rounds**: after a rejection, the coder continues its own conversation,
+  compacted as below, with the report (`prompts/revision.md`). As in `workflow/coder_auditor.yaml`, at most
   `max_audits: 2` audits (up to 3 coder rounds), `max_turns: 30` per coder round
   and `auditor_max_turns: 20`.
   Both agents use a local copy of `TurnBudgetMiddleware`: each turn is announced,
   the penultimate turn warns to finish tool work, and the last is answer-only.
+- **Compaction**: as the staged pipeline does with `workflow.compaction_model`,
+  the coder's transcript is replaced by notes the same model writes
+  (`compact_transcript`, at most `compaction_max_tokens: 32000` output tokens)
+  before each audit that another coder round may follow. The next round's
+  request then carries the input drawing again. `messages.json` and the
+  retrospective keep the replaced turns. Each compaction answer is logged as a
+  `compaction` event with its token usage. `compaction_max_tokens=null` keeps
+  the whole transcript instead.
 - **Grace turns**: an unfinished stage resumes its full state and conversation
   with `retry_turns: 10` turns left, up to `max_stage_validation_retries: 3` times,
   matching `workflow/coder_auditor.yaml`. Completion requires a final answer and
@@ -113,4 +121,5 @@ python -m zeroshot.evaluation.aggregate_run --run-dir outputs_baselines2/luna6.0
 ```
 
 `aggregate_run` counts both agents' calls and tokens, and lists their tool calls
-under `generator`.
+under `generator`. Compaction calls add to the model calls and tokens but not to
+the agent turns, as they do for the staged pipeline.

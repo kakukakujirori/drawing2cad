@@ -35,6 +35,10 @@ from zeroshot.pipeline.verification import (
     CadQueryExecutor,
     StepRenderer,
 )
+from zeroshot.pipeline.workflow.components.compact import (
+    compact_transcript,
+    compaction_model,
+)
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 from zeroshot.pipeline.workflow.middleware.stateless_reasoning import (
     StatelessReasoningMiddleware,
@@ -256,6 +260,18 @@ def run(
                 if model is None:
                     model = instantiate(config.model)
                 model_retries = int(config.model_retries)
+                compaction_max_tokens = config.get("compaction_max_tokens")
+                compactor = (
+                    compaction_model(model, int(compaction_max_tokens))
+                    if compaction_max_tokens is not None
+                    else None
+                )
+
+                def write_reports(reports: dict[str, Any]) -> None:
+                    """Log what a stream writer reports, under the staged event names."""
+                    for name, data in reports.items():
+                        log.write(name, data)
+
                 tools = [create_run_shell_tool(sandbox, workdir), load_image]
                 output = workspace / "model.py"
                 final_selection = bool(config.get("final_selection", False))
@@ -381,6 +397,9 @@ def run(
                     return state["messages"], failure_status
 
                 coder_messages: list[AnyMessage] = []
+                # The coder's turns that notes replaced, kept for messages.json
+                # and the retrospective.
+                compacted_away: list[AnyMessage] = []
                 audit_messages: list[AnyMessage] = []
                 coder_request = HumanMessage(content=blocks)
                 for round_ in range(max_audits + 1):
@@ -417,6 +436,17 @@ def run(
                     request = PromptTemplate(_PROMPTS / "audit_request.md").render(
                         author_message=coder_messages[-1].text
                     )
+                    # Before the audit, as the staged pipeline does whenever
+                    # another round may follow.
+                    if compactor is not None:
+                        notes = compact_transcript(
+                            coder_messages,
+                            model=compactor,
+                            max_retries=model_retries,
+                            stream_writer=write_reports,
+                        )
+                        compacted_away.extend(coder_messages)
+                        coder_messages = notes
                     # The coder's last build of this program, built again only if it
                     # failed transiently (a timeout or an infrastructure error).
                     build_report = (
@@ -456,10 +486,14 @@ def run(
                     log.write("audit_verdict", {"round": round_, "accepted": verdict})
                     if verdict:
                         break
+                    revision = PromptTemplate(_PROMPTS / "revision.md").render(
+                        report=report
+                    )
                     coder_request = HumanMessage(
-                        content=PromptTemplate(_PROMPTS / "revision.md").render(
-                            report=report
-                        )
+                        # The notes replaced the opening request with the drawing.
+                        content=[{"type": "text", "text": revision}, *blocks]
+                        if compactor is not None
+                        else revision
                     )
 
                 if final_selection and not failure_status and candidates:
@@ -513,7 +547,8 @@ def run(
                         write_json(run_dir / "final_selection.json", choice)
                         log.write("final_selection", choice)
 
-                write_json(run_dir / "messages.json", coder_messages)
+                transcript = [*compacted_away, *coder_messages]
+                write_json(run_dir / "messages.json", transcript)
                 if audit_messages:
                     write_json(run_dir / "audit_messages.json", audit_messages)
                 if failure_status and not _has_model(output):
@@ -546,13 +581,13 @@ def run(
     if not failure_status:
         _write_retrospective(
             model,
-            coder_messages,
+            transcript,
             prompt,
             run_dir,
             bool(config.console),
             model_retries=model_retries,
         )
     return {
-        "messages": coder_messages,
+        "messages": transcript,
         **({"status": failure_status} if failure_status else {}),
     }
