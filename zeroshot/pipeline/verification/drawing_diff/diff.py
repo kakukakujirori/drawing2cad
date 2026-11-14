@@ -15,6 +15,7 @@ from scipy.spatial import cKDTree
 from .align import AlignmentResult, _validate_rgb, opencv_transform
 from .drafting_marks import drafting_marks, thin_solid_marks
 from .image_ops import (
+    apart_from_part,
     beside_part,
     disk,
     distance_map,
@@ -294,6 +295,7 @@ def compute_diff(
     Unsupported output pixels are medium gray, excluded from distance statistics.
     Projection strokes expand by 2px; measurements use the original lines.
     Distances are raw output pixels, independent of optimizer sampling/loss.
+    Annotation ink apart from the part cannot support a matching output line.
 
     projection_rgb holds required lines only; tangent_ink is the optional
     boundary mask on that same pixel grid. It supports missing input lines
@@ -363,7 +365,6 @@ def compute_diff(
     try:
         if alignment.status == "failed" or alignment.H_drawing_to_projection is None:
             raise ValueError("no usable drawing-to-projection alignment")
-        # Map input line membership and input coverage into the output pixel frame.
         drawing_gray = cv2.cvtColor(drawing_rgb, cv2.COLOR_RGB2GRAY)
         projection_gray = cv2.cvtColor(projection_rgb, cv2.COLOR_RGB2GRAY)
         drawing_ink = foreground_mask(drawing_gray)
@@ -372,12 +373,6 @@ def compute_diff(
         aligned_ink, valid, aligned_gray = _warp_drawing(
             drawing_gray, drawing_ink, matrix, projection_gray.shape
         )
-        # Measure both directions; output pixels outside input coverage are unknown.
-        output_distances, measured = _measure_distances(
-            aligned_ink, output_ink, valid, tangent_ink
-        )
-        stats.update(measured)
-        stats["optional_tangent_ink_count"] = int(tangent_ink.sum())
         # Prepare comparison masks on the drawing grid.
         output_seen = warp_output_to_drawing(output_ink, matrix, drawing_ink.shape)
         tangent_seen = warp_output_to_drawing(tangent_ink, matrix, drawing_ink.shape)
@@ -386,6 +381,22 @@ def compute_diff(
         outline = masks.outline
         # Exclude ink beside the part from missing-line distances, whatever its tone.
         non_part = masks.annotation | beside_part(part_ink, outline)
+        # Ink apart from the part is none of its lines, so no output line lies along it.
+        apart = apart_from_part(drawing_ink, masks.annotation, outline)
+        compared_ink = drawing_ink & ~apart
+        # Keep coverage and background even when only annotation is in the output frame.
+        aligned_ink &= ~cv2.warpPerspective(
+            apart.astype(np.uint8),
+            matrix,
+            (output_ink.shape[1], output_ink.shape[0]),
+            flags=cv2.INTER_NEAREST,
+        ).astype(bool)
+        # Measure both directions; output pixels outside input coverage are unknown.
+        output_distances, measured = _measure_distances(
+            aligned_ink, output_ink, valid, tangent_ink
+        )
+        stats.update(measured)
+        stats["optional_tangent_ink_count"] = int(tangent_ink.sum())
         comparison_annotation = non_part
         output_model_to_input = None
         if projection_modelspace is not None and projection_to_uv is not None:
@@ -417,7 +428,7 @@ def compute_diff(
         # Scoring and unmatched display must exclude the same annotation ink.
         stats.update(
             _chamfers(
-                drawing_ink, output_ink, matrix, comparison_annotation, tangent_ink
+                compared_ink, output_ink, matrix, comparison_annotation, tangent_ink
             )
         )
         material = measure_material_error(outline, output_seen)
@@ -447,7 +458,7 @@ def compute_diff(
             # A stretch in the wrong line style matches no input line.
             stats.update(
                 _chamfers(
-                    drawing_ink,
+                    compared_ink,
                     output_ink,
                     matrix,
                     comparison_annotation,
@@ -463,7 +474,7 @@ def compute_diff(
         ).astype(bool)
 
         groups = find_unmatched(
-            drawing_ink,
+            compared_ink,
             output_seen,
             curves,
             comparison_annotation,
@@ -479,7 +490,8 @@ def compute_diff(
             g.direction == "line_style" for g in groups
         )
         unmatched = draw_unmatched(
-            drawing_gray,
+            # Ink apart from the part is shown as annotation and shares no line.
+            np.where(apart, np.uint8(255), drawing_gray),
             render_transformed_strokes(
                 output_ink, np.linalg.inv(matrix), drawing_ink.shape
             )

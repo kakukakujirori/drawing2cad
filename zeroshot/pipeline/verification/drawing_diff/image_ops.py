@@ -346,23 +346,61 @@ def drawing_area(ink: np.ndarray) -> np.ndarray:
     return labels == 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
 
 
-def beside_part(ink: np.ndarray, outline: np.ndarray) -> np.ndarray:
-    """Ink outside the part's filled silhouette, like dimensions; empty if unfilled.
+def _silhouette_joins(
+    ink: np.ndarray, outline: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, bool] | None:
+    """Where the part's filled silhouette reaches, the ink that joins it, and
+    whether the fill is partial; None if the silhouette cannot be filled.
 
-    Every line of the part lies within its silhouette. The silhouette is filled
-    from outline, the ink not drawn thin. If more than MAX_OUTLINE_OUTSIDE of
-    that ink lies outside it yet joins it, the outline was broken and the fill
-    partial; then only ink that never joins the silhouette, like dimension
-    text, is returned.
+    The silhouette is filled from outline, the ink not drawn thin. If more than
+    MAX_OUTLINE_OUTSIDE of that ink lies outside it yet joins it in several
+    places, the outline was broken and the fill partial. Ink that joins it in
+    one place hangs from it, as dimension lines do from a leader that touches
+    the part.
     """
     area = drawing_area(outline)
     if not area.any():
-        return np.zeros_like(ink, dtype=bool)
+        return None
     # Undo the opening, which can shave the outline itself.
     near = cv2.dilate(area.astype(np.uint8), disk(OPEN_PX)).astype(bool)
-    outside = ink & ~near
     _, labels = cv2.connectedComponents(ink.astype(np.uint8), connectivity=8)
     joined = np.isin(labels, np.unique(labels[ink & near]))
-    if (outline & outside & joined).sum() > MAX_OUTLINE_OUTSIDE * outline.sum():
-        return outside & ~joined
-    return outside
+    partial = False
+    if (outline & ~near & joined).sum() > MAX_OUTLINE_OUTSIDE * outline.sum():
+        # Each line that leaves the silhouette crosses the ring around it once.
+        ring = cv2.dilate(near.astype(np.uint8), disk(2)).astype(bool) & ~near
+        crossings, _ = cv2.connectedComponents(
+            (ink & joined & ring).astype(np.uint8), connectivity=8
+        )
+        partial = crossings - 1 > 1
+    return near, joined, partial
+
+
+def beside_part(ink: np.ndarray, outline: np.ndarray) -> np.ndarray:
+    """Ink outside the part's filled silhouette, like dimensions; empty if unfilled.
+
+    Every line of the part lies within its silhouette. Where the fill is
+    partial, only ink that never joins the silhouette, like dimension text, is
+    returned.
+    """
+    silhouette = _silhouette_joins(ink, outline)
+    if silhouette is None:
+        return np.zeros_like(ink, dtype=bool)
+    near, joined, partial = silhouette
+    return ink & ~near & ~joined if partial else ink & ~near
+
+
+def apart_from_part(
+    ink: np.ndarray, annotation: np.ndarray, outline: np.ndarray
+) -> np.ndarray:
+    """Ink outside the part's whole silhouette that cannot be the part's; else empty.
+
+    A thin wall seen edge-on runs out of the silhouette it joins, in the
+    outline's tone and weight. Ink in annotation's tone or weight is not such a
+    wall, and neither is ink that nowhere joins the silhouette.
+    """
+    silhouette = _silhouette_joins(ink & ~annotation, outline)
+    if silhouette is None or silhouette[2]:
+        return np.zeros_like(ink, dtype=bool)
+    near, joined, _ = silhouette
+    return ink & ~near & (annotation | ~joined)

@@ -8,6 +8,7 @@ from zeroshot.pipeline.verification.drawing_diff import unmatched as unmatched_m
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
 from zeroshot.pipeline.verification.drawing_diff.diff import compute_diff
 from zeroshot.pipeline.verification.drawing_diff.image_ops import (
+    apart_from_part,
     beside_part,
     drawing_area,
     drawing_masks,
@@ -1234,3 +1235,104 @@ def test_a_partial_silhouette_leaves_out_only_ink_that_never_joins_it():
 
     assert beside[260:290, :45].any()  # the note
     assert not beside[:, 45:].any()
+    assert not apart_from_part(ink, np.zeros_like(ink), ink).any()
+
+
+def test_dimensions_hanging_from_one_leader_do_not_make_the_silhouette_partial():
+    """A leader that touches the part joins its dimension lines to the outline."""
+    ink = np.zeros((300, 300), np.uint8)
+    cv2.rectangle(ink, (100, 200), (200, 260), 1, 3)
+    cv2.line(ink, (150, 200), (150, 60), 1, 3)  # the leader
+    cv2.line(ink, (20, 60), (280, 60), 1, 3)  # a dimension line it ends on
+    for x in (20, 280):  # with its extension lines, which stop short of the part
+        cv2.line(ink, (x, 40), (x, 180), 1, 3)
+    ink = ink.astype(bool)
+
+    beside = beside_part(ink, ink)
+
+    assert beside[:180].sum() > 0.9 * ink[:180].sum()
+    assert not beside[200:].any()
+
+
+def _plate_with_extension_lines():
+    """A plate with a thin wall, in black, and light extension lines that reach it."""
+    gray = np.full((300, 300), 255, np.uint8)
+    cv2.rectangle(gray, (100, 60), (200, 120), 0, 3)
+    cv2.line(gray, (200, 90), (260, 90), 0, 3)  # a wall seen edge-on
+    for x in (100, 200):  # extension lines run on from the plate's sides
+        cv2.line(gray, (x, 123), (x, 250), 120, 3)
+    cv2.line(gray, (100, 240), (200, 240), 120, 3)  # the dimension line
+    cv2.putText(gray, "NOTE", (20, 285), cv2.FONT_HERSHEY_SIMPLEX, 0.6, 0, 2)
+    return gray
+
+
+def test_ink_apart_from_the_part_is_annotation_or_never_joins_the_silhouette():
+    gray = _plate_with_extension_lines()
+    ink = foreground_mask(gray)
+    masks = drawing_masks(gray, ink)
+    assert masks.two_tone
+
+    apart = apart_from_part(ink, masks.annotation, masks.outline)
+
+    assert apart[130:260, 95:205].sum() > 0.9 * ink[130:260, 95:205].sum()
+    assert apart[265:].sum() > 0.9 * ink[265:].sum()  # the note
+    assert not apart[85:96, 210:].any()  # the wall is the part's
+
+
+@pytest.mark.parametrize("offset", [0, 20])
+@pytest.mark.parametrize("distance_clip_px", [12, None])
+def test_a_build_drawn_along_extension_lines_matches_no_line_there(
+    offset, distance_clip_px
+):
+    """A build that takes extension lines for the outline lies on no part line."""
+    gray = _plate_with_extension_lines()
+    ink = foreground_mask(gray)
+    assert ink[180, 100] and drawing_masks(gray, ink).annotation[180, 100]
+    drawing = np.repeat(gray[..., None], 3, axis=2)
+    output = _white(300)
+    cv2.rectangle(output, (100 + offset, 60), (200 + offset, 240), (0, 0, 0), 1)
+    matrix = np.array([[1, 0, offset], [0, 1, 0], [0, 0, 1]])
+    below = np.s_[150:230, 95:205]  # the stretch along the extension lines
+
+    diff = compute_diff(
+        drawing, output, _alignment(matrix), distance_clip_px=distance_clip_px
+    )
+
+    assert diff.stats["unbounded_chamfer_drawing_px"] > 5
+    assert (diff.unmatched[below] == OUTPUT_MAGENTA).all(axis=-1).any()
+    assert not (diff.unmatched[below] == MATCHED_BLUE).all(axis=-1).any()
+    assert tuple(diff.overlay[240, 150 + offset]) == (255, 0, 0)
+    assert diff.stats["output_to_input"]["max_px"] > 100
+    # The original annotation remains visible in the overlay's background.
+    assert tuple(diff.overlay[248, 100 + offset]) == (239, 239, 239)
+
+
+def test_a_correct_plate_keeps_its_edge_on_wall_and_ignores_extension_lines():
+    gray = _plate_with_extension_lines()
+    output = _white(300)
+    cv2.rectangle(output, (100, 60), (200, 120), (0, 0, 0), 1)
+    cv2.line(output, (200, 90), (260, 90), (0, 0, 0), 1)
+
+    diff = compute_diff(np.repeat(gray[..., None], 3, axis=2), output, _alignment())
+
+    assert diff.stats["unmatched"] == []
+    assert diff.stats["unbounded_chamfer_drawing_px"] < 2
+    assert tuple(diff.overlay[90, 235]) == (0, 0, 128)
+    assert tuple(diff.unmatched[90, 235]) == MATCHED_BLUE
+
+
+def test_only_annotation_in_the_projection_frame_still_reports_extra_lines():
+    gray = _plate_with_extension_lines()
+    output = np.full((64, 300, 3), 255, np.uint8)
+    output[:, [100, 200]] = 0  # the extension lines, with the part above the frame
+    matrix = np.array([[1, 0, 0], [0, 1, -150], [0, 0, 1]])
+
+    diff = compute_diff(
+        np.repeat(gray[..., None], 3, axis=2), output, _alignment(matrix)
+    )
+
+    assert diff.stats["comparison_status"] == "ok"
+    assert diff.stats["outside_count"] == 0
+    assert diff.stats["unbounded_chamfer_drawing_px"] > 20
+    assert tuple(diff.overlay[30, 100]) == (255, 0, 0)
+    assert any(g["direction"] == "extra" for g in diff.stats["unmatched"])
