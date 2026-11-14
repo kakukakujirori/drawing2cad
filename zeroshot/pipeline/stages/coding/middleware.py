@@ -272,8 +272,9 @@ _WRITE_PROGRAM = (
     "{program}, even with parts still uncertain."
 )
 _TRY = (
-    "If you have unresolved or ambiguous geometry, quickly write and run test "
-    "code by updating {program}."
+    "An unexplained part line may come from material 'addition' or 'removal'. "
+    "For unresolved geometry, reuse prior trials or test one local alternative "
+    "to {program}; compare the affected views."
 )
 
 
