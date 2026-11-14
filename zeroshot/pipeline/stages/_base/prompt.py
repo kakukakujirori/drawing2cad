@@ -99,6 +99,12 @@ class StageInstructions:
                 ),
                 PromptTemplate(stages_dir / stage.value / "prompts" / "round.md"),
             ]
+            if self.ignore_hidden_lines:
+                text_templates.append(
+                    PromptTemplate(
+                        stages_dir / "_base" / "prompts" / "hidden_lines_omitted.md"
+                    )
+                )
             texts = "\n\n".join(
                 template.render(**context) for template in text_templates
             )

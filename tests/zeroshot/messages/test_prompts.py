@@ -693,3 +693,25 @@ def test_coder_tests_predictions_and_inspects_the_latest_candidate(
         "Keep untested predictions and unavailable views explicitly unverified"
         in instruction
     )
+
+
+@pytest.mark.parametrize("stage", ["coding", "audit"])
+def test_an_input_without_hidden_lines_adds_a_note_after_the_round_instructions(
+    instructions: StageInstructions, state: ReconstructionState, stage: str
+) -> None:
+    def text(omitted: bool) -> str:
+        return (
+            replace(instructions, ignore_hidden_lines=omitted)
+            .build(
+                state,
+                PipelineStage(stage),
+                append_inputs=False,
+                attempt_dir="/work/attempts/001",
+                drawing_diff_reviews=_DRAWING_DIFF_REVIEWS,
+            )
+            .text
+        )
+
+    note = PromptTemplate(STAGES_DIR / "_base/prompts/hidden_lines_omitted.md").render()
+
+    assert text(True) == text(False) + "\n\n" + note
