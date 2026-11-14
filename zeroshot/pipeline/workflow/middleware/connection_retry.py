@@ -94,6 +94,15 @@ def _backoff_delay(retry_number: int) -> float:
     return max(0.0, delay + random.uniform(-jitter, jitter))
 
 
+def runtime_stream_writer() -> Callable[[Any], None] | None:
+    """The custom stream writer of the graph running this call, if any."""
+    try:
+        runtime = get_runtime()
+    except RuntimeError:  # Direct calls outside a runnable have no runtime.
+        return None
+    return runtime.stream_writer if runtime is not None else None
+
+
 def report_model_retry(
     error: Exception,
     *,
@@ -140,12 +149,7 @@ def report_model_retry(
             payload["provider_error"] = provider_error
     payload.update(details or {})
     if stream_writer is None:
-        try:
-            runtime = get_runtime()
-        except RuntimeError:  # Direct calls outside a runnable have no runtime.
-            runtime = None
-        if runtime is not None:
-            stream_writer = runtime.stream_writer
+        stream_writer = runtime_stream_writer()
     if stream_writer is not None:
         stream_writer({"model_retry": payload})
     else:
