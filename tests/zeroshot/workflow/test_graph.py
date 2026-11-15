@@ -49,6 +49,7 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     View,
 )
 from zeroshot.pipeline.stages.tickets.contracts import (
+    Concern,
     StageReport,
     TicketAnswers,
 )
@@ -67,6 +68,7 @@ from zeroshot.pipeline.workflow.lifecycle import (
 _ROUND_ZERO_TICKET = "ticket_initial"
 _ROUND_ONE_TICKET = "ticket_001_missing_hole"
 _PROGRAM = "result = object()\n"
+_REVISED_PROGRAM = "result = (object(), object())\n"
 
 
 def _message(answer: object) -> AIMessage:
@@ -140,11 +142,15 @@ def _coding_script(
     return _write_interpretation(artifact, call_id), _coding_submission(ticket_id)
 
 
-def _coding_submission(ticket_id: str | None = _ROUND_ZERO_TICKET) -> AIMessage:
+def _coding_submission(
+    ticket_id: str | None = _ROUND_ZERO_TICKET,
+    *,
+    concerns: Sequence[Concern] = (),
+) -> AIMessage:
     return _message(
         TicketAnswers(
             responses=ticket_answers(_responses(ticket_id, PipelineStage.CODING)),
-            stage_report=StageReport(concerns=[]),
+            stage_report=StageReport(concerns=list(concerns)),
         )
     )
 
@@ -1016,7 +1022,9 @@ def test_an_unsubmitted_audit_stops_after_validation_retries(monkeypatch, retrie
 
 
 def test_a_rejected_audit_opens_a_fresh_round_for_the_coder(monkeypatch):
-    calls = _stub_verification(monkeypatch, _verified("000"), _verified("001"))
+    calls = _stub_verification(
+        monkeypatch, _verified("000"), _verified("001", source=_REVISED_PROGRAM)
+    )
     coder = ScriptedChatModel(
         responses=(
             *_coding_script(),
@@ -1098,7 +1106,9 @@ def test_audit_decision_must_match_the_validated_file_before_integration(
 def test_revision_audit_corrects_missing_reviews_without_opening_another_round(
     monkeypatch,
 ):
-    _stub_verification(monkeypatch, _verified("000"), _verified("001"))
+    _stub_verification(
+        monkeypatch, _verified("000"), _verified("001", source=_REVISED_PROGRAM)
+    )
     audited = AuditReport(
         concern_reviews={},
         findings=[],
@@ -1152,7 +1162,9 @@ def test_an_interpretation_revision_refreshes_parameter_values_and_preserves_his
             features=[interpreted_feature(1, "plate", parameters={"offset": value})]
         )
 
-    calls = _stub_verification(monkeypatch, _verified("000"), _verified("001"))
+    calls = _stub_verification(
+        monkeypatch, _verified("000"), _verified("001", source=_REVISED_PROGRAM)
+    )
     with SandboxWorkdir(host_bind_dir=tmp_path) as workdir:
         result = _graph(
             workdir,
@@ -1185,12 +1197,18 @@ def test_a_revision_round_reseeds_the_accepted_interpretation(
     tmp_path: Path,
 ) -> None:
     _stub_verification(monkeypatch, _verified("000"), _verified("001"))
+    retained = [
+        Concern(
+            id="concern_program_unchanged",
+            explanation="The existing program is retained while checking the seeded reading.",
+        )
+    ]
     coder = ScriptedChatModel(
         responses=(
             *_coding_script(),
             # The seeded file has not been reported in this stage yet.
-            _coding_submission(_ROUND_ONE_TICKET),
-            _coding_submission(_ROUND_ONE_TICKET),
+            _coding_submission(_ROUND_ONE_TICKET, concerns=retained),
+            _coding_submission(_ROUND_ONE_TICKET, concerns=retained),
         )
     )
     auditor = ScriptedChatModel(responses=_audit_script(_rejected_audit()))
@@ -1242,7 +1260,9 @@ _COMPACTION_NOTES = (
 @pytest.mark.parametrize("rounds", [1, 2])
 def test_the_coder_starts_its_next_round_from_notes(monkeypatch, rounds):
     """Compaction runs before the audit only when the audit may open a round."""
-    _stub_verification(monkeypatch, _verified("000"), _verified("001"))
+    _stub_verification(
+        monkeypatch, _verified("000"), _verified("001", source=_REVISED_PROGRAM)
+    )
     notetaker = ScriptedChatModel(responses=(AIMessage(content=_COMPACTION_NOTES),))
     coder = ScriptedChatModel(
         responses=(
@@ -1356,7 +1376,9 @@ def test_once_compacts_only_the_first_time_a_rounds_turns_run_out(
 
 
 def test_once_compacts_again_in_the_next_round(monkeypatch: pytest.MonkeyPatch) -> None:
-    _stub_verification(monkeypatch, _verified("000"), _verified("001"))
+    _stub_verification(
+        monkeypatch, _verified("000"), _verified("001", source=_REVISED_PROGRAM)
+    )
     notes = AIMessage(content=_COMPACTION_NOTES)
     notetaker = ScriptedChatModel(responses=(notes, notes, notes))
 

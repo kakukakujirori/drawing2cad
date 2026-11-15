@@ -15,9 +15,12 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMes
 from langchain_core.messages.content import ContentBlock, create_text_block
 from langgraph.runtime import Runtime
 
+from zeroshot.pipeline.stages._base.validate import SubmissionValidationError
+from zeroshot.pipeline.stages.coding.validate import validate_program_revision
 from zeroshot.pipeline.stages.coding.workspace import CodingWorkspaceVerifier
 from zeroshot.pipeline.workflow.middleware import VerifyOnWriteMiddleware
 from zeroshot.pipeline.workflow.middleware.turn_budget import TurnBudgetState
+from zeroshot.pipeline.workflow.middleware.verify_on_write import refused_answer
 
 if TYPE_CHECKING:
     from zeroshot.pipeline.stages._base.prompt import StageInstructions
@@ -31,6 +34,11 @@ class CodingMiddleware(VerifyOnWriteMiddleware):
     """Verify the workspace after each write, and open the stage with its existing build."""
 
     verifier: CodingWorkspaceVerifier
+
+    @override
+    def reset(self, *, previous_source: str | None = None) -> None:
+        super().reset()
+        self._previous_source = previous_source
 
     def report_existing(self) -> list[ContentBlock]:
         """Report an existing model.py before the first response, without refusing it later."""
@@ -56,6 +64,32 @@ class CodingMiddleware(VerifyOnWriteMiddleware):
     def report_message(self, report: list[ContentBlock]) -> HumanMessage:
         return HumanMessage(content_blocks=report)
 
+    @override
+    def wrap_model_call(
+        self, request: ModelRequest[None], handler: Any
+    ) -> ModelResponse:
+        response = super().wrap_model_call(request, handler)
+        # Text/provider answers are checked when their snapshot is integrated.
+        if response.structured_response is None or not any(
+            isinstance(message, ToolMessage) for message in response.result
+        ):
+            return response
+        try:
+            validate_program_revision(
+                response.structured_response,
+                self.verifier.output.accepted_source,
+                self._previous_source,
+            )
+        except SubmissionValidationError as error:
+            refused = refused_answer(
+                response, "Submission refused; see the message below."
+            )
+            return ModelResponse(
+                result=[*refused.result, HumanMessage(content=str(error))],
+                structured_response=None,
+            )
+        return response
+
     @hook_config(can_jump_to=["end"])
     @override
     def before_model(self, state, runtime):
@@ -69,8 +103,8 @@ class CodingMiddleware(VerifyOnWriteMiddleware):
 class FreshCodingMiddleware(CodingMiddleware):
     """Drop pre-checkpoint messages only from a model request, after valid builds."""
 
-    def reset(self) -> None:
-        super().reset()
+    def reset(self, *, previous_source: str | None = None) -> None:
+        super().reset(previous_source=previous_source)
         self._baseline_candidate: dict[str, Any] | None = None
 
     @override

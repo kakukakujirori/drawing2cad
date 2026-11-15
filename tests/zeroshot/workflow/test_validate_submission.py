@@ -8,7 +8,10 @@ from tests.zeroshot.contracts import (
     interpreted_feature,
     ticket_answers,
 )
-from zeroshot.pipeline.stages.coding.validate import CodingOutput
+from zeroshot.pipeline.stages.coding.validate import (
+    CodingOutput,
+    validate_program_revision,
+)
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionSnapshot
 from zeroshot.pipeline.stages.interpretation.contracts import (
@@ -110,6 +113,36 @@ def test_coding_accepts_its_interpretation_and_terminal_build() -> None:
         _snapshot(None),
         deliverable=_output(),
     )
+
+
+@pytest.mark.parametrize(
+    "source,previous_source,acknowledged,refused",
+    [
+        ("result = object()\n", "result = object()\n", False, True),
+        ("result = object()\n", "result = object()\n", True, False),
+        ("result = (object(), object())\n", "result = object()\n", False, False),
+        ("result = object()\n", None, False, False),
+        (None, "result = object()\n", False, False),
+    ],
+)
+def test_only_unchanged_revisions_need_a_retention_reason(
+    source, previous_source, acknowledged, refused
+) -> None:
+    answers = _answers({"ticket_001": "Reviewed the requested edit."})
+    if acknowledged:
+        answers.stage_report.concerns.append(
+            Concern(
+                id="concern_program_unchanged",
+                explanation="The program is retained pending resolution.",
+            )
+        )
+    if refused:
+        with pytest.raises(
+            SubmissionValidationError, match="unchanged from the previous round"
+        ):
+            validate_program_revision(answers, source, previous_source)
+    else:
+        validate_program_revision(answers, source, previous_source)
 
 
 @pytest.mark.parametrize(

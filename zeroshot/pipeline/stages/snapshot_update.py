@@ -2,7 +2,10 @@
 
 from dataclasses import dataclass, replace
 
-from zeroshot.pipeline.stages.coding.validate import CodingOutput
+from zeroshot.pipeline.stages.coding.validate import (
+    CodingOutput,
+    validate_program_revision,
+)
 from zeroshot.pipeline.stages.coding.verify import VerifyOutputResult
 from zeroshot.pipeline.stages.contracts import ReconstructionHistory
 from zeroshot.pipeline.stages.resolve_refs import resolve_references
@@ -43,6 +46,13 @@ def build_snapshot_update(
     submission = resolve_references(submission, workspace_output.interpretation)
     terminal = workspace_output.verification
     assert terminal.exec_report is not None
+    validate_program_revision(
+        submission,
+        terminal.exec_report.source,
+        history.snapshots[-2].program_source
+        if history.snapshots[-1].round > 0
+        else None,
+    )
     artifacts: dict[ArtifactField, object] = {
         "interpretation": workspace_output.interpretation,
         "program_source": terminal.exec_report.source,

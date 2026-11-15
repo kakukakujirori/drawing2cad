@@ -87,7 +87,14 @@ class CodingStage:
                 interpretation_baseline(state["reconstruction"]),
                 [ticket.ticket_id for ticket in snapshot.open_tickets],
             )
-            self.middleware.reset()  # NOTE: must be after the workspace is seeded
+            # The middleware must reset after the workspace is seeded.
+            self.middleware.reset(
+                previous_source=(
+                    state["reconstruction"].snapshots[-2].program_source
+                    if snapshot.round > 0
+                    else None
+                ),
+            )
         self.ticket_verifier.reset(state["reconstruction"])
 
         # Determine whether to compact the coder's transcript for a retry.

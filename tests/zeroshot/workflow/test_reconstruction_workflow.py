@@ -100,13 +100,15 @@ def _stage_responses(history: ReconstructionHistory) -> dict[str, str]:
 def _verified_output(
     held: DrawingInterpretation | None = None,
     verification: VerifyOutputResult | None = None,
+    *,
+    source: str = _SOURCE,
 ) -> CodingOutput:
     return CodingOutput(
         held or interpretation("the base", "the hole"),
         verification
         or VerifyOutputResult(
             exec_report=CadQueryExecutionReport(
-                status=ExecutionStatus.VERIFIED, source=_SOURCE, returncode=0
+                status=ExecutionStatus.VERIFIED, source=source, returncode=0
             )
         ),
     )
@@ -125,7 +127,14 @@ def _completed_run(
             responses=ticket_answers(_stage_responses(history)),
             stage_report=StageReport(concerns=[]),
         ),
-        workspace_output=_verified_output(verification=verification),
+        workspace_output=_verified_output(
+            verification=verification,
+            source=(
+                _SOURCE
+                if history.snapshots[-1].round == 0
+                else f"result = [object() for _ in range({history.snapshots[-1].round + 1})]\n"
+            ),
+        ),
     )
 
 
@@ -362,6 +371,20 @@ def test_advance_reconstruction_rejects_before_mutating_the_run() -> None:
     assert run.model_dump_json() == original_json
 
 
+def test_integration_refuses_an_unacknowledged_unchanged_revision() -> None:
+    history = open_next_round(_completed_run(), _report())
+    original = history.model_dump_json()
+    answers = TicketAnswers(
+        responses=ticket_answers(_stage_responses(history)),
+        stage_report=StageReport(concerns=[]),
+    )
+    with pytest.raises(
+        SubmissionValidationError, match="unchanged from the previous round"
+    ):
+        advance_reconstruction(history, answers, workspace_output=_verified_output())
+    assert history.model_dump_json() == original
+
+
 def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
     completed = _completed_run()
     first_finding = _report("interpretation", ["sem_feature_1"]).findings[0]
@@ -387,7 +410,7 @@ def test_advance_reconstruction_matches_responses_by_ticket_id() -> None:
             stage_report=StageReport(concerns=[]),
             responses=ticket_answers(responses),
         ),
-        workspace_output=_verified_output(),
+        workspace_output=_verified_output(source="result = (object(), object())\n"),
     )
 
     updated_tickets = advanced.snapshots[-1].open_tickets
@@ -423,7 +446,14 @@ def test_integration_resolves_the_references_in_what_it_stores() -> None:
     advanced = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(concerns=[]),
+            stage_report=StageReport(
+                concerns=[
+                    Concern(
+                        id="concern_program_unchanged",
+                        explanation="Only clarified the feature reference; geometry is retained.",
+                    )
+                ]
+            ),
             responses=ticket_answers(
                 {
                     ticket.ticket_id: "Restated sem_feature_1.radius."
@@ -484,7 +514,14 @@ def test_a_revision_round_replaces_the_complete_interpretation() -> None:
     advanced = advance_reconstruction(
         run,
         TicketAnswers(
-            stage_report=StageReport(concerns=[]),
+            stage_report=StageReport(
+                concerns=[
+                    Concern(
+                        id="concern_program_unchanged",
+                        explanation="The reading was corrected; its program changes remain unimplemented.",
+                    )
+                ]
+            ),
             responses=ticket_answers(_stage_responses(run)),
         ),
         workspace_output=_verified_output(revised),

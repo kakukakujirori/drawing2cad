@@ -8,6 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import HumanMessage
 from langchain_core.messages.content import create_text_block
 from langchain_core.tools import tool
 
@@ -36,7 +37,11 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
     ProjectionMethod,
     View,
 )
-from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
+from zeroshot.pipeline.stages.tickets.contracts import (
+    Concern,
+    StageReport,
+    TicketAnswers,
+)
 from zeroshot.pipeline.tools.cad_hypothesis import TRIALS_DIRNAME
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.workflow.components.agent import create_agent
@@ -53,6 +58,7 @@ class _Output:
         self.interpretation: DrawingInterpretation | None = None
         self.builds: list[DrawingInterpretation | None] = []
         self.resets = 0
+        self.accepted_source: str | None = None
 
     def source_digest(self) -> str | None:
         path = self.source_path
@@ -60,9 +66,13 @@ class _Output:
 
     def reset(self) -> None:
         self.resets += 1
+        self.accepted_source = None
 
     def feedback(self):
         self.builds.append(self.interpretation)
+        self.accepted_source = (
+            self.source_path.read_text() if self.source_path.is_file() else None
+        )
         return [create_text_block("[Execution result]")]
 
     @property
@@ -156,6 +166,69 @@ def test_the_round_owes_a_valid_interpretation_then_a_changed_program(tmp_path):
     assert workspace.unsubmitted_file() == "model.py"
     output.source_path.write_text("result = object()  # revised\n")
     assert workspace.unsubmitted_file() is None
+
+
+@pytest.mark.parametrize("fresh", [False, True])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_an_unchanged_revision_is_refused_then_acknowledged_inside_the_coder(
+    tmp_path, fresh, newline
+):
+    workspace, output, candidate = _workspace(tmp_path)
+    workspace.reset(candidate, ["ticket_001"])
+    output.source_path.write_bytes(f"result = object(){newline}".encode())
+    unchecked = TicketAnswers(
+        responses=[
+            {
+                "ticket_id": "ticket_001",
+                "summary": "The requested edit remains unimplemented.",
+            }
+        ],
+        stage_report=StageReport(concerns=[]),
+    )
+    acknowledged = unchecked.model_copy(
+        update={
+            "stage_report": StageReport(
+                concerns=[
+                    Concern(
+                        id="concern_program_unchanged",
+                        explanation="The program is retained because this revision remains unresolved.",
+                    )
+                ]
+            )
+        }
+    )
+    model = ScriptedChatModel(
+        responses=(
+            tool_call(
+                "TicketAnswers", unchecked.model_dump(mode="json"), "unacknowledged"
+            ),
+            tool_call(
+                "TicketAnswers", acknowledged.model_dump(mode="json"), "acknowledged"
+            ),
+        )
+    )
+    kind = FreshCodingMiddleware if fresh else CodingMiddleware
+    middleware = kind(workspace, fingerprint=workspace.source_digest)
+    middleware.reset(previous_source="result = object()\n")
+    assert "concern_program_unchanged" not in _text(middleware.report_existing())
+    assert output.accepted_source == "result = object()\n"
+    agent = _coder(model, 3)(
+        tools=[], output_schema=TicketAnswers, extra_middleware=[middleware]
+    )
+    result = agent.invoke({"messages": [HumanMessage("Finish the coding revision.")]})
+
+    assert len(model.received_messages) == 2
+    assert all(
+        "concern_program_unchanged" not in message.text
+        for message in model.received_messages[0]
+    )
+    assert any(
+        isinstance(message, HumanMessage)
+        and "unchanged from the previous round" in message.text
+        and "concern_program_unchanged" in message.text
+        for message in model.received_messages[-1]
+    )
+    assert result["structured_response"] == acknowledged
 
 
 def test_an_answer_needs_features(tmp_path):

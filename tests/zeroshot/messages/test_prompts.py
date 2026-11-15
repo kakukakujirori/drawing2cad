@@ -147,6 +147,12 @@ def test_a_prompt_path_survives_a_change_of_working_directory(
     assert render_stage("coding") == expected_instruction
 
 
+def test_the_coder_is_not_given_the_unchanged_program_exception_in_advance(
+    render_stage: Callable[..., str],
+) -> None:
+    assert "concern_program_unchanged" not in render_stage("coding")
+
+
 def test_a_reused_builder_reads_the_latest_round_and_ticket_ownership(
     instructions: StageInstructions,
     state: ReconstructionState,
