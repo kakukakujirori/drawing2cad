@@ -51,7 +51,7 @@ from zeroshot.pipeline.stages.tickets.contracts import (
 )
 from zeroshot.pipeline.stages.types import PipelineStage
 from zeroshot.pipeline.verification import ExecutionStatus
-from zeroshot.pipeline.verification.program_log import BooleanCall, ProgramLog
+from zeroshot.pipeline.verification.program_log import Call, ProgramLog, SolidState
 from zeroshot.pipeline.verification.run_cadquery import (
     CadQueryExecutionReport,
 )
@@ -131,8 +131,19 @@ _VERIFICATION = VerifyOutputResult(
             ),
         ),
         program_log=ProgramLog(
-            (BooleanCall("cut", 4, 9, 1.0, 1.0, (0.0, 0.0, 0.0, 1.0, 1.0, 1.0), None),),
             (1.0,),
+            (
+                Call(
+                    "cut",
+                    4,
+                    9,
+                    (SolidState(True, 1.0, (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)),),
+                    ((), None),
+                    (SolidState(False, -1.0, None),),
+                    None,
+                ),
+            ),
+            False,
         ),
     ),
     render_report={
@@ -296,8 +307,9 @@ def test_custom_state_types_include_nested_runtime_values() -> None:
         CadQueryExecutionReport,
         ShapeCensus,
         Void,
-        BooleanCall,
+        Call,
         ProgramLog,
+        SolidState,
         RenderReport,
         RenderStatus,
         ProjectionPaths,

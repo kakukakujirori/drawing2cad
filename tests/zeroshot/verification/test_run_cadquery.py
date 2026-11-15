@@ -17,6 +17,7 @@ from zeroshot.pipeline.sandbox import (
 )
 from zeroshot.pipeline.verification._run_program import PROGRAM_LOG
 from zeroshot.pipeline.verification.program_log import (
+    Call,
     describe_ineffective_booleans,
     describe_inside_out,
 )
@@ -657,7 +658,17 @@ def _build(tmp_path: Path, source: str) -> CadQueryExecutionReport:
     )
 
 
-def test_a_cut_is_logged_with_the_volumes_and_boxes_around_it(tmp_path: Path) -> None:
+def _given_a_tool(report: CadQueryExecutionReport) -> list[Call]:
+    assert report.program_log is not None
+    return [call for call in report.program_log.calls if call.tools]
+
+
+def _volume(solids: tuple | None) -> float:
+    assert solids is not None
+    return sum(solid.volume for solid in solids)
+
+
+def test_a_cut_is_logged_with_the_solids_around_it(tmp_path: Path) -> None:
     source = """\
 import cadquery as cq
 
@@ -668,13 +679,16 @@ result = body.cut(cq.Workplane("XY").box(2, 2, 2).translate((50, 0, 0)))
     report = _build(tmp_path, source)
 
     assert report.status is ExecutionStatus.VERIFIED
-    assert report.program_log is not None
-    (call,) = report.program_log.booleans
+    (call,) = _given_a_tool(report)
     assert (call.operation, call.line, call.caller_line) == ("cut", 4, 4)
-    assert call.volume_before == pytest.approx(1000.0)
-    assert call.volume_after == pytest.approx(1000.0)
-    assert call.body_box == pytest.approx((-5, -5, -5, 5, 5, 5), abs=1e-6)
-    assert call.tool_box == pytest.approx((49, -1, -1, 51, 1, 1), abs=1e-6)
+    assert call.body is not None and call.output is not None
+    ((body,), ((tool,),), (output,)) = (call.body, call.tools, call.output)
+    assert (body.valid, body.volume) == (True, pytest.approx(1000.0))
+    assert output.volume == pytest.approx(1000.0)
+    assert body.box == pytest.approx((-5, -5, -5, 5, 5, 5), abs=1e-6)
+    assert tool.box == pytest.approx((49, -1, -1, 51, 1, 1), abs=1e-6)
+    assert report.program_log is not None
+    assert report.program_log.completed is True
     assert report.program_log.result_volumes == pytest.approx((1000.0,))
 
 
@@ -692,16 +706,13 @@ result = body
     report = _build(tmp_path, source)
 
     assert report.status is ExecutionStatus.VERIFIED
-    assert report.program_log is not None
-    assert [(call.operation, call.line) for call in report.program_log.booleans] == [
+    calls = _given_a_tool(report)
+    assert [(call.operation, call.line) for call in calls] == [
         ("cut", 4),
         ("cut", 5),
-        ("fuse", 6),
+        ("union", 6),
     ]
-    removed = [
-        call.volume_before - call.volume_after  # type: ignore[operator]
-        for call in report.program_log.booleans
-    ]
+    removed = [_volume(call.body) - _volume(call.output) for call in calls]
     assert removed == pytest.approx([10 * math.pi, 12.0, -6.0], rel=1e-6)
 
 
@@ -721,14 +732,13 @@ result = drill(drill(cq.Workplane("XY").box(10, 10, 10), -2), 2)
 
     report = _build(tmp_path, source)
 
-    assert report.program_log is not None
-    assert [(call.line, call.caller_line) for call in report.program_log.booleans] == [
+    assert [(call.line, call.caller_line) for call in _given_a_tool(report)] == [
         (5, 8),
         (5, 8),
     ]
 
 
-def test_booleans_without_a_solid_or_a_tool_are_not_logged(tmp_path: Path) -> None:
+def test_booleans_without_a_solid_or_a_tool_are_not_judged(tmp_path: Path) -> None:
     source = """\
 import cadquery as cq
 
@@ -741,10 +751,11 @@ result = cq.Workplane("XY").placeSketch(sketch).extrude(1)
     report = _build(tmp_path, source)
 
     assert report.status is ExecutionStatus.VERIFIED
-    assert report.program_log.booleans == ()
+    assert report.program_log is not None
+    assert describe_ineffective_booleans(report.program_log, "model.py") == ()
 
 
-def test_a_program_that_raises_inside_a_boolean_logs_nothing(tmp_path: Path) -> None:
+def test_a_boolean_that_raises_is_logged_with_its_error(tmp_path: Path) -> None:
     source = """\
 import cadquery as cq
 
@@ -755,11 +766,67 @@ result = box.cut(None)
     report = _build(tmp_path, source)
 
     assert report.status is ExecutionStatus.FAILED
-    assert report.program_log is None
+    assert report.executor_error is None
+    assert report.program_log is not None
+    assert report.program_log.completed is False
+    (cut,) = report.program_log.calls
+    assert (cut.operation, cut.line, cut.tools, cut.output) == ("cut", 4, (), None)
+    assert cut.error == "AttributeError: 'NoneType' object has no attribute 'wrapped'"
+    # The traceback is the program's own, as without the log.
     assert "Traceback (most recent call last):" in report.stderr
     assert "_run_program.py" not in report.stderr
     assert '"/work/model.py", line 4' in report.stderr
     assert "cadquery/occ_impl/shapes.py" in report.stderr
+
+
+def test_a_union_refused_for_an_empty_tool_shows_that_the_tool_was_empty(
+    tmp_path: Path,
+) -> None:
+    source = """\
+import cadquery as cq
+
+body = cq.Workplane("XY").box(10, 10, 10)
+lug = cq.Workplane("XY").box(2, 2, 2).intersect(
+    cq.Workplane("XY").box(2, 2, 2).translate((30, 0, 0))
+)
+result = body.union(lug)
+"""
+
+    report = _build(tmp_path, source)
+
+    assert report.status is ExecutionStatus.FAILED
+    intersect, union = _given_a_tool(report)
+    assert (intersect.operation, intersect.output) == ("intersect", ())
+    assert (union.operation, union.line, union.tools, union.output) == (
+        "union",
+        7,
+        ((),),
+        None,
+    )
+    assert union.body is not None and len(union.body) == 1
+    assert union.error is not None and "at least one solid" in union.error
+
+
+def test_an_inside_out_solid_is_named_for_a_program_that_raised(
+    tmp_path: Path,
+) -> None:
+    source = """\
+import cadquery as cq
+
+body = cq.Solid(cq.Solid.makeBox(10, 10, 10).wrapped.Reversed())
+body = body.cut(cq.Solid.makeBox(2, 2, 2))
+raise RuntimeError("stopped")
+"""
+
+    report = _build(tmp_path, source)
+
+    assert report.status is ExecutionStatus.FAILED
+    assert report.executor_error is not None
+    assert report.executor_error.startswith(
+        "model.py:4 cut was given an inside-out body (one whose faces point "
+        "inward): its volume is -1000.000 mm³."
+    )
+    assert "RuntimeError: stopped" in report.stderr
 
 
 def test_booleans_without_effect_are_named_from_a_real_build(tmp_path: Path) -> None:
@@ -779,7 +846,7 @@ result = body
 
     assert report.status is ExecutionStatus.VERIFIED
     assert report.program_log is not None
-    entries = describe_ineffective_booleans(report.program_log.booleans, "model.py")
+    entries = describe_ineffective_booleans(report.program_log, "model.py")
     assert [entry.split("\n")[0] for entry in entries] == [
         "model.py:4 cut removed no material.",
         (
@@ -806,7 +873,7 @@ result = body
     report = _build(tmp_path, source)
 
     assert report.program_log is not None
-    entries = describe_ineffective_booleans(report.program_log.booleans, "model.py")
+    entries = describe_ineffective_booleans(report.program_log, "model.py")
     assert [entry.split("\n")[0] for entry in entries] == [
         "model.py:4 intersect left no material.",
         "model.py:5 cut removed all material: the cutter covers the whole body.",
@@ -886,7 +953,8 @@ def test_an_inside_out_solid_is_named_before_the_step_error_it_causes(
             exportType="STEP",
         )
         path.with_name(PROGRAM_LOG).write_text(
-            '{"booleans": [], "result_volumes": [1.0, -1.0]}', encoding="utf-8"
+            '{"calls": [], "completed": true, "result_volumes": [1.0, -1.0]}',
+            encoding="utf-8",
         )
 
     executor, _ = _executor(_sandbox_result(), write_two_solids_and_an_inside_out_log)

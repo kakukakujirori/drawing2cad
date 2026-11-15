@@ -1,6 +1,6 @@
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from hashlib import sha256
 from inspect import cleandoc
 from pathlib import Path, PurePosixPath
@@ -220,6 +220,10 @@ class OutputVerifier:
             output_model_path.write_text(
                 cq_report.source,
                 encoding="utf-8",
+            )
+        if cq_report.program_log is not None:
+            (host_verification_dir / "program_log.json").write_text(
+                json.dumps(asdict(cq_report.program_log)), encoding="utf-8"
             )
 
         return cq_report
@@ -504,14 +508,14 @@ def build_verification_feedback(
                 )
             )
 
+    # Only for a program that ran to its end, whose booleans built its result.
     if (
         own_program is not None
         and exec_report is not None
         and exec_report.program_log is not None
+        and exec_report.program_log.completed
     ):
-        entries = describe_ineffective_booleans(
-            exec_report.program_log.booleans, own_program
-        )
+        entries = describe_ineffective_booleans(exec_report.program_log, own_program)
         if entries:
             blocks.append(
                 create_text_block(

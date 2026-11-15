@@ -12,6 +12,7 @@ import json
 import math
 import sys
 import traceback
+from collections import deque
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from functools import wraps
@@ -19,17 +20,17 @@ from pathlib import Path
 from typing import Any
 
 RESULT_STEP = "output.step"
-# Written when the program ran to its end and left `result`: the booleans it
-# called (see `_record_booleans`) and the volume of each solid in `result`.
+# Written once the program has run, also when it raised: the calls it made (see
+# `_record_calls`), whether it ran to its end, and the volume of each solid in
+# `result`.
 PROGRAM_LOG = "_program_log.json"
-_BOOLEANS = ("cut", "fuse", "intersect")
 
 
 def _report(error: BaseException) -> int:
     """Print the traceback without this runner's frames.
 
     They name a file the coder never wrote: the entry before the program, and
-    the boolean recorder between the program and CadQuery.
+    the call recorder between the program and CadQuery.
     """
     report = traceback.TracebackException.from_exception(error, compact=True)
     _drop_own_frames(report)
@@ -52,61 +53,114 @@ def _export(value: object, path: Path | str) -> None:
     cq.exporters.export(value, str(path), exportType="STEP")
 
 
-def _record_booleans(program: Path, log: list[dict[str, Any]]) -> Callable[[], None]:
-    """Log each cut, fuse and intersect the program calls; return the undo.
+def _record_calls(program: Path, log: list[dict[str, Any]]) -> Callable[[], None]:
+    """Patch CadQuery so that each call the program makes to the methods below
+    appends an entry to `log`; return the function that removes the patches.
 
+    An entry names the method ("operation") and the program's lines on the
+    stack ("line" the innermost, "caller_line" the outermost), and holds the
+    solids, as `_measure_solids` gives them, of
+    - "body": the solid a boolean or a modifier works on, which for a Workplane
+      method is its context solid; None for a builder, which makes a new solid;
+    - "tools": each argument of a boolean that is a shape or a Workplane;
+    - "output": what the call returned. None when it raised, and "error" is
+      then "<exception type>: <message>".
     Only the outermost of nested calls is logged, as the one call the program
-    made. A call needs a tool shape and a solid to be logged: the fuse that
-    merges a compound's own parts, or a sketch's boolean on faces, has no
-    volume change to compare. Logging never changes what a call returns or
-    raises.
+    made. Logging never changes what a call returns or raises.
     """
     import cadquery as cq
+    from cadquery.occ_impl.shapes import Mixin3D
 
-    filename = str(program)
-    originals = {
-        (cls, name): cls.__dict__[name]
-        for cls in (cq.Shape, cq.Compound, cq.Solid)
-        for name in _BOOLEANS
-        if name in cls.__dict__
+    # Methods that combine a solid with tools.
+    booleans = {
+        cq.Shape: ("cut", "fuse", "intersect"),
+        cq.Compound: ("cut", "fuse", "intersect"),
+        # Their own checks can raise before the shape's method is reached.
+        cq.Workplane: ("union", "cut", "intersect"),
     }
-    depth = 0
+    # Methods that change a solid by themselves.
+    modifiers = {Mixin3D: ("fillet", "chamfer"), cq.Workplane: ("fillet", "chamfer")}
+    # Methods that make a new solid.
+    builders = {
+        # They return the solid before it is combined with the context solid.
+        cq.Workplane: ("_extrude", "_revolve", "_sweep"),
+        # The function `Workplane.loft` builds with.
+        sys.modules[cq.Workplane.__module__]: ("loft",),
+        cq.Solid: ("extrudeLinear", "revolve", "sweep", "makeLoft"),
+    }
+    patched = [
+        (owner, name, kind)
+        for kind, methods in (
+            ("boolean", booleans),
+            ("modifier", modifiers),
+            ("builder", builders),
+        )
+        for owner, names in methods.items()
+        for name in names
+    ]
+    originals = {(owner, name): vars(owner)[name] for owner, name, _ in patched}
+    filename = str(program)
+    # The latest measurements: a chain gives each call's output to the next.
+    recent: deque[tuple[Any, dict[str, Any]]] = deque(maxlen=16)
+    depth = 0  # how many logged calls are running
 
-    def logged(name: str, original: Callable[..., Any]) -> Callable[..., Any]:
-        @wraps(original)
-        def call(self: Any, *tools: Any, **kwargs: Any) -> Any:
+    def logged(name: str, kind: str, original: Any) -> Any:
+        """`original`, made to log each call the program makes to it."""
+        is_classmethod = isinstance(original, classmethod)
+        function = original.__func__ if is_classmethod else original
+
+        @wraps(function)
+        def call(*args: Any, **kwargs: Any) -> Any:
             nonlocal depth
+            # Not logged when another logged call makes it, or not the program.
+            if depth or not (lines := _program_lines(filename)):
+                return function(*args, **kwargs)
+            entry: dict[str, Any] = {
+                "operation": name.lstrip("_"),
+                "line": lines[0],
+                "caller_line": lines[-1],
+                "body": None,
+                "tools": [],
+                "output": None,
+                "error": None,
+            }
+            # In the log before anything is measured: a failed measurement
+            # loses only its own value.
+            log.append(entry)
             depth += 1
             try:
-                result = original(self, *tools, **kwargs)
+                if kind == "boolean":
+                    entry["tools"] = [
+                        _measure_solids(arg, recent)
+                        for arg in (*args[1:], *kwargs.values())
+                        if isinstance(arg, cq.Shape | cq.Workplane)
+                    ]
+                if kind != "builder":
+                    with suppress(Exception):
+                        body = args[0]
+                        if isinstance(body, cq.Workplane):
+                            body = body._findType((cq.Solid,), True, True)
+                        # A Workplane that finds no context solid has none.
+                        entry["body"] = (
+                            [] if body is None else _measure_solids(body, recent)
+                        )
+                output = function(*args, **kwargs)
+            except BaseException as error:
+                entry["error"] = f"{type(error).__name__}: {error}"
+                raise
             finally:
                 depth -= 1
-            if depth == 0:
-                with suppress(Exception):
-                    shapes = [tool for tool in tools if isinstance(tool, cq.Shape)]
-                    lines = _program_lines(filename) if shapes else []
-                    if lines and any(shape.Solids() for shape in (self, *shapes)):
-                        log.append(
-                            {
-                                "operation": name,
-                                "line": lines[0],
-                                "caller_line": lines[-1],
-                                "volume_before": _volume(self),
-                                "volume_after": _volume(result),
-                                "body_box": _box(self),
-                                "tool_box": _box(cq.Compound.makeCompound(shapes)),
-                            }
-                        )
-            return result
+            entry["output"] = _measure_solids(output, recent)
+            return output
 
-        return call
+        return classmethod(call) if is_classmethod else call
 
-    for (cls, name), original in originals.items():
-        setattr(cls, name, logged(name, original))
+    for owner, name, kind in patched:
+        setattr(owner, name, logged(name, kind, originals[owner, name]))
 
     def undo() -> None:
-        for (cls, name), original in originals.items():
-            setattr(cls, name, original)
+        for (owner, name), original in originals.items():
+            setattr(owner, name, original)
 
     return undo
 
@@ -138,6 +192,50 @@ def _box(shape: Any) -> list[float] | None:
     return None
 
 
+def _measure_solids(
+    value: Any, recent: deque[tuple[Any, dict[str, Any]]]
+) -> list[dict[str, Any]] | None:
+    """Measure each solid of `value`, a shape or a Workplane's stack of shapes.
+
+    Returns one {"valid", "volume", "box"} per solid: OCCT's validity check,
+    the signed volume (negative for an inside-out solid) and the box (xmin,
+    ymin, zmin, xmax, ymax, zmax), each None where it cannot be measured. The
+    list is empty when `value` holds no solid, and None when its solids cannot
+    be listed. A solid found in `recent`, the latest (solid, measurement)
+    pairs, in the same orientation is not measured again.
+    """
+    import cadquery as cq
+
+    try:
+        shapes = value.objects if isinstance(value, cq.Workplane) else [value]
+        solids = [
+            solid
+            for shape in shapes
+            if isinstance(shape, cq.Shape)
+            for solid in shape.Solids()
+        ]
+        measurements = []
+        for solid in solids:
+            measurement = next(
+                (known for seen, known in recent if seen.IsEqual(solid.wrapped)),
+                None,
+            )
+            if measurement is None:
+                valid = None
+                with suppress(Exception):
+                    valid = bool(solid.isValid())
+                measurement = {
+                    "valid": valid,
+                    "volume": _volume(solid),
+                    "box": _box(solid),
+                }
+                recent.append((solid.wrapped, measurement))
+            measurements.append(measurement)
+        return measurements
+    except Exception:  # noqa: BLE001 - not measured
+        return None
+
+
 def _solid_volumes(value: object) -> list[float | None] | None:
     """The volume of each solid in `result`, made into one shape as the export does.
 
@@ -166,30 +264,34 @@ def main(argv: Sequence[str]) -> int:
         code = compile(program.read_text(encoding="utf-8"), str(program), "exec")
     except Exception as error:  # noqa: BLE001 - reported below as an exit code
         return _report(error)
-    booleans: list[dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
     try:
-        undo = _record_booleans(program, booleans)
+        undo = _record_calls(program, calls)
     except Exception:  # noqa: BLE001 - the program then runs unlogged
         undo = None
+    completed = False
     try:
         # The program leaves `result` in `namespace`.
         exec(code, namespace)  # noqa: S102 - the program is the input, and the sandbox is the guard
+        completed = True
     except Exception as error:  # noqa: BLE001 - reported below as an exit code
         return _report(error)
     finally:
         if undo is not None:
             undo()
+            log = {
+                "calls": calls,
+                "completed": completed,
+                "result_volumes": (
+                    _solid_volumes(namespace.get("result")) if completed else None
+                ),
+            }
+            with suppress(Exception):
+                Path(PROGRAM_LOG).write_text(json.dumps(log), encoding="utf-8")
 
     if "result" not in namespace:
         print("`result` not defined", file=sys.stderr)
         return 1
-    if undo is not None:
-        log = {
-            "booleans": booleans,
-            "result_volumes": _solid_volumes(namespace["result"]),
-        }
-        with suppress(Exception):
-            Path(PROGRAM_LOG).write_text(json.dumps(log), encoding="utf-8")
     try:
         _export(namespace["result"], RESULT_STEP)
     except Exception as error:  # noqa: BLE001 - reported below as an exit code

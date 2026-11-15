@@ -60,7 +60,7 @@ class CadQueryExecutionReport:
     stdout: str = ""
     stderr: str = ""
     census: ShapeCensus | None = None
-    # None: not logged, as when the program raised.
+    # None: not logged, as when the program did not compile or the run was killed.
     program_log: ProgramLog | None = None
 
 
@@ -194,13 +194,25 @@ class CadQueryExecutor:
                     stderr=sandbox_result.stderr,
                 )
 
+            # Read before any failure returns: a program that raised is logged too.
+            program_log = read_program_log(workdir.host_bind_dir / PROGRAM_LOG)
+            # The STEP round trip turns an inside-out solid outward, so only the
+            # log shows it. Its message goes first: it can explain a STEP error.
+            inside_out_error = (
+                None
+                if program_log is None
+                else describe_inside_out(program_log, model_path.name)
+            )
+
             if sandbox_result.returncode != 0:
                 return CadQueryExecutionReport(
                     source=source,
                     status=ExecutionStatus.FAILED,
+                    executor_error=inside_out_error,
                     returncode=sandbox_result.returncode,
                     stdout=sandbox_result.stdout,
                     stderr=sandbox_result.stderr,
+                    program_log=program_log,
                 )
 
             # STEP file should be generated here
@@ -213,6 +225,7 @@ class CadQueryExecutor:
                     returncode=sandbox_result.returncode,
                     stdout=sandbox_result.stdout,
                     stderr=sandbox_result.stderr,
+                    program_log=program_log,
                 )
 
             # Keep a readable result even when STEP validation rejects its geometry.
@@ -227,14 +240,6 @@ class CadQueryExecutor:
                 None
                 if tmp_step_path.is_symlink()
                 else read_census(tmp_step_path, source=source, filename=model_path.name)
-            )
-            program_log = read_program_log(workdir.host_bind_dir / PROGRAM_LOG)
-            # The STEP round trip turns an inside-out solid outward, so only the
-            # log shows it. Its message goes first: it can explain a STEP error.
-            inside_out_error = (
-                None
-                if program_log is None
-                else describe_inside_out(program_log, model_path.name)
             )
             validation_error = (
                 "\n".join(

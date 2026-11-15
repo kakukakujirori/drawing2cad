@@ -1,45 +1,72 @@
 import json
+from dataclasses import asdict
 from pathlib import Path
 
+from pydantic import TypeAdapter
+
 from zeroshot.pipeline.verification.program_log import (
-    BooleanCall,
+    Call,
     ProgramLog,
+    SolidState,
     describe_ineffective_booleans,
     describe_inside_out,
     read_program_log,
 )
 
-_ENTRY = {
+_CUT = {
     "operation": "cut",
     "line": 12,
     "caller_line": 30,
-    "volume_before": 1000.0,
-    "volume_after": 1000.0,
-    "body_box": [-5.0, -5.0, -5.0, 5.0, 5.0, 5.0],
-    "tool_box": None,
+    "body": [
+        {"valid": True, "volume": 1000.0, "box": [-5.0, -5.0, -5.0, 5.0, 5.0, 5.0]}
+    ],
+    "tools": [[], None],
+    "output": None,
+    "error": "ValueError: no cut",
 }
 
 
+def _write(path: Path, calls: list[dict], completed: bool = False) -> Path:
+    log = {"calls": calls, "completed": completed, "result_volumes": None}
+    path.write_text(json.dumps(log), encoding="utf-8")
+    return path
+
+
 def test_a_log_reads_back(tmp_path: Path) -> None:
-    log = tmp_path / "_program_log.json"
-    log.write_text(
-        json.dumps({"booleans": [_ENTRY], "result_volumes": [992.0, None]}),
-        encoding="utf-8",
-    )
+    log = _write(tmp_path / "_program_log.json", [_CUT])
 
     assert read_program_log(log) == ProgramLog(
-        booleans=(
-            BooleanCall(
+        result_volumes=None,
+        calls=(
+            Call(
                 operation="cut",
                 line=12,
                 caller_line=30,
-                volume_before=1000.0,
-                volume_after=1000.0,
-                body_box=(-5.0, -5.0, -5.0, 5.0, 5.0, 5.0),
-                tool_box=None,
+                body=(SolidState(True, 1000.0, (-5.0, -5.0, -5.0, 5.0, 5.0, 5.0)),),
+                # A tool with no solids, and one that could not be measured.
+                tools=((), None),
+                output=None,
+                error="ValueError: no cut",
             ),
         ),
-        result_volumes=(992.0, None),
+        completed=False,
+    )
+
+
+def test_a_log_saved_from_what_was_read_reads_back_the_same(tmp_path: Path) -> None:
+    read = read_program_log(_write(tmp_path / "a.json", [_CUT], completed=True))
+    assert read is not None
+    saved = tmp_path / "b.json"
+    saved.write_text(json.dumps(asdict(read)), encoding="utf-8")
+
+    assert read_program_log(saved) == read
+
+
+def test_a_history_saved_with_an_older_runners_log_reads_as_no_calls() -> None:
+    older = {"booleans": [{"operation": "cut"}], "result_volumes": [992.0]}
+
+    assert TypeAdapter(ProgramLog).validate_python(older) == ProgramLog(
+        result_volumes=(992.0,), calls=(), completed=True
     )
 
 
@@ -48,24 +75,17 @@ def test_no_log_is_not_an_empty_log(tmp_path: Path) -> None:
 
 
 def test_an_unreadable_log_is_no_log(tmp_path: Path) -> None:
-    whole = json.dumps({"booleans": [_ENTRY], "result_volumes": None})
+    whole = json.dumps({"calls": [_CUT], "completed": True, "result_volumes": None})
     truncated = tmp_path / "truncated.json"
     truncated.write_text(whole[:40], encoding="utf-8")
-    incomplete = tmp_path / "incomplete.json"
-    incomplete.write_text(
-        json.dumps({"booleans": [{"operation": "cut"}], "result_volumes": None}),
-        encoding="utf-8",
-    )
+    incomplete = _write(tmp_path / "incomplete.json", [{"operation": "cut"}])
 
     assert read_program_log(truncated) is None
     assert read_program_log(incomplete) is None
 
 
 def test_a_symlinked_log_is_not_followed(tmp_path: Path) -> None:
-    target = tmp_path / "elsewhere.json"
-    target.write_text(
-        json.dumps({"booleans": [_ENTRY], "result_volumes": None}), encoding="utf-8"
-    )
+    target = _write(tmp_path / "elsewhere.json", [_CUT])
     log = tmp_path / "_program_log.json"
     log.symlink_to(target)
 
@@ -84,22 +104,27 @@ def _call(
     line: int = 50,
     caller_line: int | None = None,
     body: tuple[float, ...] | None = _BODY,
-) -> BooleanCall:
-    return BooleanCall(
+) -> Call:
+    """A boolean of one-solid shapes; a box of None means a shape with no solids."""
+    return Call(
         operation=operation,
         line=line,
         caller_line=line if caller_line is None else caller_line,
-        volume_before=before,
-        volume_after=after,
-        body_box=body,
-        tool_box=tool,
+        body=() if body is None else (SolidState(True, before, body),),
+        tools=(() if tool is None else (SolidState(True, None, tool),),),
+        output=None if after is None else (SolidState(True, after, None),),
+        error=None,
     )
+
+
+def _log(calls: list[Call], result_volumes: tuple | None = None) -> ProgramLog:
+    return ProgramLog(result_volumes, tuple(calls), True)
 
 
 def test_a_cut_outside_the_body_shows_both_boxes() -> None:
     calls = [_call("cut", 1000.0, 1000.0, (78.815, -3.085, -1.0, 84.985, 3.085, 28.9))]
 
-    (entry,) = describe_ineffective_booleans(calls, "model.py")
+    (entry,) = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert entry == (
         "model.py:50 cut removed no material.\n"
@@ -111,7 +136,7 @@ def test_a_cut_outside_the_body_shows_both_boxes() -> None:
 def test_a_cut_in_an_empty_region_inside_the_body_says_so() -> None:
     calls = [_call("cut", 1000.0, 1000.0, (7.14, 7.34, 54.0, 9.86, 9.06, 55.5))]
 
-    (entry,) = describe_ineffective_booleans(calls, "model.py")
+    (entry,) = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert entry == (
         "model.py:50 cut removed no material: the cutter's region holds no "
@@ -124,7 +149,7 @@ def test_a_cut_in_an_empty_region_inside_the_body_says_so() -> None:
 def test_a_union_inside_material_says_so() -> None:
     calls = [_call("fuse", 1000.0, 1000.0, (0.0, 0.0, 0.0, 2.0, 2.0, 2.0))]
 
-    (entry,) = describe_ineffective_booleans(calls, "model.py")
+    (entry,) = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert entry == (
         "model.py:50 union added no material: the tool's region is already "
@@ -137,7 +162,7 @@ def test_a_union_inside_material_says_so() -> None:
 def test_an_intersect_with_a_disjoint_tool_gives_no_reason() -> None:
     calls = [_call("intersect", 1000.0, 0.0, (60.0, 0.0, 0.0, 62.0, 2.0, 2.0))]
 
-    (entry,) = describe_ineffective_booleans(calls, "model.py")
+    (entry,) = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert entry == (
         "model.py:50 intersect left no material.\n"
@@ -149,7 +174,7 @@ def test_an_intersect_with_a_disjoint_tool_gives_no_reason() -> None:
 def test_an_intersect_with_overlapping_boxes_and_no_common_material() -> None:
     calls = [_call("intersect", 1000.0, 0.0, (0.0, 0.0, 0.0, 2.0, 2.0, 2.0))]
 
-    (entry,) = describe_ineffective_booleans(calls, "model.py")
+    (entry,) = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert entry.startswith(
         "model.py:50 intersect left no material: the body and the tool share no "
@@ -160,7 +185,7 @@ def test_an_intersect_with_overlapping_boxes_and_no_common_material() -> None:
 def test_an_intersect_that_keeps_the_whole_body() -> None:
     calls = [_call("intersect", 1000.0, 1000.0, (-60.0, -20.0, -1.0, 60.0, 20.0, 70.0))]
 
-    (entry,) = describe_ineffective_booleans(calls, "model.py")
+    (entry,) = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert entry == (
         "model.py:50 intersect removed no material: the body lies inside the tool.\n"
@@ -172,7 +197,7 @@ def test_an_intersect_that_keeps_the_whole_body() -> None:
 def test_a_cut_that_removes_the_whole_body() -> None:
     calls = [_call("cut", 1000.0, 0.0, (-60.0, -20.0, -1.0, 60.0, 20.0, 70.0))]
 
-    (entry,) = describe_ineffective_booleans(calls, "model.py")
+    (entry,) = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert entry == (
         "model.py:50 cut removed all material: the cutter covers the whole body.\n"
@@ -187,7 +212,7 @@ def test_an_empty_tool_or_body_is_named_and_the_other_box_shown() -> None:
         _call("fuse", 0.0, 0.0, (0.0, 0.0, 0.0, 1.0, 1.0, 1.0), line=20, body=None),
     ]
 
-    assert describe_ineffective_booleans(calls, "model.py") == (
+    assert describe_ineffective_booleans(_log(calls), "model.py") == (
         (
             "model.py:10 cut removed no material: the cutter is empty.\n"
             "  body X -50.000..50.000, Y -19.285..19.285, Z 0.000..65.570 mm"
@@ -202,7 +227,7 @@ def test_an_empty_tool_or_body_is_named_and_the_other_box_shown() -> None:
 def test_an_unbounded_box_is_written_in_scientific_notation() -> None:
     calls = [_call("fuse", 1000.0, 1000.0, (-1e100, 29.0, -1e100, 1e100, 29.0, 1e100))]
 
-    (entry,) = describe_ineffective_booleans(calls, "model.py")
+    (entry,) = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert entry == (
         "model.py:50 union added no material.\n"
@@ -220,17 +245,17 @@ def test_calls_that_change_the_volume_are_not_named() -> None:
         _call("intersect", 1000.0, 8.0, tool),
     ]
 
-    assert describe_ineffective_booleans(calls, "model.py") == ()
+    assert describe_ineffective_booleans(_log(calls), "model.py") == ()
 
 
 def test_a_change_within_a_millionth_of_the_volume_counts_as_none() -> None:
     tool = (0.0, 0.0, 0.0, 2.0, 2.0, 2.0)
 
     assert describe_ineffective_booleans(
-        [_call("cut", 1e6, 1e6 - 0.5, tool)], "model.py"
+        _log([_call("cut", 1e6, 1e6 - 0.5, tool)]), "model.py"
     )
     assert not describe_ineffective_booleans(
-        [_call("cut", 1e6, 1e6 - 2.0, tool)], "model.py"
+        _log([_call("cut", 1e6, 1e6 - 2.0, tool)]), "model.py"
     )
 
 
@@ -242,13 +267,13 @@ def test_unmeasured_and_inside_out_volumes_are_not_judged() -> None:
         _call("cut", -5874.0, -5874.0, tool),
     ]
 
-    assert describe_ineffective_booleans(calls, "model.py") == ()
+    assert describe_ineffective_booleans(_log(calls), "model.py") == ()
 
 
 def test_a_tool_touching_the_body_counts_as_outside() -> None:
     calls = [_call("cut", 1000.0, 1000.0, (50.0, -1.0, 0.0, 52.0, 1.0, 2.0))]
 
-    (entry,) = describe_ineffective_booleans(calls, "model.py")
+    (entry,) = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert entry.startswith("model.py:50 cut removed no material.\n  body")
 
@@ -261,7 +286,7 @@ def test_repeated_calls_of_one_line_are_counted_and_the_first_is_shown() -> None
         _call("cut", 992.0, 992.0, (70.0, 0.0, 0.0, 72.0, 2.0, 2.0)),
     ]
 
-    (entry,) = describe_ineffective_booleans(calls, "model.py")
+    (entry,) = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert entry == (
         "model.py:50 cut removed no material in 2 of 3 calls. The first:\n"
@@ -277,7 +302,7 @@ def test_a_call_inside_a_helper_is_named_by_each_line_that_called_it() -> None:
         _call("cut", 1000.0, 1000.0, tool, line=35, caller_line=48),
     ]
 
-    entries = describe_ineffective_booleans(calls, "model.py")
+    entries = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert [entry.split(" cut ")[0] for entry in entries] == [
         "model.py:35 (called from model.py:41)",
@@ -289,7 +314,7 @@ def test_entries_past_the_limit_are_named_by_line() -> None:
     tool = (60.0, 0.0, 0.0, 62.0, 2.0, 2.0)
     calls = [_call("cut", 1000.0, 1000.0, tool, line=line) for line in range(1, 7)]
 
-    entries = describe_ineffective_booleans(calls, "model.py")
+    entries = describe_ineffective_booleans(_log(calls), "model.py")
 
     assert len(entries) == 5
     assert entries[-1] == "Not shown: model.py:5, model.py:6."
@@ -304,7 +329,7 @@ def test_a_call_that_returns_an_inside_out_solid_is_named() -> None:
         _call("cut", -28575.5, -28575.5, (0.0, 0.0, 0.0, 2.0, 2.0, 2.0), line=60),
     ]
 
-    assert describe_inside_out(ProgramLog(tuple(calls), (-28575.5,)), "model.py") == (
+    assert describe_inside_out(_log(calls, (-28575.5,)), "model.py") == (
         "model.py:50 cut returned an inside-out solid (one whose faces point "
         "inward): its volume is -28575.500 mm³, against 140.600 mm³ before the "
         "call.\n"
@@ -316,7 +341,7 @@ def test_a_call_that_returns_an_inside_out_solid_is_named() -> None:
 def test_a_call_given_an_inside_out_body_is_named() -> None:
     calls = [_call("fuse", -50494.877, 5075.44, (0.0, 0.0, 0.0, 2.0, 2.0, 2.0))]
 
-    message = describe_inside_out(ProgramLog(tuple(calls), None), "model.py")
+    message = describe_inside_out(_log(calls), "model.py")
 
     assert message is not None
     assert message.startswith(
@@ -333,11 +358,11 @@ def test_solids_with_positive_or_unmeasured_volume_are_not_inside_out() -> None:
         _call("cut", None, -5.0, tool),
     ]
 
-    assert describe_inside_out(ProgramLog(tuple(calls), (1000.0,)), "model.py") is None
+    assert describe_inside_out(_log(calls, (1000.0,)), "model.py") is None
 
 
 def test_an_inside_out_result_is_named_when_no_boolean_met_it() -> None:
-    log = ProgramLog((), (-5874.195,))
+    log = _log([], (-5874.195,))
 
     assert describe_inside_out(log, "model.py") == (
         "`result` is an inside-out solid (one whose faces point inward): its "
@@ -346,7 +371,7 @@ def test_an_inside_out_result_is_named_when_no_boolean_met_it() -> None:
 
 
 def test_inside_out_solids_among_several_in_the_result_are_counted() -> None:
-    log = ProgramLog((), (928.0, -1.25, 181.2, None))
+    log = _log([], (928.0, -1.25, 181.2, None))
 
     assert describe_inside_out(log, "model.py") == (
         "1 of the 3 solids in `result` is inside out (faces pointing inward): "
@@ -355,6 +380,26 @@ def test_inside_out_solids_among_several_in_the_result_are_counted() -> None:
 
 
 def test_a_result_with_no_measured_solid_is_not_inside_out() -> None:
-    assert describe_inside_out(ProgramLog((), None), "model.py") is None
-    assert describe_inside_out(ProgramLog((), ()), "model.py") is None
-    assert describe_inside_out(ProgramLog((), (None,)), "model.py") is None
+    assert describe_inside_out(_log([]), "model.py") is None
+    assert describe_inside_out(_log([], ()), "model.py") is None
+    assert describe_inside_out(_log([], (None,)), "model.py") is None
+
+
+def test_a_union_of_a_workplane_is_judged_as_a_fuse_is() -> None:
+    calls = [_call("union", 1000.0, 1000.0, (0.0, 0.0, 0.0, 2.0, 2.0, 2.0))]
+
+    (entry,) = describe_ineffective_booleans(_log(calls), "model.py")
+
+    assert entry.startswith("model.py:50 union added no material: the tool's region")
+
+
+def test_calls_given_no_tool_or_no_solid_are_not_judged() -> None:
+    # A compound's fuse of its own parts, and a sketch's boolean on faces.
+    self_fuse = Call("fuse", 3, 3, (SolidState(True, 8.0, _BODY),), (), (), None)
+    sketch = Call("cut", 4, 4, (), ((),), (), None)
+    builder = Call("extrude", 5, 5, None, (), (), None)
+
+    assert (
+        describe_ineffective_booleans(_log([self_fuse, sketch, builder]), "m.py") == ()
+    )
+    assert describe_inside_out(_log([self_fuse, sketch, builder]), "m.py") is None

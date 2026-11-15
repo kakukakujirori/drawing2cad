@@ -25,7 +25,12 @@ from zeroshot.pipeline.stages.interpretation.contracts import Axis, Region, View
 from zeroshot.pipeline.stages.tickets.contracts import TicketAnswers
 from zeroshot.pipeline.verification.attempts import AttemptStore
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
-from zeroshot.pipeline.verification.program_log import BooleanCall, ProgramLog
+from zeroshot.pipeline.verification.program_log import (
+    Call,
+    ProgramLog,
+    SolidState,
+    read_program_log,
+)
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
@@ -110,14 +115,15 @@ def test_warning_states_survive_json_and_feedback_without_program_source(
     assert ("[Geometry warning check unavailable]" in text) == (warnings is None)
 
 
-_NO_EFFECT_CUT = BooleanCall(
+_CUBE = SolidState(True, 1000.0, (-5.0, -5.0, -5.0, 5.0, 5.0, 5.0))
+_NO_EFFECT_CUT = Call(
     operation="cut",
     line=12,
     caller_line=12,
-    volume_before=1000.0,
-    volume_after=1000.0,
-    body_box=(-5.0, -5.0, -5.0, 5.0, 5.0, 5.0),
-    tool_box=(20.0, -1.0, -1.0, 22.0, 1.0, 1.0),
+    body=(_CUBE,),
+    tools=((SolidState(True, 8.0, (20.0, -1.0, -1.0, 22.0, 1.0, 1.0)),),),
+    output=(_CUBE,),
+    error=None,
 )
 
 
@@ -132,7 +138,7 @@ def _feedback_text(tmp_path: Path, report: VerifyOutputResult, own_program) -> s
     return "\n".join(block.get("text", "") for block in blocks)
 
 
-def _report_with_booleans(*calls: BooleanCall) -> VerifyOutputResult:
+def _report_with_booleans(*calls: Call) -> VerifyOutputResult:
     return VerifyOutputResult(
         exec_report=CadQueryExecutionReport(
             status=ExecutionStatus.VERIFIED,
@@ -146,7 +152,7 @@ def _report_with_booleans(*calls: BooleanCall) -> VerifyOutputResult:
                 edges=Counter(),
                 warnings=("Possible shallow steps (1 region): depth 0.1 mm.",),
             ),
-            program_log=ProgramLog(calls, (1000.0,)),
+            program_log=ProgramLog((1000.0,), calls, True),
         )
     )
 
@@ -179,11 +185,56 @@ def test_booleans_are_reported_only_for_the_readers_own_program(tmp_path) -> Non
 
 
 def test_no_block_when_every_boolean_changed_the_volume(tmp_path) -> None:
-    effective = replace(_NO_EFFECT_CUT, volume_after=992.0)
+    effective = replace(_NO_EFFECT_CUT, output=(replace(_CUBE, volume=992.0),))
 
     text = _feedback_text(tmp_path, _report_with_booleans(effective), "model.py")
 
     assert "[Booleans that" not in text
+
+
+def test_booleans_are_not_reported_for_a_program_that_raised(tmp_path) -> None:
+    report = _report_with_booleans(_NO_EFFECT_CUT)
+    assert report.exec_report is not None
+    assert report.exec_report.program_log is not None
+    raised = replace(
+        report,
+        exec_report=replace(
+            report.exec_report,
+            status=ExecutionStatus.FAILED,
+            returncode=1,
+            program_log=replace(report.exec_report.program_log, completed=False),
+        ),
+    )
+
+    assert "[Booleans that" not in _feedback_text(tmp_path, raised, "model.py")
+
+
+def test_a_failed_build_keeps_the_runners_log_in_its_attempt(tmp_path: Path) -> None:
+    import sys
+
+    from zeroshot.pipeline.sandbox import SandboxRunner
+    from zeroshot.pipeline.verification import CadQueryExecutor
+
+    executor = CadQueryExecutor(
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable), default_timeout_s=30
+        )
+    )
+    (tmp_path / "model.py").write_text(
+        "import cadquery as cq\n"
+        "body = cq.Workplane('XY').rect(2, 2).extrude(2)\n"
+        "raise RuntimeError('stop')\n",
+        encoding="utf-8",
+    )
+    verifier = _create_verifier(executor, SandboxWorkdir(host_bind_dir=tmp_path))  # type: ignore[arg-type]
+
+    report = verifier.verify()
+
+    assert report.exec_report is not None
+    assert report.exec_report.status is ExecutionStatus.FAILED
+    log = report.exec_report.program_log
+    assert log is not None and log.completed is False
+    assert read_program_log(_coding_attempt(tmp_path) / "program_log.json") == log
 
 
 class StubCadQueryExecutor:

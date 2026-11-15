@@ -23,7 +23,7 @@ from zeroshot.pipeline.tools.errors import ToolFeedbackError
 from zeroshot.pipeline.verification import AttemptStore
 from zeroshot.pipeline.verification.attempts import AttemptStage
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
-from zeroshot.pipeline.verification.program_log import BooleanCall, ProgramLog
+from zeroshot.pipeline.verification.program_log import Call, ProgramLog, SolidState
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
@@ -210,14 +210,16 @@ def test_a_trial_is_scored_against_a_reference_and_kept_apart(trial, stage):
 def test_a_trial_names_its_booleans_that_changed_nothing(trial, stage, monkeypatch):
     def execute(self, source, step):
         step.write_text("STEP")
-        cut = BooleanCall("cut", 1, 1, 8.0, 8.0, (0, 0, 0, 2, 2, 2), (5, 0, 0, 6, 1, 1))
+        body = (SolidState(True, 8.0, (0, 0, 0, 2, 2, 2)),)
+        tool = (SolidState(True, 1.0, (5, 0, 0, 6, 1, 1)),)
+        cut = Call("cut", 1, 1, body, (tool,), body, None)
         return CadQueryExecutionReport(
             status=ExecutionStatus.VERIFIED,
             source=source.read_text(),
             returncode=0,
             step_path=step,
             census=_census(),
-            program_log=ProgramLog((cut,), (8.0,)),
+            program_log=ProgramLog((8.0,), (cut,), True),
         )
 
     monkeypatch.setattr(CadQueryExecutor, "execute", execute)
