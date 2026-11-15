@@ -208,10 +208,11 @@ def test_dimension_names_and_referenced_views_are_checked() -> None:
         DrawingInterpretation.model_validate(data)
 
 
-def test_angular_dimensions_do_not_accept_measured_lengths() -> None:
+@pytest.mark.parametrize("kind", ["angular", "arc_length"])
+def test_angles_and_arc_lengths_do_not_accept_measured_lengths(kind: str) -> None:
     data = pin_interpretation()
-    data["views"][0]["dimensions"][0].update(kind="angular", measured_length=30)
-    with pytest.raises(ValidationError, match="angular"):
+    data["views"][0]["dimensions"][0].update(kind=kind, measured_length=30)
+    with pytest.raises(ValidationError, match=kind):
         DrawingInterpretation.model_validate(data)
 
 

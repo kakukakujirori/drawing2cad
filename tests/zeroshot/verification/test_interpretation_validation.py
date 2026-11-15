@@ -294,6 +294,7 @@ def test_arcs_and_unreadable_lengths_may_stay_unmeasured(tmp_path: Path) -> None
         [
             ("fillet", "radius", 16, None),
             ("bore", "diameter", 8, None),
+            ("rim", "arc_length", 30, None),
             ("illegible", "linear", None, None),
         ],
     )

@@ -177,8 +177,12 @@ class Dimension(Contract):
         ...,
         description="Stable dim_ name in lower_snake_case, unique across the drawing.",
     )
-    kind: Literal["linear", "diameter", "radius", "angular"] = Field(
-        ..., description="The kind of printed dimension."
+    kind: Literal["linear", "diameter", "radius", "arc_length", "angular"] = Field(
+        ...,
+        description=(
+            "The kind of printed dimension. arc_length is a length along a "
+            "curved edge, printed with the arc symbol ⌒ before or above its value."
+        ),
     )
     text: str = Field(
         ...,
@@ -196,7 +200,17 @@ class Dimension(Contract):
     measured_length: float | None = Field(
         default=None,
         gt=0,
-        description="Independently measured length in the containing DrawingView.file: pixels at that file's resolution for raster images, native drawing units for DXF. Required for every linear dimension whose nominal_value is readable, since those calibrate the pixel-to-mm scale. Optional for radius and diameter, and for a linear callout whose printed value is unreadable; any measurement you supply joins the same calibration. Match nominal_value's extent (diameter with diameter, radius with radius). Angles never carry one, and never infer a measurement from nominal_value or calibration scale. If you cannot locate the entity an annotation measures, leave it out of dimensions and report it in concerns.",
+        description=(
+            "Independently measured length in the containing DrawingView.file: "
+            "pixels at that file's resolution for raster images, native drawing units for DXF. "
+            "Required for every linear dimension whose nominal_value is readable, "
+            "since those calibrate the pixel-to-mm scale. "
+            "Optional for radius and diameter, and for a linear callout "
+            "whose printed value is unreadable; any measurement you supply joins the same calibration. "
+            "Match nominal_value's extent (diameter with diameter, radius with radius). "
+            "Angles and arc lengths never carry one, and never infer a measurement from nominal_value or calibration scale. "
+            "If you cannot locate the entity an annotation measures, leave it out of dimensions and report it in concerns."
+        ),
     )
     region: Region = Field(
         ...,
@@ -224,8 +238,8 @@ class Dimension(Contract):
         require_name(self.name, "dim_")
         if self.quantity < 1:
             raise ValueError("dimension quantity must be at least 1")
-        if self.kind == "angular" and self.measured_length is not None:
-            raise ValueError("angular dimensions cannot have measured_length")
+        if self.kind in ("angular", "arc_length") and self.measured_length is not None:
+            raise ValueError(f"{self.kind} dimensions cannot have measured_length")
         return self
 
 

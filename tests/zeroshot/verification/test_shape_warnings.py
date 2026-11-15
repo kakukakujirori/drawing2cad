@@ -44,8 +44,8 @@ def test_spline_warning_names_the_method_line_in_a_multiline_chain(method):
 
     assert len(warnings) == 1
     assert f"profile.py:4 ({method})" in warnings[0]
-    assert "freeform" in warnings[0]
-    assert "more points" in warnings[0]
+    assert "free-form" in warnings[0]
+    assert "control points" in warnings[0]
 
 
 def test_spline_warning_combines_locations_without_matching_comments_or_strings():

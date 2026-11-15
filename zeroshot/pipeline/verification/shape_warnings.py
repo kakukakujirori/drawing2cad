@@ -15,11 +15,14 @@ _ANGULAR_TOL = 1e-9
 _MAX_REGIONS = 4
 _SPLINE_CONSTRUCTION = (
     "Spline calls in program source: {locations}. "
-    "Splines fitted to sampled points can replace separate straight/circular "
-    "boundaries with general curves, changing STEP faces and edges despite "
-    "similar projections. Check the source drawing and use line/arc operations "
-    "where it shows straight/circular geometry. Keep splines for supported "
-    "freeform curves; adding more points does not restore the line/arc structure."
+    "Splines are discouraged in favor of line/arc operations "
+    "because they give a different face and edge structure from the line/arc "
+    "profile most drawn curves represent, even when the projections look alike. "
+    "As long as a free-form curve can be well represented (fit within the stroke width) "
+    "by joining at most 3 or 4 line/arc segments, prefer those over splines. "
+    "Keep a spline only where no such fit exists, and use one spline "
+    "for the whole curve rather than many short segments. "
+    "Adding more control points to overly refine splines is also discouraged."
 )
 
 
