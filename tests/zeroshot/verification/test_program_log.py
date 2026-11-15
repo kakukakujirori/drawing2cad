@@ -10,6 +10,7 @@ from zeroshot.pipeline.verification.program_log import (
     SolidState,
     describe_ineffective_booleans,
     describe_inside_out,
+    describe_shape_faults,
     read_program_log,
 )
 
@@ -403,3 +404,125 @@ def test_calls_given_no_tool_or_no_solid_are_not_judged() -> None:
         describe_ineffective_booleans(_log([self_fuse, sketch, builder]), "m.py") == ()
     )
     assert describe_inside_out(_log([self_fuse, sketch, builder]), "m.py") is None
+
+
+_BOX = (0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+
+
+def _solid(volume: float, valid: bool = True, box: tuple = _BOX) -> SolidState:
+    return SolidState(valid, volume, box)
+
+
+def _shape_call(
+    operation: str,
+    line: int,
+    body: tuple | None,
+    tools: tuple,
+    output: tuple | None,
+    error: str | None = None,
+) -> Call:
+    return Call(operation, line, line, body, tools, output, error)
+
+
+def test_a_failed_build_names_the_first_invalid_solid_and_the_call_that_raised() -> (
+    None
+):
+    bad = _solid(28456.412, valid=False)
+    calls = [
+        _shape_call("extrude", 74, None, (), (bad,)),
+        _shape_call("cut", 79, (bad,), ((_solid(6080.4),),), (bad,)),
+        _shape_call("chamfer", 82, (bad,), (), None, "StdFail_NotDone: not done"),
+    ]
+
+    assert describe_shape_faults(ProgramLog(None, tuple(calls), False), "m.py") == (
+        (
+            "m.py:74 extrude returned an invalid solid\n"
+            "  output 1 solid: invalid, 28456.412 mm³, "
+            "X 0.000..10.000, Y 0.000..10.000, Z 0.000..10.000 mm"
+        ),
+        (
+            "m.py:82 chamfer raised StdFail_NotDone: not done\n"
+            "  body 1 solid: invalid, 28456.412 mm³, "
+            "X 0.000..10.000, Y 0.000..10.000, Z 0.000..10.000 mm"
+        ),
+    )
+
+
+def test_an_empty_shape_and_a_separation_are_named_once_each() -> None:
+    one, two = (_solid(6093.8),), (_solid(6093.8), _solid(2535.2))
+    calls = [
+        _shape_call("intersect", 130, one, (one,), ()),
+        _shape_call("union", 142, one, (one,), two),
+        _shape_call("union", 142, two, (one,), two),
+        _shape_call("union", 142, two, ((),), None, "ValueError: no solid!"),
+    ]
+
+    entries = describe_shape_faults(ProgramLog(None, tuple(calls), False), "m.py")
+
+    assert [entry.split("\n")[0] for entry in entries] == [
+        "m.py:130 intersect returned no solid",
+        (
+            "m.py:142 union (call 1 of 3 on that line) returned 2 separate solids "
+            "from a body of 1"
+        ),
+        "m.py:142 union (call 3 of 3 on that line) raised ValueError: no solid!",
+    ]
+    assert entries[2].split("\n")[1:] == [
+        "  body 2 solids:",
+        "    6093.800 mm³, X 0.000..10.000, Y 0.000..10.000, Z 0.000..10.000 mm",
+        "    2535.200 mm³, X 0.000..10.000, Y 0.000..10.000, Z 0.000..10.000 mm",
+        "  tool no solid",
+    ]
+
+
+def test_a_call_first_seen_with_two_problems_makes_one_entry() -> None:
+    bad = (_solid(-1.0, valid=False),)
+    calls = [_shape_call("cut", 9, bad, ((_solid(8.0),),), ())]
+
+    (entry,) = describe_shape_faults(ProgramLog(None, tuple(calls), True), "m.py")
+
+    assert entry.startswith(
+        "m.py:9 cut was given an invalid body and returned no solid\n"
+    )
+
+
+def test_booleans_without_a_tool_or_a_solid_and_caught_errors_are_passed_over() -> None:
+    calls = [
+        # A compound's fuse of its own parts, and a sketch's boolean on faces.
+        _shape_call("fuse", 3, (_solid(8.0, valid=False),), (), ()),
+        _shape_call("cut", 4, (), ((),), ()),
+        # Raised, and caught by the program, which ran to its end.
+        _shape_call("cut", 5, (_solid(8.0),), ((_solid(1.0),),), None, "Error: x"),
+    ]
+
+    assert describe_shape_faults(ProgramLog(None, tuple(calls), True), "m.py") == ()
+
+
+def test_only_an_error_the_program_did_not_survive_is_named_as_raised() -> None:
+    calls = [
+        _shape_call("cut", 5, (_solid(8.0),), ((_solid(1.0),),), None, "Error: caught"),
+        _shape_call("extrude", 6, None, (), (_solid(8.0),)),
+    ]
+
+    assert describe_shape_faults(ProgramLog(None, tuple(calls), False), "m.py") == ()
+
+
+def test_a_shape_of_many_solids_lists_the_first_and_counts_the_rest() -> None:
+    many = tuple(_solid(float(volume)) for volume in range(1, 6))
+    calls = [
+        _shape_call("cut", 2, (_solid(8.0),), ((_solid(1.0),),), many),
+        _shape_call("cut", 3, None, ((_solid(1.0),),), None, "Error: x"),
+    ]
+
+    entries = describe_shape_faults(ProgramLog(None, tuple(calls), False), "m.py")
+
+    assert entries[0].split("\n")[3:] == [
+        "  output 5 solids:",
+        "    1.000 mm³, X 0.000..10.000, Y 0.000..10.000, Z 0.000..10.000 mm",
+        "    2.000 mm³, X 0.000..10.000, Y 0.000..10.000, Z 0.000..10.000 mm",
+        "    3.000 mm³, X 0.000..10.000, Y 0.000..10.000, Z 0.000..10.000 mm",
+        "    and 2 more",
+    ]
+    assert entries[1].split("\n")[1:] == [
+        "  cutter 1 solid: 1.000 mm³, X 0.000..10.000, Y 0.000..10.000, Z 0.000..10.000 mm"
+    ]

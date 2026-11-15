@@ -2,7 +2,8 @@
 
 `_run_program.py` logs the solids of each boolean, builder, fillet and chamfer
 the program called, and of its `result`. This reads the log back on the host,
-names the booleans that changed nothing and finds the first inside-out solid.
+names the booleans that changed nothing, finds the first inside-out solid and
+the first calls whose solids were invalid, missing or separated.
 """
 
 import json
@@ -17,6 +18,8 @@ from pydantic import ConfigDict
 # volume below minus this fraction of the larger volume counts as negative.
 _RELATIVE_TOLERANCE = 1e-6
 _MAX_ENTRIES = 4
+# How many solids of one shape an entry lists; the rest are counted.
+_MAX_LISTED_SOLIDS = 3
 # A coordinate of this size or more, in mm, is written in scientific notation.
 _FIXED_NOTATION_BELOW = 1e9
 _NAME = {"cut": "cut", "fuse": "union", "union": "union", "intersect": "intersect"}
@@ -45,8 +48,8 @@ class Call:
     """One call the program made, as the runner logged it.
 
     The solids of the body, of a tool or of the output are a tuple, empty when
-    there are none and None when they could not be measured. A builder makes a
-    new solid, so it has no body and no tools.
+    there are none and None when they could not be measured. Only a boolean has
+    tools; a builder makes a new solid, so it has no body either.
     """
 
     operation: str  # the CadQuery method's name without a leading underscore
@@ -113,16 +116,21 @@ def _solids(entries: list[dict] | None) -> tuple[SolidState, ...] | None:
 
 
 def _comparable_booleans(log: ProgramLog) -> list[Call]:
-    """The booleans given a tool and a solid, whose volumes can be compared.
-
-    A compound's fuse of its own parts has no tool; a sketch's boolean on
-    faces has no solid.
-    """
+    """The booleans given a tool and a solid, whose volumes can be compared."""
     return [
         call
         for call in log.calls
-        if call.operation in _NAME and call.tools and (call.body or any(call.tools))
+        if call.operation in _NAME and _has_tool_and_solid(call)
     ]
+
+
+def _has_tool_and_solid(call: Call) -> bool:
+    """Whether a boolean was given a tool and a solid.
+
+    A compound's fuse of its own parts has no tool; a sketch's boolean on faces
+    has no solid.
+    """
+    return bool(call.tools) and bool(call.body or any(call.tools))
 
 
 def _total_volume(solids: tuple[SolidState, ...] | None) -> float | None:
@@ -168,6 +176,96 @@ def describe_ineffective_booleans(log: ProgramLog, filename: str) -> tuple[str, 
         for line, caller, *_ in list(findings)[_MAX_ENTRIES:]
     )
     return (*entries[:_MAX_ENTRIES], f"Not shown: {', '.join(hidden)}.")
+
+
+def describe_shape_faults(log: ProgramLog, filename: str) -> tuple[str, ...]:
+    """Name the first calls seen with an invalid solid, with no solid, and
+    returning more solids than their body had, and the call the program raised
+    from; each call once, in call order, with the solids it was given and
+    returned. A boolean without a tool or a solid is passed over.
+    """
+    first: dict[str, tuple[int, str]] = {}  # each problem's first call, and what it did
+    for index, call in enumerate(log.calls):
+        if call.operation in _NAME and not _has_tool_and_solid(call):
+            continue
+        invalid = [
+            label
+            for label, solids in _operands(call)
+            if any(solid.valid is False for solid in solids or ())
+        ]
+        if invalid:
+            did = (
+                "returned an invalid solid"
+                if invalid[0] == "output"
+                else f"was given an invalid {invalid[0]}"
+            )
+            first.setdefault("invalid", (index, did))
+        if call.output == ():
+            first.setdefault("empty", (index, "returned no solid"))
+        elif () in call.tools:
+            tool = _TOOL[call.operation]
+            first.setdefault("empty", (index, f"was given a {tool} with no solid"))
+        if call.body and call.output and len(call.output) > len(call.body):
+            split = (
+                f"{len(call.output)} separate solids from a body of {len(call.body)}"
+            )
+            first.setdefault("separated", (index, f"returned {split}"))
+    phrases: dict[int, list[str]] = {}
+    for index, did in first.values():  # found in call order
+        phrases.setdefault(index, []).append(did)
+    # Nothing runs after an uncaught error: the program raised from its last call.
+    if not log.completed and log.calls and (error := log.calls[-1].error):
+        phrases.setdefault(len(log.calls) - 1, []).append(
+            f"raised {error.splitlines()[0]}"
+        )
+
+    keys = [(call.line, call.caller_line, call.operation) for call in log.calls]
+    entries = []
+    for index, done in phrases.items():
+        call, key = log.calls[index], keys[index]
+        head = f"{_where(call.line, call.caller_line, filename)} "
+        head += _NAME.get(call.operation, call.operation)
+        if keys.count(key) > 1:
+            head += (
+                f" (call {keys[: index + 1].count(key)} of {keys.count(key)} "
+                "on that line)"
+            )
+        rows = [(label, _describe_solids(solids)) for label, solids in _operands(call)]
+        entries.append("\n".join([f"{head} {' and '.join(done)}", *_labelled(rows)]))
+    return tuple(entries)
+
+
+def _operands(call: Call) -> list[tuple[str, tuple[SolidState, ...] | None]]:
+    """The labelled solids a call was given and, unless it raised, returned."""
+    return [
+        *([("body", call.body)] if call.body is not None else []),
+        *((_TOOL[call.operation], solids) for solids in call.tools),
+        *([("output", call.output)] if call.error is None else []),
+    ]
+
+
+def _describe_solids(solids: tuple[SolidState, ...] | None) -> str:
+    """A shape's solids after its label: on the same line if one, below if more."""
+    if solids is None:
+        return "not measured"
+    if not solids:
+        return "no solid"
+    states = [
+        ", ".join(
+            [
+                *(["invalid"] if solid.valid is False else []),
+                *(["validity unknown"] if solid.valid is None else []),
+                "volume unknown" if solid.volume is None else f"{solid.volume:.3f} mm³",
+                "box unknown" if solid.box is None else _describe(solid.box),
+            ]
+        )
+        for solid in solids[:_MAX_LISTED_SOLIDS]
+    ]
+    if len(solids) == 1:
+        return f"1 solid: {states[0]}"
+    if len(solids) > len(states):
+        states.append(f"and {len(solids) - len(states)} more")
+    return f"{len(solids)} solids:" + "".join(f"\n    {state}" for state in states)
 
 
 def describe_inside_out(log: ProgramLog, filename: str) -> str | None:
@@ -288,16 +386,22 @@ def _where(line: int, caller_line: int, filename: str) -> str:
 
 def _boxes(call: Call) -> list[str]:
     """The measured boxes of the body and the tool, as lines under an entry."""
-    labelled = [
-        (label, box)
-        for label, box in (
-            ("body", _bounds(call.body)),
-            (_TOOL[call.operation], _bounds(*call.tools)),
-        )
-        if box is not None
-    ]
-    width = max((len(label) for label, _ in labelled), default=0)
-    return [f"  {label:<{width}} {_describe(box)}" for label, box in labelled]
+    return _labelled(
+        [
+            (label, _describe(box))
+            for label, box in (
+                ("body", _bounds(call.body)),
+                (_TOOL[call.operation], _bounds(*call.tools)),
+            )
+            if box is not None
+        ]
+    )
+
+
+def _labelled(rows: list[tuple[str, str]]) -> list[str]:
+    """Rows under an entry, their labels padded to one width."""
+    width = max((len(label) for label, _ in rows), default=0)
+    return [f"  {label:<{width}} {text}" for label, text in rows]
 
 
 def _describe(box: tuple[float, ...]) -> str:

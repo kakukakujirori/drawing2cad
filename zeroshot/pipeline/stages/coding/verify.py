@@ -23,7 +23,10 @@ from zeroshot.pipeline.stages.interpretation.contracts import (
 )
 from zeroshot.pipeline.verification.attempts import AttemptStage, AttemptStore
 from zeroshot.pipeline.verification.drawing_diff.align import AlignmentResult
-from zeroshot.pipeline.verification.program_log import describe_ineffective_booleans
+from zeroshot.pipeline.verification.program_log import (
+    describe_ineffective_booleans,
+    describe_shape_faults,
+)
 from zeroshot.pipeline.verification.render.constants import (
     ProjectionPaths,
     Render3dPaths,
@@ -457,7 +460,8 @@ def build_verification_feedback(
     and the HumanMessage carrying them belong to the caller.
 
     `own_program` is the program's file name when the reader wrote the program;
-    only then are its booleans that changed nothing reported. None otherwise.
+    only then are its booleans that changed nothing reported, and for a build
+    that failed, the first calls whose solids went wrong. None otherwise.
     """
     exec_report = report.exec_report
     render_report = report.render_report or {}
@@ -522,6 +526,24 @@ def build_verification_feedback(
                     "[Booleans that changed no volume or left no material — "
                     "program lines; model XYZ in mm]\n"
                     + "\n".join(f"- {entry}" for entry in entries)
+                )
+            )
+
+    if (
+        own_program is not None
+        and exec_report is not None
+        and exec_report.status is not ExecutionStatus.VERIFIED
+        and exec_report.program_log is not None
+    ):
+        entries = describe_shape_faults(exec_report.program_log, own_program)
+        if entries:
+            blocks.append(
+                create_text_block(
+                    "[Where the program's solids first went wrong — program lines; "
+                    "model XYZ in mm]\n"
+                    + "\n".join(f"- {entry}" for entry in entries)
+                    + "\nEach is the first logged call seen with that problem, which "
+                    "need not be its cause."
                 )
             )
 

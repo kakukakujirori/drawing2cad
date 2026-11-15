@@ -237,6 +237,85 @@ def test_a_failed_build_keeps_the_runners_log_in_its_attempt(tmp_path: Path) -> 
     assert read_program_log(_coding_attempt(tmp_path) / "program_log.json") == log
 
 
+def _failed_build(*calls: Call, completed: bool = False) -> VerifyOutputResult:
+    return VerifyOutputResult(
+        verification_id="004",
+        sandbox_verification_dir="/work/attempts/round_000/coding/004",
+        exec_report=CadQueryExecutionReport(
+            status=ExecutionStatus.FAILED,
+            returncode=1,
+            source=VALID_SOURCE,
+            program_log=ProgramLog(None, calls, completed),
+        ),
+    )
+
+
+_EMPTY_INTERSECT = Call("intersect", 9, 9, (_CUBE,), ((_CUBE,),), (), None)
+
+
+def test_a_failed_build_names_where_its_shapes_went_wrong(tmp_path) -> None:
+    text = _feedback_text(tmp_path, _failed_build(_EMPTY_INTERSECT), "model.py")
+
+    block = text[text.index("[Where the program's solids first went wrong") :]
+    assert block.startswith(
+        "[Where the program's solids first went wrong — program lines; model XYZ "
+        "in mm]\n"
+        "- model.py:9 intersect returned no solid\n"
+    )
+    assert block.endswith(
+        "Each is the first logged call seen with that problem, which need not be "
+        "its cause."
+    )
+
+
+def test_shape_faults_are_named_only_for_the_readers_own_failed_build(
+    tmp_path,
+) -> None:
+    failed = _failed_build(_EMPTY_INTERSECT, completed=True)
+    assert failed.exec_report is not None
+    verified = replace(
+        failed,
+        exec_report=replace(
+            failed.exec_report, status=ExecutionStatus.VERIFIED, returncode=0
+        ),
+    )
+
+    heading = "[Where the program's solids first went wrong"
+    assert heading in _feedback_text(tmp_path, failed, "model.py")
+    assert heading not in _feedback_text(tmp_path, failed, None)
+    assert heading not in _feedback_text(tmp_path, verified, "model.py")
+
+
+def test_a_real_failed_build_names_the_empty_tool_its_union_refused(
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    from zeroshot.pipeline.sandbox import SandboxRunner
+    from zeroshot.pipeline.verification import CadQueryExecutor
+
+    executor = CadQueryExecutor(
+        sandbox_runner=SandboxRunner(
+            python_executable=Path(sys.executable), default_timeout_s=30
+        )
+    )
+    (tmp_path / "model.py").write_text(
+        "import cadquery as cq\n"
+        "body = cq.Workplane('XY').box(10, 10, 10)\n"
+        "lug = cq.Workplane('XY').box(2, 2, 2).intersect(\n"
+        "    cq.Workplane('XY').box(2, 2, 2).translate((30, 0, 0))\n"
+        ")\n"
+        "result = body.union(lug)\n",
+        encoding="utf-8",
+    )
+    verifier = _create_verifier(executor, SandboxWorkdir(host_bind_dir=tmp_path))  # type: ignore[arg-type]
+
+    text = _text(verifier.feedback())
+
+    assert "- model.py:3 intersect returned no solid\n" in text
+    assert "- model.py:6 union raised ValueError: Workplane object must have" in text
+
+
 class StubCadQueryExecutor:
     def __init__(self, report: CadQueryExecutionReport) -> None:
         self.report = report
