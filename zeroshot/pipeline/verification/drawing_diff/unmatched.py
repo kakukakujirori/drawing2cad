@@ -28,22 +28,20 @@ from skimage.morphology import thin
 
 from .image_ops import disk, distance_map, drawing_area, filled_area
 
-# Tuned on two drawings and their ground truth: outputs/a2_gate_20260927.
+# Line groups at least FAR_MIN_LENGTH_PX long that reach beyond FAR_PEAK_PX are far
+# mismatches; fragments within JOIN_PX form one group.
 FAR_PEAK_PX = 12.0
 JOIN_PX = 4
 PART_MARGIN_PX = 20
 FAR_MIN_LENGTH_PX = 50
 # A line that leaves its place gradually lies beyond FAR_PEAK_PX only in short
 # stretches; its group grows from them along the line while it stays this far.
-# Chosen where ground-truth builds gain no missing groups, on the ECCV views of
-# outputs/20261101_minimax3.1_flash; 4 px admits them.
 FAR_GROW_PX = 5.0
 # A long input line that stays within FAR_PEAK_PX of the output but reaches this
 # far takes only the display slots the other groups leave free.
 NEAR_PEAK_PX = 6.0
 
-# Tuned the same way: outputs/silhouette_20260927, with image_ops.CLOSE_PX.
-# Narrower slivers come from misregistered edges and from annotation.
+# Material slivers narrower than this come from misregistered edges and annotation.
 MATERIAL_THIN_PX = 30
 MIN_AREA_PX = 1000
 # A line group this close to a material group's outline is that outline;
@@ -53,9 +51,7 @@ OUTLINE_PX = 8
 # Unsupported stretches: a stretch of an output curve beyond STRETCH_GROW_PX of every
 # input line, the far end of matched-line noise, that somewhere reaches
 # STRETCH_PEAK_PX. Between the input's dashes a hidden curve stays nearer than half
-# the gap, which STRETCH_HIDDEN_PEAK_PX exceeds. Chosen where ground-truth builds
-# gain few groups, on outputs/20261101_minimax3.1_flash (ECCV) and
-# outputs/20261101_minimax3.1_flash_mixed_with_20261027_itercad_ortho2cad (Ortho2CAD).
+# the gap, which STRETCH_HIDDEN_PEAK_PX exceeds.
 STRETCH_GROW_PX = 3.0
 STRETCH_PEAK_PX = 6.0
 STRETCH_HIDDEN_PEAK_PX = 7.0

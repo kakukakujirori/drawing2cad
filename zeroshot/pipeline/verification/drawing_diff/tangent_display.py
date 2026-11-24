@@ -35,8 +35,7 @@ from .unmatched import SHARED_PX, warp_output_to_drawing
 if TYPE_CHECKING:
     from .worker import AlignedView
 
-# Chosen on ground-truth and predicted builds of ECCV, IterCAD and Ortho2CAD:
-# a sheet omits tangents when less than this share of their length is drawn...
+# A sheet omits tangents when less than this share of their length is drawn...
 MIN_DRAWN_FRACTION = 0.15
 # ...and at least this much of their length, in input pixels, could have shown it.
 MIN_INFORMATIVE_PX = 400

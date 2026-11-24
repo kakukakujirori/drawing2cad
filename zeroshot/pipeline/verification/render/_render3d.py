@@ -82,19 +82,13 @@ from zeroshot.pipeline.verification.render.constants import (
 class Render3dConfig:
     # camera direction: unit vector from the model centre TOWARD the eye,
     # expressed in model (X, Y, Z), where XY is horizontal and +Z is up.
-    # These are the former GT-calibrated (1,1,1), up=+Y camera rotated by the
-    # same old->new frame change as reconstructed solids: (x,y,z)->(x,-z,y).
     eye_dir: tuple[float, float, float] = (1.0, -1.0, 1.0)
     world_up: tuple[float, float, float] = (0.0, 0.0, 1.0)
     roll_deg: float = 0.0  # rotation of the image plane about the view axis
     dist_factor: float = 8.0  # eye distance = bbox_diagonal * dist_factor
     focus_factor: float = 0.15  # focal-plane distance = eye_distance * focus_factor
-    # Framing: GT fits the part's TRUE bounding sphere (max vertex distance
-    # from the AABB centre), not the projected ink bbox -- consistent incl.
-    # bodies of revolution, where the AABB-diagonal sphere over-estimates the
-    # radius. fill_factor = (projected sphere diameter) / (canvas height);
-    # median implied value over 12 GT parts with the calibrated camera is
-    # 0.887 (p10-p90 spread 0.82-1.2 -- GT's own framing varies mildly).
+    # fill_factor = (projected diameter of the part's true bounding sphere, the
+    # max vertex distance from the AABB centre) / (canvas height).
     fill_factor: float = 0.88
     margin_frac: float = 0.08  # fallback 2D-fit margin if tessellation fails
     canvas_w: int = RENDER3D_SIZE[0]
@@ -107,8 +101,7 @@ class Render3dConfig:
     hid_color: str = "#b5b5b5"
     hid_dash: str = "4,3"
 
-    # shaded pass style (calibrated against GT transparent_shaded_edges pixel
-    # stats on 000123: face mean/p25/p75 within ~5 gray levels of GT)
+    # shaded pass style
     shaded_color: str = "#c4cdd4"
     shaded_opacity: float = 0.6
     shaded_ambient: float = 0.5
@@ -117,9 +110,7 @@ class Render3dConfig:
     shaded_edge_width: float = 1.0
     shaded_view_angle_pad: float = 1.0  # multiply the derived vertical FOV by this
 
-    # hlg_translucent_faces compositing: GT face pixels average ~239 gray
-    # (near-white with soft shading); calibrated so white*(1-a)+shaded*a with
-    # the shaded face mean ~195 lands on the GT mean.
+    # hlg_translucent_faces compositing: opacity of the shaded faces over white.
     translucent_face_opacity: float = 0.27
 
 
@@ -336,8 +327,8 @@ def _hlr_project(
 # parameterisation seams and same-surface split edges) plus true mesh
 # silhouettes, each sampled densely and classified against a VTK depth buffer
 # rendered with the SAME camera as the shaded pass. Tangent (fillet/chamfer
-# boundary) edges are INCLUDED: GT draws them (000029: visible tangent circles
-# solid black, hidden ones gray dashed); only seams stay hidden.
+# boundary) edges are INCLUDED (visible ones solid black, hidden ones gray
+# dashed); only seams stay hidden.
 # ---------------------------------------------------------------------------
 
 

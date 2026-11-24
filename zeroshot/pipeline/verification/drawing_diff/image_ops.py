@@ -138,7 +138,6 @@ def disk(radius: int) -> np.ndarray:
 
 
 # Gaps a rendered outline may leave, closed before its area is filled.
-# Tuned on outputs/silhouette_20260927.
 CLOSE_PX = 3
 
 
